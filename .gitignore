@@ -1,0 +1,20 @@
+# --- ENTORNOS VIRTUALES (Protección de Inodes y Rendimiento) ---
+venv/
+.venv/
+env/
+__pycache__/
+
+# --- SECRETOS Y SEGURIDAD (Prevención de Fugas) ---
+.env
+.env.*
+secrets.json
+keys/
+
+# --- IDE Y SISTEMA OPERATIVO ---
+.vscode/
+.DS_Store
+
+# --- DATOS LOCALES (Prevención de Bloqueos) ---
+*.db
+*.sqlite3
+.vector_store/
