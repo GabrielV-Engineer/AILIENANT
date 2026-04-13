@@ -1,51 +1,77 @@
 # core/state.py
-from typing import TypedDict, List, Dict, Any, Optional
+# alienant-core/core/state.py
+
+import operator
+from typing import TypedDict, List, Dict, Any, Optional, Annotated
 from pydantic import BaseModel, Field
-import os
+
+# =====================================================================
+# 1. MODELOS DE DATOS (Contratos de Validación Estricta en Tiempo de Ejecución)
+# =====================================================================
+# Usamos Pydantic porque TypedDict es solo para el linter estático (Mypy).
+# En un sistema multi-agente, si el LLM alucina y devuelve un string en vez 
+# de un float para 'semantic_similarity', Pydantic lanzará un error inmediato,
+# evitando que el error se propague aguas abajo (Fail-Fast Principle).
+
+class WBSStep(BaseModel):
+    """Define un paso atómico del Plan Maestro."""
+    step_id: str = Field(..., description="ID único ej: 'AUTH_001'")
+    description: str
+    target_agent: str = Field(..., description="Agente responsable (Logic, Infra, etc.)")
+    estimated_tokens: Optional[int] = 0
 
 class ContextMeter(BaseModel):
-    """
-    Representa el 'Context Sufficiency Score' (CSS).
-    Determina si el sistema tiene suficiente información local para proceder.
-    """
-    semantic_similarity: float = 0.0
-    graph_coverage: float = 0.0
-    recency_score: float = 0.0
-    css_total: float = 0.0
-    routing_decision: str = "LOCAL_SMALL"
-    is_red_alert: bool = False
+    semantic_similarity: float = Field(ge=0.0, le=1.0, description="Score de similitud semántica")
+    graph_coverage: float = Field(ge=0.0, le=1.0)
+    recency_score: float = Field(ge=0.0, le=1.0)
+    css_total: float = Field(ge=0.0, le=100.0, description="Context Sufficiency Score")
+    task_complexity_index: float = Field(ge=0.0, le=100.0, description="TCI")
+    routing_decision: str = Field(pattern="^(LOCAL_SMALL|LOCAL_BIG|CLOUD)$")
+    is_red_alert: bool
 
-class AgentMemorySnapshot(BaseModel):
-    """
-    Contenedor de datos extraídos de la memoria GraphRAG para alimentar a los LLMs.
-    """
-    vector_results: List[Dict[str, Any]] = []
-    topological_paths: List[str] = []
-    environment_profile: Dict[str, str] = {}
-
-class AilienantGraphState(TypedDict):
-    """
-    Esquema principal de LangGraph. Define qué datos persisten entre nodos.
-    """
-    # --- Identificación ---
-    task_id: str
-    user_input: str
-    # --- Control de Flujo (Bento Menu) ---
-    is_manual_override: bool          # True si el usuario saltó la orquestación automática
-    target_agent: Optional[str]       # Agente específico si is_manual_override es True
-    # --- Contexto Dinámico ---
-    context_metrics: ContextMeter     # Métricas de salud del contexto
-    memory_snapshot: AgentMemorySnapshot # Datos de GraphRAG inyectados
-    # --- Gestión del Plan (WBS) ---
-    current_step: str                 # ID del paso actual en ejecución
-    wbs_plan: List[Dict[str, Any]]    # Plan maestro generado por el PlannerAgent
-    completed_steps: List[str]        # Historial de hitos alcanzados
-    # --- Artefactos de Salida ---
-    generated_code: Dict[str, str]    # Map de: "path/al/archivo": "contenido"
-    terminal_output: Optional[str]    # Resultados de tests o ejecuciones efímeras
-    # --- Telemetría y Seguridad ---
-    tokens_used_local: int            # Conteo de tokens en modelos locales (Qwen/Llama)
-    tokens_used_cloud: int            # Conteo de tokens en modelos Cloud (Claude/GPT)
-    security_flags: List[str]         # Alertas inyectadas por SecOpsAgent
-    errors: List[str]                 # Fallos críticos que activan el Circuit Breaker
+class LLMProfile(BaseModel):
+    model_name: str
+    parameters_b: float
+    context_window: int
+    quantization: str
     
+class TokenCounter(BaseModel):
+    local: int = 0
+    cloud: int = 0
+    total_cost_usd: float = 0.0 # Valor añadido para auditoría
+
+# =====================================================================
+# 2. ESTADO DEL GRAFO (AIlienant Context) (LangGraph TypedDict)
+# =====================================================================
+
+class AIlienantGraphState(TypedDict):
+    # --- Memoria de Mensajes ---
+    # Historial acumulativo O(N)
+    messages: Annotated[List[Dict[str, str]], operator.add]
+    
+    # --- Contexto y Telemetría ---
+    current_task_spec: str
+    context_metrics: ContextMeter
+    active_llm_profile: LLMProfile
+    token_usage: TokenCounter
+    
+    # --- Control de Flujo ---
+    is_manual_override: bool 
+    target_agent: Optional[str] 
+    
+    # --- Planificación (WBS) ---
+    # immutable_wbs ahora usa el modelo WBSStep para evitar datos basura
+    immutable_wbs: List[WBSStep] 
+    completed_steps: Annotated[List[str], operator.add] 
+    
+    # --- Sistema de Archivos Virtual (VFS) ---
+    # Single Source of Truth para el código. 
+    # Clave: Ruta del archivo, Valor: Contenido
+    read_files_state: Dict[str, str]
+    vfs_buffer: Dict[str, str] 
+    
+    # --- Resiliencia y Diagnóstico ---
+    errors: Annotated[List[str], operator.add]
+    retry_count: int
+    security_flags: Annotated[List[str], operator.add]
+    terminal_output: str
