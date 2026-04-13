@@ -11,7 +11,7 @@
 El cimiento inmutable. Define la soberanía de los datos, el flujo de conciencia bicefálico y el blindaje contra la entropía del entorno.
 
 - [ ] **0.1. Arquitectura de Monorepositorio y Capas de Resiliencia:** 
-  - Estructura: /alienant-core (FastAPI/LangGraph), /alienant-extension (VS Code/TS), /docs.
+  - Estructura: /ailienant-core (FastAPI/LangGraph), /alienant-extension (VS Code/TS), /docs.
   - VFS Middleware Layer: Implementación en core/vfs_middleware.py. Regla de Oro: El backend nunca consulta el disco duro directamente para archivos activos; siempre intercepta primero el buffer del IDE para evitar el "Archivo Fantasma".
 - [ ] **0.2. Esquema Neuronal Bicefálico (Pydantic/TypedDict):**
   - AIlienantGraphState: Definición del estado global con persistencia SQLite.
