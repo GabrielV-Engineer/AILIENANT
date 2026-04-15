@@ -1,6 +1,6 @@
 # Diario de Desarrollo - Ialienant 🐜
 
-## Hito 1: Cimentación del Core y WebSockets - 05/04/2026
+## Hito 0.1: Cimentación del Core y WebSockets - 05/04/2026
 * **Estructura de Archivos:** Se determinó que los archivos fuente (`main.py`, `state.py`) deben residir en la raíz del módulo (`alienant-core/`) y **nunca** dentro de la carpeta `venv/`. Esto asegura compatibilidad con Git y previene la pérdida de código fuente.
 * **Troubleshooting (Pylance):** Si VS Code no reconoce dependencias como `pydantic`, se debe forzar el intérprete (`Ctrl+Shift+P` -> `Python: Select Interpreter`) apuntando directamente al binario dentro de `venv/Scripts/python.exe`.
 * **Importaciones en FastAPI:** Para la ejecución de desarrollo local con `uvicorn`, las importaciones internas (ej. `from state import ...`) deben ser absolutas respecto a la raíz del módulo para evitar el error `Could not import module`.
@@ -8,7 +8,7 @@
 
 ---
 
-### Hito 1.2: Implementación de ConnectionManager y Robustez de Streaming - 07/04/2026
+### Hito 0.2: Implementación de ConnectionManager y Robustez de Streaming - 07/04/2026
 * **Arquitectura de Red:** Se migró la gestión de WebSockets de un manejo directo en `main.py` a un patrón de diseño **Manager (Singleton)** ubicado en `core/websocket_manager.py`. Esto desacopla la lógica de transporte de la definición de los endpoints.
 * **Prevención de Memory Leaks:** Se implementó un ciclo de vida estricto para las conexiones (`connect` -> `try/finally` -> `disconnect`). Esto asegura que, ante cierres inesperados de VS Code o caídas de red, los recursos del servidor se liberen en tiempo real (Complejidad de limpieza **O(1)**).
 * **Abstracción de Mensajería:** Se estandarizaron los métodos `send_personal_message` y `broadcast_telemetry`. Ahora el sistema es capaz de direccionar ráfagas de tokens (`TOKEN_CHUNK`) específicamente a la tarea (`task_id`) que las originó, permitiendo sesiones multi-tarea en el futuro sin colisión de datos.
@@ -16,7 +16,7 @@
 
 ---
 
-## Hito 1.3 & 1.4: Persistencia de Estado y Refactorización Enterprise - 08/04/2026
+## Hito 0.3 & 0.4: Persistencia de Estado y Refactorización Enterprise - 08/04/2026
 * **Persistencia Atómica (SQLite):** Se implementó el sistema de Checkpointing utilizando SqliteSaver. Ahora, el estado del grafo no solo reside en la RAM, sino que se guarda físicamente en checkpoints.db. Esto permite la recuperación de sesiones ante caídas del servidor y sienta las bases para el "Time-Travel Debugging" (Capacidad de volver a estados anteriores del hilo).
 * **Gestión de Recursos (Anti-Leak):** Se introdujo el patrón Context Manager (with checkpoint_manager.get_saver()) para la apertura y cierre de conexiones a la base de datos. Esta arquitectura garantiza una limpieza de recursos O(1), eliminando cualquier riesgo de fugas de memoria por conexiones huérfanas.
 * **Refactorización de Grafo (Factory Pattern):** Se migró la instanciación del grafo a una función fábrica (build_ailienant_graph). Se eliminaron todas las variables globales en graph.py, logrando un desacoplamiento total entre la definición de la topología y el motor de ejecución JIT (Just-In-Time).
@@ -25,7 +25,7 @@
 
 ---
 
-## Hito 2: Cerebro de Enrutamiento y Blindaje de Contexto - 09/04/2026
+## Hito 0.5: Cerebro de Enrutamiento y Blindaje de Contexto - 09/04/2026
 * **Matriz de Enrutamiento 3D (logic/routing_engine.py):** Se implementó el motor de decisión heurístico $O(M)$ que evalúa CSS (Contexto), TCI (Complejidad) y Capacidad (Hardware). Este nodo elimina la "ceguera de hardware" y previene errores de Out-of-Memory (OOM) mediante un buffer del 20% en la ventana de contexto.
 * **Precisión de Tokenización (utils/token_counter.py):** Integración de `tiktoken` para el conteo quirúrgico de tokens. Esto permite al orquestador predecir si un prompt desbordará el modelo local antes de realizar la inferencia, optimizando el fallback a la nube.
 * **Arquitectura de Carpetas (Clean Architecture):** Se migró el prototipo a una estructura modular (`logic/` y `utils/`). Se aplicó el principio de Separación de Preocupaciones (SoC), desacoplando la lógica de negocio de las herramientas de soporte.
@@ -33,8 +33,40 @@
 
 ---
 
-## Hito 2.1: Orquestación Dinámica de Agentes y Blindaje de Permisos - 10/04/2026
+## Hito 0.6: Orquestación Dinámica de Agentes y Blindaje de Permisos - 10/04/2026
 
 * **Consolidación de Nodos Cognitivos (`core/agents/`):** Migración de 9 agentes estáticos a 5 Nodos Base dinámicos. Se implementó el mecanismo de **Prompt Swapping** que inyecta directivas de rol $R \in \{Refactor, Infra, Doc, SecOps, Test\}$ en tiempo de ejecución, reduciendo la carga cognitiva del modelo y optimizando el uso de la ventana de contexto.
 * **Protocolo de Seguridad MCP (`core/permissions.py`):** Diseño del interceptor de privilegios con cuatro niveles de acceso granulares (**ReadOnly, Write, Execute, Dangerous**). Se estableció la validación determinista **Read-Before-Write (RBW)** para mitigar la corrupción accidental de archivos por parte de LLMs locales.
 * **Estructura del Estado Neuronal (`core/state.py`):** Definición del `IalienantGraphState` utilizando `Annotated` y reductores de LangGraph. El esquema gestiona el `wbs_plan`, el mapeo de archivos leídos y el `retry_count`, garantizando la persistencia del hilo de pensamiento y la prevención de bucles infinitos en el Micro-Enjambre de QA.
+
+## hito 1.0.0📅 [13/04/2026] | Sesión de Desarrollo: Cierre de la Fase 0 (Infraestructura Core)
+
+### 🚀 Resumen de Logros
+Finalización exitosa de los cimientos técnicos de **AILIENANT**. La infraestructura base es ahora resiliente, fuertemente tipada y preparada para la orquestación de agentes.
+
+### 🛠️ Detalles Técnicos de la Sesión
+
+* **Motor de Red Optimizado ($O(1)$):**
+    * Se implementó `TypeAdapter` de **Pydantic V2** en `websocket_manager.py`.
+    * Logro: Validación instantánea de Uniones Discriminadas, asegurando que solo los eventos que cumplen los contratos lleguen al sistema.
+* **Entrypoint Resiliente (FastAPI):**
+    * Construcción de `main.py` con manejo de ciclo de vida de WebSockets.
+    * Logro: Implementación de bloques `try-except WebSocketDisconnect` para garantizar **Zero Memory Leaks** ante desconexiones abruptas del IDE.
+* **Persistencia de Estado (HITL Ready):**
+    * Configuración de `engine.py` utilizando `SqliteSaver`.
+    * Logro: Conexión de base de datos local para habilitar la memoria a largo plazo de LangGraph y permitir pausas en el flujo para intervención humana (Human-in-the-loop).
+* **Puerta de Enlace LLM (Factory Pattern):**
+    * Desarrollo de `llm_gateway.py` para abstracción de modelos.
+    * Logro: Enrutamiento dinámico entre **Ollama** (local) y **OpenAI** (nube) con `temperature=0.0` para garantizar respuestas deterministas en tareas de ingeniería.
+* **Contratos REST VFS-Ready:**
+    * Creación del endpoint `POST /task/submit` con soporte para `dirty_buffers`.
+    * Logro: El sistema ahora puede sincronizar archivos modificados no guardados en el IDE antes de iniciar cualquier misión de IA.
+* **Seguridad, RBAC y XML Sandboxing:**
+    * Implementación de `rbac.py` y `prompts.py`.
+    * Logro: Transición a **4 Nodos de Poder** (Planner, Orchestrator, Logic, Analyst) y mitigación de inyecciones de prompt mediante etiquetas `<file_content>` delimitadas.
+
+### 🧪 Validación de Calidad (QA)
+- [x] **Prueba REST:** Endpoint `/task/submit` validado vía Swagger UI con payloads complejos.
+- [x] **Prueba WS:** Script de prueba `qa_ws.py` confirmó que el firewall rechaza paquetes malformados y procesa eventos válidos.
+- [x] **Estabilidad:** Cero errores de enrutamiento y gestión de puertos 8000 estable.
+

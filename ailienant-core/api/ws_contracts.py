@@ -51,6 +51,7 @@ class ServerStatusEvent(BaseModel):
 
 # FastAPI usará este tipo para validar CUALQUIER mensaje entrante.
 # Pydantic usará el campo 'event_type' para castearlo a la clase correcta.
+
 WebSocketMessage = Union[
     ClientFileUpdateEvent, 
     ServerCodeProposalEvent, 

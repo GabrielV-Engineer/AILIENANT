@@ -6,8 +6,9 @@ Este documento define el esquema estricto de datos que fluye a través del grafo
 ### 🧠 1. Core State Schema (`AIlienantGraphState`)
 
 ```python
-from typing import TypedDict, List, Dict, Any, Optional
-from pydantic import BaseModel
+from typing import TypedDict, List, Dict, Any, Optional, Annotated, Literal
+from pydantic import BaseModel, Field
+import operator
 
 class ContextMeter(BaseModel):
     semantic_similarity: float  # 0.0 a 1.0
@@ -23,7 +24,17 @@ class LLMProfile(BaseModel):
     parameters_b: float        # ej. 8.0, 1.5, 32.0 (Para calcular capacidad lógica)
     context_window: int        # ej. 8192 (Para evitar crashes de ventana)
     quantization: str          # ej. "int4", "fp16"
-    cost_per_1k_tokens: float  # 0.0 para locales, >0 para CLOUD
+
+class TokenCounter(BaseModel):
+    local: int = 0
+    cloud: int = 0
+    total_cost_usd: float = 0.0
+
+# --- Virtual File System (VFS) ---
+class VFSFile(BaseModel):
+    content: str = Field(..., description="Contenido en texto plano del archivo")
+    document_version_id: str = Field(..., description="Timestamp o Hash para OCC")
+    is_dirty: bool = Field(default=False, description="True si requiere sincronización con el IDE")
 
 class EnvironmentProfile(BaseModel):
     os_name: str
@@ -31,36 +42,54 @@ class EnvironmentProfile(BaseModel):
     # Registro de capacidades. El orquestador lee esto antes de enrutar.
     available_models: Dict[str, LLMProfile] # Map de roles ("LOCAL_SMALL", "CLOUD") a sus perfiles reales
 
-class AgentMemorySnapshot(BaseModel):
-    vector_results: List[Dict[str, Any]]  # Snippets de código de LanceDB
-    topological_paths: List[str]          # Relaciones de NetworkX en Markdown
-    environment: EnvironmentProfile       # Múltiples agentes consumen esta metadata
+# --- Spec-Driven Development (WBS) ---
+class WBSStep(BaseModel):
+    step_number: int
+    target_role: Literal["Refactor", "Infra", "Doc", "SecOps", "Test"] = Field(
+        description="Rol que asumirá el CoderAgent para esta tarea."
+    )
+    action: Literal["read_file", "write_file", "edit_file", "run_command"]
+    target_file: str
+    description: str
+    status: Literal["pending", "in_progress", "completed", "failed"] = "pending"
 
-class AilienantGraphState(TypedDict):
-    # 1. Metadatos de la Petición
+class MissionSpecification(BaseModel):
+    """El Macro-Contrato que blinda la ejecución del CoderAgent."""
+    outcome: str
+    scope: List[str]
+    constraints: List[str]
+    decisions: List[str]
+    tasks: List[WBSStep]
+    checks: List[str]
+
+class AIlienantGraphState(TypedDict):
+    # --- Memoria Base y Petición ---
     task_id: str
     user_input: str
-    is_manual_override: bool          # True si el usuario usó el Agent Launcher (Bento Menu)
-    target_agent: Optional[str]       # Si is_manual_override es True, indica el agente
+    messages: Annotated[List[Dict[str, str]], operator.add]
     
-    # 2. Contexto Dinámico (Llenado por AgentMemory y Orchestrator)
+    # --- Telemetría Dinámica ---
     context_metrics: ContextMeter
-    memory_snapshot: AgentMemorySnapshot
+    active_llm_profile: LLMProfile
+    token_usage: TokenCounter
     
-    # 3. Flujo de Ejecución (LangGraph)
-    current_step: str                 # Nodo actual en ejecución
-    wbs_plan: List[Dict[str, Any]]    # Work Breakdown Structure (PlannerAgent)
-    completed_steps: List[str]
+    # --- Control de Flujo (Prompt Swapping) ---
+    is_manual_override: bool 
+    target_role: Optional[str]        # El rol forzado actual si hay override
+    current_step_id: Optional[int]    # ID de la tarea actual en ejecución
     
-    # 4. Artefactos y Modificaciones
-    generated_code: Dict[str, str]    # path_archivo -> contenido_nuevo
-    terminal_output: Optional[str]    # stdout/stderr de pruebas efímeras
+    # --- Planificación Inmutable (SDD) ---
+    mission_spec: Optional[MissionSpecification] 
     
-    # 5. Telemetría y Seguridad
-    tokens_used_local: int
-    tokens_used_cloud: int
-    security_flags: List[str]         # Alertas del SecOpsAgent
-    errors: List[str]                 # Fallos críticos durante el ciclo
+    # --- VFS (Single Source of Truth) ---
+    read_files_state: Dict[str, VFSFile]
+    vfs_buffer: Dict[str, VFSFile]
+    
+    # --- Diagnóstico ---
+    errors: Annotated[List[str], operator.add]
+    retry_count: int
+    security_flags: Annotated[List[str], operator.add]
+    terminal_output: str
 
 ```
 
@@ -68,13 +97,22 @@ class AilienantGraphState(TypedDict):
 
 ### 📋 2. Reglas de Transición (Mutaciones de Estado)
 
-Para garantizar un flujo predecible y evitar colisiones de datos en LangGraph, los permisos de mutación sobre `AIlienantGraphState` están estrictamente limitados:
+Para garantizar un flujo predecible, evitar colisiones en LangGraph y operar bajo la nueva arquitectura de **Prompt Swapping**, los permisos de mutación y uso de herramientas sobre el `AIlienantGraphState` están estrictamente centralizados:
 
-* **🧭 PlannerAgent:** Único agente autorizado para inicializar y modificar el arreglo `wbs_plan` y avanzar la lista de `completed_steps`.
-* **🧠 OrchestratorAgent:** Único agente autorizado a modificar `context_metrics.routing_decision` y asignar el `target_agent`. No tiene permisos para escribir código.
-* **⚙️ LogicAgent:** Tiene permisos de escritura en `generated_code`. NO puede alterar el plan (WBS) ni las decisiones de enrutamiento.
-* **🐜 AnalystAgent (La Hormiga):** Operación estricta de **Solo Lectura** sobre `generated_code` y `memory_snapshot`. Su salida va directamente a la UI o añade notas explicativas al estado, pero *nunca* altera el código fuente directamente.
-* **🛡️ SecOpsAgent:** Tiene autoridad de bloqueo. Si inyecta un error en `security_flags`, el grafo DEBE pausarse (Human-in-the-Loop) o forzar una transición de regreso al `LogicAgent` para remediación.
-* **🧪 TestAgent & 🐛 DebugAgent:** Autorizados para escribir en `terminal_output` y añadir fallos a `errors`. Si los tests fallan, tienen el poder de devolver el estado actual al `LogicAgent` o `RefactorAgent`.
-* **🧹 RefactorAgent, 🏗️ InfraAgent & 📖 DocAgent:** Tienen permisos de escritura sobre `generated_code`, pero acotados a sus dominios (optimizaciones de AST, Dockerfiles/ENVs, y archivos `.md`/docstrings, respectivamente).
-* **💾 AgentMemory (Motor):** Toda escritura confirmada en `generated_code` debe pasar por la validación de hashing del motor de memoria antes de reflejarse permanentemente en LanceDB/NetworkX.
+* **🕵️ ResearcherAgent (Retrieval Only):** Operación estricta de **Solo Lectura** sobre el sistema de archivos. Único agente autorizado para mutar el contexto inyectando el `skeleton_prompt`. No tiene permisos para alterar código fuente.
+* **📐 PlannerAgent:** Único agente autorizado para inicializar y mutar el `wbs_plan`. Durante su ejecución ($O(1)$), el grafo entra en "modo plan", bloqueando globalmente cualquier herramienta de escritura (`Write Tools`).
+* **🧠 OrchestratorAgent:** Único agente con autoridad para gestionar el ciclo de ejecución ($O(N)$). Muta las métricas de ruteo inyectando la **Matriz de Enrutamiento 3D** (calculando el $CSS$). 
+  * *Drift Detection:* Tiene autoridad absoluta para bloquear el grafo e inyectar el estado `HITL_APPROVAL_REQUIRED` si detecta que la ejecución intenta desviarse del `immutable_wbs`. No posee permisos de escritura de código.
+* **⚙️ CoderAgent (El Obrero Mutante):** Es el **ÚNICO nodo** con permisos de escritura (`Write`) y ejecución (`Execute`). Sus permisos de mutación cambian dinámicamente en tiempo real según el System Prompt (Rol) inyectado por el Orchestrator:
+  * *Rol Refactor:* Permisos restringidos exclusivamente a `BatchEditTool` para mutaciones quirúrgicas. Tiene prohibido reescribir el archivo completo.
+  * *Rol Infra:* Permisos sobre Docker y Bash. Si intenta mutar un archivo `.env` o usar la `BashTool` para despliegues, el estado transita forzosamente a una interrupción (Human-in-the-Loop).
+  * *Rol Doc:* Permisos de escritura limitados a la generación de JSDoc/Docstrings y mutación de archivos `.md`.
+  * *Rol SecOps:* Muta el código basándose estrictamente en el output del `RunLinterTool` y reglas OWASP. 
+  * *Rol Debug & Test:* Opera en un Micro-Enjambre cerrado. Utiliza la `BashTool` para ejecutar pruebas. **Regla de Bloqueo:** La tarea no puede transitar a "completada" en el estado hasta que reciba un *exit code 0*. Utiliza `FileEditTool` para inyectar los parches basados en el `stderr`.
+* **🐜 AnalystAgent (La Hormiga):** Operación inmutable (**Solo Lectura**). Muta el estado conversacional de la UI, pero nunca el código. Utiliza herramientas `ReadOnly` (como `RunLinter` o `FileReadTool`) cruzando la memoria a corto plazo (`IalienantGraphState`), la memoria a largo plazo (GraphRAG) y los `dirty_buffers` del IDE para generar críticas usando el Método Socrático.
+
+### 💾 3. Persistencia y Consolidación de Estado (AgentMemory)
+ es el motor de infraestructura subyacente (Checkpointer).
+
+* **Regla de Consolidación (Commit):** El estado temporal del grafo (`AIlienantGraphState`) no persiste automáticamente. Toda mutación de código confirmada y ejecutada por el `CoderAgent` debe pasar por la validación de hashing del motor de memoria.
+* **Sincronización:** Solo tras obtener un exit code exitoso (ej. del micro-enjambre de Testing) y pasar el hashing, el código se refleja permanentemente en la memoria a largo plazo (LanceDB / NetworkX), actualizando el contexto para futuras recuperaciones del `ResearcherAgent`.

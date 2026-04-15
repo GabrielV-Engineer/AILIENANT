@@ -1,3 +1,6 @@
+# shared/config.py
+# alienant-core/shared/state.py
+
 import os
 
 CLOUD_PROVIDER_KEYS = [

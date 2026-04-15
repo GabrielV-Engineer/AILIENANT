@@ -4,7 +4,7 @@ from fastapi import WebSocket
 from typing import Dict, Optional
 from pydantic import ValidationError, TypeAdapter
 import logging
-from .ws_contracts import WebSocketMessage
+from ws_contracts import WebSocketMessage
 
 # Configuración básica de logging
 logging.basicConfig(level=logging.INFO)
