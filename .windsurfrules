@@ -1,0 +1,14 @@
+# AILIENANT - Cascade Master Directives
+
+## ⚖️ GOLDEN RULES (IMMUTABLE)
+1. **Architectural & Strategic Sovereignty:** You are a strict assistant. NEVER assume dependencies or create directories/files outside the scope defined in `architecture_prompt.md`. You MUST align every task with the Work Breakdown Structure (WBS) found in `PROJECT_MANIFEST.md`.
+2. **Context-First Protocol:** Before proposing any code for `ailienant-core/`, you MUST parse `SCHEMA_EVOLUTION.MD`, `SYSTEM_PROMPTS.md`, and the current phase in `PROJECT_MANIFEST.md`.
+3. **Type Safety & State:** All state mutations must strictly implement `typing.TypedDict` and `pydantic` validation as defined in the Schema Evolution contract. No "Any" types allowed.
+4. **Domain Isolation (Sandbox):** Zero Hallucinations. If the task is scoped to the Webview (React/TS), do not modify the FastAPI server or LangGraph logic, and vice versa.
+5. **Engineering Excellence:** Use strict typing. Every complex function or algorithm must include a docstring documenting its **Big O complexity** (Time/Memory) and the rationale behind the implementation.
+6. **Git Hygiene:** Every solution must be ready for a semantic commit based on the WBS task ID (e.g., "feat(core): implement MCP bridge [WBS 1.2.1]").
+
+## 🛠️ TECHNICAL STACK ENFORCEMENT
+- **Backend:** Python 3.10+, FastAPI, LangGraph, Pydantic v2.
+- **Frontend:** TypeScript, VS Code Extension API, React (Webview).
+- **Communication:** JSON-RPC over WebSockets (asynchronous).
