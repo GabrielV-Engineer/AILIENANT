@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional, Tuple
 from pydantic import BaseModel
 
 # --- 1. Contratos de Datos (Alineados con SCHEMA_EVOLUTION.MD) ---
@@ -86,3 +86,46 @@ class RoutingEngine:
         if tci < 30.0:
             return "LOCAL"
         return "CLOUD"
+
+    @staticmethod
+    def resolve_provider(
+        tci: float,
+        css: float,
+        has_images: bool = False,
+        cloud_available: bool = True,
+    ) -> Tuple[str, Optional[str]]:
+        """Full 3D decision matrix with Vision Bypass and Cloud Guard fallback.
+
+        Returns (provider, routing_warning | None).
+
+        Priority order (first matching rule wins):
+          1. CSS < 40              → HUMAN_REQUIRED  (context gap overrides all)
+          2. has_images + cloud    → CLOUD            (vision bypass — multimodal)
+          3. has_images + no cloud → HUMAN_REQUIRED   (cannot process images locally)
+          4. TCI < 30              → LOCAL            (simple task, privacy-first)
+          5. TCI >= 30 + cloud     → CLOUD
+          6. TCI >= 30 + no cloud  → LOCAL + warning  (graceful degradation)
+        """
+        # Rule 1: Context gap — not enough information to proceed safely
+        if css < 40.0:
+            return "HUMAN_REQUIRED", None
+
+        # Rules 2 & 3: Vision Bypass
+        if has_images:
+            if cloud_available:
+                return "CLOUD", None
+            return "HUMAN_REQUIRED", None
+
+        # Rule 4: Low-complexity task → privacy-first local
+        if tci < 30.0:
+            return "LOCAL", None
+
+        # Rules 5 & 6: High-complexity task — prefer CLOUD, degrade to LOCAL
+        if cloud_available:
+            return "CLOUD", None
+
+        warning = (
+            f"CLOUD optimal for TCI={tci:.1f} but no cloud provider available. "
+            "Falling back to LOCAL — response quality may be reduced."
+        )
+        return "LOCAL", warning

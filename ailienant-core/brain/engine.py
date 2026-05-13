@@ -23,8 +23,8 @@ workflow = StateGraph(AIlienantGraphState)
 from agents.planner import run_planner_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
 
-workflow.add_node("planner_agent", run_planner_node)
-workflow.add_node("coder_agent", run_coder_node)
+workflow.add_node("planner_agent", run_planner_node)  # type: ignore[type-var]
+workflow.add_node("coder_agent", run_coder_node)      # type: ignore[type-var]
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -32,21 +32,25 @@ workflow.add_node("coder_agent", run_coder_node)
 
 
 def route_to_coders(state: AIlienantGraphState) -> list[Send]:
-    """Conditional edge: fan-out desde PlannerAgent → N instancias de CoderAgent.
+    """Conditional edge implementing two execution topologies:
 
-    High-TCI (>80): usa Send para lanzar una instancia de CoderAgent por cada
-    WBSStep en parallel_tasks, ejecutándolos en paralelo dentro del grafo.
+    SWARM (provider == "CLOUD"):
+      MapReduce fan-out — one CoderAgent instance per task in parallel_tasks.
+      All instances run concurrently; _merge_generated_code resolves collisions.
 
-    Low/Medium-TCI: ejecuta un único CoderAgent secuencial con el primer
-    paso pendiente del plan.
+    RELAY (provider == "LOCAL" or fallback):
+      Relay State Machine — sends only the next pending task to a single CoderAgent.
+      Sequential execution protects VRAM from concurrent inference pressure.
+      After the CoderAgent marks its step 'completed', the next graph invocation
+      advances the pointer to the following pending step.
     """
-    tci: float = state.get("tci", 0.0)
+    provider: str = state.get("provider", "CLOUD")
     parallel_tasks = state.get("parallel_tasks", [])
+    mission_spec = state.get("mission_spec")
 
-    if tci > 80.0 and parallel_tasks:
+    if provider == "CLOUD" and parallel_tasks:
         logger.info(
-            "🔀 High-TCI (%.1f): iniciando fan-out con %d CoderAgent(s) en paralelo.",
-            tci,
+            "🔀 SWARM: provider=CLOUD, fan-out → %d CoderAgent(s) en paralelo.",
             len(parallel_tasks),
         )
         return [
@@ -54,19 +58,18 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
             for step in parallel_tasks
         ]
 
-    # Fallback secuencial: primer paso pendiente del plan
-    mission_spec = state.get("mission_spec")
-    first_step = (
+    # RELAY: send exactly one pending step to protect VRAM
+    first_pending = (
         next((t for t in mission_spec.tasks if t.status == "pending"), None)
         if mission_spec
         else None
     )
     logger.info(
-        "➡️  Low/Medium-TCI (%.1f): ejecución secuencial, paso #%s.",
-        tci,
-        first_step.step_number if first_step else "None",
+        "➡️  RELAY: provider=%s, ejecución secuencial → paso #%s.",
+        provider,
+        first_pending.step_number if first_pending else "None",
     )
-    return [Send("coder_agent", {**state, "current_step_id": first_step.step_number if first_step else None})]
+    return [Send("coder_agent", {**state, "current_step_id": first_pending.step_number if first_pending else None})]
 
 
 # =====================================================================

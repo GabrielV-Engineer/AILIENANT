@@ -1,8 +1,10 @@
-# alienant-core/brain/state.py
+# ailienant-core/brain/state.py
 
 import operator
 from typing import TypedDict, List, Dict, Optional, Annotated, Literal
 from pydantic import BaseModel, Field
+
+from shared.hardware import HardwareProfile  # noqa: E402 — imported for type annotation
 
 # =====================================================================
 # 1. MODELOS DE DATOS (Contratos de Validación Estricta en Tiempo de Ejecución)
@@ -144,6 +146,19 @@ class ManualAttachment(BaseModel):
 # =====================================================================
 
 
+def _merge_generated_code(
+    left: Dict[str, "VFSFile"], right: Dict[str, "VFSFile"]
+) -> Dict[str, "VFSFile"]:
+    """Reducer for parallel CoderAgent output buffers. Keeps the entry with the
+    lexicographically later document_version_id so the most recent generated edit
+    survives multi-agent fan-out collisions."""
+    merged = dict(left)
+    for path, file in right.items():
+        if path not in merged or file.document_version_id > merged[path].document_version_id:
+            merged[path] = file
+    return merged
+
+
 def _merge_vfs(left: Dict[str, "VFSFile"], right: Dict[str, "VFSFile"]) -> Dict[str, "VFSFile"]:
     """Reducer for concurrent CoderAgent VFS writes. Keeps the file with the
     lexicographically later document_version_id (timestamp/hash), preventing
@@ -209,6 +224,18 @@ class AIlienantGraphState(TypedDict):
     css: float          # Context Sufficiency Score  0–100
     # Payload del fan-out MapReduce: PlannerAgent escribe, route_to_coders lee.
     parallel_tasks: List[WBSStep]
+
+    # --- Routing & Hardware (Phase 2.1) ---
+    # True when at least one attachment is type="image" → forces CLOUD via Vision Bypass.
+    has_images: bool
+    # Set by resolve_provider() when CLOUD is optimal but unavailable; None otherwise.
+    routing_warning: Optional[str]
+    # Populated by orchestrator node on first invocation; cached in checkpoint state.
+    hardware_profile: Optional[HardwareProfile]
+    # Active routing decision written by the orchestrator; read by route_to_coders.
+    provider: str
+    # Parallel CoderAgent output buffer; _merge_generated_code prevents fan-out collisions.
+    generated_code: Annotated[Dict[str, VFSFile], _merge_generated_code]
 
     # --- Resiliencia y Diagnóstico ---
     errors: Annotated[List[str], operator.add]
