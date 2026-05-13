@@ -24,10 +24,24 @@ from agents.planner import run_planner_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
 from brain.summarizer import run_summarize_node  # noqa: E402
 from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
+from brain.drift_monitor import run_drift_monitor_node  # noqa: E402
+
+
+async def run_apply_patch_node(state: dict) -> dict:
+    """Phase 2.2.D stub — applies pending_patches via blob_storage in Phase 4.
+
+    In Phase 4: reads state["pending_patches"] (filepath → unified diff written by
+    CoderAgent), calls blob_storage.apply_patch() per entry, and writes updated
+    VFSFile(blob_hash=new_hash, ...) objects back into vfs_buffer.
+    """
+    return {}
+
 
 workflow.add_node("summarize_history", run_summarize_node)  # type: ignore[type-var]
 workflow.add_node("planner_agent", run_planner_node)        # type: ignore[type-var]
+workflow.add_node("drift_monitor", run_drift_monitor_node)  # type: ignore[type-var]
 workflow.add_node("coder_agent", run_coder_node)            # type: ignore[type-var]
+workflow.add_node("apply_patch", run_apply_patch_node)      # type: ignore[type-var]
 workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[type-var]
 
 # =====================================================================
@@ -81,8 +95,10 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 # =====================================================================
 workflow.add_edge(START, "summarize_history")
 workflow.add_edge("summarize_history", "planner_agent")
-workflow.add_conditional_edges("planner_agent", route_to_coders, ["coder_agent"])
-workflow.add_edge("coder_agent", "validate_output")
+workflow.add_edge("planner_agent", "drift_monitor")
+workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"])
+workflow.add_edge("coder_agent", "apply_patch")
+workflow.add_edge("apply_patch", "validate_output")
 workflow.add_conditional_edges("validate_output", route_after_validation, ["coder_agent", END])
 
 # =====================================================================
@@ -93,7 +109,10 @@ workflow.add_conditional_edges("validate_output", route_after_validation, ["code
 # `alienant_app` es importada por main.py y task_service.py.
 alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 
-logger.info("🟢 Motor AILIENANT compilado: PlannerAgent → route_to_coders → CoderAgent(s).")
+logger.info(
+    "🟢 Motor AILIENANT compilado: "
+    "PlannerAgent → DriftMonitor → route_to_coders → CoderAgent(s) → ApplyPatch → ValidateOutput."
+)
 
 
 # =====================================================================

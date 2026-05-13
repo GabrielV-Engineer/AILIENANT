@@ -101,12 +101,18 @@ async def run_planner_node(state: dict) -> dict:
 
         # Extraemos parallel_tasks para High-TCI: todos los pasos son candidatos al fan-out.
         parallel_tasks = mock_mission.tasks if tci > 80.0 else []
-        return {
+        result: dict = {
             "mission_spec": mock_mission,
             "parallel_tasks": parallel_tasks,
             "tci": tci,
             "css": css,
         }
+        # Freeze the baseline on the first turn (immutable_wbs absent or None).
+        # DriftMonitor will compare future re-plans against this anchor.
+        if state.get("immutable_wbs") is None:
+            result["immutable_wbs"] = mock_mission
+            logger.info("PlannerAgent: immutable_wbs frozen (first turn, DEBUG mode).")
+        return result
 
     # =====================================================================
     # 1. EXTRACCIÓN DE CONTEXTO (Input del Usuario e IDE)
@@ -203,12 +209,16 @@ async def run_planner_node(state: dict) -> dict:
         # Para High-TCI, todos los WBSSteps son candidatos al fan-out MapReduce.
         parallel_tasks = mission_plan.tasks if tci > 80.0 else []
 
-        return {
+        result = {
             "mission_spec": mission_plan,
             "parallel_tasks": parallel_tasks,
             "tci": tci,
             "css": css,
         }
+        if state.get("immutable_wbs") is None:
+            result["immutable_wbs"] = mission_plan
+            logger.info("PlannerAgent: immutable_wbs frozen (first turn, LLM mode).")
+        return result
 
     except Exception as e:
         logger.error(f"❌ Error crítico en la ejecución del Planner: {str(e)}")

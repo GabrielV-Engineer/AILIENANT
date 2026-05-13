@@ -9,9 +9,12 @@ Lifecycle (wired to FastAPI lifespan):
     shutdown → checkpoint_manager.close()        # after WALCheckpointer.force_truncate()
 """
 
+import logging
 import sqlite3
 import time
 from typing import Any, Optional
+
+logger = logging.getLogger("HYBRID_CHECKPOINTER")
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -73,6 +76,29 @@ class HybridCheckpointer(MemorySaver):
             self._conn.execute(pragma)
         self._conn.executescript(_L2_DDL)
         self._conn.commit()
+
+    def flush_all_sessions(self) -> None:
+        """Promote every active L1 session to L2 before shutdown.
+
+        MemorySaver.storage is a defaultdict keyed by thread_id. Iterating its
+        keys gives us all sessions that have in-memory checkpoint data. We promote
+        each one so no graph state is lost on unclean shutdown (e.g. Ctrl+C during
+        an active graph run that hadn't reached task_service.promote() yet).
+
+        Call this BEFORE force_truncate() so the freshly-promoted rows are included
+        in the WAL checkpoint.
+        """
+        thread_ids = list(self.storage.keys())
+        promoted = 0
+        for thread_id in thread_ids:
+            try:
+                self.promote(thread_id)
+                promoted += 1
+            except Exception as exc:
+                logger.warning(
+                    "flush_all_sessions: promote failed for thread_id=%s: %s", thread_id, exc
+                )
+        logger.info("L1→L2 flush complete (%d/%d sessions promoted).", promoted, len(thread_ids))
 
     def close(self) -> None:
         """Close L2 connection. Call from lifespan shutdown after WALCheckpointer.force_truncate()."""

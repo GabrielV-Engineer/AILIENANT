@@ -239,3 +239,18 @@ async def purge_file_nodes(filepath: str, project_id: str = "") -> None:
             (filepath, project_id),
         )
         await db.commit()
+
+
+# ── Phase 2.2.B: WAL Safety ───────────────────────────────────────────────────
+
+async def wal_checkpoint() -> None:
+    """Force PRAGMA wal_checkpoint(TRUNCATE) on the catalog DB.
+
+    Called from the lifespan shutdown sequence so the catalog WAL file is
+    truncated alongside the state checkpoint WAL. Without this, the catalog
+    WAL can grow unbounded across restarts when the process is interrupted
+    before the periodic WALCheckpointer fires.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        await db.commit()

@@ -5,7 +5,7 @@ import re
 import time
 import uuid
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 import litellm
@@ -147,6 +147,48 @@ class LLMGateway:
             return await litellm.acompletion(**kwargs)
         except Exception as e:
             logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
+            raise
+
+    @staticmethod
+    async def astream(
+        messages: list[dict],
+        model: str = MODEL_MEDIUM,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        """Async streaming LLM call — yields token delta strings for WebSocket broadcast.
+
+        Wired to transport/throttler.py via throttled_stream() in Phase 4's
+        WebSocket token handler. Each yielded string is a non-empty token delta
+        suitable for direct broadcast via vfs_manager.broadcast_token().
+        """
+        trace_id = session_id or str(uuid.uuid4())
+        cfg = get_litellm_config()
+        logger.debug(
+            "LLM astream — model=%s base_url=%s trace=%s", model, cfg["base_url"], trace_id
+        )
+        kwargs: dict = dict(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            stream=True,
+            max_retries=2,
+            metadata={"session_id": trace_id},
+            extra_headers={"X-Ailienant-Trace-ID": trace_id},
+            **cfg,
+        )
+        try:
+            response = await litellm.acompletion(**kwargs)
+            async for chunk in response:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    yield delta
+        except Exception as e:
+            logger.error("LLM astream failed [trace=%s]: %s", trace_id, e)
             raise
 
     @staticmethod

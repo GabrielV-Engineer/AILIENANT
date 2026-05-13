@@ -114,9 +114,17 @@ class TokenCounter(BaseModel):
 
 
 class VFSFile(BaseModel):
-    """Representa un archivo en memoria con control de concurrencia (Virtual File System)."""
+    """Representa un archivo en memoria con control de concurrencia (Virtual File System).
 
-    content: str = Field(..., description="Contenido en texto plano del archivo.")
+    Phase 2.2.D: content replaced by blob_hash — file text lives in ContentAddressableStorage
+    (core/blob_storage.py). The LangGraph checkpoint only carries the tiny hash, keeping
+    serialised state O(hash_length) regardless of file size.
+    """
+
+    blob_hash: str = Field(
+        ...,
+        description="blake2b hex digest of file content stored in ContentAddressableStorage.",
+    )
     document_version_id: str = Field(
         ...,
         description="Timestamp o Hash MD5 para OCC (Optimistic Concurrency Control).",
@@ -260,3 +268,13 @@ class AIlienantGraphState(TypedDict):
     # --- Guardrail State (Phase 2.1.14) ---
     guardrail_failed: bool              # True if validate_output detected a schema violation
     validation_feedback: Optional[str]  # Corrective message prepended to CoderAgent on retry
+
+    # --- Shadow Planner (Phase 2.2.C) ---
+    # Frozen on the first planner turn; never updated by agents.
+    # DriftMonitor compares mission_spec against this baseline to detect semantic drift.
+    immutable_wbs: Optional[MissionSpecification]
+
+    # --- Shallow State / Patch Queue (Phase 2.2.D) ---
+    # CoderAgent (Phase 4) writes unified diffs here; apply_patch_node consumes them.
+    # operator.or_ merges dicts by preferring the right-hand (latest) value per key.
+    pending_patches: Annotated[Dict[str, str], operator.or_]  # filepath → unified diff

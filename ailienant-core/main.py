@@ -71,7 +71,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Draining %d in-flight task(s) (timeout=10s)...", len(pending))
         await asyncio.wait(pending, timeout=10.0)
 
-    # 3. Stop WAL worker, force-truncate, then close the connection
+    # 3. Flush all in-memory L1 sessions to L2 before WAL truncate (Phase 2.2.B)
+    checkpoint_manager.flush_all_sessions()
+    await catalog_db.wal_checkpoint()
+
+    # 4. Stop WAL worker, force-truncate, then close the connection
     await _wal.stop()
     await _wal.force_truncate()
     checkpoint_manager.close()
