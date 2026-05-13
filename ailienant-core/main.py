@@ -21,6 +21,12 @@ from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 # --- IMPORTACIONES FASE 2 (Persistencia y Mantenimiento) ---
 from brain.checkpoint import checkpoint_manager
 
+# --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
+from core.compute_pool import compute_pool
+from brain.memory import _worker_init, index_file_sync
+from shared.contracts import IndexingRequest, IndexingResult, detect_language
+from api.api_contracts import DirtyBuffer
+
 # Configuración centralizada de observabilidad
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AILIENANT_API")
@@ -35,6 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
     await catalog_db.init_db()
     checkpoint_manager.initialize()          # WAL pragmas applied once here
+    compute_pool.initialize(initializer=_worker_init)
     _wal = WALCheckpointer(checkpoint_manager)
     _wal.start()
     logger.info("🟢 AILIENANT startup complete (WAL mode active).")
@@ -58,6 +65,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _wal.force_truncate()
     checkpoint_manager.close()
     logger.info("🧹 SQLite connection closed — WAL/SHM files released.")
+    compute_pool.shutdown(wait=True, cancel_futures=True)
+    logger.info("🧹 Compute pool shut down — no orphan processes.")
 
 
 # =====================================================================
@@ -161,6 +170,21 @@ async def submit_task(
         raise HTTPException(status_code=500, detail="Colapso interno en el orquestador")
 
 
+async def _dispatch_indexing(filepath: str, content: str) -> None:
+    lang = detect_language(filepath)
+    if not lang:
+        return  # unsupported file type — no-op
+    req = IndexingRequest(file_path=filepath, content=content, language_id=lang)
+    try:
+        result: IndexingResult = await compute_pool.run(index_file_sync, req)
+        if result.success:
+            logger.debug("Indexed %s: %d symbols", result.file_path, result.symbol_count)
+        else:
+            logger.warning("Indexing failed for %s: %s", result.file_path, result.error)
+    except Exception as exc:
+        logger.error("Compute pool dispatch error for %s: %s", filepath, exc)
+
+
 @app.websocket("/api/v1/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     """
@@ -188,7 +212,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             )
 
             if valid_event.event_type == "client_file_update":
-                pass  # Phase 1.3: pipe into VFS + LangGraph
+                # 1. RAM-VFS ingestion — synchronous O(1), does not block the event loop
+                task_service.vfs.ingest_dirty_buffers(
+                    [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)]
+                )
+                # 2. Background AST indexing — fire-and-forget on the process pool
+                asyncio.create_task(
+                    _dispatch_indexing(valid_event.data.filepath, valid_event.data.content),
+                    name=f"index:{valid_event.data.filepath}",
+                )
 
             elif valid_event.event_type == "client_planner_mode_toggle":
                 planner_mode_registry[client_id] = valid_event.data.active
