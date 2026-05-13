@@ -144,6 +144,17 @@ class ManualAttachment(BaseModel):
 # =====================================================================
 
 
+def _merge_vfs(left: Dict[str, "VFSFile"], right: Dict[str, "VFSFile"]) -> Dict[str, "VFSFile"]:
+    """Reducer for concurrent CoderAgent VFS writes. Keeps the file with the
+    lexicographically later document_version_id (timestamp/hash), preventing
+    a slower parallel branch from overwriting a more recent edit."""
+    merged = dict(left)
+    for path, file in right.items():
+        if path not in merged or file.document_version_id > merged[path].document_version_id:
+            merged[path] = file
+    return merged
+
+
 class AIlienantGraphState(TypedDict):
     """
     El cerebro compartido del flujo de LangGraph.
@@ -190,7 +201,14 @@ class AIlienantGraphState(TypedDict):
     # --- Sistema de Archivos Virtual (VFS) ---
     # Single Source of Truth para el código.
     read_files_state: Dict[str, VFSFile]
-    vfs_buffer: Dict[str, VFSFile]
+    vfs_buffer: Annotated[Dict[str, VFSFile], _merge_vfs]
+
+    # --- Enrutamiento MoE (Phase 2) ---
+    # Shortcuts para que los nodos de orquestación lean TCI/CSS sin navegar context_metrics.
+    tci: float          # Task Complexity Index  0–100
+    css: float          # Context Sufficiency Score  0–100
+    # Payload del fan-out MapReduce: PlannerAgent escribe, route_to_coders lee.
+    parallel_tasks: List[WBSStep]
 
     # --- Resiliencia y Diagnóstico ---
     errors: Annotated[List[str], operator.add]

@@ -3,12 +3,13 @@
 import logging
 import re
 import uuid
+from enum import Enum
 from typing import Optional
 
 import litellm
 from litellm import ModelResponse
 
-from shared.config import MODEL_MEDIUM, get_litellm_config
+from shared.config import MODEL_SMALL, MODEL_MEDIUM, MODEL_BIG, get_litellm_config
 
 logger = logging.getLogger("LLM_GATEWAY")
 
@@ -17,6 +18,19 @@ litellm.suppress_debug_info = True
 
 # Matches optional leading/trailing whitespace and markdown code fences (```json ... ``` or ``` ... ```).
 _MD_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+
+
+class TaskPriority(str, Enum):
+    """Routing outcome from RoutingEngine.get_optimal_provider(), used to select model tier."""
+    LOCAL = "LOCAL"
+    CLOUD = "CLOUD"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+
+
+_PRIORITY_MODEL_MAP: dict[TaskPriority, str] = {
+    TaskPriority.LOCAL: MODEL_SMALL,
+    TaskPriority.CLOUD: MODEL_BIG,
+}
 
 
 class LLMGateway:
@@ -108,3 +122,19 @@ class LLMGateway:
         except Exception as e:
             logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
             raise
+
+    @staticmethod
+    async def ainvoke_by_priority(
+        priority: TaskPriority,
+        messages: list[dict],
+        **kwargs,
+    ) -> ModelResponse:
+        """Select model tier by TaskPriority and delegate to ainvoke().
+
+        Raises ValueError for HUMAN_REQUIRED so the caller can route to the HITL gate
+        instead of accidentally firing an LLM call with no valid model.
+        """
+        if priority == TaskPriority.HUMAN_REQUIRED:
+            raise ValueError("HUMAN_REQUIRED: routing deferred to HITL gate — no LLM call made")
+        model = _PRIORITY_MODEL_MAP[priority]
+        return await LLMGateway.ainvoke(messages=messages, model=model, **kwargs)

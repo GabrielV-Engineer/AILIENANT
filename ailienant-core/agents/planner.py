@@ -40,18 +40,46 @@ async def run_planner_node(state: dict) -> dict:
     # =====================================================================
     DEBUG_MODE = True  # Cambiar a False en Producción para habilitar el LLM
 
+    # Leemos TCI y CSS del estado. Preferimos los shortcuts de top-level (Phase 2);
+    # si no están presentes aún, navegamos context_metrics como fallback seguro.
+    tci: float = state.get("tci", 0.0)
+    css: float = state.get("css", 100.0)
+    metrics = state.get("context_metrics")
+    if metrics is not None and tci == 0.0:
+        tci = getattr(metrics, "task_complexity_index", 0.0)
+    if metrics is not None and css == 100.0:
+        css = getattr(metrics, "css_total", 100.0)
+
     if DEBUG_MODE:
         logger.warning(
-            "⚠️ MODO DEBUG ACTIVO: Generando contrato SDD sintético (Bypass de LLM)."
+            "⚠️ MODO DEBUG ACTIVO: Generando contrato SDD sintético (Bypass de LLM). TCI=%.1f CSS=%.1f",
+            tci,
+            css,
         )
 
-        # Generamos un contrato Pydantic real para no romper la validación downstream
-        mock_mission = MissionSpecification(
-            outcome="Análisis inicial completado de forma sintética.",
-            scope=["main.py"],
-            constraints=["Sin dependencias externas."],
-            decisions=["Usar el modo DEBUG para validar el enrutamiento del grafo."],
-            tasks=[
+        # Para High-TCI (>80), generamos dos tareas independientes para ejercitar el fan-out.
+        if tci > 80.0:
+            tasks = [
+                WBSStep(
+                    step_number=1,
+                    target_role="Refactor",
+                    action="read_file",
+                    target_file="main.py",
+                    description="Paso paralelo A: leer archivo principal.",
+                    status="pending",
+                ),
+                WBSStep(
+                    step_number=2,
+                    target_role="Test",
+                    action="read_file",
+                    target_file="requirements.txt",
+                    description="Paso paralelo B: auditar dependencias.",
+                    status="pending",
+                ),
+            ]
+            logger.info("🔀 High-TCI detectado: %d tareas paralelas generadas.", len(tasks))
+        else:
+            tasks = [
                 WBSStep(
                     step_number=1,
                     target_role="Refactor",
@@ -60,10 +88,25 @@ async def run_planner_node(state: dict) -> dict:
                     description="Leer archivo principal para validar conexión del IDE.",
                     status="pending",
                 )
-            ],
+            ]
+
+        mock_mission = MissionSpecification(
+            outcome="Análisis inicial completado de forma sintética.",
+            scope=["main.py"],
+            constraints=["Sin dependencias externas."],
+            decisions=["Usar el modo DEBUG para validar el enrutamiento del grafo."],
+            tasks=tasks,
             checks=["El archivo se leyó sin lanzar excepciones."],
         )
-        return {"mission_spec": mock_mission}
+
+        # Extraemos parallel_tasks para High-TCI: todos los pasos son candidatos al fan-out.
+        parallel_tasks = mock_mission.tasks if tci > 80.0 else []
+        return {
+            "mission_spec": mock_mission,
+            "parallel_tasks": parallel_tasks,
+            "tci": tci,
+            "css": css,
+        }
 
     # =====================================================================
     # 1. EXTRACCIÓN DE CONTEXTO (Input del Usuario e IDE)
@@ -157,9 +200,15 @@ async def run_planner_node(state: dict) -> dict:
         print(f"🧪 Checks (QA): {len(mission_plan.checks)} pruebas de validación.")
         print("--------------------------------------\n")
 
-        # Mapeo Directo: Actualizamos el 'mission_spec' del AIlienantGraphState.
-        # Al no devolver listas sueltas, evitamos el riesgo de desincronización de estado.
-        return {"mission_spec": mission_plan}
+        # Para High-TCI, todos los WBSSteps son candidatos al fan-out MapReduce.
+        parallel_tasks = mission_plan.tasks if tci > 80.0 else []
+
+        return {
+            "mission_spec": mission_plan,
+            "parallel_tasks": parallel_tasks,
+            "tci": tci,
+            "css": css,
+        }
 
     except Exception as e:
         logger.error(f"❌ Error crítico en la ejecución del Planner: {str(e)}")

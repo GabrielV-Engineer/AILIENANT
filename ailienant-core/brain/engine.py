@@ -1,50 +1,95 @@
-# alienant-core/core/engine.py
+# ailienant-core/brain/engine.py
 
-import sqlite3
 import logging
 from typing import Callable, Optional
-from langgraph.graph import StateGraph
-from langgraph.checkpoint.sqlite import SqliteSaver
 
-# Importamos nuestro esquema fuertemente tipado
-from state import AIlienantGraphState
+from langgraph.graph import StateGraph, START, END
+from langgraph.constants import Send
+
+from brain.state import AIlienantGraphState
+from brain.checkpoint import checkpoint_manager
 
 logger = logging.getLogger("AILIENANT_ENGINE")
 
 # =====================================================================
 # 1. INICIALIZACIÓN DEL GRAFO
 # =====================================================================
-# Le indicamos a LangGraph que use nuestro estado con Uniones O(1) y Pydantic
 workflow = StateGraph(AIlienantGraphState)
 
 # =====================================================================
-# 2. CONFIGURACIÓN DE PERSISTENCIA (CHECKPOINTER)
+# 2. NODOS DEL GRAFO (Phase 2)
 # =====================================================================
-# Usamos SQLite porque es ligero, no requiere contenedores extra en esta fase,
-# y maneja lecturas O(1) de manera eficiente para el estado del hilo (thread_id).
-DB_PATH = "alienant_memory.sqlite"
+# Importaciones diferidas para evitar dependencias circulares en el startup.
+from agents.planner import run_planner_node  # noqa: E402
+from agents.coder import run_coder_node      # noqa: E402
 
-try:
-    # check_same_thread=False es vital porque FastAPI es asíncrono y multi-hilo
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    memory_checkpointer = SqliteSaver(conn)
-    logger.info("🟢 Motor SQLite conectado exitosamente.")
-except Exception as e:
-    logger.critical(f"🔴 Error fatal conectando al Checkpointer: {e}")
-    raise e
+workflow.add_node("planner_agent", run_planner_node)
+workflow.add_node("coder_agent", run_coder_node)
 
 # =====================================================================
-# 3. COMPILACIÓN DEL MOTOR (PREPARACIÓN FASE 1)
+# 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
 # =====================================================================
-# En la Fase 1, añadiremos los nodos (PlannerAgent, LogicAgent) aquí.
-# Por ahora, simplemente compilamos un grafo vacío con memoria para probar.
 
-# alienant_app = workflow.compile(checkpointer=memory_checkpointer)
-# (Lo mantenemos comentado hasta que añadamos el primer nodo)
+
+def route_to_coders(state: AIlienantGraphState) -> list[Send]:
+    """Conditional edge: fan-out desde PlannerAgent → N instancias de CoderAgent.
+
+    High-TCI (>80): usa Send para lanzar una instancia de CoderAgent por cada
+    WBSStep en parallel_tasks, ejecutándolos en paralelo dentro del grafo.
+
+    Low/Medium-TCI: ejecuta un único CoderAgent secuencial con el primer
+    paso pendiente del plan.
+    """
+    tci: float = state.get("tci", 0.0)
+    parallel_tasks = state.get("parallel_tasks", [])
+
+    if tci > 80.0 and parallel_tasks:
+        logger.info(
+            "🔀 High-TCI (%.1f): iniciando fan-out con %d CoderAgent(s) en paralelo.",
+            tci,
+            len(parallel_tasks),
+        )
+        return [
+            Send("coder_agent", {**state, "current_step_id": step.step_number})
+            for step in parallel_tasks
+        ]
+
+    # Fallback secuencial: primer paso pendiente del plan
+    mission_spec = state.get("mission_spec")
+    first_step = (
+        next((t for t in mission_spec.tasks if t.status == "pending"), None)
+        if mission_spec
+        else None
+    )
+    logger.info(
+        "➡️  Low/Medium-TCI (%.1f): ejecución secuencial, paso #%s.",
+        tci,
+        first_step.step_number if first_step else "None",
+    )
+    return [Send("coder_agent", {**state, "current_step_id": first_step.step_number if first_step else None})]
 
 
 # =====================================================================
-# 4. CONTEXT ASSEMBLY UTILITIES (Phase 1.1.0.4)
+# 4. TOPOLOGÍA DEL GRAFO (Edges)
+# =====================================================================
+workflow.add_edge(START, "planner_agent")
+workflow.add_conditional_edges("planner_agent", route_to_coders, ["coder_agent"])
+workflow.add_edge("coder_agent", END)
+
+# =====================================================================
+# 5. COMPILACIÓN CON PERSISTENCIA (CheckpointManager)
+# =====================================================================
+# Usamos checkpoint_manager de brain/checkpoint.py para centralizar la
+# gestión del ciclo de vida de la conexión SQLite. La instancia compilada
+# `alienant_app` es importada por main.py y task_service.py.
+with checkpoint_manager.get_saver() as _saver:
+    alienant_app = workflow.compile(checkpointer=_saver)
+
+logger.info("🟢 Motor AILIENANT compilado: PlannerAgent → route_to_coders → CoderAgent(s).")
+
+
+# =====================================================================
+# 6. CONTEXT ASSEMBLY UTILITIES (Phase 1.1.0.4)
 # =====================================================================
 
 

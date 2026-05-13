@@ -69,3 +69,20 @@ class RoutingEngine:
                     selected_role = role
 
         return selected_role
+
+    @staticmethod
+    def get_optimal_provider(tci: float, css: float) -> str:
+        """
+        Simplified 2D routing matrix for the orchestrator node.
+
+        Returns "LOCAL" | "CLOUD" | "HUMAN_REQUIRED".
+        Priority order:
+          1. CSS < 40  → HUMAN_REQUIRED (context gap triggers graceful degradation)
+          2. TCI < 30  → LOCAL (simple task, privacy-first)
+          3. TCI >= 30 → CLOUD (cognitive demand exceeds local tier)
+        """
+        if css < 40.0:
+            return "HUMAN_REQUIRED"
+        if tci < 30.0:
+            return "LOCAL"
+        return "CLOUD"
