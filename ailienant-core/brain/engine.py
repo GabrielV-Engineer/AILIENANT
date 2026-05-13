@@ -22,9 +22,11 @@ workflow = StateGraph(AIlienantGraphState)
 # Importaciones diferidas para evitar dependencias circulares en el startup.
 from agents.planner import run_planner_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
+from brain.summarizer import run_summarize_node  # noqa: E402
 
-workflow.add_node("planner_agent", run_planner_node)  # type: ignore[type-var]
-workflow.add_node("coder_agent", run_coder_node)      # type: ignore[type-var]
+workflow.add_node("summarize_history", run_summarize_node)  # type: ignore[type-var]
+workflow.add_node("planner_agent", run_planner_node)        # type: ignore[type-var]
+workflow.add_node("coder_agent", run_coder_node)            # type: ignore[type-var]
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -75,7 +77,8 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 # =====================================================================
 # 4. TOPOLOGÍA DEL GRAFO (Edges)
 # =====================================================================
-workflow.add_edge(START, "planner_agent")
+workflow.add_edge(START, "summarize_history")
+workflow.add_edge("summarize_history", "planner_agent")
 workflow.add_conditional_edges("planner_agent", route_to_coders, ["coder_agent"])
 workflow.add_edge("coder_agent", END)
 

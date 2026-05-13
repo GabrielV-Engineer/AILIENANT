@@ -170,6 +170,18 @@ def _merge_vfs(left: Dict[str, "VFSFile"], right: Dict[str, "VFSFile"]) -> Dict[
     return merged
 
 
+def _merge_messages(
+    existing: List[Dict[str, str]],
+    update: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """Default: append (operator.add semantics).
+    If update[0] has __replace__=True, replace entire history with the rest of update.
+    """
+    if update and update[0].get("__replace__"):
+        return [m for m in update if not m.get("__replace__")]
+    return existing + update
+
+
 class AIlienantGraphState(TypedDict):
     """
     El cerebro compartido del flujo de LangGraph.
@@ -187,7 +199,7 @@ class AIlienantGraphState(TypedDict):
 
     # --- Memoria de Mensajes ---
     # Historial acumulativo O(N) para la comunicación conversacional.
-    messages: Annotated[List[Dict[str, str]], operator.add]
+    messages: Annotated[List[Dict[str, str]], _merge_messages]
 
     # --- Contexto y Telemetría ---
     context_metrics: ContextMeter

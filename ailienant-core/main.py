@@ -27,6 +27,9 @@ from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
 
 # --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
 from core.indexer import lazy_indexer
+
+# --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
+from core.io_coalescer import io_coalescer, is_critical_file
 from shared.contracts import (
     IndexingRequest, IndexingResult, detect_language,
     PPRRequest, PPRResult,
@@ -48,6 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await catalog_db.init_db()
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
+    io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)
     _wal = WALCheckpointer(checkpoint_manager)
     _wal.start()
     logger.info("🟢 AILIENANT startup complete (WAL mode active).")
@@ -261,15 +265,20 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 task_service.vfs.ingest_dirty_buffers(
                     [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)]
                 )
-                # 2. Background AST indexing + PPR scheduling — fire-and-forget on the process pool
-                asyncio.create_task(
-                    _dispatch_indexing_and_ppr(
-                        valid_event.data.filepath,
-                        valid_event.data.content,
-                        project_id="",  # Phase 2.5: replace "" with session-scoped project_id
-                    ),
-                    name=f"index:{valid_event.data.filepath}",
-                )
+                # 2. Critical files bypass debounce; normal files coalesced in 500ms window
+                if is_critical_file(valid_event.data.filepath):
+                    asyncio.create_task(
+                        _dispatch_indexing_and_ppr(
+                            valid_event.data.filepath,
+                            valid_event.data.content,
+                            project_id="",
+                        ),
+                        name=f"index_critical:{valid_event.data.filepath}",
+                    )
+                else:
+                    io_coalescer.submit(
+                        valid_event.data.filepath, valid_event.data.content, project_id=""
+                    )
 
             elif valid_event.event_type == "client_planner_mode_toggle":
                 planner_mode_registry[client_id] = valid_event.data.active
