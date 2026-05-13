@@ -146,3 +146,27 @@ def test_token_counter_unknown_model_falls_back() -> None:
     # Should not raise; falls back to cl100k_base
     result = PrecisionTokenCounter.count("test", model="nonexistent-model-xyz")
     assert result > 0
+
+
+# ---------------------------------------------------------------------------
+# RoutingEngine.get_keep_alive — tiered VRAM residency
+# ---------------------------------------------------------------------------
+
+def test_keep_alive_big_model_is_5m() -> None:
+    from shared.config import MODEL_BIG
+
+    result = RoutingEngine.get_keep_alive(MODEL_BIG)
+    assert result == "5m"
+
+
+def test_keep_alive_small_model_is_permanent() -> None:
+    from shared.config import MODEL_SMALL
+
+    result = RoutingEngine.get_keep_alive(MODEL_SMALL)
+    assert result == -1
+
+
+def test_keep_alive_unknown_model_is_permanent() -> None:
+    # Unknown alias → conservative permanent residency (no VRAM release assumed)
+    result = RoutingEngine.get_keep_alive("some-unknown-alias")
+    assert result == -1

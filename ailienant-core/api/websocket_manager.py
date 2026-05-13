@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import uuid
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from fastapi import WebSocket
 from pydantic import ValidationError, TypeAdapter
@@ -14,6 +14,7 @@ from ws_contracts import (
     ServerTelemetryEvent, TelemetryPayload,
     ServerGraphMutationEvent, GraphMutationPayload,
     ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
+    ServerModelWarmupEvent, ModelWarmupPayload,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -38,8 +39,12 @@ class ConnectionManager:
       on the same session.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.active_connections: Dict[str, WebSocket] = {}
+        # Shutdown guard — set True by lifespan; gates new connect() calls
+        self.shutting_down: bool = False
+        # In-flight agent asyncio.Tasks; drained during graceful shutdown
+        self.active_tasks: Set[asyncio.Task[Any]] = set()
         # HITL state — keyed by approval_id (UUID4), NOT session_id
         self._hitl_pending: Dict[str, asyncio.Event] = {}
         self._hitl_responses: Dict[str, dict] = {}
@@ -49,6 +54,9 @@ class ConnectionManager:
     # ------------------------------------------------------------------
 
     async def connect(self, client_id: str, websocket: WebSocket) -> None:
+        if self.shutting_down:
+            await websocket.close(code=1001)
+            return
         await websocket.accept()
         self.active_connections[client_id] = websocket
         logger.info(
@@ -134,6 +142,25 @@ class ConnectionManager:
                     step_number=step_number,
                     new_status=new_status,
                     agent_name=agent_name,
+                )
+            ),
+        )
+
+    async def broadcast_model_warmup(
+        self,
+        session_id: str,
+        model_name: str,
+        is_local: bool,
+        tier: str,
+    ) -> None:
+        """Signal the IDE that a model is being loaded/warmed up before inference."""
+        await self.send_personal_message(
+            session_id,
+            ServerModelWarmupEvent(
+                data=ModelWarmupPayload(
+                    model_name=model_name,
+                    is_local=is_local,
+                    tier=tier,  # type: ignore[arg-type]
                 )
             ),
         )

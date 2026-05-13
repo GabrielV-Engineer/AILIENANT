@@ -5,7 +5,7 @@ import re
 import time
 import uuid
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 import litellm
@@ -205,14 +205,24 @@ class LLMGateway:
     async def ainvoke_by_priority(
         priority: TaskPriority,
         messages: list[dict],
-        **kwargs,
+        session_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Select model tier by TaskPriority and delegate to ainvoke().
 
         Raises ValueError for HUMAN_REQUIRED so the caller can route to the HITL gate
         instead of accidentally firing an LLM call with no valid model.
+
+        For LOCAL priority, injects Ollama keep_alive via extra_body — agents should
+        call vfs_manager.broadcast_model_warmup() before this if a warmup may occur.
         """
         if priority == TaskPriority.HUMAN_REQUIRED:
             raise ValueError("HUMAN_REQUIRED: routing deferred to HITL gate — no LLM call made")
         model = _PRIORITY_MODEL_MAP[priority]
-        return await LLMGateway.ainvoke(messages=messages, model=model, **kwargs)
+        if priority == TaskPriority.LOCAL:
+            from brain.routing_engine import RoutingEngine
+            keep_alive = RoutingEngine.get_keep_alive(model)
+            kwargs["extra_body"] = {**kwargs.get("extra_body", {}), "keep_alive": keep_alive}
+        return await LLMGateway.ainvoke(
+            messages=messages, model=model, session_id=session_id, **kwargs
+        )

@@ -1,5 +1,7 @@
+import asyncio
 import logging
-from typing import Dict, List
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Dict, List
 
 import httpx
 
@@ -10,19 +12,63 @@ from api.websocket_manager import vfs_manager
 # --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
 from core import db as catalog_db
 from core.config_generator import discover_models
+from core.db_maintenance import WALCheckpointer
 from core.task_service import TaskPayload, TaskService
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 
+# --- IMPORTACIONES FASE 2 (Persistencia y Mantenimiento) ---
+from brain.checkpoint import checkpoint_manager
+
 # Configuración centralizada de observabilidad
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AILIENANT_API")
+
+
+# =====================================================================
+# LIFESPAN — Startup & Graceful Shutdown
+# =====================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # ── Startup ──────────────────────────────────────────────────────────
+    await catalog_db.init_db()
+    checkpoint_manager.initialize()          # WAL pragmas applied once here
+    _wal = WALCheckpointer(checkpoint_manager)
+    _wal.start()
+    logger.info("🟢 AILIENANT startup complete (WAL mode active).")
+
+    yield  # application handles requests
+
+    # ── Shutdown ─────────────────────────────────────────────────────────
+    logger.info("🔴 AILIENANT shutdown initiated.")
+
+    # 1. Stop accepting new WebSocket connections
+    vfs_manager.shutting_down = True
+
+    # 2. Drain in-flight agent tasks (10s grace period)
+    pending = list(vfs_manager.active_tasks)
+    if pending:
+        logger.info("Draining %d in-flight task(s) (timeout=10s)...", len(pending))
+        await asyncio.wait(pending, timeout=10.0)
+
+    # 3. Stop WAL worker, force-truncate, then close the connection
+    await _wal.stop()
+    await _wal.force_truncate()
+    checkpoint_manager.close()
+    logger.info("🧹 SQLite connection closed — WAL/SHM files released.")
+
+
+# =====================================================================
+# APPLICATION
+# =====================================================================
 
 app = FastAPI(
     title="AILIENANT API Gateway",
     description="Backend bicefálico con VFS Middleware O(1)",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # SecOps: CORS es crítico para el Webview (vscode-webview://)
@@ -36,19 +82,18 @@ app.add_middleware(
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
 
-
-@app.on_event("startup")
-async def _startup() -> None:
-    await catalog_db.init_db()
-
 # Session-scoped planner mode registry — read by TaskService when LangGraph is wired (Phase 2)
 planner_mode_registry: Dict[str, bool] = {}
 
 
+# =====================================================================
+# ENDPOINTS
+# =====================================================================
+
 @app.get("/")
 async def health_check():
     """Endpoint HTTP tradicional para verificar que el servidor está vivo."""
-    return {"status": "online", "phase": "1.6", "system": "VFS Middleware Active"}
+    return {"status": "online", "phase": "2.2", "system": "WAL + MODEL_WARMUP Active"}
 
 
 @app.get("/api/v1/models/available", response_model=ModelsAvailableResponse)

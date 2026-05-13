@@ -162,6 +162,24 @@ class ClientConcurrencyConflictEvent(BaseModel):
 
 
 # =====================================================================
+# 6. PHASE 2.2 — MODEL WARMUP SIGNAL
+# =====================================================================
+
+
+class ModelWarmupPayload(BaseModel):
+    """Emitted before a local model inference call that may require warmup time."""
+
+    model_name: str
+    is_local: bool
+    tier: Literal["small", "medium", "big"]
+
+
+class ServerModelWarmupEvent(BaseModel):
+    event_type: Literal["server_model_warmup"] = "server_model_warmup"
+    data: ModelWarmupPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -179,4 +197,5 @@ WebSocketMessage = Union[
     ClientPlannerModeToggleEvent,
     ClientHITLResponseEvent,
     ClientConcurrencyConflictEvent,
+    ServerModelWarmupEvent,
 ]

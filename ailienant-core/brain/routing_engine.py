@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 from pydantic import BaseModel
 
 # --- 1. Contratos de Datos (Alineados con SCHEMA_EVOLUTION.MD) ---
@@ -129,3 +129,14 @@ class RoutingEngine:
             "Falling back to LOCAL — response quality may be reduced."
         )
         return "LOCAL", warning
+
+    @staticmethod
+    def get_keep_alive(model_alias: str) -> Union[int, str]:
+        """Ollama keep_alive hint for the given model alias.
+
+        Small/Medium tiers (< 10B params) stay permanently resident in VRAM for
+        sub-second response latency. Big tier (> 10B) unloads after 5 min idle to
+        free VRAM for the host IDE without penalising bursts of agent activity.
+        """
+        from shared.config import MODEL_BIG
+        return "5m" if model_alias == MODEL_BIG else -1
