@@ -242,3 +242,5 @@ class AIlienantGraphState(TypedDict):
     retry_count: int
     security_flags: Annotated[List[str], operator.add]
     terminal_output: str
+    # Phase 2.5: Workspace Indexing Gate — seeded from lazy_indexer.is_complete at graph invocation
+    is_indexing_complete: bool

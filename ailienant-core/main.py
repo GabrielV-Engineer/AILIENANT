@@ -24,6 +24,9 @@ from brain.checkpoint import checkpoint_manager
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
 from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
+
+# --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
+from core.indexer import lazy_indexer
 from shared.contracts import (
     IndexingRequest, IndexingResult, detect_language,
     PPRRequest, PPRResult,
@@ -296,6 +299,19 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     valid_event.data.filepath,
                     valid_event.data.expected_version,
                     valid_event.data.actual_version,
+                )
+
+            elif valid_event.event_type == "client_workspace_init":
+                await lazy_indexer.start(
+                    workspace_root=valid_event.data.workspace_root,
+                    project_id=valid_event.data.project_id,
+                    session_id=client_id,
+                )
+                logger.info(
+                    "[Session: %s] Workspace init received: root=%s project=%s",
+                    client_id,
+                    valid_event.data.workspace_root,
+                    valid_event.data.project_id,
                 )
 
     except WebSocketDisconnect:

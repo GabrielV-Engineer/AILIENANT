@@ -85,7 +85,7 @@ workflow.add_edge("coder_agent", END)
 # Usamos checkpoint_manager de brain/checkpoint.py para centralizar la
 # gestión del ciclo de vida de la conexión SQLite. La instancia compilada
 # `alienant_app` es importada por main.py y task_service.py.
-alienant_app = workflow.compile(checkpointer=checkpoint_manager.get_saver())
+alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 
 logger.info("🟢 Motor AILIENANT compilado: PlannerAgent → route_to_coders → CoderAgent(s).")
 

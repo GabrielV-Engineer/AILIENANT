@@ -15,6 +15,7 @@ from ws_contracts import (
     ServerGraphMutationEvent, GraphMutationPayload,
     ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
     ServerModelWarmupEvent, ModelWarmupPayload,
+    ServerIndexingProgressEvent, IndexingProgressPayload,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -164,6 +165,26 @@ class ConnectionManager:
                 )
             ),
         )
+
+    # ------------------------------------------------------------------
+    # Phase 2.5 — Workspace Indexing Progress
+    # ------------------------------------------------------------------
+
+    async def broadcast_indexing_progress(
+        self, session_id: str, current: int, total: int
+    ) -> None:
+        """Stream workspace indexing progress to the IDE progress bar."""
+        pct = round(current / total * 100.0 if total > 0 else 0.0, 1)
+        await self.send_personal_message(
+            session_id,
+            ServerIndexingProgressEvent(
+                data=IndexingProgressPayload(current=current, total=total, percentage=pct)
+            ),
+        )
+
+    async def broadcast_indexing_complete(self, session_id: str) -> None:
+        """Signal 100% indexing completion to the IDE."""
+        await self.broadcast_indexing_progress(session_id, current=1, total=1)
 
     # ------------------------------------------------------------------
     # HITL — Human-in-the-Loop suspension

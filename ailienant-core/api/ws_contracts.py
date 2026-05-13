@@ -180,6 +180,34 @@ class ServerModelWarmupEvent(BaseModel):
 
 
 # =====================================================================
+# 7. PHASE 2.5 — LAZY WORKSPACE INDEXING CONTRACTS
+# =====================================================================
+
+
+class WorkspaceInitPayload(BaseModel):
+    """Client announces the workspace root path for lazy background indexing."""
+    workspace_root: str
+    project_id: str
+
+
+class IndexingProgressPayload(BaseModel):
+    """Server progress broadcast during lazy workspace indexing."""
+    current: int
+    total: int
+    percentage: float
+
+
+class ClientWorkspaceInitEvent(BaseModel):
+    event_type: Literal["client_workspace_init"] = "client_workspace_init"
+    data: WorkspaceInitPayload
+
+
+class ServerIndexingProgressEvent(BaseModel):
+    event_type: Literal["server_indexing_progress"] = "server_indexing_progress"
+    data: IndexingProgressPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -198,4 +226,6 @@ WebSocketMessage = Union[
     ClientHITLResponseEvent,
     ClientConcurrencyConflictEvent,
     ServerModelWarmupEvent,
+    ClientWorkspaceInitEvent,        # Phase 2.5
+    ServerIndexingProgressEvent,     # Phase 2.5
 ]

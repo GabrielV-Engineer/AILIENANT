@@ -1,7 +1,7 @@
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiosqlite
 
@@ -42,6 +42,14 @@ _DDL = [
         PRIMARY KEY (file_path, project_id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_ppr_score ON ppr_scores(project_id, ppr_score DESC)",
+    # Phase 2.5: indexed_files — tracks which files have been processed by LazyIndexer
+    """CREATE TABLE IF NOT EXISTS indexed_files (
+        file_path    TEXT NOT NULL,
+        project_id   TEXT NOT NULL DEFAULT '',
+        indexed_at   REAL NOT NULL,
+        PRIMARY KEY (file_path, project_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_if_project ON indexed_files(project_id)",
 ]
 
 # ── Sync connection (for use from VFSMiddleware.read_safe) ───────────────────
@@ -173,3 +181,36 @@ async def get_ppr_score(file_path: str, project_id: str = "") -> float:
         ) as cur:
             row = await cur.fetchone()
             return float(row[0]) if row else 0.0
+
+
+# ── Phase 2.5: Indexed Files (LazyIndexer resume support) ─────────────────────
+
+async def upsert_indexed_file(file_path: str, project_id: str = "") -> None:
+    """Record that a file has been successfully processed by LazyIndexer."""
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO indexed_files VALUES (?,?,?)",
+            (file_path, project_id, time.time()),
+        )
+        await db.commit()
+
+
+async def get_indexed_count(project_id: str = "") -> int:
+    """Return how many files have been indexed for a project."""
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM indexed_files WHERE project_id=?", (project_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def get_top_ppr_files(project_id: str = "", limit: int = 20) -> List[Tuple[str, float]]:
+    """Return top-N (file_path, ppr_score) pairs ordered by score descending."""
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT file_path, ppr_score FROM ppr_scores "
+            "WHERE project_id=? ORDER BY ppr_score DESC LIMIT ?",
+            (project_id, limit),
+        ) as cur:
+            return [(r[0], float(r[1])) for r in await cur.fetchall()]
