@@ -1,7 +1,7 @@
 # alienant-core/core/ws_contracts.py
 
 from pydantic import BaseModel, Field
-from typing import Literal, Union
+from typing import Literal, Optional, Union
 
 # =====================================================================
 # 1. PAYLOADS DE LOS EVENTOS
@@ -57,12 +57,107 @@ class ServerStatusEvent(BaseModel):
 
 
 # =====================================================================
-# 3. EL CONTRATO MAESTRO O(1)
+# 3. PHASE 1.4 — BIDIRECTIONAL STREAMING & HITL CONTRACTS
+# =====================================================================
+
+
+class TokenChunkPayload(BaseModel):
+    """Single LLM output token streamed to the IDE."""
+
+    token: str
+    step_id: Optional[int] = None   # WBS step currently executing, if known
+
+
+class TelemetryPayload(BaseModel):
+    """Routing telemetry snapshot for the IDE status bar."""
+
+    session_id: str
+    routing_decision: str           # "LOCAL_SMALL" | "LOCAL_BIG" | "CLOUD"
+    css_total: float
+    task_complexity_index: float
+    is_red_alert: bool
+
+
+class GraphMutationPayload(BaseModel):
+    """WBS step status transition emitted by the Orchestrator."""
+
+    step_number: int
+    new_status: Literal["pending", "in_progress", "completed", "failed"]
+    agent_name: Optional[str] = None
+
+
+class PlannerModeTogglePayload(BaseModel):
+    """Client request to switch Planner-only mode on or off."""
+
+    active: bool
+
+
+class HITLApprovalRequestPayload(BaseModel):
+    """Backend suspends and asks the human to approve a proposed action."""
+
+    session_id: str
+    approval_id: str                    # UUID4 — unique per request; client must echo this back
+    action_description: str
+    proposed_content: Optional[str] = None
+
+
+class HITLResponsePayload(BaseModel):
+    """Client response to a pending HITL approval request."""
+
+    approval_id: str                    # Must match the approval_id from the request
+    approved: bool
+    comment: Optional[str] = None
+
+
+# --- Server → Client Events ---
+
+class ServerTokenChunkEvent(BaseModel):
+    event_type: Literal["server_token_chunk"] = "server_token_chunk"
+    data: TokenChunkPayload
+
+
+class ServerTelemetryEvent(BaseModel):
+    event_type: Literal["server_telemetry"] = "server_telemetry"
+    data: TelemetryPayload
+
+
+class ServerGraphMutationEvent(BaseModel):
+    event_type: Literal["server_graph_mutation"] = "server_graph_mutation"
+    data: GraphMutationPayload
+
+
+class ServerHITLApprovalRequestEvent(BaseModel):
+    event_type: Literal["server_hitl_approval_request"] = "server_hitl_approval_request"
+    data: HITLApprovalRequestPayload
+
+
+# --- Client → Server Events ---
+
+class ClientPlannerModeToggleEvent(BaseModel):
+    event_type: Literal["client_planner_mode_toggle"] = "client_planner_mode_toggle"
+    data: PlannerModeTogglePayload
+
+
+class ClientHITLResponseEvent(BaseModel):
+    event_type: Literal["client_hitl_response"] = "client_hitl_response"
+    data: HITLResponsePayload
+
+
+# =====================================================================
+# 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
 # FastAPI usará este tipo para validar CUALQUIER mensaje entrante.
 # Pydantic usará el campo 'event_type' para castearlo a la clase correcta.
 
 WebSocketMessage = Union[
-    ClientFileUpdateEvent, ServerCodeProposalEvent, ServerStatusEvent
+    ClientFileUpdateEvent,
+    ServerCodeProposalEvent,
+    ServerStatusEvent,
+    ServerTokenChunkEvent,
+    ServerTelemetryEvent,
+    ServerGraphMutationEvent,
+    ServerHITLApprovalRequestEvent,
+    ClientPlannerModeToggleEvent,
+    ClientHITLResponseEvent,
 ]

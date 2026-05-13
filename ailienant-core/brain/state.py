@@ -177,6 +177,11 @@ class AIlienantGraphState(TypedDict):
         int
     ]  # Puntero a la tarea actual del WBS en ejecución (step_number).
 
+    # --- Human-in-the-Loop & Planner Mode (Phase 1.4) ---
+    planner_mode_active: bool       # True when user toggled Planner-only mode via WS event
+    hitl_pending: bool              # True while the graph is awaiting human approval
+    hitl_response: Optional[str]   # "approved" | "rejected" + optional comment from HITL response
+
     # --- Planificación Inmutable (SDD) ---
     # Reemplaza 'immutable_wbs' y 'completed_steps'.
     # Todo el estado del plan vive dentro de este único objeto para evitar desincronizaciones.

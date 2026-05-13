@@ -80,9 +80,32 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
             # --- ZONA DE ENRUTAMIENTO SEGURO ---
             logger.info(
-                f"📥 Evento válido procesado de {client_id}: {valid_event.event_type}"
+                "📥 Evento válido de %s: %s", client_id, valid_event.event_type
             )
-            # (En la Fase 1.3, conectaremos LangGraph al WebSocketManager)
+
+            if valid_event.event_type == "client_file_update":
+                pass  # Phase 1.3: pipe into VFS + LangGraph
+
+            elif valid_event.event_type == "client_planner_mode_toggle":
+                logger.info(
+                    "🧠 Planner mode %s by %s",
+                    "ON" if valid_event.data.active else "OFF",
+                    client_id,
+                )
+                # Phase 1.3: update AIlienantGraphState.planner_mode_active via graph checkpoint
+
+            elif valid_event.event_type == "client_hitl_response":
+                vfs_manager.resolve_human_approval(
+                    approval_id=valid_event.data.approval_id,
+                    approved=valid_event.data.approved,
+                    comment=valid_event.data.comment,
+                )
+                logger.info(
+                    "✅ HITL response from %s: approved=%s (approval_id=%s)",
+                    client_id,
+                    valid_event.data.approved,
+                    valid_event.data.approval_id,
+                )
 
     except WebSocketDisconnect:
         # 4. Limpieza O(1) para evitar Fugas de Memoria
