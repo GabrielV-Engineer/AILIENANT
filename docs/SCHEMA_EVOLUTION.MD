@@ -62,6 +62,9 @@ class MissionSpecification(BaseModel):
     tasks: List[WBSStep]
     checks: List[str]
 
+# --- INSERCIÓN: Control de Estado HITL y Planner Manual ---
+PlanningStrategy = Literal["autonomous", "manual_override", "collaborative"]
+
 class AIlienantGraphState(TypedDict):
     # --- Memoria Base y Petición ---
     task_id: str
@@ -90,6 +93,11 @@ class AIlienantGraphState(TypedDict):
     retry_count: int
     security_flags: Annotated[List[str], operator.add]
     terminal_output: str
+
+    # Control de Concurrencia y Planificación
+    planning_strategy: PlanningStrategy
+    human_wbs_draft: Optional[str] # Payload crudo del IDE. Solo primitivas, NO objetos de conexión.
+    wbs_approved: bool # Bandera de transición. Si es False, el grafo interrumpe (HITL).
 
 ```
 

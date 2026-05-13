@@ -1,55 +1,110 @@
-# ailienant-core/core/llm_gateway.py
+# ailienant-core/tools/llm_gateway.py
 
-import os
 import logging
+import re
+import uuid
 from typing import Optional
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from pydantic.v1 import SecretStr
 
-# Cargamos las variables del archivo .env (si existe)
-load_dotenv()
+import litellm
+from litellm import ModelResponse
+
+from shared.config import MODEL_MEDIUM, get_litellm_config
 
 logger = logging.getLogger("LLM_GATEWAY")
 
+# Silence litellm's verbose default logging; our gateway owns the log surface.
+litellm.suppress_debug_info = True
+
+# Matches optional leading/trailing whitespace and markdown code fences (```json ... ``` or ``` ... ```).
+_MD_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+
+
 class LLMGateway:
     """
-    Gateway agnóstico. Se conecta a CUALQUIER proveedor que respete 
-    el formato de API de OpenAI (LM Studio, Ollama, vLLM, OpenAI, Groq, etc.).
+    Unified client for all agent LLM calls.
+
+    Routes every request through the local LiteLLM proxy (localhost:4000),
+    which handles provider translation, fallbacks, and API key management.
+    Agents pass abstract model aliases (ailienant/small, /medium, /big);
+    the proxy resolves them to real models without touching application code.
     """
-    
+
     @staticmethod
-    def get_model(
-        temperature: float = 0.0, 
-        model_name: Optional[str] = None,
-        override_base_url: Optional[str] = None, # 👈 Parámetro dinámico del usuario
-        override_api_key: Optional[str] = None   # 👈 Parámetro dinámico del usuario
-    ) -> ChatOpenAI:
+    def _sanitize_json_response(content: str) -> str:
+        """Strip markdown code fences and surrounding whitespace from an LLM response.
+
+        Some models wrap JSON output in ```json ... ``` regardless of response_format.
+        This normalises the string so model_validate_json never sees the fences.
         """
-        Retorna la instancia del LLM configurada a través de preferencias dinámicas o variables de entorno.
-        """
-        # 1. Jerarquía de Configuración: UI > .env > Default
-        base_url = override_base_url or os.getenv("AILIENANT_LLM_BASE_URL", "http://localhost:1234/v1")
-        raw_api_key = override_api_key or os.getenv("AILIENANT_LLM_API_KEY", "lm-studio")
-        target_model = model_name or os.getenv("AILIENANT_LLM_MODEL", "local-model")
-        
-        # 2. Envolver la API Key en SecretStr para satisfacer la seguridad de Pydantic
-        api_key_secret = SecretStr(raw_api_key) if raw_api_key else None
-        
-        logger.debug(f"Conectando a LLM en {base_url} con el modelo {target_model}")
-        
+        match = _MD_FENCE_RE.match(content)
+        return match.group(1).strip() if match else content.strip()
+
+    @staticmethod
+    def invoke(
+        messages: list[dict],
+        model: str = MODEL_MEDIUM,
+        temperature: float = 0.0,
+        response_format: Optional[dict] = None,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+    ) -> ModelResponse:
+        """Synchronous LLM call. Prefer ainvoke() inside async contexts."""
+        trace_id = session_id or str(uuid.uuid4())
+        cfg = get_litellm_config()
+        logger.debug(
+            "LLM invoke — model=%s base_url=%s trace=%s", model, cfg["base_url"], trace_id
+        )
         try:
-            # 3. Instanciar el modelo agnóstico con la configuración final
-            llm = ChatOpenAI(
-                base_url=base_url,
-                api_key=api_key_secret,
-                model=target_model,
+            kwargs: dict = dict(
+                model=model,
+                messages=messages,
                 temperature=temperature,
-                max_retries=2  # Resiliencia contra micro-cortes de red
+                max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=2,
+                metadata={"session_id": trace_id},
+                extra_headers={"X-Ailienant-Trace-ID": trace_id},
+                **cfg,
             )
-            return llm
-            
+            if response_format:
+                kwargs["response_format"] = response_format
+            return litellm.completion(**kwargs)
         except Exception as e:
-            logger.error(f"❌ Error al inicializar ChatOpenAI en el Gateway: {str(e)}")
-            raise e
-   
+            logger.error("LLM invoke failed [trace=%s]: %s", trace_id, e)
+            raise
+
+    @staticmethod
+    async def ainvoke(
+        messages: list[dict],
+        model: str = MODEL_MEDIUM,
+        temperature: float = 0.0,
+        response_format: Optional[dict] = None,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+    ) -> ModelResponse:
+        """Async LLM call — non-blocking on the FastAPI event loop."""
+        trace_id = session_id or str(uuid.uuid4())
+        cfg = get_litellm_config()
+        logger.debug(
+            "LLM ainvoke — model=%s base_url=%s trace=%s", model, cfg["base_url"], trace_id
+        )
+        try:
+            kwargs: dict = dict(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=2,
+                metadata={"session_id": trace_id},
+                extra_headers={"X-Ailienant-Trace-ID": trace_id},
+                **cfg,
+            )
+            if response_format:
+                kwargs["response_format"] = response_format
+            return await litellm.acompletion(**kwargs)
+        except Exception as e:
+            logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
+            raise

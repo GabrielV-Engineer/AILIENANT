@@ -70,3 +70,17 @@ Finalización exitosa de los cimientos técnicos de **AILIENANT**. La infraestru
 - [x] **Prueba WS:** Script de prueba `qa_ws.py` confirmó que el firewall rechaza paquetes malformados y procesa eventos válidos.
 - [x] **Estabilidad:** Cero errores de enrutamiento y gestión de puertos 8000 estable.
 
+## 🚀 HITO 1.0.1 📅 [15/04/2026] | Estabilización de Arquitectura y VFS
+
+### Logros Técnicos:
+* **Tipado Estricto Resuelto:** Se solucionó la colisión entre el patrón Singleton (`__new__`) y Pylance/LSP mediante la declaración de la anotación `_ram_vfs: Dict[str, str]` a nivel de clase, garantizando autocompletado y validación estática sin errores de "member not defined".
+* **Inversión de Dependencias (SRP):** Se implementó la capa `core/task_service.py`. Esta capa actúa como el orquestador de lógica de negocio, aislando con éxito la lógica cognitiva y el manejo del VFS de los controladores de transporte en `main.py`.
+* **Unificación del API Gateway:** Refactorización integral de `main.py`. Se consolidaron las rutas HTTP y el túnel de WebSockets bajo un esquema de enrutamiento profesional y versionado (`/api/v1/`), eliminando endpoints redundantes y preparando el sistema para producción.
+* **Testing de Integración VFS:** Ejecución exitosa de `test_vfs.py`. Se validó empíricamente que el middleware actúa como un proxy de lectura:
+    * **Fallback:** Lectura de disco duro cuando no hay cambios.
+    * **Interceptación:** Retorno inmediato $O(1)$ desde RAM cuando existen "dirty buffers" (entropía del IDE), evitando I/O innecesario.
+* **Refactorización Mayor (WBS Fase 2):** Limpieza profunda de la hoja de ruta. 
+    * Sustitución de `networkx` por **LangGraph** (`StateGraph`) para la orquestación de agentes.
+    * Implementación de **SQLite WAL Mode** para permitir concurrencia segura entre los Checkpoints de la IA y el servidor API.
+    * Eliminación de lecturas directas `os.open` en favor del `VFSMiddleware`.
+
