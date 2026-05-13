@@ -14,6 +14,7 @@ class TaskPayload(BaseModel):
     project_id: Optional[str] = None
     explicit_mentions: List[str] = Field(default_factory=list)
     attachments: List[ManualAttachment] = Field(default_factory=list)
+    document_version_id: Optional[str] = None  # OCC: version at submission (Phase 1.5)
 
 
 class TaskService:

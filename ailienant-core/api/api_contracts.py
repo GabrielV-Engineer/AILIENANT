@@ -48,3 +48,26 @@ class TaskSubmitResponse(BaseModel):
     task_id: str
     status: str = Field(pattern="^(accepted|rejected|queued)$")
     message: str
+
+
+# =====================================================================
+# MODEL DISCOVERY (Phase 1.6.3)
+# =====================================================================
+
+
+class ModelInfo(BaseModel):
+    """Single model entry returned by the discovery endpoint."""
+
+    id: str = Field(..., description="Alias used by LiteLLM, e.g. 'ailienant/medium'")
+    name: str = Field(..., description="Underlying model name, e.g. 'llama3.1'")
+    provider: str = Field(..., description="'ollama' | 'openai' | 'anthropic' | etc.")
+    is_local: bool = Field(..., description="True if the model runs on-device")
+
+
+class ModelsAvailableResponse(BaseModel):
+    """Response envelope for GET /api/v1/models/available."""
+
+    models: List[ModelInfo]
+    litellm_available: bool = Field(
+        ..., description="True when the LiteLLM proxy responded successfully"
+    )

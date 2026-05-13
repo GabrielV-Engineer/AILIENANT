@@ -1,13 +1,18 @@
 import logging
-from typing import Dict
+from typing import Dict, List
+
+import httpx
 
 # --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
+from api.api_contracts import ModelInfo, ModelsAvailableResponse
 from api.websocket_manager import vfs_manager
 
 # --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
+from core.config_generator import discover_models
 from core.task_service import TaskPayload, TaskService
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 
 # Configuración centralizada de observabilidad
 logging.basicConfig(level=logging.INFO)
@@ -37,7 +42,51 @@ planner_mode_registry: Dict[str, bool] = {}
 @app.get("/")
 async def health_check():
     """Endpoint HTTP tradicional para verificar que el servidor está vivo."""
-    return {"status": "online", "phase": "1.2", "system": "VFS Middleware Active"}
+    return {"status": "online", "phase": "1.6", "system": "VFS Middleware Active"}
+
+
+@app.get("/api/v1/models/available", response_model=ModelsAvailableResponse)
+async def get_available_models() -> ModelsAvailableResponse:
+    """
+    Phase 1.6.3 — Model discovery endpoint.
+
+    Strategy:
+    1. Try LiteLLM proxy GET /model/info for a live, authoritative model list.
+    2. If the proxy is unreachable, fall back to direct port scan via ConfigGenerator
+       so the endpoint works even before LiteLLM is started for the first time.
+    """
+    litellm_available = False
+    models: List[ModelInfo] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(
+                f"{LITELLM_PROXY_BASE_URL}/model/info",
+                headers={"Authorization": f"Bearer {LITELLM_PROXY_API_KEY}"},
+            )
+            if resp.status_code == 200:
+                litellm_available = True
+                for entry in resp.json().get("data", []):
+                    alias = entry.get("model_name", "")
+                    params = entry.get("litellm_params", {})
+                    real_model: str = params.get("model", alias)
+                    provider = real_model.split("/")[0] if "/" in real_model else "cloud"
+                    models.append(ModelInfo(
+                        id=alias,
+                        name=real_model,
+                        provider=provider,
+                        is_local=provider in ("ollama", "lmstudio"),
+                    ))
+                logger.info("Model discovery via LiteLLM proxy: %d model(s)", len(models))
+    except Exception:
+        pass  # proxy not running — fall through to direct scan
+
+    if not litellm_available:
+        raw = await discover_models()
+        models = [ModelInfo(**m) for m in raw]
+        logger.info("Model discovery via direct scan: %d model(s)", len(models))
+
+    return ModelsAvailableResponse(models=models, litellm_available=litellm_available)
 
 
 @app.post("/api/v1/task/submit")
@@ -109,6 +158,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     client_id,
                     valid_event.data.approved,
                     valid_event.data.approval_id,
+                )
+
+            elif valid_event.event_type == "client_concurrency_conflict":
+                logger.warning(
+                    "⚡ OCC Conflict [Session: %s]: %s (expected v%d, got v%d) — aborting write",
+                    client_id,
+                    valid_event.data.filepath,
+                    valid_event.data.expected_version,
+                    valid_event.data.actual_version,
                 )
 
     except WebSocketDisconnect:

@@ -144,6 +144,24 @@ class ClientHITLResponseEvent(BaseModel):
 
 
 # =====================================================================
+# 5. OCC — OPTIMISTIC CONCURRENCY CONTROL (Phase 1.5)
+# =====================================================================
+
+
+class ConcurrencyConflictPayload(BaseModel):
+    """Client reports a file version conflict detected during inference."""
+
+    filepath: str = Field(..., description="Absolute path of the conflicting file")
+    expected_version: int = Field(..., description="Version at task submission")
+    actual_version: int = Field(..., description="Current version after user edited the file")
+
+
+class ClientConcurrencyConflictEvent(BaseModel):
+    event_type: Literal["client_concurrency_conflict"] = "client_concurrency_conflict"
+    data: ConcurrencyConflictPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -160,4 +178,5 @@ WebSocketMessage = Union[
     ServerHITLApprovalRequestEvent,
     ClientPlannerModeToggleEvent,
     ClientHITLResponseEvent,
+    ClientConcurrencyConflictEvent,
 ]
