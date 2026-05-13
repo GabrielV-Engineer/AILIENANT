@@ -214,3 +214,28 @@ async def get_top_ppr_files(project_id: str = "", limit: int = 20) -> List[Tuple
             (project_id, limit),
         ) as cur:
             return [(r[0], float(r[1])) for r in await cur.fetchall()]
+
+
+# ── Phase 2.1.13: Ghost Pruning (BranchSwitchHandler) ─────────────────────────
+
+async def purge_file_nodes(filepath: str, project_id: str = "") -> None:
+    """Remove all DB records for a deleted file (Ghost Pruning — Phase 2.1.13).
+
+    Eradicates stale PPR scores, indexed_files entries, and outgoing dependency
+    edges for the deleted file so they cannot pollute GraphRAG rankings or cause
+    agent hallucinations after a branch switch.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "DELETE FROM ppr_scores WHERE file_path = ? AND project_id = ?",
+            (filepath, project_id),
+        )
+        await db.execute(
+            "DELETE FROM indexed_files WHERE file_path = ? AND project_id = ?",
+            (filepath, project_id),
+        )
+        await db.execute(
+            "DELETE FROM dependency_graph WHERE source_file = ? AND project_id = ?",
+            (filepath, project_id),
+        )
+        await db.commit()

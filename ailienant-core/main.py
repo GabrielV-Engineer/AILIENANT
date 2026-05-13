@@ -29,7 +29,7 @@ from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
 from core.indexer import lazy_indexer
 
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
-from core.io_coalescer import io_coalescer, is_critical_file
+from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
 from shared.contracts import (
     IndexingRequest, IndexingResult, detect_language,
     PPRRequest, PPRResult,
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)
+    io_coalescer.register_mass_handler(_handle_mass_change)
     _wal = WALCheckpointer(checkpoint_manager)
     _wal.start()
     logger.info("🟢 AILIENANT startup complete (WAL mode active).")
@@ -107,6 +108,9 @@ planner_mode_registry: Dict[str, bool] = {}
 # PPR debounce registry — one asyncio.Task per project_id, cancelled and replaced on each file save
 _ppr_tasks: Dict[str, asyncio.Task[None]] = {}
 _PPR_DEBOUNCE_S: float = 2.0
+
+# Workspace registry — populated on client_workspace_init; used by mass change handler
+_workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
 
 
 # =====================================================================
@@ -215,8 +219,27 @@ def _schedule_ppr(project_id: str) -> None:
     )
 
 
+async def _handle_mass_change(project_id: str) -> None:
+    """Triggered by IOCoalescer when a mass event (>100 files) is detected (branch switch)."""
+    workspace_root = _workspace_registry.get(project_id, "")
+    if not workspace_root:
+        logger.warning("Mass change handler: no workspace_root for project_id=%s", project_id)
+        return
+    lazy_indexer._is_complete = False  # force re-index after branch switch
+    await lazy_indexer.start(
+        workspace_root=workspace_root,
+        project_id=project_id,
+        session_id="mass_change",
+    )
+    logger.info("Mass change: re-triggered lazy indexer for project %s", project_id)
+
+
 async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: str) -> None:
     """Index a file in the process pool, persist its import edges, then debounce PPR."""
+    if content == _UNLINK_SENTINEL:
+        await catalog_db.purge_file_nodes(filepath, project_id)
+        logger.info("Ghost purge: removed DB records for deleted file %s", filepath)
+        return
     lang = detect_language(filepath)
     if not lang:
         return  # unsupported file type — no-op
@@ -311,6 +334,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 )
 
             elif valid_event.event_type == "client_workspace_init":
+                _workspace_registry[valid_event.data.project_id] = valid_event.data.workspace_root
                 await lazy_indexer.start(
                     workspace_root=valid_event.data.workspace_root,
                     project_id=valid_event.data.project_id,
@@ -321,6 +345,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     client_id,
                     valid_event.data.workspace_root,
                     valid_event.data.project_id,
+                )
+
+            elif valid_event.event_type == "client_file_delete":
+                io_coalescer.submit_unlink(
+                    valid_event.data.filepath, valid_event.data.project_id
                 )
 
     except WebSocketDisconnect:

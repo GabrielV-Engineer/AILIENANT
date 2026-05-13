@@ -23,10 +23,12 @@ workflow = StateGraph(AIlienantGraphState)
 from agents.planner import run_planner_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
 from brain.summarizer import run_summarize_node  # noqa: E402
+from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
 
 workflow.add_node("summarize_history", run_summarize_node)  # type: ignore[type-var]
 workflow.add_node("planner_agent", run_planner_node)        # type: ignore[type-var]
 workflow.add_node("coder_agent", run_coder_node)            # type: ignore[type-var]
+workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[type-var]
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -80,7 +82,8 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 workflow.add_edge(START, "summarize_history")
 workflow.add_edge("summarize_history", "planner_agent")
 workflow.add_conditional_edges("planner_agent", route_to_coders, ["coder_agent"])
-workflow.add_edge("coder_agent", END)
+workflow.add_edge("coder_agent", "validate_output")
+workflow.add_conditional_edges("validate_output", route_after_validation, ["coder_agent", END])
 
 # =====================================================================
 # 5. COMPILACIÓN CON PERSISTENCIA (CheckpointManager)

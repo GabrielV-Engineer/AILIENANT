@@ -208,6 +208,22 @@ class ServerIndexingProgressEvent(BaseModel):
 
 
 # =====================================================================
+# 8. PHASE 2.1.13 — FILE DELETE / UNLINK EVENTS
+# =====================================================================
+
+
+class FileDeletePayload(BaseModel):
+    """Payload for IDE file deletion (unlink) events."""
+    filepath: str = Field(..., description="Absolute path of the deleted file")
+    project_id: str = Field(default="", description="Project scope for DB purge")
+
+
+class ClientFileDeleteEvent(BaseModel):
+    event_type: Literal["client_file_delete"] = "client_file_delete"
+    data: FileDeletePayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -228,4 +244,5 @@ WebSocketMessage = Union[
     ServerModelWarmupEvent,
     ClientWorkspaceInitEvent,        # Phase 2.5
     ServerIndexingProgressEvent,     # Phase 2.5
+    ClientFileDeleteEvent,           # Phase 2.1.13
 ]

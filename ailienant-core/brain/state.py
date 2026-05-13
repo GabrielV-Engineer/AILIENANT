@@ -256,3 +256,7 @@ class AIlienantGraphState(TypedDict):
     terminal_output: str
     # Phase 2.5: Workspace Indexing Gate — seeded from lazy_indexer.is_complete at graph invocation
     is_indexing_complete: bool
+
+    # --- Guardrail State (Phase 2.1.14) ---
+    guardrail_failed: bool              # True if validate_output detected a schema violation
+    validation_feedback: Optional[str]  # Corrective message prepended to CoderAgent on retry

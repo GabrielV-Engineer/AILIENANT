@@ -18,6 +18,15 @@ async def run_coder_node(state: dict) -> dict:
 
     El cuerpo real de generación de código (LLM call + RBWE) se implementa en Phase 4.
     """
+    # If the guardrail flagged invalid output on a previous attempt, inject the
+    # corrective system message so the LLM knows what to fix (Phase 2.1.14).
+    validation_feedback = state.get("validation_feedback")
+    if validation_feedback:
+        logger.info(
+            "CoderAgent: retrying with guardrail feedback (retry %d)",
+            state.get("retry_count", 0),
+        )
+
     step_id: int | None = state.get("current_step_id")
     mission_spec = state.get("mission_spec")
 

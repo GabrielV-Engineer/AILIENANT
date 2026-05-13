@@ -21,6 +21,8 @@ from typing import Callable, Dict, Optional, Tuple
 logger = logging.getLogger("IO_COALESCER")
 
 _DEBOUNCE_S: float = 0.5
+_MASS_THRESHOLD: int = 100          # files above this count → background indexer
+_UNLINK_SENTINEL: str = "__UNLINK__"  # marks a file deletion in _pending
 _CRITICAL_PATTERNS = frozenset({".env", "config.py", "settings.py", "secrets.py"})
 
 
@@ -45,14 +47,28 @@ class IOCoalescer:
         self._pending: Dict[str, Tuple[str, str]] = {}  # filepath → (content, project_id)
         self._timer: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self._dispatch_fn: Optional[Callable] = None  # type: ignore[type-arg]
+        self._mass_handler_fn: Optional[Callable] = None  # type: ignore[type-arg]
 
     def register_dispatch(self, fn: Callable) -> None:  # type: ignore[type-arg]
         """Wire in the indexing callback. Called once from lifespan startup."""
         self._dispatch_fn = fn
 
+    def register_mass_handler(self, fn: Callable) -> None:  # type: ignore[type-arg]
+        """Wire in the mass-change callback. Called once from lifespan startup."""
+        self._mass_handler_fn = fn
+
     def submit(self, filepath: str, content: str, project_id: str = "") -> None:
         """Accept a file update. O(1) synchronous — safe from async WebSocket handler."""
         self._pending[filepath] = (content, project_id)
+        if self._timer is not None and not self._timer.done():
+            self._timer.cancel()
+        self._timer = asyncio.create_task(
+            self._flush_after_debounce(), name="io_coalescer:flush"
+        )
+
+    def submit_unlink(self, filepath: str, project_id: str = "") -> None:
+        """Mark a file for deletion (unlink). O(1) synchronous."""
+        self._pending[filepath] = (_UNLINK_SENTINEL, project_id)
         if self._timer is not None and not self._timer.done():
             self._timer.cancel()
         self._timer = asyncio.create_task(
@@ -65,16 +81,45 @@ class IOCoalescer:
         except asyncio.CancelledError:
             return  # superseded by a newer submit
 
-        if not self._pending or self._dispatch_fn is None:
+        if not self._pending:
             return
         batch = dict(self._pending)
         self._pending.clear()
-        logger.info("IOCoalescer: flushing %d file(s) as one batch", len(batch))
-        for filepath, (content, project_id) in batch.items():
-            try:
-                await self._dispatch_fn(filepath, content, project_id)
-            except Exception as exc:
-                logger.warning("IOCoalescer: dispatch error for %s: %s", filepath, exc)
+
+        # Partition: unlinks (ghost pruning) first, then updates
+        unlinks = {fp: pid for fp, (c, pid) in batch.items() if c == _UNLINK_SENTINEL}
+        updates = {fp: (c, pid) for fp, (c, pid) in batch.items() if c != _UNLINK_SENTINEL}
+
+        # 1. Unlink priority — process deletions before any write dispatches
+        for filepath, project_id in unlinks.items():
+            if self._dispatch_fn:
+                try:
+                    await self._dispatch_fn(filepath, _UNLINK_SENTINEL, project_id)
+                except Exception as exc:
+                    logger.warning("IOCoalescer: unlink error for %s: %s", filepath, exc)
+
+        # 2. Mass event detection — bypass individual dispatch, trigger background indexer
+        if len(updates) > _MASS_THRESHOLD:
+            logger.warning(
+                "IOCoalescer: mass change detected (%d files). Shifting to Background Worker.",
+                len(updates),
+            )
+            if self._mass_handler_fn:
+                for pid in {pid for _, pid in updates.values()}:
+                    try:
+                        await self._mass_handler_fn(pid)
+                    except Exception as exc:
+                        logger.error("IOCoalescer: mass handler error for %s: %s", pid, exc)
+            return
+
+        # 3. Normal sequential dispatch
+        logger.info("IOCoalescer: flushing %d file(s) as one batch", len(updates))
+        for filepath, (content, project_id) in updates.items():
+            if self._dispatch_fn:
+                try:
+                    await self._dispatch_fn(filepath, content, project_id)
+                except Exception as exc:
+                    logger.warning("IOCoalescer: dispatch error for %s: %s", filepath, exc)
 
 
 # Global singleton imported by main.py
