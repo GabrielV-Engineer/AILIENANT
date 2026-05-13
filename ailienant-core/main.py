@@ -8,6 +8,7 @@ from api.api_contracts import ModelInfo, ModelsAvailableResponse
 from api.websocket_manager import vfs_manager
 
 # --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
+from core import db as catalog_db
 from core.config_generator import discover_models
 from core.task_service import TaskPayload, TaskService
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
@@ -34,6 +35,11 @@ app.add_middleware(
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await catalog_db.init_db()
 
 # Session-scoped planner mode registry — read by TaskService when LangGraph is wired (Phase 2)
 planner_mode_registry: Dict[str, bool] = {}

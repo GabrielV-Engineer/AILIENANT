@@ -43,23 +43,23 @@ El cimiento inmutable. Define la soberanía de los datos, el flujo de conciencia
 - [x] **1.0: Cimientos del Motor IA (Base del Spec-Driven Development):**
 Establecimiento de los contratos de datos fundamentales y la pasarela de comunicación agnóstica para el núcleo del sistema.*
 - [x] **Refactorización de Contratos de Estado:** Modificación del archivo `core/state.py` para incluir el modelo `MissionSpecification` como contrato maestro y redefinir `WBSStep` asegurando atomicidad estricta (`step_number`, `action`, `target_file`).
-- [ ] **Evolución del LLM Gateway a LiteLLM Client:**
+- [x] **Evolución del LLM Gateway a LiteLLM Client:**
   - **Estado:** Refactorizado de Factory Manual a Cliente de Proxy.
   - **Cambio Crítico:** El archivo `core/llm_gateway.py` deja de intentar traducir SDKs de Anthropic o Google manualmente. Ahora actúa como el **Cliente Unificado** que apunta exclusivamente al endpoint local de LiteLLM (`localhost:4000`).
   - **Función Actual:** Centraliza la lógica de `BaseClient`, inyecta los `headers` de Ailienant y gestiona el streaming de tokens de forma agnóstica, confiando la traducción de modelos al motor de LiteLLM (Fase 1.6).
 - [x] **Aislamiento de Configuración:** Integración de `python-dotenv` y configuración del archivo `.env` para independizar el código de la infraestructura de IA (permitiendo cambiar entre LM Studio, Ollama o servicios Cloud sin tocar el código fuente).
 - [x] **1.1. Frontend (VS Code): Extractor de Entropía (Payload Builder):**
-  - [ ] **1.1.0. Identificación de Espacio de Trabajo (Workspace Identity):**
+  - [x] **1.1.0. Identificación de Espacio de Trabajo (Workspace Identity):**
     - Implementación de `PathResolver`: Captura de la ruta absoluta del root del proyecto en el sistema operativo.
     - Generador de `WorkspaceHash`: Algoritmo SHA-256 para transformar la ruta en un `project_id` único e inmutable.
     - Inyección Obligatoria: Modificación del `EntropyPayload` para incluir el `project_id` en el encabezado de cada mensaje hacia el cerebro de IA.
-  - [ ] **1.1.0.4. Contexto Manual y Sobrescritura (Manual Override):**
+  - [x] **1.1.0.4. Contexto Manual y Sobrescritura (Manual Override):**
     - `manual_attachments`: Soporte multimodal en el payload para inyección de imágenes (Base64) y documentos externos (PDF/CSV) parseables por herramientas.
     - `explicit_mentions`: Array de referencias directas (`@archivo.ts`) para forzar la inclusión de archivos completos en el prompt, haciendo un *bypass* al GraphRAG cuando el usuario requiera precisión absoluta.
   - [x] Implementar función en TypeScript para capturar el estado real del IDE: vscode.workspace.textDocuments.filter(d => d.isDirty).
   - [x] Extraer el document_version_id nativo del LSP (Language Server Protocol) de VS Code.
   - [x] Empaquetar y enviar estos datos en el POST /api/v1/task/submit.
-- [ ] **1.2. Interceptor de Intenciones y Enrutamiento Estático ("Shift-Left" AST):**
+- [x] **1.2. Interceptor de Intenciones y Enrutamiento Estático ("Shift-Left" AST):**
   - **Implementación:** Desarrollar la clase `IntentRouter` en `ailienant-extension/src/core/IntentRouter.ts`. Utilizar expresiones regulares y análisis léxico rápido sobre el Árbol Sintáctico Abstracto (AST) de VS Code para interceptar el prompt del usuario *antes* de que cruce el WebSocket.
   - **Propósito:** Ejecutar "codemods" locales instantáneos (ej. formatear código, cambiar `let` a `const`) en <5ms. 
   - **Impacto:** Evita despertar al backend, gastar tokens o consumir batería innecesariamente para tareas triviales. Actúa como el primer "Filtro de Gravedad".
@@ -68,26 +68,26 @@ Establecimiento de los contratos de datos fundamentales y la pasarela de comunic
   - [x] Exponer un método vfs.read(filepath) que actúe como proxy: si existe en el diccionario RAM, lo devuelve (O(1)); si no, lee el disco duro.
   - [x] Crear capa intermedia `core/task_service.py` para asimilar la entropía O(1) antes de invocar a la IA.
   - [x] Consolidar `main.py` unificando endpoint HTTP (`/api/v1/task/submit`) y WebSockets (`/api/v1/ws/{client_id}`).
-- [ ] **1.3.1. Cortafuegos de Contexto (Context Firewall) en el VFS:**
+- [x] **1.3.1. Cortafuegos de Contexto (Context Firewall) en el VFS:**
   - Implementar un motor de filtrado estricto (Shift-Left) en `vfs_manager` para evitar la ingesta de archivos inútiles o masivos *antes* de que lleguen a la memoria RAM o al parser AST.
   - **Capa 1 (Git/Ignore Nativo):** Parseo automático de `.gitignore` y `.ailienantignore` usando `pathspec` para ignorar directorios (`node_modules`, `.venv`) en $O(1)$.
   - **Capa 2 (Bloqueo de Binarios):** Detección y rechazo mediante firmas MIME o extensiones de archivos no procesables (ej. `.png`, `.pdf`, `.zip`, `.exe`).
   - **Capa 3 (Heurística Anti-OOM):** Bloqueo de lectura para archivos de texto masivos (> 500 KB) o código minificado (líneas > 1000 caracteres sin saltos), exponiendo solo su metadata al agente.
-- [ ] **1.4. Gestor de WebSockets Bidireccional (El Cordón Umbilical):**
-  - [ ] Refactorizar core/websocket_manager.py para soportar la emisión asíncrona de los nuevos tipos de mensajes definidos en la Fase 0 (TOKEN_CHUNK, TELEMETRY_UPDATE, GRAPH_MUTATION).
-  - [ ] **Protocolo de Intencionalidad:** Implementar el manejo del mensaje `PLANNER_MODE_TOGGLE`. El socket debe capturar este estado y persistirlo en la sesión antes de procesar el `INITIAL_PROMPT`.
+- [x] **1.4. Gestor de WebSockets Bidireccional (El Cordón Umbilical):**
+  - [x] Refactorizar core/websocket_manager.py para soportar la emisión asíncrona de los nuevos tipos de mensajes definidos en la Fase 0 (TOKEN_CHUNK, TELEMETRY_UPDATE, GRAPH_MUTATION).
+  - [x] **Protocolo de Intencionalidad:** Implementar el manejo del mensaje `PLANNER_MODE_TOGGLE`. El socket debe capturar este estado y persistirlo en la sesión antes de procesar el `INITIAL_PROMPT`.
   - [ ] Implementar el canal de ida y vuelta para el HITL_APPROVAL_REQUIRED (Human-in-the-Loop) asegurando que el backend congele el hilo de ejecución (Await) hasta recibir el HITL_RESPONSE del cliente.
-- [ ] **1.4.1. Handshake de Intención:** Implementar en el ailienant-extension el comando de activación (Switch UI).
-- [ ] **1.4.2. Telemetría de Estado:** El Backend debe recibir y persistir en el AIlienantGraphState si la sesión actual es MANUAL_PLANNING: true.
-- [ ] **1.5. Optimistic Concurrency Control (OCC) Gatekeeper:**
-  - [ ] En la extensión de VS Code, interceptar los mensajes de tipo GRAPH_MUTATION (peticiones de edición de código).
-  - [ ] Validar current_ide_version == payload.document_version_id. Si hay desfase (el usuario escribió algo mientras la IA procesaba), rechazar el parche y devolver un error CONCURRENCY_CONFLICT al WebSocket para que el OrchestratorAgent recalcule el WBS.
-- [ ] **1.6. Gateway Interno Soberano (LiteLLM Integration):**
+- [x] **1.4.1. Handshake de Intención:** Implementar en el ailienant-extension el comando de activación (Switch UI).
+- [x] **1.4.2. Telemetría de Estado:** El Backend debe recibir y persistir en el AIlienantGraphState si la sesión actual es MANUAL_PLANNING: true.
+- [x] **1.5. Optimistic Concurrency Control (OCC) Gatekeeper:**
+  - [x] En la extensión de VS Code, interceptar los mensajes de tipo GRAPH_MUTATION (peticiones de edición de código).
+  - [x] Validar current_ide_version == payload.document_version_id. Si hay desfase (el usuario escribió algo mientras la IA procesaba), rechazar el parche y devolver un error CONCURRENCY_CONFLICT al WebSocket para que el OrchestratorAgent recalcule el WBS.
+- [x] **1.6. Gateway Interno Soberano (LiteLLM Integration):**
   - **Misión:** Reemplazar el enrutamiento directo y fragmentado por un proxy interno (LiteLLM) que estandarice 100+ proveedores al formato OpenAI, garantizando autonomía, gestión de fallos (fallbacks) y control de gasto sin depender de servicios como OpenRouter.
-  - [ ] **1.6.1. Despliegue de LiteLLM Proxy:** Integrar el servidor LiteLLM localmente como intermediario absoluto. Todas las llamadas de los agentes (Planner, Orchestrator, Coder) apuntarán a `localhost:4000`, mientras LiteLLM gestiona las API Keys reales.
-  - [ ] **1.6.2. Mapeo de Categorías (Alias Routing):** Configurar endpoints virtuales en LiteLLM para abstraer la complejidad. Crear los alias estáticos `ailienant/small`, `ailienant/medium`, y `ailienant/big`. El proxy enrutará estas peticiones al modelo específico configurado en el perfil activo del usuario.
-  - [ ] **1.6.3. Endpoint de Autodescubrimiento:** Exponer un endpoint en FastAPI (`/api/v1/models/available`) que consulte a LiteLLM y devuelva al Frontend la lista dinámica de modelos disponibles (tanto locales detectados como APIs configuradas).
-  - [ ] **1.6.4. Orquestador de Configuración "Zero-Touch":**
+  - [x] **1.6.1. Despliegue de LiteLLM Proxy:** Integrar el servidor LiteLLM localmente como intermediario absoluto. Todas las llamadas de los agentes (Planner, Orchestrator, Coder) apuntarán a `localhost:4000`, mientras LiteLLM gestiona las API Keys reales.
+  - [x] **1.6.2. Mapeo de Categorías (Alias Routing):** Configurar endpoints virtuales en LiteLLM para abstraer la complejidad. Crear los alias estáticos `ailienant/small`, `ailienant/medium`, y `ailienant/big`. El proxy enrutará estas peticiones al modelo específico configurado en el perfil activo del usuario.
+  - [x] **1.6.3. Endpoint de Autodescubrimiento:** Exponer un endpoint en FastAPI (`/api/v1/models/available`) que consulte a LiteLLM y devuelva al Frontend la lista dinámica de modelos disponibles (tanto locales detectados como APIs configuradas).
+  - [x] **1.6.4. Orquestador de Configuración "Zero-Touch":**
     - **Bootstrap dinámico:** Desarrollar el script de Python que genera el `config.yaml` de LiteLLM al vuelo basado en las preferencias de la extensión.
     - **Inyector de Secretos:** Lógica para pasar las API Keys del almacenamiento seguro de VS Code a variables de entorno del proceso LiteLLM.
     - **Auto-detección Agnóstica de Motores Locales:** Escaneo heurístico de puertos locales estándar (ej. `11434` Ollama, `1234` LM Studio, `8000` vLLM, `4891` GPT4All) o lectura de un endpoint custom. Si detecta un motor vivo respondiendo al formato OpenAI, lo inyecta automáticamente como el modelo `Small` o `Local-Fallback` sin intervención del usuario.

@@ -1,9 +1,13 @@
 import os
 import threading
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pathspec
 from pydantic import BaseModel
+
+from .ast_engine import ASTEngine as _ASTEngine
+
+_ast = _ASTEngine()
 
 
 # Contract aligned with vfs_reader.ts
@@ -90,6 +94,9 @@ class VFSMiddleware:
             for buf in buffers:
                 normalized_path = os.path.normpath(buf.uri)
                 self._ram_vfs[normalized_path] = buf.content
+        # AST parse outside lock — CPU-bound, doesn't need _ram_vfs lock
+        for buf in buffers:
+            _ast.parse(os.path.normpath(buf.uri), buf.content, buf.languageId)
 
     # ------------------------------------------------------------------
     # Transparent read (backward-compatible, no firewall)
@@ -121,11 +128,15 @@ class VFSMiddleware:
     # Firewalled read (context assembly, LLM injection)
     # ------------------------------------------------------------------
 
+    def get_ast(self, filepath: str) -> "Optional[Any]":
+        return _ast.get(os.path.normpath(filepath))
+
     def read_safe(
         self,
         filepath: str,
         project_id: Optional[str] = None,
         project_root: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> VFSReadResult:
         """
         Three-layer content firewall for LLM context assembly.
@@ -194,7 +205,11 @@ class VFSMiddleware:
                 metadata={**size_meta, "reason": "line length exceeds minification threshold"},
             )
 
-        return VFSReadResult(content=content)
+        result = VFSReadResult(content=content)
+        if session_id:
+            from .db import log_file_read_sync as _log
+            _log(session_id, normalized, None)
+        return result
 
     # ------------------------------------------------------------------
     # Ignore spec cache (thread-safe, compiled once per project_id)

@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionManager } from '../brain/session';
+import { IntentRouter } from '../core/IntentRouter';
+import { WSClient } from '../api/ws_client';
 
 export class AilienantChatProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'ailienant.chatView';
@@ -30,13 +32,23 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
         webviewView.webview.onDidReceiveMessage(async (data) => {
             switch (data.type) {
                 case 'SUBMIT_TASK': {
-                    const session = SessionManager.getInstance();
-                    // Orquestamos la tarea con el prompt que viene de la UI
-                    await session.startAITask(data.value);
+                    const activeDoc = vscode.window.activeTextEditor?.document;
+                    const intercepted = await IntentRouter.intercept(data.value, activeDoc);
+                    if (!intercepted) {
+                        const session = SessionManager.getInstance();
+                        await session.startAITask(data.value);
+                    }
                     break;
                 }
                 case 'ABORT_TASK': {
                     SessionManager.getInstance().abortCurrentTask();
+                    break;
+                }
+                case 'togglePlannerMode': {
+                    WSClient.getInstance().send({
+                        event_type: 'client_planner_mode_toggle',
+                        data: { active: data.value as boolean },
+                    });
                     break;
                 }
             }
@@ -54,24 +66,22 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
-        // En la siguiente fase, aquí generaremos los URIs de los archivos compilados de React.
-        // Por ahora, dejamos un placeholder estructural.
-        return `
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>AILIENANT Chat</title>
-            </head>
-            <body>
-                <div id="root"></div>
-                <script>
-                    const vscode = acquireVsCodeApi();
-                    document.getElementById('root').innerHTML = '<h1>AILIENANT 🐜</h1><p>Esperando motor React...</p>';
-                </script>
-            </body>
-            </html>
-        `;
+        const scriptUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.js')
+        );
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; script-src ${webview.cspSource};">
+    <title>AILIENANT Chat</title>
+</head>
+<body>
+    <div id="root"></div>
+    <script src="${scriptUri}"></script>
+</body>
+</html>`;
     }
 }

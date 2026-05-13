@@ -3,10 +3,32 @@
 import { DirtyBuffer } from '../editor/vfs_reader';
 import * as vscode from 'vscode';
 
-// Definimos la interfaz del Payload alineada con el contrato de FastAPI
+// Multimodal context the user can attach manually (image or document).
+export interface ManualAttachment {
+    type: 'image' | 'document';
+    data?: string;     // base64-encoded bytes for images
+    content?: string;  // raw text for documents
+    mime?: string;     // MIME type hint, e.g. 'image/png', 'text/csv'
+    name?: string;     // filename hint for the backend
+}
+
+// Outgoing payload contract — aligned with FastAPI's TaskPayload model.
+// All new fields are optional for backward compatibility during rollout.
 export interface TaskPayload {
     task_prompt: string;
     dirty_buffers: DirtyBuffer[];
+    project_id?: string;               // SHA-256 of the VS Code workspace root path
+    attachments?: ManualAttachment[];  // user-attached multimodal context
+    explicit_mentions?: string[];      // @-referenced file paths — triggers full-file injection
+    document_version_id?: string;      // OCC: active document version at submission (Phase 1.5)
+}
+
+// Phase 1.6.3 — Model discovery response schema (mirrors FastAPI ModelInfo).
+export interface ModelInfo {
+    id: string;       // LiteLLM alias, e.g. "ailienant/medium"
+    name: string;     // Underlying model, e.g. "llama3.1"
+    provider: string; // "ollama" | "openai" | "anthropic" | etc.
+    is_local: boolean;
 }
 
 export class APIClient {
@@ -87,6 +109,25 @@ export class APIClient {
         if (controller) {
             controller.abort("Operación cancelada por el usuario.");
             this.activeRequests.delete(taskId);
+        }
+    }
+
+    /**
+     * Phase 1.6.3 — Fetch available models from the discovery endpoint.
+     * Tries LiteLLM proxy first; falls back to direct Ollama scan if proxy is down.
+     * Returns empty array on any network error (non-blocking).
+     */
+    public async fetchAvailableModels(): Promise<ModelInfo[]> {
+        try {
+            const response = await fetch(`${this.baseUrl}/models/available`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!response.ok) { return []; }
+            const data = await response.json();
+            return (data.models ?? []) as ModelInfo[];
+        } catch {
+            return [];
         }
     }
 }

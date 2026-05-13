@@ -114,4 +114,12 @@ export class WSClient {
     // Métodos de Suscripción
     public onMessage(callback: WSMessageCallback): void { this.onMessageHandlers.add(callback); }
     public removeMessageHandler(callback: WSMessageCallback): void { this.onMessageHandlers.delete(callback); }
+
+    public send(payload: unknown): void {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(payload));
+        } else {
+            console.warn('[WSClient] Cannot send: connection not open');
+        }
+    }
 }

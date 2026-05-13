@@ -39,3 +39,9 @@ CLOUD_PROVIDER_KEYS = [
 def check_cloud_availability() -> bool:
     """Returns True if at least one cloud provider key is configured."""
     return any(os.getenv(key) for key in CLOUD_PROVIDER_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# Catalog DB (Phase 1.x.1) — separate from LangGraph's alienant_memory.sqlite
+# ---------------------------------------------------------------------------
+DB_CATALOG_PATH: str = os.getenv("AILIENANT_CATALOG_DB", "ailienant_catalog.sqlite")
