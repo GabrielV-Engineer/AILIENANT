@@ -11,12 +11,13 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 # Ubicación de la base de datos de estados (local al proyecto)
 DB_PATH = "ailienant_state.sqlite"
 
+
 class CheckpointManager:
     """
     Orquestador de la persistencia de LangGraph.
     Implementa un acceso seguro a la base de datos SQLite.
     """
-    
+
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
 
@@ -38,6 +39,7 @@ class CheckpointManager:
         finally:
             # Cerramos la conexión al finalizar el ciclo de vida del grafo
             conn.close()
+
 
 # Instancia global para ser importada por el grafo
 checkpoint_manager = CheckpointManager()

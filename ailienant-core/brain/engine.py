@@ -2,7 +2,8 @@
 
 import sqlite3
 import logging
-from langgraph.graph import StateGraph, START, END
+from typing import Callable, Optional
+from langgraph.graph import StateGraph
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 # Importamos nuestro esquema fuertemente tipado
@@ -40,3 +41,34 @@ except Exception as e:
 
 # alienant_app = workflow.compile(checkpointer=memory_checkpointer)
 # (Lo mantenemos comentado hasta que añadamos el primer nodo)
+
+
+# =====================================================================
+# 4. CONTEXT ASSEMBLY UTILITIES (Phase 1.1.0.4)
+# =====================================================================
+
+
+def resolve_explicit_mentions(
+    explicit_mentions: list[str],
+    vfs_read: Callable[[str], Optional[str]],
+    boundary: str,
+) -> str:
+    """Read full content for @-mentioned files, bypassing the GraphRAG threshold.
+
+    Takes a callable so this function stays decoupled from VFSMiddleware and is
+    unit-testable with a simple lambda. Callers pass `vfs_instance.read`.
+
+    Logs 'RAG bypass: full-file injection → <path>' for each successful read so
+    the DoD log check can be verified without a running graph.
+    """
+    parts: list[str] = []
+    for path in explicit_mentions:
+        content = vfs_read(path)
+        if content is not None:
+            logger.info("RAG bypass: full-file injection → %s", path)
+            parts.append(
+                f'<{boundary} filepath="{path}" source="explicit_mention">\n{content}\n</{boundary}>'
+            )
+        else:
+            logger.warning("explicit_mention not found in VFS or disk: %s", path)
+    return "\n\n".join(parts)

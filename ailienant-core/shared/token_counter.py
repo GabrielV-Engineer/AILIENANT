@@ -1,6 +1,7 @@
 # alienant-core/utils/token_counter.py
 import tiktoken
 
+
 def count_tokens(text: str, model_name: str = "gpt-4") -> int:
     """
     Calcula el número exacto de tokens en una cadena de texto.
@@ -12,8 +13,9 @@ def count_tokens(text: str, model_name: str = "gpt-4") -> int:
     except KeyError:
         # Fallback a cl100k_base (usado por la mayoría de modelos modernos)
         encoding = tiktoken.get_encoding("cl100k_base")
-    
+
     return len(encoding.encode(text))
+
 
 # Ejemplo de integración con nuestro Router
 # prompt = user_input + context_from_graphrag
