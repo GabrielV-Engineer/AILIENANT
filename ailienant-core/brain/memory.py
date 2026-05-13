@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from shared.contracts import IndexingRequest, IndexingResult
+from shared.contracts import IndexingRequest, IndexingResult, PPRRequest, PPRResult
 
 logger = logging.getLogger("MEMORY_WORKER")
 
@@ -30,6 +30,37 @@ def _count_top_level_symbols(tree: Any) -> int:
     return sum(1 for node in tree.root_node.children if node.is_named)
 
 
+def _extract_python_imports(tree: Any) -> list[str]:
+    """Walk root_node children for Python import_statement and import_from nodes.
+
+    Returns absolute module paths only (e.g. 'brain.state', 'shared.config').
+    Relative imports (from . import X) are silently skipped — resolving them
+    to absolute paths requires project-root context not available in the worker.
+    """
+    imports: list[str] = []
+    for node in tree.root_node.children:
+        if node.type == "import_statement":
+            for child in node.children:
+                if child.type == "dotted_name":
+                    text = child.text.decode("utf-8")
+                    if text:
+                        imports.append(text)
+                elif child.type == "aliased_import":
+                    name_node = child.child_by_field_name("name")
+                    if name_node:
+                        text = name_node.text.decode("utf-8")
+                        if text:
+                            imports.append(text)
+        elif node.type in ("import_from_statement", "import_from"):
+            module_node = node.child_by_field_name("module_name")
+            if module_node is None:
+                continue
+            text = module_node.text.decode("utf-8")
+            if text and not text.startswith("."):  # skip relative imports
+                imports.append(text)
+    return imports
+
+
 def index_file_sync(req: IndexingRequest) -> IndexingResult:
     """Worker entry point: parse file AST, return a picklable result.
 
@@ -43,11 +74,15 @@ def index_file_sync(req: IndexingRequest) -> IndexingResult:
         tree = _worker_ast.parse(  # type: ignore[union-attr]
             req.file_path, req.content, req.language_id
         )
+        imports: list[str] = []
+        if tree is not None and req.language_id == "python":
+            imports = _extract_python_imports(tree)
         return IndexingResult(
             file_path=req.file_path,
             symbol_count=_count_top_level_symbols(tree),
             language_id=req.language_id,
             success=True,
+            imports=imports,
         )
     except Exception as exc:
         return IndexingResult(
@@ -57,3 +92,21 @@ def index_file_sync(req: IndexingRequest) -> IndexingResult:
             success=False,
             error=str(exc),
         )
+
+
+def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
+    """Compute standard PageRank over the project dependency graph.
+
+    CPU-bound — runs in ProcessPoolExecutor. Returns scores for all nodes
+    in the graph. Phase 3.3 uses this as the Graph_Centrality term in CSS.
+    """
+    try:
+        import networkx as nx  # type: ignore[import]
+        G: Any = nx.DiGraph()
+        G.add_edges_from(req.edges)
+        if len(G) == 0:
+            return PPRResult(scores={}, success=True)
+        scores: dict[str, float] = nx.pagerank(G, alpha=0.85, max_iter=100, tol=1e-6)
+        return PPRResult(scores=scores, success=True)
+    except Exception as exc:
+        return PPRResult(scores={}, success=False, error=str(exc))

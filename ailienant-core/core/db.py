@@ -26,6 +26,22 @@ _DDL = [
         json_schema   TEXT    NOT NULL,
         mcp_privilege INTEGER NOT NULL DEFAULT 0
     )""",
+    # Phase 2.4: PPR GraphRAG foundation
+    """CREATE TABLE IF NOT EXISTS dependency_graph (
+        source_file        TEXT NOT NULL,
+        target_dependency  TEXT NOT NULL,
+        project_id         TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (source_file, target_dependency, project_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_dg_source ON dependency_graph(source_file, project_id)",
+    """CREATE TABLE IF NOT EXISTS ppr_scores (
+        file_path    TEXT NOT NULL,
+        project_id   TEXT NOT NULL DEFAULT '',
+        ppr_score    REAL NOT NULL DEFAULT 0.0,
+        computed_at  REAL NOT NULL,
+        PRIMARY KEY (file_path, project_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_ppr_score ON ppr_scores(project_id, ppr_score DESC)",
 ]
 
 # ── Sync connection (for use from VFSMiddleware.read_safe) ───────────────────
@@ -105,3 +121,55 @@ async def list_tools() -> List[Dict[str, Any]]:
             "FROM tool_registry ORDER BY name"
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
+
+
+# ── Phase 2.4: PPR GraphRAG ────────────────────────────────────────────────────
+
+async def upsert_dependencies(
+    source_file: str, imports: List[str], project_id: str = ""
+) -> None:
+    """Replace all outgoing dependency edges for source_file, then insert new ones."""
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "DELETE FROM dependency_graph WHERE source_file=? AND project_id=?",
+            (source_file, project_id),
+        )
+        if imports:
+            await db.executemany(
+                "INSERT OR IGNORE INTO dependency_graph VALUES (?,?,?)",
+                [(source_file, imp, project_id) for imp in imports],
+            )
+        await db.commit()
+
+
+async def get_all_edges(project_id: str = "") -> List[tuple]:
+    """Return all (source_file, target_dependency) edges for a project."""
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT source_file, target_dependency "
+            "FROM dependency_graph WHERE project_id=?",
+            (project_id,),
+        ) as cur:
+            return [(r[0], r[1]) for r in await cur.fetchall()]
+
+
+async def upsert_ppr_scores(scores: Dict[str, float], project_id: str = "") -> None:
+    """Persist PageRank scores returned by the process pool worker."""
+    now = time.time()
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.executemany(
+            "INSERT OR REPLACE INTO ppr_scores VALUES (?,?,?,?)",
+            [(path, project_id, score, now) for path, score in scores.items()],
+        )
+        await db.commit()
+
+
+async def get_ppr_score(file_path: str, project_id: str = "") -> float:
+    """Retrieve the stored PageRank score for a single file. Returns 0.0 if not yet computed."""
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT ppr_score FROM ppr_scores WHERE file_path=? AND project_id=?",
+            (file_path, project_id),
+        ) as cur:
+            row = await cur.fetchone()
+            return float(row[0]) if row else 0.0

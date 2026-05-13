@@ -23,8 +23,11 @@ from brain.checkpoint import checkpoint_manager
 
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
-from brain.memory import _worker_init, index_file_sync
-from shared.contracts import IndexingRequest, IndexingResult, detect_language
+from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
+from shared.contracts import (
+    IndexingRequest, IndexingResult, detect_language,
+    PPRRequest, PPRResult,
+)
 from api.api_contracts import DirtyBuffer
 
 # Configuración centralizada de observabilidad
@@ -94,6 +97,10 @@ task_service = TaskService()
 # Session-scoped planner mode registry — read by TaskService when LangGraph is wired (Phase 2)
 planner_mode_registry: Dict[str, bool] = {}
 
+# PPR debounce registry — one asyncio.Task per project_id, cancelled and replaced on each file save
+_ppr_tasks: Dict[str, asyncio.Task[None]] = {}
+_PPR_DEBOUNCE_S: float = 2.0
+
 
 # =====================================================================
 # ENDPOINTS
@@ -102,7 +109,7 @@ planner_mode_registry: Dict[str, bool] = {}
 @app.get("/")
 async def health_check():
     """Endpoint HTTP tradicional para verificar que el servidor está vivo."""
-    return {"status": "online", "phase": "2.2", "system": "WAL + MODEL_WARMUP Active"}
+    return {"status": "online", "phase": "2.4", "system": "Tiered Checkpoint + PPR Active"}
 
 
 @app.get("/api/v1/models/available", response_model=ModelsAvailableResponse)
@@ -170,7 +177,39 @@ async def submit_task(
         raise HTTPException(status_code=500, detail="Colapso interno en el orquestador")
 
 
-async def _dispatch_indexing(filepath: str, content: str) -> None:
+async def _run_ppr_for_project(project_id: str) -> None:
+    """Debounced PPR worker: waits 2s after last file save, then dispatches to process pool."""
+    await asyncio.sleep(_PPR_DEBOUNCE_S)
+    try:
+        edges_raw = await catalog_db.get_all_edges(project_id)
+        if not edges_raw:
+            return
+        req = PPRRequest(edges=tuple((s, t) for s, t in edges_raw))
+        result: PPRResult = await compute_pool.run(calculate_ppr_sync, req)
+        if result.success and result.scores:
+            await catalog_db.upsert_ppr_scores(result.scores, project_id)
+            logger.info(
+                "PPR computed for project '%s': %d files scored", project_id, len(result.scores)
+            )
+        elif not result.success:
+            logger.warning("PPR failed for project '%s': %s", project_id, result.error)
+    except asyncio.CancelledError:
+        pass  # debounced away — a newer file save superseded this run
+
+
+def _schedule_ppr(project_id: str) -> None:
+    """Cancel any pending PPR task for project_id and schedule a fresh debounced one."""
+    existing = _ppr_tasks.get(project_id)
+    if existing is not None and not existing.done():
+        existing.cancel()
+    _ppr_tasks[project_id] = asyncio.create_task(
+        _run_ppr_for_project(project_id),
+        name=f"ppr:{project_id}",
+    )
+
+
+async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: str) -> None:
+    """Index a file in the process pool, persist its import edges, then debounce PPR."""
     lang = detect_language(filepath)
     if not lang:
         return  # unsupported file type — no-op
@@ -179,6 +218,9 @@ async def _dispatch_indexing(filepath: str, content: str) -> None:
         result: IndexingResult = await compute_pool.run(index_file_sync, req)
         if result.success:
             logger.debug("Indexed %s: %d symbols", result.file_path, result.symbol_count)
+            if result.imports:
+                await catalog_db.upsert_dependencies(result.file_path, result.imports, project_id)
+                _schedule_ppr(project_id)
         else:
             logger.warning("Indexing failed for %s: %s", result.file_path, result.error)
     except Exception as exc:
@@ -216,9 +258,13 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 task_service.vfs.ingest_dirty_buffers(
                     [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)]
                 )
-                # 2. Background AST indexing — fire-and-forget on the process pool
+                # 2. Background AST indexing + PPR scheduling — fire-and-forget on the process pool
                 asyncio.create_task(
-                    _dispatch_indexing(valid_event.data.filepath, valid_event.data.content),
+                    _dispatch_indexing_and_ppr(
+                        valid_event.data.filepath,
+                        valid_event.data.content,
+                        project_id="",  # Phase 2.5: replace "" with session-scoped project_id
+                    ),
                     name=f"index:{valid_event.data.filepath}",
                 )
 

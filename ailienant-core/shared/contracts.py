@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -21,6 +21,7 @@ class IndexingResult:
     language_id: str
     success: bool
     error: Optional[str] = None
+    imports: list[str] = field(default_factory=list)  # absolute module paths extracted from AST
 
 
 _EXT_LANG: dict[str, str] = {
@@ -53,3 +54,21 @@ def detect_language(file_path: str) -> str:
     """Map file extension → VS Code languageId. Returns '' for unsupported types."""
     ext = os.path.splitext(file_path)[1].lower()
     return _EXT_LANG.get(ext, "")
+
+
+@dataclass(frozen=True)
+class PPRRequest:
+    """Dependency graph edges for one project. Sent to ProcessPoolExecutor for PageRank.
+
+    Using a tuple of tuples (not list of lists) ensures the contract is immutable
+    and unambiguously picklable across all Python versions.
+    """
+    edges: tuple[tuple[str, str], ...]  # (source_file, target_dependency)
+
+
+@dataclass
+class PPRResult:
+    """PageRank scores returned by the worker process. Keys are file paths."""
+    scores: dict[str, float]
+    success: bool
+    error: Optional[str] = None

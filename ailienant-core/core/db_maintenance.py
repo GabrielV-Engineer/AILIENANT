@@ -6,7 +6,7 @@ import sqlite3
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from brain.checkpoint import CheckpointManager
+    from brain.checkpoint import HybridCheckpointer
 
 logger = logging.getLogger("WAL_CHECKPOINTER")
 
@@ -26,7 +26,7 @@ class WALCheckpointer:
     """
 
     def __init__(
-        self, mgr: "CheckpointManager", interval_s: float = 300.0
+        self, mgr: "HybridCheckpointer", interval_s: float = 300.0
     ) -> None:
         self._mgr = mgr
         self._interval = interval_s
