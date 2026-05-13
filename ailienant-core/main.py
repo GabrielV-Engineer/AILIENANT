@@ -1,4 +1,5 @@
 import logging
+from typing import Dict
 
 # --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
 from api.websocket_manager import vfs_manager
@@ -28,6 +29,9 @@ app.add_middleware(
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
+
+# Session-scoped planner mode registry — read by TaskService when LangGraph is wired (Phase 2)
+planner_mode_registry: Dict[str, bool] = {}
 
 
 @app.get("/")
@@ -87,12 +91,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 pass  # Phase 1.3: pipe into VFS + LangGraph
 
             elif valid_event.event_type == "client_planner_mode_toggle":
+                planner_mode_registry[client_id] = valid_event.data.active
                 logger.info(
-                    "🧠 Planner mode %s by %s",
-                    "ON" if valid_event.data.active else "OFF",
+                    "[Session: %s] Persistence: MANUAL_PLANNING set to %s",
                     client_id,
+                    valid_event.data.active,
                 )
-                # Phase 1.3: update AIlienantGraphState.planner_mode_active via graph checkpoint
 
             elif valid_event.event_type == "client_hitl_response":
                 vfs_manager.resolve_human_approval(
