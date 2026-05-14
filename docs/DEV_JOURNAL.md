@@ -149,3 +149,11 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
+## 🚀 HITO 1.0.4 📅 [13/05/2026] | Adaptador Transparente MCP y FinOps de LangGraph
+
+* **Arquitectura FinOps (Seguridad de Costos):** Implementamos un nodo `finops_gate` en `brain/engine.py` que intercepta la ejecución antes de aplicar parches (`apply_patch`). Para evitar *race conditions* en la ejecución concurrente de agentes, el `current_cost_usd` en `brain/state.py` utiliza `Annotated[float, operator.add]`.
+* **Aislamiento de I/O en MCP:** Se creó `McpToolAdapter` en `tools/mcp_adapter.py`. Toda llamada externa ahora está protegida por `asyncio.wait_for`. Esto previene bloqueos indefinidos en el Event Loop de FastAPI si un servidor MCP externo (ej. análisis de dependencias) no responde.
+* **Inyección de Dependencias de Tools:** Desarrollamos un patrón de registro `McpToolRegistry` que filtra inyecciones hacia `llm.bind_tools()` basado en el enum `AgentRole` (PLANNER/CODER/ANALYST/ORCHESTRATOR). Esto asegura que no contaminemos la ventana de contexto del LLM con herramientas que su rol no requiere (Context Sufficiency Score optimizado).
+* **QA:** Alcanzamos 73/73 tests de regresión exitosos en pytest.
+
+---

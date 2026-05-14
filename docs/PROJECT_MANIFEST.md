@@ -249,7 +249,7 @@
 
 ### Fase 2D — Capa de Agentes Base 🟡
 
-- [ ] **2.18. Adaptador Transparente MCP y FinOps (`mcp_adapter.py`)**
+- [x] **2.18. Adaptador Transparente MCP y FinOps (`mcp_adapter.py`)**
   - `McpToolAdapter` envuelve servidores externos asíncronos.
   - Registro de `BaseTools` inyectadas dinámicamente vía `llm.bind_tools()` según rol del agente.
   - Tracker `current_cost_usd` por salto de nodo en el TypedDict del grafo; HITL Hard-Stop si excede `max_budget_usd`.

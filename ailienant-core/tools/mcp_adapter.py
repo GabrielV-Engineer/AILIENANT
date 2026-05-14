@@ -37,6 +37,7 @@ class AgentRole(str, Enum):
     CODER = "coder"
     ANALYST = "analyst"
     ORCHESTRATOR = "orchestrator"
+    RESEARCHER = "researcher"
 
 
 # =====================================================================

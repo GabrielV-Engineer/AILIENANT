@@ -6,6 +6,9 @@ from brain.state import WBSStep
 
 logger = logging.getLogger("CODER_NODE")
 
+# Strong reference set: prevents GC from destroying broadcast tasks mid-flight.
+_background_tasks: set = set()
+
 
 async def run_coder_node(state: dict) -> dict:
     """
@@ -53,10 +56,26 @@ async def run_coder_node(state: dict) -> dict:
     # Marcamos el paso como en progreso (Phase 4 lo mutará a 'completed' o 'failed').
     target_step.status = "in_progress"
 
+    # Emit step mutation to the frontend — non-blocking (graph must not wait on WS).
+    # Deferred import mirrors drift_monitor.py / finops.py pattern (avoids circular import).
+    import asyncio
+    from api.websocket_manager import vfs_manager
+    _t = asyncio.create_task(
+        vfs_manager.emit_graph_mutation(
+            session_id=state.get("task_id", ""),
+            step_number=target_step.step_number,
+            new_status="in_progress",
+            agent_name="CoderAgent",
+        )
+    )
+    _background_tasks.add(_t)
+    _t.add_done_callback(_background_tasks.discard)
+
     # Reservamos el slot en vfs_buffer. El reducer _merge_vfs fusionará esto
     # con los resultados de los demás CoderAgent que corran en paralelo.
     return {
         "vfs_buffer": {},   # Phase 4 escribirá VFSFile objetos aquí
         "target_role": target_step.target_role,
         "current_step_id": target_step.step_number,
+        "current_cost_usd": 0.0,   # Phase 4 returns real token cost delta
     }

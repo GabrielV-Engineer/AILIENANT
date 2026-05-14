@@ -38,6 +38,28 @@ async def run_apply_patch_node(state: dict) -> dict:
     return {}
 
 
+async def run_ideation_loop_stub(state: dict) -> dict:
+    """Phase 2.21 stub: interactive HITL planning loop.
+
+    Phase 2.21 fills this with: open HITL gate → receive user WBS draft →
+    iterate until wbs_approved=True. For now, returns {} (no-op pass-through).
+    """
+    logger.info("ideation_loop: planner_mode_active=True — stub (Phase 2.21).")
+    return {}
+
+
+def route_after_summarize(state: dict) -> str:
+    """Conditional edge: autonomous planner vs interactive ideation loop.
+
+    planner_mode_active=True  → ideation_loop (Phase 2.21 interactive HITL)
+    planner_mode_active=False → planner_agent (autonomous LLM planning)
+    """
+    if state.get("planner_mode_active"):
+        logger.info("route_after_summarize: planner_mode_active=True → ideation_loop.")
+        return "ideation_loop"
+    return "planner_agent"
+
+
 workflow.add_node("summarize_history", run_summarize_node)  # type: ignore[type-var]
 workflow.add_node("planner_agent", run_planner_node)        # type: ignore[type-var]
 workflow.add_node("drift_monitor", run_drift_monitor_node)  # type: ignore[type-var]
@@ -45,6 +67,7 @@ workflow.add_node("coder_agent", run_coder_node)            # type: ignore[type-
 workflow.add_node("apply_patch", run_apply_patch_node)      # type: ignore[type-var]
 workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[type-var]
 workflow.add_node("finops_gate", run_finops_node)           # type: ignore[type-var]
+workflow.add_node("ideation_loop", run_ideation_loop_stub)  # type: ignore[type-var]
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -96,7 +119,10 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 # 4. TOPOLOGÍA DEL GRAFO (Edges)
 # =====================================================================
 workflow.add_edge(START, "summarize_history")
-workflow.add_edge("summarize_history", "planner_agent")
+workflow.add_conditional_edges(
+    "summarize_history", route_after_summarize, ["planner_agent", "ideation_loop"]
+)
+workflow.add_edge("ideation_loop", END)
 workflow.add_edge("planner_agent", "drift_monitor")
 workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"])
 workflow.add_edge("coder_agent", "finops_gate")
@@ -114,7 +140,8 @@ alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 
 logger.info(
     "🟢 Motor AILIENANT compilado: "
-    "PlannerAgent → DriftMonitor → route_to_coders → CoderAgent(s) → "
+    "SummarizeHistory → [PlannerAgent | IdeationLoop(stub)] → "
+    "DriftMonitor → route_to_coders → CoderAgent(s) → "
     "FinOpsGate → ApplyPatch → ValidateOutput."
 )
 
