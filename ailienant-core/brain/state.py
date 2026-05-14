@@ -66,6 +66,19 @@ class MissionSpecification(BaseModel):
     checks: List[str] = Field(
         description="Criterios de aceptación técnicos. ¿Cómo sabrá el micro-enjambre de Testing que la tarea fue un éxito?"
     )
+    # Phase 2.21 — DDD Ubiquitous Language + SDD + TDD (optional; defaults preserve backward compat)
+    ubiquitous_language: Dict[str, str] = Field(
+        default_factory=dict,
+        description="DDD: domain terms → definitions extracted from the Socratic session.",
+    )
+    deep_modules_sdd: Optional[str] = Field(
+        default=None,
+        description="Architectural SDD for core modules identified during ideation.",
+    )
+    tdd_criteria: List[str] = Field(
+        default_factory=list,
+        description="TDD acceptance criteria generated from the Socratic Q&A session.",
+    )
 
 
 class ContextMeter(BaseModel):
@@ -223,10 +236,11 @@ class AIlienantGraphState(TypedDict):
         int
     ]  # Puntero a la tarea actual del WBS en ejecución (step_number).
 
-    # --- Human-in-the-Loop & Planner Mode (Phase 1.4) ---
+    # --- Human-in-the-Loop & Planner Mode (Phase 1.4 / 2.21) ---
     planner_mode_active: bool       # True when user toggled Planner-only mode via WS event
     hitl_pending: bool              # True while the graph is awaiting human approval
     hitl_response: Optional[str]   # "approved" | "rejected" + optional comment from HITL response
+    shared_understanding_reached: bool  # Phase 2.21: True once analyst confirms Socratic dialogue complete
 
     # --- Planificación Inmutable (SDD) ---
     # Reemplaza 'immutable_wbs' y 'completed_steps'.

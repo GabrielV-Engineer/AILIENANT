@@ -67,6 +67,7 @@ class TaskService:
             "planner_mode_active": payload.planner_mode_active,
             "hitl_pending": False,
             "hitl_response": None,
+            "shared_understanding_reached": False,
             "target_role": None,
             "current_step_id": None,
             "mission_spec": None,

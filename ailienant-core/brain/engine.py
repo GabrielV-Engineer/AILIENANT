@@ -38,14 +38,7 @@ async def run_apply_patch_node(state: dict) -> dict:
     return {}
 
 
-async def run_ideation_loop_stub(state: dict) -> dict:
-    """Phase 2.21 stub: interactive HITL planning loop.
-
-    Phase 2.21 fills this with: open HITL gate → receive user WBS draft →
-    iterate until wbs_approved=True. For now, returns {} (no-op pass-through).
-    """
-    logger.info("ideation_loop: planner_mode_active=True — stub (Phase 2.21).")
-    return {}
+from brain.ideation import ideation_graph  # noqa: E402 — deferred to avoid circular import
 
 
 def route_after_summarize(state: dict) -> str:
@@ -67,7 +60,7 @@ workflow.add_node("coder_agent", run_coder_node)            # type: ignore[type-
 workflow.add_node("apply_patch", run_apply_patch_node)      # type: ignore[type-var]
 workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[type-var]
 workflow.add_node("finops_gate", run_finops_node)           # type: ignore[type-var]
-workflow.add_node("ideation_loop", run_ideation_loop_stub)  # type: ignore[type-var]
+workflow.add_node("ideation_loop", ideation_graph)  # type: ignore[arg-type]
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -140,7 +133,7 @@ alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 
 logger.info(
     "🟢 Motor AILIENANT compilado: "
-    "SummarizeHistory → [PlannerAgent | IdeationLoop(stub)] → "
+    "SummarizeHistory → [PlannerAgent | IdeationLoop(Socratic)] → "
     "DriftMonitor → route_to_coders → CoderAgent(s) → "
     "FinOpsGate → ApplyPatch → ValidateOutput."
 )

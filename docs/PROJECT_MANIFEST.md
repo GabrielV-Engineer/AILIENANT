@@ -254,27 +254,26 @@
   - Registro de `BaseTools` inyectadas dinámicamente vía `llm.bind_tools()` según rol del agente.
   - Tracker `current_cost_usd` por salto de nodo en el TypedDict del grafo; HITL Hard-Stop si excede `max_budget_usd`.
 
-- [ ] **2.19. Implementación del PlannerAgent y Orchestrator (Producción)**
+- [x] **2.19. Implementación del PlannerAgent y Orchestrator (Producción)**
   - Lógica completa de descomposición de tareas + evaluación de `is_red_alert`.
   - Integrar `graph.astream()` dentro de `TaskService.process_task`; aislar la lógica del endpoint HTTP.
   - **Bifurcación Lógica (Branching):** router de entrada en el grafo:
     - Ruta A — `MANUAL_PLANNING: true` → enruta a **2.21 (Ideation Loop)**.
     - Ruta B — `false` → **Zero-Shot Planning** (default).
 
-- [ ] **2.20. Nodos de Ejecución Base (Logic, Analyst) y Swarms**
+- [x] **2.20. Nodos de Ejecución Base (Logic, Analyst) y Swarms**
   - Definir Nodos + Edges con `langgraph.graph.StateGraph`.
   - **Integración VFS:** tools `@tool def read_file(path)` consumen estrictamente `task_service.vfs.read(path)` — nunca disco local directo.
   - Capacidad de sub-grafos asíncronos para que el Planner haga *spawn* de múltiples `LogicAgents` paralelos.
   - **Streaming Nativo:** generador asíncrono de LangGraph → `vfs_manager.broadcast()` → React UI en tiempo real.
 
 - [ ] **2.21. Sub-Grafo de Ideación (The Socratic Loop)**
-  - [ ] **2.21.1. AnalystAgent (Grill Me):** nodo de interrogatorio socrático.
+  - [ ] **2.21.1. AnalystAgent (Grill Me):** nodo de interrogatorio socrático del manual plannning
   - [ ] **2.21.2. Ubiquitous Language (DDD):** extracción de entidades + glosario inyectable en `AgentMemory`.
   - [ ] **2.21.3. Nodo de Síntesis (SDD + Deep Modules):** barrera de compresión chat → `MissionSpecification` (JSON).
   - [ ] **2.21.4. Integración TDD:** genera `tdd_criteria` que el TestAgent (Fase 4) usará como verdad absoluta.
 
 - [ ] **2.22. Motor de Parcheo Atómico (`atomic_code_patch`)** — *Implementación canónica. La herramienta de Fase 5.4 (`AtomicCodePatchTool`) es solo el wrapper de exposición.*
-
   **Objetivo:** dotar a LangGraph de la capacidad de inyectar/modificar/eliminar código de forma determinista y quirúrgica, sin reescribir archivos completos. Minimiza tokens de salida y preserva integridad del AST.
 
   - [ ] **2.22.1. Esquema Estricto de la Tool (Function Calling Schema)**
