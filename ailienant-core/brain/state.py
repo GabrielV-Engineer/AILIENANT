@@ -278,3 +278,12 @@ class AIlienantGraphState(TypedDict):
     # CoderAgent (Phase 4) writes unified diffs here; apply_patch_node consumes them.
     # operator.or_ merges dicts by preferring the right-hand (latest) value per key.
     pending_patches: Annotated[Dict[str, str], operator.or_]  # filepath → unified diff
+
+    # --- FinOps Budget Gate (Phase 2.18) ---
+    # operator.add reducer required: parallel Send() fan-out means multiple CoderAgent
+    # branches write a cost delta simultaneously; reducer sums them safely.
+    # Phase 4 CoderAgent returns {"current_cost_usd": delta_usd} per invocation.
+    current_cost_usd: Annotated[float, operator.add]
+    # Fixed ceiling injected once at graph invocation from env (AILIENANT_MAX_BUDGET_USD).
+    # No reducer: this value is never aggregated, only read by the finops_gate node.
+    max_budget_usd: float

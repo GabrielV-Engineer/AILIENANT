@@ -8,9 +8,12 @@
 import hashlib
 import re
 import logging
-from typing import Dict, Optional
+from collections import OrderedDict
+from typing import Optional
 
 logger = logging.getLogger("BLOB_STORAGE")
+
+_DEFAULT_MAX_ENTRIES: int = 4096
 
 _HUNK_HEADER = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -100,15 +103,34 @@ class ContentAddressableStorage:
     VFSFile in the LangGraph checkpoint only carries the hash — serialised
     size is O(hash_length) regardless of file size.
 
+    Eviction: LRU policy with configurable max_entries cap. Oldest blobs are
+    evicted when capacity is reached; a WARNING is logged each time so operators
+    can tune max_entries before OOM pressure builds.
+
     Thread-safety: single-process, single-event-loop — no locking needed.
     """
 
-    def __init__(self) -> None:
-        self._store: Dict[str, str] = {}
+    def __init__(self, max_entries: int = _DEFAULT_MAX_ENTRIES) -> None:
+        self._store: OrderedDict[str, str] = OrderedDict()
+        self._max_entries = max_entries
 
     def put(self, content: str) -> str:
-        """Hash content with blake2b, store it, return the hex digest."""
+        """Hash content with blake2b, store it, return the hex digest.
+
+        Deduplication: if the hash already exists, mark it as most-recently-used
+        and return immediately (no write, no eviction).
+        """
         h = hashlib.blake2b(content.encode("utf-8")).hexdigest()
+        if h in self._store:
+            self._store.move_to_end(h)
+            return h
+        if len(self._store) >= self._max_entries:
+            evicted, _ = self._store.popitem(last=False)
+            logger.warning(
+                "LRU eviction: blob %s.. evicted (store at capacity=%d entries). "
+                "If blobs are being evicted prematurely, increase max_entries.",
+                evicted[:8], self._max_entries,
+            )
         self._store[h] = content
         return h
 

@@ -25,6 +25,7 @@ from agents.coder import run_coder_node      # noqa: E402
 from brain.summarizer import run_summarize_node  # noqa: E402
 from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
 from brain.drift_monitor import run_drift_monitor_node  # noqa: E402
+from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 
 
 async def run_apply_patch_node(state: dict) -> dict:
@@ -43,6 +44,7 @@ workflow.add_node("drift_monitor", run_drift_monitor_node)  # type: ignore[type-
 workflow.add_node("coder_agent", run_coder_node)            # type: ignore[type-var]
 workflow.add_node("apply_patch", run_apply_patch_node)      # type: ignore[type-var]
 workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[type-var]
+workflow.add_node("finops_gate", run_finops_node)           # type: ignore[type-var]
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -97,7 +99,8 @@ workflow.add_edge(START, "summarize_history")
 workflow.add_edge("summarize_history", "planner_agent")
 workflow.add_edge("planner_agent", "drift_monitor")
 workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"])
-workflow.add_edge("coder_agent", "apply_patch")
+workflow.add_edge("coder_agent", "finops_gate")
+workflow.add_conditional_edges("finops_gate", route_after_finops, ["apply_patch", END])
 workflow.add_edge("apply_patch", "validate_output")
 workflow.add_conditional_edges("validate_output", route_after_validation, ["coder_agent", END])
 
@@ -111,7 +114,8 @@ alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 
 logger.info(
     "🟢 Motor AILIENANT compilado: "
-    "PlannerAgent → DriftMonitor → route_to_coders → CoderAgent(s) → ApplyPatch → ValidateOutput."
+    "PlannerAgent → DriftMonitor → route_to_coders → CoderAgent(s) → "
+    "FinOpsGate → ApplyPatch → ValidateOutput."
 )
 
 

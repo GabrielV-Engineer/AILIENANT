@@ -84,3 +84,68 @@ Finalización exitosa de los cimientos técnicos de **AILIENANT**. La infraestru
     * Implementación de **SQLite WAL Mode** para permitir concurrencia segura entre los Checkpoints de la IA y el servidor API.
     * Eliminación de lecturas directas `os.open` en favor del `VFSMiddleware`.
 
+## 🚀 HITO 1.0.2 📅 [13/05/2026] | Handshake Bidireccional, Soberanía de Modelos y Motor AST
+
+### 🚀 Resumen de Logros
+Esta sesión marca la transición de AILIENANT de una infraestructura pasiva a un sistema **consciente de la sintaxis y soberano**. Se cerró el ciclo de comunicación bidireccional entre el IDE y el Backend, y se implementó la base para la edición de código a prueba de errores mediante árboles de sintaxis (AST).
+
+### 🛠️ Detalles Técnicos de la Sesión
+
+* **Handshake de Intención y UI (Phase 1.4.1):**
+    * Implementación de un **Webview optimizado** en `App.tsx` usando Vanilla TypeScript y un bundle IIFE vía `esbuild`.
+    * Logro: Creación del "Planner Mode Toggle" con estilos nativos de VS Code. Comunicación bidireccional establecida: UI -> Extension -> WebSocket -> Backend.
+* **Control de Concurrencia Optimista (OCC - Phase 1.5):**
+    * Interceptación de mutaciones mediante validación de `document.version`.
+    * Logro: Protección contra el "Efecto Fantasma". El sistema ahora detecta y bloquea intentos de parcheo si el usuario modificó el archivo durante la inferencia de la IA, emitiendo un evento `client_concurrency_conflict`.
+* **Gateway Soberano y Autodescubrimiento (Phase 1.6):**
+    * Integración de **LiteLLM Proxy** como intermediario absoluto (`localhost:4000`).
+    * Logro: Implementación de `config_generator.py` con escaneo asíncrono de puertos (Ollama, LM Studio). Nuevo endpoint `GET /api/v1/models/available` que permite a la extensión conocer en tiempo real los modelos locales y de nube disponibles.
+* **Motor AST Multilingüe (Tree-sitter 0.25):**
+    * Integración de un motor de análisis sintáctico en `core/ast_engine.py` compatible con Python 3.13.
+    * Logro: Soporte para 29 lenguajes mediante parsers individuales. El VFS ahora genera y cachea representaciones AST con una política de **Lazy Loading**, permitiendo a la IA "entender" la estructura lógica (nodos, clases, funciones) en lugar de solo texto plano.
+* **Persistencia de Auditoría y Catálogo (SQLite WAL):**
+    * Creación de `ailienant_catalog.sqlite` con tablas para `session_state` y `tool_registry`.
+    * Logro: Implementación del protocolo **Read-Before-Write (RBW)**. Cada lectura de archivo queda registrada, creando una bitácora de auditoría que previene alucinaciones sobre archivos no consultados previamente por el agente.
+
+### 🧪 Validación de Calidad (QA)
+- [x] **Prueba de Compilación:** `npm run compile` exitoso con 0 errores de tipos en el bundle del Webview.
+- [x] **Prueba AST:** Validación de `root_node.type == "module"` en archivos Python y gestión de caché por hash de contenido exitosa.
+- [x] **Prueba de Persistencia:** Verificación de inserción en `tool_registry` y persistencia de logs de sesión tras reinicio del servidor en modo WAL.
+- [x] **Prueba OCC:** Bloqueo confirmado de mutaciones al simular desfase de versión entre el IDE y el Backend.
+
+---
+
+## 🚀 HITO 1.0.3 📅 [13/05/2026] | Anti-Entropía, Sostenibilidad de Contexto y Blindaje de Runtime
+
+### 🚀 Resumen de Logros
+Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implementó un sistema de "salud sistémica" que previene el desbordamiento de memoria por contexto, blinda la integridad de la base de datos ante cierres abruptos y establece un control de flujo elástico para la comunicación con el IDE.
+
+### 🛠️ Detalles Técnicos de la Sesión
+
+* **Compresión de Estado y Ventana Deslizante (Phase 2.1.11):**
+    * Implementación del nodo `StateSummarizer` en LangGraph con un umbral del 80% de la ventana de contexto.
+    * Logro: Uso del **Modelo Small (1.5B)** para condensar el historial antiguo en un `SystemSummaryMessage`, manteniendo intactos los últimos 5 turnos (Cognitive Horizon). Prevención de errores *Context OOM*.
+* **Debouncing de I/O y Coalescencia de Eventos (Phase 2.1.12):**
+    * Creación de `core/io_coalescer.py` con una ventana de 500ms para actualizaciones de archivos.
+    * Logro: Reducción masiva de carga en CPU/Disco al agrupar múltiples *Save Hooks* (ej. Prettier formatting) en un solo lote de indexación AST y PPR, evitando saturación del WAL de SQLite.
+* **Gestión de Branch Switching y Poda de Grafo (Phase 2.1.13):**
+    * Implementación de **Dynamic Thresholding** (>100 archivos) para desviar indexaciones masivas a workers de baja prioridad.
+    * Logro: Protocolo **Unlink-First**. Las eliminaciones se procesan antes que las creaciones, purgando nodos huérfanos y "fantasmas" de dependencias obsoletas para erradicar alucinaciones de navegación.
+* **Guardrails de Integridad y Auto-Corrección (Phase 2.1.14):**
+    * Introducción del nodo `OutputGuardrailNode` con validación Pydantic estricta.
+    * Logro: Bucle cerrado de reintento (Max 2) para modelos locales. Si el JSON o el código vienen malformados, el sistema genera feedback automático al LLM para auto-corrección antes de impactar el estado.
+* **Arquitectura de Estado Sombrío (Shallow State) y CAS (Phase 2.1.x):**
+    * Refactorización del VFS para sustituir `content: str` por `blob_hash: str` (Blake2b).
+    * Logro: Implementación de `core/blob_storage.py` (Content-Addressable Storage). El estado del grafo ahora es "ligero" (hashes), mientras que los archivos pesados residen en un almacén de blobs, reduciendo el costo de serialización en un 99%.
+* **Backpressure y Seguridad de Persistencia (Anti-Entropy):**
+    * Implementación de `transport/throttler.py` para monitorear el buffer de escritura del WebSocket.
+    * Logro: El streaming de tokens del LLM se pausa automáticamente si el IDE no consume datos. Adicionalmente, se aseguró el cierre limpio mediante `PRAGMA wal_checkpoint(TRUNCATE)` en el shutdown hook del servidor.
+
+### 🧪 Validación de Calidad (QA)
+- [x] **Pruebas de Infraestructura:** 16 nuevos tests DoD aprobados (coalescencia, compresión y reductor de mensajes).
+- [x] **Pruebas de Integridad:** 9 tests de guardrails y branch-switch exitosos.
+- [x] **Regresión:** Los 24 tests de enrutamiento originales mantienen 100% de éxito.
+- [x] **Análisis Estático:** `mypy` reporta 0 errores en los 8 nuevos archivos de soporte.
+
+---
+

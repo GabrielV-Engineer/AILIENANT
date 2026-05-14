@@ -24,18 +24,23 @@ logger = logging.getLogger("STREAM_THROTTLER")
 _WRITE_BUFFER_HIGH_WATER: int = 1_048_576  # 1 MB — pause threshold
 _THROTTLE_INTERVAL_S: float = 0.05         # 50 ms poll interval when buffer is full
 
+# Fires the "throttling disabled" warning exactly once per process lifetime.
+_introspection_ok: bool = True
+
 
 def _get_write_buffer_size(websocket: WebSocket) -> int:
     """Inspect the asyncio transport write-buffer size for a uvicorn WebSocket.
 
     Traverses the uvicorn-internal connection path to reach the asyncio transport.
-    Falls back to 0 (no throttling) if the path is unavailable — e.g., under test
-    with a mock WebSocket, or after a uvicorn version bump changes the internal API.
+    Falls back to 0 (no throttling) if the path is unavailable. On the first
+    failure a WARNING is emitted so operators know throttling is inactive; subsequent
+    failures are silent to avoid log spam.
 
-    The accessed path is:
+    The accessed path:
         websocket.scope["awsgi.interfaces"]["websocket"]._connection.transport
-    which is stable across uvicorn 0.20–0.30 but is NOT part of the public ASGI spec.
+    is stable across uvicorn 0.20–0.30 but is NOT part of the public ASGI spec.
     """
+    global _introspection_ok
     try:
         transport = (
             websocket.scope["awsgi.interfaces"]["websocket"]
@@ -44,6 +49,13 @@ def _get_write_buffer_size(websocket: WebSocket) -> int:
         )
         return transport.get_write_buffer_size()
     except (KeyError, AttributeError):
+        if _introspection_ok:
+            _introspection_ok = False
+            logger.warning(
+                "WebSocket transport introspection failed — backpressure throttling is DISABLED. "
+                "Path: scope['awsgi.interfaces']['websocket']._connection.transport. "
+                "Check uvicorn version compatibility. This warning fires once per process.",
+            )
         return 0
 
 

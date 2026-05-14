@@ -19,20 +19,53 @@ from brain.state import MissionSpecification
 logger = logging.getLogger("DRIFT_MONITOR")
 
 # Similarity ratio below this value triggers the HITL gate.
-# 0.70 means a plan that changed more than ~30% of its text is flagged.
+# 0.70 means ~30% combined drift (text + structure) is flagged.
 _DRIFT_THRESHOLD: float = 0.70
+
+# Seconds to wait for a HITL response before timing out and proceeding.
+# Reduce this value if long HITL waits are blocking the graph unexpectedly.
+_DRIFT_TIMEOUT_S: int = 300
 
 
 def _plan_similarity(a: MissionSpecification, b: MissionSpecification) -> float:
-    """Compute SequenceMatcher ratio between the full text of two plans.
+    """Hybrid similarity score combining textual and structural plan dimensions.
 
-    Concatenates outcome + all task descriptions so structural changes
-    (renamed tasks, different target files) are captured alongside
-    wording changes in the outcome statement.
+    Four components weighted to reduce both false-positives (plans that look
+    different on the surface but target the same work) and false-negatives
+    (plans with similar wording but different scope):
+
+      text  50% — SequenceMatcher on outcome + task descriptions
+      files 30% — Jaccard overlap of target_file sets
+      count 10% — ratio of task counts (min/max)
+      actions 10% — Jaccard overlap of action type sets
+
+    Logs a DEBUG breakdown so operators can see exactly why a drift was flagged.
     """
+    # Text similarity
     text_a = a.outcome + " " + " ".join(t.description for t in a.tasks)
     text_b = b.outcome + " " + " ".join(t.description for t in b.tasks)
-    return difflib.SequenceMatcher(None, text_a, text_b).ratio()
+    text_sim = difflib.SequenceMatcher(None, text_a, text_b).ratio()
+
+    # Target file overlap (Jaccard)
+    files_a = {t.target_file for t in a.tasks}
+    files_b = {t.target_file for t in b.tasks}
+    file_sim = len(files_a & files_b) / len(files_a | files_b) if (files_a or files_b) else 1.0
+
+    # Task count ratio
+    count_a, count_b = len(a.tasks), len(b.tasks)
+    count_sim = (min(count_a, count_b) / max(count_a, count_b)) if max(count_a, count_b) > 0 else 1.0
+
+    # Action type overlap (Jaccard)
+    actions_a = {t.action for t in a.tasks}
+    actions_b = {t.action for t in b.tasks}
+    action_sim = len(actions_a & actions_b) / len(actions_a | actions_b) if (actions_a or actions_b) else 1.0
+
+    combined = 0.50 * text_sim + 0.30 * file_sim + 0.10 * count_sim + 0.10 * action_sim
+    logger.debug(
+        "DriftMonitor: similarity — text=%.2f, files=%.2f, count=%.2f, actions=%.2f → combined=%.2f",
+        text_sim, file_sim, count_sim, action_sim, combined,
+    )
+    return combined
 
 
 async def run_drift_monitor_node(state: dict) -> dict:
@@ -79,11 +112,19 @@ async def run_drift_monitor_node(state: dict) -> dict:
             f"Approve to continue with the new direction?"
         ),
         proposed_content=f"Revised outcome: {current_spec.outcome}",
+        timeout_s=_DRIFT_TIMEOUT_S,
     )
 
     if response is None:
-        # HITL timed out (300s default) — proceed with a warning rather than blocking.
-        logger.warning("DriftMonitor: HITL timeout — proceeding with revised plan.")
+        # HITL gate timed out — log at ERROR so this is not missed in production.
+        logger.error(
+            "DriftMonitor: HITL gate TIMED OUT after %ds for task=%s (similarity=%.2f) — "
+            "proceeding with revised plan. To reduce silent bypasses, lower _DRIFT_TIMEOUT_S "
+            "or investigate client connectivity.",
+            _DRIFT_TIMEOUT_S,
+            state.get("task_id", "unknown"),
+            sim,
+        )
         return {"hitl_response": "timeout"}
 
     if response.get("approved"):
