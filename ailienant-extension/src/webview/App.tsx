@@ -1,54 +1,51 @@
-declare function acquireVsCodeApi(): {
-    postMessage(message: unknown): void;
-    getState(): unknown;
-    setState(state: unknown): void;
-};
+import { createRoot } from "react-dom/client";
+import { useState, useCallback } from "react";
+import { MasterToggle } from "./components/MasterToggle";
+import { ProfileSelector } from "./components/ProfileSelector";
+import { DEFAULT_PROFILE, IntelligenceProfile } from "../shared/config";
 
-const vscode = acquireVsCodeApi();
-
-function mount(container: HTMLElement): void {
-    let active = false;
-
-    const btn = document.createElement('button');
-    btn.id = 'planner-mode-toggle';
-    btn.setAttribute('role', 'switch');
-    btn.setAttribute('aria-checked', 'false');
-    btn.textContent = 'Planner Mode: OFF';
-    btn.style.cssText = [
-        'display:block',
-        'width:100%',
-        'padding:8px 14px',
-        'margin:8px 0',
-        'border:2px solid var(--vscode-button-border,#888)',
-        'background:var(--vscode-button-secondaryBackground)',
-        'color:var(--vscode-button-secondaryForeground)',
-        'cursor:pointer',
-        'border-radius:4px',
-        'font-weight:bold',
-        'font-size:13px',
-        'transition:background .15s,border-color .15s',
-    ].join(';');
-
-    btn.addEventListener('click', () => {
-        active = !active;
-        btn.textContent = `Planner Mode: ${active ? 'ON 🧠' : 'OFF'}`;
-        btn.setAttribute('aria-checked', String(active));
-        btn.style.background = active
-            ? 'var(--vscode-button-background)'
-            : 'var(--vscode-button-secondaryBackground)';
-        btn.style.color = active
-            ? 'var(--vscode-button-foreground)'
-            : 'var(--vscode-button-secondaryForeground)';
-        btn.style.borderColor = active
-            ? 'var(--vscode-focusBorder,#007fd4)'
-            : 'var(--vscode-button-border,#888)';
-        vscode.postMessage({ type: 'togglePlannerMode', value: active });
-    });
-
-    container.appendChild(btn);
+interface InitialState {
+    masterEnabled: boolean;
+    profile: IntelligenceProfile;
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    const root = document.getElementById('root');
-    if (root) { mount(root); }
+function App({ initial }: { initial: InitialState }): JSX.Element {
+    const [enabled, setEnabled] = useState<boolean>(initial.masterEnabled);
+    const [profile, setProfile] = useState<IntelligenceProfile>(initial.profile);
+
+    const handleToggle  = useCallback((next: boolean): void => setEnabled(next), []);
+    const handleProfile = useCallback((next: IntelligenceProfile): void => setProfile(next), []);
+
+    return (
+        <div style={{ padding: 8 }}>
+            <MasterToggle active={enabled} onChange={handleToggle} />
+            <ProfileSelector
+                selected={profile}
+                disabled={!enabled}
+                onChange={handleProfile}
+            />
+        </div>
+    );
+}
+
+function readInitialState(root: HTMLElement): InitialState {
+    const raw = root.dataset.initial;
+    if (!raw) {
+        return { masterEnabled: false, profile: DEFAULT_PROFILE };
+    }
+    try {
+        const parsed = JSON.parse(raw) as Partial<InitialState>;
+        return {
+            masterEnabled: parsed.masterEnabled ?? false,
+            profile: parsed.profile ?? DEFAULT_PROFILE,
+        };
+    } catch {
+        return { masterEnabled: false, profile: DEFAULT_PROFILE };
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    const root = document.getElementById("root");
+    if (!root) { return; }
+    createRoot(root).render(<App initial={readInitialState(root)} />);
 });

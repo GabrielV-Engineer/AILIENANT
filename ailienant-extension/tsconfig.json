@@ -6,7 +6,7 @@
 			"ES2022",
 			"dom"
 		],
-		"jsx": "preserve",
+		"jsx": "react-jsx",
 		"sourceMap": true,
 		"rootDir": "src",
 		"strict": true,   /* enable all strict type-checking options */

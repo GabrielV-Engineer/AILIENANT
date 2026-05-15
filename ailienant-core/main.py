@@ -115,6 +115,7 @@ _PPR_DEBOUNCE_S: float = 2.0
 
 # Workspace registry — populated on client_workspace_init; used by mass change handler
 _workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
+_session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root (Phase 3.4.1)
 
 
 # =====================================================================
@@ -339,6 +340,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
             elif valid_event.event_type == "client_workspace_init":
                 _workspace_registry[valid_event.data.project_id] = valid_event.data.workspace_root
+                _session_workspace_root[client_id] = valid_event.data.workspace_root
                 await lazy_indexer.start(
                     workspace_root=valid_event.data.workspace_root,
                     project_id=valid_event.data.project_id,
@@ -355,6 +357,34 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 io_coalescer.submit_unlink(
                     valid_event.data.filepath, valid_event.data.project_id
                 )
+
+            elif valid_event.event_type == "client_master_toggle":
+                from core.config.profile import (
+                    load_from_workspace,
+                    save_to_workspace,
+                    WorkspaceRootMissingError,
+                )
+                try:
+                    ws_root = _session_workspace_root.get(client_id)
+                    cfg = load_from_workspace(ws_root)
+                    cfg = cfg.model_copy(update={"master_enabled": valid_event.data.enabled})
+                    save_to_workspace(ws_root, cfg)
+                except WorkspaceRootMissingError as exc:
+                    logger.warning("master_toggle ignored: %s", exc)
+
+            elif valid_event.event_type == "client_profile_change":
+                from core.config.profile import (
+                    load_from_workspace,
+                    save_to_workspace,
+                    WorkspaceRootMissingError,
+                )
+                try:
+                    ws_root = _session_workspace_root.get(client_id)
+                    cfg = load_from_workspace(ws_root)
+                    cfg = cfg.model_copy(update={"profile": valid_event.data.profile})
+                    save_to_workspace(ws_root, cfg)
+                except WorkspaceRootMissingError as exc:
+                    logger.warning("profile_change ignored: %s", exc)
 
     except WebSocketDisconnect:
         # 4. Limpieza O(1) para evitar Fugas de Memoria

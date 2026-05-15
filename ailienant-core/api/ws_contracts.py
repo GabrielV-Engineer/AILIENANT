@@ -242,6 +242,29 @@ class ServerVfsPatchApprovedEvent(BaseModel):
 
 
 # =====================================================================
+# 10. PHASE 3.4.1 — INTELLIGENCE PROFILE / MASTER TOGGLE EVENTS
+# =====================================================================
+
+
+class MasterTogglePayload(BaseModel):
+    enabled: bool
+
+
+class ClientMasterToggleEvent(BaseModel):
+    event_type: Literal["client_master_toggle"] = "client_master_toggle"
+    data: MasterTogglePayload
+
+
+class ProfileChangePayload(BaseModel):
+    profile: Literal["Medium", "Big", "Cloud", "Hybrid"]
+
+
+class ClientProfileChangeEvent(BaseModel):
+    event_type: Literal["client_profile_change"] = "client_profile_change"
+    data: ProfileChangePayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -264,4 +287,6 @@ WebSocketMessage = Union[
     ServerIndexingProgressEvent,     # Phase 2.5
     ClientFileDeleteEvent,           # Phase 2.1.13
     ServerVfsPatchApprovedEvent,     # Phase 2.22.4
+    ClientMasterToggleEvent,         # Phase 3.4.1
+    ClientProfileChangeEvent,        # Phase 3.4.1
 ]

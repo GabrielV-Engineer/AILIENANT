@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { IntentRouter } from './core/IntentRouter';
 import { SessionManager } from './brain/session';
+import { AilienantChatProvider } from './providers/chat_sidebar';
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log('Congratulations, your extension "ailienant-extension" is now active!');
@@ -22,7 +23,12 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
-	context.subscriptions.push(helloWorld, runTask);
+	const chatProvider = new AilienantChatProvider(context.extensionUri, context.workspaceState);
+	const chatRegistration = vscode.window.registerWebviewViewProvider(
+		AilienantChatProvider.viewType, chatProvider,
+	);
+
+	context.subscriptions.push(helloWorld, runTask, chatRegistration);
 }
 
 export function deactivate() {}
