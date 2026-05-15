@@ -26,6 +26,7 @@ from brain.summarizer import run_summarize_node  # noqa: E402
 from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
 from brain.drift_monitor import run_drift_monitor_node  # noqa: E402
 from brain.finops import run_finops_node, route_after_finops  # noqa: E402
+from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
 
 
 async def run_apply_patch_node(state: dict) -> dict:
@@ -72,6 +73,7 @@ workflow.add_node("apply_patch", run_apply_patch_node)      # type: ignore[type-
 workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[type-var]
 workflow.add_node("finops_gate", run_finops_node)           # type: ignore[type-var]
 workflow.add_node("ideation_loop", ideation_graph)  # type: ignore[arg-type]
+workflow.add_node("session_delta_aggregator", run_session_delta_aggregator_node)  # type: ignore[type-var]
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -140,8 +142,9 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 # 4. TOPOLOGÍA DEL GRAFO (Edges)
 # =====================================================================
 workflow.add_edge(START, "summarize_history")
+workflow.add_edge("summarize_history", "session_delta_aggregator")
 workflow.add_conditional_edges(
-    "summarize_history", route_after_summarize, ["planner_agent", "ideation_loop"]
+    "session_delta_aggregator", route_after_summarize, ["planner_agent", "ideation_loop"]
 )
 workflow.add_edge("ideation_loop", END)
 workflow.add_edge("planner_agent", "drift_monitor")
@@ -161,7 +164,7 @@ alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 
 logger.info(
     "🟢 Motor AILIENANT compilado: "
-    "SummarizeHistory → [PlannerAgent | IdeationLoop(Socratic)] → "
+    "SummarizeHistory → SessionDeltaAggregator → [PlannerAgent | IdeationLoop(Socratic)] → "
     "DriftMonitor → route_to_coders → CoderAgent(s) → "
     "FinOpsGate → ApplyPatch → ValidateOutput."
 )

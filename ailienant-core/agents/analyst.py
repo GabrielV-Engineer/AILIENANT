@@ -48,6 +48,32 @@ def _is_agreement(user_input: str) -> bool:
     return any(signal in text for signal in _AGREEMENT_SIGNALS)
 
 
+_INTENT_SYSTEM_PROMPT: str = (
+    "You are an AnalystAgent performing Pre-Dream Reflection. "
+    "Given the last 3–5 user messages, produce ONE sentence (≤30 words) "
+    "summarising the user's primary coding intent. "
+    "Respond with only that sentence — no preamble, no punctuation beyond the sentence."
+)
+
+
+async def generate_intent_summary_llm(user_messages: List[str], task_id: str = "") -> str:
+    """Phase 3.4.2: One-shot LLM call to summarise last N user intents (Pre-Dream Reflection)."""
+    from tools.llm_gateway import LLMGateway   # deferred — avoids circular import
+    from shared.config import MINI_JUDGE_MODEL  # reuse the fast mini-judge model
+    combined = "\n".join(f"- {m}" for m in user_messages)
+    result = await LLMGateway.ainvoke(
+        messages=[
+            {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+            {"role": "user",   "content": combined},
+        ],
+        model=MINI_JUDGE_MODEL,
+        temperature=0.0,
+        max_tokens=60,
+        session_id=task_id,
+    )
+    return str(result).strip()
+
+
 async def run_analyst_node(state: dict) -> dict:
     """LangGraph node: Socratic Grill Me AnalystAgent (Phase 2.21).
 

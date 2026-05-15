@@ -277,6 +277,9 @@ class AIlienantGraphState(TypedDict):
     retry_count: int
     security_flags: Annotated[List[str], operator.add]
     terminal_output: str
+    # Phase 3.4.2: Pre-Dream Reflection — compact summary of last session written by
+    # session_delta_aggregator_node before each planner turn. Empty string on first turn.
+    session_delta: str
     # Phase 2.5: Workspace Indexing Gate — seeded from lazy_indexer.is_complete at graph invocation
     is_indexing_complete: bool
 
