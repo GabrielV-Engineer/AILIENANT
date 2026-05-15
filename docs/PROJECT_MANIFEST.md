@@ -347,7 +347,7 @@
 - [ ] **3.4. Motor de Predicción y "Dreaming" (Overnight Engine)** - opus
   - Proyección arquitectónica profunda con GraphRAG + LSP + MCTS (Test-Time Compute).
 
-  - [ ] **3.4.1. Activación y Selector de Inteligencia (Master Toggle UI)** - opus
+  - [x] **3.4.1. Activación y Selector de Inteligencia (Master Toggle UI)** - opus
     - UI binaria ON/OFF + selector de perfil:
       - **Medium:** ejemplo: Llama 3.1 8B local/nube. Máx 1 micro-tarea, 3 archivos. <60min.
       - **Big:** ejemplo: Qwen 32B / Llama 70B. Máx 3 micro-tareas correlacionadas, 10 archivos. Refactorización nocturna.

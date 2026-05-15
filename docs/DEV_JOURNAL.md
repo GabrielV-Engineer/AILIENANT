@@ -231,3 +231,19 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Persistencia de Perfiles e Integración React, Session Delta Aggregator (Pre-Dream Reflection)
+
+##  Persistencia de Perfiles e Integración React
+* **Refactorización Frontend:** Migración exitosa de Vanilla DOM a React 18. Se implementó el patrón de "Lifting State" en `App.tsx` para controlar el flujo entre el `MasterToggle` y el `ProfileSelector`.
+* **Comunicación Segura:** Implementación de un Bridge tipado (`vscode_bridge.ts`) y transferencia de estado inicial mediante atributos de datos (CSP-compliant).
+* **Robustez en Backend:** Creación del paquete `core.config.profile` con validación Pydantic v2. Se implementó un manejador de errores para "Single File Workspaces" (`WorkspaceRootMissingError`).
+* **Calidad de Código:** Cero errores en `mypy --strict` y `tsc`. Validación exitosa de la unión discriminada de WebSockets, asegurando que los eventos de cambio de perfil se despachan correctamente.
+### Session Delta Aggregator (Pre-Dream Reflection)
+* **State Evolution:** Added `session_delta: str` field to `AIlienantGraphState` (`state.py`) following immutability protocols.
+* **Node Logic:** Created `session_delta_aggregator` LangGraph node (`aggregator_node.py`).
+* **Analyst Integration:** Enhanced `AnalystAgent` to generate high-density summaries strictly capped at <500 tokens. The logic successfully extracts the last 5 user intents, deduplicates persistent terminal blockers (LSP errors), and flags uncommitted "Dirty Buffers" in the VFS.
+* **Graph Wiring:** Successfully injected the aggregator node into `engine.py`, positioning it precisely between `summarize_history` and `route_after_summarize` to feed the planner agent with fresh session introspection.
+* **Testing & Quality Assurance:**
+    * `mypy --strict` passing with zero issues.
+    * Developed 18 dedicated unit tests in `test_aggregator.py` simulating failed compilations, empty states, and token limit enforcement.
+    * Global test suite remains stable (161/161 tests passing).

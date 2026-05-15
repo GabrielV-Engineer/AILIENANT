@@ -85,6 +85,7 @@ class TaskService:
             "retry_count": 0,
             "security_flags": [],
             "terminal_output": "",
+            "session_delta": "",
             "is_indexing_complete": True,
             "guardrail_failed": False,
             "validation_feedback": None,

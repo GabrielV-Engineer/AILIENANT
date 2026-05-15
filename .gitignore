@@ -3,6 +3,11 @@ venv/
 .venv/
 env/
 __pycache__/
+**/__pycache__/
+.env
+**/.env
+.env.local
+*.pem
 
 # --- SECRETOS Y SEGURIDAD (Prevención de Fugas) ---
 .env
@@ -18,3 +23,41 @@ keys/
 *.db
 *.sqlite3
 .vector_store/
+
+# ==========================================
+# ESCUDO DE INFRAESTRUCTURA (Node & React)
+# ==========================================
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+out/
+**/out/
+build/
+**/build/
+.npm/
+
+# ==========================================
+# ESCUDO DE BACKEND (Python)
+# ==========================================
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+**/venv/
+
+# ==========================================
+# ESCUDO DE IDE Y SISTEMA OPERATIVO
+# ==========================================
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.history/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

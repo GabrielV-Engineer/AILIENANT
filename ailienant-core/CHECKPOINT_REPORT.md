@@ -1,17 +1,17 @@
 # CHECKPOINT REPORT — Phase 2.25
 
-Generated: 2026-05-15T09:34:54.111145+00:00
+Generated: 2026-05-15T19:22:40.004962+00:00
 
 ## Average Parser Latency
 
 | Scenario | Latency (ms) |
 |---|---|
-| no_fence_ms | 0.008 |
-| fenced_ms | 0.045 |
-| large_noise_ms | 0.159 |
+| no_fence_ms | 0.005 |
+| fenced_ms | 0.026 |
+| large_noise_ms | 0.095 |
 | malformed_fence_ok | True |
 
-**Average:** 0.071 ms (threshold: < 50 ms)
+**Average:** 0.042 ms (threshold: < 50 ms)
 
 ## Swarm Success Rate
 
