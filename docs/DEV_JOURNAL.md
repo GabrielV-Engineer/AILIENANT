@@ -149,7 +149,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
-## 🚀 HITO 1.0.4 📅 [13/05/2026] | Adaptador Transparente MCP y FinOps de LangGraph, Planner Orchestration y Swarms de Ejecución
+## 🚀 HITO 1.0.4 📅 [13/05/2026] | Adaptador Transparente MCP y FinOps de LangGraph, Planner Orchestration y Swarms de Ejecución y Socratic Ideation & HITL Suspension 
 
 * **Arquitectura FinOps (Seguridad de Costos):** Implementamos un nodo `finops_gate` en `brain/engine.py` que intercepta la ejecución antes de aplicar parches (`apply_patch`). Para evitar *race conditions* en la ejecución concurrente de agentes, el `current_cost_usd` en `brain/state.py` utiliza `Annotated[float, operator.add]`.
 * **Aislamiento de I/O en MCP:** Se creó `McpToolAdapter` en `tools/mcp_adapter.py`. Toda llamada externa ahora está protegida por `asyncio.wait_for`. Esto previene bloqueos indefinidos en el Event Loop de FastAPI si un servidor MCP externo (ej. análisis de dependencias) no responde.
@@ -159,5 +159,8 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Inyección de Dependencias en Tools (VFS Sandbox):** Creamos `tools/agent_tools.py`. En lugar de pasar instancias de servicios globales, desarrollamos *Factories* (closures) como `make_read_file_tool(vfs_read)`. Esto garantiza que el LLM solo vea los argumentos estrictos (`path`, `content`) en su *Tool Schema*, blindando el acceso no autorizado al sistema operativo.
 * **Arquitectura Map-Reduce para Swarms:** Se implementaron *stubs* para `LogicAgent` y `AnalystAgent`. El orquestador ahora es capaz de disparar agentes paralelos devolviendo el costo local (`current_cost_usd: 0.0`), que nuestro reductor `operator.add` consolida de forma segura sin colisiones de estado.
 * **QA:** Alcanzamos 79/79 pruebas de regresión exitosas.
+* **Grill Me Pattern:** El AnalystAgent ahora cuestiona el plan del usuario antes de ejecutarlo. Se implementó una lógica de "Recomendación" para reducir la fricción del usuario.
+* **Non-Blocking Persistence:** Se resolvió el reto de la espera humana usando un grafo que se suspende (`hitl_pending`) y se reanuda mediante LangGraph Checkpoints, evitando bloqueos de hilos en FastAPI.
+* **Synthesis:** El nodo de síntesis comprime el diálogo en una especificación técnica inmutable para el resto de agentes.
 
 ---

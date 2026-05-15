@@ -267,11 +267,11 @@
   - Capacidad de sub-grafos asíncronos para que el Planner haga *spawn* de múltiples `LogicAgents` paralelos.
   - **Streaming Nativo:** generador asíncrono de LangGraph → `vfs_manager.broadcast()` → React UI en tiempo real.
 
-- [ ] **2.21. Sub-Grafo de Ideación (The Socratic Loop)**
-  - [ ] **2.21.1. AnalystAgent (Grill Me):** nodo de interrogatorio socrático del manual plannning
-  - [ ] **2.21.2. Ubiquitous Language (DDD):** extracción de entidades + glosario inyectable en `AgentMemory`.
-  - [ ] **2.21.3. Nodo de Síntesis (SDD + Deep Modules):** barrera de compresión chat → `MissionSpecification` (JSON).
-  - [ ] **2.21.4. Integración TDD:** genera `tdd_criteria` que el TestAgent (Fase 4) usará como verdad absoluta.
+- [x] **2.21. Sub-Grafo de Ideación (The Socratic Loop)**
+  - [x] **2.21.1. AnalystAgent (Grill Me):** nodo de interrogatorio socrático del manual plannning
+  - [x] **2.21.2. Ubiquitous Language (DDD):** extracción de entidades + glosario inyectable en `AgentMemory`.
+  - [x] **2.21.3. Nodo de Síntesis (SDD + Deep Modules):** barrera de compresión chat → `MissionSpecification` (JSON).
+  - [x] **2.21.4. Integración TDD:** genera `tdd_criteria` que el TestAgent (Fase 4) usará como verdad absoluta.
 
 - [ ] **2.22. Motor de Parcheo Atómico (`atomic_code_patch`)** — *Implementación canónica. La herramienta de Fase 5.4 (`AtomicCodePatchTool`) es solo el wrapper de exposición.*
   **Objetivo:** dotar a LangGraph de la capacidad de inyectar/modificar/eliminar código de forma determinista y quirúrgica, sin reescribir archivos completos. Minimiza tokens de salida y preserva integridad del AST.
