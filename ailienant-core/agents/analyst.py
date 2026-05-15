@@ -12,8 +12,11 @@
 #   tool_registry.bind_tools(llm, [make_read_file_tool(vfs.read)]).
 
 import asyncio
+import json
 import logging
 from typing import Dict, List
+
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger("ANALYST_AGENT")
 
@@ -154,3 +157,86 @@ async def _generate_question_llm(messages: List[Dict], user_input: str) -> str:
     raise NotImplementedError(
         "Phase 4: wire LLMGateway with make_read_file_tool(vfs.read) via tool_registry."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.4.3a — Nightmare Protocol
+# ---------------------------------------------------------------------------
+
+_NIGHTMARE_SYSTEM_PROMPT: str = (
+    "You are the Nightmare Judge for AILIENANT. Given a code delta and a "
+    "list of project rules, score the delta on a 0.0-1.0 scale where:\n"
+    "  1.0 = no rules violated, clean diff\n"
+    "  0.5 = stylistic concerns or weak adherence\n"
+    "  0.0 = at least one hard rule is violated\n"
+    "Respond with ONLY a JSON object of the form: "
+    '{"reward": <float in [0.0, 1.0]>, "violated_rules": [<rule strings>]}'
+    "\nNo prose, no markdown fences. If unsure, default to reward 0.0."
+)
+
+
+class NightmareEvaluation(BaseModel):
+    """Pydantic result of one Nightmare Protocol evaluation."""
+
+    reward: float = Field(ge=0.0, le=1.0)
+    violated_rules: List[str] = Field(default_factory=list)
+
+
+_NIGHTMARE_FAILSAFE: NightmareEvaluation = NightmareEvaluation(
+    reward=0.0, violated_rules=["LLM_EVAL_FAILED"],
+)
+
+
+async def evaluate_nightmare(
+    code_delta: str,
+    rules_json_path: str,
+    session_id: str = "",
+) -> NightmareEvaluation:
+    """Score a code delta against the project's .ailienant.json rules.
+
+    rules_json_path is the workspace directory containing .ailienant.json
+    (matches RuleManager.get_combined_rules() contract). Failsafe on any
+    error: returns reward=0.0 + violated_rules=["LLM_EVAL_FAILED"] so a
+    broken judge never green-lights rule-violating code.
+    """
+    from tools.llm_gateway import LLMGateway   # deferred — avoids circular import
+    from shared.config import MINI_JUDGE_MODEL  # reuse the fast mini-judge model
+    from core.rules import RuleManager
+
+    rules_text: str = RuleManager().get_combined_rules(rules_json_path)
+    user_payload: str = (
+        f"### Project Rules:\n{rules_text}\n\n"
+        f"### Code Delta:\n{code_delta}"
+    )
+    try:
+        response = await LLMGateway.ainvoke(
+            messages=[
+                {"role": "system", "content": _NIGHTMARE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_payload},
+            ],
+            model=MINI_JUDGE_MODEL,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            max_tokens=120,
+            session_id=session_id,
+        )
+        raw_content = response.choices[0].message.content
+        if raw_content is None:
+            raise ValueError("LLM returned empty content")
+        parsed = json.loads(raw_content)
+        clamped_reward: float = max(0.0, min(1.0, float(parsed.get("reward", 0.0))))
+        violated = parsed.get("violated_rules", [])
+        if not isinstance(violated, list):
+            violated = []
+        violated_strs: List[str] = [str(v) for v in violated]
+        result = NightmareEvaluation(
+            reward=clamped_reward, violated_rules=violated_strs,
+        )
+        logger.info(
+            "Nightmare: delta_len=%d reward=%.3f n_violations=%d",
+            len(code_delta), result.reward, len(result.violated_rules),
+        )
+        return result
+    except Exception as exc:
+        logger.warning("Nightmare: LLM eval failed (failsafe reward=0.0): %s", exc)
+        return _NIGHTMARE_FAILSAFE
