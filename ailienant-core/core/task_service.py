@@ -24,6 +24,7 @@ class TaskPayload(BaseModel):
     attachments: List[ManualAttachment] = Field(default_factory=list)
     document_version_id: Optional[str] = None  # OCC: version at submission (Phase 1.5)
     planner_mode_active: bool = False  # Phase 2.19: Planner-Mode toggle forwarded from WS registry
+    workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
 
 
 class TaskService:
@@ -65,6 +66,7 @@ class TaskService:
             "css": 100.0,
             "is_manual_override": False,
             "planner_mode_active": payload.planner_mode_active,
+            "workspace_root": payload.workspace_root or "",
             "hitl_pending": False,
             "hitl_response": None,
             "shared_understanding_reached": False,

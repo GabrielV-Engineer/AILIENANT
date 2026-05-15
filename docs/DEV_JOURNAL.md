@@ -166,7 +166,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 ---
 
 
-## 🚀 HITO 1.0.5 📅 [14/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard, VFS Transaccional y Puente IPC, Resiliencia del Grafo y Protección Políglota, Observabilidad y Auditoría Forense
+## 🚀 HITO 1.0.5 📅 [15/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard, VFS Transaccional y Puente IPC, Resiliencia del Grafo y Protección Políglota, Observabilidad y Auditoría Forense, Sistema de Vigilia (.ailienant.json)
 
 ### Motor de Parcheo Atómico Determinista
 * **Prevención de Full-File Rewrites:** Se implementó `core/patcher.py` como un motor de reemplazo basado en el patrón SEARCH/REPLACE. Esto evita que el LLM regenere archivos completos, ahorrando miles de tokens de salida ($O(N)$ en facturación y latencia) y eliminando el riesgo de truncamiento de código.
@@ -187,3 +187,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Black-Box Recorder:** Se implementó un sistema de telemetría local persistente en SQLite (`telemetry.sqlite`). A diferencia de los logs de texto, esto permite realizar consultas analíticas sobre el comportamiento del agente.
 * **Métricas de Decisión:** Cada vez que el Grafo toma una bifurcación, se capturan las métricas crudas (CSS/TCI) y la lógica de negocio (ej. "budget_rejected"). 
 * **Arquitectura Thread-Safe:** El uso de `WAL mode` y `threading.Lock` garantiza que, incluso en ejecuciones paralelas (Swarm Mode), la telemetría no se corrompa ni ralentice el flujo principal del agente.
+### Sistema de Vigilia (.ailienant.json)
+* **Identidad Pro:** Se estableció `.ailienant.json` como el archivo de configuración de reglas de estilo y arquitectura para el agente.
+* **Caché Inteligente:** Se implementó una lógica de Singleton en `core/rules.py` que solo lee el disco si el archivo ha sido modificado, optimizando los recursos durante sesiones largas de codificación.
+* **Inyección de Prompt:** El `PlannerAgent` ahora es "consciente" de las reglas del usuario. Esto permite imponer restricciones como 'No usar librerías externas' o 'Mantener funciones bajo 20 líneas' de forma persistente y automática.

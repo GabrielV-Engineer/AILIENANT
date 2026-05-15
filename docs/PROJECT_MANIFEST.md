@@ -299,8 +299,8 @@
 - [x] **2.23. Telemetry Logger Local**
   - Tabla SQLite dedicada a telemetría de decisiones. Registra los valores exactos (CSS, TCI, hardware) que provocaron un salto de nodo. Auditoría visual de *por qué* la IA tomó cada decisión de enrutamiento.
 
-- [ ] **2.24. Inyección Dinámica de Contexto (Vigilia)**
-  - **System Prompting:** `CoderAgent` y agentes diurnos cargan obligatoriamente `rules.json` (jerarquía Local > Global) concatenado al System Prompt antes de cada inferencia. *La jerarquía completa Dual-Rules vive en Fase 3.4.6.*
+- [x] **2.24. Inyección Dinámica de Contexto (Vigilia)**
+  - **System Prompting:** `CoderAgent` y agentes diurnos cargan obligatoriamente `.ailienant.json` (jerarquía Local > Global) concatenado al System Prompt antes de cada inferencia. *La jerarquía completa Dual-Rules vive en Fase 3.4.6.*
   - **Caché de Reglas:** invalidación solo cuando el AnalystAgent modifique el archivo — no se relee disco por cada pulsación.
 
 - [ ] **2.25. Checkpoint Gate Fase 2**
@@ -383,7 +383,7 @@
     - One-Click Merge para aplicar al workspace real.
 
   - [ ] **3.4.6. Dual-Rules Resolver (Arquitectura Jerárquica)**
-    - **Precedencia:** `./.ailienant/rules.json` (Local) > `~/.ailienant/rules.json` (Global).
+    - **Precedencia:** `./.ailienant/.ailienant.json` (Local) > `~/.ailienant/.ailienant.json` (Global).
     - **Motor de Composición:** combina global + local por inferencia.
     - **Conflict Resolution:** local override en colisiones.
 

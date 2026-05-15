@@ -10,6 +10,7 @@ from brain.state import MissionSpecification, WBSStep
 from shared.rbac import PLANNER_IDENTITY
 from prompts import build_safe_prompt
 from core.utils import is_polyglot_file
+from core.rules import rule_manager
 
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
@@ -176,6 +177,10 @@ async def run_planner_node(state: dict) -> dict:
     system_prompt_text = build_safe_prompt(
         agent_identity=PLANNER_IDENTITY, context_str=context_str, boundary=boundary
     )
+
+    _rules = rule_manager.get_combined_rules(state.get("workspace_root", ""))
+    if _rules:
+        system_prompt_text += f"\n\n{_rules}"
 
     # Instrucción humana: Aquí forzamos mentalmente al modelo a respetar el contrato SDD.
     instruction = (

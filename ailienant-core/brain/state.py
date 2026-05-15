@@ -215,6 +215,7 @@ class AIlienantGraphState(TypedDict):
 
     # --- Workspace Identity & Manual Context (Phase 1.1.0 / 1.1.0.4) ---
     project_id: Optional[str]              # SHA-256 of the VS Code workspace root path
+    workspace_root: Optional[str]          # Absolute path of the VS Code workspace; set from _workspace_registry
     explicit_mentions: List[str]           # @-referenced file paths → forced full-file read
     attachments: List[ManualAttachment]    # user-attached images / documents
 
