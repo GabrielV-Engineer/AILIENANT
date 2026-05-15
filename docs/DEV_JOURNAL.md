@@ -164,3 +164,15 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Synthesis:** El nodo de síntesis comprime el diálogo en una especificación técnica inmutable para el resto de agentes.
 
 ---
+
+
+## 🚀 HITO 1.0.5 📅 [14/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard 
+
+### Motor de Parcheo Atómico Determinista
+* **Prevención de Full-File Rewrites:** Se implementó `core/patcher.py` como un motor de reemplazo basado en el patrón SEARCH/REPLACE. Esto evita que el LLM regenere archivos completos, ahorrando miles de tokens de salida ($O(N)$ en facturación y latencia) y eliminando el riesgo de truncamiento de código.
+* **Algoritmo de Dos Pasadas y Fallbacks:** El motor busca primero una coincidencia exacta. Si falla debido a problemas de identación o saltos de línea del LLM, normaliza los espacios en blanco (`\r\n` a `\n`) e intenta de nuevo.
+* **Protección contra Ambigüedad:** Si el bloque de búsqueda aparece más de una vez en el archivo, el sistema lanza un `PatchError` explícito. Se prioriza el fallo seguro sobre una mutación arriesgada en el lugar equivocado.
+### Context Anchoring y AST Guard 
+* **Defensa contra la Ambigüedad:** Implementamos un validador en Pydantic que rechaza anclas (`search_block`) menores a 10 caracteres. Esto previene que el LLM intente parchear variables genéricas (ej. `i = 0`) que causarían fallos de múltiples coincidencias.
+* **Fuzzy Fallback de Ventana Deslizante:** Para lidiar con alucinaciones de espacios en blanco o errores tipográficos menores del LLM, implementamos un algoritmo que usa `difflib.SequenceMatcher` evaluando el archivo por ventanas del mismo tamaño que el bloque de búsqueda. Se exige un *ratio* de similitud > 0.90 para proceder.
+* **AST Sync Guard:** Antes de volcar el parche al VFS, si el archivo es `.py`, se compila en memoria con `ast.parse()`. Esto actúa como un "Fail-Fast", bloqueando instantáneamente cualquier parche que deje paréntesis huérfanos o identación corrupta.

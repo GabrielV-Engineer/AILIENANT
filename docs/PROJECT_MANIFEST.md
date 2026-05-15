@@ -273,13 +273,13 @@
   - [x] **2.21.3. Nodo de Síntesis (SDD + Deep Modules):** barrera de compresión chat → `MissionSpecification` (JSON).
   - [x] **2.21.4. Integración TDD:** genera `tdd_criteria` que el TestAgent (Fase 4) usará como verdad absoluta.
 
-- [ ] **2.22. Motor de Parcheo Atómico (`atomic_code_patch`)** — *Implementación canónica. La herramienta de Fase 5.4 (`AtomicCodePatchTool`) es solo el wrapper de exposición.*
+- [x] **2.22. Motor de Parcheo Atómico (`atomic_code_patch`)** — *Implementación canónica. La herramienta de Fase 5.4 (`AtomicCodePatchTool`) es solo el wrapper de exposición.*
   **Objetivo:** dotar a LangGraph de la capacidad de inyectar/modificar/eliminar código de forma determinista y quirúrgica, sin reescribir archivos completos. Minimiza tokens de salida y preserva integridad del AST.
 
-  - [ ] **2.22.1. Esquema Estricto de la Tool (Function Calling Schema)**
+  - [x] **2.22.1. Esquema Estricto de la Tool (Function Calling Schema)**
     - Schema JSON/OpenAPI: `file_path` (str), `search_block` (str exacto o fuzzy), `replace_block` (str), `ast_context_node` (opcional, str).
     - Validación Pydantic en FastAPI rechaza llamadas malformadas (ej. `search_block` vacío).
-  - [ ] **2.22.2. Motor de Anclaje de Contexto (Fuzzy Matching)**
+  - [x] **2.22.2. Motor de Anclaje de Contexto (Fuzzy Matching)**
     - LLMs alucinan números de línea y sangría. Algoritmo en `TaskService` usa Levenshtein o Diff unificado para localizar `search_block` incluso si se omitieron whitespace/comentarios.
     - Validación de límites AST antes de aplicar — evita llaves `}` huérfanas.
   - [ ] **2.22.3. Transaccionalidad en VFS (VFS Commit)**
