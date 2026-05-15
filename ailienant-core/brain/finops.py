@@ -130,8 +130,21 @@ def route_after_finops(state: dict) -> str:
     distinct from "rejected" / "timeout" (drift_monitor) to prevent false END
     routing when this edge reads drift_monitor's prior hitl_response value.
     """
+    from core.telemetry import log_routing_decision
     hitl_response: Optional[str] = state.get("hitl_response")
     if hitl_response in ("budget_rejected", "budget_timeout"):
+        target = "__end__"
+    else:
+        target = "apply_patch"
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        source="finops_gate",
+        target=target,
+        reason=f"hitl_response={hitl_response!r}",
+        css=state.get("css"),
+        tci=state.get("tci"),
+    )
+    if target == "__end__":
         logger.info("route_after_finops: %s → END.", hitl_response)
         return "__end__"
     logger.debug("route_after_finops: %r → apply_patch.", hitl_response)

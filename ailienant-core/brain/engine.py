@@ -47,10 +47,21 @@ def route_after_summarize(state: dict) -> str:
     planner_mode_active=True  → ideation_loop (Phase 2.21 interactive HITL)
     planner_mode_active=False → planner_agent (autonomous LLM planning)
     """
+    from core.telemetry import log_routing_decision
     if state.get("planner_mode_active"):
-        logger.info("route_after_summarize: planner_mode_active=True → ideation_loop.")
-        return "ideation_loop"
-    return "planner_agent"
+        target = "ideation_loop"
+        reason = "planner_mode_active=True"
+    else:
+        target = "planner_agent"
+        reason = "planner_mode_active=False"
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        source="summarize_history",
+        target=target,
+        reason=reason,
+    )
+    logger.info("route_after_summarize: planner_mode_active=%s → %s.", state.get("planner_mode_active"), target)
+    return target
 
 
 workflow.add_node("summarize_history", run_summarize_node)  # type: ignore[type-var]
@@ -80,6 +91,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
       After the CoderAgent marks its step 'completed', the next graph invocation
       advances the pointer to the following pending step.
     """
+    from core.telemetry import log_routing_decision
     provider: str = state.get("provider", "CLOUD")
     parallel_tasks = state.get("parallel_tasks", [])
     mission_spec = state.get("mission_spec")
@@ -88,6 +100,14 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         logger.info(
             "🔀 SWARM: provider=CLOUD, fan-out → %d CoderAgent(s) en paralelo.",
             len(parallel_tasks),
+        )
+        log_routing_decision(
+            session_id=state.get("task_id", ""),
+            source="drift_monitor",
+            target="coder_agent",
+            reason=f"SWARM: provider=CLOUD, {len(parallel_tasks)} tasks in parallel",
+            css=state.get("css"),
+            tci=state.get("tci"),
         )
         return [
             Send("coder_agent", {**state, "current_step_id": step.step_number})
@@ -104,6 +124,14 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         "➡️  RELAY: provider=%s, ejecución secuencial → paso #%s.",
         provider,
         first_pending.step_number if first_pending else "None",
+    )
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        source="drift_monitor",
+        target="coder_agent",
+        reason=f"RELAY: provider={provider}, sequential execution",
+        css=state.get("css"),
+        tci=state.get("tci"),
     )
     return [Send("coder_agent", {**state, "current_step_id": first_pending.step_number if first_pending else None})]
 

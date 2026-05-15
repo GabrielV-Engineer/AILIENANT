@@ -166,7 +166,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 ---
 
 
-## 🚀 HITO 1.0.5 📅 [14/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard, VFS Transaccional y Puente IPC, Resiliencia del Grafo y Protección Políglota
+## 🚀 HITO 1.0.5 📅 [14/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard, VFS Transaccional y Puente IPC, Resiliencia del Grafo y Protección Políglota, Observabilidad y Auditoría Forense
 
 ### Motor de Parcheo Atómico Determinista
 * **Prevención de Full-File Rewrites:** Se implementó `core/patcher.py` como un motor de reemplazo basado en el patrón SEARCH/REPLACE. Esto evita que el LLM regenere archivos completos, ahorrando miles de tokens de salida ($O(N)$ en facturación y latencia) y eliminando el riesgo de truncamiento de código.
@@ -183,3 +183,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Self-Correction Loop:** Se modificó la herramienta de parcheo para capturar `PatchError` y devolverlo como un string. Esto evita que LangGraph dispare un `ToolException` fatal, permitiendo que el Agente use su `observation` para corregir la sintaxis y reintentar de forma autónoma.
 * **FinOps Telemetry:** Se implementó una heurística de $O(1)$ (`len // 4`) para estimar y loguear los tokens de salida ahorrados en cada parche exitoso.
 * **Surgical Strike Protocol:** Para evitar la corrupción de archivos de sintaxis mixta (ej. `.blade.php`, `.vue`, `.tsx`), se implementó `is_polyglot_file()`. El `PlannerAgent` intercepta estos archivos e inyecta dinámicamente un constraint inmutable (usando `model_copy` de Pydantic) que prohíbe las reescrituras de archivo completo, forzando el uso exclusivo del `patch_tool`.
+### Observabilidad y Auditoría Forense
+* **Black-Box Recorder:** Se implementó un sistema de telemetría local persistente en SQLite (`telemetry.sqlite`). A diferencia de los logs de texto, esto permite realizar consultas analíticas sobre el comportamiento del agente.
+* **Métricas de Decisión:** Cada vez que el Grafo toma una bifurcación, se capturan las métricas crudas (CSS/TCI) y la lógica de negocio (ej. "budget_rejected"). 
+* **Arquitectura Thread-Safe:** El uso de `WAL mode` y `threading.Lock` garantiza que, incluso en ejecuciones paralelas (Swarm Mode), la telemetría no se corrompa ni ralentice el flujo principal del agente.

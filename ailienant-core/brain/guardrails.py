@@ -78,6 +78,17 @@ async def run_validate_output_node(state: dict) -> dict:
 
 def route_after_validation(state: dict) -> str:
     """Conditional edge: retry CoderAgent or proceed to END."""
+    from core.telemetry import log_routing_decision
     if state.get("guardrail_failed"):
-        return "coder_agent"
-    return END
+        target = "coder_agent"
+        reason = f"guardrail_failed=True (retry {state.get('retry_count', 0)}/{MAX_RETRIES})"
+    else:
+        target = "__end__"
+        reason = "guardrail_passed"
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        source="validate_output",
+        target=target,
+        reason=reason,
+    )
+    return "coder_agent" if state.get("guardrail_failed") else END

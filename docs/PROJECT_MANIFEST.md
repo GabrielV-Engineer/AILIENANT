@@ -296,7 +296,7 @@
     - Heurística en el ResearcherAgent detecta archivos mixtos (HTML+JS embebido, Jinja/Blade).
     - Si es políglota, el Planner emite WBS con restricción `require_tool: BatchEditTool` exclusivamente — prohíbe sobreescritura de archivo completo.
 
-- [ ] **2.23. Telemetry Logger Local**
+- [x] **2.23. Telemetry Logger Local**
   - Tabla SQLite dedicada a telemetría de decisiones. Registra los valores exactos (CSS, TCI, hardware) que provocaron un salto de nodo. Auditoría visual de *por qué* la IA tomó cada decisión de enrutamiento.
 
 - [ ] **2.24. Inyección Dinámica de Contexto (Vigilia)**
