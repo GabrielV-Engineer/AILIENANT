@@ -224,6 +224,24 @@ class ClientFileDeleteEvent(BaseModel):
 
 
 # =====================================================================
+# 9. PHASE 2.22.4 — VFS PATCH APPROVED (IPC Bridge)
+# =====================================================================
+
+
+class VfsPatchApprovedPayload(BaseModel):
+    """Server notifies the IDE that a patch was committed to the RAM-VFS."""
+
+    file_path: str
+    unified_diff: str
+    mode: Literal["autonomous", "supervision"]
+
+
+class ServerVfsPatchApprovedEvent(BaseModel):
+    event_type: Literal["server_vfs_patch_approved"] = "server_vfs_patch_approved"
+    data: VfsPatchApprovedPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -245,4 +263,5 @@ WebSocketMessage = Union[
     ClientWorkspaceInitEvent,        # Phase 2.5
     ServerIndexingProgressEvent,     # Phase 2.5
     ClientFileDeleteEvent,           # Phase 2.1.13
+    ServerVfsPatchApprovedEvent,     # Phase 2.22.4
 ]

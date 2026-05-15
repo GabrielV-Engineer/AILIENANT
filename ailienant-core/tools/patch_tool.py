@@ -1,12 +1,16 @@
 # ailienant-core/tools/patch_tool.py
 #
 # Phase 2.22.1 & 2.22.2 — AtomicPatch Tool Schema & Context Anchoring Engine.
+# Phase 2.22.3 & 2.22.4 — VFS Transactionality (OCC) & IPC Bridge (unified diff).
 #
 # 2.22.1: AtomicPatchInput Pydantic schema — strict field validation.
 # 2.22.2: make_patch_file_tool factory — fuzzy fallback + AST boundary check.
+# 2.22.3: apply_patch_to_vfs — OCC guard + RAM-only write.
+# 2.22.4: unified_diff generation + emit_patch IPC callback.
 
 import ast
 import difflib
+import hashlib
 import logging
 from typing import Any, Callable, Optional
 
@@ -19,6 +23,14 @@ from core.patcher import apply_search_replace
 logger = logging.getLogger("PATCH_TOOL")
 
 _FUZZY_THRESHOLD = 0.90
+
+
+# ---------------------------------------------------------------------------
+# 2.22.3 — Content hash for OCC
+# ---------------------------------------------------------------------------
+
+def _compute_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -116,15 +128,87 @@ def _validate_python_syntax(patched: str, file_path: str) -> None:
         ) from exc
 
 
+# ---------------------------------------------------------------------------
+# 2.22.3 — Transactional VFS patch (OCC + unified diff)
+# ---------------------------------------------------------------------------
+
+def apply_patch_to_vfs(
+    vfs_read: Callable[[str], Optional[str]],
+    vfs_write: Callable[[str, str], None],
+    file_path: str,
+    search_block: str,
+    replace_block: str,
+    expected_hash: Optional[str] = None,
+) -> str:
+    """Transactional patch: OCC check -> apply -> diff -> RAM write. Returns unified_diff.
+
+    If expected_hash is provided, the current VFS content is hashed before patching.
+    If the hash differs, StaleFileException is raised and no write occurs.
+    """
+    from core.exceptions import StaleFileException
+
+    content = vfs_read(file_path)
+    if content is None:
+        raise PatchError(f"File not found in VFS: {file_path!r}.")
+
+    if expected_hash is not None and _compute_hash(content) != expected_hash:
+        raise StaleFileException(
+            f"OCC conflict on {file_path!r}: file was modified since last read. "
+            "Re-read the file and regenerate the patch."
+        )
+
+    try:
+        patched = apply_search_replace(content, search_block, replace_block)
+        logger.info("PATCH_TOOL: exact/normalized match succeeded for %s.", file_path)
+    except PatchError as primary_err:
+        if "not found" in str(primary_err):
+            logger.info("PATCH_TOOL: exact match failed — trying fuzzy fallback.")
+            patched = _fuzzy_find_and_replace(content, search_block, replace_block)
+        else:
+            raise
+
+    _validate_python_syntax(patched, file_path)
+
+    unified_diff = "".join(
+        difflib.unified_diff(
+            content.splitlines(keepends=True),
+            patched.splitlines(keepends=True),
+            fromfile=f"a/{file_path}",
+            tofile=f"b/{file_path}",
+        )
+    )
+
+    vfs_write(file_path, patched)
+    logger.info("PATCH_TOOL: patch committed to RAM-VFS for %s.", file_path)
+    return unified_diff
+
+
+# ---------------------------------------------------------------------------
+# 2.22.2 / 2.22.3 / 2.22.4 — Tool factory
+# ---------------------------------------------------------------------------
+
 def make_patch_file_tool(
     vfs_read: Callable[[str], Optional[str]],
     vfs_write: Callable[[str, str], None],
+    expected_hash_provider: Optional[Callable[[str], Optional[str]]] = None,
+    emit_patch: Optional[Callable[[str, str, str], None]] = None,
+    mode: str = "autonomous",
 ) -> Any:
     """Factory: returns a LangChain tool that applies AtomicPatch via the VFS.
 
     Injection pattern mirrors tools/agent_tools.py — VFS callables are captured
     by closure so they never appear in the tool schema exposed to the LLM.
+
+    Args:
+        vfs_read: Callable to read file content from the VFS.
+        vfs_write: Callable to write file content to the VFS (RAM only).
+        expected_hash_provider: Optional callable that returns the expected SHA-256
+            hash for a given file_path (OCC guard). None = OCC disabled.
+        emit_patch: Optional sync callable invoked after a successful patch with
+            (file_path, unified_diff, mode). Use for IPC bridge to the IDE.
+        mode: Operating mode forwarded to emit_patch ("autonomous" | "supervision").
     """
+    from core.exceptions import StaleFileException
 
     @tool(args_schema=AtomicPatchInput)  # type: ignore[misc]
     def patch_file(
@@ -137,28 +221,27 @@ def make_patch_file_tool(
 
         Matching order: exact -> normalized whitespace -> fuzzy (>0.90 ratio).
         Python files are AST-validated before the write is committed.
+        OCC: aborts with a re-read instruction if the file changed since the
+        expected_hash was captured.
         """
-        content = vfs_read(file_path)
-        if content is None:
-            raise PatchError(f"File not found in VFS: {file_path!r}.")
-
         if ast_context_node:
             logger.info("PATCH_TOOL: scope hint=%r for %s.", ast_context_node, file_path)
 
-        patched: str
-        try:
-            patched = apply_search_replace(content, search_block, replace_block)
-            logger.info("PATCH_TOOL: exact/normalized match succeeded for %s.", file_path)
-        except PatchError as primary_err:
-            # Fuzzy fallback only for "not found" — ambiguous errors must propagate.
-            if "not found" in str(primary_err):
-                logger.info("PATCH_TOOL: exact match failed — trying fuzzy fallback.")
-                patched = _fuzzy_find_and_replace(content, search_block, replace_block)
-            else:
-                raise
+        expected_hash = expected_hash_provider(file_path) if expected_hash_provider else None
 
-        _validate_python_syntax(patched, file_path)
-        vfs_write(file_path, patched)
+        try:
+            unified_diff = apply_patch_to_vfs(
+                vfs_read, vfs_write, file_path, search_block, replace_block, expected_hash
+            )
+        except StaleFileException:
+            return (
+                "Error: The file was modified by the user while you were thinking. "
+                "Re-read the file and try again."
+            )
+
+        if emit_patch is not None:
+            emit_patch(file_path, unified_diff, mode)
+
         logger.info("PATCH_TOOL: patch written to %s.", file_path)
         return f"Patch applied successfully to {file_path!r}."
 

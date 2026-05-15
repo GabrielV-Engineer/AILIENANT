@@ -16,6 +16,7 @@ from ws_contracts import (
     ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
     ServerModelWarmupEvent, ModelWarmupPayload,
     ServerIndexingProgressEvent, IndexingProgressPayload,
+    ServerVfsPatchApprovedEvent, VfsPatchApprovedPayload,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -185,6 +186,29 @@ class ConnectionManager:
     async def broadcast_indexing_complete(self, session_id: str) -> None:
         """Signal 100% indexing completion to the IDE."""
         await self.broadcast_indexing_progress(session_id, current=1, total=1)
+
+    # ------------------------------------------------------------------
+    # Phase 2.22.4 — VFS Patch Approved (IPC Bridge)
+    # ------------------------------------------------------------------
+
+    async def emit_vfs_patch_approved(
+        self,
+        session_id: str,
+        file_path: str,
+        unified_diff: str,
+        mode: str,
+    ) -> None:
+        """Notify the IDE that a patch was committed to the RAM-VFS."""
+        await self.send_personal_message(
+            session_id,
+            ServerVfsPatchApprovedEvent(
+                data=VfsPatchApprovedPayload(
+                    file_path=file_path,
+                    unified_diff=unified_diff,
+                    mode=mode,  # type: ignore[arg-type]
+                )
+            ),
+        )
 
     # ------------------------------------------------------------------
     # HITL — Human-in-the-Loop suspension
