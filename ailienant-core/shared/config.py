@@ -15,7 +15,7 @@ MODEL_MEDIUM: str = os.getenv("AILIENANT_MODEL_MEDIUM", "ailienant/medium")
 MODEL_BIG: str = os.getenv("AILIENANT_MODEL_BIG", "ailienant/big")
 
 
-def get_litellm_config() -> dict:
+def get_litellm_config() -> dict[str, str]:
     """Base kwargs injected into every litellm.completion() / acompletion() call."""
     return {
         "base_url": LITELLM_PROXY_BASE_URL,

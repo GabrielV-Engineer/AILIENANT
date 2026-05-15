@@ -21,8 +21,8 @@
 | 2A | Inferencia y Enrutamiento (2.0–2.1) | ✅ |
 | 2B | Estabilización de I/O y Memoria (2.2–2.11) | ✅ |
 | 2C | Anti-Entropía de Runtime (2.12–2.15) | ✅ |
-| 2D | Capa de Agentes Base (2.16–2.22) | 🟡 EN CURSO |
-| 3 | Sistema de Memoria Evolutiva (GraphRAG) | ⬜ |
+| 2D | Capa de Agentes Base (2.16–2.22) | ✅ |
+| 3 | Sistema de Memoria Evolutiva (GraphRAG) |🟡 EN CURSO |
 | 4 | Arquitectura de Agentes y Selector de Modos | ⬜ |
 | 5 | Ecosistema MCP, Permisos y Tool RAG | ⬜ |
 | 6 | Resiliencia, Sandboxing y Seguridad | ⬜ |
@@ -313,45 +313,45 @@
 
 > Motor de recuperación de contexto (Retrieval) bajo el principio de Eventual Consistency. Latencia $O(1)$ con SQLite + VFS y cero fugas de memoria.
 
-- [ ] **3.0. Extractor de Contexto GraphRAG (Topología Expandida Dinámica)**
+- [x] **3.0. Extractor de Contexto GraphRAG (Topología Expandida Dinámica)** - sonnet
   - Profundidad $k$ de LanceDB ajustada por la decisión de Fase 2.0:
     - Local: $k=1$ (solo dependencias directas).
     - Cloud: $k=3$ (contexto arquitectónico profundo, ventanas 200k).
   - **Propósito:** prevenir colapso de VRAM local y mitigar *Lost in the Middle*, maximizando visión global en Cloud.
 
-- [ ] **3.0.1. Motor de Vectorización de Estados Exitosos (Trajectory Memory)**
+- [ ] **3.0.1. Motor de Vectorización de Estados Exitosos (Trajectory Memory)** - sonnet
   - Conectar `AIlienantGraphState` con LanceDB. Tras `exit code 0`, vectorizar el WBS + tool calls usados.
   - PlannerAgent usa búsqueda HNSW $O(\log N)$ para reciclar estados en queries futuras.
   - **Propósito:** aprendizaje Zero-Shot persistente sin fine-tuning de pesos.
 
-- [ ] **3.1. Vector & Topology Unified Engine (LanceDB + SQLite)**
+- [ ] **3.1. Vector & Topology Unified Engine (LanceDB + SQLite)** - sonnet
   - **Multi-tenencia Lógica (Compartmentalized Memory):** colecciones LanceDB aisladas por `WorkspaceHash`.
     - **Retrieval Router:** filtro estricto que impide búsqueda fuera del namespace activo.
   - **Vectores en LanceDB:** `semantic_upsert` solo para archivos > 100 tokens (evita fragmentación).
   - **Topología en SQLite:** reemplaza NetworkX en RAM. Dependencias AST en tabla relacional (`source_file`, `target_dependency`, `weight`). Aprovecha WAL existente y elimina Split-Brain.
 
-- [ ] **3.2. Integración VFS y Lazy Indexing (Zero-Drift)**
+- [ ] **3.2. Integración VFS y Lazy Indexing (Zero-Drift)** - sonnet
   - **VFS-Aware Indexer:** RAG nunca lee disco directo; pasa por `vfs_middleware` (Fase 1.3).
   - **Lazy AST Parsing:** solo se analiza AST de archivos que hacen match en Top-K + 1 grado de separación.
 
-- [ ] **3.3. Context Meter en Cascada (Cortocircuito + Mini-Juez)**
-  - **3.3.1. Portero Matemático (Early Exit + CSS):**
+- [ ] **3.3. Context Meter en Cascada (Cortocircuito + Mini-Juez)** - sonnet
+  - **3.3.1. Portero Matemático (Early Exit + CSS):** - sonnet
     - $O(1)$: `CSS = 0.5·SemanticScore + 0.3·GraphCentrality + 0.2·RecencyBoost`.
     - Si `CSS < 40%`, bandera `is_red_alert` → salta directo al PlannerAgent (Cloud/Local-Big).
-  - **3.3.2. Auditor Semántico (Mini-Juez LLM):**
+  - **3.3.2. Auditor Semántico (Mini-Juez LLM):** - sonnet
     - Solo si `CSS >= 40%`. Fallback dinámico: Ollama/LM Studio → Cloud barato (Haiku/4o-mini).
     - Valida si prompts cortos pero complejos ("Refactorizar") requieren elevar el nivel.
-  - **3.3.3. Veto Absoluto (Conditional Override):**
+  - **3.3.3. Veto Absoluto (Conditional Override):** - opus
     - Si el Mini-Juez detecta riesgos semánticos/AST que la fórmula ignoró, sobreescribe a `MEDIUM` o `BIG`.
 
-- [ ] **3.4. Motor de Predicción y "Dreaming" (Overnight Engine)**
+- [ ] **3.4. Motor de Predicción y "Dreaming" (Overnight Engine)** - opus
   - Proyección arquitectónica profunda con GraphRAG + LSP + MCTS (Test-Time Compute).
 
-  - [ ] **3.4.1. Activación y Selector de Inteligencia (Master Toggle UI)**
+  - [ ] **3.4.1. Activación y Selector de Inteligencia (Master Toggle UI)** - opus
     - UI binaria ON/OFF + selector de perfil:
-      - **Medium:** Llama 3.1 8B local/nube. Máx 1 micro-tarea, 3 archivos. <60min.
-      - **Big:** Qwen 32B / Llama 70B. Máx 3 micro-tareas correlacionadas, 10 archivos. Refactorización nocturna.
-      - **Cloud:** Claude/GPT. 1 tarea alta complejidad, máx 5 archivos. Cap de tokens en `.env`.
+      - **Medium:** ejemplo: Llama 3.1 8B local/nube. Máx 1 micro-tarea, 3 archivos. <60min.
+      - **Big:** ejemplo: Qwen 32B / Llama 70B. Máx 3 micro-tareas correlacionadas, 10 archivos. Refactorización nocturna.
+      - **Cloud:** ejemplo: Claude/GPT. 1 tarea alta complejidad, máx 5 archivos. Cap de tokens en `.env`.
       - **Hybrid (Smart-Cascade):** Cloud = System 2 (planificación + recompensa); Local Big = System 1.5 (expansión código + fixes LSP).
         - Blast Radius: máx 8 archivos / sesión.
         - Escalada: L1 Local cierra autocrítica → L2 (3 fallos LSP) invoca `Cloud-Fixer` → L3 Circuit Breaker (poda).
@@ -359,12 +359,12 @@
         - Umbrales configurables vía `.ailienant/rules.json`.
     - Configuración persistente.
 
-  - [ ] **3.4.2. Session Delta Aggregator (Pre-Dream Reflection)**
+  - [ ] **3.4.2. Session Delta Aggregator (Pre-Dream Reflection)** - sonnet
     - AnalystAgent lee `vfs_buffer` + `messages` del estado actual.
     - Genera Self-Reflection compacta de lo que el usuario intentó + errores en `terminal_output`.
     - Inyecta como `{session_delta}` para que MCTS arranque alineado con el estado mental inmediato.
 
-  - [ ] **3.4.3. The Overnight Daemon (Motor Estratégico)**
+  - [ ] **3.4.3. The Overnight Daemon (Motor Estratégico)** - opus
     - **Background Worker Aislado:** MCTS fuera del hilo principal de FastAPI; ciclos 3-5h sin bloquear.
     - **Horizonte de Predicción (Atomic Work Units):** profundidad basada en Micro-Tareas + Blast Radius.
     - **MCTS Garbage Collection:** ramas podadas destruyen su `_ram_vfs` instantáneamente — previene heap overflow.
@@ -372,28 +372,28 @@
     - **Researcher como Navegador:** recupera del GraphRAG solo nodos/aristas del hito; si el sueño sale del subgrafo, expande o poda.
     - **Nightmare Protocol (Poda Heurística):** AnalystAgent cruza propuestas con `rules.json`. Pesadilla arquitectónica → `R=0` → rama muere.
 
-  - [ ] **3.4.4. Validación Estática Políglota ("Micro-Isolate")**
+  - [ ] **3.4.4. Validación Estática Políglota ("Micro-Isolate")** - opus
     - **RAM VFS (Flyweight Pattern):** FS virtual en memoria; LSP "ve" los cambios sin tocar disco.
     - **Filtro Capa 1 (Tree-sitter AST):** validación estructural $O(1)$. Sintaxis rota → rama descartada.
     - **Filtro Capa 2 (LSP Feedback):** 0 errores de tipado/referencias antes de recompensa positiva.
     - **Sincronización Transitoria:** `VirtualDocumentProvider` mapea dependencias entre archivos soñados y reales.
 
-  - [ ] **3.4.5. Virtual Document Provider (The Mirror)**
+  - [ ] **3.4.5. Virtual Document Provider (The Mirror)** - opus
     - VS Code API: URI scheme `ailienant-vision://`, Diff-View nativa entre código actual y rama ganadora.
     - One-Click Merge para aplicar al workspace real.
 
-  - [ ] **3.4.6. Dual-Rules Resolver (Arquitectura Jerárquica)**
+  - [ ] **3.4.6. Dual-Rules Resolver (Arquitectura Jerárquica)** - opus
     - **Precedencia:** `./.ailienant/.ailienant.json` (Local) > `~/.ailienant/.ailienant.json` (Global).
     - **Motor de Composición:** combina global + local por inferencia.
     - **Conflict Resolution:** local override en colisiones.
 
-  - [ ] **3.4.7. Telemetría Diurna Silenciosa (Subconsciente + Bounding Box)**
+  - [ ] **3.4.7. Telemetría Diurna Silenciosa (Subconsciente + Bounding Box)** - opus
     - **Bounding Box:** extensión registra `startLine`/`endLine` de cada bloque inyectado por IA.
     - **Decaimiento (Colisión Espacial):** listener `onDidChangeTextDocument` evalúa $O(1)$ longitud + intersección.
     - **Heurística de Rechazo:** >70% del bloque alterado/borrado en <3min → `AI_PAYLOAD_REJECTED`.
     - **Destilación de Reglas:** AnalystAgent extrae la "pesadilla" y actualiza `.ailienant/rules.json` local.
 
-  - [ ] **3.4.8. Hybrid Cascading & Model Routing (Smart-Execution)**
+  - [ ] **3.4.8. Hybrid Cascading & Model Routing (Smart-Execution)** - opus
     - **Sistema Dual (1.5 vs 2):** nodos condicionales LangGraph dirigen baja entropía → Local Big, alta abstracción → Cloud.
     - **Estratificación Cognitiva:**
       - *Cloud Architect:* genera WBS inicial + "Juez Supremo" asignando $R$ solo a ramas que pasaron tests locales.
@@ -405,12 +405,12 @@
       - Desatasco quirúrgico: snapshot comprimido → Cloud para corrección de alto nivel.
     - **Monitor de Telemetría Híbrida:** diferencia "Tokens Ahorrados" (local) vs "Tokens Invertidos" (Cloud) en la UI.
 
-- [ ] **3.5. Ciclo de Vida de Memoria (Garbage Collection & Janitor Service)**
+- [ ] **3.5. Ciclo de Vida de Memoria (Garbage Collection & Janitor Service)** - sonnet
   - **Git-Diff GC:** limpieza asíncrona de LanceDB escuchando eventos Git para purgar embeddings de archivos borrados.
   - **Detector de Proyectos Huérfanos:** escaneo comparativo de hashes almacenados vs rutas en disco.
   - **Servicio de Purga:** comando para eliminación manual de sub-grafos viejos.
 
-- [ ] **3.6. Cognitive State Management (Fast-Boot)**
+- [ ] **3.6. Cognitive State Management (Fast-Boot)** - sonnet
   - Volcado de resúmenes en `.ailienant/AGENTS.md` permite al PlannerAgent Cold Start instantáneo sin saturar LanceDB al reiniciar VS Code.
 
 - [ ] **3.7. Checkpoint Gate Fase 3**

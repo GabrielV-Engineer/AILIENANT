@@ -195,3 +195,13 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Stress Test Superado:** Se validó que el `OutputParser` puede extraer JSON válido incluso cuando está envuelto en ruido o texto aleatorio, con una latencia promedio de 0.071ms.
 * **Resiliencia al Bucle Infinito:** Se implementó y verificó mediante Mocks que un error persistente en el VFS desencadena los Guardrails. El agente consume sus intentos (`MAX_RETRIES`) y finaliza el grafo elegantemente hacia `__end__`, registrando el fracaso en la telemetría, evitando el gasto infinito de tokens.
 * **Fase 2 Completada:** El núcleo transaccional, el enrutamiento de LangGraph, la telemetría local y el VFS están estabilizados.
+
+---
+
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria
+
+## Extractor GraphRAG Dinámico y Defensas de Memoria
+* **Topología $k$-hop Asíncrona:** Implementación de un recorrido BFS sobre el árbol de dependencias (`aiosqlite`). Se introdujo *chunking* para evadir los límites de variables `IN` de SQLite, asegurando latencia $O(k)$ constante.
+* **Protección del Event Loop:** Se extrajo el codificador de tokens (`tiktoken`) al *module level scope*, eliminando bloqueos de lectura de disco en la instanciación de clases durante la ejecución de los agentes.
+* **Integridad de Estado:** El `PlannerAgent` ahora calcula y acopla la métrica `graph_coverage` respetando la inmutabilidad de los schemas (`Pydantic model_copy`), manteniendo puro el flujo de LangGraph.
+* **Boy Scout Fix:** Se corrigió un *type hint* laxo en `shared/config.py` detectado por el control de calidad estricto (`mypy`).

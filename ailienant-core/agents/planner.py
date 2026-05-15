@@ -11,6 +11,7 @@ from shared.rbac import PLANNER_IDENTITY
 from prompts import build_safe_prompt
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
+from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
 
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
@@ -71,6 +72,33 @@ async def run_planner_node(state: dict) -> dict:
     if metrics is not None and css == 100.0:
         css = getattr(metrics, "css_total", 100.0)
 
+    # ── Phase 3.0: GraphRAG Dynamic Context Extraction ─────────────────────
+    updated_context_metrics = metrics  # default: pass through unchanged
+    _routing_decision: str = (
+        getattr(metrics, "routing_decision", "LOCAL_SMALL")
+        if metrics is not None else "LOCAL_SMALL"
+    )
+    _seed_candidates = state.get("explicit_mentions") or []
+    _seed_file: str = (
+        _seed_candidates[0] if _seed_candidates else state.get("workspace_root", "")
+    )
+    if metrics is not None and _seed_file:
+        try:
+            _extractor = GraphRAGDynamicExtractor(project_id=state.get("project_id") or "")
+            _extraction = await _extractor.extract(_seed_file, _routing_decision)
+            # coverage_ratio is already tier-relative (computed inside extract())
+            updated_context_metrics = metrics.model_copy(
+                update={"graph_coverage": _extraction.coverage_ratio}
+            )
+            logger.info(
+                "GraphRAG Phase 3.0: k=%d neighbours=%d tokens=%d truncated=%s coverage=%.3f",
+                _extraction.k_hops, len(_extraction.neighbors),
+                _extraction.token_count, _extraction.truncated, _extraction.coverage_ratio,
+            )
+        except Exception as _graphrag_err:
+            logger.warning("GraphRAG extraction failed (non-fatal): %s", _graphrag_err)
+    # ────────────────────────────────────────────────────────────────────────
+
     if DEBUG_MODE:
         logger.warning(
             "⚠️ MODO DEBUG ACTIVO: Generando contrato SDD sintético (Bypass de LLM). TCI=%.1f CSS=%.1f",
@@ -129,6 +157,7 @@ async def run_planner_node(state: dict) -> dict:
             "parallel_tasks": parallel_tasks,
             "tci": tci,
             "css": css,
+            "context_metrics": updated_context_metrics,
         }
         # Freeze the baseline on the first turn (immutable_wbs absent or None).
         # DriftMonitor will compare future re-plans against this anchor.
@@ -244,6 +273,7 @@ async def run_planner_node(state: dict) -> dict:
             "parallel_tasks": parallel_tasks,
             "tci": tci,
             "css": css,
+            "context_metrics": updated_context_metrics,
         }
         if state.get("immutable_wbs") is None:
             result["immutable_wbs"] = mission_plan
