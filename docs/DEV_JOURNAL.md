@@ -198,10 +198,13 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
-## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica
 
 ## Extractor GraphRAG Dinámico y Defensas de Memoria
 * **Topología $k$-hop Asíncrona:** Implementación de un recorrido BFS sobre el árbol de dependencias (`aiosqlite`). Se introdujo *chunking* para evadir los límites de variables `IN` de SQLite, asegurando latencia $O(k)$ constante.
 * **Protección del Event Loop:** Se extrajo el codificador de tokens (`tiktoken`) al *module level scope*, eliminando bloqueos de lectura de disco en la instanciación de clases durante la ejecución de los agentes.
 * **Integridad de Estado:** El `PlannerAgent` ahora calcula y acopla la métrica `graph_coverage` respetando la inmutabilidad de los schemas (`Pydantic model_copy`), manteniendo puro el flujo de LangGraph.
 * **Boy Scout Fix:** Se corrigió un *type hint* laxo en `shared/config.py` detectado por el control de calidad estricto (`mypy`).
+## Cierre del Bucle de Memoria Episódica
+* **Write-Loop de Trayectorias:** Se conectó `TrajectoryMemoryManager.memorize_trajectory` en el nodo de salida (`validate_output`) de LangGraph. 
+* **Resiliencia Operativa:** La persistencia de la memoria se envolvió en un diseño *fire-and-forget* (Try/Except) para garantizar que caídas temporales en la base de datos vectorial o en el proveedor de embeddings no aborten operaciones agénticas que ya fueron evaluadas como exitosas.

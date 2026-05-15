@@ -56,6 +56,18 @@ async def run_validate_output_node(state: dict) -> dict:
     }
     try:
         CoderOutput(**output)
+        # ── Phase 3.0.2: Fire-and-forget trajectory persistence ──────────────
+        # SPOF guard: any failure here (network, LiteLL proxy, disk) MUST NOT
+        # abort a mission that has already validated successfully.
+        try:
+            from core.memory.trajectory_memory import TrajectoryMemoryManager
+            await TrajectoryMemoryManager().memorize_trajectory(state, success_flag=True)
+        except Exception as _traj_err:
+            logger.warning(
+                "TrajectoryMemory: memorize failed (non-fatal, mission unaffected): %s",
+                _traj_err,
+            )
+        # ────────────────────────────────────────────────────────────────────
         return {"guardrail_failed": False, "validation_feedback": None}
     except ValidationError as exc:
         new_retry = retry_count + 1
