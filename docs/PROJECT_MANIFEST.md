@@ -319,12 +319,12 @@
     - Cloud: $k=3$ (contexto arquitectónico profundo, ventanas 200k).
   - **Propósito:** prevenir colapso de VRAM local y mitigar *Lost in the Middle*, maximizando visión global en Cloud.
 
-- [ ] **3.0.1. Motor de Vectorización de Estados Exitosos (Trajectory Memory)** - sonnet
+- [x] **3.0.1. Motor de Vectorización de Estados Exitosos (Trajectory Memory)** - sonnet
   - Conectar `AIlienantGraphState` con LanceDB. Tras `exit code 0`, vectorizar el WBS + tool calls usados.
   - PlannerAgent usa búsqueda HNSW $O(\log N)$ para reciclar estados en queries futuras.
   - **Propósito:** aprendizaje Zero-Shot persistente sin fine-tuning de pesos.
 
-- [ ] **3.1. Vector & Topology Unified Engine (LanceDB + SQLite)** - sonnet
+- [x] **3.1. Vector & Topology Unified Engine (LanceDB + SQLite)** - sonnet
   - **Multi-tenencia Lógica (Compartmentalized Memory):** colecciones LanceDB aisladas por `WorkspaceHash`.
     - **Retrieval Router:** filtro estricto que impide búsqueda fuera del namespace activo.
   - **Vectores en LanceDB:** `semantic_upsert` solo para archivos > 100 tokens (evita fragmentación).

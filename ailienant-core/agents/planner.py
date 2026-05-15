@@ -12,6 +12,8 @@ from prompts import build_safe_prompt
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
+from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
+from core.memory.semantic_memory import SemanticMemoryManager
 
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
@@ -210,6 +212,49 @@ async def run_planner_node(state: dict) -> dict:
     _rules = rule_manager.get_combined_rules(state.get("workspace_root", ""))
     if _rules:
         system_prompt_text += f"\n\n{_rules}"
+
+    # ── Phase 3.0.1: Trajectory Memory Injection ────────────────────────
+    _traj_mgr = TrajectoryMemoryManager()
+    _past_trajectories = await _traj_mgr.search(
+        user_input=user_input,
+        project_id=state.get("project_id") or "",
+    )
+    if _past_trajectories:
+        system_prompt_text += f"\n\n{format_trajectories_for_prompt(_past_trajectories)}"
+        logger.info(
+            "TrajectoryMemory: injected %d past trajectories into planner context.",
+            len(_past_trajectories),
+        )
+    # ────────────────────────────────────────────────────────────────────
+
+    # ── Phase 3.1: Semantic Similarity + CSS Recomputation ─────────────────
+    if updated_context_metrics is not None:
+        try:
+            _sem_mgr = SemanticMemoryManager()
+            _sem_score: float = await _sem_mgr.search(
+                user_input=user_input,
+                workspace_hash=state.get("project_id") or "",
+            )
+            _new_css: float = min(100.0, max(0.0, (
+                0.5 * _sem_score
+                + 0.3 * updated_context_metrics.graph_coverage
+                + 0.2 * updated_context_metrics.recency_score
+            ) * 100.0))
+            updated_context_metrics = updated_context_metrics.model_copy(
+                update={
+                    "semantic_similarity": _sem_score,
+                    "css_total": _new_css,
+                    "is_red_alert": _new_css < 40.0,
+                }
+            )
+            css = _new_css  # keep state shortcut in sync with recomputed css_total
+            logger.info(
+                "SemanticMemory Phase 3.1: semantic_similarity=%.4f css_total=%.1f is_red_alert=%s",
+                _sem_score, _new_css, _new_css < 40.0,
+            )
+        except Exception as _sem_err:
+            logger.warning("Semantic similarity + CSS recomputation failed (non-fatal): %s", _sem_err)
+    # ────────────────────────────────────────────────────────────────────────
 
     # Instrucción humana: Aquí forzamos mentalmente al modelo a respetar el contrato SDD.
     instruction = (

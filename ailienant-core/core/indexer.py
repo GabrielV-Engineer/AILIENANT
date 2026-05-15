@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import sys
-from typing import List, Optional
+from typing import List
 
 import psutil
 
@@ -158,6 +158,18 @@ class LazyIndexer:
                             await upsert_indexed_file(file_path, project_id)
                             if result.imports:
                                 await upsert_dependencies(file_path, result.imports, project_id)
+                            # ── Phase 3.1: Semantic upsert (fire-and-forget) ──────────
+                            # Deferred import: isolates even import errors from indexing.
+                            try:
+                                from core.memory.semantic_memory import SemanticMemoryManager
+                                await SemanticMemoryManager().semantic_upsert(
+                                    file_path=file_path,
+                                    content=content,
+                                    workspace_hash=project_id,
+                                )
+                            except Exception as _sem_err:
+                                logger.debug("Semantic upsert failed (non-fatal): %s", _sem_err)
+                            # ─────────────────────────────────────────────────────────
                     except Exception as exc:
                         logger.warning("LazyIndexer: skip %s: %s", file_path, exc)
                     finally:

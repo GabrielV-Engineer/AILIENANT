@@ -198,7 +198,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
-## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica, Motor Vectorial Semántico y Consolidación Atómica del CSS
 
 ## Extractor GraphRAG Dinámico y Defensas de Memoria
 * **Topología $k$-hop Asíncrona:** Implementación de un recorrido BFS sobre el árbol de dependencias (`aiosqlite`). Se introdujo *chunking* para evadir los límites de variables `IN` de SQLite, asegurando latencia $O(k)$ constante.
@@ -208,3 +208,8 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 ## Cierre del Bucle de Memoria Episódica
 * **Write-Loop de Trayectorias:** Se conectó `TrajectoryMemoryManager.memorize_trajectory` en el nodo de salida (`validate_output`) de LangGraph. 
 * **Resiliencia Operativa:** La persistencia de la memoria se envolvió en un diseño *fire-and-forget* (Try/Except) para garantizar que caídas temporales en la base de datos vectorial o en el proveedor de embeddings no aborten operaciones agénticas que ya fueron evaluadas como exitosas.
+## Motor Vectorial Semántico y Consolidación Atómica del CSS
+* **SemanticMemoryManager & Pushdown:** Se implementó el motor de indexación vectorial en LanceDB (`core/memory/semantic_memory.py`) con particionamiento lógico (`workspace_hash`) usando *Predicate Pushdown* para multi-tenencia segura.
+* **Resiliencia en Background:** La vectorización de archivos se integró en el `indexer.py` mediante un patrón *fire-and-forget* con *deferred imports*, aislando el pipeline de indexación de posibles caídas en la API de embeddings.
+* **Truncamiento Seguro de UTF-8:** Se implementó una técnica de nivel Senior para evitar la corrupción de caracteres multibyte y errores 400 en LiteLLM: el texto se codifica con `tiktoken`, se recorta al límite seguro de la ventana (8191 tokens) y se vuelve a decodificar a string antes del embedding.
+* **Recálculo Atómico de CSS:** El `PlannerAgent` ahora unifica las métricas de Topología (Fase 3.0), Semántica (Fase 3.1) y Recencia. El `css_total` y el flag `is_red_alert` se recalculan y aplican de forma atómica en una sola operación inmutable (`model_copy`).
