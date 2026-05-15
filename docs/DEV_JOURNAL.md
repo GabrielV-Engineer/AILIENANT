@@ -198,7 +198,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
-## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica, Motor Vectorial Semántico y Consolidación Atómica del CSS
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica, Motor Vectorial Semántico y Consolidación Atómica del CSS, Cierre de la Memoria Evolutiva - Zero-Drift & Lazy Parsing.
 
 ## Extractor GraphRAG Dinámico y Defensas de Memoria
 * **Topología $k$-hop Asíncrona:** Implementación de un recorrido BFS sobre el árbol de dependencias (`aiosqlite`). Se introdujo *chunking* para evadir los límites de variables `IN` de SQLite, asegurando latencia $O(k)$ constante.
@@ -213,3 +213,8 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Resiliencia en Background:** La vectorización de archivos se integró en el `indexer.py` mediante un patrón *fire-and-forget* con *deferred imports*, aislando el pipeline de indexación de posibles caídas en la API de embeddings.
 * **Truncamiento Seguro de UTF-8:** Se implementó una técnica de nivel Senior para evitar la corrupción de caracteres multibyte y errores 400 en LiteLLM: el texto se codifica con `tiktoken`, se recorta al límite seguro de la ventana (8191 tokens) y se vuelve a decodificar a string antes del embedding.
 * **Recálculo Atómico de CSS:** El `PlannerAgent` ahora unifica las métricas de Topología (Fase 3.0), Semántica (Fase 3.1) y Recencia. El `css_total` y el flag `is_red_alert` se recalculan y aplican de forma atómica en una sola operación inmutable (`model_copy`).
+## Cierre de la Memoria Evolutiva - Zero-Drift & Lazy Parsing
+* **Arquitectura Zero-Drift:** Se eliminó el uso de `open()` en el motor RAG. Ahora toda lectura de archivos se canaliza a través de `VFSMiddleware`, permitiendo que la IA indexe y razone sobre archivos no guardados (dirty buffers) en tiempo real.
+* **Lazy Deep Parsing:** Se implementó una separación de parsing AST. El sistema ahora solo realiza una extracción profunda de símbolos (clases/funciones) para los archivos identificados como Top-K semánticos y sus vecinos de primer grado, optimizando masivamente el uso de CPU.
+* **Búsqueda Vectorial Optimizada:** Se consolidó el acceso a LanceDB mediante `search_with_paths`, reduciendo la latencia al evitar llamadas duplicadas a la API de embeddings de LiteLLM.
+* **Validación DoD:** Se superó el script de auditoría de AST, confirmando que no existen accesos directos a disco en la ruta crítica del indexador, garantizando la integridad del VFS.

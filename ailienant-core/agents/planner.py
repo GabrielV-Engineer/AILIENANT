@@ -74,32 +74,8 @@ async def run_planner_node(state: dict) -> dict:
     if metrics is not None and css == 100.0:
         css = getattr(metrics, "css_total", 100.0)
 
-    # ── Phase 3.0: GraphRAG Dynamic Context Extraction ─────────────────────
+    # Phase 3.0 BFS removed in Phase 3.2 — replaced by semantic-guided deep parse (production path below).
     updated_context_metrics = metrics  # default: pass through unchanged
-    _routing_decision: str = (
-        getattr(metrics, "routing_decision", "LOCAL_SMALL")
-        if metrics is not None else "LOCAL_SMALL"
-    )
-    _seed_candidates = state.get("explicit_mentions") or []
-    _seed_file: str = (
-        _seed_candidates[0] if _seed_candidates else state.get("workspace_root", "")
-    )
-    if metrics is not None and _seed_file:
-        try:
-            _extractor = GraphRAGDynamicExtractor(project_id=state.get("project_id") or "")
-            _extraction = await _extractor.extract(_seed_file, _routing_decision)
-            # coverage_ratio is already tier-relative (computed inside extract())
-            updated_context_metrics = metrics.model_copy(
-                update={"graph_coverage": _extraction.coverage_ratio}
-            )
-            logger.info(
-                "GraphRAG Phase 3.0: k=%d neighbours=%d tokens=%d truncated=%s coverage=%.3f",
-                _extraction.k_hops, len(_extraction.neighbors),
-                _extraction.token_count, _extraction.truncated, _extraction.coverage_ratio,
-            )
-        except Exception as _graphrag_err:
-            logger.warning("GraphRAG extraction failed (non-fatal): %s", _graphrag_err)
-    # ────────────────────────────────────────────────────────────────────────
 
     if DEBUG_MODE:
         logger.warning(
@@ -227,34 +203,48 @@ async def run_planner_node(state: dict) -> dict:
         )
     # ────────────────────────────────────────────────────────────────────
 
-    # ── Phase 3.1: Semantic Similarity + CSS Recomputation ─────────────────
+    # ── Phase 3.2: Semantic-Guided Deep Context Extraction ─────────────────────────
+    # Single embedding call returns Top-K file paths + similarity score.
+    # deep_parse: 1-degree SQLite neighbor expansion → VFS read → Tree-sitter (in thread).
+    # CSS is fully recomputed here; Phase 3.1 block is subsumed.
     if updated_context_metrics is not None:
         try:
             _sem_mgr = SemanticMemoryManager()
-            _sem_score: float = await _sem_mgr.search(
+            _sem_score: float
+            _top_k_files: list[str]
+            _sem_score, _top_k_files = await _sem_mgr.search_with_paths(
                 user_input=user_input,
                 workspace_hash=state.get("project_id") or "",
             )
+            _extractor = GraphRAGDynamicExtractor(project_id=state.get("project_id") or "")
+            _deep_result = await _extractor.deep_parse(
+                seed_files=_top_k_files,
+                workspace_root=state.get("workspace_root", ""),
+            )
             _new_css: float = min(100.0, max(0.0, (
                 0.5 * _sem_score
-                + 0.3 * updated_context_metrics.graph_coverage
+                + 0.3 * _deep_result.coverage_ratio
                 + 0.2 * updated_context_metrics.recency_score
             ) * 100.0))
             updated_context_metrics = updated_context_metrics.model_copy(
                 update={
                     "semantic_similarity": _sem_score,
+                    "graph_coverage": _deep_result.coverage_ratio,
                     "css_total": _new_css,
                     "is_red_alert": _new_css < 40.0,
                 }
             )
-            css = _new_css  # keep state shortcut in sync with recomputed css_total
+            css = _new_css
+            if _deep_result.context_block:
+                system_prompt_text += f"\n\n{_deep_result.context_block}"
             logger.info(
-                "SemanticMemory Phase 3.1: semantic_similarity=%.4f css_total=%.1f is_red_alert=%s",
-                _sem_score, _new_css, _new_css < 40.0,
+                "Phase 3.2: sem=%.4f graph=%.3f css=%.1f files_parsed=%d/%d",
+                _sem_score, _deep_result.coverage_ratio, _new_css,
+                len(_deep_result.parsed_files), len(_deep_result.target_files),
             )
-        except Exception as _sem_err:
-            logger.warning("Semantic similarity + CSS recomputation failed (non-fatal): %s", _sem_err)
-    # ────────────────────────────────────────────────────────────────────────
+        except Exception as _ctx_err:
+            logger.warning("Phase 3.2: context extraction failed (non-fatal): %s", _ctx_err)
+    # ────────────────────────────────────────────────────────────────────────────────────
 
     # Instrucción humana: Aquí forzamos mentalmente al modelo a respetar el contrato SDD.
     instruction = (

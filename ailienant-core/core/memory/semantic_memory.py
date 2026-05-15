@@ -17,7 +17,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import lancedb  # type: ignore[import-untyped]
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -219,6 +219,77 @@ class SemanticMemoryManager:
 
         rows: List[Any] = query.to_list()
         return [float(r.get("_distance", 1.0)) for r in rows]
+
+    def _query_records_with_paths(
+        self,
+        vector: List[float],
+        workspace_hash: str,
+        k: int,
+    ) -> List[Tuple[str, float]]:
+        """Like _query_records but returns (file_path, distance) pairs."""
+        db = lancedb.connect(self._lancedb_path)
+        if _TABLE_NAME not in db.table_names():
+            return []
+
+        tbl = db.open_table(_TABLE_NAME)
+        query = tbl.search(vector).metric("cosine").limit(k)
+
+        if workspace_hash and _SAFE_ID_RE.match(workspace_hash):
+            query = query.where(f"workspace_hash = '{workspace_hash}'")
+        elif workspace_hash:
+            logger.warning(
+                "SemanticMemory: workspace_hash %r failed sanitization — filter skipped.",
+                workspace_hash,
+            )
+
+        rows: List[Any] = query.to_list()
+        return [
+            (str(r.get("file_path", "")), float(r.get("_distance", 1.0)))
+            for r in rows
+            if r.get("file_path")
+        ]
+
+    # ── Phase 3.2: combined search (single embedding call) ────────────
+
+    async def search_with_paths(
+        self,
+        user_input: str,
+        workspace_hash: str = "",
+        k: int = _TOP_K,
+    ) -> Tuple[float, List[str]]:
+        """Single embedding call returns (aggregated_score, top_k_file_paths).
+
+        Avoids the double embedding call that separate search() + search_files()
+        would require. Returns (0.0, []) on empty input or any failure.
+        """
+        if not user_input.strip():
+            return 0.0, []
+
+        try:
+            vector = await _get_embedding(user_input)
+        except Exception as embed_err:
+            logger.warning(
+                "SemanticMemory.search_with_paths: embed failed (non-fatal): %s", embed_err
+            )
+            return 0.0, []
+
+        try:
+            pairs: List[Tuple[str, float]] = await asyncio.to_thread(
+                self._query_records_with_paths, vector, workspace_hash, k
+            )
+        except Exception as query_err:
+            logger.warning(
+                "SemanticMemory.search_with_paths: query failed (non-fatal): %s", query_err
+            )
+            return 0.0, []
+
+        if not pairs:
+            return 0.0, []
+
+        avg = sum(max(0.0, 1.0 - d) for _, d in pairs) / len(pairs)
+        score = min(1.0, max(0.0, avg))
+        file_paths = [fp for fp, _ in pairs]
+        return score, file_paths
 
 
 # ── Module-level helpers ───────────────────────────────────────────────────

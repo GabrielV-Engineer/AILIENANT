@@ -65,8 +65,8 @@ def _get_pool_pids() -> List[int]:
     non-fatal — the indexer MUST NOT crash if it cannot set process priority.
     """
     try:
-        pool = getattr(compute_pool, "_pool", None)  # type: ignore[attr-defined]
-        processes = getattr(pool, "_processes", {})   # type: ignore[union-attr]
+        pool = getattr(compute_pool, "_pool", None)
+        processes = getattr(pool, "_processes", {})
         return list(processes.keys())
     except Exception:
         logger.debug("Could not resolve worker PIDs for priority adjustment — skipping.")
@@ -146,12 +146,19 @@ class LazyIndexer:
                         lang = detect_language(file_path)
                         if not lang:
                             continue
-                        try:
-                            with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
-                                content = fh.read()
-                        except OSError as exc:
-                            logger.debug("LazyIndexer: cannot read %s: %s", file_path, exc)
+                        from core.vfs_middleware import VFSMiddleware as _VFS  # deferred — avoid circular at module level
+                        _vfs_result = _VFS().read_safe(  # type: ignore[no-untyped-call]
+                            file_path,
+                            project_id=project_id,
+                            project_root=workspace_root,
+                            session_id=session_id,
+                        )
+                        if not _vfs_result.ok or _vfs_result.content is None:
+                            logger.debug(
+                                "LazyIndexer: VFS skip %s: %s", file_path, _vfs_result.error
+                            )
                             continue
+                        content = _vfs_result.content
                         req = IndexingRequest(file_path=file_path, content=content, language_id=lang)
                         result: IndexingResult = await compute_pool.run(index_file_sync, req)
                         if result.success:

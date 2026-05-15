@@ -330,7 +330,7 @@
   - **Vectores en LanceDB:** `semantic_upsert` solo para archivos > 100 tokens (evita fragmentación).
   - **Topología en SQLite:** reemplaza NetworkX en RAM. Dependencias AST en tabla relacional (`source_file`, `target_dependency`, `weight`). Aprovecha WAL existente y elimina Split-Brain.
 
-- [ ] **3.2. Integración VFS y Lazy Indexing (Zero-Drift)** - sonnet
+- [x] **3.2. Integración VFS y Lazy Indexing (Zero-Drift)** - sonnet
   - **VFS-Aware Indexer:** RAG nunca lee disco directo; pasa por `vfs_middleware` (Fase 1.3).
   - **Lazy AST Parsing:** solo se analiza AST de archivos que hacen match en Top-K + 1 grado de separación.
 

@@ -10,9 +10,10 @@ graph-centrality component only.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import aiosqlite
 import tiktoken
@@ -67,6 +68,55 @@ class ExtractionResult:
     truncated: bool                # True when guardrail cut the list short
     token_count: int               # sum of path tokens across kept neighbours
     coverage_ratio: float          # len(neighbors) / max_files for this tier (0.0–1.0)
+
+
+@dataclass
+class DeepParseResult:
+    """Output of GraphRAGDynamicExtractor.deep_parse() (Phase 3.2)."""
+
+    target_files: List[str]   # seed + 1-degree neighbors attempted
+    parsed_files: List[str]   # files successfully VFS-read + Tree-sitter parsed
+    context_block: str        # formatted context string ready for LLM injection
+    coverage_ratio: float     # len(parsed_files) / len(target_files); 0.0 if empty
+    token_count: int          # tiktoken token count of context_block
+
+
+# ── Module-level helpers ──────────────────────────────────────────────────
+
+
+def _extract_top_level_symbols(tree: Any) -> List[str]:
+    """Walk top-level Tree-sitter nodes and return named definition identifiers.
+
+    Language-agnostic: checks common node types across Python, TypeScript,
+    JavaScript, Java, C#, etc. Returns [] for None trees or unsupported grammars.
+    """
+    if tree is None:
+        return []
+    symbols: List[str] = []
+    for node in tree.root_node.children:
+        name_node: Any = None
+        if node.type in (
+            "function_definition", "class_definition",
+            "function_declaration", "class_declaration",
+            "method_definition",
+        ):
+            name_node = node.child_by_field_name("name")
+        elif node.type == "decorated_definition":
+            for child in node.children:
+                if child.type in ("function_definition", "class_definition"):
+                    name_node = child.child_by_field_name("name")
+                    break
+        elif node.type == "export_statement":
+            for child in node.children:
+                if child.type in ("function_declaration", "class_declaration"):
+                    name_node = child.child_by_field_name("name")
+                    break
+        if name_node is not None and name_node.text:
+            try:
+                symbols.append(name_node.text.decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+    return symbols
 
 
 # ── Extractor ─────────────────────────────────────────────────────────────
@@ -260,3 +310,105 @@ class GraphRAGDynamicExtractor:
 
         truncated: bool = len(ranked) > len(kept)
         return kept, total, truncated
+
+    # ── Phase 3.2: Semantic-guided deep parse ─────────────────────────
+
+    async def _expand_neighbors(self, seed_files: List[str]) -> List[str]:
+        """Return 1-degree SQLite neighbors for all seed_files in a single batch.
+
+        Reuses the chunked IN-clause pattern from _bfs_k_hop (O(1) DB round-trips
+        regardless of seed count, within SQLITE_LIMIT_VARIABLE_NUMBER).
+        """
+        if not seed_files:
+            return []
+        visited: set[str] = set(seed_files)
+        result: List[str] = []
+        for chunk_start in range(0, len(seed_files), _SQL_CHUNK_SIZE):
+            chunk: List[str] = seed_files[chunk_start: chunk_start + _SQL_CHUNK_SIZE]
+            placeholders: str = ",".join("?" * len(chunk))
+            query: str = (
+                f"SELECT DISTINCT target_dependency FROM dependency_graph "
+                f"WHERE source_file IN ({placeholders}) AND project_id = ?"
+            )
+            params: Tuple[object, ...] = (*chunk, self._project_id)
+            async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+                async with db.execute(query, params) as cur:
+                    rows = await cur.fetchall()
+            for (target,) in rows:
+                if target and target not in visited:
+                    visited.add(target)
+                    result.append(target)
+        return result
+
+    async def deep_parse(
+        self,
+        seed_files: List[str],
+        workspace_root: str,
+    ) -> DeepParseResult:
+        """Expand seed_files 1-degree via SQLite, then VFS-read + Tree-sitter parse.
+
+        Neighbor expansion is async (SQLite). VFS reads and Tree-sitter CPU work
+        are wrapped in asyncio.to_thread to avoid blocking the LangGraph event loop.
+        """
+        if not seed_files:
+            return DeepParseResult(
+                target_files=[],
+                parsed_files=[],
+                context_block="",
+                coverage_ratio=0.0,
+                token_count=0,
+            )
+        neighbors = await self._expand_neighbors(seed_files)
+        # Preserve seed order, append neighbors, deduplicate.
+        target_files: List[str] = list(dict.fromkeys([*seed_files, *neighbors]))
+        return await asyncio.to_thread(self._deep_parse_sync, target_files, workspace_root)
+
+    def _deep_parse_sync(
+        self,
+        target_files: List[str],
+        workspace_root: str,
+    ) -> DeepParseResult:
+        """Blocking: VFS read + Tree-sitter parse for each target file.
+
+        Runs inside asyncio.to_thread. Deferred imports isolate VFS/AST from
+        module-level loading (consistent with project SPOF guard pattern).
+        """
+        from core.vfs_middleware import VFSMiddleware
+        from core.ast_engine import ASTEngine
+        from shared.contracts import detect_language
+
+        vfs = VFSMiddleware()  # type: ignore[no-untyped-call]
+        ast_engine = ASTEngine()
+        lines: List[str] = ["## Code Context — Semantic Deep Parse (Phase 3.2):"]
+        parsed: List[str] = []
+
+        for file_path in target_files:
+            vfs_result = vfs.read_safe(
+                file_path,
+                project_id=self._project_id,
+                project_root=workspace_root,
+            )
+            if not vfs_result.ok or vfs_result.content is None:
+                continue
+            lang: Any = detect_language(file_path)
+            if not lang:
+                continue
+            tree: Any = ast_engine.parse(file_path, vfs_result.content, lang)
+            symbols = _extract_top_level_symbols(tree)
+            parsed.append(file_path)
+            sym_str = (
+                ", ".join(f"`{s}`" for s in symbols[:20])
+                if symbols else "(no top-level symbols)"
+            )
+            lines.append(f"\n### {file_path}  [{lang}]\nSymbols: {sym_str}")
+
+        context_block = "\n".join(lines) if parsed else ""
+        token_count = len(_ENC.encode(context_block)) if context_block else 0
+        coverage = len(parsed) / len(target_files) if target_files else 0.0
+        return DeepParseResult(
+            target_files=target_files,
+            parsed_files=parsed,
+            context_block=context_block,
+            coverage_ratio=min(1.0, coverage),
+            token_count=token_count,
+        )
