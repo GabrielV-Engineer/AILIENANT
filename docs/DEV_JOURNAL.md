@@ -198,7 +198,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
-## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica, Motor Vectorial Semántico y Consolidación Atómica del CSS, Cierre de la Memoria Evolutiva - Zero-Drift & Lazy Parsing, Activación de la Matriz de Ruteo Dinámico
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica, Motor Vectorial Semántico y Consolidación Atómica del CSS, Cierre de la Memoria Evolutiva - Zero-Drift & Lazy Parsing, Activación de la Matriz de Ruteo Dinámico, Consolidación del Veto Absoluto 
 
 ## Extractor GraphRAG Dinámico y Defensas de Memoria
 * **Topología $k$-hop Asíncrona:** Implementación de un recorrido BFS sobre el árbol de dependencias (`aiosqlite`). Se introdujo *chunking* para evadir los límites de variables `IN` de SQLite, asegurando latencia $O(k)$ constante.
@@ -223,3 +223,11 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Portero Matemático (O1):** Implementación de la lógica de "Red Alert" (CSS < 40%). Si el contexto es insuficiente, el sistema aborta el ruteo local y escala a la nube para mitigar riesgos de alucinación.
 * **Mini-Juez de Complejidad:** Creación de `core/memory/context_auditor.py`. Se utiliza un modelo ligero para clasificar la intención del usuario. Tareas etiquetadas como `COMPLEX` fuerzan un TCI de 100.0, activando el nivel más alto de inferencia disponible.
 * **Zero-Trust & Robustez:** Se implementaron fail-safes para que, ante cualquier caída del servidor de auditoría, el sistema por defecto no escale innecesariamente, protegiendo el presupuesto de tokens.
+## Consolidación del Veto Absoluto 
+* **Jerarquía de Decisión Finalizada:** Se estableció la soberanía del `RiskLevel` sobre las métricas puramente matemáticas. El sistema ahora opera bajo un modelo de "Confianza Verificada".
+* **Lógica Monotónica:** Implementada la matriz 3x3 de ruteo. Se verificó mediante tests de aserción que el sistema es incapaz de degradar el nivel de cómputo si existe un riesgo semántico detectado, eliminando fallos por exceso de confianza (Overconfidence bias).
+* **Blindaje de Telemetría:** El `Task Complexity Index (TCI)` ahora actúa como un espejo del riesgo semántico (75 para Medium, 100 para High), permitiendo auditorías de costos precisas en el futuro.
+* **Estado del Proyecto:** Fase 3 (Memoria Evolutiva) completada al 100%. El núcleo es ahora capaz de autogestionar su contexto y ruteo con seguridad industrial.
+
+---
+

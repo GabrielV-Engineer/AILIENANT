@@ -14,7 +14,11 @@ from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
 from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
 from core.memory.semantic_memory import SemanticMemoryManager
-from core.memory.context_auditor import audit_task_complexity, derive_routing_decision
+from core.memory.context_auditor import (
+    audit_task_complexity,
+    derive_routing_decision,
+    RiskLevel,
+)
 
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
@@ -273,19 +277,50 @@ async def run_planner_node(state: dict) -> dict:
                 updated_context_metrics.css_total,
             )
         else:
-            _is_complex: bool = await audit_task_complexity(user_input, session_id=session_id)
-            if _is_complex:
+            _risk: RiskLevel = await audit_task_complexity(user_input, session_id=session_id)
+            _math_routing: str = derive_routing_decision(
+                tci, updated_context_metrics.css_total
+            )
+
+            if _risk == RiskLevel.HIGH:
+                _cascade_routing = "CLOUD"
+                _cascade_provider = "CLOUD"
+                if _math_routing != "CLOUD":
+                    logger.warning(
+                        "VETO: Semantic risk detected, overriding %s to CLOUD",
+                        _math_routing,
+                    )
                 tci = 100.0
                 updated_context_metrics = updated_context_metrics.model_copy(
                     update={"task_complexity_index": 100.0}
                 )
-                _cascade_routing = "CLOUD"
-                _cascade_provider = "CLOUD"
-                logger.info("Phase 3.3: MiniJudge=COMPLEX → TCI=100.0, routing=CLOUD.")
-            else:
-                _cascade_routing = derive_routing_decision(tci, updated_context_metrics.css_total)
+                logger.info("Phase 3.3.3: MiniJudge=HIGH → TCI=100.0, routing=CLOUD.")
+
+            elif _risk == RiskLevel.MEDIUM:
+                if _math_routing == "LOCAL_SMALL":
+                    _cascade_routing = "LOCAL_BIG"
+                    logger.warning(
+                        "VETO: Semantic risk detected, overriding LOCAL_SMALL to LOCAL_BIG"
+                    )
+                else:
+                    _cascade_routing = _math_routing
                 _cascade_provider = "CLOUD" if _cascade_routing == "CLOUD" else "LOCAL"
-                logger.info("Phase 3.3: MiniJudge=SIMPLE → routing=%s.", _cascade_routing)
+                tci = max(tci, 75.0)
+                updated_context_metrics = updated_context_metrics.model_copy(
+                    update={"task_complexity_index": tci}
+                )
+                logger.info(
+                    "Phase 3.3.3: MiniJudge=MEDIUM → TCI=%.1f, routing=%s.",
+                    tci, _cascade_routing,
+                )
+
+            else:
+                _cascade_routing = _math_routing
+                _cascade_provider = "CLOUD" if _cascade_routing == "CLOUD" else "LOCAL"
+                logger.info(
+                    "Phase 3.3.3: MiniJudge=NONE → routing=%s (math defer).",
+                    _cascade_routing,
+                )
 
         updated_context_metrics = updated_context_metrics.model_copy(
             update={"routing_decision": _cascade_routing}

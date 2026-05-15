@@ -7,28 +7,49 @@ derive_routing_decision — pure-function 3-tier mapping (no I/O).
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from typing import Optional
 
 from shared.config import MINI_JUDGE_MODEL
 
 logger = logging.getLogger("CONTEXT_AUDITOR")
 
+
+class RiskLevel(str, Enum):
+    """Semantic risk tiers emitted by the Mini-Judge.
+
+    Ordering matters for the Veto Authority in agents/planner.py:
+        NONE   — defer to mathematical routing.
+        MEDIUM — force at least LOCAL_BIG.
+        HIGH   — absolute veto → CLOUD.
+    """
+    NONE = "NONE"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
 _MINI_JUDGE_SYSTEM: str = (
-    "Determine if the user's coding task is COMPLEX (requires refactoring, "
-    "architecture changes, or deep optimization) or SIMPLE (queries, explanations, "
-    "regex fixes, or minor edits). Respond with exactly one word: COMPLEX or SIMPLE."
+    "Audit the user's coding task for semantic risk. Classify as one of:\n"
+    "  HIGH   — multi-file refactoring impacts, deep AST mutations (class "
+    "hierarchies, decorators, or core signatures), or logical complexity "
+    "that outstrips local context availability.\n"
+    "  MEDIUM — single-module refactor, non-trivial logic changes, or "
+    "moderate scope touching more than a few functions.\n"
+    "  NONE   — queries, explanations, regex fixes, or minor isolated edits.\n"
+    "Respond with exactly one word: HIGH, MEDIUM, or NONE."
 )
 
 
-async def audit_task_complexity(user_input: str, session_id: str = "") -> bool:
-    """Return True if user_input describes a COMPLEX coding task.
+async def audit_task_complexity(user_input: str, session_id: str = "") -> RiskLevel:
+    """Return the semantic RiskLevel for user_input.
 
-    Uses MINI_JUDGE_MODEL for fast binary classification.
-    Returns False on empty input or any LLM failure (fail-safe default: don't escalate).
+    Uses MINI_JUDGE_MODEL for fast 3-state classification.
+    Returns RiskLevel.NONE on empty input or any LLM failure
+    (fail-safe default: don't escalate).
     LLMGateway is deferred to avoid circular imports at module load time.
     """
     if not user_input.strip():
-        return False
+        return RiskLevel.NONE
     try:
         from tools.llm_gateway import LLMGateway  # deferred — avoids circular at module level
         response = await LLMGateway.ainvoke(
@@ -38,20 +59,25 @@ async def audit_task_complexity(user_input: str, session_id: str = "") -> bool:
             ],
             model=MINI_JUDGE_MODEL,
             temperature=0.0,
-            max_tokens=5,
+            max_tokens=8,
             session_id=session_id,
         )
         raw: Optional[str] = response.choices[0].message.content
         verdict = (raw or "").strip().upper()
-        is_complex = verdict.startswith("COMPLEX")
+        if verdict.startswith("HIGH"):
+            risk = RiskLevel.HIGH
+        elif verdict.startswith("MEDIUM"):
+            risk = RiskLevel.MEDIUM
+        else:
+            risk = RiskLevel.NONE
         logger.info(
-            "MiniJudge: input_len=%d verdict=%r complex=%s",
-            len(user_input), verdict, is_complex,
+            "MiniJudge: input_len=%d verdict=%r risk=%s",
+            len(user_input), verdict, risk.value,
         )
-        return is_complex
+        return risk
     except Exception as exc:
-        logger.warning("MiniJudge: LLM call failed (non-fatal, defaulting False): %s", exc)
-        return False
+        logger.warning("MiniJudge: LLM call failed (non-fatal, defaulting NONE): %s", exc)
+        return RiskLevel.NONE
 
 
 def derive_routing_decision(tci: float, css: float) -> str:

@@ -334,7 +334,7 @@
   - **VFS-Aware Indexer:** RAG nunca lee disco directo; pasa por `vfs_middleware` (Fase 1.3).
   - **Lazy AST Parsing:** solo se analiza AST de archivos que hacen match en Top-K + 1 grado de separación.
 
-- [ ] **3.3. Context Meter en Cascada (Cortocircuito + Mini-Juez)** - sonnet
+- [x] **3.3. Context Meter en Cascada (Cortocircuito + Mini-Juez)** - sonnet
   - **3.3.1. Portero Matemático (Early Exit + CSS):** - sonnet
     - $O(1)$: `CSS = 0.5·SemanticScore + 0.3·GraphCentrality + 0.2·RecencyBoost`.
     - Si `CSS < 40%`, bandera `is_red_alert` → salta directo al PlannerAgent (Cloud/Local-Big).
