@@ -179,6 +179,12 @@ def apply_patch_to_vfs(
     )
 
     vfs_write(file_path, patched)
+    tokens_saved = max(0, len(content) - len(replace_block)) // 4
+    logger.info(
+        "TELEMETRY: patch_applied | tokens_saved=%d | file=%s",
+        tokens_saved,
+        file_path,
+    )
     logger.info("PATCH_TOOL: patch committed to RAM-VFS for %s.", file_path)
     return unified_diff
 
@@ -238,6 +244,8 @@ def make_patch_file_tool(
                 "Error: The file was modified by the user while you were thinking. "
                 "Re-read the file and try again."
             )
+        except PatchError as e:
+            return f"PatchError: {e}. Please adjust your search_block and try again."
 
         if emit_patch is not None:
             emit_patch(file_path, unified_diff, mode)

@@ -166,7 +166,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 ---
 
 
-## 🚀 HITO 1.0.5 📅 [14/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard 
+## 🚀 HITO 1.0.5 📅 [14/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard, VFS Transaccional y Puente IPC, Resiliencia del Grafo y Protección Políglota
 
 ### Motor de Parcheo Atómico Determinista
 * **Prevención de Full-File Rewrites:** Se implementó `core/patcher.py` como un motor de reemplazo basado en el patrón SEARCH/REPLACE. Esto evita que el LLM regenere archivos completos, ahorrando miles de tokens de salida ($O(N)$ en facturación y latencia) y eliminando el riesgo de truncamiento de código.
@@ -176,3 +176,10 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Defensa contra la Ambigüedad:** Implementamos un validador en Pydantic que rechaza anclas (`search_block`) menores a 10 caracteres. Esto previene que el LLM intente parchear variables genéricas (ej. `i = 0`) que causarían fallos de múltiples coincidencias.
 * **Fuzzy Fallback de Ventana Deslizante:** Para lidiar con alucinaciones de espacios en blanco o errores tipográficos menores del LLM, implementamos un algoritmo que usa `difflib.SequenceMatcher` evaluando el archivo por ventanas del mismo tamaño que el bloque de búsqueda. Se exige un *ratio* de similitud > 0.90 para proceder.
 * **AST Sync Guard:** Antes de volcar el parche al VFS, si el archivo es `.py`, se compila en memoria con `ast.parse()`. Esto actúa como un "Fail-Fast", bloqueando instantáneamente cualquier parche que deje paréntesis huérfanos o identación corrupta.
+### VFS Transaccional y Puente IPC 
+* **OCC (Optimistic Concurrency Control):** Protegimos el VFS contra condiciones de carrera humano-IA. Se implementó una verificación de hashes (`expected_hash`); si el usuario modifica el archivo en VS Code mientras LangGraph procesa el parche, el motor lanza `StaleFileException`, forzando al LLM a re-leer el archivo y auto-corregirse sin romper el grafo.
+* **Unified Diff & IPC:** En lugar de reescribir discos, el motor genera un Diff Unificado estándar en RAM y lo emite vía WebSocket (`server_vfs_patch_approved`). Esto delega la responsabilidad de escritura a la API nativa de VS Code (`WorkspaceEdit`), manteniendo intacto el historial de `Ctrl+Z` del usuario.
+### Resiliencia del Grafo y Protección Políglota
+* **Self-Correction Loop:** Se modificó la herramienta de parcheo para capturar `PatchError` y devolverlo como un string. Esto evita que LangGraph dispare un `ToolException` fatal, permitiendo que el Agente use su `observation` para corregir la sintaxis y reintentar de forma autónoma.
+* **FinOps Telemetry:** Se implementó una heurística de $O(1)$ (`len // 4`) para estimar y loguear los tokens de salida ahorrados en cada parche exitoso.
+* **Surgical Strike Protocol:** Para evitar la corrupción de archivos de sintaxis mixta (ej. `.blade.php`, `.vue`, `.tsx`), se implementó `is_polyglot_file()`. El `PlannerAgent` intercepta estos archivos e inyecta dinámicamente un constraint inmutable (usando `model_copy` de Pydantic) que prohíbe las reescrituras de archivo completo, forzando el uso exclusivo del `patch_tool`.

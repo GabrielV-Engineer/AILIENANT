@@ -9,9 +9,29 @@ from shared.config import MODEL_MEDIUM
 from brain.state import MissionSpecification, WBSStep
 from shared.rbac import PLANNER_IDENTITY
 from prompts import build_safe_prompt
+from core.utils import is_polyglot_file
 
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
+
+_POLYGLOT_WARNING = (
+    " [!] POLYGLOT FILE DETECTED: {target_file}. "
+    "You MUST use the 'patch_file' tool for any modifications. "
+    "Full file rewrites are strictly forbidden to prevent corrupting mixed syntax."
+)
+
+
+def _inject_polyglot_constraints(tasks: list) -> list:
+    """Return a new task list with polyglot-file constraints appended to step descriptions."""
+    result = []
+    for step in tasks:
+        if step.target_file and is_polyglot_file(step.target_file):
+            step = step.model_copy(update={
+                "description": step.description
+                    + _POLYGLOT_WARNING.format(target_file=step.target_file)
+            })
+        result.append(step)
+    return result
 
 
 async def run_planner_node(state: dict) -> dict:
@@ -89,6 +109,8 @@ async def run_planner_node(state: dict) -> dict:
                     status="pending",
                 )
             ]
+
+        tasks = _inject_polyglot_constraints(tasks)   # Phase 2.22.6
 
         mock_mission = MissionSpecification(
             outcome="Análisis inicial completado de forma sintética.",
@@ -190,6 +212,9 @@ async def run_planner_node(state: dict) -> dict:
 
         try:
             mission_plan = MissionSpecification.model_validate_json(raw_json)
+            mission_plan = mission_plan.model_copy(update={   # Phase 2.22.6
+                "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
+            })
         except Exception as parse_err:
             logger.error(f"❌ Error de parsing del LLM: {parse_err}")
             return {"errors": [f"El LLM no generó un contrato SDD válido: {parse_err}"]}

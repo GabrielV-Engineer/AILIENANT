@@ -24,6 +24,7 @@ from tools.patch_tool import (
     AtomicPatchInput,
     _fuzzy_find_and_replace,
     _validate_python_syntax,
+    make_patch_file_tool,
 )
 
 
@@ -96,3 +97,42 @@ def test_ast_validation_raises_patch_error_on_broken_python() -> None:
 
 def test_ast_validation_skipped_for_non_python_files() -> None:
     _validate_python_syntax("{{{{{{{{ not python }}}}}}}}", "template.html")
+
+
+# ---------------------------------------------------------------------------
+# make_patch_file_tool — PatchError caught as string (Phase 2.22.5)
+# ---------------------------------------------------------------------------
+
+
+def test_syntax_error_caught_by_tool() -> None:
+    """PatchError from AST validation must be returned as string, not raised."""
+    content = "def foo():\n    return 1\n"
+    storage = {"foo.py": content}
+    tool = make_patch_file_tool(
+        vfs_read=lambda p: storage.get(p),
+        vfs_write=lambda p, c: storage.update({p: c}),
+    )
+    result = tool.invoke({
+        "file_path": "foo.py",
+        "search_block": "def foo():\n    return 1\n",
+        "replace_block": "def foo():\n    return (\n",  # unclosed paren → SyntaxError
+    })
+    assert "PatchError" in result
+    assert storage["foo.py"] == content  # VFS must not be written on failure
+
+
+def test_search_not_found_caught_by_tool() -> None:
+    """PatchError from fuzzy miss must be returned as string, not raised."""
+    content = "def foo():\n    return 1\n"
+    storage = {"foo.py": content}
+    tool = make_patch_file_tool(
+        vfs_read=lambda p: storage.get(p),
+        vfs_write=lambda p, c: storage.update({p: c}),
+    )
+    result = tool.invoke({
+        "file_path": "foo.py",
+        "search_block": "class CompletelyDifferentThing:\n    def unrelated_method(self):\n        pass\n",
+        "replace_block": "replacement code here",
+    })
+    assert "PatchError" in result
+    assert storage["foo.py"] == content  # VFS must not be written on failure

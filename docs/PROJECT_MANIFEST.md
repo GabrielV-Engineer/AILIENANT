@@ -282,17 +282,17 @@
   - [x] **2.22.2. Motor de Anclaje de Contexto (Fuzzy Matching)**
     - LLMs alucinan números de línea y sangría. Algoritmo en `TaskService` usa Levenshtein o Diff unificado para localizar `search_block` incluso si se omitieron whitespace/comentarios.
     - Validación de límites AST antes de aplicar — evita llaves `}` huérfanas.
-  - [ ] **2.22.3. Transaccionalidad en VFS (VFS Commit)**
+  - [x] **2.22.3. Transaccionalidad en VFS (VFS Commit)**
     - `apply_patch_to_vfs()` muta solo memoria virtual.
     - OCC: si el archivo cambió en VS Code mientras el LLM generaba, aborta con `StaleFileException` y pide recálculo. **Ref:** Fase 1.5.
     - Genera Unified Diff del resultado en memoria.
-  - [ ] **2.22.4. Puente IPC (VFS → vscode.WorkspaceEdit)**
+  - [x] **2.22.4. Puente IPC (VFS → vscode.WorkspaceEdit)**
     - Evento WebSocket envía el diff aprobado desde FastAPI → extensión.
     - TypeScript instancia `vscode.WorkspaceEdit`; renderiza Diff View temporal (Modo Supervisión) o aplica directo (Modo Autónomo).
-  - [ ] **2.22.5. Integración como Nodo Transaccional en LangGraph**
+  - [x] **2.22.5. Integración como Nodo Transaccional en LangGraph**
     - Envoltorio `ToolNode`. Feedback loop: si el parche falla (bloque no encontrado / sintaxis rota), el nodo devuelve log de error estándar al Agente para autocorrección.
     - Emisor de telemetría: registra tokens ahorrados (parche de 5 líneas vs archivo de 500).
-  - [ ] **2.22.6. Protocolo "Surgical Strike" para Archivos Políglotas (Frankenstein)**
+  - [x] **2.22.6. Protocolo "Surgical Strike" para Archivos Políglotas (Frankenstein)**
     - Heurística en el ResearcherAgent detecta archivos mixtos (HTML+JS embebido, Jinja/Blade).
     - Si es políglota, el Planner emite WBS con restricción `require_tool: BatchEditTool` exclusivamente — prohíbe sobreescritura de archivo completo.
 
@@ -300,7 +300,7 @@
   - Tabla SQLite dedicada a telemetría de decisiones. Registra los valores exactos (CSS, TCI, hardware) que provocaron un salto de nodo. Auditoría visual de *por qué* la IA tomó cada decisión de enrutamiento.
 
 - [ ] **2.24. Inyección Dinámica de Contexto (Vigilia)**
-  - **System Prompting:** `CoderAgent` y agentes diurnos cargan obligatoriamente `rules.json` (jerarquía Local > Global) concatenado al System Prompt antes de cada inferencia. *La jerarquía completa Dual-Rules vive en Fase 3.4.5.*
+  - **System Prompting:** `CoderAgent` y agentes diurnos cargan obligatoriamente `rules.json` (jerarquía Local > Global) concatenado al System Prompt antes de cada inferencia. *La jerarquía completa Dual-Rules vive en Fase 3.4.6.*
   - **Caché de Reglas:** invalidación solo cuando el AnalystAgent modifique el archivo — no se relee disco por cada pulsación.
 
 - [ ] **2.25. Checkpoint Gate Fase 2**
