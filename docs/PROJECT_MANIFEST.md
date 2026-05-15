@@ -303,7 +303,7 @@
   - **System Prompting:** `CoderAgent` y agentes diurnos cargan obligatoriamente `.ailienant.json` (jerarquía Local > Global) concatenado al System Prompt antes de cada inferencia. *La jerarquía completa Dual-Rules vive en Fase 3.4.6.*
   - **Caché de Reglas:** invalidación solo cuando el AnalystAgent modifique el archivo — no se relee disco por cada pulsación.
 
-- [ ] **2.25. Checkpoint Gate Fase 2**
+- [x] **2.25. Checkpoint Gate Fase 2**
   - Validación de latencia de inferencia y precisión del Output Parser.
   - Tests E2E del Micro-Enjambre: fallo de sintaxis infinito dispara el límite de iteraciones y devuelve error elegante.
 

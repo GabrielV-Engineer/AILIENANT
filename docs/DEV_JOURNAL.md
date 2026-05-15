@@ -166,7 +166,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 ---
 
 
-## 🚀 HITO 1.0.5 📅 [15/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard, VFS Transaccional y Puente IPC, Resiliencia del Grafo y Protección Políglota, Observabilidad y Auditoría Forense, Sistema de Vigilia (.ailienant.json)
+## 🚀 HITO 1.0.5 📅 [15/05/2026] | Motor de Parcheo Atómico Determinista, Context Anchoring y AST Guard, VFS Transaccional y Puente IPC, Resiliencia del Grafo y Protección Políglota, Observabilidad y Auditoría Forense, Sistema de Vigilia (.ailienant.json), y Checkpoint Gate - Certificación E2E.
 
 ### Motor de Parcheo Atómico Determinista
 * **Prevención de Full-File Rewrites:** Se implementó `core/patcher.py` como un motor de reemplazo basado en el patrón SEARCH/REPLACE. Esto evita que el LLM regenere archivos completos, ahorrando miles de tokens de salida ($O(N)$ en facturación y latencia) y eliminando el riesgo de truncamiento de código.
@@ -191,3 +191,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Identidad Pro:** Se estableció `.ailienant.json` como el archivo de configuración de reglas de estilo y arquitectura para el agente.
 * **Caché Inteligente:** Se implementó una lógica de Singleton en `core/rules.py` que solo lee el disco si el archivo ha sido modificado, optimizando los recursos durante sesiones largas de codificación.
 * **Inyección de Prompt:** El `PlannerAgent` ahora es "consciente" de las reglas del usuario. Esto permite imponer restricciones como 'No usar librerías externas' o 'Mantener funciones bajo 20 líneas' de forma persistente y automática.
+### Checkpoint Gate - Certificación E2E 
+* **Stress Test Superado:** Se validó que el `OutputParser` puede extraer JSON válido incluso cuando está envuelto en ruido o texto aleatorio, con una latencia promedio de 0.071ms.
+* **Resiliencia al Bucle Infinito:** Se implementó y verificó mediante Mocks que un error persistente en el VFS desencadena los Guardrails. El agente consume sus intentos (`MAX_RETRIES`) y finaliza el grafo elegantemente hacia `__end__`, registrando el fracaso en la telemetría, evitando el gasto infinito de tokens.
+* **Fase 2 Completada:** El núcleo transaccional, el enrutamiento de LangGraph, la telemetría local y el VFS están estabilizados.
