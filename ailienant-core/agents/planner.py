@@ -6,7 +6,7 @@ import uuid
 # Importamos nuestra puerta de enlace y los contratos estrictos
 from tools.llm_gateway import LLMGateway
 from shared.config import MODEL_MEDIUM
-from brain.state import MissionSpecification, WBSStep
+from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
 from prompts import build_safe_prompt
 from core.utils import is_polyglot_file
@@ -14,6 +14,7 @@ from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
 from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
 from core.memory.semantic_memory import SemanticMemoryManager
+from core.memory.context_auditor import audit_task_complexity, derive_routing_decision
 
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
@@ -246,6 +247,57 @@ async def run_planner_node(state: dict) -> dict:
             logger.warning("Phase 3.2: context extraction failed (non-fatal): %s", _ctx_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
+    # ── Phase 3.3: Context Meter Cascade (Early Exit + Mini-Judge) ──────────────────
+    _cascade_routing: str = "LOCAL_SMALL"   # conservative safe default
+    _cascade_provider: str = "LOCAL"        # safe default
+
+    try:
+        # Initialize ContextMeter on first invocation (context_metrics absent from state).
+        if updated_context_metrics is None:
+            updated_context_metrics = ContextMeter(
+                semantic_similarity=0.0,
+                graph_coverage=0.0,
+                recency_score=0.5,
+                css_total=css,
+                task_complexity_index=tci,
+                routing_decision="LOCAL_SMALL",  # placeholder; overwritten below
+                is_red_alert=css < 40.0,
+            )
+
+        if updated_context_metrics.is_red_alert:
+            # O(1) early exit: context gap → bypass Mini-Judge, force CLOUD.
+            _cascade_routing = "CLOUD"
+            _cascade_provider = "CLOUD"
+            logger.warning(
+                "Phase 3.3: RED ALERT (CSS=%.1f) — Mini-Judge bypassed, routing=CLOUD.",
+                updated_context_metrics.css_total,
+            )
+        else:
+            _is_complex: bool = await audit_task_complexity(user_input, session_id=session_id)
+            if _is_complex:
+                tci = 100.0
+                updated_context_metrics = updated_context_metrics.model_copy(
+                    update={"task_complexity_index": 100.0}
+                )
+                _cascade_routing = "CLOUD"
+                _cascade_provider = "CLOUD"
+                logger.info("Phase 3.3: MiniJudge=COMPLEX → TCI=100.0, routing=CLOUD.")
+            else:
+                _cascade_routing = derive_routing_decision(tci, updated_context_metrics.css_total)
+                _cascade_provider = "CLOUD" if _cascade_routing == "CLOUD" else "LOCAL"
+                logger.info("Phase 3.3: MiniJudge=SIMPLE → routing=%s.", _cascade_routing)
+
+        updated_context_metrics = updated_context_metrics.model_copy(
+            update={"routing_decision": _cascade_routing}
+        )
+        logger.info(
+            "Phase 3.3: cascade done — routing=%s provider=%s css=%.1f tci=%.1f",
+            _cascade_routing, _cascade_provider, updated_context_metrics.css_total, tci,
+        )
+    except Exception as _cascade_err:
+        logger.warning("Phase 3.3: cascade failed (non-fatal): %s", _cascade_err)
+    # ────────────────────────────────────────────────────────────────────────────────────
+
     # Instrucción humana: Aquí forzamos mentalmente al modelo a respetar el contrato SDD.
     instruction = (
         f"Requerimiento del usuario: '{user_input}'.\n\n"
@@ -309,6 +361,7 @@ async def run_planner_node(state: dict) -> dict:
             "tci": tci,
             "css": css,
             "context_metrics": updated_context_metrics,
+            "provider": _cascade_provider,
         }
         if state.get("immutable_wbs") is None:
             result["immutable_wbs"] = mission_plan

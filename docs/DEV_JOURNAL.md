@@ -198,7 +198,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
-## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica, Motor Vectorial Semántico y Consolidación Atómica del CSS, Cierre de la Memoria Evolutiva - Zero-Drift & Lazy Parsing.
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Extractor GraphRAG Dinámico y Defensas de Memoria, Cierre del Bucle de Memoria Episódica, Motor Vectorial Semántico y Consolidación Atómica del CSS, Cierre de la Memoria Evolutiva - Zero-Drift & Lazy Parsing, Activación de la Matriz de Ruteo Dinámico
 
 ## Extractor GraphRAG Dinámico y Defensas de Memoria
 * **Topología $k$-hop Asíncrona:** Implementación de un recorrido BFS sobre el árbol de dependencias (`aiosqlite`). Se introdujo *chunking* para evadir los límites de variables `IN` de SQLite, asegurando latencia $O(k)$ constante.
@@ -218,3 +218,8 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Lazy Deep Parsing:** Se implementó una separación de parsing AST. El sistema ahora solo realiza una extracción profunda de símbolos (clases/funciones) para los archivos identificados como Top-K semánticos y sus vecinos de primer grado, optimizando masivamente el uso de CPU.
 * **Búsqueda Vectorial Optimizada:** Se consolidó el acceso a LanceDB mediante `search_with_paths`, reduciendo la latencia al evitar llamadas duplicadas a la API de embeddings de LiteLLM.
 * **Validación DoD:** Se superó el script de auditoría de AST, confirmando que no existen accesos directos a disco en la ruta crítica del indexador, garantizando la integridad del VFS.
+## Activación de la Matriz de Ruteo Dinámico 
+* **Cierre de la Fase 3:** Se completó el motor de Metacognición. El sistema ahora decide autónomamente el nivel de cómputo necesario mediante una cascada de dos pasos.
+* **Portero Matemático (O1):** Implementación de la lógica de "Red Alert" (CSS < 40%). Si el contexto es insuficiente, el sistema aborta el ruteo local y escala a la nube para mitigar riesgos de alucinación.
+* **Mini-Juez de Complejidad:** Creación de `core/memory/context_auditor.py`. Se utiliza un modelo ligero para clasificar la intención del usuario. Tareas etiquetadas como `COMPLEX` fuerzan un TCI de 100.0, activando el nivel más alto de inferencia disponible.
+* **Zero-Trust & Robustez:** Se implementaron fail-safes para que, ante cualquier caída del servidor de auditoría, el sistema por defecto no escale innecesariamente, protegiendo el presupuesto de tokens.

@@ -45,3 +45,8 @@ def check_cloud_availability() -> bool:
 # Catalog DB (Phase 1.x.1) — separate from LangGraph's alienant_memory.sqlite
 # ---------------------------------------------------------------------------
 DB_CATALOG_PATH: str = os.getenv("AILIENANT_CATALOG_DB", "ailienant_catalog.sqlite")
+
+# Trajectory Memory (Phase 3.0.1) — LanceDB store and embedding model alias.
+LANCEDB_PATH: str = os.getenv("AILIENANT_LANCEDB_PATH", "ailienant_lancedb")
+MODEL_EMBEDDING: str = os.getenv("AILIENANT_MODEL_EMBEDDING", "ailienant/embedding")
+MINI_JUDGE_MODEL: str = os.getenv("AILIENANT_MINI_JUDGE_MODEL", MODEL_SMALL)
