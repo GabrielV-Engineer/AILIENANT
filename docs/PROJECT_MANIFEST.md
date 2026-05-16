@@ -344,7 +344,7 @@
   - **3.3.3. Veto Absoluto (Conditional Override):** - opus
     - Si el Mini-Juez detecta riesgos semánticos/AST que la fórmula ignoró, sobreescribe a `MEDIUM` o `BIG`.
 
-- [ ] **3.4. Motor de Predicción y "Dreaming" (Overnight Engine)** - opus
+- [x] **3.4. Motor de Predicción y "Dreaming" (Overnight Engine)** - opus
   - Proyección arquitectónica profunda con GraphRAG + LSP + MCTS (Test-Time Compute).
 
   - [x] **3.4.1. Activación y Selector de Inteligencia (Master Toggle UI)** - opus
@@ -393,7 +393,7 @@
     - **Heurística de Rechazo:** >70% del bloque alterado/borrado en <3min → `AI_PAYLOAD_REJECTED`.
     - **Destilación de Reglas:** AnalystAgent extrae la "pesadilla" y actualiza `.ailienant/.ailienant.json` local.
 
-  - [ ] **3.4.8. Hybrid Cascading & Model Routing (Smart-Execution)** - opus
+  - [x] **3.4.8. Hybrid Cascading & Model Routing (Smart-Execution)** - opus
     - **Sistema Dual (1.5 vs 2):** nodos condicionales LangGraph dirigen baja entropía → Local Big, alta abstracción → Cloud.
     - **Estratificación Cognitiva:**
       - *Cloud Architect:* genera WBS inicial + "Juez Supremo" asignando $R$ solo a ramas que pasaron tests locales.

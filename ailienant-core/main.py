@@ -30,6 +30,9 @@ from api.mcts_mirror import MergeReport, apply_merge, get_virtual_file
 from agents.analyst import distill_rejection_to_rule
 from core.rules import rule_manager
 
+# --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
+from core.token_ledger import token_ledger
+
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
 from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
@@ -253,6 +256,17 @@ async def http_telemetry_reject(payload: RejectTelemetryPayload) -> Dict[str, ob
         payload.uri, rule, appended,
     )
     return {"distilled": rule is not None, "rule": rule, "appended": appended}
+
+
+# =====================================================================
+# PHASE 3.4.8 — Hybrid Cognitive Architecture token telemetry
+# =====================================================================
+
+
+@app.get("/api/v1/telemetry/tokens")
+async def http_telemetry_tokens() -> Dict[str, float]:
+    """Phase 3.4.8 — return the TokenLedger snapshot (local vs cloud + savings)."""
+    return token_ledger.snapshot()
 
 
 async def _run_ppr_for_project(project_id: str) -> None:

@@ -45,6 +45,16 @@ _PRIORITY_MODEL_MAP: dict[TaskPriority, str] = {
     TaskPriority.CLOUD: MODEL_BIG,
 }
 
+# Phase 3.4.8 — protocol-friendly alias for the routing tiers.
+Tier = TaskPriority
+
+
+def _classify_model_as_tier(model_name: str) -> TaskPriority:
+    """Best-effort: classify a raw model name into LOCAL vs CLOUD for the ledger."""
+    if model_name == MODEL_BIG:
+        return TaskPriority.CLOUD
+    return TaskPriority.LOCAL
+
 # -------------------------------------------------------------------------
 # Heartbeat cache: {url: (is_alive, expiry_monotonic_time)}
 # Avoids hammering endpoints on every routing decision.
@@ -118,21 +128,31 @@ class LLMGateway:
     async def ainvoke(
         messages: list[dict],
         model: str = MODEL_MEDIUM,
+        tier: Optional[TaskPriority] = None,
         temperature: float = 0.0,
         response_format: Optional[dict] = None,
         max_tokens: int = 4096,
         timeout: float = 60.0,
         session_id: Optional[str] = None,
     ) -> ModelResponse:
-        """Async LLM call — non-blocking on the FastAPI event loop."""
+        """Async LLM call — non-blocking on the FastAPI event loop.
+
+        Phase 3.4.8 — pass `tier=Tier.LOCAL` or `tier=Tier.CLOUD` to route via
+        the priority map (overrides `model`). If `tier` is None, `model` is used
+        directly and the tier is inferred from the model name for accounting.
+        """
         trace_id = session_id or str(uuid.uuid4())
+        effective_model: str = (
+            _PRIORITY_MODEL_MAP[tier] if tier is not None else model
+        )
         cfg = get_litellm_config()
         logger.debug(
-            "LLM ainvoke — model=%s base_url=%s trace=%s", model, cfg["base_url"], trace_id
+            "LLM ainvoke — model=%s tier=%s base_url=%s trace=%s",
+            effective_model, tier, cfg["base_url"], trace_id,
         )
         try:
             kwargs: dict = dict(
-                model=model,
+                model=effective_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -144,10 +164,29 @@ class LLMGateway:
             )
             if response_format:
                 kwargs["response_format"] = response_format
-            return await litellm.acompletion(**kwargs)
+            response: ModelResponse = await litellm.acompletion(**kwargs)
         except Exception as e:
             logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
             raise
+
+        # Phase 3.4.8 — record token usage to the global ledger by tier.
+        try:
+            from core.token_ledger import token_ledger
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                prompt_tokens: int = int(getattr(usage, "prompt_tokens", 0) or 0)
+                completion_tokens: int = int(getattr(usage, "completion_tokens", 0) or 0)
+                resolved_tier: TaskPriority = (
+                    tier if tier is not None else _classify_model_as_tier(effective_model)
+                )
+                if resolved_tier == TaskPriority.CLOUD:
+                    token_ledger.record_cloud(prompt_tokens, completion_tokens)
+                else:
+                    token_ledger.record_local(prompt_tokens, completion_tokens)
+        except Exception as exc:
+            logger.debug("Token accounting failed (non-fatal): %s", exc)
+
+        return response
 
     @staticmethod
     async def astream(

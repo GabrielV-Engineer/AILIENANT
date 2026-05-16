@@ -187,6 +187,24 @@ _NIGHTMARE_FAILSAFE: NightmareEvaluation = NightmareEvaluation(
 )
 
 
+def _parse_nightmare_response(raw_content: Optional[str]) -> NightmareEvaluation:
+    """Parse the JSON body of a Nightmare/SupremeJudge response. Failsafe on bad input."""
+    if raw_content is None:
+        return _NIGHTMARE_FAILSAFE
+    try:
+        parsed = json.loads(raw_content)
+        clamped_reward: float = max(0.0, min(1.0, float(parsed.get("reward", 0.0))))
+        violated = parsed.get("violated_rules", [])
+        if not isinstance(violated, list):
+            violated = []
+        return NightmareEvaluation(
+            reward=clamped_reward,
+            violated_rules=[str(v) for v in violated],
+        )
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return _NIGHTMARE_FAILSAFE
+
+
 async def evaluate_nightmare(
     code_delta: str,
     rules_json_path: str,
@@ -221,17 +239,7 @@ async def evaluate_nightmare(
             session_id=session_id,
         )
         raw_content = response.choices[0].message.content
-        if raw_content is None:
-            raise ValueError("LLM returned empty content")
-        parsed = json.loads(raw_content)
-        clamped_reward: float = max(0.0, min(1.0, float(parsed.get("reward", 0.0))))
-        violated = parsed.get("violated_rules", [])
-        if not isinstance(violated, list):
-            violated = []
-        violated_strs: List[str] = [str(v) for v in violated]
-        result = NightmareEvaluation(
-            reward=clamped_reward, violated_rules=violated_strs,
-        )
+        result = _parse_nightmare_response(raw_content)
         logger.info(
             "Nightmare: delta_len=%d reward=%.3f n_violations=%d",
             len(code_delta), result.reward, len(result.violated_rules),
@@ -239,6 +247,53 @@ async def evaluate_nightmare(
         return result
     except Exception as exc:
         logger.warning("Nightmare: LLM eval failed (failsafe reward=0.0): %s", exc)
+        return _NIGHTMARE_FAILSAFE
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.4.8 — Supreme Judge (Tier.CLOUD reward evaluation)
+# ---------------------------------------------------------------------------
+
+async def supreme_judge_evaluate(
+    code_delta: str,
+    rules_json_path: str,
+    session_id: str = "",
+) -> NightmareEvaluation:
+    """Phase 3.4.8 — Tier.CLOUD reward evaluation for MCTS rollouts.
+
+    Identical contract to evaluate_nightmare() but routes via Tier.CLOUD
+    (MODEL_BIG) for higher-quality reasoning. Called only after the local
+    Micro-Isolate pipeline passes (see agents/mcts_coder.py).
+    """
+    from tools.llm_gateway import LLMGateway, Tier
+    from core.rules import RuleManager
+
+    rules_text: str = RuleManager().get_combined_rules(rules_json_path)
+    user_payload: str = (
+        f"### Project Rules:\n{rules_text}\n\n"
+        f"### Code Delta:\n{code_delta}"
+    )
+    try:
+        response = await LLMGateway.ainvoke(
+            messages=[
+                {"role": "system", "content": _NIGHTMARE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_payload},
+            ],
+            tier=Tier.CLOUD,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            max_tokens=120,
+            session_id=session_id,
+        )
+        raw_content = response.choices[0].message.content
+        result = _parse_nightmare_response(raw_content)
+        logger.info(
+            "SupremeJudge: delta_len=%d reward=%.3f n_violations=%d",
+            len(code_delta), result.reward, len(result.violated_rules),
+        )
+        return result
+    except Exception as exc:
+        logger.warning("SupremeJudge: LLM eval failed (failsafe reward=0.0): %s", exc)
         return _NIGHTMARE_FAILSAFE
 
 

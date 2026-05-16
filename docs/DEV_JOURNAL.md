@@ -278,3 +278,10 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Rule Engine:** Connected the distilled rule to `RuleManager.append_local_rule()`, utilizing a safe read-modify-write pattern to update `<workspace>/.ailienant/.ailienant.json` atomically without overwriting profile keys.
 * **Quality Assurance:**
     * Reached 229 passing tests (+14 tests). All new telemetry, atomic writing, and LLM mock endpoints fully verified. Zero regressions.
+### Hybrid Cascading & Smart Execution
+* **Hybrid Routing:** Implemented a Dual-Tier cognitive architecture (`Tier.LOCAL` vs `Tier.CLOUD`) integrated directly into `LLMGateway.ainvoke`.
+* **FinOps & Telemetry:** Created a thread-safe `TokenLedger` singleton to track local vs cloud token usage and calculate estimated USD savings, exposed via `GET /api/v1/telemetry/tokens`.
+* **MCTS Coder (Local Fixer):** Built `agents/mcts_coder.py` with a "Fail-Fast" orchestrator. The `Tier.LOCAL` worker gets up to 3 attempts to fix syntax/LSP errors before a Circuit Breaker triggers the `Tier.CLOUD` Surgeon.
+* **Supreme Judge:** Added `supreme_judge_evaluate()` using `Tier.CLOUD` to compute final node rewards, only invoked if local validation passes (saving massive API costs on hopeless branches).
+* **Quality Assurance:**
+    * Reached 246 passing tests (+17 tests). All routing, circuit breaking, fail-fast mechanics, and token accounting thoroughly verified. Zero regressions.

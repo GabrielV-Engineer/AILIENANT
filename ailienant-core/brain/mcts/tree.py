@@ -36,6 +36,8 @@ class MCTSNode:
     children: List[str] = field(default_factory=list)
     is_pruned: bool = False
     is_stable: bool = False
+    # Phase 3.4.8 — consecutive local-fixer failures. Triggers Circuit Breaker at 3.
+    error_streak: int = 0
 
 
 class MCTSTree:
