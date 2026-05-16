@@ -305,3 +305,13 @@ class AIlienantGraphState(TypedDict):
     # Fixed ceiling injected once at graph invocation from env (AILIENANT_MAX_BUDGET_USD).
     # No reducer: this value is never aggregated, only read by the finops_gate node.
     max_budget_usd: float
+
+    # --- Contract Guard (Phase 2.23) ---
+    # Render signal emitted by ContractGuardNode when a drift trigger fires; consumed
+    # by the VS Code extension to render a persistent banner. Cleared by the extension
+    # on ack. Scalar overwrite — no reducer.
+    ui_payload: Optional[Dict[str, object]]
+    # Anchor snapshot of the state at the last contract emission. Read-only for all
+    # nodes except ContractGuardNode. Holds {"tci": float, "target_role": Optional[str],
+    # "turn": int}. None until the first emission. Scalar overwrite — no reducer.
+    contract_anchor: Optional[Dict[str, object]]

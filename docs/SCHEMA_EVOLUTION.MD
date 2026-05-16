@@ -124,3 +124,39 @@ Para garantizar un flujo predecible, evitar colisiones en LangGraph y operar baj
 
 * **Regla de Consolidación (Commit):** El estado temporal del grafo (`AIlienantGraphState`) no persiste automáticamente. Toda mutación de código confirmada y ejecutada por el `CoderAgent` debe pasar por la validación de hashing del motor de memoria.
 * **Sincronización:** Solo tras obtener un exit code exitoso (ej. del micro-enjambre de Testing) y pasar el hashing, el código se refleja permanentemente en la memoria a largo plazo (LanceDB / NetworkX), actualizando el contexto para futuras recuperaciones del `ResearcherAgent`.
+
+### 🛡️ 4. Phase 2.26 — Contract Guard Fields (Additive Schema Growth)
+
+`AIlienantGraphState` gana dos campos opcionales. `ContextMeter` Pydantic permanece **inmutable**.
+
+| Campo | Tipo | Owner (mutación) | Semántica |
+|---|---|---|---|
+| `ui_payload` | `Optional[Dict[str, object]]` | `ContractGuardNode` | Señal de render para la extensión VS Code. Cuando llega no-None con `action="RENDER_PERSISTENT_CONTRACT"`, el frontend dibuja el banner persistente y luego lo *ack* (vuelve a `None`). |
+| `contract_anchor` | `Optional[Dict[str, object]]` | `ContractGuardNode` (sólo) | Snapshot de `{tci, target_role, turn}` en la última emisión. Read-only para el resto del grafo. `None` hasta la primera emisión. |
+
+Ambos campos son *scalar overwrite* (sin reducer) — no se aplican en fan-out paralelo porque `ContractGuardNode` corre en serie tras `coder_agent`.
+
+**Invariantes deterministas (O(1)):**
+
+* **TCI Delta:** `abs(state["tci"] - anchor["tci"]) > 15.0` (puntos absolutos sobre 0–100). Requiere anchor previo.
+* **CSS at Token Capacity:** `state["css"] < 40.0` **AND** `(token_usage.local + token_usage.cloud) / active_llm_profile.context_window >= 0.80`. Es la única regla que puede disparar en el primer turno (sin anchor).
+* **Subgraph/Domain Shift:** `state["target_role"] != anchor["target_role"]` (y `target_role is not None`). Requiere anchor previo.
+
+**Contrato del payload:**
+
+```jsonc
+{
+  "action": "RENDER_PERSISTENT_CONTRACT",
+  "reason": "TCI_DELTA | CSS_AT_CAPACITY | SUBGRAPH_SHIFT",
+  "contract": {
+    "mission_outcome": "...",
+    "active_role": "Refactor|Infra|Doc|SecOps|Test",
+    "in_scope": ["..."],
+    "out_of_scope": ["..."],
+    "open_constraints": ["..."],
+    "trigger_reason": "TCI_DELTA | CSS_AT_CAPACITY | SUBGRAPH_SHIFT"
+  }
+}
+```
+
+`SessionContract` (Pydantic) es el contrato vinculante para el LLM y la extensión. Cualquier fallo de red, parse o validación del LLM cae a un esqueleto determinista construido desde `mission_spec.outcome / .scope / .constraints` — el banner siempre se renderiza si el trigger se activó.

@@ -307,6 +307,19 @@
   - Validación de latencia de inferencia y precisión del Output Parser.
   - Tests E2E del Micro-Enjambre: fallo de sintaxis infinito dispara el límite de iteraciones y devuelve error elegante.
 
+- [x] **2.26. ContractGuardNode (Event-Driven Context Anchoring)**
+  **Objetivo:** middleware determinista O(1) que vigila la deriva de contexto y emite un *SessionContract* persistente cuando una de tres señales se dispara.
+  - [x] **2.26.1. Nuevos campos de estado (additive schema growth):** `ui_payload: Optional[Dict]` y `contract_anchor: Optional[Dict]` en `AIlienantGraphState`. `ContextMeter` permanece inmutable. Documentado en `SCHEMA_EVOLUTION.MD`.
+  - [x] **2.26.2. Triggers deterministas O(1):**
+    - **TCI Delta:** `abs(state["tci"] - anchor.tci) > 15.0` (puntos absolutos sobre 0–100).
+    - **CSS at Token Capacity:** `state["css"] < 40.0 AND (token_usage.local + token_usage.cloud) / active_llm_profile.context_window >= 0.80`.
+    - **Subgraph/Domain Shift:** `state["target_role"] != anchor.target_role` (sólo con anchor presente).
+  - [x] **2.26.3. ContractGuardNode + SessionContract Pydantic** en `agents/contract_guard.py`. Cero coste LLM en turnos silenciosos (returns `{}`). En trigger: invoca `LLMGateway.ainvoke(response_format={"type": "json_object"})` con fallback a esqueleto determinista si la red falla.
+  - [x] **2.26.4. Inyección como middleware transparente:** `coder_agent → contract_guard → finops_gate` mediante dos `add_edge` directos en `brain/engine.py`. Sin routing function (anti-cognitive-noise: el nodo se auto-corto-circuita).
+  - [x] **2.26.5. DoD:** `mypy agents/contract_guard.py` (0 errors); `pytest tests/test_contract_guard.py` (11 passed); `pytest -x` (281 passed, regresión limpia).
+
+  > **Nota:** la versión inicial del brief llamó a este trabajo "Fase 2.17". Renumerado a **2.26** para preservar la Fase 2.17 (Blob Storage) ya entregada y porque 2.23–2.25 también están ocupados.
+
 ---
 
 ## 🗂️ FASE 3 — Sistema de Memoria Evolutiva (GraphRAG Híbrido)
@@ -359,12 +372,12 @@
         - Umbrales configurables vía `.ailienant/rules.json`.
     - Configuración persistente.
 
-  - [x] **3.4.2. Session Delta Aggregator (Pre-Dream Reflection)** - sonnet
+  - [x] **3.4.2. Session Delta Aggregator (Pre-Dream Reflection)** 
     - AnalystAgent lee `vfs_buffer` + `messages` del estado actual.
     - Genera Self-Reflection compacta de lo que el usuario intentó + errores en `terminal_output`.
     - Inyecta como `{session_delta}` para que MCTS arranque alineado con el estado mental inmediato.
 
-  - [x] **3.4.3. The Overnight Daemon (Motor Estratégico)** - opus
+  - [x] **3.4.3. The Overnight Daemon (Motor Estratégico)**
     - **Background Worker Aislado:** MCTS fuera del hilo principal de FastAPI; ciclos 3-5h sin bloquear.
     - **Horizonte de Predicción (Atomic Work Units):** profundidad basada en Micro-Tareas + Blast Radius.
     - **MCTS Garbage Collection:** ramas podadas destruyen su `_ram_vfs` instantáneamente — previene heap overflow.
@@ -372,28 +385,28 @@
     - **Researcher como Navegador:** recupera del GraphRAG solo nodos/aristas del hito; si el sueño sale del subgrafo, expande o poda.
     - **Nightmare Protocol (Poda Heurística):** AnalystAgent cruza propuestas con `.ailienant.json`. Pesadilla arquitectónica → `R=0` → rama muere.
 
-  - [x] **3.4.4. Validación Estática Políglota ("Micro-Isolate")** - opus
+  - [x] **3.4.4. Validación Estática Políglota ("Micro-Isolate")**
     - **RAM VFS (Flyweight Pattern):** FS virtual en memoria; LSP "ve" los cambios sin tocar disco.
     - **Filtro Capa 1 (Tree-sitter AST):** validación estructural $O(1)$. Sintaxis rota → rama descartada.
     - **Filtro Capa 2 (LSP Feedback):** 0 errores de tipado/referencias antes de recompensa positiva.
     - **Sincronización Transitoria:** `VirtualDocumentProvid archivos soñados y reales.er` mapea dependencias entre
 
-  - [x] **3.4.5. Virtual Document Provider (The Mirror)** - opus
+  - [x] **3.4.5. Virtual Document Provider (The Mirror)** 
     - VS Code API: URI scheme `ailienant-vision://`, Diff-View nativa entre código actual y rama ganadora.
     - One-Click Merge para aplicar al workspace real.
 
-  - [x] **3.4.6. Dual-Rules Resolver (Arquitectura Jerárquica)** - opus
+  - [x] **3.4.6. Dual-Rules Resolver (Arquitectura Jerárquica)** 
     - **Precedencia:** `./.ailienant/.ailienant.json` (Local) > `~/.ailienant/.ailienant.json` (Global).
     - **Motor de Composición:** combina global + local por inferencia.
     - **Conflict Resolution:** local override en colisiones.
 
-  - [x] **3.4.7. Telemetría Diurna Silenciosa (Subconsciente + Bounding Box)** - opus
+  - [x] **3.4.7. Telemetría Diurna Silenciosa (Subconsciente + Bounding Box)**
     - **Bounding Box:** extensión registra `startLine`/`endLine` de cada bloque inyectado por IA.
     - **Decaimiento (Colisión Espacial):** listener `onDidChangeTextDocument` evalúa $O(1)$ longitud + intersección.
     - **Heurística de Rechazo:** >70% del bloque alterado/borrado en <3min → `AI_PAYLOAD_REJECTED`.
     - **Destilación de Reglas:** AnalystAgent extrae la "pesadilla" y actualiza `.ailienant/.ailienant.json` local.
 
-  - [x] **3.4.8. Hybrid Cascading & Model Routing (Smart-Execution)** - opus
+  - [x] **3.4.8. Hybrid Cascading & Model Routing (Smart-Execution)**
     - **Sistema Dual (1.5 vs 2):** nodos condicionales LangGraph dirigen baja entropía → Local Big, alta abstracción → Cloud.
     - **Estratificación Cognitiva:**
       - *Cloud Architect:* genera WBS inicial + "Juez Supremo" asignando $R$ solo a ramas que pasaron tests locales.
@@ -405,15 +418,15 @@
       - Desatasco quirúrgico: snapshot comprimido → Cloud para corrección de alto nivel.
     - **Monitor de Telemetría Híbrida:** diferencia "Tokens Ahorrados" (local) vs "Tokens Invertidos" (Cloud) en la UI.
 
-- [x] **3.5. Ciclo de Vida de Memoria (Garbage Collection & Janitor Service)** - sonnet
+- [x] **3.5. Ciclo de Vida de Memoria (Garbage Collection & Janitor Service)**
   - **Git-Diff GC:** limpieza asíncrona de LanceDB escuchando eventos Git para purgar embeddings de archivos borrados.
   - **Detector de Proyectos Huérfanos:** escaneo comparativo de hashes almacenados vs rutas en disco.
   - **Servicio de Purga:** comando para eliminación manual de sub-grafos viejos.
 
-- [x] **3.6. Cognitive State Management (Fast-Boot)** - sonnet
+- [x] **3.6. Cognitive State Management (Fast-Boot)** 
   - Volcado de resúmenes en `.ailienant/AGENTS.md` permite al PlannerAgent Cold Start instantáneo sin saturar LanceDB al reiniciar VS Code.
 
-- [ ] **3.7. Checkpoint Gate Fase 3**
+- [x] **3.7. Checkpoint Gate Fase 3**
   - Validación E2E del flujo Retrieval → contexto inyectado → respuesta del agente.
   - Métricas: precisión de recuperación, latencia $O(1)$ confirmada bajo carga.
 
@@ -425,23 +438,23 @@
 
 - [ ] **4.1. Motor de Agentes Base (Nodos Cognitivos)**
 
-  - [ ] **4.1.1. ResearcherAgent (El Sabueso del Contexto)**
+  - [ ] **4.1.1. ResearcherAgent (El Sabueso del Contexto)** -sonnet
     - **Misión:** capa de recuperación. Entrada: query del usuario. Salida: Skeleton Prompt (mapa de firmas + relaciones, no archivos enteros).
     - **Mecánica:** `query_graphrag` (LanceDB + NetworkX), `GlobTool`, `GrepTool`. No muta código.
     - **Override de Percepción:** si `EntropyPayload.explicit_mentions` está presente, bypass parcial del GraphRAG + `FileReadTool` para contenido exacto.
 
-  - [ ] **4.1.2. PlannerAgent (El Arquitecto & SDD Enforcer)**
+  - [ ] **4.1.2. PlannerAgent (El Arquitecto & SDD Enforcer)** - opus
     - **Misión:** traduce requerimiento + contexto VFS en un Macro-Contrato siguiendo SDD.
     - **Mecánica:** Pydantic `MissionSpecification`. Blinda `scope`, `constraints`, `tasks` atómicas. Validación `with_structured_output` (Fail-Fast).
     - **Optimización:** ejecuta una sola vez $O(1)$. Modelo "Heavy" para arquitectura coherente.
 
-  - [ ] **4.1.3. OrchestratorAgent (El Capataz — Runtime Controller)**
+  - [ ] **4.1.3. OrchestratorAgent (El Capataz — Runtime Controller)** - sonnet
     - **Misión:** ciclo de vida del WBS, telemetría, Prompt Swapping.
     - **Mecánica:** bucle de LangGraph $O(N)$. Single Source of Truth: itera sobre `state["mission_spec"].tasks`.
     - **3D Routing + Prompt Swapping:** evalúa CSS, extrae `target_role` del paso actual, inyecta personalidad restrictiva en el CoderAgent.
     - **Drift Detection:** tarea fallida → muta estado a `failed` + evalúa `HITL_APPROVAL_REQUIRED`.
 
-  - [ ] **4.1.4. CoderAgent / LogicAgent (El Obrero Mutante — Transmutación Dinámica)**
+  - [ ] **4.1.4. CoderAgent / LogicAgent (El Obrero Mutante — Transmutación Dinámica)** - sonnet
     - **Misión:** único nodo con permisos `Write` + `Execute`. Ejecuta WBS interactuando con VFS y hardware.
     - **Implementación (Prompt Swapping + Tool Sandboxing):** un solo modelo en memoria; modifica System Prompt + Array de Tools MCP en tiempo real (`ailienant-core/prompts/roles.py`) según etiqueta de dominio del Planner.
     - **Registro de Transmutación (RBAC Cognitivo):**
@@ -455,7 +468,7 @@
       - 🧠 `data_ml_engineer` — Matemático. Pipelines de datos, tensores, analytics.
     - **Propósito:** cobertura experta SOTA con 1 solo modelo en memoria ($O(1)$ VRAM); polimorfismo cognitivo + Zero Trust en tools.
 
-  - [ ] **4.1.5. AnalystAgent (El Copiloto Socrático)**
+  - [ ] **4.1.5. AnalystAgent (El Copiloto Socrático)** - sonnet
     - **Misión:** interfaz conversacional para revisión, crítica, explicación de código.
     - **Fuentes de Información:**
       1. Memoria corto plazo: `AIlienantGraphState`.
@@ -468,7 +481,7 @@
       - [ ] **Prevención de Contaminación:** separar "Voz" (chat) de "Lógica" (validación) — la personalidad no contamina parches reales.
       - [ ] **Hot-Reloading:** lectura dinámica del backend; editar `SOUL.md` cambia el tono sin reiniciar servidor.
 
-- [ ] **4.2. Validadores Deterministas (Nodos Mecánicos / No-LLM)**
+- [ ] **4.2. Validadores Deterministas (Nodos Mecánicos / No-LLM)** - sonnet
   - Scripts Python puros como nodos LangGraph. Cero tokens, cero VRAM.
   - **Interceptor de Sintaxis:** wrappers `flake8`, `eslint`, `ast.parse`.
   - **Interceptor de Ejecución:** wrappers `pytest`, Sandbox Wasm — capturan `stdout/stderr` seguro.
@@ -488,25 +501,25 @@
 
 - [ ] **4.3. Motor de Orquestación (Modos de Ejecución Dinámicos)**
 
-  - **Modo Secuencial (Bypass Local):**
+  - **Modo Secuencial (Bypass Local):** - sonnet
     - Flujo: User → IntentRouter → Analyst/Coder → User.
     - Desactiva LangGraph completo (cero SQLite, cero nodos cíclicos). 1 modelo, latencia 1-3s. One-Shot.
 
-  - **Modo Micro-Enjambre (ReAct — Bucle Cerrado):**
+  - **Modo Micro-Enjambre (ReAct — Bucle Cerrado):** -sonnet
     - 1 Agente Cognitivo + Validadores Deterministas. Sin múltiples LLMs hablando entre sí.
     - Flujo: CoderAgent (Tool Calling) → Validador (Python) → Linter en CPU → si error, error inyectado al historial, reinicia bucle.
     - `max_retries=2`. 1 modelo en VRAM.
 
-  - **Modo Enjambre Completo (Enterprise Bicephalous):**
+  - **Modo Enjambre Completo (Enterprise Bicephalous):** - opus
     - Flujo: Researcher → Planner (Macro-Contrato SDD) → Orchestrator (Roles + Routing) → [Micro-Enjambre ReAct: CoderMutante ↔ Validadores] → Analyst (Reporte Final).
     - Grafo completo con persistencia SQLite. Planner "Heavy" $O(1)$; Orchestrator "Small" $O(N)$ inyectando roles.
 
-- [ ] **4.4. Monitor de Ciclo de Vida y Seguridad (Lifecycle & PID Manager)**
+- [ ] **4.4. Monitor de Ciclo de Vida y Seguridad (Lifecycle & PID Manager)** - sonnet
   - **PID Binding:** registro del PID de la ventana activa de VS Code junto a la sesión async de LangGraph.
   - **Interceptor de Señales:** listener para cierre de ventana / cambio de Workspace.
   - **Graceful Shutdown Selectivo:** terminación de subprocesos de "Mirror Dreaming" + liberación de VRAM al detectar workspace inactivo. *Distinto del WAL graceful shutdown de Fase 2.5/2.15 — este es por workspace, no por proceso.*
 
-- [ ] **4.5. Checkpoint Gate Fase 4**
+- [ ] **4.5. Checkpoint Gate Fase 4** - sonnet
   - Validación de transiciones entre modos (Bypass ↔ LangGraph) libera `KV Cache` correctamente.
   - Tests del Micro-Enjambre: fallo de sintaxis infinito dispara límite de iteraciones y devuelve error elegante.
 

@@ -27,6 +27,7 @@ from brain.guardrails import run_validate_output_node, route_after_validation  #
 from brain.drift_monitor import run_drift_monitor_node  # noqa: E402
 from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
+from agents.contract_guard import run_contract_guard_node  # noqa: E402 — Phase 2.23
 
 
 async def run_apply_patch_node(state: dict) -> dict:
@@ -74,6 +75,7 @@ workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[t
 workflow.add_node("finops_gate", run_finops_node)           # type: ignore[type-var]
 workflow.add_node("ideation_loop", ideation_graph)  # type: ignore[arg-type]
 workflow.add_node("session_delta_aggregator", run_session_delta_aggregator_node)  # type: ignore[type-var]
+workflow.add_node("contract_guard", run_contract_guard_node)  # type: ignore[type-var]  # Phase 2.23
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -149,7 +151,14 @@ workflow.add_conditional_edges(
 workflow.add_edge("ideation_loop", END)
 workflow.add_edge("planner_agent", "drift_monitor")
 workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"])
-workflow.add_edge("coder_agent", "finops_gate")
+# Phase 2.23 — ContractGuardNode is inserted as transparent middleware between
+# CoderAgent and FinOpsGate. The node short-circuits internally (returns {} on
+# quiet turns), so a routing callback would be cognitive noise. The node also
+# owns contract_anchor mutation, which would have to be fragmented across the
+# router otherwise — keeping it as a direct edge preserves a single ownership
+# boundary for both the trigger evaluation and the anchor snapshot.
+workflow.add_edge("coder_agent", "contract_guard")
+workflow.add_edge("contract_guard", "finops_gate")
 workflow.add_conditional_edges("finops_gate", route_after_finops, ["apply_patch", END])
 workflow.add_edge("apply_patch", "validate_output")
 workflow.add_conditional_edges("validate_output", route_after_validation, ["coder_agent", END])
@@ -165,7 +174,7 @@ alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 logger.info(
     "🟢 Motor AILIENANT compilado: "
     "SummarizeHistory → SessionDeltaAggregator → [PlannerAgent | IdeationLoop(Socratic)] → "
-    "DriftMonitor → route_to_coders → CoderAgent(s) → "
+    "DriftMonitor → route_to_coders → CoderAgent(s) → ContractGuard → "
     "FinOpsGate → ApplyPatch → ValidateOutput."
 )
 
