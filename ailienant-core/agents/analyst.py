@@ -14,7 +14,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -240,3 +240,70 @@ async def evaluate_nightmare(
     except Exception as exc:
         logger.warning("Nightmare: LLM eval failed (failsafe reward=0.0): %s", exc)
         return _NIGHTMARE_FAILSAFE
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.4.7 — Rule Distillation
+# ---------------------------------------------------------------------------
+
+_RULE_DISTILLER_SYSTEM_PROMPT: str = (
+    "You are the AnalystAgent performing Rule Distillation. "
+    "You will receive CODE_A (what the AI wrote) and CODE_B (what the human "
+    "corrected it to). Deduce ONE concise project rule (<=20 words) that, if "
+    "the AI had followed it, would have made it write CODE_B in the first place. "
+    "Focus on the underlying coding preference, not the literal edit.\n"
+    "Examples: 'Prefer list comprehensions over for-loop accumulation'; "
+    "'Use single quotes for string literals'; 'Type-annotate all public functions'.\n"
+    "If the diff is purely cosmetic (whitespace, trivial naming) or no clear "
+    "rule emerges, respond {\"rule\": null}. "
+    'Respond ONLY with a JSON object: {"rule": "<rule>"} or {"rule": null}.'
+)
+
+
+async def distill_rejection_to_rule(
+    original_code: str,
+    user_code: str,
+    session_id: str = "",
+) -> Optional[str]:
+    """Diff AI vs human; ask the mini-judge to extract one coding rule.
+
+    Returns the rule string or None (LLM declined / trivial diff / failure).
+    Never raises — telemetry must not block the user.
+    """
+    if not original_code.strip() or not user_code.strip():
+        return None
+    if original_code == user_code:
+        return None
+    from tools.llm_gateway import LLMGateway   # deferred — circular guard
+    from shared.config import MINI_JUDGE_MODEL
+    user_payload: str = (
+        f"### CODE_A (AI wrote):\n{original_code}\n\n"
+        f"### CODE_B (human corrected):\n{user_code}"
+    )
+    try:
+        response = await LLMGateway.ainvoke(
+            messages=[
+                {"role": "system", "content": _RULE_DISTILLER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_payload},
+            ],
+            model=MINI_JUDGE_MODEL,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            max_tokens=80,
+            session_id=session_id,
+        )
+        raw = response.choices[0].message.content
+        if raw is None:
+            return None
+        parsed = json.loads(raw)
+        rule = parsed.get("rule")
+        if rule is None:
+            return None
+        rule_str: str = str(rule).strip()
+        if not rule_str or rule_str.lower() == "none":
+            return None
+        logger.info("RuleDistiller: extracted rule (%d chars)", len(rule_str))
+        return rule_str
+    except Exception as exc:
+        logger.warning("RuleDistiller: LLM failed (skipping): %s", exc)
+        return None

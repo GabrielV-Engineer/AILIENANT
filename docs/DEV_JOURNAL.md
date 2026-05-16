@@ -231,7 +231,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 ---
 
-## 🚀 HITO 1.0.6 📅 [15/05/2026] | Persistencia de Perfiles e Integración React, Session Delta Aggregator (Pre-Dream Reflection)
+## 🚀 HITO 1.0.6 📅 [15/05/2026] | Persistencia de Perfiles e Integración React, Session Delta Aggregator (Pre-Dream Reflection), MCTS Foundation + Nightmare Protocol, Polyglot Static Validation ("Micro-Isolate"), Dual-Rules Resolver & The Mirror
 
 ##  Persistencia de Perfiles e Integración React
 * **Refactorización Frontend:** Migración exitosa de Vanilla DOM a React 18. Se implementó el patrón de "Lifting State" en `App.tsx` para controlar el flujo entre el `MasterToggle` y el `ProfileSelector`.
@@ -247,3 +247,34 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
     * `mypy --strict` passing with zero issues.
     * Developed 18 dedicated unit tests in `test_aggregator.py` simulating failed compilations, empty states, and token limit enforcement.
     * Global test suite remains stable (161/161 tests passing).
+### MCTS Foundation + Nightmare Protocol
+* **MCTS Tree:** Built `MCTSTree` and `MCTSNode` with per-node CAS-based `vfs_view` isolation. Implemented `prune_branch()` for immediate Garbage Collection (GC) of rejected universes, successfully mitigating heap overflow risks.
+* **Nightmare Protocol:** Upgraded `AnalystAgent` with `evaluate_nightmare()` to strictly enforce architecture rules via `rules.json`. Returns `R=0` (failsafe) on violations to instantly kill rogue branches.
+* **Episodic Memory:** Created `MCTSCheckpointer` with a dedicated SQLite `mcts_episodes` audit table, reusing existing LangGraph promotion logic.
+* **Daemon Stub:** Scaffolded `OvernightDaemon` with `asyncio` lifecycle hooks without blocking the main FastAPI thread.
+* **Quality Assurance:**
+    * 10/10 new unit tests passed (171 global tests passing). DoD criteria successfully verified per-node GC and Nightmare scoring limits. Strict `mypy` typing enforced system-wide.
+### Polyglot Static Validation ("Micro-Isolate")
+* **RAM VFS (Flyweight):** Implemented `VirtualDocumentProvider` to overlay MCTS `vfs_view` over physical disk using CAS, ensuring zero disk mutation during validation.
+* **Layer 1 (AST Filter):** Integrated $O(1)$ structural validation using `ast` (Python) and `tree-sitter` (TS/TSX).
+* **Layer 2 (LSP Filter):** Built stateless, subprocess-based CLI wrappers for `ruff` and `eslint` via `stdin`, equipped with graceful degradation and timeouts.
+* **Pipeline:** Plumbed the fail-fast orchestrator (`validate_delta`) to discard syntactically broken branches before invoking the expensive LLM Nightmare Protocol.
+* **Quality Assurance:**
+    * 25/25 new tests passed (196 global tests passing). 100% strict type coverage maintained system-wide.
+### Dual-Rules Resolver & The Mirror
+* **Phase 3.4.6 (Dual-Rules):** Upgraded `RuleManager` to support hierarchical resolution. It now reads from both global (`~/.ailienant/`) and local (`<workspace>/.ailienant/`) scopes. Implemented a composition engine that deep-merges dicts and concatenates/deduplicates lists, ensuring local rules always take strict precedence.
+* **Phase 3.4.5 (The Mirror):** Created an in-memory Thread-Safe `MCTSRegistry` to track active search trees. Exposed FastAPI endpoints (`/vfs` and `/merge`) to interact with MCTS universes.
+* **VS Code Integration:** Implemented the `ailienant-vision://` URI scheme via `TextDocumentContentProvider` in TypeScript, allowing native diff-views of dreamed code vs actual code. Built `applyMerge` with strict sandboxing, CAS preflight checks, and atomic OS-level writes.
+* **Quality Assurance:**
+    * +19 new tests added (215 global tests passing). 100% strict type coverage maintained. Zero backward compatibility breakages.
+
+--- 
+
+## 🚀 HITO 1.0.7 📅 [16/05/2026] | Silent Daytime Telemetry & Rule Distillation
+
+### Silent Daytime Telemetry & Rule Distillation
+* **Frontend (TypeScript):** Implemented an $O(1)$ `BoundingBoxRegistry` that tracks code injected by the AI. Added a decay listener monitoring `onDidChangeTextDocument`. If the user modifies $\ge 70\%$ of the AI's original characters within a 3-minute window, an `AI_PAYLOAD_REJECTED` event is silently triggered.
+* **Backend (Python):** Added `POST /api/v1/telemetry/reject`. Upgraded `AnalystAgent` with `distill_rejection_to_rule()`, prompting the mini-judge LLM to deduce the user's coding preference based on the diff.
+* **Rule Engine:** Connected the distilled rule to `RuleManager.append_local_rule()`, utilizing a safe read-modify-write pattern to update `<workspace>/.ailienant/.ailienant.json` atomically without overwriting profile keys.
+* **Quality Assurance:**
+    * Reached 229 passing tests (+14 tests). All new telemetry, atomic writing, and LLM mock endpoints fully verified. Zero regressions.

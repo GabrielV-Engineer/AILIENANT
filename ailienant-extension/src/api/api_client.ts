@@ -38,6 +38,18 @@ export interface MergeReport {
     workspace_root: string;
     errors: string[];
     prune_count: number;
+    // Phase 3.4.7 — workspace-relative paths actually written; used by the
+    // telemetry provider to register Bounding Boxes for rejection detection.
+    merged_paths: string[];
+}
+
+// Phase 3.4.7 — Silent rejection telemetry payload (mirrors FastAPI RejectTelemetryPayload).
+export interface RejectTelemetryPayload {
+    uri: string;
+    original_ai_code: string;
+    current_user_code: string;
+    timestamp: number;
+    workspace_root: string;
 }
 
 export class APIClient {
@@ -168,5 +180,22 @@ export class APIClient {
             throw new Error(`AILIENANT applyMerge failed: ${response.status} ${response.statusText}`);
         }
         return (await response.json()) as MergeReport;
+    }
+
+    /**
+     * Phase 3.4.7 — Fire-and-forget rejection telemetry.
+     * Errors are swallowed: silent telemetry must NEVER surface to the user.
+     */
+    public async reportRejection(payload: RejectTelemetryPayload): Promise<void> {
+        try {
+            await fetch(`${this.baseUrl}/telemetry/reject`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(10000),
+            });
+        } catch (e) {
+            console.warn('[ailienant] telemetry/reject failed:', e);
+        }
     }
 }

@@ -8,6 +8,7 @@
 
 import * as vscode from 'vscode';
 import { APIClient } from '../api/api_client';
+import { boundingBoxRegistry } from './telemetry';
 
 export const MIRROR_SCHEME = 'ailienant-vision';
 
@@ -72,6 +73,23 @@ export async function applyMergeCommand(nodeId: string): Promise<void> {
     try {
         const report = await APIClient.getInstance().applyMerge(nodeId, ws.uri.fsPath);
         if (report.success) {
+            // Phase 3.4.7 — register a Bounding Box per merged file for rejection telemetry.
+            for (const relPath of report.merged_paths) {
+                try {
+                    const localUri = vscode.Uri.joinPath(ws.uri, relPath);
+                    const doc = await vscode.workspace.openTextDocument(localUri);
+                    const text = doc.getText();
+                    boundingBoxRegistry.register({
+                        uri: localUri.fsPath,
+                        workspaceRoot: ws.uri.fsPath,
+                        originalText: text,
+                        originalLength: text.length,
+                        timestamp: Date.now(),
+                    });
+                } catch (boxErr) {
+                    console.warn(`[ailienant] failed to register bounding box for ${relPath}:`, boxErr);
+                }
+            }
             vscode.window.showInformationMessage(
                 `AILIENANT: merged ${report.merged_files} file(s); pruned ${report.prune_count} node(s).`,
             );

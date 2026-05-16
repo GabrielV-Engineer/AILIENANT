@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -88,6 +89,82 @@ class RuleManager:
         """Reset cache — call from test teardown to isolate singleton state."""
         self._cache_key = None
         self._cached_formatted = ""
+
+    def append_local_rule(self, workspace_root: str, rule: str) -> bool:
+        """Phase 3.4.7 — Atomically add `rule` to <workspace>/.ailienant/.ailienant.json.
+
+        Read-modify-write preserves any other top-level keys (e.g. the
+        IntelligenceProfileConfig fields written by core/config/profile.py) so
+        this can safely share the file. Returns True if the file was mutated,
+        False on noop (duplicate rule) or failure.
+        """
+        rule_clean: str = rule.strip()
+        if not workspace_root or not rule_clean:
+            return False
+        target: Path = Path(workspace_root) / _RULES_SUBDIR / _RULES_FILENAME
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("append_local_rule: mkdir failed for %s: %s", target.parent, exc)
+            return False
+
+        existing: Dict[str, Any] = {}
+        if target.is_file():
+            loaded: Optional[Dict[str, Any]] = self._load_one(target)
+            if loaded is not None:
+                existing = loaded
+
+        rules_value: Any = existing.get("rules")
+        if rules_value is None:
+            existing["rules"] = [rule_clean]
+        elif isinstance(rules_value, list):
+            if rule_clean in rules_value:
+                return False
+            rules_value.append(rule_clean)
+            existing["rules"] = rules_value
+        elif isinstance(rules_value, dict):
+            distilled: Any = rules_value.get("distilled")
+            if not isinstance(distilled, list):
+                distilled = []
+            if rule_clean in distilled:
+                return False
+            distilled.append(rule_clean)
+            rules_value["distilled"] = distilled
+            existing["rules"] = rules_value
+        else:
+            logger.warning(
+                "append_local_rule: existing 'rules' has unexpected type %s; overwriting.",
+                type(rules_value).__name__,
+            )
+            existing["rules"] = [rule_clean]
+
+        # Atomic write: tempfile in same dir + os.replace.
+        tmp_path: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(target.parent),
+                prefix=".__ailienant_tmp_",
+                suffix=".json",
+            ) as tmp:
+                json.dump(existing, tmp, indent=2, ensure_ascii=False)
+                tmp_path = tmp.name
+            os.replace(tmp_path, str(target))
+        except OSError as exc:
+            logger.warning("append_local_rule: write failed for %s: %s", target, exc)
+            if tmp_path is not None and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            return False
+
+        # Invalidate cache so the next get_combined_rules sees the new content.
+        self.reset()
+        logger.info("append_local_rule: '%s' written to %s", rule_clean, target)
+        return True
 
     # ------------------------------------------------------------------
     # Path resolution

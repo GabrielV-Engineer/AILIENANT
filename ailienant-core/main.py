@@ -26,6 +26,10 @@ from brain.checkpoint import checkpoint_manager
 # --- IMPORTACIONES FASE 3.4.5 (MCTS Mirror) ---
 from api.mcts_mirror import MergeReport, apply_merge, get_virtual_file
 
+# --- IMPORTACIONES FASE 3.4.7 (Silent Telemetry + Rule Distillation) ---
+from agents.analyst import distill_rejection_to_rule
+from core.rules import rule_manager
+
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
 from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
@@ -220,6 +224,35 @@ async def http_get_virtual_file(node_id: str, path: str) -> PlainTextResponse:
 async def http_apply_merge(node_id: str, body: ApplyMergeRequest) -> MergeReport:
     """Apply a stable MCTS node's vfs_view to disk; prune the branch."""
     return apply_merge(node_id, body.workspace_root)
+
+
+# =====================================================================
+# PHASE 3.4.7 — Silent Rejection Telemetry
+# =====================================================================
+
+
+class RejectTelemetryPayload(BaseModel):
+    uri: str
+    original_ai_code: str
+    current_user_code: str
+    timestamp: float
+    workspace_root: str
+
+
+@app.post("/api/v1/telemetry/reject")
+async def http_telemetry_reject(payload: RejectTelemetryPayload) -> Dict[str, object]:
+    """Receive AI_PAYLOAD_REJECTED; distill a rule; persist to local .ailienant.json."""
+    rule = await distill_rejection_to_rule(
+        payload.original_ai_code, payload.current_user_code,
+    )
+    appended: bool = False
+    if rule is not None:
+        appended = rule_manager.append_local_rule(payload.workspace_root, rule)
+    logger.info(
+        "telemetry/reject: uri=%s rule=%r appended=%s",
+        payload.uri, rule, appended,
+    )
+    return {"distilled": rule is not None, "rule": rule, "appended": appended}
 
 
 async def _run_ppr_for_project(project_id: str) -> None:

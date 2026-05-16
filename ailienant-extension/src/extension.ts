@@ -8,6 +8,7 @@ import {
 	applyMergeCommand,
 	showMctsDiff,
 } from './providers/mirror';
+import { boundingBoxRegistry, installDecayListener } from './providers/telemetry';
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log('Congratulations, your extension "ailienant-extension" is now active!');
@@ -56,6 +57,9 @@ export function activate(context: vscode.ExtensionContext) {
 		showDiffCmd,
 		applyMergeCmd,
 	);
+
+	// Phase 3.4.7 — silent Bounding Box decay listener for rejection telemetry.
+	installDecayListener(context, boundingBoxRegistry);
 }
 
 export function deactivate() {}

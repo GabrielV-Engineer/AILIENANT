@@ -359,39 +359,39 @@
         - Umbrales configurables vía `.ailienant/rules.json`.
     - Configuración persistente.
 
-  - [ ] **3.4.2. Session Delta Aggregator (Pre-Dream Reflection)** - sonnet
+  - [x] **3.4.2. Session Delta Aggregator (Pre-Dream Reflection)** - sonnet
     - AnalystAgent lee `vfs_buffer` + `messages` del estado actual.
     - Genera Self-Reflection compacta de lo que el usuario intentó + errores en `terminal_output`.
     - Inyecta como `{session_delta}` para que MCTS arranque alineado con el estado mental inmediato.
 
-  - [ ] **3.4.3. The Overnight Daemon (Motor Estratégico)** - opus
+  - [x] **3.4.3. The Overnight Daemon (Motor Estratégico)** - opus
     - **Background Worker Aislado:** MCTS fuera del hilo principal de FastAPI; ciclos 3-5h sin bloquear.
     - **Horizonte de Predicción (Atomic Work Units):** profundidad basada en Micro-Tareas + Blast Radius.
     - **MCTS Garbage Collection:** ramas podadas destruyen su `_ram_vfs` instantáneamente — previene heap overflow.
     - **Episodic Memory + Checkpointing:** SQLite WAL en cada nodo estable. Historial resumido para evitar Context Drift.
     - **Researcher como Navegador:** recupera del GraphRAG solo nodos/aristas del hito; si el sueño sale del subgrafo, expande o poda.
-    - **Nightmare Protocol (Poda Heurística):** AnalystAgent cruza propuestas con `rules.json`. Pesadilla arquitectónica → `R=0` → rama muere.
+    - **Nightmare Protocol (Poda Heurística):** AnalystAgent cruza propuestas con `.ailienant.json`. Pesadilla arquitectónica → `R=0` → rama muere.
 
-  - [ ] **3.4.4. Validación Estática Políglota ("Micro-Isolate")** - opus
+  - [x] **3.4.4. Validación Estática Políglota ("Micro-Isolate")** - opus
     - **RAM VFS (Flyweight Pattern):** FS virtual en memoria; LSP "ve" los cambios sin tocar disco.
     - **Filtro Capa 1 (Tree-sitter AST):** validación estructural $O(1)$. Sintaxis rota → rama descartada.
     - **Filtro Capa 2 (LSP Feedback):** 0 errores de tipado/referencias antes de recompensa positiva.
-    - **Sincronización Transitoria:** `VirtualDocumentProvider` mapea dependencias entre archivos soñados y reales.
+    - **Sincronización Transitoria:** `VirtualDocumentProvid archivos soñados y reales.er` mapea dependencias entre
 
-  - [ ] **3.4.5. Virtual Document Provider (The Mirror)** - opus
+  - [x] **3.4.5. Virtual Document Provider (The Mirror)** - opus
     - VS Code API: URI scheme `ailienant-vision://`, Diff-View nativa entre código actual y rama ganadora.
     - One-Click Merge para aplicar al workspace real.
 
-  - [ ] **3.4.6. Dual-Rules Resolver (Arquitectura Jerárquica)** - opus
+  - [x] **3.4.6. Dual-Rules Resolver (Arquitectura Jerárquica)** - opus
     - **Precedencia:** `./.ailienant/.ailienant.json` (Local) > `~/.ailienant/.ailienant.json` (Global).
     - **Motor de Composición:** combina global + local por inferencia.
     - **Conflict Resolution:** local override en colisiones.
 
-  - [ ] **3.4.7. Telemetría Diurna Silenciosa (Subconsciente + Bounding Box)** - opus
+  - [x] **3.4.7. Telemetría Diurna Silenciosa (Subconsciente + Bounding Box)** - opus
     - **Bounding Box:** extensión registra `startLine`/`endLine` de cada bloque inyectado por IA.
     - **Decaimiento (Colisión Espacial):** listener `onDidChangeTextDocument` evalúa $O(1)$ longitud + intersección.
     - **Heurística de Rechazo:** >70% del bloque alterado/borrado en <3min → `AI_PAYLOAD_REJECTED`.
-    - **Destilación de Reglas:** AnalystAgent extrae la "pesadilla" y actualiza `.ailienant/rules.json` local.
+    - **Destilación de Reglas:** AnalystAgent extrae la "pesadilla" y actualiza `.ailienant/.ailienant.json` local.
 
   - [ ] **3.4.8. Hybrid Cascading & Model Routing (Smart-Execution)** - opus
     - **Sistema Dual (1.5 vs 2):** nodos condicionales LangGraph dirigen baja entropía → Local Big, alta abstracción → Cloud.

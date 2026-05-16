@@ -75,9 +75,14 @@ Atomically write a stable MCTS node's `vfs_view` onto physical disk.
   "merged_files": 3,
   "workspace_root": "/abs/path",
   "errors": [],
-  "prune_count": 1
+  "prune_count": 1,
+  "merged_paths": ["src/auth.py", "tests/test_auth.py"]
 }
 ```
+
+`merged_paths` (Phase 3.4.7) is the list of workspace-relative paths
+**actually written**. The TS side uses these to register Bounding Boxes for
+the silent-rejection telemetry loop.
 
 **Safety guarantees** (in order of execution):
 1. **Sandbox**: every `vfs_view` path must resolve inside `workspace_root`.
@@ -162,6 +167,102 @@ await vscode.commands.executeCommand(
     'a1b2c3d4e5f60718...',
 );
 ```
+
+---
+
+---
+
+## Silent Telemetry (Phase 3.4.7)
+
+After a successful `applyMerge`, the extension automatically tracks each
+merged file via a **Bounding Box** registry. If the user edits ≥70% of the
+AI's characters within 3 minutes, an `AI_PAYLOAD_REJECTED` event fires to the
+backend, which distills a coding rule from the AI-vs-human diff and writes it
+to the workspace's local `.ailienant.json` so future planner runs honor the
+implicit preference. The user never sees a popup — preferences are learned
+from natural editing behavior.
+
+### Bounding Box lifecycle
+
+| Phase | Trigger |
+|---|---|
+| **Register** | `applyMerge` returns `success=true`. One box per entry in `MergeReport.merged_paths`. |
+| **Decay tick** | `vscode.workspace.onDidChangeTextDocument` fires; the listener bumps `cumulativeChangedChars += change.rangeLength` for every `contentChange` of the matching document. |
+| **Trip** | `cumulativeChangedChars >= 0.70 * originalText.length` AND `now - timestamp < 3 minutes`. |
+| **Untrack** | After firing the rejection (prevents spam), or after the 3-minute window elapses. |
+
+The decay metric is **cumulative `rangeLength` across all changes** — this
+counts replacements as well as deletions and is O(1) per change event.
+
+### `POST /api/v1/telemetry/reject`
+
+**Request body**:
+```json
+{
+  "uri": "/abs/path/to/src/auth.py",
+  "original_ai_code": "<full file content the AI wrote>",
+  "current_user_code": "<file content after user edits>",
+  "timestamp": 1747300000000,
+  "workspace_root": "/abs/path/to/workspace"
+}
+```
+
+**Response 200**:
+```json
+{
+  "distilled": true,
+  "rule": "Type-annotate all public functions",
+  "appended": true
+}
+```
+
+- `distilled` — `true` iff the LLM returned a non-null rule
+- `rule` — the rule string, or `null`
+- `appended` — `true` iff the local `.ailienant.json` was actually mutated
+  (false on duplicate rule or write failure)
+
+### Side effect
+
+When `appended === true`, `<workspace>/.ailienant/.ailienant.json` is updated
+**atomically** via `tempfile.NamedTemporaryFile + os.replace`. The file is
+**shared** with `core/config/profile.py` (IntelligenceProfileConfig); rule
+writes use read-modify-write to preserve any pre-existing keys
+(`master_enabled`, `profile`, `thresholds`).
+
+### TypeScript types
+
+```typescript
+export interface RejectTelemetryPayload {
+    uri: string;
+    original_ai_code: string;
+    current_user_code: string;
+    timestamp: number;
+    workspace_root: string;
+}
+
+export interface BoundingBox {
+    uri: string;
+    workspaceRoot: string;
+    originalText: string;
+    originalLength: number;
+    timestamp: number;
+    cumulativeChangedChars: number;
+}
+
+export class BoundingBoxRegistry {
+    register(box: Omit<BoundingBox, 'cumulativeChangedChars'>): void;
+    get(uri: string): BoundingBox | undefined;
+    untrack(uri: string): void;
+    processChange(event: vscode.TextDocumentChangeEvent): BoundingBox | null;
+}
+```
+
+### Failure semantics
+
+Telemetry NEVER surfaces to the user. Network errors / 5xx responses are
+caught and logged via `console.warn`. Backend distillation failures (LLM
+unreachable, JSON parse error) return `{distilled: false, rule: null,
+appended: false}` rather than HTTP error.
 
 ---
 

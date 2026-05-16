@@ -35,6 +35,9 @@ class MergeReport(BaseModel):
     workspace_root: str
     errors: List[str] = Field(default_factory=list)
     prune_count: int = 0
+    # Phase 3.4.7: workspace-relative paths actually written; TS side uses these
+    # to register Bounding Boxes for the silent rejection-detection loop.
+    merged_paths: List[str] = Field(default_factory=list)
 
 
 def get_virtual_file(node_id: str, path: str) -> Optional[str]:
@@ -85,7 +88,7 @@ def apply_merge(node_id: str, workspace_root: str) -> MergeReport:
         )
 
     # ---- preflight: build full (path, content) list before touching disk ----
-    pending: List[Tuple[Path, str]] = []
+    pending: List[Tuple[Path, str, str]] = []  # (resolved_path, rel_path, content)
     preflight_errors: List[str] = []
     for rel_path, blob_hash in node.vfs_view.items():
         try:
@@ -102,7 +105,7 @@ def apply_merge(node_id: str, workspace_root: str) -> MergeReport:
         if content is None:
             preflight_errors.append(f"cas_miss:{rel_path}:{blob_hash[:8]}")
             continue
-        pending.append((full, content))
+        pending.append((full, rel_path, content))
 
     if preflight_errors:
         return MergeReport(
@@ -113,7 +116,8 @@ def apply_merge(node_id: str, workspace_root: str) -> MergeReport:
     # ---- atomic per-file writes ----
     write_errors: List[str] = []
     written: int = 0
-    for full, content in pending:
+    written_rel_paths: List[str] = []
+    for full, rel_path, content in pending:
         full.parent.mkdir(parents=True, exist_ok=True)
         tmp_path: Optional[str] = None
         try:
@@ -128,6 +132,7 @@ def apply_merge(node_id: str, workspace_root: str) -> MergeReport:
                 tmp_path = tmp.name
             os.replace(tmp_path, str(full))
             written += 1
+            written_rel_paths.append(rel_path)
         except OSError as exc:
             write_errors.append(f"write_failed:{full}:{exc}")
             if tmp_path is not None and os.path.exists(tmp_path):
@@ -146,4 +151,5 @@ def apply_merge(node_id: str, workspace_root: str) -> MergeReport:
         workspace_root=str(ws_resolved),
         errors=write_errors,
         prune_count=pruned,
+        merged_paths=written_rel_paths,
     )

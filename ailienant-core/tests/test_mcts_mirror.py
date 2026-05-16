@@ -156,6 +156,8 @@ def test_apply_merge_writes_files_and_prunes(tmp_path: Path) -> None:
     assert report.merged_files == 2
     assert report.errors == []
     assert report.prune_count >= 1
+    # Phase 3.4.7 — merged_paths must contain both relative paths actually written.
+    assert sorted(report.merged_paths) == ["b.py", "sub/a.py"]
 
     # Files written under tmp_path with exact content.
     assert (tmp_path / "sub" / "a.py").read_text(encoding="utf-8") == "content of A\n"
