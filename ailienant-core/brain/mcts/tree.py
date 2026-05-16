@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from brain.mcts.registry import register_node, unregister_node
 from brain.state import MissionSpecification
 
 logger = logging.getLogger("MCTS_TREE")
@@ -55,6 +56,7 @@ class MCTSTree:
         )
         self._nodes: Dict[str, MCTSNode] = {root_id: root}
         self.root_id: str = root_id
+        register_node(root_id, self)
 
     def __len__(self) -> int:
         return len(self._nodes)
@@ -82,6 +84,7 @@ class MCTSTree:
         )
         self._nodes[child_id] = child
         parent.children.append(child_id)
+        register_node(child_id, self)
         return child
 
     def prune_branch(self, node_id: str) -> int:
@@ -105,6 +108,7 @@ class MCTSTree:
                 continue
             node.is_pruned = True
             node.vfs_view = {}
+            unregister_node(current_id)
             pruned += 1
             stack.extend(node.children)
 

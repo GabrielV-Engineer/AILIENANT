@@ -2,6 +2,12 @@ import * as vscode from 'vscode';
 import { IntentRouter } from './core/IntentRouter';
 import { SessionManager } from './brain/session';
 import { AilienantChatProvider } from './providers/chat_sidebar';
+import {
+	MIRROR_SCHEME,
+	MirrorContentProvider,
+	applyMergeCommand,
+	showMctsDiff,
+} from './providers/mirror';
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log('Congratulations, your extension "ailienant-extension" is now active!');
@@ -28,7 +34,28 @@ export function activate(context: vscode.ExtensionContext) {
 		AilienantChatProvider.viewType, chatProvider,
 	);
 
-	context.subscriptions.push(helloWorld, runTask, chatRegistration);
+	// Phase 3.4.5 — MCTS Mirror: ailienant-vision:// scheme + diff/merge commands.
+	const mirrorProvider = new MirrorContentProvider();
+	const mirrorRegistration = vscode.workspace.registerTextDocumentContentProvider(
+		MIRROR_SCHEME, mirrorProvider,
+	);
+	const showDiffCmd = vscode.commands.registerCommand(
+		'ailienant.showMctsDiff',
+		(nodeId: string, filePath: string) => showMctsDiff(nodeId, filePath),
+	);
+	const applyMergeCmd = vscode.commands.registerCommand(
+		'ailienant.applyMerge',
+		(nodeId: string) => applyMergeCommand(nodeId),
+	);
+
+	context.subscriptions.push(
+		helloWorld,
+		runTask,
+		chatRegistration,
+		mirrorRegistration,
+		showDiffCmd,
+		applyMergeCmd,
+	);
 }
 
 export function deactivate() {}

@@ -31,6 +31,15 @@ export interface ModelInfo {
     is_local: boolean;
 }
 
+// Phase 3.4.5 — MCTS Mirror response schema (mirrors FastAPI MergeReport).
+export interface MergeReport {
+    success: boolean;
+    merged_files: number;
+    workspace_root: string;
+    errors: string[];
+    prune_count: number;
+}
+
 export class APIClient {
     private static instance: APIClient;
     private readonly baseUrl: string;
@@ -129,5 +138,35 @@ export class APIClient {
         } catch {
             return [];
         }
+    }
+
+    /**
+     * Phase 3.4.5 — Read a virtual file from an MCTS "dream" node.
+     * Backs the `ailienant-vision://{node_id}/{path}` URI scheme.
+     */
+    public async fetchVirtualFile(nodeId: string, filePath: string): Promise<string> {
+        const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/vfs?path=${encodeURIComponent(filePath)}`;
+        const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) {
+            throw new Error(`AILIENANT Mirror fetch failed: ${response.status} ${response.statusText}`);
+        }
+        return await response.text();
+    }
+
+    /**
+     * Phase 3.4.5 — One-Click Merge: apply a stable MCTS node's vfs_view to disk.
+     */
+    public async applyMerge(nodeId: string, workspaceRoot: string): Promise<MergeReport> {
+        const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/merge`;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspace_root: workspaceRoot }),
+            signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+            throw new Error(`AILIENANT applyMerge failed: ${response.status} ${response.statusText}`);
+        }
+        return (await response.json()) as MergeReport;
     }
 }

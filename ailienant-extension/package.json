@@ -30,7 +30,19 @@
           "icon": "media/icon.svg"
         }
       ]
-    }
+    },
+    "commands": [
+      {
+        "command": "ailienant.showMctsDiff",
+        "title": "Show MCTS Dream Diff",
+        "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.applyMerge",
+        "title": "Apply MCTS Merge",
+        "category": "AILIENANT"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

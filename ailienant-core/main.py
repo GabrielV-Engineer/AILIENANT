@@ -16,10 +16,15 @@ from core.db_maintenance import WALCheckpointer
 from core.task_service import TaskPayload, TaskService
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 
 # --- IMPORTACIONES FASE 2 (Persistencia y Mantenimiento) ---
 from brain.checkpoint import checkpoint_manager
+
+# --- IMPORTACIONES FASE 3.4.5 (MCTS Mirror) ---
+from api.mcts_mirror import MergeReport, apply_merge, get_virtual_file
 
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
@@ -191,6 +196,30 @@ async def submit_task(
     except Exception as e:
         logger.error(f"Fallo crítico en el motor cognitivo: {str(e)}")
         raise HTTPException(status_code=500, detail="Colapso interno en el orquestador")
+
+
+# =====================================================================
+# PHASE 3.4.5 — MCTS Mirror endpoints
+# =====================================================================
+
+
+class ApplyMergeRequest(BaseModel):
+    workspace_root: str
+
+
+@app.get("/api/v1/mcts/{node_id}/vfs", response_class=PlainTextResponse)
+async def http_get_virtual_file(node_id: str, path: str) -> PlainTextResponse:
+    """Read a file out of an MCTS node's vfs_view (RAM CAS + disk fallback)."""
+    content = get_virtual_file(node_id, path)
+    if content is None:
+        raise HTTPException(status_code=404, detail="node or path not found")
+    return PlainTextResponse(content)
+
+
+@app.post("/api/v1/mcts/{node_id}/merge")
+async def http_apply_merge(node_id: str, body: ApplyMergeRequest) -> MergeReport:
+    """Apply a stable MCTS node's vfs_view to disk; prune the branch."""
+    return apply_merge(node_id, body.workspace_root)
 
 
 async def _run_ppr_for_project(project_id: str) -> None:
