@@ -405,12 +405,12 @@
       - Desatasco quirúrgico: snapshot comprimido → Cloud para corrección de alto nivel.
     - **Monitor de Telemetría Híbrida:** diferencia "Tokens Ahorrados" (local) vs "Tokens Invertidos" (Cloud) en la UI.
 
-- [ ] **3.5. Ciclo de Vida de Memoria (Garbage Collection & Janitor Service)** - sonnet
+- [x] **3.5. Ciclo de Vida de Memoria (Garbage Collection & Janitor Service)** - sonnet
   - **Git-Diff GC:** limpieza asíncrona de LanceDB escuchando eventos Git para purgar embeddings de archivos borrados.
   - **Detector de Proyectos Huérfanos:** escaneo comparativo de hashes almacenados vs rutas en disco.
   - **Servicio de Purga:** comando para eliminación manual de sub-grafos viejos.
 
-- [ ] **3.6. Cognitive State Management (Fast-Boot)** - sonnet
+- [x] **3.6. Cognitive State Management (Fast-Boot)** - sonnet
   - Volcado de resúmenes en `.ailienant/AGENTS.md` permite al PlannerAgent Cold Start instantáneo sin saturar LanceDB al reiniciar VS Code.
 
 - [ ] **3.7. Checkpoint Gate Fase 3**

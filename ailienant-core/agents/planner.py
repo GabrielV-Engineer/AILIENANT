@@ -23,6 +23,11 @@ from core.memory.context_auditor import (
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
 
+# Phase 3.6: promoted to module-level so tests can patch it.
+# Set AILIENANT_PLANNER_DEBUG=0 in production to enable full LLM path.
+import os as _os
+DEBUG_MODE: bool = _os.getenv("AILIENANT_PLANNER_DEBUG", "1") != "0"
+
 _POLYGLOT_WARNING = (
     " [!] POLYGLOT FILE DETECTED: {target_file}. "
     "You MUST use the 'patch_file' tool for any modifications. "
@@ -67,7 +72,8 @@ async def run_planner_node(state: dict) -> dict:
     # =====================================================================
     # 0. MODO SIMULACRO (Circuito Corto para Pruebas UI/Backend)
     # =====================================================================
-    DEBUG_MODE = True  # Cambiar a False en Producción para habilitar el LLM
+    # DEBUG_MODE is now a module-level constant (see top of file). Set env var
+    # AILIENANT_PLANNER_DEBUG=0 in production to enable the full LLM path.
 
     # Leemos TCI y CSS del estado. Preferimos los shortcuts de top-level (Phase 2);
     # si no están presentes aún, navegamos context_metrics como fallback seguro.
@@ -214,14 +220,29 @@ async def run_planner_node(state: dict) -> dict:
     # CSS is fully recomputed here; Phase 3.1 block is subsumed.
     if updated_context_metrics is not None:
         try:
-            _sem_mgr = SemanticMemoryManager()
+            # ── Phase 3.6 Fast-Boot: skip LanceDB embedding when AGENTS.md is fresh ─
+            from core.state_manager import load_state_from_markdown
+            _ws_root_fb: str = state.get("workspace_root", "")
+            _fast_boot = load_state_from_markdown(_ws_root_fb) if _ws_root_fb else None
+
             _sem_score: float
             _top_k_files: list[str]
-            _sem_score, _top_k_files = await _sem_mgr.search_with_paths(
-                user_input=user_input,
-                workspace_hash=state.get("project_id") or "",
-            )
             _extractor = GraphRAGDynamicExtractor(project_id=state.get("project_id") or "")
+
+            if _fast_boot is not None:
+                logger.info("Phase 3.6 Fast-Boot: using cached context, skipping LanceDB search.")
+                _sem_score = (
+                    _fast_boot.context_metrics.semantic_similarity
+                    if _fast_boot.context_metrics else 0.0
+                )
+                _top_k_files = _fast_boot.top_k_files
+            else:
+                _sem_mgr = SemanticMemoryManager()
+                _sem_score, _top_k_files = await _sem_mgr.search_with_paths(
+                    user_input=user_input,
+                    workspace_hash=state.get("project_id") or "",
+                )
+            # ─────────────────────────────────────────────────────────────────────────
             _deep_result = await _extractor.deep_parse(
                 seed_files=_top_k_files,
                 workspace_root=state.get("workspace_root", ""),
@@ -401,6 +422,17 @@ async def run_planner_node(state: dict) -> dict:
         if state.get("immutable_wbs") is None:
             result["immutable_wbs"] = mission_plan
             logger.info("PlannerAgent: immutable_wbs frozen (first turn, LLM mode).")
+
+        # ── Phase 3.6: flush cognitive state to .ailienant/AGENTS.md ────────────
+        try:
+            from core.state_manager import dump_state_to_markdown
+            _state_for_dump = dict(state) | result
+            _state_for_dump["_top_k_files_cache"] = locals().get("_top_k_files", [])
+            dump_state_to_markdown(_state_for_dump, state.get("workspace_root", ""))
+        except Exception as _dump_err:
+            logger.debug("Phase 3.6: state dump skipped: %s", _dump_err)
+        # ─────────────────────────────────────────────────────────────────────────
+
         return result
 
     except Exception as e:

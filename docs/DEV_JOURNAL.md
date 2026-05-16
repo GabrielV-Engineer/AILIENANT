@@ -270,7 +270,7 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 
 --- 
 
-## 🚀 HITO 1.0.7 📅 [16/05/2026] | Silent Daytime Telemetry & Rule Distillation
+## 🚀 HITO 1.0.7 📅 [16/05/2026] | Silent Daytime Telemetry & Rule Distillation, Memory Lifecycle & Cognitive Fast-Boot
 
 ### Silent Daytime Telemetry & Rule Distillation
 * **Frontend (TypeScript):** Implemented an $O(1)$ `BoundingBoxRegistry` that tracks code injected by the AI. Added a decay listener monitoring `onDidChangeTextDocument`. If the user modifies $\ge 70\%$ of the AI's original characters within a 3-minute window, an `AI_PAYLOAD_REJECTED` event is silently triggered.
@@ -285,3 +285,9 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Supreme Judge:** Added `supreme_judge_evaluate()` using `Tier.CLOUD` to compute final node rewards, only invoked if local validation passes (saving massive API costs on hopeless branches).
 * **Quality Assurance:**
     * Reached 246 passing tests (+17 tests). All routing, circuit breaking, fail-fast mechanics, and token accounting thoroughly verified. Zero regressions.
+### Memory Lifecycle & Cognitive Fast-Boot
+* **Memory Janitor (Phase 3.5):** Created `core/janitor.py` exposing `run_vector_gc` and `purge_obsolete_graphs`. Leveraged native `pyarrow` over LanceDB tables to achieve zero-copy filtering without adding heavy dependencies like `pandas`. Exposed via `POST /api/v1/system/janitor`.
+* **Cognitive Fast-Boot (Phase 3.6):** Implemented `core/state_manager.py` to atomically dump state to `.ailienant/AGENTS.md` using a `` sentinel. Wired into `agents/planner.py` to skip expensive LanceDB vector searches when the cache is fresh.
+* **Testability:** Promoted `DEBUG_MODE` in the planner to an environment-driven constant (`AILIENANT_PLANNER_DEBUG`), enabling proper `patch()` mocking in tests.
+* **Quality Assurance:**
+    * Reached 260 passing tests (+14 tests). Zero regressions. `mypy --strict` and `ruff` checks passed cleanly.

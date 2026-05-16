@@ -145,7 +145,7 @@ def apply_merge(node_id: str, workspace_root: str) -> MergeReport:
     pruned: int = tree.prune_branch(node_id)
     mcts_checkpointer.record_prune(node_id, "user_merge_applied")
 
-    return MergeReport(
+    report = MergeReport(
         success=not write_errors,
         merged_files=written,
         workspace_root=str(ws_resolved),
@@ -153,3 +153,14 @@ def apply_merge(node_id: str, workspace_root: str) -> MergeReport:
         prune_count=pruned,
         merged_paths=written_rel_paths,
     )
+
+    # ── Phase 3.6: record merge event in .ailienant/AGENTS.md ───────────────
+    if report.success:
+        try:
+            from core.state_manager import record_merge_event
+            record_merge_event(workspace_root, report.merged_paths)
+        except Exception as _ev_err:
+            logger.debug("Phase 3.6: merge event record skipped: %s", _ev_err)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    return report

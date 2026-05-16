@@ -33,6 +33,9 @@ from core.rules import rule_manager
 # --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
 from core.token_ledger import token_ledger
 
+# --- IMPORTACIONES FASE 3.5 (Memory Janitor) ---
+from core.janitor import JanitorReport, run_janitor
+
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
 from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
@@ -267,6 +270,24 @@ async def http_telemetry_reject(payload: RejectTelemetryPayload) -> Dict[str, ob
 async def http_telemetry_tokens() -> Dict[str, float]:
     """Phase 3.4.8 — return the TokenLedger snapshot (local vs cloud + savings)."""
     return token_ledger.snapshot()
+
+
+# =====================================================================
+# PHASE 3.5 — Memory Janitor
+# =====================================================================
+
+class JanitorRequest(BaseModel):
+    workspace_root: str
+    retention_days: int = 30
+
+
+@app.post("/api/v1/system/janitor")
+async def http_janitor(payload: JanitorRequest) -> JanitorReport:
+    """Phase 3.5 — Trigger Memory Janitor: orphaned vector GC + obsolete graph purge."""
+    return await run_janitor(
+        workspace_root=payload.workspace_root,
+        retention_days=payload.retention_days,
+    )
 
 
 async def _run_ppr_for_project(project_id: str) -> None:
