@@ -598,3 +598,15 @@ Each guarded call site (`planner.py`, `summarizer.py`, `mcts_coder.py`) wraps th
 * `ailienant-core/agents/mcts_coder.py` — wrap `generate_local_variant` and `_ask_local_to_fix`; conditional tier (preserves `Tier.LOCAL` when broker keeps us local, swaps to `Tier.CLOUD` when broker substitutes MODEL_BIG).
 * `ailienant-core/tests/test_resource_manager.py` — **NEW** (≈260 LoC).
 * `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
+
+---
+
+## Hito 4.3: Motor de Orquestación — Modo Secuencial (Bypass Local) — 2026-05-17
+
+**Status:** COMPLETADO ✅
+
+* `brain/fast_path.py` — **NUEVO**. `execute_sequential_bypass()`: inyecta SOUL.md via SoulManager, llama `LLMGateway.ainvoke(MODEL_SMALL)`, fallback echo-stub si LLM offline. Retorna `{"messages": [...], "shared_understanding_reached": True}` (contrato WebSocket-safe).
+* `brain/engine.py` — **EXTENDIDO** (sección 7). `process_user_intent()`: SEQUENTIAL → fast_path; MICRO_SWARM/FULL_SWARM → `NotImplementedError` (Phase 4.4).
+* `brain/state.py` — **EXTENDIDO**. `execution_mode: Literal["SEQUENTIAL", "MICRO_SWARM", "FULL_SWARM"]` añadido a `AIlienantGraphState`.
+* `tests/test_fast_path.py` — **NUEVO**. 5 tests: shape, soul injection, fallback, routing, NotImplementedError swarm.
+* `docs/PROJECT_MANIFEST.md` — Modo Secuencial marcado `[x]`.

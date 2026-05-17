@@ -517,9 +517,10 @@
 
 - [ ] **4.3. Motor de Orquestación (Modos de Ejecución Dinámicos)**
 
-  - **Modo Secuencial (Bypass Local):** - sonnet
+  - [x] **Modo Secuencial (Bypass Local):** - sonnet
     - Flujo: User → IntentRouter → Analyst/Coder → User.
     - Desactiva LangGraph completo (cero SQLite, cero nodos cíclicos). 1 modelo, latencia 1-3s. One-Shot.
+    - Implementado: `brain/fast_path.py:execute_sequential_bypass()` + `brain/engine.py:process_user_intent()`. Echo-stub fallback cuando LLM offline. `execution_mode` añadido a `AIlienantGraphState`.
 
   - **Modo Micro-Enjambre (ReAct — Bucle Cerrado):** -sonnet
     - 1 Agente Cognitivo + Validadores Deterministas. Sin múltiples LLMs hablando entre sí.

@@ -404,3 +404,8 @@ class AIlienantGraphState(TypedDict):
     # | "CANCEL". Set by the broker from the HitL reply; consumed within the same
     # node invocation. Scalar overwrite — no reducer.
     user_resource_resolution: Optional[Literal["WAIT", "SWITCH_TO_CLOUD", "CANCEL"]]
+
+    # --- Phase 4.3 — Execution Tier Selector ---
+    # Written once by process_user_intent() at the routing entry; locked for the
+    # lifetime of the run (mode-locked topology per blueprint §2).
+    execution_mode: Literal["SEQUENTIAL", "MICRO_SWARM", "FULL_SWARM"]

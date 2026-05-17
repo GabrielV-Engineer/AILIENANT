@@ -81,7 +81,15 @@ The VS Code extension is intentionally **thin**: a sidebar with a master toggle 
                                 └─────────────┘         └───────────────┘      └─────────────────┘
 ```
 
-The LangGraph flow (built in [ailienant-core/brain/engine.py](ailienant-core/brain/engine.py)):
+Execution entry point — `process_user_intent()` in [ailienant-core/brain/engine.py](ailienant-core/brain/engine.py) (Phase 4.3):
+
+```
+process_user_intent(prompt, mode)
+  SEQUENTIAL → fast_path.execute_sequential_bypass()   # zero-LangGraph, 1–3 s
+  MICRO_SWARM / FULL_SWARM → (Phase 4.4, pending)
+```
+
+The LangGraph flow (FULL_SWARM / legacy, built in [ailienant-core/brain/engine.py](ailienant-core/brain/engine.py)):
 
 ```
 START
@@ -111,8 +119,10 @@ Proyect_Ailienant/
 │   ├── main.py                 # FastAPI app + WebSocket gateway
 │   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator)
 │   ├── brain/                  # State machine + MCTS + checkpointing
-│   │   ├── engine.py           #   graph builder
+│   │   ├── engine.py           #   graph builder + process_user_intent() routing entry
+│   │   ├── fast_path.py        #   SEQUENTIAL mode bypass (zero-LangGraph, 1–3 s)
 │   │   ├── state.py            #   AIlienantGraphState, ContextMeter, MissionSpecification
+│   │   ├── personality.py      #   SoulManager — SOUL.md mtime-cached reader (AnalystAgent only)
 │   │   ├── mcts/               #   tree + registry
 │   │   ├── episodic/           #   MCTS audit checkpointer
 │   │   └── routing_engine.py   #   CSS × TCI matrix
@@ -129,7 +139,7 @@ Proyect_Ailienant/
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 325 passing tests
+│   └── tests/                  # 330 passing tests
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry
