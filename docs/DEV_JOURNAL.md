@@ -291,3 +291,65 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * **Testability:** Promoted `DEBUG_MODE` in the planner to an environment-driven constant (`AILIENANT_PLANNER_DEBUG`), enabling proper `patch()` mocking in tests.
 * **Quality Assurance:**
     * Reached 260 passing tests (+14 tests). Zero regressions. `mypy --strict` and `ruff` checks passed cleanly.
+
+---
+
+## 🚀 HITO 1.0.8 📅 [16/05/2026] | ContractGuardNode — Event-Driven Context Anchoring (Phase 2.26)
+
+### Deterministic Middleware Between CoderAgent and FinOpsGate
+* **Topology change (`brain/engine.py`):** replaced the direct edge `coder_agent → finops_gate` with the pair `coder_agent → contract_guard → finops_gate`. Chose two `add_edge` calls over `add_conditional_edges` because a routing function that unconditionally returns one branch is cognitive noise; the node short-circuits internally and owns its own anchor mutation in a single boundary.
+* **Three $O(1)$ deterministic triggers (`agents/contract_guard.py`):**
+    * **TCI Delta:** `abs(state["tci"] - anchor["tci"]) > 15.0` (absolute points on 0–100).
+    * **CSS at Token Capacity:** `state["css"] < 40.0` AND $(token\_local + token\_cloud) / context\_window \ge 0.80$. The only rule that can fire on the first turn (no anchor yet).
+    * **Subgraph/Domain Shift:** `state["target_role"] != anchor["target_role"]` (requires prior anchor).
+* **`SessionContract` Pydantic model:** structured-output contract `{mission_outcome, active_role, in_scope, out_of_scope, open_constraints, trigger_reason}`. Minted via `LLMGateway.ainvoke(response_format={"type": "json_object"})` then validated with `model_validate_json`. On any LLM / network / parse failure, the node falls back to a deterministic skeleton built from `mission_spec.outcome / .scope / .constraints` so the banner always renders if a trigger fired.
+* **Additive schema growth (`brain/state.py`):** appended `ui_payload: Optional[Dict[str, object]]` and `contract_anchor: Optional[Dict[str, object]]` to `AIlienantGraphState`. Scalar overwrite (no reducer) — guard runs serially after CoderAgent. `ContextMeter` Pydantic remains immutable.
+
+### Phase Renumbering (Roadmap Foresight)
+* **Conflict:** the inbound brief labelled this work "Phase 2.17", which already binds to the shipped *Shallow State + Blob Storage*. 2.23 (Telemetry Logger), 2.24 (Inyección Dinámica), and 2.25 (Checkpoint Gate) were also occupied. Renumbered as **Phase 2.26** to preserve prior delivery history and append cleanly at the tail of Phase 2D.
+
+### Quality Assurance
+* **`tests/test_contract_guard.py`:** 11 new tests covering each trigger (positive + boundary cases), pass-through on quiet turns, stub-injected LLM success path, raised-exception fallback, and malformed-JSON fallback.
+* **Full suite:** **281 passing tests** (+11 new, +1 incidental); zero regressions. `mypy agents/contract_guard.py` clean (0 issues). Graph compiles end-to-end via `from brain.engine import alienant_app`.
+
+### Files Changed
+* `ailienant-core/brain/state.py` — two new state fields.
+* `ailienant-core/agents/contract_guard.py` — **NEW** (≈190 LoC).
+* `ailienant-core/brain/engine.py` — import + `add_node` + edge rewiring.
+* `ailienant-core/tests/test_contract_guard.py` — **NEW** (≈210 LoC).
+
+---
+
+## 🚀 HITO 1.0.9 📅 [16/05/2026] | ResearcherAgent — Phase 4.1.1 (Context Hound)
+
+### Read-Only Retrieval Node with @-Mention Override
+
+* **New cognitive node (`agents/researcher.py`):** Strictly read-only LangGraph node producing a **Skeleton Map** (function signatures, class headers, cross-module relations, file paths) for the future PlannerAgent consumption in `FULL_SWARM` mode. Follows the established planner pattern: deterministic retrieval + single `LLMGateway.ainvoke` call. Zero LangChain `bind_tools` / ReAct precedent introduced.
+* **Decision tree:**
+  1. **@-mention override** — when `state["explicit_mentions"]` has entries, the node bypasses GraphRAG and loads those files verbatim via `VFSMiddleware.read()` (try/except `FileNotFoundError`, fail-soft).
+  2. **GraphRAG path** — otherwise, `SemanticMemoryManager.search_with_paths()` → `GraphRAGDynamicExtractor.deep_parse()` produces the formatted context block.
+  3. **Single LLM call** — both paths converge in one `LLMGateway.ainvoke(model=MODEL_MEDIUM, temperature=0.0)` invocation that asks for a compact markdown Skeleton.
+* **Tools deferred:** `GlobTool` / `GrepTool` intentionally NOT created. GraphRAG already covers their retrieval intent (path matching + symbol search via Tree-sitter). Re-evaluate in 4.1.4 if the CoderAgent surfaces a gap.
+
+### State Contract Extension (Phase 4 Lock-In Amendment)
+
+* **New channel:** `AIlienantGraphState.researcher_skeleton: Optional[str]` (additive, default `None`, no reducer). Written by `run_researcher_node`; will be consumed by the PlannerAgent in Phase 4.1.3 when the FULL_SWARM topology is wired.
+* **Blueprint amendment:** `docs/PHASE_4_BLUEPRINT.md` §1 amended in the same PR per the Phase 4 lock-in clause in `claude.md`. Provenance-map row added.
+* **`RESEARCHER_IDENTITY`** added to `shared/rbac.py` (`PermissionMode.READ_ONLY`, `allowed_tools=[]` — tools are programmatic in this phase).
+
+### Quality Assurance
+
+* **`tests/test_phase4_researcher.py`** (2 strict tests): `test_researcher_standard_retrieval` (GraphRAG path) and `test_researcher_explicit_override` (proves SemanticMemoryManager + GraphRAGDynamicExtractor are NOT called when @-mentions are supplied — they `raise AssertionError` on side-effect).
+* **Full suite: 283 passing tests** (+2 net, 0 regressions). `mypy --strict --explicit-package-bases` clean. `ruff check` clean.
+* **Scope boundary:** the node is reachable directly (`from agents.researcher import run_researcher_node`) but **not** wired into `brain/engine.py` yet. FULL_SWARM topology assembly happens in 4.1.3 (Orchestrator) / 4.3 (Modes).
+
+### Files Changed
+
+* `ailienant-core/agents/researcher.py` — **NEW** (≈155 LoC).
+* `ailienant-core/brain/state.py` — `researcher_skeleton: Optional[str]` added.
+* `ailienant-core/shared/rbac.py` — `RESEARCHER_IDENTITY` added (English `role_description`).
+* `ailienant-core/tests/test_phase4_researcher.py` — **NEW** (≈130 LoC).
+* `docs/PHASE_4_BLUEPRINT.md` — §1 state-contract section amended.
+* `docs/PROJECT_MANIFEST.md` — 4.1.1 ticked `[x]`.
+* `README.md` — Repository Layout (agents list + test count).
+* `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.

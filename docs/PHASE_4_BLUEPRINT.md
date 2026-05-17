@@ -122,6 +122,12 @@ class AIlienantGraphState(TypedDict):
 
     soul_md_hash: Optional[str]             # Hash of ~/.ailienant/SOUL.md at load time.
     # Only the AnalystAgent reads SOUL.md; cached by hash for hot-reload without restart.
+
+    # Phase 4.1.1 ADD — Researcher Skeleton Map.
+    researcher_skeleton: Optional[str]
+    # Written by run_researcher_node before the PlannerAgent in FULL_SWARM mode.
+    # None when the run skips the Researcher (SEQUENTIAL / MICRO_SWARM modes).
+    # Additive, default None, no reducer (last-write semantics).
 ```
 
 ### Field Provenance Map
@@ -135,6 +141,7 @@ class AIlienantGraphState(TypedDict):
 | `circuit_breaker_tripped` | Circuit Breaker | `route_to_coders` | latch (never resets within run) |
 | `cloud_surgeon_invocations` | Cloud Surgeon | Circuit Breaker | `operator.add` |
 | `workspace_pid` / `workspace_active` | Lifecycle MCP listener | Shutdown subgraph | last-write |
+| `researcher_skeleton` | `ResearcherAgent` (Phase 4.1.1) | `PlannerAgent` (next turn, when wired in 4.1.3) | last-write |
 
 ---
 

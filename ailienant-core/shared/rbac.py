@@ -44,4 +44,21 @@ LOGIC_IDENTITY = AgentIdentity(
     allowed_tools=["edit_file", "run_terminal"],
 )
 
+# Phase 4.1.1 — ResearcherAgent (The Context Hound).
+# Strictly read-only: explores GraphRAG + @-mention bypass to emit a Skeleton Map
+# for the PlannerAgent. Tools are programmatic (Python) in this phase; LangChain
+# bind_tools / ReAct is deferred until Phase 4.1.4 (CoderAgent transmutation).
+RESEARCHER_IDENTITY = AgentIdentity(
+    name="ResearcherAgent",
+    role_description=(
+        "You are the Context Hound. Strictly read-only: explore GraphRAG and, "
+        "when the user supplies @-mentions, the requested files verbatim to build "
+        "a Skeleton Map (function signatures, class headers, cross-module relations, "
+        "and file paths) that the PlannerAgent will consume next. Forbidden: writing "
+        "code, returning full file dumps, or proposing implementations."
+    ),
+    permission_mode=PermissionMode.READ_ONLY,
+    allowed_tools=[],
+)
+
 # ... (Orchestrator y Analyst seguirán este mismo patrón)

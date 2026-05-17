@@ -280,6 +280,9 @@ class AIlienantGraphState(TypedDict):
     # Phase 3.4.2: Pre-Dream Reflection — compact summary of last session written by
     # session_delta_aggregator_node before each planner turn. Empty string on first turn.
     session_delta: str
+    # Phase 4.1.1: Researcher Skeleton Map — written by run_researcher_node before planner in
+    # FULL_SWARM mode. None when the run skips the Researcher (SEQUENTIAL / MICRO_SWARM).
+    researcher_skeleton: Optional[str]
     # Phase 2.5: Workspace Indexing Gate — seeded from lazy_indexer.is_complete at graph invocation
     is_indexing_complete: bool
 
@@ -315,3 +318,17 @@ class AIlienantGraphState(TypedDict):
     # nodes except ContractGuardNode. Holds {"tci": float, "target_role": Optional[str],
     # "turn": int}. None until the first emission. Scalar overwrite — no reducer.
     contract_anchor: Optional[Dict[str, object]]
+
+    # --- Resource Broker (Phase 2.27) ---
+    # Blocking-modal render signal emitted by ResourceBroker on cross-session VRAM
+    # contention. Distinct from `ui_payload` (Phase 2.23 — non-blocking banner) so
+    # the two cannot collide in the same turn. Cleared by the extension once the
+    # user picks a resolution. Scalar overwrite — no reducer.
+    ui_interrupt: Optional[Dict[str, object]]
+    # Telemetry snapshot at the moment of contention: conflicting model, queue
+    # position, recommendation. Owned by ResourceBroker; read-only elsewhere.
+    contention_status: Optional[Dict[str, object]]
+    # User's response to the most recent contention prompt: "WAIT" | "SWITCH_TO_CLOUD"
+    # | "CANCEL". Set by the broker from the HitL reply; consumed within the same
+    # node invocation. Scalar overwrite — no reducer.
+    user_resource_resolution: Optional[Literal["WAIT", "SWITCH_TO_CLOUD", "CANCEL"]]

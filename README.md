@@ -31,7 +31,7 @@ AILIENANT is a Python orchestration engine paired with a thin VS Code extension 
 
 | Metric | Value |
 | --- | --- |
-| Backend tests passing | **270** |
+| Backend tests passing | **283** |
 | `mypy --strict` on new modules | Clean |
 | `ruff check` | Clean |
 | Concurrent SQLite WAL reads (50 tasks) | No lock errors, p95 < 250 ms |
@@ -109,7 +109,7 @@ State is checkpointed by a `HybridCheckpointer` over SQLite WAL — every node t
 Proyect_Ailienant/
 ├── ailienant-core/             # Python orchestration engine
 │   ├── main.py                 # FastAPI app + WebSocket gateway
-│   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard)
+│   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher)
 │   ├── brain/                  # State machine + MCTS + checkpointing
 │   │   ├── engine.py           #   graph builder
 │   │   ├── state.py            #   AIlienantGraphState, ContextMeter, MissionSpecification
@@ -127,7 +127,7 @@ Proyect_Ailienant/
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
-│   └── tests/                  # 270 passing tests
+│   └── tests/                  # 283 passing tests
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

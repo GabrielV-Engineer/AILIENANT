@@ -438,9 +438,10 @@
 
 - [ ] **4.1. Motor de Agentes Base (Nodos Cognitivos)**
 
-  - [ ] **4.1.1. ResearcherAgent (El Sabueso del Contexto)** -sonnet
+  - [x] **4.1.1. ResearcherAgent (El Sabueso del Contexto)** -sonnet
     - **Misión:** capa de recuperación. Entrada: query del usuario. Salida: Skeleton Prompt (mapa de firmas + relaciones, no archivos enteros).
     - **Mecánica:** `query_graphrag` (LanceDB + NetworkX), `GlobTool`, `GrepTool`. No muta código.
+    - **Status (2026-05-16):** Implementado en `ailienant-core/agents/researcher.py` siguiendo el patrón programático del Planner (retrieval determinista + 1 LLM call, sin LangChain `bind_tools`/ReAct). `GlobTool`/`GrepTool` diferidos — `GraphRAGDynamicExtractor.deep_parse` cubre la intención de ambos. Nuevo state channel `researcher_skeleton: Optional[str]` (blueprint §1 amended). Nodo NO wireado aún a `brain/engine.py` (depende de 4.1.3 Orchestrator + 4.3 Modos). 2/2 tests verdes, 283 totales, 0 regressions.
     - **Override de Percepción:** si `EntropyPayload.explicit_mentions` está presente, bypass parcial del GraphRAG + `FileReadTool` para contenido exacto.
 
   - [ ] **4.1.2. PlannerAgent (El Arquitecto & SDD Enforcer)** - opus
