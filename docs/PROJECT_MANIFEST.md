@@ -320,6 +320,15 @@
 
   > **Nota:** la versión inicial del brief llamó a este trabajo "Fase 2.17". Renumerado a **2.26** para preservar la Fase 2.17 (Blob Storage) ya entregada y porque 2.23–2.25 también están ocupados.
 
+- [x] **2.27. Interactive Resource Broker & Hardware Confinement**
+  **Objetivo:** serializar invocaciones de LLM locales entre sesiones concurrentes vía un `GPUResourceManager` async singleton, pausando vía HitL ante contención y permitiendo al usuario elegir WAIT / SWITCH_TO_CLOUD / CANCEL.
+  - [x] **2.27.1. `GPUResourceManager` (singleton async-safe):** `core/resource_manager.py` con `_LockState` (active_model, holder, timestamp, queue), `asyncio.Lock` + `asyncio.Event` para wakeups O(1). Reentrante por sesión.
+  - [x] **2.27.2. Esquema aditivo:** `ui_interrupt`, `contention_status`, `user_resource_resolution` en `AIlienantGraphState`. `ContextMeter` Pydantic permanece inmutable. `ui_interrupt` es campo distinto a `ui_payload` (Fase 2.26) para evitar colisión modal-vs-banner.
+  - [x] **2.27.3. `ResourceBroker.acquire_or_resolve(state, model)`:** wrapper fino en sitios de llamada (planner, summarizer, mcts_coder). MODEL_BIG y sesiones sin task_id bypass. Heurística de recomendación: `TCI>75 → CLOUD`, `TCI<40 → CLOUD`, mid + queue vacío → `WAIT`, mid + queue ocupado → `CLOUD`.
+  - [x] **2.27.4. Transporte WS:** payload rico embebido como JSON en `HITLApprovalRequestPayload.proposed_content` con sentinel `action_description="RESOURCE_CONTENTION"`. Resolución en `comment: "WAIT"|"SWITCH_TO_CLOUD"|"CANCEL"`. Cero cambios en `ws_contracts.py`.
+  - [x] **2.27.5. Disciplina anti-deadlock:** cada sitio envuelve la región lock-held (LLM call + parse + validación) en `try/finally`; si `holds_lock` se libera incluso ante errores de parsing.
+  - [x] **2.27.6. DoD:** `mypy core/resource_manager.py` (0 errors); `pytest tests/test_resource_manager.py` (18 passed, incluye regression guard para el deadlock post-LLM); `pytest -x` (301 passed, regresión limpia).
+
 ---
 
 ## 🗂️ FASE 3 — Sistema de Memoria Evolutiva (GraphRAG Híbrido)

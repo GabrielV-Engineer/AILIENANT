@@ -123,6 +123,7 @@ Proyect_Ailienant/
 │   │   ├── state_manager.py    #   AGENTS.md fast-boot serializer
 │   │   ├── janitor.py          #   orphan-vector GC + MCTS purge
 │   │   ├── token_ledger.py     #   LOCAL/CLOUD token accounting
+│   │   ├── resource_manager.py #   cross-session VRAM lock + ResourceBroker (Phase 2.27)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub

@@ -21,6 +21,8 @@ from typing import Any, Tuple
 
 from agents.analyst import supreme_judge_evaluate
 from brain.mcts.tree import MCTSNode
+from core.resource_manager import ResourceBroker  # Phase 2.27
+from shared.config import MODEL_BIG, MODEL_SMALL  # Phase 2.27 — explicit models for broker
 from tools.llm_gateway import LLMGateway, Tier
 from tools.validation.pipeline import validate_delta
 from tools.validation.result import PipelineResult
@@ -65,18 +67,32 @@ async def generate_local_variant(
 
     Used by the MCTS daemon during node expansion to propose a new dreamed
     state without touching the cloud.
+
+    Phase 2.27 — on cross-session VRAM contention the broker yields the
+    daemon's call to a live user session by swapping to MODEL_BIG (CLOUD).
+    A daemon should never block a live session; the synthesized state below
+    keeps tci low so the broker's recommendation is always SWITCH_TO_CLOUD.
     """
-    response = await LLMGateway.ainvoke(
-        messages=[
-            {"role": "system", "content": _LOCAL_GENERATE_SYSTEM},
-            {"role": "user", "content": f"### File: {file_path}\n### Current content:\n{content}"},
-        ],
-        tier=Tier.LOCAL,
-        temperature=0.2,
-        max_tokens=2000,
-        session_id=session_id,
-    )
-    return _extract_content(response)
+    broker_state: dict = {"task_id": session_id, "tci": 0.0, "css": 100.0}
+    decision = await ResourceBroker.acquire_or_resolve(broker_state, model=MODEL_SMALL)
+    if decision.cancelled:
+        raise RuntimeError("MCTS local-variant generation cancelled by user during VRAM contention.")
+    chosen_tier: Tier = Tier.CLOUD if decision.effective_model == MODEL_BIG else Tier.LOCAL
+    try:
+        response = await LLMGateway.ainvoke(
+            messages=[
+                {"role": "system", "content": _LOCAL_GENERATE_SYSTEM},
+                {"role": "user", "content": f"### File: {file_path}\n### Current content:\n{content}"},
+            ],
+            tier=chosen_tier,
+            temperature=0.2,
+            max_tokens=2000,
+            session_id=session_id,
+        )
+        return _extract_content(response)
+    finally:
+        if decision.holds_lock:
+            await ResourceBroker.release(session_id)
 
 
 async def _ask_local_to_fix(
@@ -85,22 +101,35 @@ async def _ask_local_to_fix(
     error: str,
     session_id: str,
 ) -> str:
-    """Ask Tier.LOCAL to repair `content` based on `error`."""
-    response = await LLMGateway.ainvoke(
-        messages=[
-            {"role": "system", "content": _LOCAL_FIX_SYSTEM},
-            {"role": "user", "content": (
-                f"### File: {file_path}\n"
-                f"### Error: {error}\n"
-                f"### Code:\n{content}"
-            )},
-        ],
-        tier=Tier.LOCAL,
-        temperature=0.0,
-        max_tokens=2000,
-        session_id=session_id,
-    )
-    return _extract_content(response)
+    """Ask Tier.LOCAL to repair `content` based on `error`.
+
+    Phase 2.27 — wrapped by ResourceBroker; on contention, yields to live
+    sessions by swapping to MODEL_BIG (CLOUD). See generate_local_variant.
+    """
+    broker_state: dict = {"task_id": session_id, "tci": 0.0, "css": 100.0}
+    decision = await ResourceBroker.acquire_or_resolve(broker_state, model=MODEL_SMALL)
+    if decision.cancelled:
+        raise RuntimeError("MCTS local-fix cancelled by user during VRAM contention.")
+    chosen_tier: Tier = Tier.CLOUD if decision.effective_model == MODEL_BIG else Tier.LOCAL
+    try:
+        response = await LLMGateway.ainvoke(
+            messages=[
+                {"role": "system", "content": _LOCAL_FIX_SYSTEM},
+                {"role": "user", "content": (
+                    f"### File: {file_path}\n"
+                    f"### Error: {error}\n"
+                    f"### Code:\n{content}"
+                )},
+            ],
+            tier=chosen_tier,
+            temperature=0.0,
+            max_tokens=2000,
+            session_id=session_id,
+        )
+        return _extract_content(response)
+    finally:
+        if decision.holds_lock:
+            await ResourceBroker.release(session_id)
 
 
 async def local_fix_with_retry(

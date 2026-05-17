@@ -17,6 +17,7 @@ from typing import List, Dict
 from tools.llm_gateway import LLMGateway
 from tools.token_counter import PrecisionTokenCounter
 from shared.config import MODEL_SMALL
+from core.resource_manager import ResourceBroker  # Phase 2.27
 
 logger = logging.getLogger("STATE_SUMMARIZER")
 
@@ -55,15 +56,32 @@ async def run_summarize_node(state: dict) -> dict:
         f"[{m.get('role', '?')}]: {m.get('content', '')}" for m in to_summarize
     )
 
-    try:
-        response = await LLMGateway.ainvoke(
-            messages=[{"role": "user", "content": _PROMPT.format(history=history_text)}],
-            model=MODEL_SMALL,
-            temperature=0.0,
-            max_tokens=512,
-            session_id=state.get("task_id", ""),
+    # Phase 2.27 — pre-flight VRAM contention check. SWITCH_TO_CLOUD swaps to
+    # MODEL_BIG transparently. CANCEL falls back to plain truncation.
+    decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_SMALL)
+    if decision.cancelled:
+        logger.info(
+            "StateSummarizer: cancelled by user during VRAM contention — truncating to last %d.",
+            KEEP_LAST_N,
         )
-        summary_text = response.choices[0].message.content or "[Summary unavailable]"
+        return {"messages": [{"__replace__": True}, *recent]}
+
+    try:
+        # Lock-held region: LLM call + content extraction. Inner finally guarantees
+        # release even if response.choices indexing or attribute access raises.
+        try:
+            response = await LLMGateway.ainvoke(
+                messages=[{"role": "user", "content": _PROMPT.format(history=history_text)}],
+                model=decision.effective_model,
+                temperature=0.0,
+                max_tokens=512,
+                session_id=state.get("task_id", ""),
+            )
+            summary_text = response.choices[0].message.content or "[Summary unavailable]"
+        finally:
+            if decision.holds_lock:
+                await ResourceBroker.release(state.get("task_id", ""))
+
         logger.info(
             "StateSummarizer: compressed %d messages → 1 summary + %d recent (task=%s)",
             len(to_summarize), KEEP_LAST_N, state.get("task_id", ""),

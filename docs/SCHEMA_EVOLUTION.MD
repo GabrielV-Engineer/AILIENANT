@@ -160,3 +160,48 @@ Ambos campos son *scalar overwrite* (sin reducer) — no se aplican en fan-out p
 ```
 
 `SessionContract` (Pydantic) es el contrato vinculante para el LLM y la extensión. Cualquier fallo de red, parse o validación del LLM cae a un esqueleto determinista construido desde `mission_spec.outcome / .scope / .constraints` — el banner siempre se renderiza si el trigger se activó.
+
+### 🚦 5. Phase 2.27 — Resource Broker Fields (Additive Schema Growth)
+
+Tres campos opcionales nuevos en `AIlienantGraphState`. `ContextMeter` Pydantic permanece **inmutable**.
+
+| Campo | Tipo | Owner (mutación) | Semántica |
+|---|---|---|---|
+| `ui_interrupt` | `Optional[Dict[str, object]]` | `ResourceBroker` | Señal de modal bloqueante. **Distinto** de `ui_payload` (banner persistente). Cleared por la extensión al elegir resolución. |
+| `contention_status` | `Optional[Dict[str, object]]` | `ResourceBroker` (sólo) | Telemetría del momento de contención: `requested_model`, `holder_session`, `queue_len`, `recommendation`. |
+| `user_resource_resolution` | `Optional[Literal["WAIT","SWITCH_TO_CLOUD","CANCEL"]]` | `ResourceBroker` (lee del HitL reply) | Respuesta del usuario consumida dentro del mismo nodo. |
+
+Los tres son *scalar overwrite* (sin reducer) — el broker corre serialmente desde los sitios de llamada protegidos.
+
+**Heurística de recomendación (`_compute_recommendation`):**
+
+* `TCI > 75` → `SWITCH_TO_CLOUD` (tarea pesada, cloud es más rápido)
+* `TCI < 40` → `SWITCH_TO_CLOUD` (tarea ligera, no hacer esperar al usuario)
+* `40 ≤ TCI ≤ 75` + queue vacío → `WAIT`
+* `40 ≤ TCI ≤ 75` + queue ocupado → `SWITCH_TO_CLOUD`
+
+**Contrato `ui_interrupt`:**
+
+```jsonc
+{
+  "action": "RESOURCE_CONTENTION_INTERRUPT",
+  "payload": {
+    "conflicting_model": "ailienant/small",
+    "task_tci": 55.0,
+    "recommendation": "WAIT | SWITCH_TO_CLOUD",
+    "queue_position": 1,
+    "estimated_wait_seconds": 20
+  }
+}
+```
+
+**Transporte WebSocket (sin cambios en `ws_contracts.py`):**
+
+El broker reutiliza `vfs_manager.request_human_approval(...)` (mismo patrón que `drift_monitor` y `finops_gate`). Distinción vía sentinel:
+
+* `action_description == "RESOURCE_CONTENTION"` → la extensión deserializa `proposed_content` como JSON para obtener el payload rico.
+* Respuesta del usuario en `client_hitl_response` con `comment ∈ {"WAIT","SWITCH_TO_CLOUD","CANCEL"}`. El campo `approved` se ignora para esta acción.
+
+**Disciplina anti-deadlock (CRÍTICO):**
+
+Cada sitio de llamada (planner, summarizer, mcts_coder) DEBE envolver toda la región lock-held — no sólo la llamada `LLMGateway.ainvoke`, sino también el parsing y la validación Pydantic — en `try/finally` que invoque `await ResourceBroker.release(session_id)` si `decision.holds_lock`. Un error de parsing JSON que escape sin liberar el lock dejaría bloqueadas todas las demás sesiones permanentemente. La regression está cubierta por `test_lock_released_when_post_llm_processing_raises`.

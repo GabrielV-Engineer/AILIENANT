@@ -14,6 +14,7 @@ from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
 from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
 from core.memory.semantic_memory import SemanticMemoryManager
+from core.resource_manager import ResourceBroker  # Phase 2.27
 from core.memory.context_auditor import (
     audit_task_complexity,
     derive_routing_decision,
@@ -376,25 +377,38 @@ async def run_planner_node(state: dict) -> dict:
     # =====================================================================
     logger.info("⏳ Esperando Especificación Técnica (SDD) del LLM...")
 
-    try:
-        response = await LLMGateway.ainvoke(
-            messages=messages,
-            model=MODEL_MEDIUM,
-            temperature=0.0,
-            response_format={"type": "json_object"},
-            session_id=session_id,
-        )
-        raw_content = response.choices[0].message.content or ""
-        raw_json = LLMGateway._sanitize_json_response(raw_content)
+    # Phase 2.27 — pre-flight VRAM contention check. On cross-session contention
+    # the broker pauses via HitL and may swap effective_model to MODEL_BIG.
+    decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_MEDIUM)
+    if decision.cancelled:
+        return {"errors": ["Planner cancelled by user during VRAM contention."]}
 
+    try:
+        # Lock-held region: LLM call + sanitize + Pydantic validation. ANY exception
+        # here must still release the lock via the inner finally — otherwise a bad
+        # JSON response would deadlock every other session.
         try:
-            mission_plan = MissionSpecification.model_validate_json(raw_json)
-            mission_plan = mission_plan.model_copy(update={   # Phase 2.22.6
-                "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
-            })
-        except Exception as parse_err:
-            logger.error(f"❌ Error de parsing del LLM: {parse_err}")
-            return {"errors": [f"El LLM no generó un contrato SDD válido: {parse_err}"]}
+            response = await LLMGateway.ainvoke(
+                messages=messages,
+                model=decision.effective_model,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                session_id=session_id,
+            )
+            raw_content = response.choices[0].message.content or ""
+            raw_json = LLMGateway._sanitize_json_response(raw_content)
+
+            try:
+                mission_plan = MissionSpecification.model_validate_json(raw_json)
+                mission_plan = mission_plan.model_copy(update={   # Phase 2.22.6
+                    "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
+                })
+            except Exception as parse_err:
+                logger.error(f"❌ Error de parsing del LLM: {parse_err}")
+                return {"errors": [f"El LLM no generó un contrato SDD válido: {parse_err}"]}
+        finally:
+            if decision.holds_lock:
+                await ResourceBroker.release(state.get("task_id", ""))
 
         # =====================================================================
         # 5. AUDITORÍA Y ACTUALIZACIÓN DEL ESTADO GLOBAL

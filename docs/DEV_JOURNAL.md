@@ -353,3 +353,58 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * `docs/PROJECT_MANIFEST.md` — 4.1.1 ticked `[x]`.
 * `README.md` — Repository Layout (agents list + test count).
 * `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
+
+---
+
+## 🚀 HITO 1.0.9 📅 [16/05/2026] | Interactive Resource Broker — Cross-Session VRAM Confinement (Phase 2.27)
+
+### Problem
+Local LLM invocations across concurrent AILIENANT sessions were unprotected against VRAM contention. The graph's RELAY topology serialised inferences *within* a session, but two sessions could still race for the same Ollama model and cause thrashing or OOM crashes.
+
+### Singleton Lock + Wrapper at Call Sites
+* **`core/resource_manager.py` (NEW, ≈285 LoC):** `GPUResourceManager` is a process-wide async singleton built on `asyncio.Lock` (mutex on `_LockState`) and `asyncio.Event` (O(1) wakeup of queued waiters). Tracks `active_model_name`, `locked_by_session_id`, `lock_timestamp`, and a FIFO `queue`. Reentrant per session.
+* **`ResourceBroker.acquire_or_resolve(state, model)`:** thin orchestration wrapper. MODEL_BIG and sessions without `task_id` bypass the lock entirely. On contention it computes a recommendation, mutates `state["ui_interrupt"]` and `state["contention_status"]`, and suspends via the existing `vfs_manager.request_human_approval(...)` (same convention as `drift_monitor` and `finops_gate` — *not* a new HitL paradigm).
+* **Three drift signals → one heuristic (`_compute_recommendation`):** `TCI>75` or `TCI<40` → `SWITCH_TO_CLOUD`; mid-TCI + empty queue → `WAIT`; mid-TCI + busy queue → `SWITCH_TO_CLOUD`.
+
+### Three Resolution Paths
+* **WAIT:** broker calls `acquire_lock` and the caller awaits; lock returns to caller atomically.
+* **SWITCH_TO_CLOUD:** broker substitutes `effective_model = MODEL_BIG` and swaps `state["active_llm_profile"]` to a cloud profile. No local lock held.
+* **CANCEL:** broker returns `BrokerDecision(cancelled=True)`; caller returns an error-shaped state delta and skips the LLM call.
+
+### Schema Growth (Additive — `ContextMeter` Pydantic Untouched)
+* `ui_interrupt: Optional[Dict[str, object]]` — distinct from Phase 2.26 `ui_payload`; blocking modal cannot collide with persistent banner in the same turn.
+* `contention_status: Optional[Dict[str, object]]` — telemetry snapshot of the contention moment.
+* `user_resource_resolution: Optional[Literal["WAIT","SWITCH_TO_CLOUD","CANCEL"]]` — captured user reply.
+
+### WebSocket Transport (Zero `ws_contracts.py` Changes)
+Rich payload is JSON-encoded into `HITLApprovalRequestPayload.proposed_content` with sentinel `action_description="RESOURCE_CONTENTION"`. Frontend discriminates on the sentinel; response in `client_hitl_response.comment ∈ {"WAIT","SWITCH_TO_CLOUD","CANCEL"}`. Strict payload contract:
+
+```jsonc
+{
+  "action": "RESOURCE_CONTENTION_INTERRUPT",
+  "payload": {
+    "conflicting_model": "...",
+    "task_tci": 0.0,
+    "recommendation": "WAIT | SWITCH_TO_CLOUD",
+    "queue_position": 1,
+    "estimated_wait_seconds": 20
+  }
+}
+```
+
+### Anti-Deadlock Discipline (Reviewer-Flagged)
+Each guarded call site (`planner.py`, `summarizer.py`, `mcts_coder.py`) wraps the *entire* lock-held region — LLM call + sanitization + Pydantic validation — in `try/finally` that releases the lock even if post-LLM parsing raises. A bad JSON response would otherwise deadlock every other session permanently. Covered by `test_lock_released_when_post_llm_processing_raises`.
+
+### Quality Assurance
+* `mypy core/resource_manager.py` — 0 errors.
+* `tests/test_resource_manager.py` — **18 new tests** including singleton identity, multi-session queue + release, all three resolution paths, recommendation heuristic, and the deadlock regression guard.
+* Full suite: **301 passing tests** (+18 net, 0 regressions). Graph compile smoke (`from brain.engine import alienant_app`) returns instance.
+
+### Files Changed
+* `ailienant-core/core/resource_manager.py` — **NEW** (≈285 LoC).
+* `ailienant-core/brain/state.py` — three additive fields.
+* `ailienant-core/agents/planner.py` — wrap LLM call with broker.
+* `ailienant-core/brain/summarizer.py` — wrap LLM call with broker.
+* `ailienant-core/agents/mcts_coder.py` — wrap `generate_local_variant` and `_ask_local_to_fix`; conditional tier (preserves `Tier.LOCAL` when broker keeps us local, swaps to `Tier.CLOUD` when broker substitutes MODEL_BIG).
+* `ailienant-core/tests/test_resource_manager.py` — **NEW** (≈260 LoC).
+* `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
