@@ -374,7 +374,7 @@ Legend: ✅ allowed, ⛔ forbidden, ⚠️ HITL gate required, 🔒 ReadOnly onl
 
 The AnalystAgent is the **only** node permitted to load `~/.ailienant/SOUL.md`. The Planner, Researcher, Orchestrator, and Coder explicitly skip SOUL.md loading at prompt-build time. Enforcement:
 
-- Implementation hook: a single `load_soul_md()` function lives in `agents/analyst.py`. Other agents importing it triggers a `mypy` no-public-re-export rule (architectural fence).
+- **Implementation hook (4.1.5, 2026-05-17):** the persona reader (`SoulManager` with mtime cache + env-overridable path + 🐜 fallback + R6 directory-misconfiguration guard) lives in `brain/personality.py`. It is consumed **exclusively** by `agents/analyst.py` via `from brain.personality import soul_manager`. Planner, Coder, Orchestrator, and Researcher MUST NEVER import this module — [`tests/test_analyst_agent.py::test_soul_manager_not_imported_by_logic_agents`](../ailienant-core/tests/test_analyst_agent.py) audits the four logic-agent source files on every CI run to catch breaches statically (regex-level scan, no runtime dependence). Earlier draft of this section forecasted a `mypy` no-public-re-export fence; the import-source audit replaces it as simpler and zero-config.
 - Hot-reload: `soul_md_hash` in state acts as the cache key; mismatch forces re-read.
 
 ---

@@ -18,6 +18,12 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+# Phase 4.1.5 — SOUL.md persona reader. Analyst is the EXCLUSIVE consumer of
+# brain.personality per blueprint §3.4 cognitive-isolation fence. Other agents
+# (planner, coder, orchestrator, researcher) MUST NEVER import this module —
+# Test D audits the four logic-agent files for foreign imports on every CI run.
+from brain.personality import soul_manager
+
 logger = logging.getLogger("ANALYST_AGENT")
 
 DEBUG_MODE = True  # Phase 4: real LLM call; same pattern as planner.py
@@ -112,6 +118,19 @@ async def run_analyst_node(state: dict) -> dict:
         [{"role": "user", "content": user_input}]
         if has_prior and user_input
         else []
+    )
+
+    # Phase 4.1.5 — fetch the persona prompt as an EPHEMERAL local variable.
+    # CRITICAL: soul_prompt is NEVER written to state.messages or returned in the
+    # result dict (R1 — state-key contract). The Phase 5 LLM call will receive
+    # it as the system message body; for now it is held locally and only its
+    # length + emoji flag are logged, so tests can audit integration without
+    # leaking prompt content.
+    soul_prompt: str = soul_manager.get_prompt()
+    logger.info(
+        "AnalystAgent: SOUL prompt loaded (%d chars, contains_emoji=%s).",
+        len(soul_prompt),
+        "🐜" in soul_prompt,
     )
 
     if DEBUG_MODE:

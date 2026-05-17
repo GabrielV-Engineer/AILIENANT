@@ -461,6 +461,47 @@ Blueprint §3.1's twice-deferred schema migration finally landed:
 * `docs/PHASE_4_BLUEPRINT.md` — §3.1 status: `Decision` → `Implemented 2026-05-17`. §7 impact table SCHEMA_EVOLUTION row marked Done.
 * `docs/PROJECT_MANIFEST.md` — 4.1.4 ticked `[x]` with status note + Tech Debt entry for legacy role removal.
 * `README.md` — backend test count 310 → 314 (both occurrences).
+
+---
+
+## 🚀 HITO 1.0.13 📅 [17/05/2026] | AnalystAgent — Phase 4.1.5 (Soul Integration)
+
+### The Voice Gets a Soul
+
+Blueprint §3.4 "Cognitive Isolation" mandates the AnalystAgent be the **sole** consumer of `~/.ailienant/SOUL.md` — the persona configuration separating "Voice" (chat, Socratic Q&A) from "Logic" (Planner/Coder/Orchestrator/Researcher). Phase 4.1.5 lands the persona reader without disturbing the existing 365-line `agents/analyst.py` substrate (Socratic Grill-Me, Pre-Dream Reflection, Nightmare Protocol, SupremeJudge, RuleDistiller — all preserved).
+
+* **New module — `brain/personality.py` (~110 LoC):** `SoulManager` class with mtime-based cache, DI-friendly constructor (`SoulManager(path=...)` for tests), env-var override (`AILIENANT_SOUL_PATH`), and a built-in 🐜 Socratic fallback when the file is absent. Module-level singleton `soul_manager` for the production import path.
+* **Hot-reload contract:** if the file's mtime advances between calls, the cache is invalidated and the file is re-read; otherwise the cached content is returned with no disk I/O. Test A explicitly bumps mtime via `os.utime` after a rewrite (defensive against Windows FAT-like 2-second mtime resolution) and asserts the new content flows through.
+* **R6 directory-misconfiguration guard:** if `AILIENANT_SOUL_PATH` accidentally points at a directory (trailing slash, Docker mount confusion), the previous design would have crashed with `IsADirectoryError` on `read_text()`. The shipped version checks `path.is_file()` BEFORE `stat()`, distinguishes "missing" (debug log) vs "directory" (operator-friendly warning naming `AILIENANT_SOUL_PATH`), and returns the fallback. Test B2 captures the log and asserts the diagnostic fires.
+
+### Risk-Audit Fixes Baked In
+
+* **R1 — phantom state keys.** Soul prompt is a LOCAL VARIABLE in `run_analyst_node`. The return dict's keys are restricted to existing `AIlienantGraphState` fields (`messages`, `hitl_pending`, `shared_understanding_reached`, `errors`, `security_flags`). Test C asserts `result.keys()` ⊆ declared state fields AND that a sentinel soul-prompt string never reaches `state.messages`.
+* **R4 — cognitive isolation fence.** Test D is a static source audit: it reads `agents/planner.py`, `agents/coder.py`, `agents/orchestrator.py`, `agents/researcher.py` from disk and asserts none of them contain `from brain.personality` or `import brain.personality`. Pure regex scan — no runtime dependence, fast in CI, catches accidental future breaches.
+* **R5 — Phase 3.4.x evaluators untouched.** `evaluate_nightmare`, `supreme_judge_evaluate`, `distill_rejection_to_rule` emit structured JSON (`response_format=json_object`) — injecting SOUL.md into those would corrupt downstream parsing. Left strictly alone.
+* **R7 — no inline imports.** The `from brain.personality import soul_manager` lives at the module top of `agents/analyst.py` (not buried inside `run_analyst_node`). Test D's fence covers the four logic agents; the Analyst's top-level import is the correct, visible place.
+
+### Blueprint Amendment (Phase 4 LOCK-IN)
+
+`docs/PHASE_4_BLUEPRINT.md` §3.4 previously said: *"a single `load_soul_md()` function lives in `agents/analyst.py`."* This PR amends §3.4 to reflect the shipped reality — the implementation lives in `brain/personality.py`, consumed exclusively by `agents/analyst.py`. The architectural fence (no foreign imports) is preserved; only the physical location moved.
+
+### Deferred (with rationale)
+
+* **`soul_md_hash: Optional[str]` state channel** (blueprint §1 Phase 4 ADD). The SoulManager's in-memory mtime cache covers the brief's hot-reload contract; adding the field now would require an R1 audit + tests with no consumer yet. Same pattern as 4.1.3 (deferred ADDs land when concrete consumers arrive).
+
+### Quality Assurance
+
+* **`tests/test_analyst_agent.py`** (NEW, 5 tests): A hot-reload via mtime tick, B missing-file fallback (asserts 🐜 + "Socratic" both present, no spurious caching of empty content), B2 directory-misconfiguration guard with log diagnostic capture, C R1 state-key contract + ReadOnly policy (no `vfs_buffer`/`pending_patches`/`generated_code` mutation, soul sentinel never leaks to messages), D foreign-import fence (static source audit of the four logic agents).
+* **Full suite: 319 passing tests** (+5 net from 314 baseline). Zero regressions. `ruff check` clean. `mypy --strict --explicit-package-bases` clean on `brain/personality.py`.
+
+### Files Changed
+
+* `ailienant-core/brain/personality.py` — **NEW** (~110 LoC).
+* `ailienant-core/agents/analyst.py` — top-level import + ephemeral soul-prompt fetch inside `run_analyst_node`.
+* `ailienant-core/tests/test_analyst_agent.py` — **NEW** (5 tests, ~165 LoC).
+* `docs/PHASE_4_BLUEPRINT.md` — §3.4 implementation-hook line amended.
+* `docs/PROJECT_MANIFEST.md` — `4.1.5` Hot-Reloading sub-item ticked `[x]` with full status note.
+* `README.md` — backend test count 314 → 319 (both occurrences).
 * `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
 
 ---

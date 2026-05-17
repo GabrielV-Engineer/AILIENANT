@@ -492,7 +492,8 @@
       - [ ] **Generación Base (`SOUL.md`):** crea `~/.ailienant/SOUL.md` con directrices (tono empático, analogías, 🐜).
       - [ ] **Aislamiento Estricto:** AnalystAgent es el ÚNICO nodo que carga `SOUL.md`. Planner/Logic estrictamente prohibidos.
       - [ ] **Prevención de Contaminación:** separar "Voz" (chat) de "Lógica" (validación) — la personalidad no contamina parches reales.
-      - [ ] **Hot-Reloading:** lectura dinámica del backend; editar `SOUL.md` cambia el tono sin reiniciar servidor.
+      - [x] **Hot-Reloading:** lectura dinámica del backend; editar `SOUL.md` cambia el tono sin reiniciar servidor.
+    - **Status (2026-05-17):** Gap closure on existing 365-line `agents/analyst.py` (Socratic Grill-Me + Pre-Dream Reflection + Nightmare + SupremeJudge + RuleDistiller). New `brain/personality.py` introduces `SoulManager` (mtime cache, `AILIENANT_SOUL_PATH` env override, DI-friendly constructor, 🐜 fallback when missing, R6 directory-misconfiguration guard with operator-friendly diagnostic). `run_analyst_node` imports `soul_manager` at module level (R7 — no inline import) and fetches `soul_prompt = soul_manager.get_prompt()` as an EPHEMERAL LOCAL VARIABLE — never persisted to `state.messages`, never returned in result dict (R1 state-key contract). Nightmare/SupremeJudge/RuleDistiller logic-only evaluators untouched (R5). Cognitive-isolation fence enforced by Test D: static source audit of planner/coder/orchestrator/researcher catches foreign imports of `brain.personality`. `soul_md_hash` state channel deferred per blueprint §1's "Phase 4 ADD" pattern — SoulManager's in-memory cache is sufficient for the brief's hot-reload contract. 319 tests pass, 0 regressions.
 
 - [ ] **4.2. Validadores Deterministas (Nodos Mecánicos / No-LLM)** - sonnet
   - Scripts Python puros como nodos LangGraph. Cero tokens, cero VRAM.
