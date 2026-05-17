@@ -140,8 +140,10 @@ Proyect_Ailienant/
 │   └── esbuild.js
 ├── docs/
 │   ├── PROJECT_MANIFEST.md     # Phase-by-phase roadmap (load-bearing)
+│   ├── PHASE_4_BLUEPRINT.md    # Master architectural contract for Phase 4 (mandatory read while Phase 4 is active)
 │   ├── SCHEMA_EVOLUTION.MD     # State + agent contracts
 │   ├── SYSTEM_PROMPTS.md       # Agent system prompts
+│   ├── DEV_JOURNAL.md          # Per-phase engineering log
 │   └── architecture_prompt.md  # Directory rules
 ├── CLAUDE.md                   # Operating instructions for AI contributors
 ├── .env.example
