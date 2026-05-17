@@ -459,11 +459,12 @@
     - **Optimización:** ejecuta una sola vez $O(1)$. Modelo "Heavy" para arquitectura coherente.
     - **Status (2026-05-16):** Cierre de brechas sobre la implementación existente del Planner (no rewrite — `MissionSpecification`, polyglot guard, `immutable_wbs` freeze, ResourceBroker ya estaban). Añadidos: (a) bucle de reintento `MAX_PLANNER_RETRIES=2` con inyección del error de Pydantic en el siguiente turno; (b) consumo del nuevo canal `researcher_skeleton` de Fase 4.1.1 dentro del XML sandbox; (c) lock-in a `MODEL_BIG` (Heavy/Opus per blueprint); (d) telemetría `planner_retry_count` en `AIlienantGraphState`. `with_structured_output` NO migrado — el patrón existente `response_format=json_object + model_validate_json` es funcionalmente idéntico y ya está integrado con ResourceBroker. Widening de `WBSStep.target_role` (blueprint §3.1, 5→8 valores) diferido a 4.1.4 cuando el CoderAgent consuma los 8 roles. 304 tests pass, 0 regresiones.
 
-  - [ ] **4.1.3. OrchestratorAgent (El Capataz — Runtime Controller)** - sonnet
+  - [x] **4.1.3. OrchestratorAgent (El Capataz — Runtime Controller)** - sonnet
     - **Misión:** ciclo de vida del WBS, telemetría, Prompt Swapping.
     - **Mecánica:** bucle de LangGraph $O(N)$. Single Source of Truth: itera sobre `state["mission_spec"].tasks`.
     - **3D Routing + Prompt Swapping:** evalúa CSS, extrae `target_role` del paso actual, inyecta personalidad restrictiva en el CoderAgent.
     - **Drift Detection:** tarea fallida → muta estado a `failed` + evalúa `HITL_APPROVAL_REQUIRED`.
+    - **Status (2026-05-17):** Nodo determinista standalone (`agents/orchestrator.py`, sin LLM call). Honra `MAX_RETRIES=2` del blueprint (sin nuevas constantes). Cero cambios al schema — usa `target_role`, `current_step_id`, `retry_count`, `hitl_pending`, `security_flags` existentes. Risk-audit incorporado: (R1) `retry_count` es READ-ONLY aquí — el incremento es responsabilidad de los nodos downstream (`validate_output`/`drift_monitor`/futuro Analyst), documentado en el module docstring; (R2) idempotencia en re-dispatch de pasos ya `in_progress` (skip `model_copy`); (R3) helper `_safe_get_css` tolera tanto `ContextMeter` como dict[str, Any] de la deserialización SQLite de LangGraph. Wiring a `engine.py` diferido a Fase 4.3 (assembly de los tres `execution_mode` subgraphs). 310 tests pass, 0 regresiones.
 
   - [ ] **4.1.4. CoderAgent / LogicAgent (El Obrero Mutante — Transmutación Dinámica)** - sonnet
     - **Misión:** único nodo con permisos `Write` + `Execute`. Ejecuta WBS interactuando con VFS y hardware.

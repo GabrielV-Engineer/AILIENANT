@@ -385,6 +385,40 @@ The PlannerAgent's structural backbone (`MissionSpecification` Pydantic v2 contr
 * `docs/PHASE_4_BLUEPRINT.md` — §1 channel + §4.1 threshold row.
 * `docs/PROJECT_MANIFEST.md` — 4.1.2 ticked `[x]` with status note.
 * `README.md` — backend test count 283 → 304 (both occurrences).
+
+---
+
+## 🚀 HITO 1.0.11 📅 [17/05/2026] | OrchestratorAgent — Phase 4.1.3 (El Capataz)
+
+### Deterministic WBS Lifecycle with Bounded Failure Ceiling
+
+The OrchestratorAgent is the runtime controller for the LangGraph WBS lifecycle. Unlike the Planner (LLM-backed, single O(1) shot) and the Coder (forthcoming LLM-backed tool user), the Orchestrator is **purely deterministic** — no LLM call, no broker arbitration, no checkpoint cost. It picks the next pending step, emits the `target_role` Prompt Swap signal, and enforces the blueprint's `MAX_RETRIES=2` ceiling.
+
+* **Single Source of Truth iteration:** `_pick_next_step` walks `state["mission_spec"].tasks` and returns the first task whose status is neither `completed` nor `failed`. Tasks already in `in_progress` are returned for retry; the dispatch path is idempotent (R2 — no redundant `model_copy` mutation).
+* **Prompt Swap signal:** the node emits `{target_role, current_step_id}` only. The CoderAgent (Phase 4.1.4) will own the role → system-prompt mapping; the Orchestrator's contract is "pick + dispatch", nothing more.
+* **Bounded Failure ceiling:** if `retry_count > MAX_RETRIES (= 2)`, the active step is mutated to `status="failed"`, `hitl_pending=True` is set, `security_flags += ["BOUNDED_FAILURE_LIMIT_REACHED"]`, and the counter is reset for the next HITL-unblocked step. Errors entry includes step number + role + retry count for the operator's diff.
+* **RED ALERT flag:** if `css_total < 40.0` (blueprint canonical threshold), `security_flags += ["RED_ALERT_ORCHESTRATOR"]` is emitted. **Informational only** — topology routing belongs to the IntentRouter (Phase 4.3); the Orchestrator never reroutes.
+* **Terminal state signal:** when all tasks are `completed`/`failed`, the node emits `security_flags += ["ALL_WBS_STEPS_COMPLETE"]` plus `{current_step_id: None, target_role: None}` — a clean LangGraph END marker without mutating `mission_spec`.
+
+### Risk-Audit Fixes Baked In (Anti-Bias Review)
+
+* **R1 — `retry_count` ownership:** the Orchestrator is the JUDGE, never the incrementer. Increment is the responsibility of downstream failure evaluators (`validate_output` on validation failure, `drift_monitor` on drift, future AnalystAgent on QA rejection). Documented at module-docstring level + at the read site to prevent the "ghost increment" infinite-loop trap when wired in Phase 4.3.
+* **R2 — `in_progress` idempotency:** re-dispatch of a step already at `in_progress` short-circuits before `_mark_step_status`, emitting only the dispatch signal (`target_role` + `current_step_id`) without a mission mutation. Saves a `model_copy` and avoids spurious diffs in the WBS audit trail.
+* **R3 — Pydantic/dict dual-shape:** `_safe_get_css(metrics, fallback)` handles both `ContextMeter` models and plain `dict[str, Any]` shapes (LangGraph SQLite checkpoint deserialization may produce either). Replaces a naive `hasattr(metrics, "css_total")` that would silently return False on the dict shape.
+
+### Quality Assurance
+
+* **`tests/test_orchestrator.py`** (NEW, 6 tests, no LLM mocks): happy-path step pick + Prompt Swap, Bounded Failure ceiling + HITL escalation, RED ALERT with ContextMeter, ALL_WBS_STEPS_COMPLETE terminal signal, R2 idempotency on in_progress, R3 dict-shaped context_metrics.
+* **Full suite: 310 passing tests** (+6 net from 304 baseline). Zero regressions. `ruff check` clean. `mypy --strict --explicit-package-bases` clean on the new module.
+* **Deferred items:** (a) engine.py wiring → Phase 4.3 when `execution_mode` subgraphs are assembled; (b) role → system-prompt mapping in `prompts/roles.py` → Phase 4.1.4 CoderAgent transmutation; (c) `WBSStep.target_role` widening (5 → 8 values per blueprint §3.1) → Phase 4.1.4 when the Coder actually consumes the new roles.
+
+### Files Changed
+
+* `ailienant-core/agents/orchestrator.py` — **NEW** (≈165 LoC).
+* `ailienant-core/tests/test_orchestrator.py` — **NEW** (≈200 LoC).
+* `docs/PHASE_4_BLUEPRINT.md` — §1 provenance map: two rows for `target_role` + `current_step_id` ownership.
+* `docs/PROJECT_MANIFEST.md` — 4.1.3 ticked `[x]` with full status note.
+* `README.md` — backend test count 304 → 310, `orchestrator` added to agents tuple.
 * `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
 
 ---

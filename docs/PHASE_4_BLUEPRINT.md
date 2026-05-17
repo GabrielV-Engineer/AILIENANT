@@ -148,6 +148,8 @@ class AIlienantGraphState(TypedDict):
 | `workspace_pid` / `workspace_active` | Lifecycle MCP listener | Shutdown subgraph | last-write |
 | `researcher_skeleton` | `ResearcherAgent` (Phase 4.1.1) | `PlannerAgent` (consumed since Phase 4.1.2) | last-write |
 | `planner_retry_count` | `PlannerAgent` (Phase 4.1.2) | Tests, FinOps audit | last-write |
+| `target_role` | `OrchestratorAgent` (Phase 4.1.3) | `CoderAgent` (Phase 4.1.4 will consume) | last-write |
+| `current_step_id` | `OrchestratorAgent` (Phase 4.1.3) | `CoderAgent`, `route_to_coders` | last-write |
 
 ---
 
