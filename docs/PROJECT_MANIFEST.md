@@ -481,35 +481,37 @@
     - **Propósito:** cobertura experta SOTA con 1 solo modelo en memoria ($O(1)$ VRAM); polimorfismo cognitivo + Zero Trust en tools.
     - **Status (2026-05-17):** Cognitive Policy Engine landed in `agents/roles.py` (NEW): `ROLE_REGISTRY` maps all 8 RBAC roles to `{system_prompt, allowed_tools, forbidden_phrases, hitl_triggers}`. `agents/coder.py` augmented in-place with policy resolution + ephemeral prompt build (LOCAL VAR — never persisted to `state.messages`, never returned in result dict per R1 state-key contract) + HITL trigger evaluation (e.g., `devops_infra` matching `.env` emits `HITL_APPROVAL_REQUIRED:devops_infra:.env`). `WBSStep.target_role` Literal widened from 5 → 13 values (transitional Union of legacy 5 + new 8); `model_validator(mode="before")` migrates legacy strings to canonical names at construction (Refactor→architect_refactor, Infra→devops_infra, Doc→doc_manager, SecOps→secops, Test→qa_tester). No real LLM call, no real tool execution — Phase 5 MCP re-resolves the registry at runtime. 314 tests pass, 0 regressions. **Tech debt:** legacy 5 values + migration validator scheduled for removal one release after Phase 4 closure.
 
-  - [ ] **4.1.5. AnalystAgent (El Copiloto Socrático)** - sonnet
+  - [x] **4.1.5. AnalystAgent (El Copiloto Socrático)** - sonnet
     - **Misión:** interfaz conversacional para revisión, crítica, explicación de código.
     - **Fuentes de Información:**
       1. Memoria corto plazo: `AIlienantGraphState`.
       2. Memoria largo plazo: GraphRAG Indexer en background.
       3. Contexto Activo IDE: payload estático con texto seleccionado + archivo activo.
     - **Mecánica de Crítica:** no compila código. Tools `ReadOnly` (`RunLinter`, `FileReadTool`) + Método Socrático (*"¿Notaste que este bucle es O(n²)?"* en vez de reescribir).
-    - [ ] **Inyección de Personalidad y Aislamiento Cognitivo (Alma de La Hormiga):**
-      - [ ] **Generación Base (`SOUL.md`):** crea `~/.ailienant/SOUL.md` con directrices (tono empático, analogías, 🐜).
-      - [ ] **Aislamiento Estricto:** AnalystAgent es el ÚNICO nodo que carga `SOUL.md`. Planner/Logic estrictamente prohibidos.
-      - [ ] **Prevención de Contaminación:** separar "Voz" (chat) de "Lógica" (validación) — la personalidad no contamina parches reales.
+    - [x] **Inyección de Personalidad y Aislamiento Cognitivo (Alma de La Hormiga):**
+      - [x] **Generación Base (`SOUL.md`):** crea `~/.ailienant/SOUL.md` con directrices (tono empático, analogías, 🐜).
+      - [x] **Aislamiento Estricto:** AnalystAgent es el ÚNICO nodo que carga `SOUL.md`. Planner/Logic estrictamente prohibidos.
+      - [x] **Prevención de Contaminación:** separar "Voz" (chat) de "Lógica" (validación) — la personalidad no contamina parches reales.
       - [x] **Hot-Reloading:** lectura dinámica del backend; editar `SOUL.md` cambia el tono sin reiniciar servidor.
     - **Status (2026-05-17):** Gap closure on existing 365-line `agents/analyst.py` (Socratic Grill-Me + Pre-Dream Reflection + Nightmare + SupremeJudge + RuleDistiller). New `brain/personality.py` introduces `SoulManager` (mtime cache, `AILIENANT_SOUL_PATH` env override, DI-friendly constructor, 🐜 fallback when missing, R6 directory-misconfiguration guard with operator-friendly diagnostic). `run_analyst_node` imports `soul_manager` at module level (R7 — no inline import) and fetches `soul_prompt = soul_manager.get_prompt()` as an EPHEMERAL LOCAL VARIABLE — never persisted to `state.messages`, never returned in result dict (R1 state-key contract). Nightmare/SupremeJudge/RuleDistiller logic-only evaluators untouched (R5). Cognitive-isolation fence enforced by Test D: static source audit of planner/coder/orchestrator/researcher catches foreign imports of `brain.personality`. `soul_md_hash` state channel deferred per blueprint §1's "Phase 4 ADD" pattern — SoulManager's in-memory cache is sufficient for the brief's hot-reload contract. 319 tests pass, 0 regressions.
 
-- [ ] **4.2. Validadores Deterministas (Nodos Mecánicos / No-LLM)** - sonnet
+- [x] **4.2. Validadores Deterministas (Nodos Mecánicos / No-LLM)** - sonnet
   - Scripts Python puros como nodos LangGraph. Cero tokens, cero VRAM.
   - **Interceptor de Sintaxis:** wrappers `flake8`, `eslint`, `ast.parse`.
   - **Interceptor de Ejecución:** wrappers `pytest`, Sandbox Wasm — capturan `stdout/stderr` seguro.
+  - **Status (2026-05-17):** Standalone `validators/` module shipped (no engine wiring; same pattern as 4.1.1/4.1.3/4.1.5). `gates.py` exposes `syntax_gate_node` (`ast.parse`), `style_gate_node` (`ruff check --stdin` subprocess with R8 timeout=10 + `proc.kill` deadlock guard + R9 graceful degradation when ruff is missing) plus the inline Give-Up Gate (latches `style_bypass_active=True` + `STYLE_BYPASS_ACTIVATED` flag once `consecutive_style_failures >= STYLE_BYPASS_THRESHOLD=2`). `environment.py` exposes `verify_environment_node` (sys.executable fallback + mypy.ini/pyproject.toml probe → `relaxed_typing_mode`). State extended with 6 fields per blueprint §1 (venv_interpreter_path, relaxed_typing_mode, style_bypass_active, consecutive_style_failures, syntax_gate_status, code_under_validation). R1 state-key contract enforced — every test asserts returned keys ⊆ declared fields. `style_gate_status` deferred (no consumer yet — same pattern as 4.1.3 deferrals). 325 tests pass, 0 regressions.
+  - **Tech debt (Phase 4.3 obligation):** `code_under_validation: Optional[str]` is a unit-test isolation convenience that DUPLICATES content already in `vfs_buffer` (Dict[str, VFSFile]) and `pending_patches` (Dict[str, str] diffs), causing O(N) state bloat per patch in SQLite WAL + LanceDB checkpoints. Phase 4.3 must: (a) replace `_extract_code` reads with resolution from `vfs_buffer` (via `core/blob_storage`) or `pending_patches` (in-memory diff apply); (b) remove the field from `AIlienantGraphState`; (c) update `tests/test_deterministic_gates.py` to inject via the new resolution path or `RunnableConfig.metadata`. TODO markers grep-able in `brain/state.py` and `validators/gates.py::_extract_code`.
 
-  - [ ] **4.2.1. Environment Introspection Engine (Venv Proxy)**
+  - [x] **4.2.1. Environment Introspection Engine (Venv Proxy)**
     - Endpoint MCP en VS Code lee `activeInterpreter` del usuario y lo envía en el payload.
     - `TypeCheckerAdapter` en LangGraph usa el binario del venv para MyPy/Pyright — reconoce libs de terceros.
     - ResearcherAgent detecta `pyproject.toml` / `mypy.ini` → modifica System Prompt del CoderAgent a "Strict Typing".
 
-  - [ ] **4.2.2. Pre-flight Environment Check + Graceful Degradation**
+  - [x] **4.2.2. Pre-flight Environment Check + Graceful Degradation**
     - Nodo `verify_environment` al inicio del Orchestrator.
     - Test rápido con linter. Si falla por "módulos terceros no encontrados" → activa `relaxed_typing` (`--ignore-missing-imports`) para evitar bucles infinitos del CoderAgent.
 
-  - [ ] **4.2.3. The "Give Up" Gate (Resiliencia ante Linters Hostiles)**
+  - [x] **4.2.3. The "Give Up" Gate (Resiliencia ante Linters Hostiles)**
     - Bifurcar `SyntaxGate` (`ast.parse`) de `StyleGate` (`eslint`, `flake8`).
     - Si `StyleGate` falla pero `SyntaxGate` aprueba y `retry_count` llega al límite (2) → transiciona a AnalystAgent con flag `STYLE_BYPASS_ACTIVATED`.
 

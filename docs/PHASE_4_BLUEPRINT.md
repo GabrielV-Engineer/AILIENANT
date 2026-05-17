@@ -150,6 +150,12 @@ class AIlienantGraphState(TypedDict):
 | `planner_retry_count` | `PlannerAgent` (Phase 4.1.2) | Tests, FinOps audit | last-write |
 | `target_role` | `OrchestratorAgent` (Phase 4.1.3) | `CoderAgent` (Phase 4.1.4 will consume) | last-write |
 | `current_step_id` | `OrchestratorAgent` (Phase 4.1.3) | `CoderAgent`, `route_to_coders` | last-write |
+| `venv_interpreter_path` | `verify_environment_node` (4.2.1) | `style_gate_node` | last-write |
+| `relaxed_typing_mode` | `verify_environment_node` (4.2.1/4.2.2) | future TypeChecker adapter | last-write |
+| `style_bypass_active` | `style_gate_node` (4.2.3 Give-Up Gate) | future Analyst handoff (Phase 4.3) | latch (overwrite True) |
+| `consecutive_style_failures` | `style_gate_node` (4.2) | `style_gate_node` (self) | last-write |
+| `syntax_gate_status` | `syntax_gate_node` (4.2) | `style_gate_node` | last-write |
+| `code_under_validation` | (Phase 4.2 test injection — TRANSITIONAL; Phase 4.3 will remove) | `syntax_gate_node`, `style_gate_node` | last-write |
 
 ---
 

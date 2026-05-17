@@ -327,6 +327,34 @@ class AIlienantGraphState(TypedDict):
     # planner consumed on the current invocation (0 = first-shot success). Bounded by
     # MAX_PLANNER_RETRIES (= 2). Overwrite semantics; not a reducer.
     planner_retry_count: int
+
+    # Phase 4.2 — Deterministic Validators (blueprint §4.2 + §4.1 thresholds).
+    # All additive, overwrite semantics (no reducer). The gate nodes write them;
+    # the Give-Up Gate logic (inlined in style_gate_node) reads syntax_gate_status
+    # + consecutive_style_failures to decide whether to latch style_bypass_active.
+    # Engine wiring lives in Phase 4.3.
+    venv_interpreter_path: Optional[str]
+    relaxed_typing_mode: bool
+    style_bypass_active: bool
+    consecutive_style_failures: int
+    syntax_gate_status: Literal["pass", "fail", "pending"]
+    # ──────────────────────────────────────────────────────────────────────
+    # Phase 4.2 TRANSITIONAL — code_under_validation
+    # ──────────────────────────────────────────────────────────────────────
+    # This field exists ONLY so Phase 4.2 unit tests can inject code into the
+    # gate nodes without coupling to vfs_buffer / blob_storage. It DUPLICATES
+    # content that already lives in vfs_buffer (Dict[str, VFSFile]) and
+    # pending_patches (Dict[str, str] diffs). Persisting it inflates the
+    # SQLite WAL + LanceDB checkpoint by O(N) per patch — STATE BLOAT.
+    #
+    # TODO(phase-4.3): when engine wiring lands, replace gate-node reads of
+    # this field with resolution from vfs_buffer (via core/blob_storage) or
+    # pending_patches (in-memory diff apply). Then REMOVE this field from the
+    # TypedDict and update the tests to point at a RunnableConfig.metadata
+    # channel or equivalent ephemeral surface. Tracked in
+    # docs/PROJECT_MANIFEST.md Tech Debt section.
+    # ──────────────────────────────────────────────────────────────────────
+    code_under_validation: Optional[str]
     # Phase 2.5: Workspace Indexing Gate — seeded from lazy_indexer.is_complete at graph invocation
     is_indexing_complete: bool
 

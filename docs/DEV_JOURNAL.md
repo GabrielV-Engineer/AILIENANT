@@ -502,6 +502,46 @@ Blueprint §3.4 "Cognitive Isolation" mandates the AnalystAgent be the **sole** 
 * `docs/PHASE_4_BLUEPRINT.md` — §3.4 implementation-hook line amended.
 * `docs/PROJECT_MANIFEST.md` — `4.1.5` Hot-Reloading sub-item ticked `[x]` with full status note.
 * `README.md` — backend test count 314 → 319 (both occurrences).
+
+---
+
+## 🚀 HITO 1.0.14 📅 [17/05/2026] | Deterministic Validators (Syntax + Style + Environment) — Phase 4.2
+
+### Zero-Token Mechanical Gates for the MICRO_SWARM Loop
+
+Blueprint §4.2 specifies a layer of "Validadores Deterministas (Nodos Mecánicos / No-LLM)" — pure Python nodes that gate the Coder output WITHOUT spending tokens or VRAM. Phase 4.2 ships the trio (Syntax / Style / Environment) as a standalone `validators/` package, matching the 4.1.1 / 4.1.3 / 4.1.5 pattern (built and unit-tested without engine wiring; Phase 4.3 will integrate them into the MICRO_SWARM and FULL_SWARM subgraphs).
+
+* **New module — `validators/gates.py` (~150 LoC):** `syntax_gate_node` wraps `ast.parse`. `style_gate_node` shells out to `ruff check --stdin` via `asyncio.create_subprocess_exec` with a **10-second hard timeout** + explicit `proc.kill()` on timeout (R8 deadlock guard). Both nodes expose pure-function helpers (`validate_syntax`, `validate_style`) so unit tests can exercise the logic without state-channel plumbing. The inline **Give-Up Gate** inside `style_gate_node` latches `style_bypass_active=True` and emits the `STYLE_BYPASS_ACTIVATED` security flag once `consecutive_style_failures >= STYLE_BYPASS_THRESHOLD = 2` (blueprint §4.1).
+* **New module — `validators/environment.py` (~50 LoC):** `verify_environment_node` resolves the interpreter (explicit `state.venv_interpreter_path` overrides `sys.executable`) and probes the workspace for `mypy.ini` / `pyproject.toml`. Absence triggers `relaxed_typing_mode=True` so downstream linters can run with `--ignore-missing-imports` (graceful degradation per blueprint §4.2.2).
+
+### Risk-Audit Fixes Baked In
+
+* **R1 — state-key contract.** Every gate-node return dict is restricted to declared `AIlienantGraphState` fields. Six fields added this PR (blueprint §1 vocabulary): `venv_interpreter_path`, `relaxed_typing_mode`, `style_bypass_active`, `consecutive_style_failures`, `syntax_gate_status`, `code_under_validation`. **`style_gate_status` deliberately omitted** (no consumer yet — same deferral pattern as 4.1.3). Tests assert `set(result.keys()) ⊆ ALLOWED_STATE_KEYS` on every node call.
+* **R8 — subprocess deadlock.** `asyncio.wait_for(proc.communicate(...), timeout=10.0)` + `proc.kill()` + `await proc.wait()` on the `TimeoutError` branch. No child-process leaks even if ruff stalls on a pathological input.
+* **R9 — `ruff` not in the resolved interpreter's environment.** `validate_style` catches `FileNotFoundError` on the subprocess exec AND inspects stderr for `"No module named ruff"`. Both branches return `(False, <diagnostic>)` instead of crashing. Test F injects a bogus interpreter path and asserts the clean-fail path.
+* **R10 — `pyproject.toml` presence ≠ mypy config.** The brief's literal file-presence check is preserved for 4.2 (avoids parser deps) but the docstring flags this as a future refinement candidate. TODO logged.
+
+### Schema Tech Debt — `code_under_validation` is Transitional
+
+`code_under_validation: Optional[str]` is a unit-test isolation convenience: it lets Phase 4.2 inject code into the gate nodes without coupling to `vfs_buffer` / `blob_storage` resolution. But it DUPLICATES content that already lives in `state["vfs_buffer"]` (Dict[str, VFSFile]) and `state["pending_patches"]` (Dict[str, str] diffs). Every LangGraph checkpoint persists this duplicate to SQLite WAL + LanceDB — O(N) state bloat per patch.
+
+**Phase 4.3 obligation (logged in PROJECT_MANIFEST.md 4.2 status note):** (a) replace `_extract_code` reads with `vfs_buffer`/`blob_storage` resolution (or `pending_patches` in-memory diff apply); (b) remove the field from the TypedDict; (c) migrate the deterministic-gate tests to inject via the new path or `RunnableConfig.metadata`. TODO markers are grep-able in `brain/state.py` (comment block above the field) and `validators/gates.py::_extract_code` (docstring).
+
+### Quality Assurance
+
+* **`tests/test_deterministic_gates.py`** (NEW, 6 tests): A) `syntax_gate` catches `SyntaxError`; B) `verify_environment` falls back to `sys.executable` when no override; C) Give-Up Gate latches `style_bypass_active=True` at `consecutive_style_failures = 2`; D) `syntax_gate` passes valid code; E) `style_gate` resets counter to 0 on pass; F) R8/R9 robustness — `FileNotFoundError` returns clean fail. Every node test asserts the R1 state-key contract.
+* **Full suite: 325 passing tests** (+6 net from 319 baseline). Zero regressions. `ruff check` clean. `mypy --strict --explicit-package-bases` clean on `validators/environment.py`, `validators/gates.py`, `brain/state.py` (3 source files).
+
+### Files Changed
+
+* `ailienant-core/validators/__init__.py` — **NEW** (namespace package init).
+* `ailienant-core/validators/environment.py` — **NEW** (~50 LoC).
+* `ailienant-core/validators/gates.py` — **NEW** (~150 LoC).
+* `ailienant-core/brain/state.py` — 6 new Phase 4.2 fields with explicit TRANSITIONAL comment block on `code_under_validation`.
+* `ailienant-core/tests/test_deterministic_gates.py` — **NEW** (6 tests, ~180 LoC).
+* `docs/PHASE_4_BLUEPRINT.md` — §1 provenance map: 6 new rows.
+* `docs/PROJECT_MANIFEST.md` — 4.2, 4.2.1, 4.2.2, 4.2.3 ticked `[x]` with status note + tech-debt entry.
+* `README.md` — backend test count 319 → 325, `validators/` added to Repository Layout.
 * `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
 
 ---
