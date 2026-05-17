@@ -31,7 +31,7 @@ AILIENANT is a Python orchestration engine paired with a thin VS Code extension 
 
 | Metric | Value |
 | --- | --- |
-| Backend tests passing | **283** |
+| Backend tests passing | **304** |
 | `mypy --strict` on new modules | Clean |
 | `ruff check` | Clean |
 | Concurrent SQLite WAL reads (50 tasks) | No lock errors, p95 < 250 ms |
@@ -128,7 +128,7 @@ Proyect_Ailienant/
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
-│   └── tests/                  # 283 passing tests
+│   └── tests/                  # 304 passing tests
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

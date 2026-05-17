@@ -128,6 +128,11 @@ class AIlienantGraphState(TypedDict):
     # Written by run_researcher_node before the PlannerAgent in FULL_SWARM mode.
     # None when the run skips the Researcher (SEQUENTIAL / MICRO_SWARM modes).
     # Additive, default None, no reducer (last-write semantics).
+
+    # Phase 4.1.2 ADD — Planner retry telemetry.
+    planner_retry_count: int
+    # Number of ValidationError retries the planner consumed (0..MAX_PLANNER_RETRIES=2).
+    # Visible to tests and FinOps audit. Overwrite semantics; not a reducer.
 ```
 
 ### Field Provenance Map
@@ -141,7 +146,8 @@ class AIlienantGraphState(TypedDict):
 | `circuit_breaker_tripped` | Circuit Breaker | `route_to_coders` | latch (never resets within run) |
 | `cloud_surgeon_invocations` | Cloud Surgeon | Circuit Breaker | `operator.add` |
 | `workspace_pid` / `workspace_active` | Lifecycle MCP listener | Shutdown subgraph | last-write |
-| `researcher_skeleton` | `ResearcherAgent` (Phase 4.1.1) | `PlannerAgent` (next turn, when wired in 4.1.3) | last-write |
+| `researcher_skeleton` | `ResearcherAgent` (Phase 4.1.1) | `PlannerAgent` (consumed since Phase 4.1.2) | last-write |
+| `planner_retry_count` | `PlannerAgent` (Phase 4.1.2) | Tests, FinOps audit | last-write |
 
 ---
 
@@ -388,6 +394,7 @@ Every loop has a numeric ceiling. Every ceiling triggers exactly one next-step t
 | **State summariser threshold** | `SUMMARY_TRIGGER` | 80% window | Phase 2.1.11 |
 | **Cognitive Horizon (preserved turns)** | — | last 5 | Phase 2.1.11 |
 | **Lifecycle workspace-idle timeout** | `WORKSPACE_IDLE_SEC` | 300 | New (4.4) |
+| **Planner schema-retry cap** | `MAX_PLANNER_RETRIES` | 2 | Phase 4.1.2 — distinct from `MAX_RETRIES` (Coder/MICRO_SWARM); both happen to be 2 by coincidence, different agents/gates. |
 
 ### 4.2 The "Give Up" Gate (Style Bypass) — 4.2.3
 

@@ -283,6 +283,10 @@ class AIlienantGraphState(TypedDict):
     # Phase 4.1.1: Researcher Skeleton Map — written by run_researcher_node before planner in
     # FULL_SWARM mode. None when the run skips the Researcher (SEQUENTIAL / MICRO_SWARM).
     researcher_skeleton: Optional[str]
+    # Phase 4.1.2: PlannerAgent retry telemetry — number of ValidationError retries the
+    # planner consumed on the current invocation (0 = first-shot success). Bounded by
+    # MAX_PLANNER_RETRIES (= 2). Overwrite semantics; not a reducer.
+    planner_retry_count: int
     # Phase 2.5: Workspace Indexing Gate — seeded from lazy_indexer.is_complete at graph invocation
     is_indexing_complete: bool
 

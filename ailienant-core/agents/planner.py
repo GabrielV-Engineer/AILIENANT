@@ -1,11 +1,13 @@
 # alienant-core/agents/planner.py
 
 import logging
+import os as _os
 import uuid
+from typing import Optional
 
 # Importamos nuestra puerta de enlace y los contratos estrictos
 from tools.llm_gateway import LLMGateway
-from shared.config import MODEL_MEDIUM
+from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
 from prompts import build_safe_prompt
@@ -21,12 +23,15 @@ from core.memory.context_auditor import (
     RiskLevel,
 )
 
+# Phase 4.1.2 — bounded planner retry budget on Pydantic ValidationError.
+# Distinct from MICRO_SWARM Coder's MAX_RETRIES (different agent, different gate).
+MAX_PLANNER_RETRIES: int = 2
+
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
 
 # Phase 3.6: promoted to module-level so tests can patch it.
 # Set AILIENANT_PLANNER_DEBUG=0 in production to enable full LLM path.
-import os as _os
 DEBUG_MODE: bool = _os.getenv("AILIENANT_PLANNER_DEBUG", "1") != "0"
 
 _POLYGLOT_WARNING = (
@@ -355,11 +360,28 @@ async def run_planner_node(state: dict) -> dict:
         logger.warning("Phase 3.3: cascade failed (non-fatal): %s", _cascade_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
+    # Phase 4.1.2 — consume the Researcher's Skeleton Map when available.
+    # Injected as a sandboxed block so the LLM treats it as inert data (matches the
+    # XML-boundary discipline used for dirty buffers throughout this module).
+    researcher_skeleton: str = state.get("researcher_skeleton") or ""
+    skeleton_block: str = ""
+    if researcher_skeleton:
+        skeleton_block = (
+            f"\n\n<{boundary} role=\"researcher_skeleton\">\n"
+            f"{researcher_skeleton}\n"
+            f"</{boundary}>\n"
+        )
+        logger.info(
+            "Planner: consuming researcher_skeleton (%d chars).",
+            len(researcher_skeleton),
+        )
+
     # Instrucción humana: Aquí forzamos mentalmente al modelo a respetar el contrato SDD.
     instruction = (
         f"Requerimiento del usuario: '{user_input}'.\n\n"
         f"Contexto del IDE (Los archivos están encapsulados bajo la etiqueta segura <{boundary}>):\n"
         f"{context_str}\n"
+        f"{skeleton_block}"
         "Eres el Arquitecto (The Planner). Tienes PROHIBIDO escribir código de implementación.\n"
         "Tu única tarea es generar una especificación técnica completa y lógica (MissionSpecification). "
         "Define de forma estricta el Outcome, Scope, Constraints, Decisions, las Tasks secuenciales (WBS) "
@@ -377,79 +399,109 @@ async def run_planner_node(state: dict) -> dict:
     # =====================================================================
     logger.info("⏳ Esperando Especificación Técnica (SDD) del LLM...")
 
-    # Phase 2.27 — pre-flight VRAM contention check. On cross-session contention
-    # the broker pauses via HitL and may swap effective_model to MODEL_BIG.
-    decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_MEDIUM)
+    # Phase 4.1.2 — blueprint §4.1.2 mandates Heavy/Opus for the Planner.
+    # ResourceBroker still arbitrates the VRAM lock; we just request BIG by default.
+    decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_BIG)
     if decision.cancelled:
         return {"errors": ["Planner cancelled by user during VRAM contention."]}
 
+    # Phase 4.1.2 — bounded ValidationError retry loop. On each failure we inject the
+    # raw Pydantic error into the user message so the LLM corrects on the next attempt.
+    retry_count: int = 0
+    last_validation_err: str = ""
+    mission_plan: Optional[MissionSpecification] = None
+
     try:
-        # Lock-held region: LLM call + sanitize + Pydantic validation. ANY exception
-        # here must still release the lock via the inner finally — otherwise a bad
-        # JSON response would deadlock every other session.
-        try:
-            response = await LLMGateway.ainvoke(
-                messages=messages,
-                model=decision.effective_model,
-                temperature=0.0,
-                response_format={"type": "json_object"},
-                session_id=session_id,
-            )
-            raw_content = response.choices[0].message.content or ""
-            raw_json = LLMGateway._sanitize_json_response(raw_content)
+        while retry_count <= MAX_PLANNER_RETRIES:
+            if retry_count > 0 and last_validation_err:
+                corrective: str = (
+                    f"\n\nYour previous attempt failed strict schema validation. "
+                    f"Pydantic reported:\n{last_validation_err}\n"
+                    f"Regenerate a fully valid MissionSpecification JSON. "
+                    f"Do not omit required fields."
+                )
+                messages[-1] = {
+                    **messages[-1],
+                    "content": messages[-1]["content"] + corrective,
+                }
 
             try:
+                response = await LLMGateway.ainvoke(
+                    messages=messages,
+                    model=decision.effective_model,
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                    session_id=session_id,
+                )
+                raw_content = response.choices[0].message.content or ""
+                raw_json = LLMGateway._sanitize_json_response(raw_content)
                 mission_plan = MissionSpecification.model_validate_json(raw_json)
                 mission_plan = mission_plan.model_copy(update={   # Phase 2.22.6
                     "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
                 })
-            except Exception as parse_err:
-                logger.error(f"❌ Error de parsing del LLM: {parse_err}")
-                return {"errors": [f"El LLM no generó un contrato SDD válido: {parse_err}"]}
-        finally:
-            if decision.holds_lock:
-                await ResourceBroker.release(state.get("task_id", ""))
+                break
+            except Exception as parse_err:  # noqa: BLE001 — Pydantic ValidationError + sanitiser errors
+                last_validation_err = str(parse_err)
+                logger.warning(
+                    "Planner retry %d/%d — schema validation failed: %s",
+                    retry_count + 1,
+                    MAX_PLANNER_RETRIES + 1,
+                    last_validation_err,
+                )
+                retry_count += 1
 
-        # =====================================================================
-        # 5. AUDITORÍA Y ACTUALIZACIÓN DEL ESTADO GLOBAL
-        # =====================================================================
-        logger.info("✅ Especificación Técnica generada y validada estrictamente.")
+        if mission_plan is None:
+            logger.error(
+                "Planner: exhausted %d attempts on schema validation.",
+                MAX_PLANNER_RETRIES + 1,
+            )
+            return {
+                "errors": [
+                    f"Planner Error - schema validation exhausted "
+                    f"{MAX_PLANNER_RETRIES + 1} attempts: {last_validation_err}"
+                ],
+                "planner_retry_count": retry_count,
+            }
+    finally:
+        if decision.holds_lock:
+            await ResourceBroker.release(state.get("task_id", ""))
 
-        print("\n--- 📋 MISSION SPECIFICATION (SDD) ---")
-        print(f"🎯 Outcome: {mission_plan.outcome}")
-        print(f"🔒 Constraints: {len(mission_plan.constraints)} reglas definidas.")
-        print(f"🛠️ Pasos (Tasks): {len(mission_plan.tasks)} tareas programadas.")
-        print(f"🧪 Checks (QA): {len(mission_plan.checks)} pruebas de validación.")
-        print("--------------------------------------\n")
+    # =====================================================================
+    # 5. AUDITORÍA Y ACTUALIZACIÓN DEL ESTADO GLOBAL
+    # =====================================================================
+    logger.info("✅ Especificación Técnica generada y validada estrictamente.")
 
-        # Para High-TCI, todos los WBSSteps son candidatos al fan-out MapReduce.
-        parallel_tasks = mission_plan.tasks if tci > 80.0 else []
+    print("\n--- 📋 MISSION SPECIFICATION (SDD) ---")
+    print(f"🎯 Outcome: {mission_plan.outcome}")
+    print(f"🔒 Constraints: {len(mission_plan.constraints)} reglas definidas.")
+    print(f"🛠️ Pasos (Tasks): {len(mission_plan.tasks)} tareas programadas.")
+    print(f"🧪 Checks (QA): {len(mission_plan.checks)} pruebas de validación.")
+    print("--------------------------------------\n")
 
-        result = {
-            "mission_spec": mission_plan,
-            "parallel_tasks": parallel_tasks,
-            "tci": tci,
-            "css": css,
-            "context_metrics": updated_context_metrics,
-            "provider": _cascade_provider,
-        }
-        if state.get("immutable_wbs") is None:
-            result["immutable_wbs"] = mission_plan
-            logger.info("PlannerAgent: immutable_wbs frozen (first turn, LLM mode).")
+    # Para High-TCI, todos los WBSSteps son candidatos al fan-out MapReduce.
+    parallel_tasks = mission_plan.tasks if tci > 80.0 else []
 
-        # ── Phase 3.6: flush cognitive state to .ailienant/AGENTS.md ────────────
-        try:
-            from core.state_manager import dump_state_to_markdown
-            _state_for_dump = dict(state) | result
-            _state_for_dump["_top_k_files_cache"] = locals().get("_top_k_files", [])
-            dump_state_to_markdown(_state_for_dump, state.get("workspace_root", ""))
-        except Exception as _dump_err:
-            logger.debug("Phase 3.6: state dump skipped: %s", _dump_err)
-        # ─────────────────────────────────────────────────────────────────────────
+    result = {
+        "mission_spec": mission_plan,
+        "parallel_tasks": parallel_tasks,
+        "tci": tci,
+        "css": css,
+        "context_metrics": updated_context_metrics,
+        "provider": _cascade_provider,
+        "planner_retry_count": retry_count,  # Phase 4.1.2 — 0 on first-shot success
+    }
+    if state.get("immutable_wbs") is None:
+        result["immutable_wbs"] = mission_plan
+        logger.info("PlannerAgent: immutable_wbs frozen (first turn, LLM mode).")
 
-        return result
+    # ── Phase 3.6: flush cognitive state to .ailienant/AGENTS.md ────────────
+    try:
+        from core.state_manager import dump_state_to_markdown
+        _state_for_dump = dict(state) | result
+        _state_for_dump["_top_k_files_cache"] = locals().get("_top_k_files", [])
+        dump_state_to_markdown(_state_for_dump, state.get("workspace_root", ""))
+    except Exception as _dump_err:
+        logger.debug("Phase 3.6: state dump skipped: %s", _dump_err)
+    # ─────────────────────────────────────────────────────────────────────────
 
-    except Exception as e:
-        logger.error(f"❌ Error crítico en la ejecución del Planner: {str(e)}")
-        # Inyectamos el error en el estado para activar protocolos de auto-recuperación (Resiliencia)
-        return {"errors": [f"Planner Error - Fallo en generación SDD: {str(e)}"]}
+    return result

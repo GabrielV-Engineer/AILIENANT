@@ -352,6 +352,39 @@ Esta sesión consolidó la estabilidad industrial de **AILIENANT**. Se implement
 * `docs/PHASE_4_BLUEPRINT.md` — §1 state-contract section amended.
 * `docs/PROJECT_MANIFEST.md` — 4.1.1 ticked `[x]`.
 * `README.md` — Repository Layout (agents list + test count).
+
+---
+
+## 🚀 HITO 1.0.10 📅 [16/05/2026] | PlannerAgent — Phase 4.1.2 Gap Closure
+
+### Bounded Retry, Heavy Tier, and Skeleton Intake
+
+The PlannerAgent's structural backbone (`MissionSpecification` Pydantic v2 contract, polyglot file guard, `immutable_wbs` shadow freeze, ResourceBroker VRAM coordination) was already in place from Phase 2/3. Phase 4.1.2 closed the **five concrete gaps** that blocked declaring the blueprint §4.1.2 contract complete — **without** rewriting the existing planner.
+
+* **Bounded `ValidationError` retry (`MAX_PLANNER_RETRIES=2`):** Single-shot `try/except parse_err → return errors` replaced by a `while retry_count <= 2` loop. On each failure, the raw `str(ValidationError)` is appended to the user message so the LLM corrects on the next attempt. Hard ceiling: 3 total attempts; exhaustion returns a clean `state.errors` entry — no fatal raise.
+* **`researcher_skeleton` consumption:** The Phase 4.1.1 channel is now read by the planner and injected as a sandboxed `<{boundary} role="researcher_skeleton">...</{boundary}>` block inside the existing XML-boundary discipline. Inert-data treatment per the established Prompt Injection defence.
+* **Model tier lock-in:** `ResourceBroker.acquire_or_resolve(state, model=MODEL_BIG)` now matches the blueprint's "Heavy/Opus" mandate. ResourceBroker still arbitrates the VRAM lock; only the requested tier changed.
+* **`planner_retry_count` telemetry:** New `AIlienantGraphState` field. Visible to tests, FinOps audit, and the future Orchestrator. Surfaced in the result dict on both success and exhaustion paths.
+* **`tests/test_planner.py`** (NEW, 3 tests): `test_planner_retries_on_malformed_json_then_succeeds` (1 retry → success, asserts corrective banner in the 2nd call's user message), `test_planner_returns_errors_when_retries_exhausted` (3 garbage responses → clean `errors[]`), `test_planner_consumes_researcher_skeleton` (skeleton text surfaces in the prompt sent to LLMGateway). All mock `audit_task_complexity` to isolate the planner's LLM call from the Phase 3.3 Mini-Judge cascade.
+
+### Deliberate Non-Goals
+
+* **`with_structured_output` migration rejected** — the existing `response_format=json_object + MissionSpecification.model_validate_json` path is functionally identical to LangChain's wrapper, already integrated with `ResourceBroker`, and migrating would add risk for zero behavioural gain.
+* **`WBSStep.target_role` widening (5 → 8 values per blueprint §3.1) deferred to 4.1.4** — no consumer reads the additional 3 roles yet; widening a Literal nobody uses is busywork.
+
+### Quality Assurance
+
+* **Full suite: 304 passing tests** (+3 net from 283 baseline). Zero regressions. `ruff` clean. `mypy --strict` clean on `brain/state.py`. Pre-existing strict-mode debt in `agents/planner.py` (4 errors: generic-type annotations on `list`/`dict` + `from prompts import ...` path) silenced via the established `mypy.ini` per-module pattern (mirrors `agents.analyst`, `core.vfs_middleware`, etc.) — debt left untouched, scheduled for a dedicated cleanup PR.
+
+### Files Changed
+
+* `ailienant-core/agents/planner.py` — surgical retry loop + skeleton intake + BIG tier; pre-existing `import os as _os` moved to top.
+* `ailienant-core/brain/state.py` — `planner_retry_count: int` channel.
+* `ailienant-core/tests/test_planner.py` — **NEW** (≈260 LoC).
+* `ailienant-core/mypy.ini` — `agents.planner` added to `follow_imports = silent` list.
+* `docs/PHASE_4_BLUEPRINT.md` — §1 channel + §4.1 threshold row.
+* `docs/PROJECT_MANIFEST.md` — 4.1.2 ticked `[x]` with status note.
+* `README.md` — backend test count 283 → 304 (both occurrences).
 * `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
 
 ---

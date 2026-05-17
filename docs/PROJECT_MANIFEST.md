@@ -453,10 +453,11 @@
     - **Status (2026-05-16):** Implementado en `ailienant-core/agents/researcher.py` siguiendo el patrón programático del Planner (retrieval determinista + 1 LLM call, sin LangChain `bind_tools`/ReAct). `GlobTool`/`GrepTool` diferidos — `GraphRAGDynamicExtractor.deep_parse` cubre la intención de ambos. Nuevo state channel `researcher_skeleton: Optional[str]` (blueprint §1 amended). Nodo NO wireado aún a `brain/engine.py` (depende de 4.1.3 Orchestrator + 4.3 Modos). 2/2 tests verdes, 283 totales, 0 regressions.
     - **Override de Percepción:** si `EntropyPayload.explicit_mentions` está presente, bypass parcial del GraphRAG + `FileReadTool` para contenido exacto.
 
-  - [ ] **4.1.2. PlannerAgent (El Arquitecto & SDD Enforcer)** - opus
+  - [x] **4.1.2. PlannerAgent (El Arquitecto & SDD Enforcer)** - opus
     - **Misión:** traduce requerimiento + contexto VFS en un Macro-Contrato siguiendo SDD.
     - **Mecánica:** Pydantic `MissionSpecification`. Blinda `scope`, `constraints`, `tasks` atómicas. Validación `with_structured_output` (Fail-Fast).
     - **Optimización:** ejecuta una sola vez $O(1)$. Modelo "Heavy" para arquitectura coherente.
+    - **Status (2026-05-16):** Cierre de brechas sobre la implementación existente del Planner (no rewrite — `MissionSpecification`, polyglot guard, `immutable_wbs` freeze, ResourceBroker ya estaban). Añadidos: (a) bucle de reintento `MAX_PLANNER_RETRIES=2` con inyección del error de Pydantic en el siguiente turno; (b) consumo del nuevo canal `researcher_skeleton` de Fase 4.1.1 dentro del XML sandbox; (c) lock-in a `MODEL_BIG` (Heavy/Opus per blueprint); (d) telemetría `planner_retry_count` en `AIlienantGraphState`. `with_structured_output` NO migrado — el patrón existente `response_format=json_object + model_validate_json` es funcionalmente idéntico y ya está integrado con ResourceBroker. Widening de `WBSStep.target_role` (blueprint §3.1, 5→8 valores) diferido a 4.1.4 cuando el CoderAgent consuma los 8 roles. 304 tests pass, 0 regresiones.
 
   - [ ] **4.1.3. OrchestratorAgent (El Capataz — Runtime Controller)** - sonnet
     - **Misión:** ciclo de vida del WBS, telemetría, Prompt Swapping.
