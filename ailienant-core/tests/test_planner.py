@@ -32,7 +32,7 @@ def _valid_mission_json() -> str:
         tasks=[
             WBSStep(
                 step_number=1,
-                target_role="Refactor",
+                target_role="architect_refactor",
                 action="read_file",
                 target_file="test/scope.py",
                 description="Stub task.",

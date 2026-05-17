@@ -78,8 +78,10 @@ async def test_orchestrator_picks_first_pending_and_sets_target_role() -> None:
 
     result = await run_orchestrator_node(state)
 
+    # Phase 4.1.4 — the WBSStep before-validator migrated legacy "Test" → "qa_tester"
+    # at construction; the Orchestrator surfaces the post-migration canonical name.
     assert result["current_step_id"] == 2
-    assert result["target_role"] == "Test"
+    assert result["target_role"] == "qa_tester"
 
     # Mission was mutated: step 2 now in_progress; steps 1 and 3 unchanged.
     updated: MissionSpecification = result["mission_spec"]
@@ -118,7 +120,8 @@ async def test_orchestrator_bounded_failure_marks_step_failed_and_escalates_hitl
     assert result["errors"], "Bounded failure must emit an errors entry."
     err = result["errors"][0]
     assert "step 1" in err
-    assert "Infra" in err
+    # Phase 4.1.4 — legacy "Infra" → "devops_infra" via the before-validator.
+    assert "devops_infra" in err
     assert "3 retries" in err
     assert "cap=2" in err
 
@@ -147,7 +150,8 @@ async def test_orchestrator_emits_red_alert_when_css_below_threshold() -> None:
     assert "RED_ALERT_ORCHESTRATOR" in result["security_flags"]
     # RED ALERT is informational, not a halt.
     assert result["current_step_id"] == 1
-    assert result["target_role"] == "SecOps"
+    # Phase 4.1.4 — legacy "SecOps" → "secops" via the before-validator.
+    assert result["target_role"] == "secops"
     updated: MissionSpecification = result["mission_spec"]
     assert updated.tasks[0].status == "in_progress"
 
@@ -190,7 +194,8 @@ async def test_orchestrator_idempotent_when_step_already_in_progress() -> None:
     # Critical invariant: no mission_spec mutation when status was already in_progress.
     assert "mission_spec" not in result
     assert result["current_step_id"] == 1
-    assert result["target_role"] == "Doc"
+    # Phase 4.1.4 — legacy "Doc" → "doc_manager" via the before-validator.
+    assert result["target_role"] == "doc_manager"
 
 
 # ── Test 6 (R3): RED ALERT works with dict-shaped context_metrics ────────────

@@ -305,6 +305,8 @@ One model in VRAM. The System Prompt + tool array are mutated per step. Source-o
 
 ### 3.1 Schema extension — `WBSStep.target_role` widened to 8 values
 
+**Status (2026-05-17): Implemented in Phase 4.1.4.** The transitional 13-value Literal (`Union[LEGACY_5, NEW_8]`) accepts both legacy and new names; `model_validator(mode="before")` normalises legacy strings to the canonical 8-value names at construction time. Stored values are always one of the 8 NEW canonical names. Legacy 5 values + migration validator scheduled for removal one release after Phase 4 closure (logged in `PROJECT_MANIFEST.md` Tech Debt section).
+
 **Decision:** Extend the existing Literal in [ailienant-core/brain/state.py:26-29](../ailienant-core/brain/state.py#L26-L29) so the Planner can request any of the 8 RBAC roles explicitly. This is a deliberate `SCHEMA_EVOLUTION.MD` change.
 
 ```python
@@ -528,7 +530,7 @@ Manual smoke (after pytest green):
 
 | Future Phase | Risk introduced by Phase 4 plan | Mitigation in this blueprint |
 |---|---|---|
-| `SCHEMA_EVOLUTION.MD` | `WBSStep.target_role` widens from 5 to 8 values (breaking literal). | Pydantic `model_validator(mode="before")` migrates legacy values during deserialization. Schema doc updated in same PR. |
+| `SCHEMA_EVOLUTION.MD` | `WBSStep.target_role` widens from 5 to 8 values (breaking literal). | **Done — Phase 4.1.4 (2026-05-17).** Transitional Union (13 values) + Pydantic `model_validator(mode="before")` migrate legacy strings during construction. Legacy values + validator removal scheduled one release post-Phase-4. |
 | Phase 5 (MCP/Tool RAG) | Hardcoding tool whitelists in `roles.py` could clash with Tool RAG dynamic injection. | §3.2 whitelist is a **policy** layer; Tool RAG decides which of the *allowed* tools to *inject*. No conflict. |
 | Phase 5.1 (Permission System) | `secops`/`devops_infra` HITL gates duplicate `PermissionMode` (`default`/`plan`/`auto`). | Phase 4 emits permission-level events only; the final allow/deny remains Phase 5's responsibility. |
 | Phase 6 (DriftMonitor extensions) | Tighter drift thresholds may force Phase 4 Orchestrator changes. | DriftMonitor edge is already isolated; threshold lives in config, not in Orchestrator code. |

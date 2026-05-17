@@ -106,7 +106,7 @@ async def run_planner_node(state: dict) -> dict:
             tasks = [
                 WBSStep(
                     step_number=1,
-                    target_role="Refactor",
+                    target_role="architect_refactor",
                     action="read_file",
                     target_file="main.py",
                     description="Paso paralelo A: leer archivo principal.",
@@ -114,7 +114,7 @@ async def run_planner_node(state: dict) -> dict:
                 ),
                 WBSStep(
                     step_number=2,
-                    target_role="Test",
+                    target_role="qa_tester",
                     action="read_file",
                     target_file="requirements.txt",
                     description="Paso paralelo B: auditar dependencias.",
@@ -126,7 +126,7 @@ async def run_planner_node(state: dict) -> dict:
             tasks = [
                 WBSStep(
                     step_number=1,
-                    target_role="Refactor",
+                    target_role="architect_refactor",
                     action="read_file",
                     target_file="main.py",
                     description="Leer archivo principal para validar conexión del IDE.",

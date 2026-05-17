@@ -33,7 +33,7 @@ def _make_mission(outcome: str = "test outcome") -> MissionSpecification:
         tasks=[
             WBSStep(
                 step_number=1,
-                target_role="Refactor",
+                target_role="architect_refactor",
                 action="write_file",
                 target_file="core/janitor.py",
                 description="implement janitor",

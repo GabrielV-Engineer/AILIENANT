@@ -419,6 +419,48 @@ The OrchestratorAgent is the runtime controller for the LangGraph WBS lifecycle.
 * `docs/PHASE_4_BLUEPRINT.md` — §1 provenance map: two rows for `target_role` + `current_step_id` ownership.
 * `docs/PROJECT_MANIFEST.md` — 4.1.3 ticked `[x]` with full status note.
 * `README.md` — backend test count 304 → 310, `orchestrator` added to agents tuple.
+
+---
+
+## 🚀 HITO 1.0.12 📅 [17/05/2026] | CoderAgent Cognitive Policy Engine + 8-Role Schema Widening — Phase 4.1.4
+
+### Single Model, Many Personalities — Policy Layer Only (No Executor Yet)
+
+Blueprint §3 mandates the CoderAgent transmute across 8 RBAC roles via Prompt Swapping. Phase 4.1.4 lands the **policy layer** — role → system_prompt + tool_whitelist + hitl_triggers — without executing any LLM call or real tool. Tool execution belongs to Phase 5 MCP.
+
+* **New module — `agents/roles.py` (~125 LoC):** `ROLE_REGISTRY` maps each of the 8 canonical roles (`core_dev`, `architect_refactor`, `devops_infra`, `secops`, `qa_tester`, `doc_manager`, `vcs_manager`, `data_ml_engineer`) to a `RoleConfig` TypedDict carrying the role-specific System Prompt directive, the tool whitelist (strings — consumed by Phase 5 MCP executor), forbidden output phrases, and HITL substring triggers. Two builder helpers: `get_role_config(role)` (defensive fallback to `core_dev`) and `build_coder_system_prompt(role)` (ephemeral string composition).
+* **`agents/coder.py` augmented in-place:** policy resolution + ephemeral prompt build inserted after the step lookup. `ephemeral_system_prompt` is a LOCAL VARIABLE — **never** written to `state.messages`, **never** returned in the result dict. Pre-execution HITL gates iterate `role_cfg["hitl_triggers"]` against the concatenated `target_file + description` and emit `HITL_APPROVAL_REQUIRED:<role>:<trigger>` entries in `security_flags`.
+
+### Risk-Audit Fix R1 — Phantom State Keys
+
+A pre-review draft of the plan returned `allowed_tools` from `run_coder_node`. LangGraph passes every returned key through state reducers — keys not in the `AIlienantGraphState` TypedDict either break state-merge or silently bloat the SQLite checkpoint. **Fixed before any code landed:** the Coder returns ONLY existing state keys (`vfs_buffer`, `target_role`, `current_step_id`, `current_cost_usd`, plus `security_flags` when non-empty). Phase 5's MCP executor re-resolves the role config at runtime via the module-level singleton — O(1) dict lookup, no perf penalty for the second read. Test C explicitly asserts `result.keys()` is a subset of declared state fields.
+
+### Schema Widening — `WBSStep.target_role` 5 → 8 Values
+
+Blueprint §3.1's twice-deferred schema migration finally landed:
+* **Transitional Literal (13 values):** accepts legacy `Refactor/Infra/Doc/SecOps/Test` AND new `core_dev/architect_refactor/devops_infra/secops/qa_tester/doc_manager/vcs_manager/data_ml_engineer`. Existing tests/checkpoints continue to type-check.
+* **`model_validator(mode="before")`:** maps legacy strings to canonical names at construction (`Refactor`→`architect_refactor`, `Infra`→`devops_infra`, `Doc`→`doc_manager`, `SecOps`→`secops`, `Test`→`qa_tester`). Stored value is always one of the 8 NEW. Idempotent on already-new values.
+* **Tech debt:** legacy 5 values + migration validator removed one release after Phase 4 ships (logged in `PROJECT_MANIFEST.md`).
+* **Fixture cascade:** `planner.py` DEBUG-MODE mocks + `test_fast_boot.py` + `test_planner.py` fixtures updated to emit new names directly. `test_orchestrator.py` assertions updated to expect post-migration canonical values (`"Test"` → `"qa_tester"`, etc.). A new test (`test_coder_agent_legacy_role_migrates_to_new_via_validator`) proves end-to-end migration through the Coder.
+
+### Quality Assurance
+
+* **`tests/test_coder_agent.py`** (NEW, 4 tests): doc_manager tool whitelist (no BashTool, has WriteFileTool + apply_patch), devops_infra HITL trigger on `.env`, ephemeral-prompt non-leak + R1 state-key contract (`result.keys()` ⊆ declared state fields), legacy → new role migration end-to-end.
+* **Full suite: 314 passing tests** (+4 net from 310 baseline). Zero regressions. `ruff check` clean. `mypy --strict --explicit-package-bases` clean on `agents/roles.py` and `brain/state.py`.
+
+### Files Changed
+
+* `ailienant-core/agents/roles.py` — **NEW** (~125 LoC).
+* `ailienant-core/agents/coder.py` — policy resolution + HITL gate evaluation + R1-safe return dict.
+* `ailienant-core/agents/planner.py` — DEBUG-MODE WBSStep mocks updated to new role vocabulary.
+* `ailienant-core/brain/state.py` — `WBSStep.target_role` widened to 13-value transitional Literal + `_migrate_legacy_target_role` before-validator + `_LEGACY_TO_NEW_ROLE` map.
+* `ailienant-core/tests/test_coder_agent.py` — **NEW** (4 tests, ~180 LoC).
+* `ailienant-core/tests/test_fast_boot.py` — fixture role updated to `architect_refactor`.
+* `ailienant-core/tests/test_planner.py` — `_valid_mission_json` role updated to `architect_refactor`.
+* `ailienant-core/tests/test_orchestrator.py` — assertions updated to expect post-migration canonical values.
+* `docs/PHASE_4_BLUEPRINT.md` — §3.1 status: `Decision` → `Implemented 2026-05-17`. §7 impact table SCHEMA_EVOLUTION row marked Done.
+* `docs/PROJECT_MANIFEST.md` — 4.1.4 ticked `[x]` with status note + Tech Debt entry for legacy role removal.
+* `README.md` — backend test count 310 → 314 (both occurrences).
 * `docs/PROJECT_MANIFEST.md`, `docs/SCHEMA_EVOLUTION.MD`, `docs/DEV_JOURNAL.md`, `README.md`.
 
 ---

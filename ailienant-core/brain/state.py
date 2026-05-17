@@ -1,8 +1,8 @@
 # ailienant-core/brain/state.py
 
 import operator
-from typing import TypedDict, List, Dict, Optional, Annotated, Literal
-from pydantic import BaseModel, Field
+from typing import Any, TypedDict, List, Dict, Optional, Annotated, Literal
+from pydantic import BaseModel, Field, model_validator
 
 from shared.hardware import HardwareProfile  # noqa: E402 — imported for type annotation
 
@@ -14,18 +14,43 @@ from shared.hardware import HardwareProfile  # noqa: E402 — imported for type 
 # evitando propagar datos corruptos al Orchestrator o al CoderAgent.
 
 
+# Phase 4.1.4 — Legacy → new role-name migration (blueprint §3.1).
+# Maps the deprecated 5-value vocabulary onto the canonical 8-value vocabulary.
+# Consumed by WBSStep.__migrate_legacy_target_role__ as a before-validator so
+# every stored target_role is always one of the 8 NEW canonical names. The legacy
+# 5 values + this map will be removed one release after Phase 4 closes (logged
+# in PROJECT_MANIFEST.md Tech Debt section).
+_LEGACY_TO_NEW_ROLE: Dict[str, str] = {
+    "Refactor": "architect_refactor",
+    "Infra": "devops_infra",
+    "Doc": "doc_manager",
+    "SecOps": "secops",
+    "Test": "qa_tester",
+}
+
+
 class WBSStep(BaseModel):
     """
     Un paso individual, atómico y ejecutable de la misión.
     Refactor (Fase 4): Integra su propio 'status' y reemplaza agentes por roles dinámicos.
+
+    Phase 4.1.4 widening: target_role Literal accepts both legacy (5) and new (8)
+    values. A model_validator(mode="before") normalises legacy strings to new
+    canonical names at construction, so the stored value is always one of the 8 NEW.
     """
 
     step_number: int = Field(
         description="El orden secuencial de ejecución (1, 2, 3...)."
     )
-    target_role: Literal["Refactor", "Infra", "Doc", "SecOps", "Test"] = Field(
-        default="Refactor",
-        description="El rol ('System Prompt') que el CoderAgent debe asumir para ejecutar esta tarea.",
+    target_role: Literal[
+        # Legacy 5 (deprecated, auto-migrated to the new vocabulary):
+        "Refactor", "Infra", "Doc", "SecOps", "Test",
+        # New 8 (canonical Phase 4 vocabulary):
+        "core_dev", "architect_refactor", "devops_infra", "secops",
+        "qa_tester", "doc_manager", "vcs_manager", "data_ml_engineer",
+    ] = Field(
+        default="core_dev",
+        description="The RBAC role the CoderAgent assumes for this step (Phase 4.1.4).",
     )
     action: Literal["read_file", "write_file", "edit_file", "run_command"] = Field(
         description="Tipo de acción estricta permitida para este paso."
@@ -40,6 +65,21 @@ class WBSStep(BaseModel):
         default="pending",
         description="Estado actual de la tarea. El Orchestrator muta esto durante la ejecución.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_target_role(cls, data: Any) -> Any:
+        """Map legacy 5-value role names to new 8-value canonical names.
+
+        Runs BEFORE Pydantic field validation so the Literal narrows cleanly to
+        the post-migration set. Idempotent: already-new values pass through
+        unchanged. Tolerates non-dict input (Pydantic internal construction).
+        """
+        if isinstance(data, dict):
+            legacy = data.get("target_role")
+            if isinstance(legacy, str) and legacy in _LEGACY_TO_NEW_ROLE:
+                data["target_role"] = _LEGACY_TO_NEW_ROLE[legacy]
+        return data
 
 
 class MissionSpecification(BaseModel):

@@ -466,7 +466,7 @@
     - **Drift Detection:** tarea fallida → muta estado a `failed` + evalúa `HITL_APPROVAL_REQUIRED`.
     - **Status (2026-05-17):** Nodo determinista standalone (`agents/orchestrator.py`, sin LLM call). Honra `MAX_RETRIES=2` del blueprint (sin nuevas constantes). Cero cambios al schema — usa `target_role`, `current_step_id`, `retry_count`, `hitl_pending`, `security_flags` existentes. Risk-audit incorporado: (R1) `retry_count` es READ-ONLY aquí — el incremento es responsabilidad de los nodos downstream (`validate_output`/`drift_monitor`/futuro Analyst), documentado en el module docstring; (R2) idempotencia en re-dispatch de pasos ya `in_progress` (skip `model_copy`); (R3) helper `_safe_get_css` tolera tanto `ContextMeter` como dict[str, Any] de la deserialización SQLite de LangGraph. Wiring a `engine.py` diferido a Fase 4.3 (assembly de los tres `execution_mode` subgraphs). 310 tests pass, 0 regresiones.
 
-  - [ ] **4.1.4. CoderAgent / LogicAgent (El Obrero Mutante — Transmutación Dinámica)** - sonnet
+  - [x] **4.1.4. CoderAgent / LogicAgent (El Obrero Mutante — Transmutación Dinámica)** - sonnet
     - **Misión:** único nodo con permisos `Write` + `Execute`. Ejecuta WBS interactuando con VFS y hardware.
     - **Implementación (Prompt Swapping + Tool Sandboxing):** un solo modelo en memoria; modifica System Prompt + Array de Tools MCP en tiempo real (`ailienant-core/prompts/roles.py`) según etiqueta de dominio del Planner.
     - **Registro de Transmutación (RBAC Cognitivo):**
@@ -479,6 +479,7 @@
       - 🐙 `vcs_manager` — Controlador Git. Merge conflicts, rebases, semantic commits.
       - 🧠 `data_ml_engineer` — Matemático. Pipelines de datos, tensores, analytics.
     - **Propósito:** cobertura experta SOTA con 1 solo modelo en memoria ($O(1)$ VRAM); polimorfismo cognitivo + Zero Trust en tools.
+    - **Status (2026-05-17):** Cognitive Policy Engine landed in `agents/roles.py` (NEW): `ROLE_REGISTRY` maps all 8 RBAC roles to `{system_prompt, allowed_tools, forbidden_phrases, hitl_triggers}`. `agents/coder.py` augmented in-place with policy resolution + ephemeral prompt build (LOCAL VAR — never persisted to `state.messages`, never returned in result dict per R1 state-key contract) + HITL trigger evaluation (e.g., `devops_infra` matching `.env` emits `HITL_APPROVAL_REQUIRED:devops_infra:.env`). `WBSStep.target_role` Literal widened from 5 → 13 values (transitional Union of legacy 5 + new 8); `model_validator(mode="before")` migrates legacy strings to canonical names at construction (Refactor→architect_refactor, Infra→devops_infra, Doc→doc_manager, SecOps→secops, Test→qa_tester). No real LLM call, no real tool execution — Phase 5 MCP re-resolves the registry at runtime. 314 tests pass, 0 regressions. **Tech debt:** legacy 5 values + migration validator scheduled for removal one release after Phase 4 closure.
 
   - [ ] **4.1.5. AnalystAgent (El Copiloto Socrático)** - sonnet
     - **Misión:** interfaz conversacional para revisión, crítica, explicación de código.
