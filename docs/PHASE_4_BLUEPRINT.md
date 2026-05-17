@@ -495,7 +495,9 @@ If `current_cost_usd + projected_step_cost > max_budget_usd`:
 | `ailienant-core/validators/give_up_gate.py` | NEW | Phase 4.2.3 — Style bypass latch. |
 | `ailienant-core/validators/env_introspect.py` | NEW | Phase 4.2.1/4.2.2 — Venv proxy + relaxed_typing detection. |
 | `ailienant-core/core/lifecycle_manager.py` | NEW | Phase 4.4 — PID listener + graceful workspace shutdown. |
-| `ailienant-core/intent_router.py` | NEW | Mode selector entry node. |
+| `ailienant-core/brain/intent_router.py` | NEW | Mode selector entry node. Lives in `brain/` for symmetry with `engine.py`, `fast_path.py`, and `swarms.py`. |
+| `ailienant-core/brain/swarms.py` | NEW (Phase 4.3 stage-2) | `build_micro_swarm()` + `build_full_swarm(checkpointer)` graph builders. |
+| `ailienant-core/brain/nodes/circuit_breaker.py` | NEW (Phase 4.3 stage-2) | Pure-function evaluator for the `error_streak ≥ 3` → Cloud Surgeon transition. |
 | [docs/SYSTEM_PROMPTS.md](SYSTEM_PROMPTS.md) | EXTEND | Document the 8 RBAC personalities verbatim. |
 | [docs/PROJECT_MANIFEST.md](PROJECT_MANIFEST.md) | UPDATE | Mark 4.1–4.5 sub-items complete as they land. |
 | [docs/DEV_JOURNAL.md](DEV_JOURNAL.md) | APPEND | Hito entry per sub-phase. |

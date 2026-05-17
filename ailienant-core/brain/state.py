@@ -409,3 +409,21 @@ class AIlienantGraphState(TypedDict):
     # Written once by process_user_intent() at the routing entry; locked for the
     # lifetime of the run (mode-locked topology per blueprint §2).
     execution_mode: Literal["SEQUENTIAL", "MICRO_SWARM", "FULL_SWARM"]
+
+    # --- Phase 4.3 stage-2 — MICRO_SWARM / FULL_SWARM channels ---
+    # active_role: written by Orchestrator (1:1 copy of WBSStep.target_role for the
+    #   active step); read by CoderAgent prompt builder and tool-filter.
+    # error_streak: written by SyntaxGate/StyleGate on fail; reset on step transition;
+    #   read by Circuit Breaker (escalates at CIRCUIT_BREAKER_THRESHOLD = 3).
+    # style_gate_status: split from consecutive_style_failures so MICRO_SWARM router
+    #   can distinguish "broken code" from "ugly code" without re-deriving from counts.
+    # circuit_breaker_tripped: latched True once tripped; read by route_to_coders.
+    # cloud_surgeon_invocations: operator.add — bounded to MAX_CLOUD_SURGEON=1 by Circuit Breaker.
+    active_role: Optional[Literal[
+        "core_dev", "architect_refactor", "devops_infra", "secops",
+        "qa_tester", "doc_manager", "vcs_manager", "data_ml_engineer",
+    ]]
+    error_streak: int
+    style_gate_status: Literal["pass", "fail", "pending"]
+    circuit_breaker_tripped: bool
+    cloud_surgeon_invocations: Annotated[int, operator.add]

@@ -84,9 +84,11 @@ The VS Code extension is intentionally **thin**: a sidebar with a master toggle 
 Execution entry point — `process_user_intent()` in [ailienant-core/brain/engine.py](ailienant-core/brain/engine.py) (Phase 4.3):
 
 ```
-process_user_intent(prompt, mode)
-  SEQUENTIAL → fast_path.execute_sequential_bypass()   # zero-LangGraph, 1–3 s
-  MICRO_SWARM / FULL_SWARM → (Phase 4.4, pending)
+process_user_intent(prompt, mode)            # brain/intent_router.py
+  SEQUENTIAL  → fast_path.execute_sequential_bypass()   # zero-LangGraph, 1–3 s
+  MICRO_SWARM → swarms._MICRO_SWARM_APP.ainvoke()       # CoderAgent ↔ SyntaxGate ↔ StyleGate ↔ CircuitBreaker
+  FULL_SWARM  → swarms.build_full_swarm(checkpoint_manager).ainvoke()
+                # verify_env → researcher → planner → orchestrator → micro_swarm (sub-graph) → analyst
 ```
 
 The LangGraph flow (FULL_SWARM / legacy, built in [ailienant-core/brain/engine.py](ailienant-core/brain/engine.py)):
@@ -119,10 +121,13 @@ Proyect_Ailienant/
 │   ├── main.py                 # FastAPI app + WebSocket gateway
 │   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator)
 │   ├── brain/                  # State machine + MCTS + checkpointing
-│   │   ├── engine.py           #   graph builder + process_user_intent() routing entry
+│   │   ├── engine.py           #   legacy `alienant_app` graph + re-export of process_user_intent
+│   │   ├── intent_router.py    #   process_user_intent() — dispatches SEQUENTIAL / MICRO_SWARM / FULL_SWARM
+│   │   ├── swarms.py           #   build_micro_swarm() + build_full_swarm(checkpointer)
 │   │   ├── fast_path.py        #   SEQUENTIAL mode bypass (zero-LangGraph, 1–3 s)
 │   │   ├── state.py            #   AIlienantGraphState, ContextMeter, MissionSpecification
 │   │   ├── personality.py      #   SoulManager — SOUL.md mtime-cached reader (AnalystAgent only)
+│   │   ├── nodes/              #   pure-function graph nodes (aggregator, circuit_breaker)
 │   │   ├── mcts/               #   tree + registry
 │   │   ├── episodic/           #   MCTS audit checkpointer
 │   │   └── routing_engine.py   #   CSS × TCI matrix
@@ -139,7 +144,7 @@ Proyect_Ailienant/
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 330 passing tests
+│   └── tests/                  # 342 passing tests
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

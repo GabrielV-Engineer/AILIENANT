@@ -610,3 +610,18 @@ Each guarded call site (`planner.py`, `summarizer.py`, `mcts_coder.py`) wraps th
 * `brain/state.py` — **EXTENDIDO**. `execution_mode: Literal["SEQUENTIAL", "MICRO_SWARM", "FULL_SWARM"]` añadido a `AIlienantGraphState`.
 * `tests/test_fast_path.py` — **NUEVO**. 5 tests: shape, soul injection, fallback, routing, NotImplementedError swarm.
 * `docs/PROJECT_MANIFEST.md` — Modo Secuencial marcado `[x]`.
+
+---
+
+## Hito 4.3 stage-2: Modos Micro-Enjambre + Enjambre Completo — 2026-05-17
+
+**Status:** COMPLETADO ✅
+
+* `brain/swarms.py` — **NUEVO**. `build_micro_swarm()` + `build_full_swarm(checkpointer)`. MICRO_SWARM: coder_agent → syntax_gate → style_gate → circuit_breaker_check (gobernado solo por `error_streak`; `retry_count` es propiedad del Orchestrator). FULL_SWARM incrusta `_MICRO_SWARM_APP` como sub-grafo nativo de LangGraph (evita duplicación O(2^N) de `messages` por el reducer `operator.add`).
+* `brain/intent_router.py` — **NUEVO**. `process_user_intent()` con tres ramas (SEQUENTIAL / MICRO_SWARM / FULL_SWARM). Extraído de `engine.py`.
+* `brain/nodes/circuit_breaker.py` — **NUEVO**. `evaluate_circuit_breaker()`: swap a Cloud Surgeon en `error_streak ≥ 3` con `MAX_CLOUD_SURGEON=1`; segunda falla emite `CLOUD_SURGEON_EXHAUSTED`.
+* `brain/engine.py` — **REFACTORIZADO**. `process_user_intent` ahora es `from brain.intent_router import process_user_intent` (preserva call-sites existentes).
+* `brain/state.py` — **EXTENDIDO**. 5 nuevos canales: `active_role`, `error_streak`, `style_gate_status`, `circuit_breaker_tripped`, `cloud_surgeon_invocations`. `workspace_pid` / `workspace_active` diferidos a Phase 4.4 (Lifecycle Manager) para evitar canales huérfanos.
+* `tests/test_intent_router.py`, `tests/test_micro_swarm.py`, `tests/test_full_swarm.py` — **NUEVOS** (12 tests). `tests/test_fast_path.py` — router-tests removidos (re-home a `test_intent_router.py`).
+* `docs/PHASE_4_BLUEPRINT.md` §5 — ruta `intent_router.py` actualizada a `brain/intent_router.py`.
+* Suite total: **342 passing** (+12 net, 0 regresiones). Ruff exit 0.

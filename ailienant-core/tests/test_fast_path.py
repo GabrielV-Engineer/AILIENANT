@@ -87,31 +87,8 @@ async def test_sequential_bypass_fallback_on_llm_failure() -> None:
 
 
 # ---------------------------------------------------------------------------
-# process_user_intent routing tests
+# Routing tests for process_user_intent now live in test_intent_router.py
+# (Phase 4.3 stage-2 — router was extracted from brain.engine to
+# brain.intent_router so SEQUENTIAL / MICRO_SWARM / FULL_SWARM dispatch
+# branches share a single home).
 # ---------------------------------------------------------------------------
-
-
-async def test_process_user_intent_routes_sequential() -> None:
-    """process_user_intent with mode='sequential' must delegate to execute_sequential_bypass."""
-    stub_result = {
-        "messages": [{"role": "assistant", "content": "done"}],
-        "shared_understanding_reached": True,
-    }
-    with patch(
-        "brain.fast_path.execute_sequential_bypass",
-        new_callable=AsyncMock,
-        return_value=stub_result,
-    ) as mock_bypass:
-        from brain.engine import process_user_intent
-        result = await process_user_intent("prompt", "/ws", execution_mode="sequential")
-
-    mock_bypass.assert_awaited_once()
-    assert result["shared_understanding_reached"] is True
-
-
-async def test_process_user_intent_raises_for_swarm_modes() -> None:
-    """MICRO_SWARM and FULL_SWARM must raise NotImplementedError (not yet wired)."""
-    from brain.engine import process_user_intent
-    for mode in ("MICRO_SWARM", "FULL_SWARM"):
-        with pytest.raises(NotImplementedError, match="pending implementation"):
-            await process_user_intent("prompt", "/ws", execution_mode=mode)

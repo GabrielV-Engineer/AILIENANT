@@ -213,33 +213,7 @@ def resolve_explicit_mentions(
 # =====================================================================
 # 7. TOP-LEVEL ROUTING ENTRY POINT (Phase 4.3)
 # =====================================================================
-
-
-async def process_user_intent(
-    prompt: str,
-    workspace_root: str,
-    task_id: str = "",
-    execution_mode: str = "sequential",
-) -> dict:
-    """Phase 4.3 — top-level routing entry point.
-
-    Routes to the SEQUENTIAL fast path or raises NotImplementedError for swarm
-    modes (pending Phase 4.4). The caller is responsible for broadcasting the
-    returned messages dict via websocket_manager.broadcast_token().
-    """
-    from brain.fast_path import execute_sequential_bypass  # noqa: E402
-
-    mode = execution_mode.strip().upper()
-    logger.info("process_user_intent: mode=%s task_id=%s", mode, task_id)
-
-    if mode == "SEQUENTIAL":
-        return await execute_sequential_bypass(
-            prompt=prompt,
-            workspace_root=workspace_root,
-            task_id=task_id,
-        )
-
-    raise NotImplementedError(
-        f"Execution mode '{mode}' is pending implementation. "
-        "MICRO_SWARM and FULL_SWARM land in Phase 4.4."
-    )
+# Re-exported from brain.intent_router so existing import sites
+# (`from brain.engine import process_user_intent`) keep working unchanged.
+# All three execution modes (SEQUENTIAL / MICRO_SWARM / FULL_SWARM) live there.
+from brain.intent_router import process_user_intent  # noqa: E402,F401

@@ -515,21 +515,22 @@
     - Bifurcar `SyntaxGate` (`ast.parse`) de `StyleGate` (`eslint`, `flake8`).
     - Si `StyleGate` falla pero `SyntaxGate` aprueba y `retry_count` llega al límite (2) → transiciona a AnalystAgent con flag `STYLE_BYPASS_ACTIVATED`.
 
-- [ ] **4.3. Motor de Orquestación (Modos de Ejecución Dinámicos)**
+- [x] **4.3. Motor de Orquestación (Modos de Ejecución Dinámicos)**
 
-  - [x] **Modo Secuencial (Bypass Local):** - sonnet
+  - [x] **Modo Secuencial (Bypass Local):** 
     - Flujo: User → IntentRouter → Analyst/Coder → User.
     - Desactiva LangGraph completo (cero SQLite, cero nodos cíclicos). 1 modelo, latencia 1-3s. One-Shot.
     - Implementado: `brain/fast_path.py:execute_sequential_bypass()` + `brain/engine.py:process_user_intent()`. Echo-stub fallback cuando LLM offline. `execution_mode` añadido a `AIlienantGraphState`.
 
-  - **Modo Micro-Enjambre (ReAct — Bucle Cerrado):** -sonnet
+  - [x] **Modo Micro-Enjambre (ReAct — Bucle Cerrado):** 
     - 1 Agente Cognitivo + Validadores Deterministas. Sin múltiples LLMs hablando entre sí.
-    - Flujo: CoderAgent (Tool Calling) → Validador (Python) → Linter en CPU → si error, error inyectado al historial, reinicia bucle.
-    - `max_retries=2`. 1 modelo en VRAM.
+    - Flujo: CoderAgent (Tool Calling) → SyntaxGate → StyleGate → Circuit Breaker → reintento o escape.
+    - Implementado: `brain/swarms.py:build_micro_swarm()`. Terminación gobernada exclusivamente por `error_streak` + Circuit Breaker (`CIRCUIT_BREAKER_THRESHOLD=3` → swap a Cloud Surgeon vía `MAX_CLOUD_SURGEON=1`; segunda falla → `CLOUD_SURGEON_EXHAUSTED` → END). `retry_count` es propiedad exclusiva del Orchestrator, ignorado por el inner-loop.
 
-  - **Modo Enjambre Completo (Enterprise Bicephalous):** - opus
-    - Flujo: Researcher → Planner (Macro-Contrato SDD) → Orchestrator (Roles + Routing) → [Micro-Enjambre ReAct: CoderMutante ↔ Validadores] → Analyst (Reporte Final).
-    - Grafo completo con persistencia SQLite. Planner "Heavy" $O(1)$; Orchestrator "Small" $O(N)$ inyectando roles.
+  - [x] **Modo Enjambre Completo (Enterprise Bicephalous):** 
+    - Flujo: verify_environment → Researcher → Planner (Macro-Contrato SDD) → Orchestrator (Roles + Routing) → micro_swarm (sub-grafo nativo) → Analyst.
+    - Implementado: `brain/swarms.py:build_full_swarm(checkpointer)`. Acepta `checkpointer` inyectable (producción: `checkpoint_manager` SQLite WAL; tests: `MemorySaver`). `_MICRO_SWARM_APP` se incrusta como sub-grafo nativo de LangGraph para evitar duplicación O(2^N) de `messages` por el reducer `operator.add`.
+    - IntentRouter extraído a `brain/intent_router.py`; `brain/engine.py:process_user_intent` ahora re-export del nuevo router. Estado extendido: `active_role`, `error_streak`, `circuit_breaker_tripped`, `cloud_surgeon_invocations`, `style_gate_status`.
 
 - [ ] **4.4. Monitor de Ciclo de Vida y Seguridad (Lifecycle & PID Manager)** - sonnet
   - **PID Binding:** registro del PID de la ventana activa de VS Code junto a la sesión async de LangGraph.
