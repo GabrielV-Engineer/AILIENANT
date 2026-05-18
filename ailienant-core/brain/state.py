@@ -427,3 +427,9 @@ class AIlienantGraphState(TypedDict):
     style_gate_status: Literal["pass", "fail", "pending"]
     circuit_breaker_tripped: bool
     cloud_surgeon_invocations: Annotated[int, operator.add]
+
+    # --- Phase 4.4 — Lifecycle & PID Manager channels ---
+    # workspace_pid: VS Code window PID sent by the extension on client_workspace_init.
+    # workspace_active: latched False by lifecycle_manager.shutdown_workspace(pid).
+    workspace_pid: Optional[int]
+    workspace_active: bool

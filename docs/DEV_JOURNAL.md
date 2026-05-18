@@ -625,3 +625,14 @@ Each guarded call site (`planner.py`, `summarizer.py`, `mcts_coder.py`) wraps th
 * `tests/test_intent_router.py`, `tests/test_micro_swarm.py`, `tests/test_full_swarm.py` — **NUEVOS** (12 tests). `tests/test_fast_path.py` — router-tests removidos (re-home a `test_intent_router.py`).
 * `docs/PHASE_4_BLUEPRINT.md` §5 — ruta `intent_router.py` actualizada a `brain/intent_router.py`.
 * Suite total: **342 passing** (+12 net, 0 regresiones). Ruff exit 0.
+
+## Hito 4.4: Monitor de Ciclo de Vida y Seguridad (Lifecycle & PID Manager) — 2026-05-17
+
+**Status:** COMPLETADO ✅
+
+* `core/lifecycle_manager.py` — **NUEVO**. `WorkspaceLifecycleManager` singleton: `register_task(pid, task)`, `mark_inactive(pid)`, `shutdown_workspace(pid)`. `.pop()` antes del await loop elimina race condition. Stub `_release_vram()` con nota de debounce ≥10 s para Phase 4.5. `WORKSPACE_IDLE_SEC = 300` declarado.
+* `api/ws_contracts.py` — **EDITADO**. `WorkspaceInitPayload` + `workspace_pid: Optional[int] = None`.
+* `main.py` — **EDITADO**. `_session_workspace_pid` dict global; almacenamiento en `client_workspace_init`; `asyncio.create_task(lifecycle_manager.shutdown_workspace(pid))` en `WebSocketDisconnect`.
+* `brain/state.py` — **EXTENDIDO**. 2 nuevos canales: `workspace_pid: Optional[int]`, `workspace_active: bool` (last-write, sin reducer).
+* `tests/test_lifecycle.py` — **NUEVO** (4 tests). Cancel, noop PID desconocido, mark_inactive sin cancelar, múltiples tasks.
+* Suite total: **346 passing** (+4 net, 0 regresiones). Ruff exit 0, mypy exit 0.

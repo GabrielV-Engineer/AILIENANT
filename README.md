@@ -139,12 +139,13 @@ Proyect_Ailienant/
 │   │   ├── janitor.py          #   orphan-vector GC + MCTS purge
 │   │   ├── token_ledger.py     #   LOCAL/CLOUD token accounting
 │   │   ├── resource_manager.py #   cross-session VRAM lock + ResourceBroker (Phase 2.27)
+│   │   ├── lifecycle_manager.py #  workspace-scoped PID → task registry + graceful shutdown (Phase 4.4)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 342 passing tests
+│   └── tests/                  # 346 passing tests
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

@@ -8,6 +8,7 @@ import httpx
 # --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
 from api.api_contracts import ModelInfo, ModelsAvailableResponse
 from api.websocket_manager import vfs_manager
+from core.lifecycle_manager import lifecycle_manager
 
 # --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
 from core import db as catalog_db
@@ -131,6 +132,7 @@ _PPR_DEBOUNCE_S: float = 2.0
 # Workspace registry — populated on client_workspace_init; used by mass change handler
 _workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
 _session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root (Phase 3.4.1)
+_session_workspace_pid: Dict[str, int] = {}  # client_id → workspace_pid (Phase 4.4)
 
 
 # =====================================================================
@@ -438,6 +440,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             elif valid_event.event_type == "client_workspace_init":
                 _workspace_registry[valid_event.data.project_id] = valid_event.data.workspace_root
                 _session_workspace_root[client_id] = valid_event.data.workspace_root
+                if valid_event.data.workspace_pid is not None:
+                    _session_workspace_pid[client_id] = valid_event.data.workspace_pid
                 await lazy_indexer.start(
                     workspace_root=valid_event.data.workspace_root,
                     project_id=valid_event.data.project_id,
@@ -487,3 +491,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
         # 4. Limpieza O(1) para evitar Fugas de Memoria
         logger.warning(f"⚠️ Conexión perdida abruptamente con {client_id}")
         vfs_manager.disconnect(client_id)
+        if client_id in _session_workspace_pid:
+            _pid = _session_workspace_pid.pop(client_id)
+            asyncio.create_task(lifecycle_manager.shutdown_workspace(_pid))

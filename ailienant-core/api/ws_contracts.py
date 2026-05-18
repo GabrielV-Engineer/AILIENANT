@@ -188,6 +188,7 @@ class WorkspaceInitPayload(BaseModel):
     """Client announces the workspace root path for lazy background indexing."""
     workspace_root: str
     project_id: str
+    workspace_pid: Optional[int] = None  # Phase 4.4 — VS Code window PID
 
 
 class IndexingProgressPayload(BaseModel):

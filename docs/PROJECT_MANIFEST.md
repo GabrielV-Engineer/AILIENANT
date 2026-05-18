@@ -532,10 +532,10 @@
     - Implementado: `brain/swarms.py:build_full_swarm(checkpointer)`. Acepta `checkpointer` inyectable (producción: `checkpoint_manager` SQLite WAL; tests: `MemorySaver`). `_MICRO_SWARM_APP` se incrusta como sub-grafo nativo de LangGraph para evitar duplicación O(2^N) de `messages` por el reducer `operator.add`.
     - IntentRouter extraído a `brain/intent_router.py`; `brain/engine.py:process_user_intent` ahora re-export del nuevo router. Estado extendido: `active_role`, `error_streak`, `circuit_breaker_tripped`, `cloud_surgeon_invocations`, `style_gate_status`.
 
-- [ ] **4.4. Monitor de Ciclo de Vida y Seguridad (Lifecycle & PID Manager)** - sonnet
-  - **PID Binding:** registro del PID de la ventana activa de VS Code junto a la sesión async de LangGraph.
-  - **Interceptor de Señales:** listener para cierre de ventana / cambio de Workspace.
-  - **Graceful Shutdown Selectivo:** terminación de subprocesos de "Mirror Dreaming" + liberación de VRAM al detectar workspace inactivo. *Distinto del WAL graceful shutdown de Fase 2.5/2.15 — este es por workspace, no por proceso.*
+- [x] **4.4. Monitor de Ciclo de Vida y Seguridad (Lifecycle & PID Manager)** - sonnet
+  - **PID Binding:** registro del PID de la ventana activa de VS Code junto a la sesión async de LangGraph. `WorkspaceInitPayload.workspace_pid` + `_session_workspace_pid` en `main.py`.
+  - **Interceptor de Señales:** listener para cierre de ventana / cambio de Workspace. `lifecycle_manager.shutdown_workspace(pid)` disparado en `WebSocketDisconnect`.
+  - **Graceful Shutdown Selectivo:** cancela asyncio.Tasks registradas bajo el PID; stub de liberación de VRAM + WAL checkpoint. *Distinto del WAL graceful shutdown de Fase 2.5/2.15 — este es por workspace, no por proceso.*
 
 - [ ] **4.5. Checkpoint Gate Fase 4** - sonnet
   - Validación de transiciones entre modos (Bypass ↔ LangGraph) libera `KV Cache` correctamente.
