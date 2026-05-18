@@ -288,3 +288,23 @@ Existing checkpoints deserialize unchanged. `mcp_adapter._call_mcp_tool` no long
 * `markdownify==1.1.0` — pure-Python HTML→Markdown, lazy-imported by `WebFetchTool._fetch`. Pulls in `beautifulsoup4==4.14.3` + `soupsieve==2.8.3` (pure Python).
 
 No semantic change to `mcp_adapter._call_mcp_tool` or Phase 5.2 contracts. Existing checkpoints deserialize unchanged.
+
+---
+
+## Phase 5.4 — Surgical Mutation Tools (WRITE bundle) — 2026-05-18
+
+**Strictly additive. No state-field renames or removals. `core/permissions.py` byte-identical — only its `ToolPrivilegeTier.WRITE` enum value is imported as a schema-tier marker.** Three WRITE-tier tools registered in `tool_rag_store`.
+
+**New tools (LangChain BaseTool subclasses in `tools/mutation_tools.py`):**
+
+* `AtomicCodePatchTool` — wraps `tools.patch_tool.apply_patch_to_vfs` (fuzzy match + Python AST + OCC).
+* `BatchSemanticEditTool` — multi-file ACID transaction via the Unit-of-Work / Write-Buffer pattern. Three phases (Phase 1 pre-validate OCC, Phase 2 apply against in-memory `Dict[str, str]` buffer, Phase 3 commit). Any failure in Phase 1 or 2 discards the buffer — the real `vfs_write` is invoked only after every item passes.
+* `FileWriteTool` — full-file create/overwrite. Optional OCC via `expected_hash`. Python files are AST-validated before commit. RBWE is enforced **upstream** by `core/permissions.rbwe_guard` (Phase 5.1) — this tool's body is not state-aware.
+
+**New helper:**
+
+* `tools/agent_tools.py::make_state_aware_read_file_tool(state, vfs_read, *, vfs_stat=None)` — the integration seam that completes Phase 5.3's `record_read` hook. Builds a state-mutating callback that writes the `VFSFile` audit record into `state["read_files_state"]`. Agent-layer callers swap this in for `make_read_file_tool` to satisfy `rbwe_guard`.
+
+**Role whitelist** (`_ALLOWED_MUTATION_ROLES`): `frozenset({"core_dev", "architect_refactor", "secops", "data_ml_engineer", "devops_infra"})`. Matches Phase 4 §3.2 RBAC matrix. Excludes `doc_manager` (scope-limited refinement deferred), `qa_tester` (EXECUTE tier domain), `vcs_manager` (git-only).
+
+**No new state channels. No `core/permissions.py` edits. No new dependencies.** Existing checkpoints deserialize unchanged.

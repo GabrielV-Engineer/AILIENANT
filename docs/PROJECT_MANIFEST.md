@@ -576,7 +576,7 @@
   - `FileReadTool`: lectura paginada (offset/limit) exclusiva del VFS. Alimenta `readFileState`.
   - `WebFetchTool`: HTML → Markdown limpio para docs remotas de librerías.
 
-- [ ] **5.4. Herramientas de Mutación Quirúrgica (`Write`)** — *Wrappers de exposición sobre Fase 2.22.* - opus
+- [x] **5.4. Herramientas de Mutación Quirúrgica (`Write`)** — *Wrappers de exposición sobre Fase 2.22.* - opus
   - `AtomicCodePatchTool`: wrapper de la implementación canónica (**Ref:** Fase 2.22). Búsqueda Levenshtein + validación AST.
   - `BatchSemanticEditTool`: refactorizaciones atómicas en cascada multi-archivo, guiado por `GetSymbolReferencesTool`. Incluye OCC: payload lleva `document_version_id`; antes de `WorkspaceEdit`, valida `current_version == payload.version`; si falla, rechaza la inyección y fuerza al CoderAgent a recalcular con contexto actualizado. **Ref:** Fase 1.5.
   - `FileWriteTool`: creación/sobreescritura. Bloqueado por RBWE si la ruta no fue leída antes.

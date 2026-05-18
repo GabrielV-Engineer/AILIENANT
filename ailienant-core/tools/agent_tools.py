@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, MutableMapping, Optional, Tuple
 
 from langchain_core.tools import BaseTool, tool
 
@@ -122,3 +122,33 @@ def make_run_command_tool() -> BaseTool:
         )
 
     return run_command
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.4 — Graph wiring: state-aware FileReadTool that populates RBWE audit
+# ---------------------------------------------------------------------------
+
+
+def make_state_aware_read_file_tool(
+    state: MutableMapping[str, Any],
+    vfs_read: Callable[[str], Optional[str]],
+    *,
+    vfs_stat: Optional[Callable[[str], Optional[Tuple[str, str]]]] = None,
+) -> BaseTool:
+    """Wire a record_read callback that populates state['read_files_state'].
+
+    Phase 5.1 rbwe_guard rejects WRITE/EXECUTE/DANGEROUS tools whose target_path
+    is not in state['read_files_state']. Phase 5.3 exposed the record_read audit
+    hook on make_read_file_tool. This helper builds the missing closure that
+    actually mutates state, completing the wiring.
+
+    Agent / graph-node callers should swap make_read_file_tool(vfs_read) for
+    make_state_aware_read_file_tool(state, vfs_read) — the returned BaseTool is
+    drop-in compatible (same args_schema, same return shape), but every
+    successful read now writes a VFSFile entry into state.
+    """
+    def _recorder(path: str, vfs_file: "VFSFile") -> None:
+        bucket = state.setdefault("read_files_state", {})
+        bucket[path] = vfs_file
+
+    return make_read_file_tool(vfs_read, vfs_stat=vfs_stat, record_read=_recorder)
