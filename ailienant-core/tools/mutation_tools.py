@@ -54,23 +54,10 @@ _ALLOWED_MUTATION_ROLES: FrozenSet[str] = frozenset(
 
 
 class AtomicCodePatchInput(BaseModel):
-    """Inputs for a single surgical patch."""
-
-    file_path: str = Field(description="VFS path of the file to patch.")
-    search_block: str = Field(
-        description=(
-            "Snippet to match (≥10 non-whitespace characters required). "
-            "Exact first, then normalized whitespace, then fuzzy (0.90 ratio)."
-        )
-    )
-    replace_block: str = Field(default="", description="Replacement snippet ('' = delete).")
-    expected_hash: Optional[str] = Field(
-        default=None,
-        description=(
-            "SHA-256 of the file's current content (from a prior FileReadTool "
-            "call) for OCC. Omit to skip the check (unsafe)."
-        ),
-    )
+    file_path: str = Field(description="VFS path.")
+    search_block: str = Field(description="Snippet to match (>=10 non-ws chars).")
+    replace_block: str = Field(default="", description="Replacement ('' deletes).")
+    expected_hash: Optional[str] = Field(default=None, description="OCC hash.")
 
 
 class AtomicCodePatchTool(BaseTool):

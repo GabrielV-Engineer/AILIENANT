@@ -151,13 +151,7 @@ class AskUserQuestionTool(BaseTool):
 
 
 class TogglePlanModeInput(BaseModel):
-    mode: Literal["DEFAULT", "PLAN", "AUTO"] = Field(
-        description=(
-            "Target session permission mode. DEFAULT = HITL on every "
-            "WRITE/EXECUTE/DANGEROUS; PLAN = blocks everything not READ_ONLY; "
-            "AUTO = uninterrupted execution (DANGEROUS still HITL-gated)."
-        )
-    )
+    mode: Literal["DEFAULT", "PLAN", "AUTO"] = Field(description="Target mode.")
 
 
 class TogglePlanModeTool(BaseTool):

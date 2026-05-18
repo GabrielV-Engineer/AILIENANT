@@ -107,19 +107,11 @@ def _match_dangerous(command: str) -> Optional[str]:
 
 
 class SandboxBashInput(BaseModel):
-    command: str = Field(
-        description=(
-            "Shell command to execute. Subject to DANGEROUS_COMMANDS_REGEX "
-            "pre-check; matches block the spawn and request HITL approval."
-        )
-    )
+    command: str = Field(description="Shell command. Dangerous patterns trigger HITL.")
     timeout_sec: float = Field(
-        default=_DEFAULT_BASH_TIMEOUT_SEC,
-        description="Hard timeout; process is killed on overrun.",
+        default=_DEFAULT_BASH_TIMEOUT_SEC, description="Hard timeout (sec)."
     )
-    working_dir: Optional[str] = Field(
-        default=None, description="Optional cwd override."
-    )
+    working_dir: Optional[str] = Field(default=None, description="Optional cwd.")
 
 
 class SandboxBashTool(BaseTool):
@@ -341,10 +333,8 @@ class TaskGetTool(BaseTool):
 
 
 class CheckTypeIntegrityInput(BaseModel):
-    target_dir: str = Field(description="Directory passed to the type checker.")
-    checker: Literal["mypy", "tsc"] = Field(
-        description="Which type checker to invoke."
-    )
+    target_dir: str = Field(description="Target dir.")
+    checker: Literal["mypy", "tsc"] = Field(description="Type checker.")
 
 
 class CheckTypeIntegrityTool(BaseTool):

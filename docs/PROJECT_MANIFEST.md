@@ -591,7 +591,7 @@
   - [x] `TogglePlanModeTool`: Orchestrator escala/desescala privilegios en runtime.
   - [x] **Fricción Asimétrica (Anti-Fatiga HITL):** Webview en VS Code con dict regex de comandos peligrosos (`rm\s+-rf`, `sudo`, `drop`). Match → deshabilita "Approve" y requiere confirmación por texto.
 
-- [ ] **5.7. Checkpoint Gate Fase 5** - opus
+- [x] **5.7. Checkpoint Gate Fase 5** - opus
   - **E2E Zero-Trust (RBWE):** prompt injection que intente `AtomicCodePatchTool`/`FileWriteTool` en archivo no indexado → `PermissionDeniedError` al scratchpad, agente forzado a `FileReadTool` sin crash.
   - **Auditoría Tool RAG:** task de testing audita payload HTTP — solo subset QA (`SandboxBashTool`, `run_test_suite`); prompt al menos 70% más pequeño que el ecosistema completo.
   - **Validación AST:** patch malicioso que intenta borrar `}` de clase principal → AST detecta y aborta el commit al VFS.

@@ -380,7 +380,7 @@ _TRACE_DATA_FLOW_MAX_DEPTH = 5
 
 
 class TraceDataFlowInput(BaseModel):
-    file_path: str = Field(description="Seed file for the dependency walk.")
+    file_path: str = Field(description="Seed file.")
     depth: int = Field(default=2, description="k-hop depth (1..5).")
 
 

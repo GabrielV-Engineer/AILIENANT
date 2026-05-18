@@ -347,3 +347,24 @@ No semantic change to `mcp_adapter._call_mcp_tool` or Phase 5.2 contracts. Exist
 * `tools/execution_tools.TASK_OUTPUT_TRUNC = 2000` — blueprint §5.1 line 293 truncation cap. Re-used by all 3 truncating tools and the BackgroundTaskManager watcher.
 
 **No new state channels. No `core/permissions.py` edits. No new dependencies.** Existing checkpoints deserialize unchanged. `permissions.ToolPrivilegeTier` enum is intentionally NOT extended with a "CONTROL" value — that design intent is honoured behaviourally via READ_ONLY tier (D1 in the approved plan).
+
+---
+
+## Phase 5.7 — Checkpoint Gate Fase 5 (Adversarial E2E Audit) — 2026-05-18
+
+**Strictly additive at the schema level. No state-field renames, removals, or new channels. `core/permissions.py` byte-identical. `brain/state.py` byte-identical.**
+
+Phase 5.7 is the milestone gate that proves the cumulative Phase 5.1–5.6 contract holds under attack. It lands as **one new test file** plus **honest description compression** in 5 Pydantic input models (user-locked D5 remedy, see DEV_JOURNAL.md for the full rationale). No tool semantics or runtime behaviour change.
+
+**New test artefact — `tests/test_phase5_7_checkpoint_gate.py`:** 7 mocked-boundary integration tests:
+
+* **RBWE Zero-Trust** (A1/A2) — `AtomicCodePatchTool` / `FileWriteTool` against an unread path → `rbwe_guard` raises `PermissionDeniedError`, `vfs_write` mock registers 0 calls. The guard call is simulated at the **Node** (orchestrator) boundary rather than the Tool boundary, matching the production reality that LangGraph dispatches `rbwe_guard` upstream of `_arun` (the graph-level integration test that proves the orchestrator wires the guard is deferred to Phase 6 hardening).
+* **Tool RAG financial audit** (B1) — load all 14 Phase-5 schemas (5 perception + 3 mutation + 4 execution + 2 control), call `store.select_tools(intent="Run the test suite and check linting", k=TOOL_RAG_TOP_K=5, active_role="core_dev", session_mode=DEFAULT)`, assert `ToolRAGStore.prompt_size_metrics(eager, selected)["reduction_ratio"] >= 0.70`. With the post-compression schemas the empirical ratio is **0.7010** (eager 6054 bytes, selected 1810 bytes).
+* **AST malicious-patch containment** (C1/C2) — `replace_block` / `content` that produces unparseable Python → `_validate_python_syntax` raises `PatchError` → tool returns `[atomic_code_patch] ERROR: …` or `[file_write] ERROR: …` → `vfs_write` mock 0 calls.
+* **Asymmetric Friction containment** (D1/D2) — `rm -rf node_modules` → `DANGEROUS_COMMANDS_REGEX` blocks before `asyncio.create_subprocess_shell` (subprocess spawn mock raises `AssertionError` if ever called; `spawn_calls == []`); subsequent `AskUserQuestionTool` call populates `state["pending_hitl_request"]` with a 32-char uuid4 hex `request_id`. Sentinel string from the bash interceptor advises the agent to call `ask_user_question`; D2 verifies that escalation does in fact populate the suspension channel.
+
+**Modified — `mypy.ini`:** added `[mypy-tools.patch_tool]` `follow_imports = silent` stanza. Phase 5.7's test file is the first one to transitively pull `tools.patch_tool` into a `mypy --strict` invocation; the pre-existing `unused-ignore` at `patch_tool.py:219` (LangChain `@tool` decorator stub mismatch) surfaced. Same pattern already documented for `agents.planner` and `core.compute_pool` — out-of-scope strict violations get a follow_imports=silent gate so the in-scope file can land clean.
+
+**Modified — Pydantic Field descriptions ONLY (D5 user-locked remedy)** in `tools/mutation_tools.py::AtomicCodePatchInput`, `tools/execution_tools.py::{SandboxBashInput, CheckTypeIntegrityInput}`, `tools/control_tools.py::TogglePlanModeInput`, `tools/perception_tools.py::TraceDataFlowInput`. The first run of B1 reported `reduction_ratio = 0.636`; the locked remedy was to compress verbose descriptions (NOT lower the threshold nor shrink `TOOL_RAG_TOP_K`). Field/class names and `Literal` / `Optional` typing remain unchanged — the operational verbosity ("Phase 1 of the batch rejects…", "Subject to DANGEROUS_COMMANDS_REGEX pre-check", multi-sentence enum explainers) was removed; that detail lives more naturally in the `BaseTool` docstrings (which do NOT enter the measured `json_schema`) or in code comments. No tool semantics changed.
+
+**No new state channels. No new dependencies. No `core/permissions.py` edits. No `brain/state.py` edits.** Phase 5 LOCK-IN (CLAUDE.md §1) auto-expires with the 5.7 `[x]` mark.
