@@ -144,10 +144,10 @@ Proyect_Ailienant/
 │   │   ├── tool_rag.py         #   RAM LanceDB schema store + select_tools(intent, k=5) (Phase 5.2)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
-│   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
+│   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly bundle)
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 418 passing tests (incl. tests/chaos/ — Phase 4.5 crucible; test_permissions.py — Phase 5.1; test_tool_rag_selection.py + test_mcp_handshake.py — Phase 5.2)
+│   └── tests/                  # 445 passing tests (incl. tests/chaos/ — Phase 4.5 crucible; test_permissions.py — Phase 5.1; test_tool_rag_selection.py + test_mcp_handshake.py — Phase 5.2; test_perception_tools.py — Phase 5.3)
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

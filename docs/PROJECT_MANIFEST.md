@@ -568,7 +568,7 @@
   - **Context Window Optimization:** vector store ligero (RAM) de esquemas JSON en vez de inyectar 50+ tools en el System Prompt.
   - **Inyección Just-in-Time:** Orchestrator intercepta la intención y provee solo 3-5 tools relevantes — atención del LLM al 99%, tokens $O(1)$.
 
-- [ ] **5.3. Herramientas de Percepción Semántica (`ReadOnly`)** - sonnet
+- [x] **5.3. Herramientas de Percepción Semántica (`ReadOnly`)** - sonnet
   - `DocumentParserTool`: extrae texto de `.pdf`/`.csv`/`.docx` desde el payload sin tocar disco; inyecta en el Scratchpad del agente.
   - `InspectASTNodeTool`: extracción quirúrgica de clases/funciones vía AST — ignora ruido + comentarios.
   - `GetSymbolReferencesTool`: query al GraphRAG para encontrar archivos dependientes (reemplaza Grep para refactors).

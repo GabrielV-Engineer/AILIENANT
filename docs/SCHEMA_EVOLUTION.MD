@@ -267,3 +267,24 @@ Orthogonal to existing `shared/rbac.py::PermissionMode` (`{PLAN_ONLY, ROUTING_ON
 Existing checkpoints deserialize unchanged. `mcp_adapter._call_mcp_tool` no longer raises `NotImplementedError`; it now raises `RuntimeError` if called before `bootstrap_mcp_session()` — semantic change is opt-in (callers that never bootstrap also never invoke the adapter).
 
 **Known tech debt:** the two `operator.add` channels (`permission_audit_log`, `rbwe_violations`) grow O(N) over long missions; deferred reducer swap to truncating `(old + new)[-cap:]` in Phase 5.6/5.7. Field names/types remain stable; callers will not see the change.
+
+---
+
+## Phase 5.3 — Perception tools bundle (2026-05-18)
+
+**Strictly additive. No state-field renames or removals; no `AIlienantGraphState` channel additions; no enum widening.** Five ReadOnly tools registered in `tool_rag_store` with `privilege_tier=ToolPrivilegeTier.READ_ONLY`.
+
+**New helpers:**
+
+* `core/db.py::get_dependents(target, project_id="")` — async, returns `List[str]` of files importing the target (1-hop backward edge from `dependency_graph`).
+* `core/memory/graphrag_extractor.py::GraphRAGDynamicExtractor.bfs_k_hop_forward(seed, k)` — public alias of the existing `_bfs_k_hop` walker.
+* `core/memory/graphrag_extractor.py::GraphRAGDynamicExtractor.bfs_k_hop_backward(seed, k)` — symmetric BFS using reversed edges (`target_dependency` IN frontier → `source_file`).
+* `tools/agent_tools.py::make_read_file_tool(vfs_read, *, vfs_stat=None, record_read=None)` — adds `offset` / `limit` pagination + a `record_read(path, VFSFile)` audit hook. The graph-node wiring (orchestrator-side recorder writing to `state["read_files_state"]`) is a Phase 5.4 deliverable.
+* `tools/perception_tools.register_perception_tools(store)` — async, registers 5 schemas (`document_parser`, `inspect_ast_node`, `get_symbol_references`, `trace_data_flow`, `web_fetch`).
+
+**New dependencies:**
+
+* `pypdf==5.4.0` — pure-Python PDF parser, lazy-imported by `DocumentParserTool._parse_pdf`.
+* `markdownify==1.1.0` — pure-Python HTML→Markdown, lazy-imported by `WebFetchTool._fetch`. Pulls in `beautifulsoup4==4.14.3` + `soupsieve==2.8.3` (pure Python).
+
+No semantic change to `mcp_adapter._call_mcp_tool` or Phase 5.2 contracts. Existing checkpoints deserialize unchanged.

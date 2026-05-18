@@ -131,6 +131,26 @@ async def list_tools() -> List[Dict[str, Any]]:
             return [dict(r) for r in await cur.fetchall()]
 
 
+# ── Phase 5.3 — Dependent-file lookup (inbound edges) ──────────────────────
+
+
+async def get_dependents(target: str, project_id: str = "") -> List[str]:
+    """Return files that import the given target (1-hop backward edge).
+
+    Used by GetSymbolReferencesTool and TraceDataFlowTool (Phase 5.3).
+    Deterministic ordering for caching: sorts by source_file ascending.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT DISTINCT source_file FROM dependency_graph "
+            "WHERE target_dependency = ? AND project_id = ? "
+            "ORDER BY source_file",
+            (target, project_id),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [row[0] for row in rows]
+
+
 # ── Phase 2.4: PPR GraphRAG ────────────────────────────────────────────────────
 
 async def upsert_dependencies(

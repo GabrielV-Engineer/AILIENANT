@@ -252,6 +252,57 @@ class GraphRAGDynamicExtractor:
 
         return result
 
+    # ── Phase 5.3 — Public BFS wrappers (forward + backward) ──────────────
+
+    async def bfs_k_hop_forward(self, seed: str, k: int) -> List[str]:
+        """Public wrapper: files transitively imported by `seed` up to k hops."""
+        return await self._bfs_k_hop(seed, k)
+
+    async def bfs_k_hop_backward(self, seed: str, k: int) -> List[str]:
+        """Public wrapper: files that transitively import `seed` (k-hop reverse).
+
+        Uses the symmetric SQL query (source_file ↔ target_dependency swap)
+        with the same chunked-IN pattern as the forward walk. Powers
+        TraceDataFlowTool's "who could be affected by changing X" view.
+        """
+        visited: set[str] = {seed}
+        frontier: List[str] = [seed]
+        result: List[str] = []
+
+        for hop in range(k):
+            if not frontier:
+                break
+
+            next_frontier: List[str] = []
+
+            for chunk_start in range(0, len(frontier), _SQL_CHUNK_SIZE):
+                chunk: List[str] = frontier[chunk_start : chunk_start + _SQL_CHUNK_SIZE]
+                placeholders: str = ",".join("?" * len(chunk))
+                query: str = (
+                    f"SELECT DISTINCT source_file "
+                    f"FROM dependency_graph "
+                    f"WHERE target_dependency IN ({placeholders}) "
+                    f"AND project_id = ?"
+                )
+                params: Tuple[object, ...] = (*chunk, self._project_id)
+
+                async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+                    async with db.execute(query, params) as cur:
+                        rows = await cur.fetchall()
+
+                for (source,) in rows:
+                    if source and source not in visited:
+                        visited.add(source)
+                        next_frontier.append(source)
+                        result.append(source)
+
+            logger.debug(
+                "GraphRAG reverse BFS hop %d/%d: +%d nodes", hop + 1, k, len(next_frontier)
+            )
+            frontier = next_frontier
+
+        return result
+
     async def _fetch_ppr_scores(self, files: List[str]) -> Dict[str, float]:
         """Bulk-fetch PPR scores in a single IN-clause query.
 

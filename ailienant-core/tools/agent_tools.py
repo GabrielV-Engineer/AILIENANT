@@ -1,43 +1,97 @@
 # ailienant-core/tools/agent_tools.py
 #
 # Phase 2.20 — VFS-Sandboxed Agent Tool Factories.
+# Phase 5.3 — make_read_file_tool extended with offset/limit pagination + an
+#             optional `record_read` audit hook the orchestrator wires to
+#             populate state["read_files_state"] for the RBWE guard.
 #
 # Factory functions inject the VFS instance via closure so LangChain's @tool
 # schema only exposes path/content arguments to the LLM. No internal service
 # objects (VFSMiddleware, os, open()) reach the tool schema.
-#
-# Phase 4 wires these into run_logic_node via tool_registry.
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from typing import Callable, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Callable, Optional, Tuple
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
+
+if TYPE_CHECKING:
+    from brain.state import VFSFile
 
 logger = logging.getLogger("AGENT_TOOLS")
 
 
-def make_read_file_tool(vfs_read: Callable[[str], Optional[str]]):
+def make_read_file_tool(
+    vfs_read: Callable[[str], Optional[str]],
+    *,
+    vfs_stat: Optional[Callable[[str], Optional[Tuple[str, str]]]] = None,
+    record_read: Optional[Callable[[str, "VFSFile"], None]] = None,
+) -> BaseTool:
     """Factory: returns a @tool that reads a VFS file by path.
 
     Args:
-        vfs_read: Callable e.g. vfs_middleware.read(path) → str | None
+        vfs_read:    Callable e.g. vfs_middleware.read(path) → str | None.
+        vfs_stat:    Optional. (path) → (blob_hash, document_version_id) | None.
+                     Defaults to computing a blake2b hash + ISO8601 UTC timestamp.
+        record_read: Optional Phase 5.3 audit hook. When provided AND the read
+                     succeeds, the factory invokes record_read(path, VFSFile(...)).
+                     The graph node wires this to update state["read_files_state"]
+                     so the RBWE guard in core/permissions.py sees the entry.
     """
     @tool
-    def read_file(path: str) -> str:
-        """Read a file from the Virtual File System by its workspace-relative path."""
+    def read_file(
+        path: str, offset: int = 0, limit: Optional[int] = None
+    ) -> str:
+        """Read a file from the VFS. Optional line-based offset/limit pagination."""
         content = vfs_read(path)
         if content is None:
             logger.warning("read_file: '%s' not found in VFS.", path)
             return f"[read_file] ERROR: '{path}' not found in VFS or on disk."
+
+        # Line-based slicing. offset clamped to non-negative; limit None means "all".
+        if offset or limit is not None:
+            lines = content.splitlines(keepends=True)
+            start = max(0, int(offset))
+            stop = (start + int(limit)) if limit is not None else None
+            content = "".join(lines[start:stop])
+
+        # Audit hook — populates state["read_files_state"] when wired up by the
+        # graph node. Failures here are non-fatal: read still returns the bytes.
+        if record_read is not None:
+            try:
+                from brain.state import VFSFile  # local import: avoid module-load cycle
+
+                if vfs_stat is not None:
+                    stat_result = vfs_stat(path)
+                else:
+                    stat_result = None
+                if stat_result is None:
+                    blob_hash = hashlib.blake2b(
+                        content.encode("utf-8", errors="replace"), digest_size=16
+                    ).hexdigest()
+                    document_version_id = datetime.now(timezone.utc).isoformat()
+                else:
+                    blob_hash, document_version_id = stat_result
+
+                vfs_file = VFSFile(
+                    blob_hash=blob_hash,
+                    document_version_id=document_version_id,
+                    is_dirty=False,
+                )
+                record_read(path, vfs_file)
+            except Exception as exc:  # noqa: BLE001 — audit hook is best-effort
+                logger.warning("read_file: record_read hook failed for %r: %s", path, exc)
+
         logger.debug("read_file: '%s' read (%d chars).", path, len(content))
         return content
 
     return read_file
 
 
-def make_write_file_tool(vfs_write: Callable[[str, str], None]):
+def make_write_file_tool(vfs_write: Callable[[str, str], None]) -> BaseTool:
     """Factory: returns a @tool that writes content to a VFS file.
 
     Args:
@@ -53,7 +107,7 @@ def make_write_file_tool(vfs_write: Callable[[str, str], None]):
     return write_file
 
 
-def make_run_command_tool():
+def make_run_command_tool() -> BaseTool:
     """Factory: returns a @tool stub for shell command execution.
 
     Phase 4 replaces this with sandboxed subprocess execution.
