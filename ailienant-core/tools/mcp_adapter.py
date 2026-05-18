@@ -1,23 +1,34 @@
 # ailienant-core/tools/mcp_adapter.py
 #
 # Phase 2.18 — MCP Tool Adapter + Role-based Registry.
-#
-# McpToolAdapter wraps an MCP tool call behind the langchain_core BaseTool interface.
-# McpToolRegistry provides a role-scoped store that Phase 2.19+ agents use via bind_tools().
-#
-# _call_mcp_tool() is intentionally a NotImplementedError stub — Phase 5 fills it
-# with real MCP session/transport logic (mcp.ClientSession or equivalent).
+# Phase 5.2 — Real stdio transport via mcp.ClientSession + bootstrap handshake
+#             that harvests tool schemas into the Tool RAG store and the SQLite
+#             tool_registry catalog. Singleton session lifetime is process-scoped;
+#             cleanup relies on OS-delivered EOF when stdin/stdout close.
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shlex
 from collections import defaultdict
+from contextlib import AsyncExitStack
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
+from urllib.parse import urlparse
 
 from langchain_core.tools import BaseTool
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, Field
+
+from core.permissions import ToolPrivilegeTier
+from core.tool_rag import MCP_HANDSHAKE_TIMEOUT_SEC, ToolSchema, tool_rag_store
+
+if TYPE_CHECKING:
+    from brain.state import AIlienantGraphState
 
 logger = logging.getLogger("MCP_ADAPTER")
 
@@ -61,8 +72,10 @@ class McpToolAdapter(BaseTool):
     """LangChain BaseTool wrapper around a single MCP tool endpoint.
 
     Lifecycle:
-        Phase 2.18 — Registry infrastructure; _call_mcp_tool() is a stub.
-        Phase 5     — _call_mcp_tool() is replaced with a real mcp.ClientSession call.
+        Phase 2.18 — Registry infrastructure; _call_mcp_tool() was a stub.
+        Phase 5.2 — _call_mcp_tool() is now a real mcp.ClientSession.call_tool()
+                    invocation backed by the process-singleton session opened
+                    by bootstrap_mcp_session().
 
     Timeout:
         asyncio.wait_for wraps _call_mcp_tool() with a configurable deadline (default 30s)
@@ -85,7 +98,7 @@ class McpToolAdapter(BaseTool):
         """Invoke the MCP tool asynchronously with a hard timeout.
 
         Raises asyncio.TimeoutError if the MCP call exceeds timeout_s.
-        Raises NotImplementedError (stub) until Phase 5 fills _call_mcp_tool().
+        Raises RuntimeError if invoked before bootstrap_mcp_session() opened a session.
         """
         call_args: Dict[str, Any] = arguments or {}
         logger.debug(
@@ -98,17 +111,18 @@ class McpToolAdapter(BaseTool):
         )
 
     async def _call_mcp_tool(self, arguments: Dict[str, Any]) -> Any:
-        """Execute the MCP tool call over the wire.
+        """Execute the MCP tool call over the wire via the bootstrapped session.
 
-        Phase 2.18: Raises NotImplementedError (stub).
-        Phase 5 replacement:
-            async with mcp.ClientSession(...) as session:
-                return await session.call_tool(self.mcp_tool_name, arguments)
+        Phase 5.2: uses the process-singleton mcp.ClientSession opened by
+        bootstrap_mcp_session(). Raises RuntimeError if invoked before bootstrap
+        — call sites must invoke bootstrap_mcp_session(...) on app startup.
         """
-        raise NotImplementedError(
-            f"_call_mcp_tool() not implemented for tool '{self.mcp_tool_name}'. "
-            "Phase 5 will wire this to a real MCP ClientSession."
-        )
+        if _session_singleton is None:
+            raise RuntimeError(
+                f"MCP session not bootstrapped; cannot call {self.mcp_tool_name!r}. "
+                "Call tools.mcp_adapter.bootstrap_mcp_session(uri, state) first."
+            )
+        return await _session_singleton.call_tool(self.mcp_tool_name, arguments)
 
 
 # =====================================================================
@@ -172,3 +186,185 @@ class McpToolRegistry:
 #   from tools.mcp_adapter import tool_registry, AgentRole
 #   llm = tool_registry.bind_tools(base_llm, AgentRole.CODER)
 tool_registry = McpToolRegistry()
+
+
+# =====================================================================
+# 5. PHASE 5.2 — STDIO TRANSPORT + BOOTSTRAP HANDSHAKE
+# =====================================================================
+
+# Module-level singletons. Lifetime is the entire Python process; cleanup
+# is delegated to OS-delivered EOF on stdin/stdout when the process exits
+# (see PHASE_5_BLUEPRINT Flag C in the plan). No atexit hook for the
+# async session — that pattern is unreliable once the event loop stops.
+_session_singleton: Optional[ClientSession] = None
+_exit_stack: Optional[AsyncExitStack] = None
+
+
+def _parse_mcp_uri(uri: str) -> StdioServerParameters:
+    """Parse 'stdio:///abs/path/to/server[?arg=x&arg=y]' into StdioServerParameters.
+
+    The path component is the executable; the query string contributes positional
+    arguments (one ?arg=value pair per arg). Anything else is rejected loudly.
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme != "stdio":
+        raise ValueError(
+            f"_parse_mcp_uri: unsupported scheme {parsed.scheme!r}. "
+            "Phase 5.2 only supports stdio:// transports."
+        )
+    if not parsed.path:
+        raise ValueError(f"_parse_mcp_uri: missing executable path in URI {uri!r}.")
+
+    # The leading slash on absolute paths is preserved by urlparse; on Windows
+    # callers can pass stdio:///C:/path/to/exe and we strip the leading slash
+    # only when followed by a drive letter.
+    command = parsed.path
+    if len(command) >= 3 and command[0] == "/" and command[2] == ":":
+        command = command[1:]
+
+    args: List[str] = []
+    if parsed.query:
+        # Format: arg=foo&arg=bar — preserve order; values may be shell-quoted.
+        for pair in parsed.query.split("&"):
+            if not pair:
+                continue
+            key, _, value = pair.partition("=")
+            if key != "arg":
+                raise ValueError(
+                    f"_parse_mcp_uri: only 'arg' query keys supported, got {key!r}."
+                )
+            args.extend(shlex.split(value))
+
+    return StdioServerParameters(command=command, args=args)
+
+
+def _audit_entry(event: str, **extra: Any) -> Dict[str, Any]:
+    """Build one permission_audit_log entry with consistent shape."""
+    entry: Dict[str, Any] = {
+        "event": event,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    entry.update(extra)
+    return entry
+
+
+async def bootstrap_mcp_session(
+    uri: Optional[str],
+    state: "AIlienantGraphState",
+    *,
+    timeout_sec: float = MCP_HANDSHAKE_TIMEOUT_SEC,
+) -> bool:
+    """Open a stdio MCP session, harvest tool schemas, populate the Tool RAG store.
+
+    Returns True on success, False on any fallback path (None URI, timeout,
+    connection error). Never raises — failures are logged to
+    state['permission_audit_log'] as event='tool_rag_fallback'.
+    """
+    global _session_singleton, _exit_stack
+
+    audit_log: List[Dict[str, Any]] = state.setdefault("permission_audit_log", [])
+
+    if uri is None:
+        state["mcp_server_endpoint"] = None
+        audit_log.append(_audit_entry("tool_rag_fallback", reason="no_uri"))
+        logger.info("bootstrap_mcp_session: no URI provided — local-only fallback.")
+        return False
+
+    try:
+        params = _parse_mcp_uri(uri)
+    except ValueError as exc:
+        state["mcp_server_endpoint"] = None
+        audit_log.append(
+            _audit_entry("tool_rag_fallback", reason="invalid_uri", detail=str(exc))
+        )
+        logger.warning("bootstrap_mcp_session: invalid URI %r: %s", uri, exc)
+        return False
+
+    stack = AsyncExitStack()
+    try:
+        async def _open_and_initialise() -> ClientSession:
+            read_stream, write_stream = await stack.enter_async_context(
+                stdio_client(params)
+            )
+            session = await stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
+            await session.initialize()
+            return session
+
+        session = await asyncio.wait_for(_open_and_initialise(), timeout=timeout_sec)
+    except (asyncio.TimeoutError, ConnectionError, OSError) as exc:
+        # Best-effort cleanup of whatever we did manage to open.
+        try:
+            await stack.aclose()
+        except Exception:  # noqa: BLE001 — diagnostic-only path
+            logger.debug("bootstrap_mcp_session: cleanup-after-failure noise.", exc_info=True)
+        state["mcp_server_endpoint"] = None
+        reason = "handshake_timeout" if isinstance(exc, asyncio.TimeoutError) else "connect_error"
+        audit_log.append(
+            _audit_entry("tool_rag_fallback", reason=reason, detail=str(exc))
+        )
+        logger.warning("bootstrap_mcp_session: %s for %r (%s)", reason, uri, exc)
+        return False
+
+    # Harvest tool schemas. Any per-tool failure is logged but does not abort
+    # the whole bootstrap — partial discovery is still useful.
+    try:
+        list_result = await session.list_tools()
+        descriptors = getattr(list_result, "tools", list_result) or []
+    except Exception as exc:  # noqa: BLE001 — list_tools is the one remote call we tolerate failing
+        await stack.aclose()
+        state["mcp_server_endpoint"] = None
+        audit_log.append(
+            _audit_entry("tool_rag_fallback", reason="list_tools_failed", detail=str(exc))
+        )
+        logger.warning("bootstrap_mcp_session: list_tools failed for %r: %s", uri, exc)
+        return False
+
+    from core.db import register_tool  # local import to avoid top-level cycles
+
+    discovered = 0
+    for descriptor in descriptors:
+        name = getattr(descriptor, "name", None)
+        if not name:
+            continue
+        description = getattr(descriptor, "description", "") or ""
+        input_schema = getattr(descriptor, "inputSchema", None) or {}
+        try:
+            json_schema = json.dumps(input_schema, default=str)
+        except (TypeError, ValueError):
+            json_schema = "{}"
+
+        # Phase 5.2 default: all MCP-discovered tools are READ_ONLY until a
+        # descriptor-side privilege annotation lands (tech debt item 4).
+        schema_obj = ToolSchema(
+            name=name,
+            description=description,
+            json_schema=json_schema,
+            privilege_tier=ToolPrivilegeTier.READ_ONLY,
+            allowed_roles=frozenset({"core_dev"}),  # safe default
+        )
+        try:
+            await tool_rag_store.register_schema(schema_obj)
+            await register_tool(name, description, json_schema, mcp_privilege=False)
+            discovered += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "bootstrap_mcp_session: failed to register %r: %s", name, exc
+            )
+
+    _session_singleton = session
+    _exit_stack = stack
+    state["mcp_server_endpoint"] = uri
+    audit_log.append(
+        _audit_entry("mcp_bootstrap_success", uri=uri, discovered=discovered)
+    )
+    logger.info("bootstrap_mcp_session: %d tools discovered from %r.", discovered, uri)
+    return True
+
+
+def _reset_mcp_session_for_tests() -> None:
+    """Test-only: clear the singletons. NOT for production use."""
+    global _session_singleton, _exit_stack
+    _session_singleton = None
+    _exit_stack = None

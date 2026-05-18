@@ -29,6 +29,76 @@ MAX_RETRIES: int = 2
 
 
 # =====================================================================
+# Phase 5.2 — Tool RAG selection node
+# =====================================================================
+
+
+async def tool_rag_select_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Select ≤ TOOL_RAG_TOP_K tools by intent. Runs once per swarm invocation.
+
+    Splices in before coder_agent in both MICRO_SWARM and FULL_SWARM (FULL_SWARM
+    embeds MICRO_SWARM as a sub-graph, so the splice in MICRO_SWARM covers both).
+    SEQUENTIAL (fast_path) does NOT call this node — that mode has no tool-calling
+    agent loop.
+
+    Returns deltas only (`tool_registry_active`, `permission_audit_log`); other
+    state channels are untouched. The audit entry is wrapped in a single-element
+    list so the `operator.add` reducer on `permission_audit_log` appends instead
+    of overwriting.
+    """
+    from datetime import datetime, timezone
+
+    from core.permissions import SessionPermissionMode
+    from core.tool_rag import TOOL_RAG_TOP_K, ToolRAGStore, tool_rag_store
+
+    intent: str = state.get("user_input") or ""
+    active_role: str = state.get("active_role") or "core_dev"
+    raw_session_mode: str = state.get("session_permission_mode") or "DEFAULT"
+    try:
+        session_mode = SessionPermissionMode(raw_session_mode.lower())
+    except ValueError:
+        session_mode = SessionPermissionMode.DEFAULT
+
+    # Eager baseline: every schema this (role, session_mode) pair would have
+    # seen without Tool RAG. Local computation, no embedding cost.
+    eager_baseline = [
+        s
+        for s in tool_rag_store.all_schemas()
+        if active_role in s.allowed_roles
+        and (
+            session_mode is not SessionPermissionMode.PLAN
+            or s.privilege_tier.value == "read_only"
+        )
+    ]
+
+    selected = await tool_rag_store.select_tools(
+        intent,
+        k=TOOL_RAG_TOP_K,
+        active_role=active_role,
+        session_mode=session_mode,
+    )
+
+    metrics = ToolRAGStore.prompt_size_metrics(eager_baseline, selected)
+
+    audit_entry: Dict[str, Any] = {
+        "event": "tool_rag_select" if selected else "tool_rag_fallback",
+        "active_role": active_role,
+        "session_mode": session_mode.value,
+        "selected": [s.name for s in selected],
+        "eager_count": len(eager_baseline),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **metrics,
+    }
+    if not selected:
+        audit_entry["reason"] = "empty_catalog_or_no_survivors"
+
+    return {
+        "tool_registry_active": [s.name for s in selected],
+        "permission_audit_log": [audit_entry],
+    }
+
+
+# =====================================================================
 # MICRO_SWARM
 # =====================================================================
 
@@ -82,12 +152,16 @@ def build_micro_swarm() -> Any:
     from validators.gates import style_gate_node, syntax_gate_node
 
     g = StateGraph(AIlienantGraphState)
+    g.add_node("tool_rag_select", tool_rag_select_node)    # type: ignore[type-var]
     g.add_node("coder_agent", run_coder_node)              # type: ignore[type-var]
     g.add_node("syntax_gate", syntax_gate_node)            # type: ignore[type-var]
     g.add_node("style_gate", style_gate_node)              # type: ignore[type-var]
     g.add_node("circuit_breaker_check", _circuit_breaker_node)  # type: ignore[type-var]
 
-    g.add_edge(START, "coder_agent")
+    # Phase 5.2 — Tool RAG runs once on entry. Retries from circuit_breaker
+    # bypass tool_rag_select (selection is intent-based, not error-based).
+    g.add_edge(START, "tool_rag_select")
+    g.add_edge("tool_rag_select", "coder_agent")
     g.add_edge("coder_agent", "syntax_gate")
     g.add_conditional_edges(
         "syntax_gate", _route_after_syntax, ["style_gate", "circuit_breaker_check"]

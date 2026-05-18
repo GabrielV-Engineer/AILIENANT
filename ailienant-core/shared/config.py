@@ -50,3 +50,8 @@ DB_CATALOG_PATH: str = os.getenv("AILIENANT_CATALOG_DB", "ailienant_catalog.sqli
 LANCEDB_PATH: str = os.getenv("AILIENANT_LANCEDB_PATH", "ailienant_lancedb")
 MODEL_EMBEDDING: str = os.getenv("AILIENANT_MODEL_EMBEDDING", "ailienant/embedding")
 MINI_JUDGE_MODEL: str = os.getenv("AILIENANT_MINI_JUDGE_MODEL", MODEL_SMALL)
+
+# Phase 5.2 — MCP transport URI (None → local-only fallback, no MCP session).
+# Format expected: "stdio:///absolute/path/to/server[?arg=...]" (only stdio
+# supported in 5.2; websocket/http transports deferred).
+AILIENANT_MCP_SERVER_URI: str | None = os.getenv("AILIENANT_MCP_SERVER_URI") or None

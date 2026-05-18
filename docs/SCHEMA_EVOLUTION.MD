@@ -234,4 +234,36 @@ Cada sitio de llamada (planner, summarizer, mcts_coder) DEBE envolver toda la re
 
 Orthogonal to existing `shared/rbac.py::PermissionMode` (`{PLAN_ONLY, ROUTING_ONLY, EDIT_EXECUTE_RBW, READ_ONLY}`) — `shared/rbac.py` unchanged.
 
+---
+
+## Phase 5.2 — Tool RAG + MCP transport (2026-05-18)
+
+**Strictly additive. No state-field renames or removals; no enum widening; no breaking change to `mcp_adapter` public API.**
+
+**New constants in `core/tool_rag.py`:**
+
+* `TOOL_RAG_TOP_K = 5` — hard cap on schemas returned per `select_tools()` call.
+* `TOOL_RAG_MIN_REDUCTION = 0.70` — mean prompt-size reduction target (asserted by Phase 5.7 gate).
+* `MCP_HANDSHAKE_TIMEOUT_SEC = 5.0` — `asyncio.wait_for` deadline for `bootstrap_mcp_session()`.
+
+**New classes/functions:**
+
+* `ToolSchema` (frozen dataclass) — in-memory representation `{name, description, json_schema, privilege_tier, allowed_roles (frozenset[str]), embedding (List[float] | None)}`. On disk in LanceDB, `allowed_roles` is persisted as a comma-flanked string for future `.where()` filtering.
+* `ToolRAGStore` — RAM-resident (tempfile-backed) LanceDB store, schemas-only. Methods: `register_schema()`, `select_tools()`, `all_schemas()`, `clear()`, `prompt_size_metrics()`.
+* `core/tool_rag.tool_rag_store` — module-level singleton.
+* `tools/mcp_adapter.bootstrap_mcp_session(uri, state, *, timeout_sec)` — opens stdio MCP session, harvests `session.list_tools()`, populates Tool RAG store + `core.db.tool_registry` SQLite table. Returns `bool`; never raises.
+* `brain/swarms.tool_rag_select_node(state)` — graph node spliced before `coder_agent` in MICRO_SWARM (also covers FULL_SWARM via embedded sub-graph).
+
+**New env var:**
+
+* `AILIENANT_MCP_SERVER_URI` — default `None` ⇒ local-only fallback. Format: `stdio:///absolute/path/to/server[?arg=val]`.
+
+**`AIlienantGraphState` channels (NO new fields, only consumption changes):**
+
+* `tool_registry_active` — now written by `tool_rag_select_node` per turn.
+* `mcp_server_endpoint` — written by `bootstrap_mcp_session` at app start.
+* `permission_audit_log` — appended by both above with `event="tool_rag_select"` / `"tool_rag_fallback"` / `"mcp_bootstrap_success"`.
+
+Existing checkpoints deserialize unchanged. `mcp_adapter._call_mcp_tool` no longer raises `NotImplementedError`; it now raises `RuntimeError` if called before `bootstrap_mcp_session()` — semantic change is opt-in (callers that never bootstrap also never invoke the adapter).
+
 **Known tech debt:** the two `operator.add` channels (`permission_audit_log`, `rbwe_violations`) grow O(N) over long missions; deferred reducer swap to truncating `(old + new)[-cap:]` in Phase 5.6/5.7. Field names/types remain stable; callers will not see the change.
