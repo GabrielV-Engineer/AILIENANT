@@ -13,9 +13,15 @@ keeps KV-cache invalidations to a single transition per run.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("INTENT_ROUTER")
+
+# Phase 4.5 — Inter-run mode-switch tracker. None on first dispatch; thereafter
+# carries the prior call's normalized execution_mode. When a new call's mode
+# differs, release_vram_on_mode_switch() fires once to evict the stale KV cache
+# (different system prompts / role definitions across modes).
+_last_dispatched_mode: Optional[str] = None
 
 
 async def process_user_intent(
@@ -32,6 +38,13 @@ async def process_user_intent(
     """
     mode = execution_mode.strip().upper()
     logger.info("process_user_intent: mode=%s task_id=%s", mode, task_id)
+
+    global _last_dispatched_mode
+    if _last_dispatched_mode is not None and _last_dispatched_mode != mode:
+        from core.lifecycle_manager import lifecycle_manager  # noqa: PLC0415
+
+        await lifecycle_manager.release_vram_on_mode_switch()
+    _last_dispatched_mode = mode
 
     if mode == "SEQUENTIAL":
         from brain.fast_path import execute_sequential_bypass

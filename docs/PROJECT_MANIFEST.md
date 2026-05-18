@@ -445,7 +445,7 @@
 
 > Orquestación adaptativa del State Graph ("Prompt Swapping") combinando herramientas MCP deterministas y LLMs para minimizar latencia local.
 
-- [ ] **4.1. Motor de Agentes Base (Nodos Cognitivos)**
+- [x] **4.1. Motor de Agentes Base (Nodos Cognitivos)**
 
   - [x] **4.1.1. ResearcherAgent (El Sabueso del Contexto)** -sonnet
     - **Misión:** capa de recuperación. Entrada: query del usuario. Salida: Skeleton Prompt (mapa de firmas + relaciones, no archivos enteros).
@@ -537,9 +537,13 @@
   - **Interceptor de Señales:** listener para cierre de ventana / cambio de Workspace. `lifecycle_manager.shutdown_workspace(pid)` disparado en `WebSocketDisconnect`.
   - **Graceful Shutdown Selectivo:** cancela asyncio.Tasks registradas bajo el PID; stub de liberación de VRAM + WAL checkpoint. *Distinto del WAL graceful shutdown de Fase 2.5/2.15 — este es por workspace, no por proceso.*
 
-- [ ] **4.5. Checkpoint Gate Fase 4** - sonnet
-  - Validación de transiciones entre modos (Bypass ↔ LangGraph) libera `KV Cache` correctamente.
-  - Tests del Micro-Enjambre: fallo de sintaxis infinito dispara límite de iteraciones y devuelve error elegante.
+- [x] **4.5. Checkpoint Gate Fase 4 (Chaos Crucible)** - opus
+  - Validación de transiciones entre modos (Bypass ↔ LangGraph) libera `KV Cache` correctamente. Implementado: `_last_dispatched_mode` sentinel en `brain/intent_router.py` + `lifecycle_manager.release_vram_on_mode_switch()` (immediate, no debounce — modes don't bounce). Test A1 valida que el hook dispara exactamente una vez en la transición SEQUENTIAL→FULL_SWARM.
+  - Tests del Micro-Enjambre: fallo de sintaxis infinito dispara límite de iteraciones y devuelve error elegante. Tests B1/B2 validan `error_streak=3 → CLOUD_SURGEON → fallo→ CLOUD_SURGEON_EXHAUSTED → END` y la latch `style_bypass_active` que evita invocar al Cloud Surgeon cuando solo falla style.
+  - **Persistence Mid-Flight (C1):** `build_full_swarm()` extendido con `interrupt_before: Optional[List[str]]` reenviado a `.compile()`. Test C1 compila con `MemorySaver` + `interrupt_before=["micro_swarm"]`, ejecuta hasta el corte, reanuda con el mismo `thread_id` y verifica que `researcher_agent` y `planner_agent` NO se re-ejecutan.
+  - **Lifecycle Phantom Reconnects (D1):** `WorkspaceLifecycleManager` ahora arma un `asyncio.TimerHandle` vía `loop.call_later(debounce_sec, ...)` en `shutdown_workspace`. `register_task` cancela cualquier purga pendiente para el mismo PID — guard anti-phantom-reconnect (10s en producción, configurable). Test D1 valida que `_release_vram` NUNCA dispara si hay reconexión dentro de la ventana.
+  - **Summarizer protección (A2):** corrección al spec — el componente que comprime `messages` es `brain/summarizer.py:run_summarize_node` (no el Janitor, que solo purga LanceDB/MCTS). Test A2 valida que la compresión vía `__replace__` sentinel ocurre pero los campos Phase 4 (`error_streak`, `active_role`, `circuit_breaker_tripped`, `cloud_surgeon_invocations`) nunca aparecen en el delta retornado.
+  - **DoD:** 352 tests passing (346 + 6 chaos), 0 regresiones, ruff/mypy verdes. Phase 4 cerrada; el LOCK-IN de Phase 4 auto-expira por CLAUDE.md §1.
 
 ---
 

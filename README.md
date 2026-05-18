@@ -31,7 +31,7 @@ AILIENANT is a Python orchestration engine paired with a thin VS Code extension 
 
 | Metric | Value |
 | --- | --- |
-| Backend tests passing | **325** |
+| Backend tests passing | **352** |
 | `mypy --strict` on new modules | Clean |
 | `ruff check` | Clean |
 | Concurrent SQLite WAL reads (50 tasks) | No lock errors, p95 < 250 ms |
@@ -139,13 +139,13 @@ Proyect_Ailienant/
 │   │   ├── janitor.py          #   orphan-vector GC + MCTS purge
 │   │   ├── token_ledger.py     #   LOCAL/CLOUD token accounting
 │   │   ├── resource_manager.py #   cross-session VRAM lock + ResourceBroker (Phase 2.27)
-│   │   ├── lifecycle_manager.py #  workspace-scoped PID → task registry + graceful shutdown (Phase 4.4)
+│   │   ├── lifecycle_manager.py #  workspace-scoped PID → task registry + debounced VRAM purge + mode-switch hook (Phase 4.4/4.5)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 346 passing tests
+│   └── tests/                  # 352 passing tests (incl. tests/chaos/ — Phase 4.5 crucible)
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

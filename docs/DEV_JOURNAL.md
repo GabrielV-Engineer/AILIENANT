@@ -636,3 +636,17 @@ Each guarded call site (`planner.py`, `summarizer.py`, `mcts_coder.py`) wraps th
 * `brain/state.py` — **EXTENDIDO**. 2 nuevos canales: `workspace_pid: Optional[int]`, `workspace_active: bool` (last-write, sin reducer).
 * `tests/test_lifecycle.py` — **NUEVO** (4 tests). Cancel, noop PID desconocido, mark_inactive sin cancelar, múltiples tasks.
 * Suite total: **346 passing** (+4 net, 0 regresiones). Ruff exit 0, mypy exit 0.
+
+---
+
+## Hito 4.5: Checkpoint Gate Fase 4 — Chaos Crucible — 2026-05-17
+
+**Status:** COMPLETADO ✅ — Phase 4 closure.
+
+* `tests/chaos/test_global_crucible.py` — **NUEVO** (6 tests). Batería end-to-end que valida la convergencia Memory/WAL/LangGraph/Lifecycle bajo condiciones caóticas: A1 KV-cache release on mode switch, A2 Summarizer preserva campos Phase 4, B1 double-fault → CLOUD_SURGEON_EXHAUSTED, B2 style-bypass latch evita Cloud Surgeon, C1 SQLite WAL resume via `interrupt_before`, D1 lifecycle debounce previene phantom-reconnect VRAM purge. `tests/chaos/__init__.py` añadido (package marker).
+* `core/lifecycle_manager.py` — **EDITADO**. Debounce timer (`asyncio.TimerHandle` vía `loop.call_later`); `register_task` cancela purgas pendientes para el mismo PID. Nueva `release_vram_on_mode_switch()` (immediate, sin debounce — modes don't bounce). `DEFAULT_DEBOUNCE_SEC=10.0` configurable vía constructor para tests (0.05 s).
+* `brain/intent_router.py` — **EDITADO**. `_last_dispatched_mode: Optional[str]` a nivel módulo; transición de modo entre runs dispara `lifecycle_manager.release_vram_on_mode_switch()` exactamente una vez por cambio. Tests resetean el sentinel directamente.
+* `brain/swarms.py` — **EDITADO**. `build_full_swarm(checkpointer, interrupt_before=None)` reenvía ambos kwargs a `.compile()`. Permite el patrón estándar de LangGraph de pausa/reanudación con `thread_id`.
+* `docs/PROJECT_MANIFEST.md` — `4.1` y `4.5` marcados `[x]`. Phase 4 cerrada; LOCK-IN auto-expira por CLAUDE.md §1.
+* **Spec correction (A2):** El brief original decía "Janitor (from Phase 3)". `core/janitor.py` solo purga LanceDB/MCTS, jamás toca `messages` ni graph state. El componente que comprime `messages` sobre el threshold de 80% del context window es `brain/summarizer.py:run_summarize_node` (Phase 2.1.11, `__replace__` sentinel, last-5 cognitive horizon). Test renombrado a `test_summarizer_protects_phase4_state` con comment que cita el spec original.
+* Suite total: **352 passing** (+6 net, 0 regresiones). Ruff exit 0, mypy exit 0 sobre `core/lifecycle_manager.py`.

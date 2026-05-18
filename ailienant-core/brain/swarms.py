@@ -14,7 +14,7 @@ Blueprint references:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -111,12 +111,20 @@ _MICRO_SWARM_APP = build_micro_swarm()
 # =====================================================================
 
 
-def build_full_swarm(checkpointer: Optional[BaseCheckpointSaver] = None) -> Any:
+def build_full_swarm(
+    checkpointer: Optional[BaseCheckpointSaver] = None,
+    interrupt_before: Optional[List[str]] = None,
+) -> Any:
     """Compile FULL_SWARM with a caller-supplied checkpointer.
 
     Production callers pass :data:`brain.checkpoint.checkpoint_manager`
     (HybridCheckpointer / SQLite WAL). Unit tests pass
     ``langgraph.checkpoint.memory.MemorySaver()`` or ``None``.
+
+    Phase 4.5 — optional ``interrupt_before`` list is forwarded to
+    ``StateGraph.compile()`` so tests (and future HITL paths) can pause the
+    graph before a named node, persist via the checkpointer, and resume with
+    the same ``thread_id``.
 
     Topology: ``verify_environment → researcher → planner → orchestrator
     → micro_swarm (sub-graph) → analyst → END``. The Coder-side middleware
@@ -152,4 +160,9 @@ def build_full_swarm(checkpointer: Optional[BaseCheckpointSaver] = None) -> Any:
     g.add_edge("micro_swarm", "analyst_agent")
     g.add_edge("analyst_agent", END)
 
-    return g.compile(checkpointer=checkpointer) if checkpointer else g.compile()
+    compile_kwargs: Dict[str, Any] = {}
+    if checkpointer is not None:
+        compile_kwargs["checkpointer"] = checkpointer
+    if interrupt_before is not None:
+        compile_kwargs["interrupt_before"] = interrupt_before
+    return g.compile(**compile_kwargs)
