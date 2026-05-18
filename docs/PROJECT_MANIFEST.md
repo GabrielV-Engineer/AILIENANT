@@ -581,15 +581,15 @@
   - `BatchSemanticEditTool`: refactorizaciones atómicas en cascada multi-archivo, guiado por `GetSymbolReferencesTool`. Incluye OCC: payload lleva `document_version_id`; antes de `WorkspaceEdit`, valida `current_version == payload.version`; si falla, rechaza la inyección y fuerza al CoderAgent a recalcular con contexto actualizado. **Ref:** Fase 1.5.
   - `FileWriteTool`: creación/sobreescritura. Bloqueado por RBWE si la ruta no fue leída antes.
 
-- [ ] **5.5. Herramientas de Ejecución Asíncrona y Sandboxing (`Execute`)** - sonnet
-  - `SandboxBashTool`: comandos cortos (`npm run lint`, `pytest`). Truncamiento automático de `stderr`/`stdout` (>2000 chars).
-  - `BackgroundTaskManager` (`TaskCreateTool` + `TaskGetTool`): procesos largos (compilaciones, servidores dev). Agente lanza proceso, continúa el grafo, consulta estado (`running`/`completed`/`failed`).
-  - `CheckTypeIntegrityTool`: wrapper de `tsc`/`mypy` antes de declarar tarea finalizada.
+- [x] **5.5. Herramientas de Ejecución Asíncrona y Sandboxing (`Execute`)** - sonnet
+  - [x] `SandboxBashTool`: comandos cortos (`npm run lint`, `pytest`). Truncamiento automático de `stderr`/`stdout` (>2000 chars).
+  - [x] `BackgroundTaskManager` (`TaskCreateTool` + `TaskGetTool`): procesos largos (compilaciones, servidores dev). Agente lanza proceso, continúa el grafo, consulta estado (`running`/`completed`/`failed`).
+  - [x] `CheckTypeIntegrityTool`: wrapper de `tsc`/`mypy` antes de declarar tarea finalizada.
 
-- [ ] **5.6. Herramientas de Control Cognitivo y HITL (`Control`)** - sonnet
-  - `AskUserQuestionTool`: pausa el nodo por alta entropía/incertidumbre. Prompt interactivo en VS Code; reanuda con contexto humano inyectado.
-  - `TogglePlanModeTool`: Orchestrator escala/desescala privilegios en runtime.
-  - **Fricción Asimétrica (Anti-Fatiga HITL):** Webview en VS Code con dict regex de comandos peligrosos (`rm\s+-rf`, `sudo`, `drop`). Match → deshabilita "Approve" y requiere confirmación por texto.
+- [x] **5.6. Herramientas de Control Cognitivo y HITL (`Control`)** - sonnet
+  - [x] `AskUserQuestionTool`: pausa el nodo por alta entropía/incertidumbre. Prompt interactivo en VS Code; reanuda con contexto humano inyectado.
+  - [x] `TogglePlanModeTool`: Orchestrator escala/desescala privilegios en runtime.
+  - [x] **Fricción Asimétrica (Anti-Fatiga HITL):** Webview en VS Code con dict regex de comandos peligrosos (`rm\s+-rf`, `sudo`, `drop`). Match → deshabilita "Approve" y requiere confirmación por texto.
 
 - [ ] **5.7. Checkpoint Gate Fase 5** - opus
   - **E2E Zero-Trust (RBWE):** prompt injection que intente `AtomicCodePatchTool`/`FileWriteTool` en archivo no indexado → `PermissionDeniedError` al scratchpad, agente forzado a `FileReadTool` sin crash.

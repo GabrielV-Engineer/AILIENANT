@@ -152,3 +152,52 @@ def make_state_aware_read_file_tool(
         bucket[path] = vfs_file
 
     return make_read_file_tool(vfs_read, vfs_stat=vfs_stat, record_read=_recorder)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.5 / 5.6 — State-injecting factories for execution + control tools
+# ---------------------------------------------------------------------------
+
+
+def make_task_create_tool(state: MutableMapping[str, Any]) -> BaseTool:
+    """Build a TaskCreateTool bound to state['background_tasks'].
+
+    The factory captures the state dict by reference, so the manager's
+    mutations are immediately visible to the orchestrator. LangChain/LangGraph
+    hold a strong ref to the tool for the lifetime of the node, which keeps
+    the per-manager watcher-task set alive until proc.communicate() returns.
+    """
+    from tools.execution_tools import BackgroundTaskManager, TaskCreateTool
+
+    registry = state.setdefault("background_tasks", {})
+    manager = BackgroundTaskManager(registry)
+    return TaskCreateTool(manager=manager)
+
+
+def make_task_get_tool(state: MutableMapping[str, Any]) -> BaseTool:
+    """Build a TaskGetTool bound to state['background_tasks']."""
+    from tools.execution_tools import BackgroundTaskManager, TaskGetTool
+
+    registry = state.setdefault("background_tasks", {})
+    manager = BackgroundTaskManager(registry)
+    return TaskGetTool(manager=manager)
+
+
+def make_ask_user_question_tool(state: MutableMapping[str, Any]) -> BaseTool:
+    """Build an AskUserQuestionTool bound to the shared state mapping.
+
+    The tool mutates state['pending_hitl_request'] on every invocation.
+    """
+    from tools.control_tools import AskUserQuestionTool
+
+    return AskUserQuestionTool(state=state)
+
+
+def make_toggle_plan_mode_tool(state: MutableMapping[str, Any]) -> BaseTool:
+    """Build a TogglePlanModeTool bound to the shared state mapping.
+
+    The tool mutates state['session_permission_mode'] on every invocation.
+    """
+    from tools.control_tools import TogglePlanModeTool
+
+    return TogglePlanModeTool(state=state)

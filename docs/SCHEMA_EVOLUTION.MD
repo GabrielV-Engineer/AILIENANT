@@ -308,3 +308,42 @@ No semantic change to `mcp_adapter._call_mcp_tool` or Phase 5.2 contracts. Exist
 **Role whitelist** (`_ALLOWED_MUTATION_ROLES`): `frozenset({"core_dev", "architect_refactor", "secops", "data_ml_engineer", "devops_infra"})`. Matches Phase 4 §3.2 RBAC matrix. Excludes `doc_manager` (scope-limited refinement deferred), `qa_tester` (EXECUTE tier domain), `vcs_manager` (git-only).
 
 **No new state channels. No `core/permissions.py` edits. No new dependencies.** Existing checkpoints deserialize unchanged.
+
+---
+
+## Phase 5.5 / 5.6 — Async Execution + Cognitive Control bundles — 2026-05-18
+
+**Strictly additive. No state-field renames or removals. `core/permissions.py` byte-identical — only its `ToolPrivilegeTier.{READ_ONLY, EXECUTE}` enum values are imported as schema-tier markers.** Six new schemas registered in `tool_rag_store` (4 execution + 2 control).
+
+**New tools — `tools/execution_tools.py` (Phase 5.5, EXECUTE bundle):**
+
+* `SandboxBashTool` — `ToolPrivilegeTier.EXECUTE`. Short-lived shell command via `asyncio.create_subprocess_shell` + `asyncio.wait_for` (30 s default timeout, kill-on-overrun). Output capped at `TASK_OUTPUT_TRUNC = 2000` chars with middle truncation. **HITL Interceptor**: every invocation pre-checks against `DANGEROUS_COMMANDS_REGEX` (imported from `tools.control_tools`); any match blocks the spawn and returns a sentinel string redirecting the agent to `ask_user_question`.
+* `TaskCreateTool` — `ToolPrivilegeTier.EXECUTE`. Spawns a long-running asyncio subprocess; returns a UUID-hex `task_id`. State mutation happens inside the injected `BackgroundTaskManager` (registry is a reference to `state["background_tasks"]`).
+* `TaskGetTool` — `ToolPrivilegeTier.READ_ONLY` (per blueprint §4 line 272 — the tool only reads the in-memory registry, no subprocess spawn; marking it EXECUTE would block status polling from PLAN mode).
+* `CheckTypeIntegrityTool` — `ToolPrivilegeTier.EXECUTE`. `mypy --strict <dir>` or `npx --no-install tsc --noEmit -p <dir>` via `create_subprocess_exec`. Same truncation rules.
+* `BackgroundTaskManager` (non-BaseTool helper class) — owns the lifecycle of long-running `asyncio.subprocess.Process` handles. Strong-ref `Set[asyncio.Task]` mirrors `agents/coder.py:101` precedent. Mutates the supplied registry dict directly.
+
+**New tools — `tools/control_tools.py` (Phase 5.6, CONTROL classification):**
+
+* `AskUserQuestionTool` — registered as `ToolPrivilegeTier.READ_ONLY` so the session-mode filter admits it in every mode (READ_ONLY is universally permitted, behaviourally satisfying the blueprint §4 line 277 "policy-neutral across the matrix" requirement without extending the enum). Mutates `state["pending_hitl_request"] = {request_id, kind, question, context, suggested_options, requested_at}` and returns sentinel string `[ask_user_question] HITL_PENDING:{request_id}`. Orchestrator graph node detects the populated channel and suspends the turn.
+* `TogglePlanModeTool` — `ToolPrivilegeTier.READ_ONLY`. Mutates `state["session_permission_mode"]` with `Literal["DEFAULT", "PLAN", "AUTO"]` per blueprint §4 line 275. (The system prompt's `execution_mode` / topology-swap interpretation was rejected — that's an orthogonal Phase 4.3 concern.)
+
+**New module-level export — `tools/control_tools.DANGEROUS_COMMANDS_REGEX`:** `List[re.Pattern[str]]` containing 10 patterns covering `rm -rf`, `sudo`, `drop table`, `dd if=…of=/dev/`, fork-bomb, `mkfs`, `chmod -R 777`, `> /dev/sd?`, pipe-to-shell, `git push --force`. Imported by `SandboxBashTool` for HITL interception. Will eventually drive the Frontend friction modal (Phase 5.7).
+
+**New factories — `tools/agent_tools.py`:**
+
+* `make_task_create_tool(state)` — captures `state.setdefault("background_tasks", {})` by reference, constructs a `BackgroundTaskManager`, returns a `TaskCreateTool` bound to it.
+* `make_task_get_tool(state)` — symmetric to the above. Independent manager instance, same backing dict (factories are pair-friendly: a TaskGetTool can read entries written by a separate TaskCreateTool because both share the registry through `state`).
+* `make_ask_user_question_tool(state)` — passes the state mapping to `AskUserQuestionTool(state=state)`.
+* `make_toggle_plan_mode_tool(state)` — passes the state mapping to `TogglePlanModeTool(state=state)`.
+
+**Role whitelists:**
+
+* `tools/execution_tools._EXECUTE_ROLES`: `frozenset({"core_dev", "devops_infra", "secops", "qa_tester", "data_ml_engineer"})` — 5 hands-on roles. `architect_refactor` excluded (planning role); `doc_manager` and `vcs_manager` excluded by scope.
+* `tools/control_tools._CONTROL_ROLES`: all 8 canonical roles — any agent may request HITL or self-mode its session.
+
+**Constants:**
+
+* `tools/execution_tools.TASK_OUTPUT_TRUNC = 2000` — blueprint §5.1 line 293 truncation cap. Re-used by all 3 truncating tools and the BackgroundTaskManager watcher.
+
+**No new state channels. No `core/permissions.py` edits. No new dependencies.** Existing checkpoints deserialize unchanged. `permissions.ToolPrivilegeTier` enum is intentionally NOT extended with a "CONTROL" value — that design intent is honoured behaviourally via READ_ONLY tier (D1 in the approved plan).
