@@ -16,8 +16,13 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from brain.state import AIlienantGraphState
+    from shared.rbac import AgentIdentity
 
 logger = logging.getLogger("PROMPT_BUILDER")
 
@@ -276,3 +281,33 @@ class PromptBuilder:
 
 # Module-level singleton
 prompt_builder = PromptBuilder()
+
+
+# ── Phase 5.1.1 — Centralized boundary_id ownership ──────────────────────────
+# Per PHASE_5_BLUEPRINT §2.4: prompt_builder.build_system_prompt(state) generates
+# boundary_id = uuid.uuid4().hex and writes it to state; the axiom string in
+# agents.prompts.BASE_SYSTEM_PROMPT interpolates it. Callers that adopt this
+# function get a state-owned per-turn boundary; legacy inline uuid4().hex sites
+# (e.g. agents/planner.py) are unchanged in this PR and migrate in a follow-up.
+
+def build_system_prompt(
+    state: "AIlienantGraphState",
+    agent_identity: "AgentIdentity",
+    context_str: str = "",
+    target_role: Optional[str] = None,
+) -> str:
+    """Generate a per-turn boundary_id, write it to state, return the System Prompt.
+
+    Delegates final assembly to agents.prompts.build_safe_prompt — this function
+    owns only the boundary generation and state mutation.
+    """
+    from agents.prompts import build_safe_prompt  # local import: avoid circular
+
+    boundary = uuid.uuid4().hex
+    state["boundary_id"] = boundary
+    return build_safe_prompt(
+        agent_identity=agent_identity,
+        context_str=context_str,
+        boundary=boundary,
+        target_role=target_role,
+    )

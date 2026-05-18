@@ -205,3 +205,33 @@ El broker reutiliza `vfs_manager.request_human_approval(...)` (mismo patrón que
 **Disciplina anti-deadlock (CRÍTICO):**
 
 Cada sitio de llamada (planner, summarizer, mcts_coder) DEBE envolver toda la región lock-held — no sólo la llamada `LLMGateway.ainvoke`, sino también el parsing y la validación Pydantic — en `try/finally` que invoque `await ResourceBroker.release(session_id)` si `decision.holds_lock`. Un error de parsing JSON que escape sin liberar el lock dejaría bloqueadas todas las demás sesiones permanentemente. La regression está cubierta por `test_lock_released_when_post_llm_processing_raises`.
+
+---
+
+## Phase 5.1 — Permission Engine + Cognitive Quarantine channels (2026-05-17)
+
+**Strictly additive. No removals, no renames, no Literal narrowing.** Existing checkpoints deserialize unchanged because every new field has a safe default at construction sites.
+
+**New enums in `core/permissions.py`:**
+
+* `SessionPermissionMode` — `{DEFAULT, PLAN, AUTO}` — per-mission HITL policy.
+* `ToolPrivilegeTier` — `{READ_ONLY, WRITE, EXECUTE, DANGEROUS}` — per-tool tier declared at registration.
+* `PermissionDecision` — `{ALLOW, HITL, DENY}` — outcome of the pure `evaluate_action()` matrix.
+* `PermissionDeniedError(Exception)` — raised by `rbwe_guard`, surfaced to agent scratchpad (not crash).
+
+**`AIlienantGraphState` extended (8 new channels, end of TypedDict body):**
+
+| Field | Type | Reducer |
+|---|---|---|
+| `session_permission_mode` | `Literal["DEFAULT","PLAN","AUTO"]` | last-write |
+| `boundary_id` | `Optional[str]` | last-write (rotates each turn) |
+| `tool_registry_active` | `List[str]` | last-write |
+| `permission_audit_log` | `Annotated[List[Dict[str, Any]], operator.add]` | append-only |
+| `pending_hitl_request` | `Optional[Dict[str, Any]]` | last-write (cleared on response) |
+| `background_tasks` | `Dict[str, Dict[str, Any]]` | last-write per key |
+| `mcp_server_endpoint` | `Optional[str]` | last-write |
+| `rbwe_violations` | `Annotated[List[str], operator.add]` | append-only |
+
+Orthogonal to existing `shared/rbac.py::PermissionMode` (`{PLAN_ONLY, ROUTING_ONLY, EDIT_EXECUTE_RBW, READ_ONLY}`) — `shared/rbac.py` unchanged.
+
+**Known tech debt:** the two `operator.add` channels (`permission_audit_log`, `rbwe_violations`) grow O(N) over long missions; deferred reducer swap to truncating `(old + new)[-cap:]` in Phase 5.6/5.7. Field names/types remain stable; callers will not see the change.

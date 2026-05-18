@@ -1,0 +1,151 @@
+"""Phase 5.1 — Permission Engine (3-axis model + RBWE).
+
+See docs/PHASE_5_BLUEPRINT.md §2 for the architectural contract.
+
+Three orthogonal axes:
+    1. AgentIdentity.permission_mode  — per-agent (shared/rbac.py, unchanged)
+    2. SessionPermissionMode          — per-mission session policy (THIS MODULE)
+    3. ToolPrivilegeTier              — per-tool static tier        (THIS MODULE)
+
+evaluate_action() composes all three into a single PermissionDecision via a pure,
+O(1), lru_cached pure function — no I/O, no LLM. rbwe_guard() enforces
+Read-Before-Write by consulting state["read_files_state"] (existing channel).
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any, Mapping, Optional
+
+from shared.rbac import PermissionMode
+
+if TYPE_CHECKING:
+    from brain.state import AIlienantGraphState
+
+
+# =====================================================================
+# 1. ENUMS — Session policy + tool tier + decision outcome
+# =====================================================================
+
+
+class SessionPermissionMode(str, Enum):
+    """Session-wide HITL policy. Mutated by user toggle or TogglePlanModeTool."""
+
+    DEFAULT = "default"   # HITL on every WRITE / EXECUTE / DANGEROUS not pre-approved.
+    PLAN = "plan"         # Blocks everything that is not READ_ONLY.
+    AUTO = "auto"         # Uninterrupted execution; DANGEROUS still goes through HITL.
+
+
+class ToolPrivilegeTier(str, Enum):
+    """Per-tool privilege classification. Declared at registration time."""
+
+    READ_ONLY = "read_only"  # No side effects on disk, network mutating ops, or processes.
+    WRITE = "write"          # Mutates VFS / workspace files.
+    EXECUTE = "execute"      # Spawns subprocesses or background tasks.
+    DANGEROUS = "dangerous"  # Irreversible. Always HITL.
+
+
+class PermissionDecision(str, Enum):
+    """Outcome of evaluate_action(). Consumed by gates and audit log."""
+
+    ALLOW = "allow"
+    HITL = "hitl"
+    DENY = "deny"
+
+
+# =====================================================================
+# 2. PermissionDeniedError — surfaced to agent scratchpad by RBWE
+# =====================================================================
+
+
+class PermissionDeniedError(Exception):
+    """Raised by rbwe_guard when a Write/Execute tool targets an unread path.
+
+    Caught and surfaced to the agent's scratchpad (NOT a crashed turn) so the
+    agent observes the violation and corrects course by calling FileReadTool first.
+    """
+
+    def __init__(self, tool_name: str, target_path: str, reason: str) -> None:
+        self.tool_name = tool_name
+        self.target_path = target_path
+        self.reason = reason
+        super().__init__(f"{tool_name} → {target_path!r}: {reason}")
+
+
+# =====================================================================
+# 3. evaluate_action — pure O(1) 3-axis matrix
+# =====================================================================
+
+
+@lru_cache(maxsize=None)
+def evaluate_action(
+    session_mode: SessionPermissionMode,
+    tool_tier: ToolPrivilegeTier,
+    agent_permission: PermissionMode,
+) -> PermissionDecision:
+    """Compose the 3-axis matrix into a single decision.
+
+    See PHASE_5_BLUEPRINT §2.2 for the matrix. The agent_permission acts as a
+    floor: identities locked to PLAN_ONLY / READ_ONLY / ROUTING_ONLY cannot
+    escalate above READ_ONLY tools regardless of session mode.
+    """
+
+    if tool_tier is ToolPrivilegeTier.READ_ONLY:
+        return PermissionDecision.ALLOW
+
+    if agent_permission is not PermissionMode.EDIT_EXECUTE_RBW:
+        return PermissionDecision.DENY
+
+    if session_mode is SessionPermissionMode.PLAN:
+        return PermissionDecision.DENY
+
+    if tool_tier is ToolPrivilegeTier.DANGEROUS:
+        return PermissionDecision.HITL
+
+    if session_mode is SessionPermissionMode.AUTO:
+        return PermissionDecision.ALLOW
+
+    return PermissionDecision.HITL
+
+
+# =====================================================================
+# 4. rbwe_guard — Read-Before-Write enforcement
+# =====================================================================
+
+
+_MUTATING_TIERS = frozenset(
+    {ToolPrivilegeTier.WRITE, ToolPrivilegeTier.EXECUTE, ToolPrivilegeTier.DANGEROUS}
+)
+
+
+def rbwe_guard(
+    tool_name: str,
+    tool_tier: ToolPrivilegeTier,
+    target_path: Optional[str],
+    state: "AIlienantGraphState | Mapping[str, Any]",
+) -> None:
+    """Raise PermissionDeniedError if a mutating tool targets an unread path.
+
+    READ_ONLY tier bypasses the guard. Mutating tier with target_path=None
+    (e.g. SandboxBashTool without a -c file) also bypasses — the guard only
+    fires when there is a concrete filesystem target.
+    """
+
+    if tool_tier not in _MUTATING_TIERS:
+        return
+    if target_path is None:
+        return
+
+    read_files_state = state.get("read_files_state", {}) if isinstance(state, Mapping) else {}
+    if target_path in read_files_state:
+        return
+
+    raise PermissionDeniedError(
+        tool_name=tool_name,
+        target_path=target_path,
+        reason=(
+            "RBWE violation: target was never read via FileReadTool. "
+            "Call FileReadTool first, then retry."
+        ),
+    )

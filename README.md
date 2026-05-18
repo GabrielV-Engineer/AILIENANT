@@ -140,12 +140,13 @@ Proyect_Ailienant/
 │   │   ├── token_ledger.py     #   LOCAL/CLOUD token accounting
 │   │   ├── resource_manager.py #   cross-session VRAM lock + ResourceBroker (Phase 2.27)
 │   │   ├── lifecycle_manager.py #  workspace-scoped PID → task registry + debounced VRAM purge + mode-switch hook (Phase 4.4/4.5)
+│   │   ├── permissions.py      #   3-axis matrix (SessionPermissionMode × ToolPrivilegeTier × AgentIdentity) + RBWE guard (Phase 5.1)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter stub
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 352 passing tests (incl. tests/chaos/ — Phase 4.5 crucible)
+│   └── tests/                  # 401 passing tests (incl. tests/chaos/ — Phase 4.5 crucible; test_permissions.py — Phase 5.1)
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

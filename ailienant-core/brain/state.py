@@ -433,3 +433,21 @@ class AIlienantGraphState(TypedDict):
     # workspace_active: latched False by lifecycle_manager.shutdown_workspace(pid).
     workspace_pid: Optional[int]
     workspace_active: bool
+
+    # --- Phase 5.1 — Permission Engine & Cognitive Quarantine channels ---
+    # session_permission_mode: per-mission HITL policy (DEFAULT / PLAN / AUTO).
+    # boundary_id: per-turn uuid4().hex used by the Cognitive Quarantine axiom.
+    # tool_registry_active: names of tools surfaced to the model this turn (Tool RAG).
+    # permission_audit_log: append-only ledger of every permission decision.
+    # pending_hitl_request: structured payload awaiting WebView user response.
+    # background_tasks: registry of long-running asyncio tasks keyed by task_id.
+    # mcp_server_endpoint: active MCP ClientSession URI (None = local-only).
+    # rbwe_violations: append-only list of "tool::target" RBWE rejections.
+    session_permission_mode: Literal["DEFAULT", "PLAN", "AUTO"]
+    boundary_id: Optional[str]
+    tool_registry_active: List[str]
+    permission_audit_log: Annotated[List[Dict[str, Any]], operator.add]
+    pending_hitl_request: Optional[Dict[str, Any]]
+    background_tasks: Dict[str, Dict[str, Any]]
+    mcp_server_endpoint: Optional[str]
+    rbwe_violations: Annotated[List[str], operator.add]
