@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List, cast
+from typing import AsyncIterator, Dict, List, Optional, cast
 
 import httpx
 
@@ -274,6 +274,20 @@ async def resume_task(task_id: str) -> Dict[str, object]:
         "resumed": True,
         "from_episode": episode.episode_id,
         "node_resumed_at": episode.failed_node,
+    }
+
+
+@app.get("/api/v1/dlq/pending")
+async def list_pending_dlqs(task_id: Optional[str] = None) -> Dict[str, object]:
+    """Phase 6.9 — report unresolved DLQ episodes for the sidebar Resume affordance.
+
+    Backend surface for the extension's "Resume Task" item. Optionally scoped to
+    a ``task_id``; newest episodes first. Read-only — no state mutation.
+    """
+    pending = await get_pending_dlqs(task_id)
+    return {
+        "count": len(pending),
+        "episodes": [r.model_dump() for r in pending],
     }
 
 

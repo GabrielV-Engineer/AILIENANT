@@ -105,9 +105,11 @@ async def _oom_cascade(
         "OOM cascade re-emitting to cloud fallback [trace=%s] model=%s",
         trace_id, fallback_model,
     )
+    _t0 = time.perf_counter()
     response: ModelResponse = await litellm.acompletion(
         **{**kwargs, "model": fallback_model, "messages": trimmed}
     )
+    swap_latency_ms = (time.perf_counter() - _t0) * 1000.0
 
     # 5. Ledger — the rescue is a cloud call.
     try:
@@ -120,6 +122,20 @@ async def _oom_cascade(
             )
     except Exception as exc:  # noqa: BLE001 — token accounting is non-fatal
         logger.debug("OOM cascade token accounting failed (non-fatal): %s", exc)
+
+    # 6. Telemetry — record the rescue swap (Phase 6.8, formalises 6.3).
+    try:
+        from core import telemetry
+        tokens_at_failure = litellm.token_counter(
+            model=failed_model, messages=messages
+        )
+        await telemetry.log_oom_event(
+            reason=reason, original_model=failed_model,
+            fallback_model=fallback_model, tokens_at_failure=tokens_at_failure,
+            swap_latency_ms=swap_latency_ms, state=state,
+        )
+    except Exception as exc:  # noqa: BLE001 — telemetry is non-fatal
+        logger.debug("OOM telemetry write failed (non-fatal): %s", exc)
 
     return response
 

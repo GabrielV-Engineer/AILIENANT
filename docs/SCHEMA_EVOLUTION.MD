@@ -455,3 +455,23 @@ CREATE INDEX IF NOT EXISTS idx_audit_session ON hitl_audit_log(session_id);
 ## Phase 6.7 — Secrets Scrubber: no schema change — 2026-05-19
 
 **No new state channels, no new SQLite tables, no renames.** Phase 6.7 centralises the secrets-redaction engine into `shared/logging_filters.py` (`SecretsScrubber` + `SecretsScrubberFilter`) and installs it as a process-wide `logging.Filter`. `core/audit.py` is refactored to consume `SecretsScrubber` instead of its Phase 6.6 local `_scrub`; the `hitl_audit_log` table and its `proposed_content_scrubbed` / `proposed_content_hash` columns are **unchanged**. The only observable change is the redaction marker format (`**REDACTED:<hash8>**` → `REDACTED:<hash8>`), which is cosmetic — each ledger row's `chain_hash` is computed independently, so the format change does not affect chain verification of rows written before or after it.
+
+## Phase 6.8 & 6.9 — OOM telemetry table; no graph-state change — 2026-05-19
+
+**No new `AIlienantGraphState` channels, no renames, no catalog-DB change.** Phase 6.8 adds one table to the **telemetry DB** (`data/telemetry.sqlite`, NOT the catalog DB):
+
+```sql
+CREATE TABLE IF NOT EXISTS oom_fallback_events (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    session_id        TEXT,
+    event             TEXT NOT NULL,         -- constant "oom_fallback"
+    reason            TEXT NOT NULL,         -- context_overflow | cuda_oom | provider:*
+    original_model    TEXT NOT NULL,
+    fallback_model    TEXT NOT NULL,
+    tokens_at_failure INTEGER,
+    swap_latency_ms   REAL
+);
+```
+
+Idempotent `CREATE TABLE IF NOT EXISTS` appended to `core/telemetry.py::_DDL`; written by the new `log_oom_event(...)` from `tools/llm_gateway.py::_oom_cascade`. Phase 6.9 adds **no schema** — the `dead_letter_tasks` table (catalog DB) shipped in Phase 6.4 is unchanged; 6.9 only adds the read-only `GET /api/v1/dlq/pending` endpoint over `get_pending_dlqs`. The OOM (`oom_fallback_active`) and DLQ (`dead_letter_episode_id`) graph-state channels already existed (Phase 6 §1); Phase 6 checkpoints deserialise unchanged.
