@@ -368,3 +368,19 @@ Phase 5.7 is the milestone gate that proves the cumulative Phase 5.1–5.6 contr
 **Modified — Pydantic Field descriptions ONLY (D5 user-locked remedy)** in `tools/mutation_tools.py::AtomicCodePatchInput`, `tools/execution_tools.py::{SandboxBashInput, CheckTypeIntegrityInput}`, `tools/control_tools.py::TogglePlanModeInput`, `tools/perception_tools.py::TraceDataFlowInput`. The first run of B1 reported `reduction_ratio = 0.636`; the locked remedy was to compress verbose descriptions (NOT lower the threshold nor shrink `TOOL_RAG_TOP_K`). Field/class names and `Literal` / `Optional` typing remain unchanged — the operational verbosity ("Phase 1 of the batch rejects…", "Subject to DANGEROUS_COMMANDS_REGEX pre-check", multi-sentence enum explainers) was removed; that detail lives more naturally in the `BaseTool` docstrings (which do NOT enter the measured `json_schema`) or in code comments. No tool semantics changed.
 
 **No new state channels. No new dependencies. No `core/permissions.py` edits. No `brain/state.py` edits.** Phase 5 LOCK-IN (CLAUDE.md §1) auto-expires with the 5.7 `[x]` mark.
+---
+
+## Phase 6.3 — OOM Cascade: 6 Operational-Safety state channels — 2026-05-19
+
+**Additive only. No renames, no removals, no Literal narrowing. Phase 5.7 checkpoints deserialize unchanged.**
+
+`brain/state.py::AIlienantGraphState` gains the **6 Phase-6 channels** mandated by `PHASE_6_BLUEPRINT.md` §1 — all scalar overwrite (no reducer), safe defaults. Landed in one shot during Phase 6.3 (the OOM Cascade needs `oom_fallback_active`; the other 5 front-load the 6.4 DLQ / 6.5 Supervisor work and avoid a second `state.py` churn):
+
+* `accumulated_session_cost: float` — USD cost across the WHOLE WebSocket session (many tasks). Owner: `core/supervisor.py` (Phase 6.5).
+* `session_max_budget_usd: float` — hard session ceiling injected at graph construction from `AILIENANT_MAX_SESSION_BUDGET_USD`. Owner: task_service (Phase 6.5).
+* `oom_fallback_active: bool` — set True by `tools/llm_gateway.py::ainvoke` when it traps an OOM-class exception; read by `brain/nodes/circuit_breaker.py` to bypass the `error_streak` evaluation; reset to False once the fallback turn is acknowledged. **This is the only channel functionally wired in 6.3.**
+* `sandbox_tier_active: Literal["DOCKER","WASM","NATIVE_HITL"]` — mirror of `core.sandbox.ACTIVE_TIER` injected at graph start. Owner: graph factory (Phase 6.5).
+* `hitl_audit_chain_head: Optional[str]` — blake2b chain_hash of the last resolved `hitl_audit_log` row. Owner: `core/audit.py` (Phase 6.6).
+* `dead_letter_episode_id: Optional[str]` — episode_id of a resumed DLQ turn; None for fresh tasks. Owner: `main.py::resume_task` (Phase 6.4).
+
+**No new dependencies. No `core/permissions.py` edits.** `LLMGateway.ainvoke` gains an optional `state: Optional[Dict[str, Any]] = None` parameter (backward compatible — no existing caller breaks; the channel mutation only happens when a caller threads `state`, deferred to a later phase).

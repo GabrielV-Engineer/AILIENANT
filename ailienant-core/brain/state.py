@@ -451,3 +451,28 @@ class AIlienantGraphState(TypedDict):
     background_tasks: Dict[str, Dict[str, Any]]
     mcp_server_endpoint: Optional[str]
     rbwe_violations: Annotated[List[str], operator.add]
+
+    # --- Phase 6 — Operational Safety Layer channels (PHASE_6_BLUEPRINT §1) ---
+    # All scalar overwrite (no reducer) with safe defaults — Phase 5.7 checkpoints
+    # deserialise unchanged. Landed in Phase 6.3 (OOM Cascade needs
+    # oom_fallback_active); the rest front-load the 6.4/6.5 Supervisor + DLQ work.
+    #
+    # accumulated_session_cost: USD cost across the WHOLE WebSocket session
+    #   (many tasks), written by core/supervisor.py from token_ledger.snapshot().
+    # session_max_budget_usd: hard ceiling injected once at graph construction
+    #   from AILIENANT_MAX_SESSION_BUDGET_USD; read by the Supervisor triggers.
+    # oom_fallback_active: set True by tools/llm_gateway.py::ainvoke when it traps
+    #   an OOM-class exception; read by brain/nodes/circuit_breaker.py to skip the
+    #   local cascade; reset to False once the fallback turn is acknowledged.
+    # sandbox_tier_active: mirror of core.sandbox.ACTIVE_TIER injected at graph
+    #   start so nodes can reason about posture without importing the global.
+    # hitl_audit_chain_head: blake2b chain_hash of the last resolved
+    #   hitl_audit_log row; the Supervisor verifies it against the DB head.
+    # dead_letter_episode_id: episode_id of a resumed DLQ turn; None for fresh
+    #   tasks; rendered by the AnalystAgent post-mortem.
+    accumulated_session_cost: float
+    session_max_budget_usd: float
+    oom_fallback_active: bool
+    sandbox_tier_active: Literal["DOCKER", "WASM", "NATIVE_HITL"]
+    hitl_audit_chain_head: Optional[str]
+    dead_letter_episode_id: Optional[str]
