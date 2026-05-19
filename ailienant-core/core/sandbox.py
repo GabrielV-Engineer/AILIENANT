@@ -13,9 +13,10 @@ Implemented here:
       reachable (Phase 6.1.1).
     * :class:`NativeHITLSandboxAdapter` — degraded-mode fallback gated by the
       canonical ``vfs_manager.request_human_approval`` channel (Phase 6.1.2).
+    * :class:`WasmSandboxAdapter` — pure-compute tier on a ``wasmtime`` WASI
+      runtime, fuel-metered and preopen-free (Phase 6.1.3).
 
 Out of scope for this module (deferred to later sub-tasks of Phase 6):
-    * ``WasmSandboxAdapter`` (Phase 6.1.3)
     * ``resolve_default_adapter`` startup probe + ``ACTIVE_ADAPTER`` global (6.1.4)
     * Dispatch swap in ``tools/execution_tools.py`` (Phase 6.2)
 
@@ -24,7 +25,9 @@ protect the FastAPI event loop — same discipline as :mod:`core.janitor`.
 Docker-tier timeouts are enforced **inside** the container by the GNU
 ``timeout`` coreutils (SIGTERM then SIGKILL); the NativeHITL tier enforces
 timeouts host-side via :func:`asyncio.wait_for` and reaps the OS process to
-prevent zombie accumulation.
+prevent zombie accumulation. The Wasm tier blocks the CPU during module
+compilation + execution, so both run inside :func:`asyncio.to_thread`; runaway
+payloads are bounded by a 5 M-instruction fuel cap rather than wall-clock.
 """
 
 from __future__ import annotations
@@ -33,11 +36,13 @@ import asyncio
 import logging
 import os
 import shlex
+import tempfile
 from abc import ABC, abstractmethod
 from io import BytesIO
 from typing import Any, Dict, Optional, Tuple
 
 import docker  # type: ignore[import-untyped]
+import wasmtime
 from pydantic import BaseModel
 
 logger = logging.getLogger("AILIENANT_SANDBOX")
@@ -66,6 +71,14 @@ _DOCKERFILE_TEXT: str = (
     'CMD ["tail", "-f", "/dev/null"]\n'
 )
 
+# ── Wasm tier constants (Phase 6.1.3) ────────────────────────────────────────
+
+_WASM_FUEL_LIMIT: int = 5_000_000          # ADR-002 hard instruction cap
+_WASM_ENTRYPOINT: str = "_start"           # WASI command-module entrypoint
+_WASM_ALLOWED_IMPORT_MODULES: frozenset[str] = frozenset(
+    {"wasi_snapshot_preview1"}             # WASI-preview1 only — no custom host
+)
+
 
 # ── Pydantic result model ────────────────────────────────────────────────────
 
@@ -92,7 +105,7 @@ class SandboxAdapter(ABC):
     Concrete implementations:
         * :class:`DockerSandboxAdapter` (Phase 6.1.1, this module)
         * :class:`NativeHITLSandboxAdapter` (Phase 6.1.2, this module)
-        * ``WasmSandboxAdapter`` (Phase 6.1.3)
+        * :class:`WasmSandboxAdapter` (Phase 6.1.3, this module)
     """
 
     @abstractmethod
@@ -482,3 +495,228 @@ class NativeHITLSandboxAdapter(SandboxAdapter):
             "[DLQ:NativeHITL] timeout — command suppressed for replay. "
             "cwd=%s command=%s", cwd, command,
         )
+
+
+# ── Wasm pure-compute adapter ────────────────────────────────────────────────
+
+
+class WasmScopeError(Exception):
+    """Raised by the ADR-002 Scope Guard when a ``.wasm`` payload imports a
+    host module outside the WASI-preview1 allow-list.
+
+    Public so the Phase 6.10 B1 adversarial test and the future
+    ``RunPureLogicTool`` consumer can assert against it directly.
+    """
+
+    def __init__(self, import_module: str, import_name: str) -> None:
+        self.import_module = import_module
+        self.import_name = import_name
+        super().__init__(
+            f"disallowed wasm import: {import_module}::{import_name}"
+        )
+
+
+class WasmSandboxAdapter(SandboxAdapter):
+    """Pure-compute tier: runs a pre-compiled ``.wasm`` payload under WASI.
+
+    Strongest isolation of the three tiers — a WASI-preview1 module granted
+    **zero preopens** structurally cannot reach the host filesystem or
+    network (capability model), independent of any daemon or human. The
+    trade-off: compute only — no ``pytest`` discovery, no ``tsc``/``npm``.
+
+    Determinism + safety knobs (ADR-002, ``PHASE_6_BLUEPRINT.md §2.2``):
+
+    * ``Config.consume_fuel`` + ``Store.set_fuel(5_000_000)`` — a runaway or
+      infinite-loop payload traps once fuel is exhausted instead of hanging;
+      fuel — not wall-clock — is the hard bound, so no worker thread can leak
+      (contrast Docker R5 and NativeHITL N1).
+    * No ``preopen_dir`` / no ``--mapdir`` — the guest sees only fds 0/1/2.
+      stdout/stderr are redirected to **host** temp files (the host owns
+      them; the guest is never handed a directory capability), then read
+      back and unlinked.
+    * Scope Guard: the module import section is inspected *before* fuel is
+      set; any import outside the WASI-preview1 allow-list raises
+      :class:`WasmScopeError`.
+
+    ``timeout_s``, ``cwd`` and ``session_id`` are accepted for ABC parity and
+    ignored — the Wasm tier has no wall-clock kill, no filesystem cwd, and no
+    HITL surface.
+    """
+
+    def __init__(self) -> None:
+        config = wasmtime.Config()
+        config.consume_fuel = True
+        self._engine: wasmtime.Engine = wasmtime.Engine(config)
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+    ) -> SandboxResult:
+        """Run the ``.wasm`` payload at the path given by ``command``.
+
+        ``command`` is the path to a compiled ``.wasm`` file. Module
+        compilation and execution are both CPU-bound and run inside
+        :func:`asyncio.to_thread` so the FastAPI event loop is never blocked.
+        """
+        del timeout_s, cwd, session_id  # fuel is the bound; no FS/HITL surface
+        return await asyncio.to_thread(
+            self._run_sync, command, dict(env_whitelist),
+        )
+
+    # ── sync worker (always via asyncio.to_thread) ──────────────────────────
+
+    def _run_sync(
+        self, wasm_path: str, env_whitelist: Dict[str, str],
+    ) -> SandboxResult:
+        """Compile → scope-guard → fuel-meter → run; never raises."""
+        if not os.path.isfile(wasm_path):
+            return SandboxResult(
+                exit_code=-1, stdout="",
+                stderr=f"[wasm_load_error: file not found: {wasm_path}]",
+            )
+        try:
+            module = wasmtime.Module.from_file(self._engine, wasm_path)
+        except wasmtime.WasmtimeError as exc:
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr=f"[wasm_load_error: {exc}]",
+            )
+
+        try:
+            self._inspect_module_scope(module)
+        except WasmScopeError as exc:
+            return SandboxResult(
+                exit_code=-1, stdout="",
+                stderr=(
+                    f"[wasm_scope_violation: "
+                    f"{exc.import_module}::{exc.import_name}]"
+                ),
+            )
+
+        return self._instantiate_and_run(module, env_whitelist)
+
+    def _inspect_module_scope(self, module: wasmtime.Module) -> None:
+        """ADR-002 Scope Guard.
+
+        Raises :class:`WasmScopeError` on the first import whose module is
+        outside :data:`_WASM_ALLOWED_IMPORT_MODULES`.
+        """
+        for imp in module.imports:
+            if imp.module not in _WASM_ALLOWED_IMPORT_MODULES:
+                raise WasmScopeError(imp.module, imp.name or "<unnamed>")
+
+    def _instantiate_and_run(
+        self, module: wasmtime.Module, env_whitelist: Dict[str, str],
+    ) -> SandboxResult:
+        """Fuel-metered WASI instantiation + ``_start`` invocation."""
+        out_fd, out_path = tempfile.mkstemp(prefix="ail_wasm_out_")
+        err_fd, err_path = tempfile.mkstemp(prefix="ail_wasm_err_")
+        os.close(out_fd)
+        os.close(err_fd)
+        try:
+            store = wasmtime.Store(self._engine)
+            store.set_fuel(_WASM_FUEL_LIMIT)
+
+            wasi = wasmtime.WasiConfig()
+            wasi.stdout_file = out_path        # host file — NOT a guest preopen
+            wasi.stderr_file = err_path
+            if env_whitelist:
+                wasi.env = list(env_whitelist.items())
+            store.set_wasi(wasi)
+
+            linker = wasmtime.Linker(self._engine)
+            linker.define_wasi()
+            try:
+                instance = linker.instantiate(store, module)
+            except wasmtime.WasmtimeError as exc:
+                return SandboxResult(
+                    exit_code=-1, stdout="",
+                    stderr=f"[wasm_instantiate_error: {exc}]",
+                )
+
+            try:
+                start = instance.exports(store)[_WASM_ENTRYPOINT]
+            except KeyError:
+                return SandboxResult(
+                    exit_code=-1, stdout="",
+                    stderr="[wasm_load_error: no _start export]",
+                )
+            if not isinstance(start, wasmtime.Func):
+                return SandboxResult(
+                    exit_code=-1, stdout="",
+                    stderr="[wasm_load_error: _start is not a function]",
+                )
+
+            return self._invoke(start, store, out_path, err_path)
+        finally:
+            for path in (out_path, err_path):
+                try:
+                    os.unlink(path)
+                except OSError as exc:  # noqa: BLE001 — defensive cleanup
+                    logger.warning("Wasm temp cleanup failed: %s", exc)
+
+    def _invoke(
+        self,
+        start: wasmtime.Func,
+        store: wasmtime.Store,
+        out_path: str,
+        err_path: str,
+    ) -> SandboxResult:
+        """Call ``_start`` and normalise every exit path to a SandboxResult."""
+        exit_code = 0
+        try:
+            start(store)
+        except wasmtime.ExitTrap as exit_trap:
+            # Clean WASI termination: libc's `proc_exit` carries the status.
+            exit_code = int(getattr(exit_trap, "code", 0))
+        except wasmtime.Trap as trap:
+            stdout, stderr = self._read_streams(out_path, err_path)
+            if self._is_fuel_trap(trap):
+                return SandboxResult(
+                    exit_code=137, stdout=stdout,
+                    stderr="[wasm_fuel_exhausted]",
+                )
+            return SandboxResult(
+                exit_code=-1, stdout=stdout,
+                stderr="[wasm_trap: memory_violation]",
+            )
+        except wasmtime.WasmtimeError as exc:
+            stdout, stderr = self._read_streams(out_path, err_path)
+            return SandboxResult(
+                exit_code=-1, stdout=stdout,
+                stderr=f"[wasm_runtime_error: {exc}]",
+            )
+
+        stdout, stderr = self._read_streams(out_path, err_path)
+        return SandboxResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    # ── pure helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_fuel_trap(trap: wasmtime.Trap) -> bool:
+        """True when ``trap`` is an out-of-fuel trap.
+
+        wasmtime surfaces fuel exhaustion as a :class:`wasmtime.Trap` whose
+        message contains ``all fuel consumed``. Its internal trap code (11)
+        is **not** a member of the Python ``TrapCode`` enum, so reading
+        ``trap.trap_code`` raises ``ValueError`` — the message string is the
+        only stable signal.
+        """
+        return "fuel" in (trap.message or "").lower()
+
+    @staticmethod
+    def _read_streams(out_path: str, err_path: str) -> Tuple[str, str]:
+        """Read + UTF-8-decode the WASI stdout/stderr host temp files."""
+
+        def _read(path: str) -> str:
+            try:
+                with open(path, "rb") as handle:
+                    return handle.read().decode("utf-8", errors="replace")
+            except OSError:
+                return ""
+
+        return _read(out_path), _read(err_path)

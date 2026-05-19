@@ -154,7 +154,8 @@ ACTIVE_ADAPTER: Optional[SandboxAdapter] = None
 #### `WasmSandboxAdapter` operating principles
 
 - [ADR-002] Wasm Scope Guard. Wasm executes **only** pure-compute payloads: algorithm validation, parser unit tests, regex compile, math kernels. Disallowed imports (`os`, `subprocess`, `socket`, `pathlib`, `shutil`, anything that touches FS/net) cause `WasmScopeError` *before* fuel is consumed. Any test that needs `pytest` discovery, `npm install`, `tsc`, or `mypy` falls through to Docker (or, degraded, to HITL).
-- Backing: `wasmtime-py>=20.0.0`, `Config.consume_fuel(True)`, `Store.set_fuel(5_000_000)`. Out-of-fuel maps to `SandboxResult(exit_code=137, stderr="[wasm_fuel_exhausted]")`.
+  - **Two-layer model (clarified at 6.1.3 landing).** The Scope Guard operates at *two* layers. (1) **Module-import layer** — implemented in `WasmSandboxAdapter._inspect_module_scope` (Phase 6.1.3): the loaded `.wasm` module's import section is inspected and any import whose module is outside the WASI-preview1 allow-list raises `WasmScopeError`. A pre-compiled `.wasm` has wasm imports, not Python imports, so this is the correct mechanism for the executor. (2) **Python-source layer** — the `os`/`subprocess`/`socket`/`pathlib`/`shutil` allow-list above is a *complementary* check that belongs with the `RunPureLogicTool` consumer, which compiles source → wasm and can therefore see Python-level imports. Both raise the same public `WasmScopeError`.
+- Backing: `wasmtime-py>=20.0.0`, `Config.consume_fuel(True)`, `Store.set_fuel(5_000_000)`. Out-of-fuel maps to `SandboxResult(exit_code=137, stderr="[wasm_fuel_exhausted]")`. Non-fuel traps map to `SandboxResult(exit_code=-1, stderr="[wasm_trap: memory_violation]")`.
 
 ### 2.3 Resolution at startup
 
