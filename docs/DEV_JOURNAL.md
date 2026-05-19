@@ -1004,3 +1004,40 @@ Las Fases 6.8 y 6.9 son **fases de formalización** — el brief las describe co
 * **Type/lint compliance:** `mypy --strict core/telemetry.py` y `tools/llm_gateway.py` exit 0 limpio cada uno (se corren por separado). `ruff check core/telemetry.py tools/llm_gateway.py` exit 0. `pytest tests/test_oom_cascade.py tests/test_dead_letter.py` 8/8 verde (5 OOM + 3 DLQ). `main.py` 37 errores `--strict` (baseline 37 — sin regresión).
 * **Constraint honoured:** sin nuevos canales de `AIlienantGraphState` (`oom_fallback_active`/`dead_letter_episode_id` ya existen), sin nuevas dependencias (`litellm.token_counter` ya es dep; `sqlite3`/`time` stdlib), `PHASE_6_BLUEPRINT.md` intacto (la tabla `oom_fallback_events`, la elección REST y la reconciliación 5-vs-7 son correcciones de realización no-ADR).
 * **PHASE 6 LOCK-IN sigue ABIERTO:** auto-expira al marcar 6.10 [x]. La próxima sub-task natural es 6.10 (Checkpoint Gate Fase 6 — suite adversarial E2E `tests/test_phase6_checkpoint_gate.py`).
+
+## Hito 6.10: Checkpoint Gate Fase 6 (Adversarial E2E) — 2026-05-19
+
+**Status:** COMPLETADO ✅ — Fase 6 cerrada. PHASE 6 LOCK-IN auto-expirado (CLAUDE.md §1).
+
+Cierre de la Fase 6 con una **suite adversarial test-only**: cero código de producción tocado (`core/`, `tools/`, `shared/`, `brain/`, `main.py` intactos), un único archivo nuevo que IMPORTA e INVOCA los entrypoints ya enviados por las Fases 6.1–6.9 y los ataca por sus bordes. Aterrizó como `tests/test_phase6_checkpoint_gate.py` (**NEW**) con las 12 funciones nombradas A1–G2 que el brief especifica.
+
+**Doce escenarios:**
+* **A1 — Docker tier reachable:** `docker.from_env().ping` mockeado vivo → `resolve_default_adapter()` bindea `ACTIVE_TIER=="DOCKER"` y un `DockerSandboxAdapter` (no `NativeHITLSandboxAdapter`); los globales del módulo se save/restore.
+* **A2 — Docker daemon offline + Wasm down → NATIVE_HITL:** ambos tiers superiores rotos (ping lanza + `WasmSandboxAdapter` constructor lanza) → resolver degrada legítimamente a NATIVE_HITL; `vfs_manager.request_human_approval` AsyncMock approves; `NativeHITLSandboxAdapter().execute("echo hello", ...)` corre y devuelve `exit_code=0` + `"hello"` en stdout.
+* **B1 — Wasm scope guard:** `.wat` mínimo `(module (import "env" "evil" (func)))` compilado vía `wasmtime.Module.from_file` → `WasmSandboxAdapter._inspect_module_scope(module)` lanza `WasmScopeError` (el seam que su propio docstring nombra como B1-caller).
+* **C1 — Budget hard kill:** `token_ledger.snapshot` mockeado a `$12.00` invested vs ceiling `$10.00` → `run_supervisor_node` patch contiene `["SESSION_BUDGET_HARD_KILL"]`; `route_after_supervisor` devuelve `"__end__"`.
+* **C2 — Token-spike HITL:** snapshot mockeado a 100 000 tokens single-turn vs ceiling 64 000 (budget bajo, sin breach) → `vfs_manager.request_human_approval` awaited con `action_description="TOKEN_SPIKE"`.
+* **D1 — OOM cascade:** `litellm.acompletion` patcheado a `[ContextWindowExceededError, ModelResponse()]` → `LLMGateway.ainvoke` devuelve la respuesta cloud, `state["oom_fallback_active"] is True`, exactly 2 calls.
+* **D2 — Double OOM:** ambos calls lanzan `ContextWindowExceededError` → `ainvoke` propaga la segunda excepción (el `dead_letter_decorator` de 6.4 sería el catcher, no ejercitado aquí).
+* **E1 — Audit chain integrity:** 3 `log_audit_event` secuenciales con `db_path=tmp` → `verify_chain` devuelve `True`.
+* **E2 — Audit tamper detection:** seed 2 eventos, raw `sqlite3` `UPDATE` del `action_description` en rowid 2 → `verify_chain` lanza `AuditChainBrokenError`.
+* **F1 — Secrets scrubber:** `SecretsScrubberFilter` aplicado a un `logging.LogRecord` con `sk-ant-AAAAAAAAAAAAAAAAAAAA` → mensaje contiene `f"REDACTED:{blake2b(key)[:8]}"`; `"sk-ant-"` ausente; `"*"` ausente (lock Phase 6.7 formato sin asteriscos).
+* **G1 — DLQ + Resume:** catálogo aislado vía monkeypatch de `dead_letter.DB_CATALOG_PATH`; episodio sembrado vía `save_dead_letter`; `main.checkpoint_manager.recover` (MagicMock) y `main.alienant_app.ainvoke` (AsyncMock) mockeados; `TestClient(main.app)` sin `with` (skip lifespan); `POST /api/v1/task/resume/g1` devuelve `200` + `{resumed: True, from_episode, node_resumed_at: "apply_patch"}`.
+* **G2 — Resume idempotency:** episodio sembrado y resuelto via `mark_dlq_resolved` antes del POST → `POST /api/v1/task/resume/g2` devuelve `200` + `{resumed: False, reason: "no_dlq_episode"}` (no-op).
+
+**Correcciones del brief (CLAUDE.md §3 — Opción A Pivot; test-only, sin ADR/schema impact):**
+* (1) `pytest.mark.asyncio` → `asyncio.run`. `pytest-asyncio` **no está instalado** en el venv (sólo `anyio`); los tres suites Phase 6.6/6.8/6.9 vecinos ya consolidaron `asyncio.run` como patrón sin plugin. Usar el marker rompería el suite.
+* (2) **A2 fallback es WASM, no NATIVE_HITL.** El resolver de 6.1.4 degrada Docker → **Wasm** → NativeHITL (3 tiers; el brief razona con 2). Para aterrizar legítimamente en NATIVE_HITL hay que romper también el constructor de `WasmSandboxAdapter` — un escenario "total sandbox degradation" fiel al intent del brief (test del HITL fallback) que respeta la arquitectura enviada.
+* (3) **B1 asserta `WasmScopeError` vía el seam que lo lanza, no vía `execute()`.** `WasmSandboxAdapter.execute()` *captura* `WasmScopeError` internamente y devuelve un `SandboxResult(stderr="[wasm_scope_violation: ...]")`. La excepción la lanza `_inspect_module_scope`, y su propio docstring nombra "el test B1 adversarial de Phase 6.10" como caller esperado.
+* (4) **C1 usa cost=$12.00, no $11.00.** El hard-kill triggea con `cost > budget * 1.10` (`>` estricto); con budget $10.00 el umbral es exactamente $11.00 — `11.0 > 11.0` es `False`. Adicional: el Supervisor lee cost de `token_ledger.snapshot()["estimated_invested_usd"]`, **no** de `state["accumulated_session_cost"]` — C1/C2 mockean `token_ledger.snapshot`.
+
+**Decisiones técnicas adicionales:**
+* `TestClient(main.app)` se usa **sin** context manager — Starlette sólo corre el lifespan en `__enter__`, así que se evita la cascada de startup (`resolve_default_adapter`, `init_db`, etc.); las requests siguen funcionando.
+* Aislamiento del catálogo via monkeypatch de `core.dead_letter.DB_CATALOG_PATH` (mismo seam usado por `test_dead_letter.py`).
+* `_min_env()` helper: en Windows, el `env_whitelist` que el adapter pasa como entorno completo del comando necesita `SystemRoot` para que `cmd.exe` arranque — se mantiene la garantía no-host-env-leak sin que cmd colapse. POSIX queda con env vacío.
+* Save/restore explícito de `sandbox.ACTIVE_TIER` y `sandbox.ACTIVE_ADAPTER` en A1/A2 (`resolve_default_adapter` rebindea globales del módulo).
+* `_LAST_TURN_TOKENS["c2"]` se limpia al inicio del test (cache module-level por `task_id`).
+
+**Type/lint compliance:** `pytest tests/test_phase6_checkpoint_gate.py -v` → **12/12 verde** (16.66 s, primera corrida); `ruff check tests/test_phase6_checkpoint_gate.py` → exit 0; `mypy --strict` sobre los 5 módulos source (`core/sandbox.py`, `core/audit.py`, `core/supervisor.py`, `core/dead_letter.py`, `shared/logging_filters.py`) → unchanged from baseline (cero regresión — el suite es test-only). La única deprecación en el output es `LangGraphDeprecatedSinceV10` en `brain/engine.py:7` (importing `Send` from `langgraph.constants` → trasladar a `langgraph.types`) — ajena a 6.10, candidato a tracking en Fase 7 o como housekeeping.
+
+**Constraint honoured:** `core/sandbox.py`, `core/audit.py`, `core/supervisor.py`, `core/dead_letter.py`, `shared/logging_filters.py`, `main.py`, `tools/*.py`, `brain/*.py` — **intactos**. Sin nuevas dependencias. Sin amendment a `PHASE_6_BLUEPRINT.md` (ningún ADR alterado — las cuatro correcciones del brief son test-spec, no contratos de diseño). La columna `resolved_at` ya existía en `dead_letter_tasks`. **Fase 6 cerrada**; el PHASE 6 LOCK-IN de CLAUDE.md §1 auto-expira al marcar 6.10 [x]. La próxima fase activa es **Fase 7 — Extensión VS Code (Frontend TS/React)**.
