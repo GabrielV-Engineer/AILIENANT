@@ -151,9 +151,9 @@ Proyect_Ailienant/
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX); llm_gateway.py (Phase 6.3 — OOM Cascade: ainvoke traps ContextWindowExceeded/CUDA-OOM, purges VRAM, trims context, re-emits to cloud Haiku fallback)
-│   ├── shared/                 # Config, RBAC, contracts, hardware probe
+│   ├── shared/                 # Config, RBAC, contracts, hardware probe, logging_filters.py (Phase 6.7 — SecretsScrubber DLP filter)
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 496 passing tests (incl. tests/chaos/ — Phase 4.5 crucible; test_permissions.py — Phase 5.1; test_tool_rag_selection.py + test_mcp_handshake.py — Phase 5.2; test_perception_tools.py — Phase 5.3; test_mutation_tools.py — Phase 5.4; test_execution_tools.py + test_control_tools.py — Phase 5.5/5.6; test_phase5_7_checkpoint_gate.py — Phase 5.7; test_audit_chain.py — Phase 6.6 HITL audit chain E1/E2)
+│   └── tests/                  # 496 passing tests (incl. tests/chaos/ — Phase 4.5 crucible; test_permissions.py — Phase 5.1; test_tool_rag_selection.py + test_mcp_handshake.py — Phase 5.2; test_perception_tools.py — Phase 5.3; test_mutation_tools.py — Phase 5.4; test_execution_tools.py + test_control_tools.py — Phase 5.5/5.6; test_phase5_7_checkpoint_gate.py — Phase 5.7; test_audit_chain.py — Phase 6.6 HITL audit chain E1/E2; test_logging_filters.py — Phase 6.7 secrets scrubber)
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry

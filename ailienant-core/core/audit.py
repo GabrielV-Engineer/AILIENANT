@@ -10,7 +10,8 @@ Every Human-in-the-Loop resolution appends one **immutable** row to
 so any out-of-band mutation of a historical row breaks every subsequent link.
 :func:`verify_chain` re-walks a session and raises :class:`AuditChainBrokenError`
 on the first inconsistency. ``proposed_content`` is **secrets-scrubbed** before
-it is stored or hashed (:func:`_scrub`) — no raw key ever enters the ledger.
+it is stored or hashed (``shared.logging_filters.SecretsScrubber``, the central
+DLP engine — Phase 6.7) — no raw key ever enters the ledger.
 
 Single-write model: one row is appended *at resolution time* (approved /
 rejected / timeout all logged), entirely from inside
@@ -28,14 +29,14 @@ import asyncio
 import hashlib
 import logging
 import os
-import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import aiosqlite
 
 from shared.config import DB_CATALOG_PATH
+from shared.logging_filters import SecretsScrubber
 
 logger = logging.getLogger("AUDIT")
 
@@ -115,35 +116,9 @@ _KIND_SENTINELS: Tuple[str, ...] = (
     "RESOURCE_CONTENTION",
 )
 
-# Secrets-scrubber patterns (Blueprint §8.2). sk-ant- is listed before sk- so
-# an Anthropic key is redacted as a whole.
-_SCRUB_PATTERNS: List["re.Pattern[str]"] = [
-    re.compile(r"sk-ant-[A-Za-z0-9-]{20,}"),
-    re.compile(r"sk-[A-Za-z0-9]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9._-]{20,}"),
-    re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-    re.compile(r"://[^:/\s]+:[^@/\s]+@"),
-]
-
-
 # ── Helpers ─────────────────────────────────────────────────────────────────
-
-
-def _redact(match: "re.Match[str]") -> str:
-    """Replace a matched secret with ``**REDACTED:<hash8>**`` — diagnosable
-    (same secret → same hash8) without disclosing the secret."""
-    h8 = hashlib.blake2b(match.group(0).encode("utf-8")).hexdigest()[:8]
-    return f"**REDACTED:{h8}**"
-
-
-def _scrub(text: Optional[str]) -> str:
-    """Return ``text`` with every recognised secret redacted. ``None`` → ``""``."""
-    if not text:
-        return ""
-    out = text
-    for pattern in _SCRUB_PATTERNS:
-        out = pattern.sub(_redact, out)
-    return out
+# Secrets redaction lives in shared/logging_filters.py (Phase 6.7) — the same
+# SecretsScrubber engine scrubs both the logs and this ledger.
 
 
 def _classify(action_description: str) -> str:
@@ -229,7 +204,7 @@ async def log_audit_event(
     path = db_path or DB_CATALOG_PATH
     aid = audit_id or uuid.uuid4().hex
     request_kind = _classify(action_description)
-    scrubbed = _scrub(proposed_content)
+    scrubbed = SecretsScrubber.scrub(proposed_content or "")
     content_hash = hashlib.blake2b(scrubbed.encode("utf-8")).hexdigest()
     operator = os.getenv("AILIENANT_OPERATOR_EMAIL", "") or None
     resolved_at = int(time.time())
