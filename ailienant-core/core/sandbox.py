@@ -1,24 +1,30 @@
 # ailienant-core/core/sandbox.py
-"""Phase 6.1.1 — Pluggable Sandbox Adapter (base ABC + Docker concrete).
+"""Phase 6.1.1 + 6.1.2 — Pluggable Sandbox Adapter (ABC + Docker + NativeHITL).
 
 Implements the host-isolation primitive defined in
 ``docs/PHASE_6_BLUEPRINT.md §2``. Today every EXECUTE-tier tool call hits
 ``asyncio.create_subprocess_shell`` against the host with full parent
-privileges — Phase 6.1.1 lands the adapter contract and the Docker concrete
-that the Phase 6.1.4 resolver will pick as the default tier on machines where
-the Docker daemon is reachable.
+privileges — this module lands the adapter contract plus the concretes that
+the Phase 6.1.4 resolver will pick from at startup.
 
-Out of scope for 6.1.1 (deferred to later sub-tasks of Phase 6.1):
-    * ``NativeHITLSandboxAdapter`` (6.1.2)
-    * ``WasmSandboxAdapter`` (6.1.3)
+Implemented here:
+    * :class:`SandboxAdapter` — the ABC (Phase 6.1.1).
+    * :class:`DockerSandboxAdapter` — default tier when the Docker daemon is
+      reachable (Phase 6.1.1).
+    * :class:`NativeHITLSandboxAdapter` — degraded-mode fallback gated by the
+      canonical ``vfs_manager.request_human_approval`` channel (Phase 6.1.2).
+
+Out of scope for this module (deferred to later sub-tasks of Phase 6):
+    * ``WasmSandboxAdapter`` (Phase 6.1.3)
     * ``resolve_default_adapter`` startup probe + ``ACTIVE_ADAPTER`` global (6.1.4)
-    * Dispatch swap in ``tools/execution_tools.py`` (6.2)
+    * Dispatch swap in ``tools/execution_tools.py`` (Phase 6.2)
 
 All synchronous ``docker`` SDK calls are wrapped in :func:`asyncio.to_thread` to
 protect the FastAPI event loop — same discipline as :mod:`core.janitor`.
-Timeouts are enforced **inside** the container by the GNU ``timeout`` coreutils
-(SIGTERM then SIGKILL), not via :func:`asyncio.wait_for`, to avoid leaking
-``ThreadPoolExecutor`` workers on long-running or runaway commands.
+Docker-tier timeouts are enforced **inside** the container by the GNU
+``timeout`` coreutils (SIGTERM then SIGKILL); the NativeHITL tier enforces
+timeouts host-side via :func:`asyncio.wait_for` and reaps the OS process to
+prevent zombie accumulation.
 """
 
 from __future__ import annotations
@@ -85,7 +91,7 @@ class SandboxAdapter(ABC):
 
     Concrete implementations:
         * :class:`DockerSandboxAdapter` (Phase 6.1.1, this module)
-        * ``NativeHITLSandboxAdapter`` (Phase 6.1.2)
+        * :class:`NativeHITLSandboxAdapter` (Phase 6.1.2, this module)
         * ``WasmSandboxAdapter`` (Phase 6.1.3)
     """
 
@@ -97,11 +103,17 @@ class SandboxAdapter(ABC):
         timeout_s: float,
         cwd: str,
         env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
     ) -> SandboxResult:
         """Run ``command`` inside the adapter's isolation envelope.
 
         ``env_whitelist`` is the **only** environment dictionary the command
         sees — host environment (including API keys) MUST NOT leak through.
+
+        ``session_id`` is consumed by adapters that route through the HITL
+        channel (Phase 6.1.2 :class:`NativeHITLSandboxAdapter`). Adapters that
+        own their isolation envelope end-to-end (Docker, Wasm) accept the
+        kwarg for LSP parity and ignore it.
         """
         ...
 
@@ -141,6 +153,7 @@ class DockerSandboxAdapter(SandboxAdapter):
         timeout_s: float,
         cwd: str,
         env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
     ) -> SandboxResult:
         """Dispatch ``command`` to the sandbox container.
 
@@ -149,7 +162,11 @@ class DockerSandboxAdapter(SandboxAdapter):
         process group when the deadline expires and ``exec_run`` returns
         naturally with exit code 124, freeing the Python worker thread
         instantly.
+
+        ``session_id`` is accepted for ABC parity and intentionally ignored —
+        the Docker tier owns its isolation envelope.
         """
+        del session_id  # ABC parity; the Docker tier does not need it.
         await self._ensure_container_running()
         assert self._container is not None  # narrowed by lock-guarded init
 
@@ -340,3 +357,128 @@ class DockerSandboxAdapter(SandboxAdapter):
     @staticmethod
     def _decode(raw: bytes) -> str:
         return raw.decode("utf-8", errors="replace") if raw else ""
+
+
+# ── Native HITL fallback adapter ─────────────────────────────────────────────
+
+
+class NativeHITLSandboxAdapter(SandboxAdapter):
+    """Degraded-mode adapter: host-native subprocess gated by a human approval.
+
+    Selected by the Phase 6.1.4 resolver only when neither Docker nor Wasm is
+    available. Every call suspends until ``vfs_manager.request_human_approval``
+    returns; rejection or timeout aborts cleanly without spawning anything.
+    Approved commands run with :func:`asyncio.create_subprocess_shell` and
+    inherit *only* ``env_whitelist`` — host environment (including API keys)
+    MUST NOT leak through.
+
+    Known limits (parity with R5 of the Docker tier):
+        * ``process.kill()`` does not traverse the process tree on POSIX and
+          maps to ``TerminateProcess`` on Windows (single-PID semantics). A
+          shell-spawned command that forks long-lived children may leak them.
+          Documented; out of scope for 6.1.2. A future ``setsid``/``killpg``
+          POSIX path and ``CREATE_NEW_PROCESS_GROUP`` Windows path can be
+          added in 6.1.2.b if telemetry shows orphan accumulation.
+    """
+
+    _HITL_ACTION: str = "SANDBOX_DEGRADED_EXEC"
+    _HITL_TIMEOUT_S: float = 300.0  # matches resource_manager + finops defaults
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+    ) -> SandboxResult:
+        """HITL-gated host execution.
+
+        Returns immediately with ``exit_code=-1`` if no session is available,
+        the human declines, or the approval times out. Approved commands then
+        run host-native with the timeout enforced via :func:`asyncio.wait_for`
+        plus ``process.kill()`` and a ``process.wait()`` reap.
+        """
+        # Deferred import: api.websocket_manager imports from core.* at module
+        # load, so a top-level import here re-creates the circular dependency
+        # that resource_manager.py:171 already documented and side-stepped.
+        from api.websocket_manager import vfs_manager
+
+        if not session_id:
+            logger.error(
+                "NativeHITL adapter invoked without session_id — refusing to "
+                "execute on host. Command suppressed: %s", command,
+            )
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[hitl_no_session]",
+            )
+
+        approval = await vfs_manager.request_human_approval(
+            session_id=session_id,
+            action_description=self._HITL_ACTION,
+            proposed_content=f"CWD: {cwd}\nCommand: {command}",
+            timeout_s=self._HITL_TIMEOUT_S,
+        )
+        if approval is None or not approval.get("approved", False):
+            # None ⇒ HITL timeout; approved=False ⇒ explicit rejection.
+            # Both are non-events: nothing was spawned.
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[hitl_denied]",
+            )
+
+        return await self._spawn_with_timeout(
+            command=command,
+            timeout_s=timeout_s,
+            cwd=cwd,
+            env_whitelist=env_whitelist,
+        )
+
+    async def _spawn_with_timeout(
+        self,
+        *,
+        command: str,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+    ) -> SandboxResult:
+        """Host-side spawn with strict timeout + zombie reaping."""
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            cwd=cwd or None,
+            env=dict(env_whitelist),
+        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()  # reap — prevents OS zombie
+            await self._enqueue_dlq_stub(command=command, cwd=cwd)
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[hitl_native_timeout]",
+            )
+
+        exit_code = process.returncode if process.returncode is not None else -1
+        return SandboxResult(
+            exit_code=exit_code,
+            stdout=stdout_bytes.decode("utf-8", errors="replace"),
+            stderr=stderr_bytes.decode("utf-8", errors="replace"),
+        )
+
+    async def _enqueue_dlq_stub(self, *, command: str, cwd: str) -> None:
+        """Phase 6.4 hand-off stub.
+
+        Logs a CRITICAL line that the Phase 6.4 DLQ ingestor will retrofit by
+        log-tail or by a shared in-memory queue once it lands. We intentionally
+        do NOT enqueue to a real queue here — that would require a state-channel
+        addition and 6.1.2 is locked to no-state-channel-changes.
+        """
+        logger.critical(
+            "[DLQ:NativeHITL] timeout — command suppressed for replay. "
+            "cwd=%s command=%s", cwd, command,
+        )
