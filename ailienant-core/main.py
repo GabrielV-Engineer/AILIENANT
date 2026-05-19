@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List
+from typing import AsyncIterator, Dict, List, cast
 
 import httpx
 
@@ -24,6 +24,12 @@ from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 
 # --- IMPORTACIONES FASE 2 (Persistencia y Mantenimiento) ---
 from brain.checkpoint import checkpoint_manager
+
+# --- IMPORTACIONES FASE 6.4 (Dead Letter Queue & Resume API) ---
+from brain.engine import alienant_app
+from brain.state import AIlienantGraphState
+from core.dead_letter import get_pending_dlqs, init_dlq_table, mark_dlq_resolved
+from langchain_core.runnables import RunnableConfig
 
 # --- IMPORTACIONES FASE 3.4.5 (MCTS Mirror) ---
 from api.mcts_mirror import MergeReport, apply_merge, get_virtual_file
@@ -67,6 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
     await resolve_default_adapter()          # Phase 6.1.4 — bind sandbox tier
     await catalog_db.init_db()
+    await init_dlq_table()                   # Phase 6.4 — dead_letter_tasks table
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)
@@ -210,6 +217,52 @@ async def submit_task(
     except Exception as e:
         logger.error(f"Fallo crítico en el motor cognitivo: {str(e)}")
         raise HTTPException(status_code=500, detail="Colapso interno en el orquestador")
+
+
+# =====================================================================
+# PHASE 6.4 — Resume API (Dead Letter Queue rehydration)
+# =====================================================================
+
+
+@app.post("/api/v1/task/resume/{task_id}")
+async def resume_task(task_id: str) -> Dict[str, object]:
+    """Phase 6.4 — re-hydrate the latest L2 checkpoint of a crashed task and resume.
+
+    Idempotent: a task with no unresolved DLQ episode (never crashed, or already
+    resumed to completion) returns ``resumed: false`` without mutating state.
+    On success the episode is stamped ``resolved_at`` so a repeated call no-ops.
+    """
+    pending = await get_pending_dlqs(task_id)
+    if not pending:
+        return {"resumed": False, "reason": "no_dlq_episode"}
+
+    episode = pending[0]  # newest unresolved
+    checkpoint_manager.recover(episode.thread_id)  # seed L1 from the L2 snapshot
+    config: RunnableConfig = {"configurable": {"thread_id": episode.thread_id}}
+    # Partial-state update merged into the resumed checkpoint; cast satisfies the
+    # ainvoke() overload (full state lives in the L2 checkpoint being resumed).
+    resume_input = cast(
+        AIlienantGraphState, {"dead_letter_episode_id": episode.episode_id}
+    )
+    try:
+        await alienant_app.ainvoke(resume_input, config=config)
+    except Exception as exc:
+        logger.error(
+            "Resume re-invocation failed [task=%s episode=%s]: %s",
+            task_id, episode.episode_id, exc,
+        )
+        raise HTTPException(status_code=500, detail="Resume re-invocation failed")
+
+    await mark_dlq_resolved(episode.episode_id)
+    logger.info(
+        "Task resumed [task=%s] from episode=%s (failed_node=%s)",
+        task_id, episode.episode_id, episode.failed_node,
+    )
+    return {
+        "resumed": True,
+        "from_episode": episode.episode_id,
+        "node_resumed_at": episode.failed_node,
+    }
 
 
 # =====================================================================
