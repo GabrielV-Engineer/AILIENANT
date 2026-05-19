@@ -29,6 +29,7 @@ from brain.drift_monitor import run_drift_monitor_node  # noqa: E402
 from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
 from agents.contract_guard import run_contract_guard_node  # noqa: E402 — Phase 2.23
+from core.supervisor import run_supervisor_node, route_after_supervisor  # noqa: E402 — Phase 6.5
 
 
 async def run_apply_patch_node(state: dict) -> dict:
@@ -83,6 +84,13 @@ workflow.add_node("finops_gate", run_finops_node)
 workflow.add_node("ideation_loop", ideation_graph)
 workflow.add_node("session_delta_aggregator", run_session_delta_aggregator_node)
 workflow.add_node("contract_guard", run_contract_guard_node)  # Phase 2.23
+# Phase 6.5 — deterministic FinOps Supervisor spliced between finops_gate and
+# apply_patch. DLQ-wrapped (Blueprint §5.2): an AuditChainBrokenError becomes a
+# recoverable dead_letter_tasks episode rather than a silent graph death.
+workflow.add_node(
+    "supervisor_node",
+    dead_letter_decorator("supervisor_node")(run_supervisor_node),
+)
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
@@ -166,7 +174,20 @@ workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"]
 # boundary for both the trigger evaluation and the anchor snapshot.
 workflow.add_edge("coder_agent", "contract_guard")
 workflow.add_edge("contract_guard", "finops_gate")
-workflow.add_conditional_edges("finops_gate", route_after_finops, ["apply_patch", END])
+# Phase 6.5 — the finops_gate path-map is remapped from a list to a dict so the
+# router's "apply_patch" verdict is rerouted through supervisor_node. This
+# splices the Supervisor without touching brain/finops.py: route_after_finops
+# still returns "apply_patch" / "__end__" unchanged.
+workflow.add_conditional_edges(
+    "finops_gate", route_after_finops,
+    {"apply_patch": "supervisor_node", "__end__": END},
+)
+# supervisor_node terminates the graph on a budget hard-kill, else continues to
+# apply_patch. route_after_supervisor reads the SESSION_BUDGET_HARD_KILL flag.
+workflow.add_conditional_edges(
+    "supervisor_node", route_after_supervisor,
+    {"apply_patch": "apply_patch", "__end__": END},
+)
 workflow.add_edge("apply_patch", "validate_output")
 workflow.add_conditional_edges("validate_output", route_after_validation, ["coder_agent", END])
 
@@ -182,7 +203,7 @@ logger.info(
     "🟢 Motor AILIENANT compilado: "
     "SummarizeHistory → SessionDeltaAggregator → [PlannerAgent | IdeationLoop(Socratic)] → "
     "DriftMonitor → route_to_coders → CoderAgent(s) → ContractGuard → "
-    "FinOpsGate → ApplyPatch → ValidateOutput."
+    "FinOpsGate → Supervisor → ApplyPatch → ValidateOutput."
 )
 
 
