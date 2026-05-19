@@ -6,9 +6,9 @@
 
 ## 📍 Estado Actual
 
-- **Fase Activa:** Fase 2D — Capa de Agentes Base (MCP Adapter en cola)
-- **Hito Reciente:** Fase 2C — Stability & Memory Architecture (Backpressure, WAL-Safety, Shadow Planner, Shallow State + Blob CAS) — 64/64 tests verdes
-- **Próximo Objetivo:** Fase 2.16 — `mcp_adapter.py` + FinOps tracker
+- **Fase Activa:** Fase 7 — Extensión VS Code (Frontend TS/React)
+- **Hito Reciente:** Fase 6.10 — Checkpoint Gate Fase 6 (Adversarial E2E, 12/12 tests verdes); Fase 6 cerrada
+- **Próximo Objetivo:** Fase 7.1 — Base Client & IDE Sync (`src/ide_sync.ts`)
 
 ---
 
@@ -25,8 +25,8 @@
 | 3 | Sistema de Memoria Evolutiva (GraphRAG) |🟡 EN CURSO |
 | 4 | Arquitectura de Agentes y Selector de Modos | ⬜ |
 | 5 | Ecosistema MCP, Permisos y Tool RAG | ⬜ |
-| 6 | Resiliencia, Sandboxing y Seguridad (Enterprise Refactor) | ⬜ |
-| 7 | Extensión VS Code (Frontend TS/React) | ⬜ |
+| 6 | Resiliencia, Sandboxing y Seguridad (Enterprise Refactor) | ✅ |
+| 7 | Extensión VS Code (Frontend TS/React) | 🟡 EN CURSO |
 | 8 | Pruebas, Refinamiento y Degradación Elegante | ⬜ |
 | 9 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
 | 10 | Nivel Portafolio (Standout Release) | ⬜ |
@@ -599,11 +599,11 @@
 
 ---
 
-## 🛡️ FASE 6 — Resiliencia, Sandboxing y Seguridad (Enterprise Refactor)
+## 🛡️ FASE 6 — Resiliencia, Sandboxing y Seguridad (Enterprise Refactor) ✅
 
 > Capa Zero-Trust de "manos" para los agentes: aislamiento real del host, FinOps con freno de emergencia, audit log SOC2-compatible y recuperación elegante ante OOM y crash de nodos. Reemplaza el bosquejo original 6.1–6.6 (regex + try/except) por una arquitectura Enterprise-grade pluggable.
 
-**🔒 Phase 6 LOCK-IN (activo hasta cierre de 6.10):** mientras esta fase esté abierta, toda mutación que toque ejecución de subprocesos, FinOps, HITL o persistencia DEBE leer este bloque más [`docs/PHASE_6_BLUEPRINT.md`](PHASE_6_BLUEPRINT.md) antes de tocar código. Las decisiones marcadas **[ADR-XXX]** son vinculantes; cualquier desviación requiere amendment explícito en el mismo PR.
+**🔒 Phase 6 LOCK-IN (expirado 2026-05-19):** el lock-in auto-expiró al cerrar 6.10 (CLAUDE.md §1). Las decisiones **[ADR-001..ADR-004]** quedan como contrato histórico — toda mutación futura que toque ejecución de subprocesos, FinOps, HITL o persistencia las honra por defecto; las desviaciones siguen requiriendo amendment explícito en el mismo PR.
 
 ### 🧭 Decisiones Arquitectónicas Vinculantes
 
@@ -747,7 +747,7 @@
 
   - **Status (2026-05-19):** Fase de **entrega formal** — la tabla `dead_letter_tasks`, `dead_letter_decorator`, los writers (`save_dead_letter`/`get_pending_dlqs`/`mark_dlq_resolved`) y el endpoint `POST /api/v1/task/resume/{task_id}` ya aterrizaron en 6.4 (`core/dead_letter.py` no se toca). **Correcciones del brief / decisiones AskUserQuestion:** (1) el brief dice `core/dead_letter.py` **NEW** — ya existe desde 6.4 (con columna extra `resolved_at`); (2) "7 entrypoints en `brain/swarms.py`" es inexacto — el decorator vive sobre **5 nodos de `brain/engine.py`**; **decisión: mantener 5 y corregir el manifest** (ver 6.4.2) en vez de extender a `researcher_agent`/`orchestrator_agent`; (3) **decisión: superficie de DLQs pendientes vía REST endpoint** — `GET /api/v1/dlq/pending` en `main.py` (backend-only, sin tocar `ws_contracts.py` ni la extensión; honra Blueprint §3.1 [ADR-003] *"No change to ws_contracts.py"*), cierra 6.4.4. Gaps reales cerrados: `main.py` — **EDIT**: ruta `GET /api/v1/dlq/pending` (`get_pending_dlqs` ya importado; devuelve `{count, episodes}`). `tests/test_dead_letter.py` — **NEW**: 3 tests (creación idempotente de tabla+índice `idx_dlq_task_id`; el decorator intercepta excepción no manejada → promote L1→L2 + 1 fila DLQ con metadata exacta + re-raise; ciclo de resume idempotente — episodio resuelto no resurge). Aislamiento del catálogo vía monkeypatch del seam `DB_CATALOG_PATH`. DoD: `pytest tests/test_dead_letter.py` 3/3 verde; `main.py` 37 errores `mypy --strict` (baseline 37 — sin regresión); `ruff` exit 0.
 
-- [ ] **6.10. Checkpoint Gate Fase 6 (Adversarial E2E)** — *Mismo patrón estructural que Phase 5.7 gate.*
+- [x] **6.10. Checkpoint Gate Fase 6 (Adversarial E2E)** — *Mismo patrón estructural que Phase 5.7 gate.*
 
   Test file: `tests/test_phase6_checkpoint_gate.py` (12 escenarios):
 
@@ -767,6 +767,8 @@
   | G2 — Resume idempotency | Segundo resume sobre `task_id` ya completo → 200 OK, no-op |
 
   **DoD:** los 12 tests pasan; `mypy --strict` clean sobre los 5 módulos nuevos (`core/sandbox.py`, `core/audit.py`, `core/supervisor.py`, `core/dead_letter.py`, `shared/logging_filters.py`); `ruff check` clean; suite existente (496 tests) verde, cero regresiones.
+
+  - **Status (2026-05-19):** Aterrizó como `tests/test_phase6_checkpoint_gate.py` (**NEW**) — un único archivo, test-only, cero mutación de feature code. 12 funciones nombradas A1–G2 (`asyncio.run`-driven; `unittest.mock` + `fastapi.testclient.TestClient` — sin dependencia de `pytest-asyncio`, espejando los tres suites Phase-6 vecinos). **Correcciones del brief (verificadas vs código vivo, CLAUDE.md §3 Pivot — test-only, sin ADR/schema):** (1) `pytest.mark.asyncio` → `asyncio.run` — `pytest-asyncio` no está instalado (sólo `anyio`); los tres suites Phase 6.6/6.8/6.9 ya consolidaron `asyncio.run` como patrón. (2) **A2 fallback es WASM, no NATIVE_HITL** — el resolver degrada Docker → Wasm → NativeHITL; para aterrizar legítimamente en NATIVE_HITL hay que romper ambos tiers superiores (monkeypatch `docker.from_env().ping` que falla + monkeypatch `sandbox.WasmSandboxAdapter` que lanza en construcción) — escenario adversarial fiel "total sandbox degradation"; luego HITL aprobado vía `vfs_manager.request_human_approval` AsyncMock → `echo hello` corre y devuelve `exit_code=0`. (3) **B1 asserta `WasmScopeError` vía `_inspect_module_scope`** — `WasmSandboxAdapter.execute()` captura `WasmScopeError` internamente y devuelve `SandboxResult`; la excepción la lanza el seam privado que el propio docstring de `WasmScopeError` nombra como caller esperado para B1; un `.wat` mínimo `(module (import "env" "evil" (func)))` compilado via `wasmtime.Module.from_file` triggea el guard. (4) **C1 usa cost=$12.00, no $11.00** — el hard-kill dispara con `cost > budget * 1.10` (`>` estricto); con budget $10.00 el umbral es exactamente $11.00, así que $11.00 no triggea. Además: el Supervisor lee cost de `token_ledger.snapshot()` (no de `state["accumulated_session_cost"]`) → C1/C2 mockean `token_ledger.snapshot`. (5) **G1/G2 isolation** — el seam `DB_CATALOG_PATH` (módulo `core.dead_letter`) es monkeypatchable; `TestClient(main.app)` sin `with` no corre el lifespan (no sandbox resolve, no DB init de runtime). DoD: `pytest tests/test_phase6_checkpoint_gate.py` 12/12 verde (16.66s, primera corrida); `ruff check tests/test_phase6_checkpoint_gate.py` exit 0; `mypy --strict` sobre los 5 módulos source unchanged from baseline (cero regresión — el suite es test-only). **Cierre de Fase 6 + CLAUDE.md §1 LOCK-IN auto-expirado.**
 
 ### 🛠️ Build Order (4 sub-fases, cada una individualmente verde)
 
