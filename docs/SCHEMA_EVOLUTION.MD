@@ -411,3 +411,13 @@ CREATE INDEX IF NOT EXISTS idx_dlq_task_id ON dead_letter_tasks(task_id, created
 **`resolved_at` is a deliberate non-ADR addition** to the Blueprint §5.1 DDL: the blueprint's resume idempotency ("task already COMPLETED") is not implementable without it (no task-status table exists). Idempotency is realized as "is there a row with `resolved_at IS NULL` for this `task_id`?" — a successful resume stamps `resolved_at`, so a repeated `POST /api/v1/task/resume/{task_id}` is a deterministic no-op.
 
 **New module-level API — `core/dead_letter.py`:** `DeadLetterRecord` (Pydantic), `init_dlq_table()`, `save_dead_letter(...)`, `get_pending_dlqs(task_id=None)`, `mark_dlq_resolved(episode_id)`, `dead_letter_decorator(node_name)`. **No new dependencies, no `core/db.py` edits, no `ws_contracts.py` edits.** Existing checkpoints deserialize unchanged.
+
+## Phase 6.5 — FinOps Supervisor: no schema change — 2026-05-19
+
+**No new state channels, no new SQLite tables, no renames.** The Phase 6.5 Supervisor (`core/supervisor.py`) is purely additive at the *graph-topology* level and consumes channels that already exist:
+
+* It **reads** `task_id`, `hitl_audit_chain_head`, `session_max_budget_usd`, `security_flags` and **writes** `accumulated_session_cost`, `session_max_budget_usd`, `security_flags` — every one of these was already added in the Phase 6.3 Blueprint §1 block above. The Supervisor is simply the declared owner of `accumulated_session_cost` finally coming online.
+* `SESSION_BUDGET_HARD_KILL` is an additive **value** appended to the existing `security_flags` channel (`Annotated[List[str], operator.add]`) — not a new channel.
+* `core/audit.py` is created as a **minimal seam** (`AuditChainBrokenError`, `get_chain_head` stub) — no table yet. The `hitl_audit_log` table lands in Phase 6.6.
+
+Existing checkpoints deserialize unchanged.

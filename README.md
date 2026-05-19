@@ -103,10 +103,12 @@ START
               → drift_monitor
                 → route_to_coders          (SWARM if CLOUD, RELAY if LOCAL)
                   → coder_agent (× N parallel)
-                    → finops_gate
-                      → apply_patch
-                        → validate_output
-                          → [retry?] → coder_agent OR → END
+                    → contract_guard
+                      → finops_gate
+                        → supervisor_node     (FinOps hard-kill → END, else continue)
+                          → apply_patch
+                            → validate_output
+                              → [retry?] → coder_agent OR → END
 ```
 
 State is checkpointed by a `HybridCheckpointer` over SQLite WAL — every node transition is durable, enabling time-travel debugging and resume-after-crash.
@@ -144,6 +146,8 @@ Proyect_Ailienant/
 │   │   ├── tool_rag.py         #   RAM LanceDB schema store + select_tools(intent, k=5) (Phase 5.2)
 │   │   ├── sandbox.py          #   SandboxAdapter ABC + DockerSandboxAdapter (kernel-side `timeout`; --read-only, --network none, ro bind-mount, tmpfs /work) + NativeHITLSandboxAdapter (degraded host-spawn gated by `vfs_manager.request_human_approval`, `SANDBOX_DEGRADED_EXEC` sentinel, asyncio.wait_for + process.kill+reap, DLQ stub) + WasmSandboxAdapter (wasmtime WASI pure-compute; 5M-instruction fuel cap, no preopens, ADR-002 module-import Scope Guard / WasmScopeError) + resolve_default_adapter() startup probe (Docker→Wasm→NativeHITL degradation ladder; ACTIVE_TIER/ACTIVE_ADAPTER globals + get_active_tier getter) (Phase 6.1.1 + 6.1.2 + 6.1.3 + 6.1.4)
 │   │   ├── dead_letter.py      #   Phase 6.4 — DLQ: dead_letter_decorator + dead_letter_tasks table + resume helpers
+│   │   ├── supervisor.py       #   Phase 6.5 — deterministic FinOps Supervisor: ledger→state sync, budget hard-kill (1.10×) / soft HITL gate (1.00×) / token-spike trip; spliced finops_gate→supervisor_node→apply_patch
+│   │   ├── audit.py            #   Phase 6.5 — minimal HITL audit-chain seam (AuditChainBrokenError + get_chain_head stub; full AuditLogger in Phase 6.6)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX); llm_gateway.py (Phase 6.3 — OOM Cascade: ainvoke traps ContextWindowExceeded/CUDA-OOM, purges VRAM, trims context, re-emits to cloud Haiku fallback)
