@@ -1,15 +1,17 @@
 # ailienant-core/tools/llm_gateway.py
 
 import logging
+import os
 import re
 import time
 import uuid
 from enum import Enum
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 import litellm
 from litellm import ModelResponse
+from litellm.exceptions import APIConnectionError, ContextWindowExceededError
 
 from shared.config import (
     MODEL_SMALL,
@@ -27,6 +29,99 @@ litellm.suppress_debug_info = True
 
 # Matches optional leading/trailing whitespace and markdown code fences (```json ... ``` or ``` ... ```).
 _MD_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+
+# ── Phase 6.3 — OOM Cascade & Inference Resilience ──────────────────────────
+# ainvoke() is the single LLM chokepoint. When a local model exhausts its
+# context window or VRAM, the OOM-class exception is trapped at the
+# litellm.acompletion call site, the local KV cache is purged, the message
+# payload is trimmed, and the prompt is re-emitted to a cloud Haiku-class model
+# WITHIN THE SAME TURN — see _oom_cascade(). Blueprint §4.
+_OOM_CUDA_RE = re.compile(r"cuda|out of memory", re.IGNORECASE)
+# Messages retained when trimming the payload for the cloud re-emit. Mirrors the
+# StateSummarizer's own failure fallback (brain/summarizer.py KEEP_LAST_N).
+_OOM_FALLBACK_KEEP_LAST_N: int = 6
+
+
+def _looks_like_oom(exc: Exception) -> bool:
+    """True when an APIConnectionError message reveals a CUDA / VRAM OOM."""
+    return bool(_OOM_CUDA_RE.search(str(exc)))
+
+
+def _trim_for_fallback(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deterministically shrink the payload before the cloud re-emit.
+
+    Keeps a leading ``system`` message (if present) plus the last
+    ``_OOM_FALLBACK_KEEP_LAST_N`` messages. No LLM call — the LLM-backed
+    StateSummarizer routes to the *local* model, the exact tier that just
+    OOM'd, so invoking it here would risk a re-OOM recursion.
+    """
+    if len(messages) <= _OOM_FALLBACK_KEEP_LAST_N:
+        return messages
+    head: List[Dict[str, Any]] = (
+        [messages[0]] if messages and messages[0].get("role") == "system" else []
+    )
+    return head + messages[-_OOM_FALLBACK_KEEP_LAST_N:]
+
+
+async def _oom_cascade(
+    messages: List[Dict[str, Any]],
+    failed_model: str,
+    *,
+    reason: str,
+    kwargs: Dict[str, Any],
+    trace_id: str,
+    state: Optional[Dict[str, Any]] = None,
+) -> ModelResponse:
+    """OOM rescue: purge VRAM → mark state → trim context → re-emit to cloud.
+
+    Single-turn recovery (Blueprint §4.2). Sequential, NOT recursive: a second
+    OOM on the cloud model propagates out of ainvoke() naturally — the
+    double-fault → DLQ path is Phase 6.4 scope.
+    """
+    logger.warning(
+        "OOM cascade engaged [trace=%s] failed_model=%s reason=%s",
+        trace_id, failed_model, reason,
+    )
+
+    # 1. Purge the local KV cache / VRAM (Phase 4.4 hook — argless signature).
+    from core.lifecycle_manager import lifecycle_manager
+    await lifecycle_manager.release_vram_on_mode_switch()
+
+    # 2. Mark graph state — best-effort; ainvoke() is often called without state.
+    if state is not None:
+        state["oom_fallback_active"] = True
+        state.setdefault("security_flags", []).append(
+            f"OOM_FALLBACK_ENGAGED:{reason}"
+        )
+
+    # 3. Trim the payload to cut token density before the re-emit.
+    trimmed = _trim_for_fallback(messages)
+
+    # 4. Re-emit to the cloud fallback model (env-configurable).
+    fallback_model = os.getenv(
+        "AILIENANT_OOM_CLOUD_FALLBACK_MODEL", "claude-haiku-4-5-20251001"
+    )
+    logger.warning(
+        "OOM cascade re-emitting to cloud fallback [trace=%s] model=%s",
+        trace_id, fallback_model,
+    )
+    response: ModelResponse = await litellm.acompletion(
+        **{**kwargs, "model": fallback_model, "messages": trimmed}
+    )
+
+    # 5. Ledger — the rescue is a cloud call.
+    try:
+        from core.token_ledger import token_ledger
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            token_ledger.record_cloud(
+                int(getattr(usage, "prompt_tokens", 0) or 0),
+                int(getattr(usage, "completion_tokens", 0) or 0),
+            )
+    except Exception as exc:  # noqa: BLE001 — token accounting is non-fatal
+        logger.debug("OOM cascade token accounting failed (non-fatal): %s", exc)
+
+    return response
 
 
 class NoAvailableProviderError(RuntimeError):
@@ -91,10 +186,10 @@ class LLMGateway:
 
     @staticmethod
     def invoke(
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         model: str = MODEL_MEDIUM,
         temperature: float = 0.0,
-        response_format: Optional[dict] = None,
+        response_format: Optional[dict[str, Any]] = None,
         max_tokens: int = 4096,
         timeout: float = 60.0,
         session_id: Optional[str] = None,
@@ -106,7 +201,7 @@ class LLMGateway:
             "LLM invoke — model=%s base_url=%s trace=%s", model, cfg["base_url"], trace_id
         )
         try:
-            kwargs: dict = dict(
+            kwargs: dict[str, Any] = dict(
                 model=model,
                 messages=messages,
                 temperature=temperature,
@@ -126,20 +221,25 @@ class LLMGateway:
 
     @staticmethod
     async def ainvoke(
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         model: str = MODEL_MEDIUM,
         tier: Optional[TaskPriority] = None,
         temperature: float = 0.0,
-        response_format: Optional[dict] = None,
+        response_format: Optional[dict[str, Any]] = None,
         max_tokens: int = 4096,
         timeout: float = 60.0,
         session_id: Optional[str] = None,
+        state: Optional[Dict[str, Any]] = None,
     ) -> ModelResponse:
         """Async LLM call — non-blocking on the FastAPI event loop.
 
         Phase 3.4.8 — pass `tier=Tier.LOCAL` or `tier=Tier.CLOUD` to route via
         the priority map (overrides `model`). If `tier` is None, `model` is used
         directly and the tier is inferred from the model name for accounting.
+
+        Phase 6.3 — `state` is the optional LangGraph state dict. When supplied,
+        an OOM-class failure mutates it (`oom_fallback_active`, `security_flags`)
+        before re-emitting to the cloud fallback model; see `_oom_cascade`.
         """
         trace_id = session_id or str(uuid.uuid4())
         effective_model: str = (
@@ -150,21 +250,36 @@ class LLMGateway:
             "LLM ainvoke — model=%s tier=%s base_url=%s trace=%s",
             effective_model, tier, cfg["base_url"], trace_id,
         )
+        kwargs: dict[str, Any] = dict(
+            model=effective_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            max_retries=2,
+            metadata={"session_id": trace_id},
+            extra_headers={"X-Ailienant-Trace-ID": trace_id},
+            **cfg,
+        )
+        if response_format:
+            kwargs["response_format"] = response_format
         try:
-            kwargs: dict = dict(
-                model=effective_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout,
-                max_retries=2,
-                metadata={"session_id": trace_id},
-                extra_headers={"X-Ailienant-Trace-ID": trace_id},
-                **cfg,
-            )
-            if response_format:
-                kwargs["response_format"] = response_format
             response: ModelResponse = await litellm.acompletion(**kwargs)
+        except ContextWindowExceededError:
+            # Phase 6.3 — context window exhausted → OOM Cascade to cloud.
+            return await _oom_cascade(
+                messages, effective_model, reason="context_overflow",
+                kwargs=kwargs, trace_id=trace_id, state=state,
+            )
+        except APIConnectionError as exc:
+            # Phase 6.3 — a CUDA / VRAM OOM surfaces as a connection error.
+            if _looks_like_oom(exc):
+                return await _oom_cascade(
+                    messages, effective_model, reason="cuda_oom",
+                    kwargs=kwargs, trace_id=trace_id, state=state,
+                )
+            logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, exc)
+            raise
         except Exception as e:
             logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
             raise
@@ -190,7 +305,7 @@ class LLMGateway:
 
     @staticmethod
     async def astream(
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         model: str = MODEL_MEDIUM,
         temperature: float = 0.0,
         max_tokens: int = 4096,
@@ -208,7 +323,7 @@ class LLMGateway:
         logger.debug(
             "LLM astream — model=%s base_url=%s trace=%s", model, cfg["base_url"], trace_id
         )
-        kwargs: dict = dict(
+        kwargs: dict[str, Any] = dict(
             model=model,
             messages=messages,
             temperature=temperature,
@@ -285,7 +400,7 @@ class LLMGateway:
     @staticmethod
     async def ainvoke_by_priority(
         priority: TaskPriority,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         session_id: Optional[str] = None,
         **kwargs: Any,
     ) -> ModelResponse:

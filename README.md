@@ -125,9 +125,9 @@ Proyect_Ailienant/
 │   │   ├── intent_router.py    #   process_user_intent() — dispatches SEQUENTIAL / MICRO_SWARM / FULL_SWARM
 │   │   ├── swarms.py           #   build_micro_swarm() + build_full_swarm(checkpointer)
 │   │   ├── fast_path.py        #   SEQUENTIAL mode bypass (zero-LangGraph, 1–3 s)
-│   │   ├── state.py            #   AIlienantGraphState, ContextMeter, MissionSpecification
+│   │   ├── state.py            #   AIlienantGraphState, ContextMeter, MissionSpecification (+ 6 Phase-6 Operational-Safety channels: oom_fallback_active, accumulated_session_cost, …)
 │   │   ├── personality.py      #   SoulManager — SOUL.md mtime-cached reader (AnalystAgent only)
-│   │   ├── nodes/              #   pure-function graph nodes (aggregator, circuit_breaker)
+│   │   ├── nodes/              #   pure-function graph nodes (aggregator, circuit_breaker — Phase 6.3 OOM-fallback branch bypasses error_streak)
 │   │   ├── mcts/               #   tree + registry
 │   │   ├── episodic/           #   MCTS audit checkpointer
 │   │   └── routing_engine.py   #   CSS × TCI matrix
@@ -145,7 +145,7 @@ Proyect_Ailienant/
 │   │   ├── sandbox.py          #   SandboxAdapter ABC + DockerSandboxAdapter (kernel-side `timeout`; --read-only, --network none, ro bind-mount, tmpfs /work) + NativeHITLSandboxAdapter (degraded host-spawn gated by `vfs_manager.request_human_approval`, `SANDBOX_DEGRADED_EXEC` sentinel, asyncio.wait_for + process.kill+reap, DLQ stub) + WasmSandboxAdapter (wasmtime WASI pure-compute; 5M-instruction fuel cap, no preopens, ADR-002 module-import Scope Guard / WasmScopeError) + resolve_default_adapter() startup probe (Docker→Wasm→NativeHITL degradation ladder; ACTIVE_TIER/ACTIVE_ADAPTER globals + get_active_tier getter) (Phase 6.1.1 + 6.1.2 + 6.1.3 + 6.1.4)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
-│   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX)
+│   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX); llm_gateway.py (Phase 6.3 — OOM Cascade: ainvoke traps ContextWindowExceeded/CUDA-OOM, purges VRAM, trims context, re-emits to cloud Haiku fallback)
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
 │   └── tests/                  # 496 passing tests (incl. tests/chaos/ — Phase 4.5 crucible; test_permissions.py — Phase 5.1; test_tool_rag_selection.py + test_mcp_handshake.py — Phase 5.2; test_perception_tools.py — Phase 5.3; test_mutation_tools.py — Phase 5.4; test_execution_tools.py + test_control_tools.py — Phase 5.5/5.6; test_phase5_7_checkpoint_gate.py — Phase 5.7)
