@@ -142,6 +142,7 @@ Proyect_Ailienant/
 │   │   ├── lifecycle_manager.py #  workspace-scoped PID → task registry + debounced VRAM purge + mode-switch hook (Phase 4.4/4.5)
 │   │   ├── permissions.py      #   3-axis matrix (SessionPermissionMode × ToolPrivilegeTier × AgentIdentity) + RBWE guard (Phase 5.1)
 │   │   ├── tool_rag.py         #   RAM LanceDB schema store + select_tools(intent, k=5) (Phase 5.2)
+│   │   ├── sandbox.py          #   SandboxAdapter ABC + DockerSandboxAdapter (kernel-side timeout via GNU `timeout`; --read-only, --network none, ro bind-mount, tmpfs /work) (Phase 6.1.1)
 │   │   └── rules.py            #   .ailienant rule manager
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX)

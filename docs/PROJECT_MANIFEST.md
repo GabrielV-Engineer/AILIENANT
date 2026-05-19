@@ -618,18 +618,19 @@
 
   Patrón Adapter sobre una ABC `SandboxAdapter.execute(command, *, timeout_s, cwd, env_whitelist) -> SandboxResult`. Tres concretes:
 
-  - [ ] **6.1.1. `DockerSandboxAdapter` (default cuando el daemon vive).** Contenedor `ailienant-sandbox` Alpine + `python:3.13-slim`, long-lived (creado lazy en el primer uso, reusado via `docker exec` para amortizar la latencia). `--read-only` rootfs, tmpfs en `/work`, proyecto montado **read-only**; los patches aterrizan via overlay write-buffer (ACID — **Ref:** Fase 5.4), nunca directo sobre el mount del host. Sin red por defecto. Imagen construida localmente en primer arranque (no Docker Hub pull en runtime); hash de la imagen se persiste en `hitl_audit_log`.
-  - [ ] **6.1.2. `NativeHITLSandboxAdapter` (fallback degradado).** Envuelve el path actual `asyncio.create_subprocess_shell`. **Toda invocación** emite síncronamente `vfs_manager.request_human_approval(action_description="SANDBOX_DEGRADED_EXEC", proposed_content=<full command + cwd>)` antes del spawn. Rechazo → `SandboxResult(exit_code=-1, stderr="[hitl_denied]")`; timeout → mismo + DLQ enqueue (**Ref:** 6.4). Aprobación → spawn nativo + audit row.
-  - [ ] **6.1.3. `WasmSandboxAdapter` (opt-in pure-compute).** `wasmtime-py` host, WASI-preview1 only, **sin** `--mapdir`, fuel-metered (`Config.consume_fuel(True)`, 5 M instrucciones cap). Consumido por el pipeline de validación (Fase 4.2) para test bodies stateless y por una nueva `RunPureLogicTool`.
-  - [ ] **6.1.4. Resolución al startup.** `core.sandbox.resolve_default_adapter()` corre dentro del `lifespan` de FastAPI: probe Docker (`docker.from_env().ping()` con `asyncio.wait_for(timeout=2.0)`) → probe Wasm import → fallback `NATIVE_HITL`. Persistido a `core.sandbox.ACTIVE_TIER`. El badge llega al frontend en el payload de startup del WebSocket.
+  - [x] opus **6.1.1. `DockerSandboxAdapter` (default cuando el daemon vive).** Contenedor `ailienant-sandbox` Alpine + `python:3.13-slim`, long-lived (creado lazy en el primer uso, reusado via `docker exec` para amortizar la latencia). `--read-only` rootfs, tmpfs en `/work`, proyecto montado **read-only**; los patches aterrizan via overlay write-buffer (ACID — **Ref:** Fase 5.4), nunca directo sobre el mount del host. Sin red por defecto. Imagen construida localmente en primer arranque (no Docker Hub pull en runtime); hash de la imagen se persiste en `hitl_audit_log`.
+    - **Status (2026-05-18):** Aterrizó como `core/sandbox.py` (269 LOC). Base ABC `SandboxAdapter` + `SandboxResult` Pydantic + `DockerSandboxAdapter` concrete. Decisión clave **audit-driven**: el timeout NO se enforza via `asyncio.wait_for` (eso cancela la corutina pero no mata el thread del `ThreadPoolExecutor`, leak hazard ante comandos en bucle infinito). En su lugar, kernel-side: `timeout --foreground -k 1 {N}s sh -c {shlex.quote(command)}` — SIGTERM→SIGKILL desde el kernel, `exec_run` retorna naturalmente con exit 124, el worker thread se libera al instante. Cero `pkill`, cero leaks. Todas las llamadas síncronas al SDK de `docker` envueltas en `asyncio.to_thread` (event-loop protection, mismo patrón de `core/janitor.py`). Imagen `ailienant-sandbox:latest` construida desde Dockerfile in-memory (`python:3.13-slim` directo — el wording original "Alpine + python:3.13-slim" del blueprint era ambiguo; Alpine forzaría `musl` + Python manual y rompe wheels de `ruff`/`mypy`; deferred a 6.1.1.b si se requiere). Container singleton (`ailienant-sandbox-daemon`), `--read-only`, `--network none`, CWD montado ro en `/workspace`, tmpfs 512MB en `/work` con `nosuid,nodev`, user no-root uid=1000. `_translate_cwd` defence-in-depth: paths que escapen el mount caen a `/workspace` con warning. `shutdown()` idempotente para el lifecycle hook de 6.2. DoD: `mypy --strict core/sandbox.py` exit 0; `ruff check core/sandbox.py` exit 0; ambos verdes a la primera corrida. Deferrals explícitos a 6.1.2/6.1.3/6.1.4/6.2/6.6/6.10.
+  - [ ] sonnet **6.1.2. `NativeHITLSandboxAdapter` (fallback degradado).** Envuelve el path actual `asyncio.create_subprocess_shell`. **Toda invocación** emite síncronamente `vfs_manager.request_human_approval(action_description="SANDBOX_DEGRADED_EXEC", proposed_content=<full command + cwd>)` antes del spawn. Rechazo → `SandboxResult(exit_code=-1, stderr="[hitl_denied]")`; timeout → mismo + DLQ enqueue (**Ref:** 6.4). Aprobación → spawn nativo + audit row.
+  - [ ] opus **6.1.3. `WasmSandboxAdapter` (opt-in pure-compute).** `wasmtime-py` host, WASI-preview1 only, **sin** `--mapdir`, fuel-metered (`Config.consume_fuel(True)`, 5 M instrucciones cap). Consumido por el pipeline de validación (Fase 4.2) para test bodies stateless y por una nueva `RunPureLogicTool`.
+  - [ ] sonnet **6.1.4. Resolución al startup.** `core.sandbox.resolve_default_adapter()` corre dentro del `lifespan` de FastAPI: probe Docker (`docker.from_env().ping()` con `asyncio.wait_for(timeout=2.0)`) → probe Wasm import → fallback `NATIVE_HITL`. Persistido a `core.sandbox.ACTIVE_TIER`. El badge llega al frontend en el payload de startup del WebSocket.
 
   > **Defensa en profundidad.** El `DANGEROUS_COMMANDS_REGEX` de Fase 5.6 (`tools/control_tools.py`) NO se elimina — sigue siendo el primer filtro, ahora ejecutándose **antes** del dispatch al adapter. Regex es necesario pero ya no es suficiente: el sandbox es la barrera real.
 
-- [ ] **6.2. Puente HITL & Fricción Asimétrica** — *Contrato, no código nuevo.* **Ref:** Fase 1.4, Fase 5.6.
+- [ ] sonnet **6.2. Puente HITL & Fricción Asimétrica** — *Contrato, no código nuevo.* **Ref:** Fase 1.4, Fase 5.6.
 
   Toda herramienta de tier `EXECUTE` o `DANGEROUS` (`SandboxBashTool`, `TaskCreateTool`, `CheckTypeIntegrityTool` — Fase 5.5) ahora **debe** despachar via `core.sandbox.ACTIVE_ADAPTER.execute(...)`. Las firmas públicas de `BaseTool` quedan intactas; sólo cambia el `_arun` interno. La fricción asimétrica del webview (Fase 5.6) se reutiliza textualmente: en match contra `DANGEROUS_COMMANDS_REGEX` el botón "Approve" queda deshabilitado hasta que el usuario tipea el verbo destructivo. Sin cambios en `ws_contracts.py`.
 
-- [ ] **6.3. OOM Cascade & Inference Resilience (`tools/llm_gateway.py` patch)**
+- [ ] opus **6.3. OOM Cascade & Inference Resilience (`tools/llm_gateway.py` patch)**
 
   Wrap de `ainvoke()` en una jerarquía de catches sobre el **único chokepoint** del sistema (líneas 127-189 hoy):
   - `litellm.exceptions.ContextWindowExceededError` → cascade.
@@ -647,22 +648,22 @@
 
   Reemplaza el `commit_on_completion=True` ingenuo del bosquejo original. Reusa la disciplina WAL de Fase 2C / Fase 3:
 
-  - [ ] **6.4.1. DLQ Table.** `dead_letter_tasks(episode_id PK, task_id, thread_id, failed_node, exception_class, exception_message, state_snapshot_blob_hash, created_at)` en el catálogo SQLite existente. El `state_snapshot_blob_hash` reusa `core/blob_storage.py` (blake2b — Fase 2.17).
-  - [ ] **6.4.2. `dead_letter_decorator`.** Aplicado a los 7 entrypoints de `brain/swarms.py` (planner, researcher, orchestrator, coder, apply_patch, validate, supervisor). Cualquier excepción no manejada: promueve L1→L2 via `HybridCheckpointer.promote()` (idempotente, Fase 2.7/2.15), persiste la fila DLQ, y re-lanza para que LangGraph registre el fallo.
-  - [ ] **6.4.3. Resume Endpoint.** `POST /api/v1/task/resume/{task_id}` en `main.py`: hidrata el último L2 checkpoint para el `thread_id` y reanuda. Idempotente: resume sobre `task_id` ya completado → no-op. Canal nuevo `dead_letter_episode_id: Optional[str]` (scalar overwrite) indica que el turno actual es un resume.
-  - [ ] **6.4.4. UI Resume.** El payload de startup del WebSocket reporta DLQs pendientes para el workspace; la sidebar de la extensión ofrece "Resume Task" como item accionable. **Ref:** Fase 7.5.
+  - [ ] sonnet **6.4.1. DLQ Table.** `dead_letter_tasks(episode_id PK, task_id, thread_id, failed_node, exception_class, exception_message, state_snapshot_blob_hash, created_at)` en el catálogo SQLite existente. El `state_snapshot_blob_hash` reusa `core/blob_storage.py` (blake2b — Fase 2.17).
+  - [ ] opus **6.4.2. `dead_letter_decorator`.** Aplicado a los 7 entrypoints de `brain/swarms.py` (planner, researcher, orchestrator, coder, apply_patch, validate, supervisor). Cualquier excepción no manejada: promueve L1→L2 via `HybridCheckpointer.promote()` (idempotente, Fase 2.7/2.15), persiste la fila DLQ, y re-lanza para que LangGraph registre el fallo.
+  - [ ] sonnet **6.4.3. Resume Endpoint.** `POST /api/v1/task/resume/{task_id}` en `main.py`: hidrata el último L2 checkpoint para el `thread_id` y reanuda. Idempotente: resume sobre `task_id` ya completado → no-op. Canal nuevo `dead_letter_episode_id: Optional[str]` (scalar overwrite) indica que el turno actual es un resume.
+  - [ ] sonnet **6.4.4. UI Resume.** El payload de startup del WebSocket reporta DLQs pendientes para el workspace; la sidebar de la extensión ofrece "Resume Task" como item accionable. **Ref:** Fase 7.5.
 
 - [ ] **6.5. FinOps Cost Circuit Breaker & Graph Health Monitor (`core/supervisor.py` — NEW)**
 
   Promueve el stub original 6.5 a un nodo determinista (sin LLM, sin tokens) spliced entre `finops_gate` y `apply_patch` en `brain/swarms.py`.
 
-  - [ ] **6.5.1. Sync Ledger ↔ State.** Cierra el bug arquitectónico detectado en la auditoría: hoy `core/token_ledger.py` acumula process-wide pero **nunca** se escribe de vuelta a `state["current_cost_usd"]`. El supervisor lee `token_ledger.snapshot()` y publica `accumulated_session_cost = ledger_delta_for_session(session_id)` en cada pasada.
-  - [ ] **6.5.2. Triggers (en orden de prioridad).**
+  - [ ] sonnet **6.5.1. Sync Ledger ↔ State.** Cierra el bug arquitectónico detectado en la auditoría: hoy `core/token_ledger.py` acumula process-wide pero **nunca** se escribe de vuelta a `state["current_cost_usd"]`. El supervisor lee `token_ledger.snapshot()` y publica `accumulated_session_cost = ledger_delta_for_session(session_id)` en cada pasada.
+  - [ ] opus **6.5.2. Triggers (en orden de prioridad).**
     1. **Hard kill:** `accumulated_session_cost > session_max_budget_usd × 1.10` → halt con `security_flags ← "SESSION_BUDGET_HARD_KILL"`, route to END, escribe fila DLQ para continuidad de Resume.
     2. **HITL soft gate:** `accumulated_session_cost > session_max_budget_usd` → `request_human_approval(action_description="BUDGET_OVERFLOW", proposed_content=<ledger snapshot + last 3 nodes>)`. Approve → eleva el techo; deny/timeout → cae al hard kill.
     3. **Token spike:** `token_usage` delta single-turn > `AILIENANT_MAX_TOKENS_PER_TURN` (default `64000`) dispara HITL aunque el budget esté bajo — atrapa llamadas runaway de 200 K context.
     4. **Audit chain verify:** verifica `last_chain_hash == state["hitl_audit_chain_head"]`; mismatch → `AuditChainBrokenError` (loud crash; detecta mutación out-of-band del DB).
-  - [ ] **6.5.3. Canales de estado nuevos (todos scalar overwrite, defaults seguros):**
+  - [ ] sonnet **6.5.3. Canales de estado nuevos (todos scalar overwrite, defaults seguros):**
     - `accumulated_session_cost: float = 0.0` (owner: supervisor).
     - `session_max_budget_usd: float = AILIENANT_MAX_SESSION_BUDGET_USD` (owner: `task_service.process_task` al inicio del grafo).
     - `oom_fallback_active: bool = False` (owner: LLM gateway / supervisor).
@@ -694,11 +695,11 @@
   );
   ```
 
-  - [ ] **6.6.1. Hooks en transport.** `api/websocket_manager.request_human_approval(...)` invoca `audit_logger.log_request(...)` justo tras generar `approval_id`; `resolve_human_approval(...)` invoca `log_resolution(...)`. El `chain_hash` se finaliza en resolución (cubre el ciclo completo).
-  - [ ] **6.6.2. Canal de verificación.** `hitl_audit_chain_head: Optional[str]` (scalar overwrite). El supervisor (6.5.2 trigger 4) verifica continuidad cada pasada.
-  - [ ] **6.6.3. WAL discipline.** Reusa `PRAGMA journal_mode=WAL` + `WALCheckpointer.is_writing` guard (Fase 2C). Sin nueva infraestructura de persistencia.
+  - [ ] sonnet **6.6.1. Hooks en transport.** `api/websocket_manager.request_human_approval(...)` invoca `audit_logger.log_request(...)` justo tras generar `approval_id`; `resolve_human_approval(...)` invoca `log_resolution(...)`. El `chain_hash` se finaliza en resolución (cubre el ciclo completo).
+  - [ ] sonnet **6.6.2. Canal de verificación.** `hitl_audit_chain_head: Optional[str]` (scalar overwrite). El supervisor (6.5.2 trigger 4) verifica continuidad cada pasada.
+  - [ ] opus **6.6.3. WAL discipline.** Reusa `PRAGMA journal_mode=WAL` + `WALCheckpointer.is_writing` guard (Fase 2C). Sin nueva infraestructura de persistencia.
 
-- [ ] **6.7. Secrets Scrubber para Logs (`shared/logging_filters.py` — NEW)** *(Enterprise pattern adicional #1)*
+- [ ] opus **6.7. Secrets Scrubber para Logs (`shared/logging_filters.py` — NEW)** *(Enterprise pattern adicional #1)*
 
   `logging.Filter` instalado en el root logger durante el `lifespan` startup. Cubre todos los loggers `AILIENANT_*` (resource_broker, lifecycle_manager, wal_checkpointer, hybrid_checkpointer, telemetry, etc.) sin tocar uno a uno. Patrones iniciales:
   - OpenAI: `sk-[A-Za-z0-9]{20,}`
@@ -709,14 +710,14 @@
 
   Reemplazo in-place: `**REDACTED:<hash8>**` donde `<hash8>` es los primeros 8 chars de `blake2b(secret).hexdigest()` — diagnosticable sin disclosure. El scrubber también corre sobre `proposed_content` **antes** de entrar al `hitl_audit_log` (defensa en profundidad: una clave fugada en un prompt HITL persistiría para siempre en la cadena de audit).
 
-- [ ] **6.8. OOM Cascade Telemetría & Test Suite** *(Enterprise pattern adicional #2 — formaliza 6.3)*
+- [ ] sonnet **6.8. OOM Cascade Telemetría & Test Suite** *(Enterprise pattern adicional #2 — formaliza 6.3)*
 
   Tracked separadamente porque tiene entregables propios:
   - Nuevo env var: `AILIENANT_OOM_CLOUD_FALLBACK_MODEL` (default `claude-haiku-4-5-20251001`).
   - Test suite `tests/test_oom_cascade.py`: `ContextWindowExceededError`, simulated `CUDA_OUT_OF_MEMORY` via mock, double-fault (cloud fallback también OOMs → DLQ + halt).
   - Métrica en `core/telemetry.py`: rows `event="oom_fallback"` con provider, tokens-at-failure y latencia del swap.
 
-- [ ] **6.9. Dead Letter Queue + Resume API entrega formal** *(Enterprise pattern adicional #3 — entrega 6.4)*
+- [ ] sonnet **6.9. Dead Letter Queue + Resume API entrega formal** *(Enterprise pattern adicional #3 — entrega 6.4)*
 
   Commitment explícito de entregables:
   - Tabla `dead_letter_tasks` + writer (`core/dead_letter.py`).
@@ -724,7 +725,7 @@
   - REST endpoint `POST /api/v1/task/resume/{task_id}` en `main.py`.
   - UI "Resume Task" en la sidebar de la extensión cuando el payload de startup reporta DLQs pendientes.
 
-- [ ] **6.10. Checkpoint Gate Fase 6 (Adversarial E2E)** — *Mismo patrón estructural que Phase 5.7 gate.*
+- [ ] opus **6.10. Checkpoint Gate Fase 6 (Adversarial E2E)** — *Mismo patrón estructural que Phase 5.7 gate.*
 
   Test file: `tests/test_phase6_checkpoint_gate.py` (12 escenarios):
 
