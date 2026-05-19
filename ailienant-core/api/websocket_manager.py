@@ -248,12 +248,34 @@ class ConnectionManager:
                 ),
             )
             await asyncio.wait_for(event.wait(), timeout=timeout_s)
-            return self._hitl_responses.pop(approval_id, None)
+            decision: Optional[Dict[str, Any]] = self._hitl_responses.pop(approval_id, None)
         except asyncio.TimeoutError:
             logger.warning("⏱️ HITL timeout for session %s (approval_id=%s)", session_id, approval_id)
-            return None
+            decision = None
         finally:
             self._hitl_pending.pop(approval_id, None)
+
+        # Phase 6.6 — append one immutable row to the HITL audit chain. Approved,
+        # rejected and timeout are all logged (no gap-attack surface). Best-effort:
+        # an audit-write failure must never break the HITL round-trip.
+        resolution = (
+            "timeout" if decision is None
+            else "approved" if decision.get("approved") else "rejected"
+        )
+        try:
+            from core.audit import log_audit_event  # deferred — avoids import cycle
+            await log_audit_event(
+                session_id=session_id,
+                action_description=action_description,
+                proposed_content=proposed_content,
+                resolution=resolution,
+                resolution_comment=None if decision is None else decision.get("comment"),
+                audit_id=approval_id,
+            )
+        except Exception:  # noqa: BLE001 — audit failure must never break HITL
+            logger.error("HITL audit-log write failed for approval_id=%s", approval_id)
+
+        return decision
 
     def resolve_human_approval(
         self, approval_id: str, approved: bool, comment: Optional[str] = None

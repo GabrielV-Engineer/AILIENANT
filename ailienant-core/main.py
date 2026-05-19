@@ -29,6 +29,7 @@ from brain.checkpoint import checkpoint_manager
 from brain.engine import alienant_app
 from brain.state import AIlienantGraphState
 from core.dead_letter import get_pending_dlqs, init_dlq_table, mark_dlq_resolved
+from core.audit import init_audit_table  # Phase 6.6 — HITL audit ledger
 from langchain_core.runnables import RunnableConfig
 
 # --- IMPORTACIONES FASE 3.4.5 (MCTS Mirror) ---
@@ -74,6 +75,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await resolve_default_adapter()          # Phase 6.1.4 — bind sandbox tier
     await catalog_db.init_db()
     await init_dlq_table()                   # Phase 6.4 — dead_letter_tasks table
+    await init_audit_table()                 # Phase 6.6 — hitl_audit_log ledger
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)
