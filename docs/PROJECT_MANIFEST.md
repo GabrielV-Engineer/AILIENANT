@@ -25,7 +25,7 @@
 | 3 | Sistema de Memoria Evolutiva (GraphRAG) |🟡 EN CURSO |
 | 4 | Arquitectura de Agentes y Selector de Modos | ⬜ |
 | 5 | Ecosistema MCP, Permisos y Tool RAG | ⬜ |
-| 6 | Resiliencia, Sandboxing y Seguridad | ⬜ |
+| 6 | Resiliencia, Sandboxing y Seguridad (Enterprise Refactor) | ⬜ |
 | 7 | Extensión VS Code (Frontend TS/React) | ⬜ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante | ⬜ |
 | 9 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
@@ -599,38 +599,160 @@
 
 ---
 
-## 🛡️ FASE 6 — Resiliencia, Sandboxing y Seguridad
+## 🛡️ FASE 6 — Resiliencia, Sandboxing y Seguridad (Enterprise Refactor)
 
-> Dotar a los agentes de "manos" bajo límites estrictos para no corromper la máquina local.
+> Capa Zero-Trust de "manos" para los agentes: aislamiento real del host, FinOps con freno de emergencia, audit log SOC2-compatible y recuperación elegante ante OOM y crash de nodos. Reemplaza el bosquejo original 6.1–6.6 (regex + try/except) por una arquitectura Enterprise-grade pluggable.
 
-- [ ] **6.1. Invisible Execution Engine**
+**🔒 Phase 6 LOCK-IN (activo hasta cierre de 6.10):** mientras esta fase esté abierta, toda mutación que toque ejecución de subprocesos, FinOps, HITL o persistencia DEBE leer este bloque más [`docs/PHASE_6_BLUEPRINT.md`](PHASE_6_BLUEPRINT.md) antes de tocar código. Las decisiones marcadas **[ADR-XXX]** son vinculantes; cualquier desviación requiere amendment explícito en el mismo PR.
 
-  - **Nivel 1 (Permissioned Subprocess):** ejecución nativa controlada con interceptor de comandos (Allowlist/Blocklist). `npm run test`, `python script.py` capturando `stdout/stderr`. Mutaciones de SO (instalar paquetes, borrar carpetas) → HITL.
-  - **Nivel 2 (Wasm Isolates — Aislamiento Absoluto):** runtime embebido (`wasmtime`) para código generado dinámicamente que el TestAgent valide sin riesgo de FS. Arranca en ms, cero instalaciones de terceros.
+### 🧭 Decisiones Arquitectónicas Vinculantes
 
-  - [ ] **6.1.1. Interceptor de Comandos (`core/safety.py`)**
-    - **Categoría A (Hard Block):** `rm -rf /`, `sudo`, `shutdown`, `iptables` → rechazo automático.
-    - **Categoría B (HITL):** `npm/pip install`, mutación `.env`, `git reset --hard`/`push --force`, binarios fuera del PATH → `HITL_APPROVAL_REQUIRED`.
-    - **Categoría C (Allowlist Invisible):** `ls`, `cat`, `pytest`, `git status`, MCP — ejecución silenciosa.
+- **[ADR-001] Sandbox Pluggable con Degradación Elegante.** Se rechaza el camino "Strict Docker obligatorio" — viola el contrato Phase 10.2 (Zero-Friction Install, single-binary). Se adopta un patrón Adapter resuelto **una sola vez al startup**: tier por defecto `DOCKER` (probe 2s); si el daemon no responde, fallback a `NATIVE_HITL` (cada ejecución pasa por `request_human_approval` antes del spawn); tier opt-in `WASM` exclusivo para Pure-Compute. El tier activo es proceso-global, inmutable durante la sesión, y se proyecta a la extensión como un badge de color (`green=DOCKER`, `amber=WASM`, `red=NATIVE_HITL`).
+- **[ADR-002] Wasm Scope Guard.** `wasmtime` se restringe a payloads stateless puros (algoritmos, parsers, tests con stdlib + allow-list `math|re|json|dataclasses|typing`). Cualquier intento de importar `os`/`subprocess`/`socket` lanza `WasmScopeError`. `npm install`, `pytest` con FS y `tsc` quedan fuera de Wasm — bajan a Docker o, si está degradado, a Native-HITL.
+- **[ADR-003] Reutilización del Canal HITL Canónico.** No se crea un nuevo transporte de aprobación. Toda fricción (sandbox degradado, comando peligroso, overflow de budget, drift, contención de recurso) reusa `vfs_manager.request_human_approval(...)` de **Fase 1.4 / 2.27**. Distinción semántica vía sentinel `action_description` (`SANDBOX_DEGRADED_EXEC` · `DANGEROUS_COMMAND_INTERCEPT` · `BUDGET_OVERFLOW` · `RESOURCE_CONTENTION`).
+- **[ADR-004] Crecimiento Estrictamente Aditivo del Estado.** Los 6 canales nuevos (`accumulated_session_cost`, `session_max_budget_usd`, `oom_fallback_active`, `sandbox_tier_active`, `hitl_audit_chain_head`, `dead_letter_episode_id`) son scalar overwrite con defaults seguros — checkpoints Phase 5.7 deserializan sin cambios.
 
-- [ ] **6.2. Puerta HITL (`core/safety.py`)** — *Consolida el canal de Fase 1.4 + UI Anti-Fatiga de Fase 5.6.*
-  - Interrupción forzada del grafo por comandos destructivos.
-  - Dispara `HITL_APPROVAL_REQUIRED` por WebSocket; await response del IDE.
-  - Fricción Asimétrica heredada de Fase 5.6.
+### 🧱 Tareas de la Fase
 
-- [ ] **6.3. Resiliencia de Inferencia (JIT VRAM + OOM Handler)**
-  - `try/except` profundo en `core/llm_client.py` captura `CUDA_OUT_OF_MEMORY` / `context_length_exceeded`.
-  - Fallback state: crash GPU → retrocede al Orchestrator con flag `EMERGENCY_CLOUD_FALLBACK_REQUIRED`.
+- [ ] **6.1. Pluggable Sandbox Adapter (`core/sandbox.py` — NEW)**
 
-- [ ] **6.4. Transacciones Atómicas (Anti Ghost Disconnect)**
-  - `commit_on_completion=True` en el Saver de LangGraph para nodos largos (Cloud LLM).
-  - Mecanismo `Resume Task` en la REST API lee último checkpoint sin estado corrupto.
+  Patrón Adapter sobre una ABC `SandboxAdapter.execute(command, *, timeout_s, cwd, env_whitelist) -> SandboxResult`. Tres concretes:
 
-- [ ] **6.5. Graph Health Monitor (`core/supervisor.py`)**
-  - Componente Anti-SPOF. Monitor paralelo que actúa como Circuit Breaker si LangGraph entra en bucle infinito de auto-corrección.
+  - [ ] **6.1.1. `DockerSandboxAdapter` (default cuando el daemon vive).** Contenedor `ailienant-sandbox` Alpine + `python:3.13-slim`, long-lived (creado lazy en el primer uso, reusado via `docker exec` para amortizar la latencia). `--read-only` rootfs, tmpfs en `/work`, proyecto montado **read-only**; los patches aterrizan via overlay write-buffer (ACID — **Ref:** Fase 5.4), nunca directo sobre el mount del host. Sin red por defecto. Imagen construida localmente en primer arranque (no Docker Hub pull en runtime); hash de la imagen se persiste en `hitl_audit_log`.
+  - [ ] **6.1.2. `NativeHITLSandboxAdapter` (fallback degradado).** Envuelve el path actual `asyncio.create_subprocess_shell`. **Toda invocación** emite síncronamente `vfs_manager.request_human_approval(action_description="SANDBOX_DEGRADED_EXEC", proposed_content=<full command + cwd>)` antes del spawn. Rechazo → `SandboxResult(exit_code=-1, stderr="[hitl_denied]")`; timeout → mismo + DLQ enqueue (**Ref:** 6.4). Aprobación → spawn nativo + audit row.
+  - [ ] **6.1.3. `WasmSandboxAdapter` (opt-in pure-compute).** `wasmtime-py` host, WASI-preview1 only, **sin** `--mapdir`, fuel-metered (`Config.consume_fuel(True)`, 5 M instrucciones cap). Consumido por el pipeline de validación (Fase 4.2) para test bodies stateless y por una nueva `RunPureLogicTool`.
+  - [ ] **6.1.4. Resolución al startup.** `core.sandbox.resolve_default_adapter()` corre dentro del `lifespan` de FastAPI: probe Docker (`docker.from_env().ping()` con `asyncio.wait_for(timeout=2.0)`) → probe Wasm import → fallback `NATIVE_HITL`. Persistido a `core.sandbox.ACTIVE_TIER`. El badge llega al frontend en el payload de startup del WebSocket.
 
-- [ ] **6.6. Checkpoint Gate Fase 6**
-  - Auditoría del Interceptor + aislamiento Wasm + smoke test del JIT VRAM fallback.
+  > **Defensa en profundidad.** El `DANGEROUS_COMMANDS_REGEX` de Fase 5.6 (`tools/control_tools.py`) NO se elimina — sigue siendo el primer filtro, ahora ejecutándose **antes** del dispatch al adapter. Regex es necesario pero ya no es suficiente: el sandbox es la barrera real.
+
+- [ ] **6.2. Puente HITL & Fricción Asimétrica** — *Contrato, no código nuevo.* **Ref:** Fase 1.4, Fase 5.6.
+
+  Toda herramienta de tier `EXECUTE` o `DANGEROUS` (`SandboxBashTool`, `TaskCreateTool`, `CheckTypeIntegrityTool` — Fase 5.5) ahora **debe** despachar via `core.sandbox.ACTIVE_ADAPTER.execute(...)`. Las firmas públicas de `BaseTool` quedan intactas; sólo cambia el `_arun` interno. La fricción asimétrica del webview (Fase 5.6) se reutiliza textualmente: en match contra `DANGEROUS_COMMANDS_REGEX` el botón "Approve" queda deshabilitado hasta que el usuario tipea el verbo destructivo. Sin cambios en `ws_contracts.py`.
+
+- [ ] **6.3. OOM Cascade & Inference Resilience (`tools/llm_gateway.py` patch)**
+
+  Wrap de `ainvoke()` en una jerarquía de catches sobre el **único chokepoint** del sistema (líneas 127-189 hoy):
+  - `litellm.exceptions.ContextWindowExceededError` → cascade.
+  - `litellm.exceptions.APIConnectionError` con mensaje `/cuda|out of memory/i` → cascade.
+  - Excepciones OOM provider-specific (Ollama, vLLM) → cascade.
+
+  Reacción del cascade:
+  1. `lifecycle_manager.release_vram_on_mode_switch(pid)` (purga inmediata del KV cache local, **Ref:** Fase 4.4/4.5).
+  2. `state["oom_fallback_active"] = True`, `security_flags ← "OOM_FALLBACK_ENGAGED:<provider>"`.
+  3. Re-emisión del mismo prompt al modelo definido por `AILIENANT_OOM_CLOUD_FALLBACK_MODEL` (default `claude-haiku-4-5-20251001`), con el contexto **trimmed** por el `brain/summarizer.py` ya existente.
+
+  OOM y Cloud Surgeon (Fase 4.5, `error_streak ≥ 3`) son **señales ortogonales**: OOM dispara el swap inmediato sin requerir streak. La rama nueva en `brain/nodes/circuit_breaker.py` es una única condición adicional, sin widening de enums.
+
+- [ ] **6.4. ACID Atomic Transactions & Resume API (`core/dead_letter.py` — NEW)**
+
+  Reemplaza el `commit_on_completion=True` ingenuo del bosquejo original. Reusa la disciplina WAL de Fase 2C / Fase 3:
+
+  - [ ] **6.4.1. DLQ Table.** `dead_letter_tasks(episode_id PK, task_id, thread_id, failed_node, exception_class, exception_message, state_snapshot_blob_hash, created_at)` en el catálogo SQLite existente. El `state_snapshot_blob_hash` reusa `core/blob_storage.py` (blake2b — Fase 2.17).
+  - [ ] **6.4.2. `dead_letter_decorator`.** Aplicado a los 7 entrypoints de `brain/swarms.py` (planner, researcher, orchestrator, coder, apply_patch, validate, supervisor). Cualquier excepción no manejada: promueve L1→L2 via `HybridCheckpointer.promote()` (idempotente, Fase 2.7/2.15), persiste la fila DLQ, y re-lanza para que LangGraph registre el fallo.
+  - [ ] **6.4.3. Resume Endpoint.** `POST /api/v1/task/resume/{task_id}` en `main.py`: hidrata el último L2 checkpoint para el `thread_id` y reanuda. Idempotente: resume sobre `task_id` ya completado → no-op. Canal nuevo `dead_letter_episode_id: Optional[str]` (scalar overwrite) indica que el turno actual es un resume.
+  - [ ] **6.4.4. UI Resume.** El payload de startup del WebSocket reporta DLQs pendientes para el workspace; la sidebar de la extensión ofrece "Resume Task" como item accionable. **Ref:** Fase 7.5.
+
+- [ ] **6.5. FinOps Cost Circuit Breaker & Graph Health Monitor (`core/supervisor.py` — NEW)**
+
+  Promueve el stub original 6.5 a un nodo determinista (sin LLM, sin tokens) spliced entre `finops_gate` y `apply_patch` en `brain/swarms.py`.
+
+  - [ ] **6.5.1. Sync Ledger ↔ State.** Cierra el bug arquitectónico detectado en la auditoría: hoy `core/token_ledger.py` acumula process-wide pero **nunca** se escribe de vuelta a `state["current_cost_usd"]`. El supervisor lee `token_ledger.snapshot()` y publica `accumulated_session_cost = ledger_delta_for_session(session_id)` en cada pasada.
+  - [ ] **6.5.2. Triggers (en orden de prioridad).**
+    1. **Hard kill:** `accumulated_session_cost > session_max_budget_usd × 1.10` → halt con `security_flags ← "SESSION_BUDGET_HARD_KILL"`, route to END, escribe fila DLQ para continuidad de Resume.
+    2. **HITL soft gate:** `accumulated_session_cost > session_max_budget_usd` → `request_human_approval(action_description="BUDGET_OVERFLOW", proposed_content=<ledger snapshot + last 3 nodes>)`. Approve → eleva el techo; deny/timeout → cae al hard kill.
+    3. **Token spike:** `token_usage` delta single-turn > `AILIENANT_MAX_TOKENS_PER_TURN` (default `64000`) dispara HITL aunque el budget esté bajo — atrapa llamadas runaway de 200 K context.
+    4. **Audit chain verify:** verifica `last_chain_hash == state["hitl_audit_chain_head"]`; mismatch → `AuditChainBrokenError` (loud crash; detecta mutación out-of-band del DB).
+  - [ ] **6.5.3. Canales de estado nuevos (todos scalar overwrite, defaults seguros):**
+    - `accumulated_session_cost: float = 0.0` (owner: supervisor).
+    - `session_max_budget_usd: float = AILIENANT_MAX_SESSION_BUDGET_USD` (owner: `task_service.process_task` al inicio del grafo).
+    - `oom_fallback_active: bool = False` (owner: LLM gateway / supervisor).
+    - `sandbox_tier_active: Literal["DOCKER","WASM","NATIVE_HITL"]` (owner: inyectado al construir el grafo desde `core.sandbox.ACTIVE_TIER`).
+
+- [ ] **6.6. Append-Only HITL Audit Log SOC2 (`core/audit.py` — NEW)**
+
+  Tabla append-only con **cadena criptográfica blake2b** que hace cualquier tampering histórico detectable:
+
+  ```sql
+  CREATE TABLE IF NOT EXISTS hitl_audit_log (
+    audit_id TEXT PRIMARY KEY,           -- uuid4 hex
+    session_id TEXT NOT NULL,
+    task_id TEXT,
+    request_kind TEXT NOT NULL,          -- BUDGET_OVERFLOW | DANGEROUS_COMMAND_INTERCEPT
+                                         -- | SANDBOX_DEGRADED_EXEC | DRIFT_DETECTED
+                                         -- | RESOURCE_CONTENTION
+    action_description TEXT NOT NULL,
+    proposed_content_hash TEXT NOT NULL, -- blake2b del payload (post-scrubber, ver 6.7)
+    state_snapshot_hash TEXT NOT NULL,   -- blake2b del state en la emisión
+    prev_chain_hash TEXT,                -- chain_hash de la fila anterior; NULL sólo en genesis
+    chain_hash TEXT NOT NULL,            -- blake2b(prev_chain_hash || audit_id
+                                         --         || state_snapshot_hash
+                                         --         || resolution || resolved_at)
+    requested_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    resolution TEXT,                     -- approved | rejected | timeout | <comment>
+    operator_user_email TEXT             -- best-effort (CLAUDE.md userEmail)
+  );
+  ```
+
+  - [ ] **6.6.1. Hooks en transport.** `api/websocket_manager.request_human_approval(...)` invoca `audit_logger.log_request(...)` justo tras generar `approval_id`; `resolve_human_approval(...)` invoca `log_resolution(...)`. El `chain_hash` se finaliza en resolución (cubre el ciclo completo).
+  - [ ] **6.6.2. Canal de verificación.** `hitl_audit_chain_head: Optional[str]` (scalar overwrite). El supervisor (6.5.2 trigger 4) verifica continuidad cada pasada.
+  - [ ] **6.6.3. WAL discipline.** Reusa `PRAGMA journal_mode=WAL` + `WALCheckpointer.is_writing` guard (Fase 2C). Sin nueva infraestructura de persistencia.
+
+- [ ] **6.7. Secrets Scrubber para Logs (`shared/logging_filters.py` — NEW)** *(Enterprise pattern adicional #1)*
+
+  `logging.Filter` instalado en el root logger durante el `lifespan` startup. Cubre todos los loggers `AILIENANT_*` (resource_broker, lifecycle_manager, wal_checkpointer, hybrid_checkpointer, telemetry, etc.) sin tocar uno a uno. Patrones iniciales:
+  - OpenAI: `sk-[A-Za-z0-9]{20,}`
+  - Anthropic: `sk-ant-[A-Za-z0-9-]{20,}`
+  - Bearer genérico: `Bearer\s+[A-Za-z0-9._-]{20,}`
+  - JWT-shape: `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`
+  - URL con password embebido: `://[^:]+:[^@]+@`
+
+  Reemplazo in-place: `**REDACTED:<hash8>**` donde `<hash8>` es los primeros 8 chars de `blake2b(secret).hexdigest()` — diagnosticable sin disclosure. El scrubber también corre sobre `proposed_content` **antes** de entrar al `hitl_audit_log` (defensa en profundidad: una clave fugada en un prompt HITL persistiría para siempre en la cadena de audit).
+
+- [ ] **6.8. OOM Cascade Telemetría & Test Suite** *(Enterprise pattern adicional #2 — formaliza 6.3)*
+
+  Tracked separadamente porque tiene entregables propios:
+  - Nuevo env var: `AILIENANT_OOM_CLOUD_FALLBACK_MODEL` (default `claude-haiku-4-5-20251001`).
+  - Test suite `tests/test_oom_cascade.py`: `ContextWindowExceededError`, simulated `CUDA_OUT_OF_MEMORY` via mock, double-fault (cloud fallback también OOMs → DLQ + halt).
+  - Métrica en `core/telemetry.py`: rows `event="oom_fallback"` con provider, tokens-at-failure y latencia del swap.
+
+- [ ] **6.9. Dead Letter Queue + Resume API entrega formal** *(Enterprise pattern adicional #3 — entrega 6.4)*
+
+  Commitment explícito de entregables:
+  - Tabla `dead_letter_tasks` + writer (`core/dead_letter.py`).
+  - `dead_letter_decorator` aplicado a los 7 entrypoints en `brain/swarms.py`.
+  - REST endpoint `POST /api/v1/task/resume/{task_id}` en `main.py`.
+  - UI "Resume Task" en la sidebar de la extensión cuando el payload de startup reporta DLQs pendientes.
+
+- [ ] **6.10. Checkpoint Gate Fase 6 (Adversarial E2E)** — *Mismo patrón estructural que Phase 5.7 gate.*
+
+  Test file: `tests/test_phase6_checkpoint_gate.py` (12 escenarios):
+
+  | Test | Aserción |
+  |---|---|
+  | A1 — Docker tier reachable | Startup probe selecciona `DOCKER`; `SandboxBashTool("echo hi")` corre en contenedor; árbol PID del host nunca ve el `sh` proceso |
+  | A2 — Docker daemon offline | Probe falla → `NATIVE_HITL`; badge "degraded" en webview; mock HITL approve → comando corre y se audita |
+  | B1 — Wasm scope guard | `RunPureLogicTool` acepta pure-compute; rechaza con `WasmScopeError` ante import de `os`/`subprocess`/`socket` |
+  | C1 — Budget hard kill | Seed `accumulated_session_cost=11.0`, `session_max_budget_usd=10.0` → supervisor halt; DLQ row existe; `SESSION_BUDGET_HARD_KILL` en `security_flags` |
+  | C2 — Token-spike HITL | Single LLM call con 70 000 tokens → HITL aunque budget esté bajo |
+  | D1 — OOM cascade | Mock LiteLLM raising `ContextWindowExceededError` → `oom_fallback_active=True`, cloud Haiku call succeeds, audit row written |
+  | D2 — Double OOM | Local y cloud raise → DLQ row, halt elegante |
+  | E1 — Audit chain integrity | 3 HITL events seguidos → `chain_hash[i] == blake2b(chain_hash[i-1] ‖ …)` para cada i |
+  | E2 — Audit tamper detection | Manual UPDATE de fila histórica → próxima pasada del supervisor crashea con `AuditChainBrokenError` |
+  | F1 — Secrets scrubber | Log line con `sk-ant-AAAAAAAAAAAAAAAAAAAA` → registro llega al handler con `**REDACTED:<hash8>**` |
+  | G1 — DLQ + Resume | Force-raise en `coder_agent` → DLQ row creada; `POST /api/v1/task/resume/{task_id}` → grafo reanuda desde L2 checkpoint y completa |
+  | G2 — Resume idempotency | Segundo resume sobre `task_id` ya completo → 200 OK, no-op |
+
+  **DoD:** los 12 tests pasan; `mypy --strict` clean sobre los 5 módulos nuevos (`core/sandbox.py`, `core/audit.py`, `core/supervisor.py`, `core/dead_letter.py`, `shared/logging_filters.py`); `ruff check` clean; suite existente (496 tests) verde, cero regresiones.
+
+### 🛠️ Build Order (4 sub-fases, cada una individualmente verde)
+
+1. **6.A — Foundations (sin behaviour change visible).** `shared/logging_filters.py`, `core/audit.py` + tabla, `core/dead_letter.py` + tabla, 6 canales nuevos en `brain/state.py`. Aterriza tras feature flag.
+2. **6.B — Supervisor + FinOps wiring.** `core/supervisor.py`, splice en `brain/swarms.py`, token-ledger ↔ state sync, audit hooks en `request_human_approval`.
+3. **6.C — Sandbox.** `core/sandbox.py` con los 3 adapters, swap de dispatch en `tools/execution_tools.py`, badge wiring en la extensión.
+4. **6.D — OOM + Resume API + Checkpoint Gate.** `tools/llm_gateway.py` OOM wrap, rama nueva en `circuit_breaker.py`, endpoint `/api/v1/task/resume/{task_id}`, suite 6.10.
+
+Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una entrada en `DEV_JOURNAL.md` (CLAUDE.md §5).
 
 ---
 
