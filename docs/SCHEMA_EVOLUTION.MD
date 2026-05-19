@@ -421,3 +421,33 @@ CREATE INDEX IF NOT EXISTS idx_dlq_task_id ON dead_letter_tasks(task_id, created
 * `core/audit.py` is created as a **minimal seam** (`AuditChainBrokenError`, `get_chain_head` stub) — no table yet. The `hitl_audit_log` table lands in Phase 6.6.
 
 Existing checkpoints deserialize unchanged.
+
+## Phase 6.6 — HITL audit ledger table `hitl_audit_log` — 2026-05-19
+
+**Additive only. New SQLite table in the catalog DB (`DB_CATALOG_PATH`); no state-channel changes, no renames.** The Phase 6 state channel `hitl_audit_chain_head` was already added in Phase 6.3 (Blueprint §1 block) — 6.6 only populates the ledger that channel will eventually mirror.
+
+**New table — `hitl_audit_log`** (created idempotently by `core/audit.py::init_audit_table()`, invoked from the FastAPI lifespan after `init_dlq_table()`):
+
+```sql
+CREATE TABLE IF NOT EXISTS hitl_audit_log (
+    audit_id                  TEXT    PRIMARY KEY,   -- uuid4 (== approval_id)
+    session_id                TEXT    NOT NULL,
+    request_kind              TEXT    NOT NULL,      -- classified sentinel
+    action_description        TEXT    NOT NULL,
+    proposed_content_scrubbed TEXT,                  -- secrets-redacted cleartext
+    proposed_content_hash     TEXT    NOT NULL,      -- blake2b(scrubbed)
+    resolution                TEXT    NOT NULL,      -- approved | rejected | timeout
+    resolution_comment        TEXT,
+    operator_user_email       TEXT,                  -- best-effort, env
+    prev_chain_hash           TEXT,                  -- NULL for the session genesis row
+    chain_hash                TEXT    NOT NULL,
+    resolved_at               INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_session ON hitl_audit_log(session_id);
+```
+
+**Chain formula:** `chain_hash = blake2b(prev_chain_hash ‖ audit_id ‖ session_id ‖ request_kind ‖ action_description ‖ proposed_content_hash ‖ resolution ‖ resolved_at).hexdigest()`. One immutable row per resolved HITL event (single-write model — user-confirmed); `verify_chain()` re-walks a session and raises `AuditChainBrokenError` on the first divergence.
+
+**Schema reconciliation vs Blueprint §7.1** (non-ADR realization corrections, documented — no amendment): `state_snapshot_hash` is **dropped** — the canonical `request_human_approval` channel carries no graph state and ADR-003 forbids changing its signature, so a state snapshot is not computable at the audit site. `task_id` is dropped (`== session_id` everywhere). `requested_at` is dropped (single-write records only `resolved_at`). `proposed_content` is stored **scrubbed** (`proposed_content_scrubbed`), never raw — Blueprint §7.4/§12.
+
+**New module-level API — `core/audit.py`:** `init_audit_table()`, `log_audit_event(...)`, `get_chain_head(session_id)` (promoted from the 6.5 stub), `verify_chain(session_id)`, plus `_scrub`/`_classify`/`_compute_chain_hash` helpers. **No new dependencies** (`hashlib.blake2b` is stdlib), **no `core/db.py` edits, no new state channels.** Existing checkpoints deserialize unchanged.

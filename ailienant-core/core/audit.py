@@ -1,19 +1,43 @@
-"""Phase 6.5 — minimal HITL audit-chain seam.
+"""Phase 6.6 — Append-Only HITL Audit Log (SOC2 cryptographic ledger).
 
-This is a deliberately minimal stub. Phase 6.6 replaces it with the full
-``AuditLogger`` (``log_request`` / ``log_resolution`` / ``verify_chain``) backed
-by the ``hitl_audit_log`` table and the blake2b chain formula (Blueprint §7).
+Every Human-in-the-Loop resolution appends one **immutable** row to
+``hitl_audit_log``. Rows are blake2b-chained:
 
-Until then, :func:`get_chain_head` always returns ``None`` (no chain exists),
-which makes the Supervisor's chain-verify trigger a typed, load-bearing no-op:
-the divergence check only fires once ``state["hitl_audit_chain_head"]`` is set
-by a real audit row — impossible before Phase 6.6 — so the stub is safe.
+    chain_hash = blake2b(prev_chain_hash ‖ audit_id ‖ session_id ‖ request_kind
+                         ‖ action_description ‖ proposed_content_hash
+                         ‖ resolution ‖ resolved_at)
 
-Blueprint reference: §7 (Append-Only HITL Audit Chain).
+so any out-of-band mutation of a historical row breaks every subsequent link.
+:func:`verify_chain` re-walks a session and raises :class:`AuditChainBrokenError`
+on the first inconsistency. ``proposed_content`` is **secrets-scrubbed** before
+it is stored or hashed (:func:`_scrub`) — no raw key ever enters the ledger.
+
+Single-write model: one row is appended *at resolution time* (approved /
+rejected / timeout all logged), entirely from inside
+``api/websocket_manager.py::request_human_approval``.
+
+Realized as module-level functions (not an ``AuditLogger`` class) so the
+``from core.audit import get_chain_head`` import in ``core/supervisor.py``
+(Phase 6.5) stays valid, matching the ``core/dead_letter.py`` pattern.
+
+Blueprint reference: §7 (Append-Only HITL Audit Chain), §8.2 (scrubber patterns).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import asyncio
+import hashlib
+import logging
+import os
+import re
+import time
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
+
+import aiosqlite
+
+from shared.config import DB_CATALOG_PATH
+
+logger = logging.getLogger("AUDIT")
 
 
 class AuditChainBrokenError(Exception):
@@ -50,12 +74,236 @@ class AuditChainBrokenError(Exception):
         }
 
 
-async def get_chain_head(session_id: str) -> Optional[str]:
-    """Return the blake2b ``chain_hash`` of the last resolved ``hitl_audit_log``
-    row for ``session_id``.
+# ── Schema ──────────────────────────────────────────────────────────────────
 
-    Phase 6.5 stub — no audit table exists yet, so there is no chain and the
-    head is ``None``. Phase 6.6 implements the real ``SELECT … ORDER BY
-    requested_at DESC LIMIT 1`` query.
+_AUDIT_DDL = """CREATE TABLE IF NOT EXISTS hitl_audit_log (
+    audit_id                  TEXT    PRIMARY KEY,
+    session_id                TEXT    NOT NULL,
+    request_kind              TEXT    NOT NULL,
+    action_description        TEXT    NOT NULL,
+    proposed_content_scrubbed TEXT,
+    proposed_content_hash     TEXT    NOT NULL,
+    resolution                TEXT    NOT NULL,
+    resolution_comment        TEXT,
+    operator_user_email       TEXT,
+    prev_chain_hash           TEXT,
+    chain_hash                TEXT    NOT NULL,
+    resolved_at               INTEGER NOT NULL
+)"""
+
+_AUDIT_IDX = (
+    "CREATE INDEX IF NOT EXISTS idx_audit_session "
+    "ON hitl_audit_log(session_id)"
+)
+
+# Field separator for the chain payload — a char that will not occur in any
+# action_description or hex digest, so the concatenation is unambiguous.
+_SEP: str = "‖"
+
+# Serialises the read-head → compute-hash → INSERT critical section so two
+# concurrent HITL resolutions on the same session cannot fork the chain.
+_CHAIN_LOCK: asyncio.Lock = asyncio.Lock()
+
+# Known HITL sentinels (Blueprint §3.1 / §7.1). Matched as substrings of the
+# action_description, longest-first is not needed — they are disjoint.
+_KIND_SENTINELS: Tuple[str, ...] = (
+    "BUDGET_OVERFLOW",
+    "TOKEN_SPIKE",
+    "SANDBOX_DEGRADED_EXEC",
+    "DANGEROUS_COMMAND_INTERCEPT",
+    "DRIFT_DETECTED",
+    "RESOURCE_CONTENTION",
+)
+
+# Secrets-scrubber patterns (Blueprint §8.2). sk-ant- is listed before sk- so
+# an Anthropic key is redacted as a whole.
+_SCRUB_PATTERNS: List["re.Pattern[str]"] = [
+    re.compile(r"sk-ant-[A-Za-z0-9-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9._-]{20,}"),
+    re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    re.compile(r"://[^:/\s]+:[^@/\s]+@"),
+]
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _redact(match: "re.Match[str]") -> str:
+    """Replace a matched secret with ``**REDACTED:<hash8>**`` — diagnosable
+    (same secret → same hash8) without disclosing the secret."""
+    h8 = hashlib.blake2b(match.group(0).encode("utf-8")).hexdigest()[:8]
+    return f"**REDACTED:{h8}**"
+
+
+def _scrub(text: Optional[str]) -> str:
+    """Return ``text`` with every recognised secret redacted. ``None`` → ``""``."""
+    if not text:
+        return ""
+    out = text
+    for pattern in _SCRUB_PATTERNS:
+        out = pattern.sub(_redact, out)
+    return out
+
+
+def _classify(action_description: str) -> str:
+    """Map an ``action_description`` to a ``request_kind`` enum string."""
+    upper = action_description.upper()
+    for kind in _KIND_SENTINELS:
+        if kind in upper:
+            return kind
+    return "OTHER"
+
+
+def _compute_chain_hash(
+    *,
+    prev: Optional[str],
+    audit_id: str,
+    session_id: str,
+    request_kind: str,
+    action_description: str,
+    proposed_content_hash: str,
+    resolution: str,
+    resolved_at: int,
+) -> str:
+    """blake2b link hash over the row payload — see module docstring formula."""
+    payload = _SEP.join(
+        [
+            prev or "",
+            audit_id,
+            session_id,
+            request_kind,
+            action_description,
+            proposed_content_hash,
+            resolution,
+            str(resolved_at),
+        ]
+    )
+    return hashlib.blake2b(payload.encode("utf-8")).hexdigest()
+
+
+# ── Public API ──────────────────────────────────────────────────────────────
+
+
+async def init_audit_table(db_path: Optional[str] = None) -> None:
+    """Idempotent ``CREATE TABLE``/``CREATE INDEX`` for ``hitl_audit_log``.
+
+    Called once from the FastAPI lifespan startup, after ``init_dlq_table()``.
     """
-    return None
+    async with aiosqlite.connect(db_path or DB_CATALOG_PATH) as db:
+        await db.execute(_AUDIT_DDL)
+        await db.execute(_AUDIT_IDX)
+        await db.commit()
+
+
+async def get_chain_head(
+    session_id: str, db_path: Optional[str] = None
+) -> Optional[str]:
+    """Return the ``chain_hash`` of the most recent ``hitl_audit_log`` row for
+    ``session_id``, or ``None`` if the session has no audit rows yet."""
+    async with aiosqlite.connect(db_path or DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT chain_hash FROM hitl_audit_log WHERE session_id = ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (session_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return None if row is None else str(row[0])
+
+
+async def log_audit_event(
+    *,
+    session_id: str,
+    action_description: str,
+    proposed_content: Optional[str],
+    resolution: str,
+    resolution_comment: Optional[str] = None,
+    audit_id: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> str:
+    """Append one immutable row to the HITL audit chain; return its ``chain_hash``.
+
+    ``proposed_content`` is scrubbed before it is stored or hashed. The
+    read-head → hash → INSERT section is serialised by :data:`_CHAIN_LOCK`.
+    """
+    path = db_path or DB_CATALOG_PATH
+    aid = audit_id or uuid.uuid4().hex
+    request_kind = _classify(action_description)
+    scrubbed = _scrub(proposed_content)
+    content_hash = hashlib.blake2b(scrubbed.encode("utf-8")).hexdigest()
+    operator = os.getenv("AILIENANT_OPERATOR_EMAIL", "") or None
+    resolved_at = int(time.time())
+
+    async with _CHAIN_LOCK:
+        prev = await get_chain_head(session_id, db_path=path)
+        chain_hash = _compute_chain_hash(
+            prev=prev,
+            audit_id=aid,
+            session_id=session_id,
+            request_kind=request_kind,
+            action_description=action_description,
+            proposed_content_hash=content_hash,
+            resolution=resolution,
+            resolved_at=resolved_at,
+        )
+        async with aiosqlite.connect(path) as db:
+            await db.execute(
+                "INSERT INTO hitl_audit_log (audit_id, session_id, "
+                "request_kind, action_description, proposed_content_scrubbed, "
+                "proposed_content_hash, resolution, resolution_comment, "
+                "operator_user_email, prev_chain_hash, chain_hash, resolved_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    aid, session_id, request_kind, action_description,
+                    scrubbed, content_hash, resolution, resolution_comment,
+                    operator, prev, chain_hash, resolved_at,
+                ),
+            )
+            await db.commit()
+
+    logger.info(
+        "HITL audit row %s logged: session=%s kind=%s resolution=%s",
+        aid, session_id, request_kind, resolution,
+    )
+    return chain_hash
+
+
+async def verify_chain(session_id: str, db_path: Optional[str] = None) -> bool:
+    """Re-walk every ``hitl_audit_log`` row for ``session_id`` in insertion
+    order, recompute each ``chain_hash``, and raise :class:`AuditChainBrokenError`
+    on the first divergence (a tampered row, or a broken ``prev`` link).
+
+    Returns ``True`` when the chain is intact (including the empty chain).
+    """
+    async with aiosqlite.connect(db_path or DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT audit_id, request_kind, action_description, "
+            "proposed_content_hash, resolution, prev_chain_hash, chain_hash, "
+            "resolved_at FROM hitl_audit_log WHERE session_id = ? "
+            "ORDER BY rowid ASC",
+            (session_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    expected_prev: Optional[str] = None
+    for r in rows:
+        stored_prev = None if r[5] is None else str(r[5])
+        stored_chain = str(r[6])
+        recomputed = _compute_chain_hash(
+            prev=expected_prev,
+            audit_id=str(r[0]),
+            session_id=session_id,
+            request_kind=str(r[1]),
+            action_description=str(r[2]),
+            proposed_content_hash=str(r[3]),
+            resolution=str(r[4]),
+            resolved_at=int(r[7]),
+        )
+        if stored_prev != expected_prev or stored_chain != recomputed:
+            raise AuditChainBrokenError(
+                state_head=recomputed,
+                db_head=stored_chain,
+                task_id=session_id,
+            )
+        expected_prev = stored_chain
+    return True
