@@ -15,9 +15,11 @@ Implemented here:
       canonical ``vfs_manager.request_human_approval`` channel (Phase 6.1.2).
     * :class:`WasmSandboxAdapter` — pure-compute tier on a ``wasmtime`` WASI
       runtime, fuel-metered and preopen-free (Phase 6.1.3).
+    * :func:`resolve_default_adapter` — the startup probe that picks a tier
+      (Docker → Wasm → NativeHITL) and binds the ``ACTIVE_TIER`` /
+      ``ACTIVE_ADAPTER`` globals (Phase 6.1.4).
 
 Out of scope for this module (deferred to later sub-tasks of Phase 6):
-    * ``resolve_default_adapter`` startup probe + ``ACTIVE_ADAPTER`` global (6.1.4)
     * Dispatch swap in ``tools/execution_tools.py`` (Phase 6.2)
 
 All synchronous ``docker`` SDK calls are wrapped in :func:`asyncio.to_thread` to
@@ -39,7 +41,7 @@ import shlex
 import tempfile
 from abc import ABC, abstractmethod
 from io import BytesIO
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import docker  # type: ignore[import-untyped]
 import wasmtime
@@ -720,3 +722,70 @@ class WasmSandboxAdapter(SandboxAdapter):
                 return ""
 
         return _read(out_path), _read(err_path)
+
+
+# ── Phase 6.1.4 — startup tier resolution ────────────────────────────────────
+
+ACTIVE_TIER: Optional[Literal["DOCKER", "WASM", "NATIVE_HITL"]] = None
+ACTIVE_ADAPTER: Optional[SandboxAdapter] = None
+
+_DOCKER_PROBE_TIMEOUT_S: float = 2.0
+
+
+async def resolve_default_adapter() -> None:
+    """Probe the three sandbox tiers in degradation order; bind the globals.
+
+    Order: Docker (default) → Wasm (degraded, pure-compute) → NativeHITL
+    (last-resort host exec). Called once from the FastAPI lifespan at startup.
+    Idempotent — safe to re-invoke. Never raises: a total failure still binds
+    the NativeHITL tier.
+    """
+    global ACTIVE_TIER, ACTIVE_ADAPTER
+
+    # Tier 1 — Docker (daemon reachable within 2 s).
+    try:
+        client = docker.from_env()
+        await asyncio.wait_for(
+            asyncio.to_thread(client.ping), timeout=_DOCKER_PROBE_TIMEOUT_S,
+        )
+        ACTIVE_TIER = "DOCKER"
+        ACTIVE_ADAPTER = DockerSandboxAdapter()
+        logger.info("Sandbox tier resolved: DOCKER (daemon reachable).")
+        return
+    except Exception as exc:  # noqa: BLE001 — any probe failure → degrade
+        logger.warning("Docker probe failed (%s) — falling back to Wasm.", exc)
+
+    # Tier 2 — Wasm (constructing the adapter exercises the wasmtime runtime).
+    try:
+        wasm_adapter = WasmSandboxAdapter()
+        ACTIVE_TIER = "WASM"
+        ACTIVE_ADAPTER = wasm_adapter
+        logger.warning(
+            "Sandbox tier resolved: WASM (DEGRADED — Docker unavailable; "
+            "pure-compute only).",
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 — wasmtime broken → degrade
+        logger.warning(
+            "Wasm probe failed (%s) — falling back to NativeHITL.", exc,
+        )
+
+    # Tier 3 — NativeHITL (last-resort host exec, human-gated).
+    ACTIVE_TIER = "NATIVE_HITL"
+    ACTIVE_ADAPTER = NativeHITLSandboxAdapter()
+    logger.warning(
+        "Sandbox tier resolved: NATIVE_HITL (DEGRADED — last-resort "
+        "host execution, human-in-the-loop gated).",
+    )
+
+
+def get_active_tier() -> Optional[Literal["DOCKER", "WASM", "NATIVE_HITL"]]:
+    """Stable accessor for the resolved tier.
+
+    Consumers MUST call this rather than a ``from core.sandbox import
+    ACTIVE_TIER`` binding — the resolver reassigns the global at startup, so
+    a from-import would capture a stale ``None``. Phase 6.1.4 defers the
+    frontend ``sandbox_tier`` badge; this getter is the seam a later phase
+    uses to read the tier without import-order coupling.
+    """
+    return ACTIVE_TIER

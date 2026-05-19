@@ -14,6 +14,7 @@ from core.lifecycle_manager import lifecycle_manager
 from core import db as catalog_db
 from core.config_generator import discover_models
 from core.db_maintenance import WALCheckpointer
+from core.sandbox import resolve_default_adapter
 from core.task_service import TaskPayload, TaskService
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,6 +65,7 @@ logger = logging.getLogger("AILIENANT_API")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
+    await resolve_default_adapter()          # Phase 6.1.4 — bind sandbox tier
     await catalog_db.init_db()
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
