@@ -384,3 +384,30 @@ Phase 5.7 is the milestone gate that proves the cumulative Phase 5.1–5.6 contr
 * `dead_letter_episode_id: Optional[str]` — episode_id of a resumed DLQ turn; None for fresh tasks. Owner: `main.py::resume_task` (Phase 6.4).
 
 **No new dependencies. No `core/permissions.py` edits.** `LLMGateway.ainvoke` gains an optional `state: Optional[Dict[str, Any]] = None` parameter (backward compatible — no existing caller breaks; the channel mutation only happens when a caller threads `state`, deferred to a later phase).
+
+---
+
+## Phase 6.4 — DLQ table `dead_letter_tasks` — 2026-05-19
+
+**Additive only. New SQLite table in the catalog DB (`DB_CATALOG_PATH`); no state-channel changes, no renames.** The Phase 6 state channel `dead_letter_episode_id` was already added in Phase 6.3 (Blueprint §1 block) — 6.4 only writes to it via the Resume API.
+
+**New table — `dead_letter_tasks`** (created idempotently by `core/dead_letter.py::init_dlq_table()`, invoked from the FastAPI lifespan after `catalog_db.init_db()`):
+
+```sql
+CREATE TABLE IF NOT EXISTS dead_letter_tasks (
+    episode_id               TEXT    PRIMARY KEY,   -- uuid4 hex
+    task_id                  TEXT    NOT NULL,
+    thread_id                TEXT    NOT NULL,      -- == task_id in this codebase
+    failed_node              TEXT    NOT NULL,
+    exception_class          TEXT    NOT NULL,
+    exception_message        TEXT    NOT NULL,      -- truncated to 2000 chars
+    state_snapshot_blob_hash TEXT    NOT NULL,      -- blake2b CAS ref (RAM-backed; integrity marker only)
+    created_at               INTEGER NOT NULL,
+    resolved_at              INTEGER                -- NULL until a successful resume stamps it
+);
+CREATE INDEX IF NOT EXISTS idx_dlq_task_id ON dead_letter_tasks(task_id, created_at);
+```
+
+**`resolved_at` is a deliberate non-ADR addition** to the Blueprint §5.1 DDL: the blueprint's resume idempotency ("task already COMPLETED") is not implementable without it (no task-status table exists). Idempotency is realized as "is there a row with `resolved_at IS NULL` for this `task_id`?" — a successful resume stamps `resolved_at`, so a repeated `POST /api/v1/task/resume/{task_id}` is a deterministic no-op.
+
+**New module-level API — `core/dead_letter.py`:** `DeadLetterRecord` (Pydantic), `init_dlq_table()`, `save_dead_letter(...)`, `get_pending_dlqs(task_id=None)`, `mark_dlq_resolved(episode_id)`, `dead_letter_decorator(node_name)`. **No new dependencies, no `core/db.py` edits, no `ws_contracts.py` edits.** Existing checkpoints deserialize unchanged.

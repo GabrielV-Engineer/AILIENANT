@@ -8,6 +8,7 @@ from langgraph.constants import Send
 
 from brain.state import AIlienantGraphState
 from brain.checkpoint import checkpoint_manager
+from core.dead_letter import dead_letter_decorator  # Phase 6.4 — DLQ node wrap
 
 logger = logging.getLogger("AILIENANT_ENGINE")
 
@@ -67,15 +68,21 @@ def route_after_summarize(state: dict) -> str:
 
 
 workflow.add_node("summarize_history", run_summarize_node)  # type: ignore[type-var]
-workflow.add_node("planner_agent", run_planner_node)        # type: ignore[type-var]
-workflow.add_node("drift_monitor", run_drift_monitor_node)  # type: ignore[type-var]
-workflow.add_node("coder_agent", run_coder_node)            # type: ignore[type-var]
-workflow.add_node("apply_patch", run_apply_patch_node)      # type: ignore[type-var]
-workflow.add_node("validate_output", run_validate_output_node)  # type: ignore[type-var]
-workflow.add_node("finops_gate", run_finops_node)           # type: ignore[type-var]
-workflow.add_node("ideation_loop", ideation_graph)  # type: ignore[arg-type]
-workflow.add_node("session_delta_aggregator", run_session_delta_aggregator_node)  # type: ignore[type-var]
-workflow.add_node("contract_guard", run_contract_guard_node)  # type: ignore[type-var]  # Phase 2.23
+# Phase 6.4 — DLQ-wrapped node entrypoints. An unhandled exception promotes
+# L1→L2 and persists a dead_letter_tasks row before re-raising (see
+# core/dead_letter.py). The 4 wrapped nodes are the state-bearing entrypoints;
+# summarize_history / drift_monitor / contract_guard / finops_gate are left bare.
+# The decorator's Callable[...] return satisfies add_node without the type-var
+# suppression the bare node functions still need.
+workflow.add_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node))
+workflow.add_node("drift_monitor", run_drift_monitor_node)
+workflow.add_node("coder_agent", dead_letter_decorator("coder_agent")(run_coder_node))
+workflow.add_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_patch_node))
+workflow.add_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node))
+workflow.add_node("finops_gate", run_finops_node)
+workflow.add_node("ideation_loop", ideation_graph)
+workflow.add_node("session_delta_aggregator", run_session_delta_aggregator_node)
+workflow.add_node("contract_guard", run_contract_guard_node)  # Phase 2.23
 
 # =====================================================================
 # 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
