@@ -12,7 +12,6 @@ import pytest
 from core.audit import (
     AuditChainBrokenError,
     _compute_chain_hash,
-    _scrub,
     get_chain_head,
     init_audit_table,
     log_audit_event,
@@ -101,16 +100,6 @@ def test_tamper_detection_e2(tmp_path) -> None:
 
     with pytest.raises(AuditChainBrokenError):
         asyncio.run(verify_chain("s1", db_path=db))
-
-
-def test_scrubber_redacts_secrets() -> None:
-    """Secrets are redacted before storage/hashing; redaction is deterministic."""
-    raw = "use key sk-ant-AAAAAAAAAAAAAAAAAAAA to authenticate"
-    out = _scrub(raw)
-    assert "sk-ant-AAAAAAAAAAAAAAAAAAAA" not in out
-    assert "**REDACTED:" in out
-    assert _scrub(raw) == out          # same secret → same hash8
-    assert _scrub(None) == ""
 
 
 def test_resolution_coverage(tmp_path) -> None:

@@ -30,6 +30,7 @@ from brain.engine import alienant_app
 from brain.state import AIlienantGraphState
 from core.dead_letter import get_pending_dlqs, init_dlq_table, mark_dlq_resolved
 from core.audit import init_audit_table  # Phase 6.6 — HITL audit ledger
+from shared.logging_filters import SecretsScrubberFilter  # Phase 6.7 — DLP scrubber
 from langchain_core.runnables import RunnableConfig
 
 # --- IMPORTACIONES FASE 3.4.5 (MCTS Mirror) ---
@@ -72,6 +73,15 @@ logger = logging.getLogger("AILIENANT_API")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
+    # Phase 6.7 — install the DLP secrets scrubber. The filter is attached to
+    # the root logger AND to every root handler: handler-level filtering is what
+    # redacts records propagated from named child loggers (AUDIT, SUPERVISOR…).
+    _scrubber = SecretsScrubberFilter()
+    _root_logger = logging.getLogger()
+    _root_logger.addFilter(_scrubber)
+    for _handler in _root_logger.handlers:
+        _handler.addFilter(_scrubber)
+
     await resolve_default_adapter()          # Phase 6.1.4 — bind sandbox tier
     await catalog_db.init_db()
     await init_dlq_table()                   # Phase 6.4 — dead_letter_tasks table
