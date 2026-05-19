@@ -10,9 +10,17 @@ Four LangChain BaseTool subclasses + a shared BackgroundTaskManager:
                               output. READ_ONLY tier (blueprint §4 line 272).
     CheckTypeIntegrityTool  — Wraps mypy/tsc with the same truncation rules.
 
-All subprocess work uses asyncio (create_subprocess_shell / create_subprocess_exec
-+ asyncio.wait_for + kill-on-timeout). NEVER subprocess.run or os.system — the
-FastAPI event loop MUST NOT block. Pattern mirrored from validators/gates.py.
+Phase 6.2 — HITL Bridge wiring: `sandbox_bash` and `check_type_integrity` no
+longer spawn on the host. Their `_arun` bodies route through the process-global
+`core.sandbox.ACTIVE_ADAPTER` (resolved at lifespan startup by Phase 6.1.4),
+read via `get_active_adapter()`. `task_create` / `BackgroundTaskManager` keep
+their native `create_subprocess_shell` path: the blocking `SandboxAdapter`
+contract has no fire-and-forget / PID semantics — that routing is deferred
+pending an ABC background-execution method.
+
+All remaining subprocess work uses asyncio (create_subprocess_shell + wait_for
++ kill-on-timeout). NEVER subprocess.run or os.system — the FastAPI event loop
+MUST NOT block. Pattern mirrored from validators/gates.py.
 
 register_execution_tools(store) registers all four schemas: 3 EXECUTE-tier
 (sandbox_bash, task_create, check_type_integrity) + 1 READ_ONLY (task_get).
@@ -27,6 +35,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shlex
 import uuid
 from datetime import datetime, timezone
 from typing import (
@@ -46,6 +56,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
 from core.permissions import ToolPrivilegeTier
+from core.sandbox import get_active_adapter
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.control_tools import DANGEROUS_COMMANDS_REGEX
 
@@ -65,6 +76,22 @@ _DEFAULT_TYPECHECK_TIMEOUT_SEC: float = 120.0
 _EXECUTE_ROLES: FrozenSet[str] = frozenset(
     {"core_dev", "devops_infra", "secops", "qa_tester", "data_ml_engineer"}
 )
+
+_SANDBOX_ENV_WHITELIST: Tuple[str, ...] = (
+    "PYTHONPATH", "NODE_OPTIONS", "RUFF_CACHE_DIR", "MYPY_CACHE_DIR",
+)
+"""Env-var NAMES forwarded into the sandbox. PATH is deliberately excluded —
+host secrets (API keys, tokens) MUST NOT leak through (PHASE_6_BLUEPRINT.md §2.2)."""
+
+_SANDBOX_UNINITIALIZED_MSG: str = (
+    "Sandbox adapter not initialized via lifespan startup."
+)
+
+
+def _sandbox_env() -> Dict[str, str]:
+    """Resolve the whitelisted env-var names from the host environment into the
+    name→value dict the sandbox adapter expects (ABC ``env_whitelist``)."""
+    return {k: os.environ[k] for k in _SANDBOX_ENV_WHITELIST if k in os.environ}
 
 
 def _now_iso() -> str:
@@ -153,31 +180,21 @@ class SandboxBashTool(BaseTool):
                 f"matched. Use ask_user_question to request HITL approval before retrying."
             )
 
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-            )
-        except FileNotFoundError as exc:
-            return f"[sandbox_bash] SPAWN_ERROR: {exc}"
+        # Phase 6.2 — dispatch through the resolved sandbox tier instead of the
+        # host. The adapter absorbs the timeout internally (Docker exit 124 /
+        # NativeHITL wait_for / Wasm fuel) and always returns a SandboxResult.
+        adapter = get_active_adapter()
+        if adapter is None:
+            raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
 
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_sec
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return f"[sandbox_bash] TIMEOUT after {timeout_sec}s"
-
-        combined = (
-            stdout_bytes.decode("utf-8", errors="replace")
-            + stderr_bytes.decode("utf-8", errors="replace")
+        result = await adapter.execute(
+            command,
+            timeout_s=timeout_sec,
+            cwd=working_dir or "",
+            env_whitelist=_sandbox_env(),
         )
-        body = _truncate(combined)
-        return f"[sandbox_bash] exit={proc.returncode}\n{body}"
+        body = _truncate(result.stdout + result.stderr)
+        return f"[sandbox_bash] exit={result.exit_code}\n{body}"
 
 
 # =====================================================================
@@ -359,32 +376,24 @@ class CheckTypeIntegrityTool(BaseTool):
         else:
             argv = ("npx", "--no-install", "tsc", "--noEmit", "-p", target_dir)
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            return f"[check_type_integrity:{checker}] SPAWN_ERROR: {exc}"
+        # Phase 6.2 — route through the sandbox tier. The adapter takes a shell
+        # string, so the argv tuple is joined; the adapter owns the timeout.
+        command = shlex.join(argv)
+        adapter = get_active_adapter()
+        if adapter is None:
+            raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
 
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=_DEFAULT_TYPECHECK_TIMEOUT_SEC
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return (
-                f"[check_type_integrity:{checker}] TIMEOUT after "
-                f"{_DEFAULT_TYPECHECK_TIMEOUT_SEC}s"
-            )
-
-        combined = (
-            stdout_bytes.decode("utf-8", errors="replace")
-            + stderr_bytes.decode("utf-8", errors="replace")
+        result = await adapter.execute(
+            command,
+            timeout_s=_DEFAULT_TYPECHECK_TIMEOUT_SEC,
+            cwd="",
+            env_whitelist=_sandbox_env(),
         )
-        return f"[check_type_integrity:{checker}] exit={proc.returncode}\n{_truncate(combined)}"
+        combined = result.stdout + result.stderr
+        return (
+            f"[check_type_integrity:{checker}] exit={result.exit_code}\n"
+            f"{_truncate(combined)}"
+        )
 
 
 # =====================================================================

@@ -17,7 +17,8 @@ Implemented here:
       runtime, fuel-metered and preopen-free (Phase 6.1.3).
     * :func:`resolve_default_adapter` — the startup probe that picks a tier
       (Docker → Wasm → NativeHITL) and binds the ``ACTIVE_TIER`` /
-      ``ACTIVE_ADAPTER`` globals (Phase 6.1.4).
+      ``ACTIVE_ADAPTER`` globals, read back via :func:`get_active_tier` /
+      :func:`get_active_adapter` (Phase 6.1.4).
 
 Out of scope for this module (deferred to later sub-tasks of Phase 6):
     * Dispatch swap in ``tools/execution_tools.py`` (Phase 6.2)
@@ -789,3 +790,14 @@ def get_active_tier() -> Optional[Literal["DOCKER", "WASM", "NATIVE_HITL"]]:
     uses to read the tier without import-order coupling.
     """
     return ACTIVE_TIER
+
+
+def get_active_adapter() -> Optional[SandboxAdapter]:
+    """Stable accessor for the resolved adapter instance.
+
+    Consumers (e.g. ``tools/execution_tools.py``) MUST call this rather than a
+    ``from core.sandbox import ACTIVE_ADAPTER`` binding — the resolver
+    reassigns the global at startup, so a from-import would capture a stale
+    ``None``.
+    """
+    return ACTIVE_ADAPTER
