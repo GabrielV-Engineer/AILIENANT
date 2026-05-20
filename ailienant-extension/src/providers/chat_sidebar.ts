@@ -160,6 +160,9 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
         const styleUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.css')
         );
+        const logoUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'logo.svg')
+        );
         // Encode initial state on a data-* attribute (CSP-safe — no inline <script>).
         const initialAttr = JSON.stringify(this._readInitialState())
             .replace(/&/g, '&amp;')
@@ -171,12 +174,12 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';">
+          content="default-src 'none'; img-src ${webview.cspSource}; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';">
     <title>AILIENANT</title>
     <link rel="stylesheet" href="${styleUri}">
 </head>
 <body>
-    <div id="root" data-initial='${initialAttr}'></div>
+    <div id="root" data-initial='${initialAttr}' data-logo='${logoUri}'></div>
     <script src="${scriptUri}"></script>
 </body>
 </html>`;

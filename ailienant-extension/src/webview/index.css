@@ -525,6 +525,22 @@ body {
   gap: 6px;
 }
 
+/* ── Sidebar logo header ──────────────────────────────────── */
+.ai-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 0 8px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.15));
+  flex-shrink: 0;
+}
+
+.ai-logo {
+  height: 30px;
+  width: auto;
+  opacity: 0.92;
+}
+
 .ai-btn {
   padding: 4px 10px;
   border-radius: var(--ai-radius);

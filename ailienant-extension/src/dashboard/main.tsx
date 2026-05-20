@@ -1,4 +1,6 @@
 import './dashboard.css';
+// @ts-ignore — esbuild resolves .svg as dataurl string; tsc doesn't know this
+import logoUrl from './logo.svg';
 import { createRoot } from 'react-dom/client';
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 
@@ -41,7 +43,7 @@ function Dashboard(): JSX.Element {
         <div className="db-layout">
             {/* Header */}
             <header className="db-header">
-                <span className="db-header-logo">AILIENANT</span>
+                <img src={logoUrl as string} alt="AILIENANT" className="db-header-logo-img" />
                 <span className="db-header-sub">Local Command Center</span>
             </header>
 

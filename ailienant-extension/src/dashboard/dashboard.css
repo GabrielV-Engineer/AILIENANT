@@ -48,11 +48,9 @@ body {
   z-index: 10;
 }
 
-.db-header-logo {
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  color: var(--color-primary);
+.db-header-logo-img {
+  height: 32px;
+  width: auto;
 }
 
 .db-header-sub {

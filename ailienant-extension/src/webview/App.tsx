@@ -73,7 +73,7 @@ function readInitialState(root: HTMLElement): InitialState {
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
-function App({ initial }: { initial: InitialState }): JSX.Element {
+function App({ initial, logoUri }: { initial: InitialState; logoUri: string }): JSX.Element {
     // Core state
     const [enabled,         setEnabled]         = useState(initial.masterEnabled);
     const [preset,          setPreset]           = useState<ReasoningPreset>(initial.reasoningPreset);
@@ -267,6 +267,13 @@ function App({ initial }: { initial: InitialState }): JSX.Element {
             style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}
             {...rootAttrs}
         >
+            {/* Logo header */}
+            {logoUri && (
+                <div className="ai-sidebar-header">
+                    <img src={logoUri} alt="AILIENANT" className="ai-logo" />
+                </div>
+            )}
+
             {/* Connection health bar */}
             <div className="ai-connection-bar">
                 <span className="ai-connection-dot" data-status={wsStatus} />
@@ -441,5 +448,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const root = document.getElementById('root');
     if (!root) { return; }
     const initial = readInitialState(root);
-    createRoot(root).render(<App initial={initial} />);
+    const logoUri = root.dataset.logo ?? '';
+    createRoot(root).render(<App initial={initial} logoUri={logoUri} />);
 });

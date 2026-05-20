@@ -69,6 +69,7 @@ async function main() {
 		platform: 'browser',
 		outdir: 'dist/dashboard',
 		chunkNames: 'chunks/[name]-[hash]',
+		loader: { '.svg': 'dataurl' },
 		logLevel: 'silent',
 		plugins: [esbuildProblemMatcherPlugin],
 	});
