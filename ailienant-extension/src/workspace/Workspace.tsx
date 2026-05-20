@@ -5,17 +5,16 @@ import {
     ReasoningPreset, InferenceTier, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot,
 } from '../shared/config';
-import type { AilienantConfig } from '../shared/types';
+import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { Icon } from '../shared/Icon';
+import { Tooltip as AiTooltip } from '../shared/Tooltip';
 import { WorkspaceHeader } from './components/WorkspaceHeader';
-import { HUD, type ModelInfo } from './components/HUD';
 import { TelemetryHUD, useTpsCalculator } from './components/TelemetryHUD';
-import { DreamingMode } from './components/DreamingMode';
 import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
-import { ConfigPanel } from './components/ConfigPanel';
+import { IndexingStatus } from './components/IndexingStatus';
 import type { HITLIntervention } from './components/HITLInterventionCard';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 
@@ -24,6 +23,7 @@ interface ToastItem { id: number; level: ToastLevel; message: string; }
 let _toastId = 0;
 
 interface Message { role: 'user' | 'assistant'; content: string; streaming?: boolean; }
+interface NattMessage { role: 'natt' | 'user'; content: string; }
 
 interface InitialState {
     sessionId: string;
@@ -33,15 +33,20 @@ interface InitialState {
 }
 
 export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
-    const config = initial.config;
+    const [config, setConfig] = useState<AilienantConfig | null>(initial.config);
     const nattName = config?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
 
-    // Core state
+    // Mode / preset / tier (all live inside ModeMenu)
+    const [mode, setMode] = useState<ExecutionMode>('automatic');
     const [preset, setPreset] = useState<ReasoningPreset>('architect');
     const [tier, setTier] = useState<InferenceTier>('HYBRID');
+
+    // Dreaming
     const [dreamingActive, setDreamingActive] = useState(false);
     const [dreamingProfile, setDreamingProfile] = useState<DreamingProfile>('Hybrid');
-    const [budgetUsd, setBudgetUsd] = useState(config?.finops?.budget_usd ?? 10.0);
+
+    // Budget
+    const [budgetUsd] = useState(config?.finops?.budget_usd ?? 0);
 
     // Chat
     const [messages, setMessages] = useState<Message[]>([]);
@@ -51,7 +56,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     // Natt
     const [nattOpen, setNattOpen] = useState(false);
-    const [nattMessages] = useState<{ role: 'natt' | 'user'; content: string }[]>([]);
+    const [nattMessages, setNattMessages] = useState<NattMessage[]>([]);
     const [hitlPending, setHitlPending] = useState<HITLIntervention | undefined>();
 
     // Telemetry
@@ -60,10 +65,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [lockedFiles, setLockedFiles] = useState(0);
     const [telemetry, setTelemetry] = useState<TelemetryFrame | undefined>();
     const [snapshot, setSnapshot] = useState<TokenSnapshot | undefined>();
-
-    // Models
-    const [models, setModels] = useState<ModelInfo[]>([]);
-    const [selectedModelId, setSelectedModelId] = useState<string | undefined>();
+    const [indexing, setIndexing] = useState<IndexingState>({ state: 'idle' });
 
     // Toasts
     const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -73,16 +75,27 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 6000);
     }, []);
 
-    const { recordChunk, tps, history: tpsHistory } = useTpsCalculator();
+    const { recordChunk, tps } = useTpsCalculator();
+
+    // Emit Natt visibility to the extension host (drives critical-notif gating).
+    useEffect(() => {
+        vscode.postMessage({ type: 'NATT_VISIBILITY', open: nattOpen });
+    }, [nattOpen]);
 
     // ── WS / extension message handler ─────────────────────────
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
-            const msg = event.data as { type: string; payload?: unknown };
+            const msg = event.data as { type: string; payload?: unknown; config?: unknown; open?: boolean };
 
             switch (msg.type) {
                 case 'WS_STATUS':
                     setWsStatus(msg.payload as WsConnectionStatus);
+                    break;
+                case 'CONFIG_UPDATED':
+                    setConfig((msg.config ?? null) as AilienantConfig | null);
+                    break;
+                case 'OPEN_NATT':
+                    setNattOpen(true);
                     break;
                 case 'server_token_chunk': {
                     const d = msg.payload as { token: string };
@@ -116,6 +129,32 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     addToast('warn', `${nattName} requires your authorization`);
                     break;
                 }
+                case 'server_natt_message': {
+                    const d = msg.payload as { content: string; is_alert?: boolean };
+                    setNattMessages(prev => [...prev, { role: 'natt', content: d.content }]);
+                    break;
+                }
+                case 'server_indexing_started': {
+                    const d = msg.payload as { total_files?: number };
+                    setIndexing({ state: 'indexing', pct: 0, total_files: d?.total_files, files_indexed: 0 });
+                    break;
+                }
+                case 'server_indexing_progress':
+                case 'INDEXING_PROGRESS': {
+                    const d = msg.payload as { pct?: number; files_indexed?: number; total_files?: number };
+                    setIndexing({
+                        state: 'indexing',
+                        pct: d?.pct ?? 0,
+                        files_indexed: d?.files_indexed,
+                        total_files: d?.total_files,
+                    });
+                    break;
+                }
+                case 'server_indexing_complete': {
+                    const d = msg.payload as { node_count?: number };
+                    setIndexing({ state: 'ready', node_count: d?.node_count ?? 0 });
+                    break;
+                }
                 case 'server_model_warmup': {
                     const d = msg.payload as { model_name: string; is_local: boolean };
                     addToast('info', `Warming up ${d.model_name} (${d.is_local ? 'local' : 'cloud'})`);
@@ -135,12 +174,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 case 'TOKEN_SNAPSHOT':
                     setSnapshot(msg.payload as TokenSnapshot);
                     break;
-                case 'MODELS_LOADED':
-                    setModels(msg.payload as ModelInfo[]);
-                    break;
                 case 'TASK_STARTED': {
                     const d = msg.payload as { task_id: string };
                     setActiveTaskId(d.task_id);
+                    break;
+                }
+                case 'PARALLEL_SESSION_NOTIFY': {
+                    const count = (msg as unknown as { count: number }).count;
+                    const label = count === 1 ? 'session is' : `${count} sessions are`;
+                    addToast('info', `${count} parallel ${label} running — AILIENANT isolates each independently.`);
                     break;
                 }
             }
@@ -161,11 +203,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             value: text,
             preset,
             tier,
+            execution_mode: mode,
             ...presetConfig,
-            model_override: selectedModelId,
             session_id: initial.sessionId,
         });
-    }, [preset, tier, selectedModelId, initial.sessionId]);
+    }, [preset, tier, mode, initial.sessionId]);
 
     const handleAbort = useCallback(() => {
         vscode.postMessage({ type: 'ABORT_TASK' });
@@ -176,10 +218,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         setDreamingProfile(p);
     }, []);
 
-    const handleEngineChange = useCallback((tierKey: 'small' | 'medium' | 'big' | 'cloud') => {
-        const m = config?.tiers[tierKey];
-        if (m) { setSelectedModelId(m); }
-    }, [config]);
+    const handleNattSubmit = useCallback((text: string) => {
+        setNattMessages(prev => [...prev, { role: 'user', content: text }]);
+        vscode.postMessage({ type: 'NATT_MESSAGE', text, session_id: initial.sessionId });
+    }, [initial.sessionId]);
 
     const handleResolveHitl = useCallback((_id: string) => {
         setHitlPending(undefined);
@@ -194,8 +236,13 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     };
 
     const wsLabel =
-        wsStatus === 'connected' ? 'Connected' :
-        wsStatus === 'reconnecting' ? 'Reconnecting…' : 'Disconnected';
+        wsStatus === 'connected' ? 'AILIENANT Core · Connected' :
+        wsStatus === 'reconnecting' ? 'AILIENANT Core · Reconnecting…' :
+        'AILIENANT Core · Offline';
+    const wsTip =
+        wsStatus === 'connected' ? 'Backend WebSocket online. Streaming, telemetry, and HITL are active.' :
+        wsStatus === 'reconnecting' ? 'Reconnecting to the AILIENANT backend. Streaming is paused.' :
+        'Backend WebSocket unreachable. Start the core (uvicorn main:app) on the configured port.';
 
     return (
         <Tooltip.Provider delayDuration={400} skipDelayDuration={150}>
@@ -205,58 +252,28 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     nattName={nattName}
                     nattOpen={nattOpen}
                     onToggleNatt={() => setNattOpen(o => !o)}
-                    onOpenSettings={() => { /* settings dropdown is inline */ }}
                     logoUri={initial.logoUri}
                 />
 
                 {/* Status strip */}
                 <div className="ws-status">
-                    <span className="ws-status-dot" data-status={wsStatus} />
-                    <span>{wsLabel}</span>
-                    <span style={{ flex: 1 }} />
-                    <DreamingMode
-                        active={dreamingActive}
-                        profile={dreamingProfile}
-                        onToggle={handleDreamingToggle}
-                    />
+                    <AiTooltip content={wsTip}>
+                        <div className="ws-status-pill">
+                            <Icon name="network" size={12} />
+                            <span className="ws-status-dot" data-status={wsStatus} />
+                            <span>{wsLabel}</span>
+                        </div>
+                    </AiTooltip>
+                    <span className="ws-status-divider" />
+                    <IndexingStatus state={indexing} />
+                    <span className="ws-spacer" />
                 </div>
 
                 {/* Main split-grid */}
                 <main className="ws-main">
-                    {/* LEFT: chat + controls */}
+                    {/* LEFT: chat + bar */}
                     <section className="ws-main-left">
                         <CSSAlertBanner telemetry={telemetry} />
-
-                        {config && (
-                            <ConfigPanel
-                                config={config}
-                                budgetUsd={budgetUsd}
-                                onBudgetChange={setBudgetUsd}
-                                onEngineChange={handleEngineChange}
-                                onOpenContextOverlay={() => { /* triggered from PromptBar [+] */ }}
-                            />
-                        )}
-
-                        <HUD
-                            preset={preset}
-                            tier={tier}
-                            disabled={false}
-                            models={models}
-                            selectedModelId={selectedModelId}
-                            onPresetChange={setPreset}
-                            onTierChange={setTier}
-                            onModelSelect={setSelectedModelId}
-                        />
-
-                        <TelemetryHUD
-                            occStatus={occStatus}
-                            lockedFiles={lockedFiles}
-                            tps={tps}
-                            tpsHistory={tpsHistory}
-                            snapshot={snapshot}
-                            budgetUsd={budgetUsd}
-                            telemetry={telemetry}
-                        />
 
                         <div className="ws-messages">
                             {messages.length === 0 && (
@@ -281,29 +298,52 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             <div ref={messagesEndRef} />
                         </div>
 
-                        <PromptBar
-                            disabled={Boolean(hitlPending)}
-                            placeholder={hitlPending ? `${nattName} is waiting for your decision` : undefined}
-                            activeTaskId={activeTaskId}
-                            isStreaming={isStreaming}
-                            onSubmit={handleSubmit}
-                            onAbort={handleAbort}
-                        />
+                        {/* PromptBar + Telemetry sibling cards (matches manifest §7.2) */}
+                        <div className="ws-bottom">
+                            <PromptBar
+                                disabled={Boolean(hitlPending)}
+                                placeholder={hitlPending ? `${nattName} is waiting for your decision` : undefined}
+                                activeTaskId={activeTaskId}
+                                isStreaming={isStreaming}
+                                config={config}
+                                mode={mode}
+                                preset={preset}
+                                tier={tier}
+                                onModeChange={setMode}
+                                onPresetChange={setPreset}
+                                onTierChange={setTier}
+                                dreamingActive={dreamingActive}
+                                dreamingProfile={dreamingProfile}
+                                onDreamingToggle={handleDreamingToggle}
+                                onSubmit={handleSubmit}
+                                onAbort={handleAbort}
+                            />
+                            <TelemetryHUD
+                                occStatus={occStatus}
+                                lockedFiles={lockedFiles}
+                                tps={tps}
+                                snapshot={snapshot}
+                                budgetUsd={budgetUsd}
+                                telemetry={telemetry}
+                            />
+                        </div>
                     </section>
 
-                    {/* RIGHT: Natt pane (visible only when nattOpen) */}
+                    {/* RIGHT: Natt pane */}
                     {nattOpen && (
                         <NattCanvas
                             nattName={nattName}
                             messages={nattMessages}
                             pendingIntervention={hitlPending}
+                            disabled={Boolean(hitlPending)}
                             onClose={() => setNattOpen(false)}
                             onResolveIntervention={handleResolveHitl}
+                            onSendMessage={handleNattSubmit}
                         />
                     )}
                 </main>
 
-                {/* Toast stack */}
+                {/* Toasts */}
                 <div className="ws-toast-stack">
                     {toasts.map(t => (
                         <div key={t.id} className="ws-toast" data-level={t.level} role="alert">

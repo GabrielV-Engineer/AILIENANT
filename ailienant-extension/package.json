@@ -34,13 +34,15 @@
     "commands": [
       {
         "command": "ailienant.openWorkspace",
-        "title": "Open Workspace",
-        "category": "AILIENANT"
+        "title": "Open AILIENANT Workspace",
+        "category": "AILIENANT",
+        "icon": "media/icon.svg"
       },
       {
         "command": "ailienant.newSession",
-        "title": "New Session",
-        "category": "AILIENANT"
+        "title": "New AILIENANT Session",
+        "category": "AILIENANT",
+        "icon": "media/icon-color.svg"
       },
       {
         "command": "ailienant.showMctsDiff",
@@ -53,6 +55,15 @@
         "category": "AILIENANT"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "ailienant.newSession",
+          "group": "navigation",
+          "when": "true"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "ailienant.openWorkspace",
