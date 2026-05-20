@@ -47,6 +47,12 @@ export class WorkspacePanelManager {
         for (const panel of this._panels.values()) { panel.dispose(); }
     }
 
+    /** Close and dispose the panel for a deleted session (no-op if not open). */
+    public closeSession(id: string): void {
+        const panel = this._panels.get(id);
+        if (panel) { panel.dispose(); }
+    }
+
     /** Reveal existing panel or open a new one for the given session. */
     public openSession(session: Session): void {
         const existing = this._panels.get(session.id);

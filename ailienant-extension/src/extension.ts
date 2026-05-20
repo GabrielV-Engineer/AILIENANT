@@ -40,11 +40,14 @@ export function activate(context: vscode.ExtensionContext): void {
         };
     };
 
+    const onDeleteSession = (id: string): void => workspaceManager.closeSession(id);
+
     const sessionBrowser = new SessionBrowserProvider(
         context.extensionUri,
         context.workspaceState,
         onOpenSession,
         onNewSession,
+        onDeleteSession,
     );
 
     // Auto-title pipeline: workspace_panel fires the LLM request after the first
