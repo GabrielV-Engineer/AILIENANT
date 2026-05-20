@@ -4180,16 +4180,18 @@ var SessionManager = class _SessionManager {
 var vscode7 = __toESM(require("vscode"));
 var SESSIONS_KEY = "ailienant.sessions";
 var SessionBrowserProvider = class {
-  constructor(_extensionUri, _workspaceState, _onOpenSession, _onNewSession) {
+  constructor(_extensionUri, _workspaceState, _onOpenSession, _onNewSession, _onDeleteSession) {
     this._extensionUri = _extensionUri;
     this._workspaceState = _workspaceState;
     this._onOpenSession = _onOpenSession;
     this._onNewSession = _onNewSession;
+    this._onDeleteSession = _onDeleteSession;
   }
   _extensionUri;
   _workspaceState;
   _onOpenSession;
   _onNewSession;
+  _onDeleteSession;
   static viewType = "ailienant.sessionBrowser";
   _view;
   resolveWebviewView(webviewView, _context, _token) {
@@ -4223,6 +4225,7 @@ var SessionBrowserProvider = class {
           break;
         }
         case "DELETE_SESSION": {
+          this._onDeleteSession(msg.session_id);
           this._persist((prev) => prev.filter((s) => s.id !== msg.session_id));
           break;
         }
@@ -4421,6 +4424,13 @@ var WorkspacePanelManager = class {
       d.dispose();
     }
     for (const panel of this._panels.values()) {
+      panel.dispose();
+    }
+  }
+  /** Close and dispose the panel for a deleted session (no-op if not open). */
+  closeSession(id) {
+    const panel = this._panels.get(id);
+    if (panel) {
       panel.dispose();
     }
   }
@@ -4828,11 +4838,13 @@ function activate(context) {
       model_tier: "medium"
     };
   };
+  const onDeleteSession = (id) => workspaceManager.closeSession(id);
   const sessionBrowser = new SessionBrowserProvider(
     context.extensionUri,
     context.workspaceState,
     onOpenSession,
-    onNewSession
+    onNewSession,
+    onDeleteSession
   );
   workspaceManager.setTitleUpdater((sessionId, title) => {
     sessionBrowser.updateSessionTitle(sessionId, title);

@@ -1,8 +1,9 @@
 @import url("../shared/theme.css");
 
-/* Remap bg-main to match whatever VS Code theme is active */
+/* Remap bg-main and bg-surface to match the active VS Code theme */
 :root {
-  --bg-main: var(--vscode-editor-background, #0D1117);
+  --bg-main:    var(--vscode-editor-background,       #0D1117);
+  --bg-surface: var(--vscode-editorWidget-background, #161B22);
 }
 
 html, body, #root { height: 100%; }

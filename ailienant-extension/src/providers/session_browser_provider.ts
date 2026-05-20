@@ -12,6 +12,7 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
         private readonly _workspaceState: vscode.Memento,
         private readonly _onOpenSession: (session: Session) => void,
         private readonly _onNewSession: () => Promise<Session>,
+        private readonly _onDeleteSession: (id: string) => void,
     ) {}
 
     public resolveWebviewView(
@@ -52,6 +53,7 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
                     break;
                 }
                 case 'DELETE_SESSION': {
+                    this._onDeleteSession(msg.session_id as string);
                     this._persist((prev) => prev.filter(s => s.id !== msg.session_id));
                     break;
                 }
