@@ -1041,3 +1041,81 @@ Cierre de la Fase 6 con una **suite adversarial test-only**: cero código de pro
 **Type/lint compliance:** `pytest tests/test_phase6_checkpoint_gate.py -v` → **12/12 verde** (16.66 s, primera corrida); `ruff check tests/test_phase6_checkpoint_gate.py` → exit 0; `mypy --strict` sobre los 5 módulos source (`core/sandbox.py`, `core/audit.py`, `core/supervisor.py`, `core/dead_letter.py`, `shared/logging_filters.py`) → unchanged from baseline (cero regresión — el suite es test-only). La única deprecación en el output es `LangGraphDeprecatedSinceV10` en `brain/engine.py:7` (importing `Send` from `langgraph.constants` → trasladar a `langgraph.types`) — ajena a 6.10, candidato a tracking en Fase 7 o como housekeeping.
 
 **Constraint honoured:** `core/sandbox.py`, `core/audit.py`, `core/supervisor.py`, `core/dead_letter.py`, `shared/logging_filters.py`, `main.py`, `tools/*.py`, `brain/*.py` — **intactos**. Sin nuevas dependencias. Sin amendment a `PHASE_6_BLUEPRINT.md` (ningún ADR alterado — las cuatro correcciones del brief son test-spec, no contratos de diseño). La columna `resolved_at` ya existía en `dead_letter_tasks`. **Fase 6 cerrada**; el PHASE 6 LOCK-IN de CLAUDE.md §1 auto-expira al marcar 6.10 [x]. La próxima fase activa es **Fase 7 — Extensión VS Code (Frontend TS/React)**.
+
+---
+
+## 🚀 HITO 7.0: VS Code Extension & Web Dashboard — Phase 7 (UI/UX Layer) — 2026-05-19
+
+**Status:** COMPLETADO ✅ — Phase 7 cerrada. Build pipeline: `tsc --noEmit` ✅ · `npm run lint` ✅ · `node esbuild.js` (3 bundles) ✅
+
+Phase 7 construye la capa completa de usuario de AILIENANT: la sidebar de VS Code (React/IIFE) y el dashboard web local (SPA ESM con code splitting). La propuesta fue sometida a un proceso de validación crítica antes de implementarse, resolviendo 5 gaps arquitectónicos (ver Plan de Sesión) y un conflicto de diseño (Reasoning Presets vs Hardware Templates → Opción A Pivot). El HUD ASCII del manifest quedó preservado íntegro; la paleta de color `#FEF9F3 / #E8D9CA / #CDC8C2 / #63a583 / #233237` se aplicó **exclusivamente** al Dashboard Web; la sidebar VS Code usa variables `--vscode-*` nativas con acentos de modo estilo Claude Code.
+
+### Resoluciones de Gap (Análisis Crítico Pre-Implementación)
+
+| Gap | Problema | Resolución |
+|---|---|---|
+| G1 — FinOps cost en WS | `server_telemetry` no lleva campos de costo | Poll `GET /api/v1/telemetry/tokens` cada 5 s |
+| G2 — TPS Speedometer | `server_token_chunk` no lleva TPS server-side | Cálculo client-side: ventana rolling 5 s desde timestamps de chunks |
+| G3 — `/context Rewind` | `/api/v1/graph/rollback` no existe | Mapeado a `POST /api/v1/task/resume/{task_id}` |
+| G4 — Dependencias faltantes | `@radix-ui/react-command` + `@radix-ui/react-dialog` no existen en npm | SlashMenu reescrito con React puro; HITL es inline (no modal) |
+| G5 — Monaco blast radius (>5MB) | Import estático → TTI spike + main thread bloqueado | `React.lazy()` + `Suspense` + esbuild `splitting:true` + `format:'esm'` |
+
+**Conflicto Resuelto:** Reasoning Presets (HOW to think) ≠ Hardware Templates (WHICH model). Pivot a tres capas ortogonales: Preset Selector (Surgeon/Architect/Explorer) → Tier Toggle (LOCAL_ONLY/HYBRID/SOLO_CLOUD) → Level 2 Popover (model detail). Separación más limpia que el diseño original.
+
+### 7.1 — Context Capture Engine (`ide_sync.ts`)
+
+* `ailienant-extension/src/ide_sync.ts` — **NEW** (~220 LoC). `IdeSync` class con debounce 150 ms. Suscripciones a `onDidChangeActiveTextEditor`, `onDidChangeTextEditorSelection`, `onDidChangeTextEditorVisibleRanges`, `onDidChangeTextDocument`. Parseado de `.ailienantignore` con `FileSystemWatcher` (hot-reload). Privacy Gate: `isFileBlocked()` filtra por glob patterns → emite `FILE_BLOCKED` al webview → submit button deshabilitado. Envía `client_file_update` via `WSClient`.
+
+### 7.2 — Chat Sidebar UI (`src/webview/`)
+
+* `src/webview/index.css` — **REWRITE** (~350 LoC). Sistema de tokens CSS completo para sidebar. `:root` con `--ai-accent: #63a583`, `--ai-warn: #E8C43A`, `--ai-error: #E85A4F`, `--ai-cloud: #7B9ED9`. Acentos de modo via `data-*` attributes en el root: `[data-dreaming="true"] .ai-chat-input { border-color: var(--ai-accent); }`. Todos los componentes usan `--vscode-*` como base + accent vars. No hay colores hardcodeados en la sidebar.
+* `src/webview/components/HUD.tsx` — **NEW**. Level 1: 3 Reasoning Preset buttons (Surgeon/Architect/Explorer). Level 2: Radix `Popover` con model list y detail (context window, quantization). Importa `TierToggle`.
+* `src/webview/components/TierToggle.tsx` — **NEW**. Toggle de 3 posiciones (LOCAL_ONLY/HYBRID/SOLO_CLOUD) con CSS `data-active` + `data-tier`. Sin dependencia Radix — HTML nativo.
+* `src/webview/hooks/useReasoningPreset.ts` — **NEW**. `PRESETS` record mapeando los 3 presets a `{temperature, top_p, tool_rag_top_k, context_window_pct, enable_mcts?, preferred_tools?}`. Se inyectan en el `TaskSubmitRequest` antes de la serialización.
+* `src/webview/components/TelemetryHUD.tsx` — **NEW** (~280 LoC). Tres instrumentos SVG puros: `OccRing` (stroke-dasharray, 3 colores por estado), `Speedometer` (arco SVG, TPS client-side), `TpsSparkline` (polyline 60 puntos, ventana rolling). `FinOpsBar`: poll `GET /api/v1/telemetry/tokens` cada 5 s, animación roja en umbral de gasto.
+* `src/webview/components/DreamingMode.tsx` — **NEW**. Botón `🌙` con popover Radix: toggle ON/OFF + 4 radio pills (Medium/Big/Cloud/Hybrid). Animación `ai-dream-glow` (2.5 s pulse). Persiste en `vscode.workspace.state`. Envía `dreaming_toggle` postMessage.
+* `src/webview/components/CSSAlertBanner.tsx` — **NEW**. Banner sticky cuando `css_total < 40 || is_red_alert`. Usa `--vscode-inputValidation-error*` CSS vars. Dismissible por sesión via `sessionStorage`.
+* `src/webview/components/SlashMenu.tsx` — **NEW**. Typeahead puro React: `/context`, `/context rewind`, `/models`, `/customize`, `/dlq`. Nav por teclado ↑↓ Enter Escape. `/context rewind` → `POST /api/v1/task/resume/{task_id}`.
+* `src/webview/components/HITLCard.tsx` — **NEW**. Tarjeta inline (no modal) para `server_hitl_approval_request`. Botones Approve/Reject + textarea de comentario. Envía `HITL_RESPONSE` postMessage.
+* `src/webview/BentoMenu.tsx` — **IMPLEMENTED** (era stub vacío). Grid 3×3 con 9 agentes canónicos. Badge `⚡ Direct` 3 s post-invocación. Envía `FORCE_AGENT` postMessage.
+* `src/webview/GraphViewer.tsx` — **IMPLEMENTED** (era stub vacío). React Flow con `onlyRenderVisibleElements`. LOD via `useViewport()`: zoom >0.8 → FullNode (texto completo), 0.4–0.8 → MediumNode (nombre de archivo), <0.4 → DotNode + `HeatmapOverlay` SVG. `GraphMutationEvent` interface; upsert de nodos desde `mutations` prop.
+* `src/webview/App.tsx` — **REFACTOR COMPLETO** (51 LoC → ~260 LoC). Estado completo: `wsStatus`, `occStatus`, `telemetry`, `snapshot`, `hitlQueue`, `dlqCount`, `models`, `toasts`, `fileBlocked`. `ToastStack` inline (3 niveles, auto-dismiss 6 s). Handler `window.addEventListener('message')` para todos los eventos WS server-side. Root con `data-dreaming`, `data-tier`, `data-alert` para CSS mode accents.
+
+### 7.3 — Delta State Sync (`ws_client.ts`)
+
+* `src/api/ws_client.ts` — **MODIFIED**. `_fileVersions: Map<string, string>` para tracking OCC. `BroadcastChannel('ailienant_ws')` para relay al Dashboard. `onStatus/removeStatusHandler` + `_emitStatus()`. Reconexión exponencial: 1 s → 2 s → 4 s → 30 s (cap). `trackFileVersion()` público; `FILE_VERSION_CHANGED` broadcasted al Dashboard cuando `document_version_id` cambia → marca patches como STALE.
+
+### 7.4 — Providers & Activation
+
+* `src/providers/chat_sidebar.ts` — **MODIFIED**. `InitialState` extendido con `reasoningPreset`, `inferenceTier`, `dreamingEnabled`, `dreamingProfile`. Forwarding de `WSClient.onStatus` → `WS_STATUS` webview. Forwarding de `WSClient.onMessage` → eventos `server_*` al webview. Nuevos casos: `HITL_RESPONSE`, `FORCE_AGENT`, `dreaming_toggle`. HTML generado incluye `<link rel="stylesheet">` para `webview.css` + CSP extendida con `'unsafe-inline'` para estilos.
+
+### 7.5 — Web Dashboard SPA (`src/dashboard/`)
+
+* `src/dashboard/dashboard.css` — **NEW**. Paleta custom completa vía CSS custom properties: `--color-bg: #FEF9F3`, `--color-surface: #E8D9CA`, `--color-border: #CDC8C2`, `--color-primary: #63a583`, `--color-dark: #233237`. Grid layout: 220 px sidebar + 1fr main, 56 px header.
+* `src/dashboard/main.tsx` — **NEW**. SPA entry con `React.lazy()` para `StagingArea` (code split Monaco). 4 paneles eager: `HardwarePanel`, `BYOMPanel`, `RulesPanel`, `AuditPanel`.
+* `src/dashboard/panels/HardwarePanel.tsx` — **NEW**. Gauges RAM/VRAM SVG radiales, Hardware Semaphore (🟢/🟡/🔴), selector de Execution Mode (SEQUENTIAL/MICRO_SWARM/FULL_SWARM).
+* `src/dashboard/panels/BYOMPanel.tsx` — **NEW**. Formularios dinámicos para endpoints Ollama/vLLM/OpenRouter. API key maskeada/toggleable. Botón "Test Connection" → `GET /api/v1/models/available`.
+* `src/dashboard/panels/RulesPanel.tsx` — **NEW**. Editor de instrucciones globales (SOUL.md) + reglas por directorio. Persiste via `POST /api/v1/telemetry/reject`.
+* `src/dashboard/panels/StagingArea.tsx` — **NEW, lazy-loaded**. Monaco `DiffEditor` side-by-side. Badge STALE sobre `document_version_id` mismatch vía `BroadcastChannel('ailienant_patches')`. Bloquea re-aprobación en versión obsoleta.
+* `src/dashboard/panels/AuditPanel.tsx` — **NEW**. Ledger HITL paginado. Verificación de integridad de cadena blake2b via `GET /api/v1/audit/verify`. Indicador ✅/❌ por cadena.
+
+### 7.6 — Build Pipeline
+
+* `esbuild.js` — **MODIFIED**. Tercer contexto de build `dashboardCtx`: `entryPoints: ['src/dashboard/main.tsx']`, `format: 'esm'`, `splitting: true`, `outdir: 'dist/dashboard'`, `chunkNames: 'chunks/[name]-[hash]'`. Monaco chunk verificado en `dist/dashboard/chunks/StagingArea-*.js` (~232 KB dev). Bundle principal dashboard: <200 KB.
+* `tsconfig.json` — **MODIFIED**. `"skipLibCheck": true` para suprimir errores de declaración en `@monaco-editor/react`.
+* `package.json` — **MODIFIED**. Dependencias añadidas: `@radix-ui/react-popover`, `@radix-ui/react-toggle-group`, `reactflow`, `@monaco-editor/react`.
+* `src/shared/config.ts` — **MODIFIED**. Tipos Phase 7: `ReasoningPreset`, `InferenceTier`, `DreamingProfile`, `AgentRole`, `WsConnectionStatus`, `OccStatus`, `TelemetryFrame`, `TokenSnapshot`. `WORKSPACE_STATE_KEYS` extendido con `dreamingEnabled`, `dreamingProfile`, `reasoningPreset`, `inferenceTier`.
+
+### Validación de Calidad
+
+- [x] `tsc --noEmit` — 0 errores (skipLibCheck en tsconfig)
+- [x] `npm run lint` — 0 errores (2 warnings pre-existentes en `api_client.ts:1` y `vfs_reader.ts:1`, no de Phase 7)
+- [x] `node esbuild.js` — 3 bundles producidos exitosamente (`dist/extension.js`, `dist/webview.js`, `dist/dashboard/`)
+- [x] Monaco code splitting verificado: chunk `dist/dashboard/chunks/StagingArea-*.js` existe como chunk separado
+
+### Decisiones Arquitectónicas Clave
+
+1. **Color scope:** Paleta custom SÓLO en Dashboard Web. Sidebar VS Code usa `--vscode-*` + acentos de modo (Claude Code-style) via `data-*` attributes. Sin fondos o superficies custom en sidebar.
+2. **Dreaming Mode:** Botón `[🌙 Dream]` prominente → Radix Popover con ON/OFF + 4 profile pills. Border de input pulsa verde (#63a583) cuando activo. Persiste en `vscode.workspace.state`.
+3. **Monaco blast radius:** Resuelto. `React.lazy()` + `Suspense` + esbuild ESM splitting. El chunk Monaco (~5 MB) solo se descarga cuando el usuario abre Staging Area.
+4. **LOD Graph:** 3 tiers por zoom. Heatmap SVG en ultra-zoom. `onlyRenderVisibleElements` en React Flow.
