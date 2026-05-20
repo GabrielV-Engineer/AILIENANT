@@ -10,11 +10,11 @@ interface HardwareMetrics {
 type SemaphoreLevel = 'green' | 'yellow' | 'red';
 type ExecutionMode  = 'SEQUENTIAL' | 'MICRO_SWARM' | 'FULL_SWARM';
 
-const SEMAPHORE_COLORS = { green: '#63a583', yellow: '#E8C43A', red: '#E85A4F' };
+const SEMAPHORE_COLORS = { green: '#63a583', yellow: '#E3B341', red: '#F85149' };
 const SEMAPHORE_LABELS = {
-    green:  '🟢 Sufficient VRAM',
-    yellow: '🟡 Paging risk — degraded latency',
-    red:    '🔴 OOM risk — blocking local, suggesting Cloud',
+    green:  'Sufficient VRAM',
+    yellow: 'Paging risk — degraded latency',
+    red:    'OOM risk — blocking local, suggesting Cloud',
 };
 
 function getSemaphoreLevel(vramUsedGb: number, vramTotalGb: number): SemaphoreLevel {

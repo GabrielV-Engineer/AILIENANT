@@ -1,0 +1,112 @@
+/* ============================================================
+   AILIENANT — Unified Design Tokens (Dark Mode Only)
+   Imported by sidebar.css, workspace.css, dashboard.css.
+   ============================================================ */
+:root {
+  /* Premium Dark Color Palette */
+  --bg-main:        #0D1117;
+  --bg-surface:     #161B22;
+  --bg-hover:       #21262D;
+  --border-subtle:  #30363D;
+
+  /* AILIENANT Brand Accents */
+  --accent-primary: #63a583;
+  --accent-hover:   #74b394;
+  --accent-alert:   #F85149;
+  --accent-warn:    #E3B341;
+
+  /* Text Hierarchy */
+  --text-primary:   #E6EDF3;
+  --text-secondary: #8B949E;
+  --text-disabled:  #484F58;
+
+  /* Elevation & Depth */
+  --shadow-elevation: 0 10px 25px -5px rgba(0, 0, 0, 0.6),
+                      0 8px 10px -6px rgba(0, 0, 0, 0.6);
+  --shadow-tooltip:   0 4px 12px rgba(0, 0, 0, 0.5);
+
+  /* Surfaces */
+  --radius-smart: 6px;
+}
+
+/* ── Reset ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  font-size: 13px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Radix Tooltip primitive (.ai-tooltip-content) ─────────── */
+.ai-tooltip-content {
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-radius: var(--radius-smart);
+  box-shadow: var(--shadow-tooltip);
+  font-size: 12px;
+  max-width: 240px;
+  z-index: 9999;
+  user-select: none;
+  animation: ai-tooltip-fadein 120ms ease-out;
+}
+
+@keyframes ai-tooltip-fadein {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Universal Card (elevated surface) ─────────────────────── */
+.ai-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-smart);
+  box-shadow: var(--shadow-elevation);
+  padding: 16px;
+}
+
+/* ── Universal Button base ─────────────────────────────────── */
+.ai-btn {
+  appearance: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 7px 14px;
+  border-radius: var(--radius-smart);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+.ai-btn:hover  { background: var(--bg-hover); border-color: var(--accent-primary); }
+.ai-btn:active { transform: translateY(1px); }
+.ai-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.ai-btn[data-variant="primary"]  { background: var(--accent-primary); border-color: var(--accent-primary); color: #0D1117; }
+.ai-btn[data-variant="primary"]:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.ai-btn[data-variant="danger"]   { background: var(--accent-alert); border-color: var(--accent-alert); color: #fff; }
+.ai-btn[data-variant="ghost"]    { background: transparent; border-color: transparent; }
+.ai-btn[data-variant="ghost"]:hover { background: var(--bg-hover); }
+
+/* ── Universal Input base ──────────────────────────────────── */
+.ai-input {
+  width: 100%;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 8px 11px;
+  border-radius: var(--radius-smart);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.ai-input:focus { border-color: var(--accent-primary); }
+.ai-input::placeholder { color: var(--text-disabled); }

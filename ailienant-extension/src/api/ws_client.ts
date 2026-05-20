@@ -119,9 +119,9 @@ export class WSClient {
     private _emitStatus(status: WsConnectionStatus): void {
         this.onStatusHandlers.forEach(h => h(status));
         if (status === 'connected') {
-            vscode.window.showInformationMessage('AILIENANT: Túnel Cuántico [Conectado] 🟢');
+            vscode.window.showInformationMessage('AILIENANT: Quantum tunnel connected');
         } else if (status === 'disconnected') {
-            vscode.window.showErrorMessage('AILIENANT: Conexión perdida 🔴');
+            vscode.window.showErrorMessage('AILIENANT: Connection lost');
         }
     }
 

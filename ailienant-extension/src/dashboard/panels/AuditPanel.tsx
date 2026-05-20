@@ -61,8 +61,7 @@ export function AuditPanel(): JSX.Element {
                     </button>
                     {chainStatus && (
                         <div className="db-row" style={{ gap: 6 }}>
-                            <span style={{ fontSize: 18 }}>{chainStatus.valid ? '✅' : '❌'}</span>
-                            <span style={{ fontWeight: 600, color: chainStatus.valid ? '#63a583' : '#E85A4F' }}>
+                            <span style={{ fontWeight: 600, color: chainStatus.valid ? '#63a583' : '#F85149' }}>
                                 {chainStatus.valid
                                     ? `Chain intact — ${chainStatus.checked} events verified`
                                     : `Tamper detected — ${chainStatus.error ?? 'unknown error'}`
@@ -81,7 +80,16 @@ export function AuditPanel(): JSX.Element {
                 )}
                 {entries.map(e => (
                     <div key={e.id} className="db-audit-row">
-                        <span className="db-audit-status">{e.approved === true ? '✅' : e.approved === false ? '❌' : '⏳'}</span>
+                        <span
+                            className="db-audit-status"
+                            data-state={e.approved === true ? 'approved' : e.approved === false ? 'rejected' : 'pending'}
+                            style={{
+                                width: 10, height: 10, borderRadius: '50%',
+                                background: e.approved === true ? '#63a583' : e.approved === false ? '#F85149' : '#E3B341',
+                                marginTop: 5,
+                            }}
+                            title={e.approved === true ? 'Approved' : e.approved === false ? 'Rejected' : 'Pending'}
+                        />
                         <div style={{ flex: 1 }}>
                             <div style={{ fontWeight: 600, fontSize: 12 }}>{e.action_type}</div>
                             <div className="db-muted">{e.session_id} · {new Date(e.timestamp).toLocaleString()}</div>

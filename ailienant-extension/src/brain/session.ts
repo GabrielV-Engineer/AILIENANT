@@ -61,7 +61,7 @@ export class SessionManager {
             // 5. Emitir la Misión (Boca) al API Gateway
             const apiClient = APIClient.getInstance();
 
-            vscode.window.showInformationMessage(`AILIENANT: Analizando directiva con ${dirtyBuffers.length} buffers en contexto... 🐜`);
+            vscode.window.showInformationMessage(`AILIENANT: Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
 
             // Disparamos la petición. Si falla, el catch local lo maneja.
             await apiClient.submitTask(this.sessionId, payload);
@@ -80,7 +80,7 @@ export class SessionManager {
      */
     public abortCurrentTask(): void {
         APIClient.getInstance().cancelTask(this.sessionId);
-        vscode.window.showWarningMessage("AILIENANT: Misión abortada por el usuario. 🛑");
+        vscode.window.showWarningMessage("AILIENANT: Mission aborted by user.");
     }
 
     // Exponemos el SessionID por si la UI lo necesita para renderizar algo
@@ -106,7 +106,7 @@ export class SessionManager {
 
         if (storedVersion !== undefined && doc.version !== storedVersion) {
             vscode.window.showWarningMessage(
-                `AILIENANT: ⚡ Concurrency conflict on ${doc.fileName} — file was edited during inference. Aborting write.`
+                `AILIENANT: Concurrency conflict on ${doc.fileName} — file was edited during inference. Aborting write.`
             );
             WSClient.getInstance().send({
                 event_type: 'client_concurrency_conflict',

@@ -37,7 +37,7 @@ export class IntentRouter {
                 if (pattern.regex.test(prompt)) {
                     const handled = await pattern.handler(document);
                     if (handled) {
-                        vscode.window.setStatusBarMessage('Ailienant: Local optimization applied ⚡', 3000);
+                        vscode.window.setStatusBarMessage('AILIENANT: Local optimization applied', 3000);
                         return true;
                     }
                 }

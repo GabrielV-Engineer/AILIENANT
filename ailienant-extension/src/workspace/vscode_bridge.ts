@@ -6,5 +6,4 @@ export interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
-// Module-level singleton — acquireVsCodeApi() throws if called twice in a webview.
 export const vscode: VsCodeApi = acquireVsCodeApi();

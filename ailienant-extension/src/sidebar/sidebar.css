@@ -1,0 +1,146 @@
+@import url("../shared/theme.css");
+
+/* ============================================================
+   AILIENANT — Session Browser Sidebar
+   ============================================================ */
+
+html, body, #root {
+  height: 100%;
+}
+
+.sb-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  padding: 10px 8px;
+  gap: 10px;
+}
+
+/* ── Top action bar ────────────────────────────────────────── */
+.sb-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.sb-new-btn {
+  width: 100%;
+  justify-content: center;
+  font-weight: 600;
+}
+
+/* ── Search input ──────────────────────────────────────────── */
+.sb-search-wrap {
+  position: relative;
+}
+
+.sb-search-icon {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.sb-search-input {
+  padding-left: 30px;
+}
+
+/* ── Session list ──────────────────────────────────────────── */
+.sb-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.sb-list::-webkit-scrollbar { width: 6px; }
+.sb-list::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 3px; }
+.sb-list::-webkit-scrollbar-thumb:hover { background: var(--bg-hover); }
+
+.sb-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ── Session card ──────────────────────────────────────────── */
+.sb-card {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-smart);
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  position: relative;
+}
+
+.sb-card:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+}
+
+.sb-card[data-active="true"] {
+  background: var(--bg-hover);
+  border-color: var(--accent-primary);
+}
+
+.sb-card-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 22px;
+}
+
+.sb-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.sb-card-tier {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.sb-card-tier[data-tier="cloud"] { color: #7B9ED9; border-color: #7B9ED9; }
+.sb-card-tier[data-tier="big"]   { color: var(--accent-primary); border-color: var(--accent-primary); }
+
+.sb-card-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-disabled);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.sb-card:hover .sb-card-delete { opacity: 1; }
+.sb-card-delete:hover { color: var(--accent-alert); background: var(--bg-main); }

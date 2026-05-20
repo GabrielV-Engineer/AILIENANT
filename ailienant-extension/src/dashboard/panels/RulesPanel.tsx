@@ -72,7 +72,7 @@ export function RulesPanel(): JSX.Element {
             <div className="db-card">
                 <div className="db-card-title">Directory Rules</div>
                 {dirRules.map(r => (
-                    <div key={r.id} style={{ marginBottom: 12, padding: '10px', background: 'var(--color-bg)', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                    <div key={r.id} style={{ marginBottom: 12, padding: '10px', background: 'var(--bg-main)', borderRadius: 4, border: '1px solid var(--border-subtle)' }}>
                         <div className="db-row" style={{ marginBottom: 6 }}>
                             <input
                                 className="db-input"
@@ -83,9 +83,10 @@ export function RulesPanel(): JSX.Element {
                             />
                             <button
                                 className="db-btn db-btn-secondary"
-                                style={{ flexShrink: 0, padding: '4px 8px', fontSize: 11 }}
+                                style={{ flexShrink: 0, padding: '4px 10px', fontSize: 11 }}
                                 onClick={() => removeRule(r.id)}
-                            >✕</button>
+                                aria-label="Remove directory rule"
+                            >Remove</button>
                         </div>
                         <textarea
                             className="db-input"
@@ -102,7 +103,7 @@ export function RulesPanel(): JSX.Element {
                 </button>
                 <div className="db-row">
                     <button className="db-btn db-btn-primary" onClick={saveAll}>Save All Rules</button>
-                    {saved && <span style={{ color: '#63a583', fontSize: 12 }}>✓ Saved</span>}
+                    {saved && <span style={{ color: '#63a583', fontSize: 12 }}>Saved</span>}
                 </div>
             </div>
         </div>
