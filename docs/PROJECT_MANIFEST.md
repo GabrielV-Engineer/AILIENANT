@@ -856,6 +856,152 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
   - Framework: Playwright (Dashboard) + VS Code Extension Test API + Jest (unidades)
   - CI gate: `npm run lint` + `tsc --noEmit` = exit 0
 
+- [ ] **7.9. Granular Per-Element Refactor Tracking**
+
+  > Catalogo de defectos surgidos en smoke-testing post-Phase 7.1. Cada item es un
+  > slot independiente para refactor: el `Problem` describe el sintoma observado,
+  > el `Resolution` queda en blanco hasta que se diseñe la solucion individual.
+  > Dos items son tan grandes que requieren plan dedicado aparte (ver placeholders).
+
+  ### 7.9.A — VS Code Interface (sidebar + workspace editor tab)
+
+  - [ ] **7.9.A.1 — Editor Tab Bar entry (button next to "Split Editor")**
+    - **Problem:** Falta un boton al lado del split editor de VS Code (al estilo
+      Claude Code) que abra una sesion de AILIENANT directamente. Debe tener el
+      logo de AILIENANT.
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.A.2 — HUD / PromptBar size**
+    - **Problem:** El HUD (barra de entrada de texto + herramientas) es muy
+      ancho y un poco alto. Debe achicarse manteniendose centrado, sin ocupar
+      todo el ancho disponible.
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.A.3 — Sidebar styling regression + duplicate-on-click bug**
+    - **Problem:** El sidebar todavia tiene los mismos defectos:
+      - Logo demasiado grande.
+      - Los botones "New Session", "Search" y el boton de eliminar todavia se
+        ven blancos — deben adoptar el template visual de AILIENANT.
+      - Eliminar el logo del sidebar; mostrar solo el wordmark "AILIENANT" en
+        la parte superior.
+      - Agregar separaciones visibles entre las zonas para que no se vea todo
+        amontonado.
+      - **BUG:** cada vez que se hace clic en "New Session", se clona debajo el
+        bloque completo de logo + botones + barra de busqueda (la cabecera
+        del sidebar se renderiza dos veces y crece con cada clic). Hay que
+        identificar el componente que se esta re-montando o duplicando en el
+        DOM y eliminar la fuente de la duplicacion.
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.A.4 — Attach Context button → file picker**
+    - **Problem:** El boton de adjuntar archivos (`[+]` context adder) debe abrir
+      el dialogo nativo de seleccion de archivos de VS Code para que el usuario
+      elija el archivo a adjuntar — actualmente solo muestra un overlay de
+      texto libre.
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.A.5 — "AILIENANT Core" connection + Workspace status accuracy**
+    - **Problem:** La etiqueta "AILIENANT Core · Connected/Offline" y el estado
+      de workspace no reflejan la realidad: incluso con el backend corriendo y
+      una carpeta abierta, sigue mostrando "Offline". Verificar la suscripcion
+      al `WSClient.onStatus`, las condiciones de re-evaluacion del status, y la
+      semantica de "Workspace" (folder abierto vs. workspace indexado).
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.A.6 — New session tab branding (logo missing)**
+    - **Problem:** Al abrir una nueva sesion el tab muestra solo el texto
+      "AILIENANT", falta colocar el logo dentro del editor tab para que se vea
+      profesional.
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.A.7 — Command Menu + Settings Menu (Claude-Code-inspired)**
+    > **🔵 DEDICATED FUTURE PLAN — placeholder only**
+    - **Problem:** El "open command menu" actual es muy simple: solo lista
+      comandos. Debe ser AILIENANT-menu + settings combinados, separado por
+      secciones como Claude Code lo hace. Requiere ingenieria inversa del
+      patron de Claude Code para inspirarse.
+    - **Resolution placeholder:** se diseñara en un **plan dedicado aparte**
+      (no inline). Esta entrada existe solo como ancla en el WBS para que el
+      plan futuro se cuelgue aqui.
+
+  - [ ] **7.9.A.8 — Logo vs. theme brightness mismatch**
+    - **Problem:** El logo es demasiado brillante comparado con el template
+      dark de AILIENANT. Decision binaria: o se adapta el template al brillo
+      del logo, o se adapta el logo al template (probablemente atenuar el
+      verde `#00dc41` a `#63a583` del token `--accent-primary`).
+    - **Resolution:** _(pending design)_
+
+  ### 7.9.B — Web Dashboard (browser SPA)
+
+  - [ ] **7.9.B.1 — Memory Management panel still broken**
+    > **🔵 DEDICATED FUTURE PLAN — placeholder only**
+    - **Problem:** El panel Memory Management sigue sin funcionar a pesar del
+      hotfix del freeze loop. Requiere un plan completo separado que cubra:
+      diagnostico real del fallo actual (¿render? ¿wiring del WS? ¿datos?),
+      arquitectura del visor GraphRAG, contrato de eventos backend → dashboard,
+      LOD strategy, side-panel de detalles, layers de vector/code/docs, y
+      criterios de aceptacion.
+    - **Resolution placeholder:** se diseñara en un **plan dedicado aparte**
+      (no inline). Esta entrada existe solo como ancla en el WBS para que el
+      plan futuro se cuelgue aqui.
+
+  - [ ] **7.9.B.2 — BYOM Models — test connection + local model support + validation**
+    - **Problem:** Tres defectos en una sola pantalla:
+      - El boton "Test Connection" no parece funcionar contra endpoints reales.
+      - Al darle clic con campos vacios no muestra ninguna señal de error
+        indicando que faltan inputs requeridos.
+      - El panel solo permite configurar modelos cloud — debe permitir tambien
+        insertar y configurar modelos locales (Ollama, vLLM, etc.).
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.B.3 — Hardware Monitor — real metrics + execution-mode gating**
+    - **Problem:** El Hardware Monitor actualmente no detecta hardware real.
+      Debe indicar y mostrar:
+      - Cantidad total y disponible de RAM.
+      - Cantidad total y disponible de VRAM.
+      - Modelo y especificacion del CPU (o memoria unificada si aplica a la
+        plataforma del usuario, ej. Apple Silicon).
+      - Disponible vs. indisponible para cada recurso.
+      - Adicionalmente el "Execution Mode" debe ser **automatico por defecto**
+        (decidido por la disponibilidad de hardware), y si se expone como
+        toggle manual al usuario, los botones de modos que el hardware no
+        soporta deben quedar bloqueados con aviso al usuario explicando por
+        que.
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.B.4 — Rules & Governance — SOUL.md docs + Analyst rename**
+    - **Problem:** En el panel "Rules & Governance":
+      - La seccion `SOUL.md` no explica para que sirve — debe guiar al usuario
+        diciendo que es la persona / instrucciones globales para Natt (el
+        Analyst Agent).
+      - Falta un boton / input para cambiar el nombre del Analyst Agent
+        (actualmente solo es editable via `ailienant-config.json`).
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.B.5 — Audit Ledger — professional dashboards + intuitive naming**
+    - **Problem:** Dos defectos:
+      - El titulo "Blake2b Chain Integrity" es dificil de entender para
+        usuarios no-tecnicos. Debe usar un nombre mas intuitivo sin perder
+        profesionalidad. El termino tecnico "Blake2b" puede quedar en un
+        tooltip al pasar el cursor sobre el control.
+      - El panel necesita dashboards visuales mas profesionales — actualmente
+        es una lista plana de filas. Agregar metricas agregadas: count total
+        de eventos, breakdown por tipo, integridad del chain, timeline visual.
+    - **Resolution:** _(pending design)_
+
+  - [ ] **7.9.B.6 — Additional Dashboard Segments — analysis & expansion**
+    - **Problem:** Analizar si es necesario y posible agregar mas segmentos al
+      Web Dashboard para que sea mas completo y profesional. Candidatos
+      iniciales a evaluar (no decision tomada todavia):
+      - Sessions Browser global (cross-workspace).
+      - Cost & Budget Analytics (graficas historicas de FinOps).
+      - Agent Performance (latencias por rol, tasa de exito).
+      - GraphRAG Inspector (dependiente de 7.9.B.1).
+      - Logs / Telemetry Stream Viewer.
+      - Settings & Configuration (mover `ailienant-config.json` a UI).
+    - **Resolution:** _(pending design — incluye decision de cuales segmentos
+      agregar, en que orden, y wireframes para cada uno)_
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
