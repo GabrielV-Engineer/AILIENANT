@@ -58,7 +58,6 @@ export default function StagingArea(): JSX.Element {
             <div>
                 <div className="db-section-title">Staging Area</div>
                 <div className="db-card" style={{ textAlign: 'center', padding: 40 }}>
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
                     <div className="db-muted">No pending patches. Changes will appear here when the agent proposes a mutation.</div>
                 </div>
             </div>
@@ -74,8 +73,8 @@ export default function StagingArea(): JSX.Element {
                         <div className="db-row" style={{ gap: 8 }}>
                             <span className="db-file-badge">{p.file_path}</span>
                             {p.stale && (
-                                <span style={{ fontSize: 11, color: '#E8C43A', fontWeight: 600 }}>
-                                    ⚠ STALE — file changed since this patch was generated
+                                <span style={{ fontSize: 11, color: '#E3B341', fontWeight: 600 }}>
+                                    STALE — file changed since this patch was generated
                                 </span>
                             )}
                         </div>
@@ -120,13 +119,13 @@ export default function StagingArea(): JSX.Element {
                             onClick={() => respond(p.approval_id, true)}
                             disabled={p.stale}
                         >
-                            ✓ Approve{editedContent[p.approval_id] ? ' (edited)' : ''}
+                            Approve{editedContent[p.approval_id] ? ' (edited)' : ''}
                         </button>
                         <button
                             className="db-btn db-btn-danger"
                             onClick={() => respond(p.approval_id, false)}
                         >
-                            ✗ Reject
+                            Reject
                         </button>
                         {p.stale && (
                             <span className="db-muted" style={{ fontSize: 11 }}>

@@ -59,10 +59,10 @@ export function BYOMPanel(): JSX.Element {
                         />
                         <span style={{
                             width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
-                            background: ep.status === 'ok' ? '#63a583' : ep.status === 'error' ? '#E85A4F' : '#CDC8C2',
+                            background: ep.status === 'ok' ? '#63a583' : ep.status === 'error' ? '#F85149' : '#484F58',
                         }} title={ep.status} />
                         <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
-                            onClick={() => removeEndpoint(ep.id)}>✕</button>
+                            onClick={() => removeEndpoint(ep.id)} aria-label="Remove endpoint">Remove</button>
                     </div>
 
                     <div className="db-grid-2" style={{ marginBottom: 10 }}>
@@ -102,10 +102,11 @@ export function BYOMPanel(): JSX.Element {
                             />
                             <button
                                 className="db-btn db-btn-secondary"
-                                style={{ flexShrink: 0, padding: '5px 8px', fontSize: 13 }}
+                                style={{ flexShrink: 0, padding: '5px 10px', fontSize: 11 }}
                                 onClick={() => setShowKey(prev => ({ ...prev, [ep.id]: !prev[ep.id] }))}
+                                aria-label={showKey[ep.id] ? 'Hide API key' : 'Show API key'}
                             >
-                                {showKey[ep.id] ? '🙈' : '👁'}
+                                {showKey[ep.id] ? 'Hide' : 'Show'}
                             </button>
                         </div>
                     </div>
