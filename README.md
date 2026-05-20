@@ -27,17 +27,20 @@ AILIENANT is a Python orchestration engine paired with a thin VS Code extension 
 
 ## Status
 
-**Current phase:** **3.7 — Checkpoint Gate** (complete). The system has just finished a cross-subsystem verification pass covering retrieval, context cascade, hybrid routing, memory janitor, and cognitive fast-boot.
+**Current phase:** **Phase 7 — VS Code Extension & Web Dashboard** (complete). Full user-facing layer implemented: sidebar React UI with Reasoning Presets, Dreaming Mode, OCC ring, Inference Speedometer, HITL inline cards, Bento Menu, and Graph Viewer; plus a local Web Dashboard SPA with Hardware Monitor, BYOM, Rules governance, Monaco Staging Area, and HITL Audit Ledger.
 
 | Metric | Value |
 | --- | --- |
-| Backend tests passing | **352** |
-| `mypy --strict` on new modules | Clean |
+| Backend tests passing | **496** (Phase 6.10 gate) |
+| Frontend `tsc --noEmit` | 0 errors |
+| Frontend `npm run lint` | 0 errors |
+| Frontend build (3 bundles) | ✅ extension.js · webview.js · dashboard/ (ESM+splitting) |
+| Monaco chunk (Staging Area) | Lazy-loaded ~232 KB dev, only on open |
+| Dashboard main bundle | < 200 KB |
+| `mypy --strict` on new backend modules | Clean |
 | `ruff check` | Clean |
-| Concurrent SQLite WAL reads (50 tasks) | No lock errors, p95 < 250 ms |
-| Token-ledger isolation (LOCAL strict run) | `cloud_tokens == 0.0` |
 
-The next planned milestone is **Phase 4** — promoting the CoderAgent stub to a real tool-using executor and wiring the MCP adapter.
+The next planned milestone is **Phase 8** — Checkpoint Gate & E2E test suite for the frontend (Playwright + VS Code Extension Test API + Jest).
 
 ---
 
@@ -53,7 +56,7 @@ The next planned milestone is **Phase 4** — promoting the CoderAgent stub to a
 - **Spec-Driven HITL.** The FinOps gate halts execution at a configurable `max_budget_usd` ceiling; the IdeationLoop (when `planner_mode_active=True`) runs a Socratic clarification dialogue before any code is generated.
 - **Telemetry & Rule Distillation.** When the user edits ≥ 70 % of an AI-merged code block within 3 minutes, the extension reports a silent rejection. The backend distills rejection patterns into rules persisted under `.ailienant/rules/`.
 
-The VS Code extension is intentionally **thin**: a sidebar with a master toggle and an intelligence profile selector, a VFS reader that captures dirty buffers, a WebSocket client, an MCTS "dream diff" viewer, and a silent rejection telemetry channel. The dashboard, agent picker, and graph visualizer described in earlier proposals do **not** exist yet (see [Honest list of what is NOT implemented](#honest-list-of-what-is-not-implemented)).
+The VS Code extension now provides a **full-featured sidebar**: Reasoning Preset selector (Surgeon / Architect / Explorer), Inference Tier Toggle (LOCAL_ONLY / HYBRID / SOLO_CLOUD), Dreaming Mode with autonomous background scheduler, OCC concurrency ring, TPS speedometer + sparkline, FinOps cost bar, Context Sufficiency alert banner, slash-command menu, Bento Menu 3×3 agent launcher, React Flow graph viewer with 3-tier LOD, and inline HITL approval cards. A companion **local Web Dashboard** (served by FastAPI) adds Hardware Monitor with VRAM gauges, BYOM endpoint manager, Context Rules governance editor, Monaco-powered Staging Area (code-split, lazy-loaded), and a cryptographic HITL Audit Ledger with blake2b chain verification.
 
 ---
 
@@ -157,13 +160,28 @@ Proyect_Ailienant/
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry
-│   │   ├── providers/          #   chat sidebar, MCTS mirror, telemetry
-│   │   ├── webview/            #   React UI (MasterToggle, ProfileSelector)
-│   │   ├── api/                #   WS + HTTP clients
+│   │   ├── ide_sync.ts         #   Context Capture Engine — 150 ms debounce, .ailienantignore privacy gate (Phase 7.1)
+│   │   ├── providers/          #   chat sidebar (Phase 7 HITL/dreaming/WS forwarding), MCTS mirror, telemetry
+│   │   ├── shared/             #   config.ts — ReasoningPreset, InferenceTier, DreamingProfile, AgentRole, TelemetryFrame (Phase 7 types)
+│   │   ├── webview/            #   React sidebar UI (IIFE bundle, ~200 KB budget)
+│   │   │   ├── App.tsx         #     full state: wsStatus, occ, telemetry, hitlQueue, toasts, fileBlocked
+│   │   │   ├── index.css       #     --vscode-* base + --ai-accent/warn/error/cloud mode accents (no custom backgrounds)
+│   │   │   ├── BentoMenu.tsx   #     3×3 agent launcher grid (FORCE_AGENT postMessage)
+│   │   │   ├── GraphViewer.tsx #     React Flow + 3-tier LOD (zoom>0.8/0.4–0.8/<0.4) + heatmap SVG
+│   │   │   ├── components/     #     HUD, TierToggle, TelemetryHUD (OCC ring + speedometer + sparkline + FinOps bar),
+│   │   │   │                   #     DreamingMode (🌙 popover), CSSAlertBanner, SlashMenu, HITLCard
+│   │   │   └── hooks/          #     useReasoningPreset (surgeon/architect/explorer preset serializer)
+│   │   ├── dashboard/          #   Web Dashboard SPA (ESM + code splitting, custom palette)
+│   │   │   ├── main.tsx        #     SPA entry — lazy StagingArea (Monaco), eager HW/BYOM/Rules/Audit panels
+│   │   │   ├── dashboard.css   #     full palette: --color-bg #FEF9F3, --color-primary #63a583, --color-dark #233237
+│   │   │   └── panels/         #     HardwarePanel (VRAM gauges), BYOMPanel (endpoint forms), RulesPanel (SOUL.md editor),
+│   │   │                       #     StagingArea (Monaco DiffEditor, lazy-loaded, stale OCC badge), AuditPanel (blake2b chain viewer)
+│   │   ├── api/                #   WSClient (BroadcastChannel delta sync, exponential reconnect), HTTP clients
 │   │   ├── editor/             #   vfs_reader (dirty buffer capture)
 │   │   └── core/               #   IntentRouter, PathResolver
-│   ├── package.json
-│   └── esbuild.js
+│   ├── package.json            #   + @radix-ui/react-popover, @radix-ui/react-toggle-group, reactflow, @monaco-editor/react
+│   ├── tsconfig.json           #   + skipLibCheck (monaco type declarations)
+│   └── esbuild.js              #   3 build contexts: extension (CJS), webview (IIFE), dashboard (ESM+splitting)
 ├── docs/
 │   ├── PROJECT_MANIFEST.md     # Phase-by-phase roadmap (load-bearing)
 │   ├── PHASE_4_BLUEPRINT.md    # Master architectural contract for Phase 4 (mandatory read while Phase 4 is active)

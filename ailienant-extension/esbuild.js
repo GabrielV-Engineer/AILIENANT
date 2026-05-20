@@ -38,11 +38,11 @@ async function main() {
 		external: ['vscode'],
 		logLevel: 'silent',
 		plugins: [
-			/* add to the end of plugins array */
 			esbuildProblemMatcherPlugin,
 		],
 	});
 
+	// Sidebar webview — IIFE, ~200KB budget (no Monaco/React Flow here)
 	const webviewCtx = await esbuild.context({
 		entryPoints: ['src/webview/App.tsx'],
 		bundle: true,
@@ -56,14 +56,34 @@ async function main() {
 		plugins: [esbuildProblemMatcherPlugin],
 	});
 
+	// Dashboard SPA — ESM with code splitting so Monaco loads lazily
+	// Monaco chunk (~5MB) is only downloaded when Staging Area is opened
+	const dashboardCtx = await esbuild.context({
+		entryPoints: ['src/dashboard/main.tsx'],
+		bundle: true,
+		format: 'esm',
+		splitting: true,
+		minify: production,
+		sourcemap: !production,
+		sourcesContent: false,
+		platform: 'browser',
+		outdir: 'dist/dashboard',
+		chunkNames: 'chunks/[name]-[hash]',
+		logLevel: 'silent',
+		plugins: [esbuildProblemMatcherPlugin],
+	});
+
 	if (watch) {
 		await ctx.watch();
 		await webviewCtx.watch();
+		await dashboardCtx.watch();
 	} else {
 		await ctx.rebuild();
 		await ctx.dispose();
 		await webviewCtx.rebuild();
 		await webviewCtx.dispose();
+		await dashboardCtx.rebuild();
+		await dashboardCtx.dispose();
 	}
 }
 

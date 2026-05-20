@@ -781,65 +781,80 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
 
 ---
 
-## 💻 FASE 7 — Extensión VS Code (Frontend TypeScript/React)
+## 💻 FASE 7 — Extensión VS Code (Frontend TypeScript/React) — **🔄 EN CURSO**
 
 > Interfaz "Claude Code style" donde el usuario opera la plataforma.
+> **Deps instaladas:** `@radix-ui/react-popover`, `@radix-ui/react-toggle-group`, `reactflow`, `@monaco-editor/react`
+> **Build:** `tsc --noEmit` ✅ (0 errores) · `npm run lint` ✅ (0 errores) · `node esbuild.js` ✅
 
-- [ ] **7.1. Base Client & IDE Sync (`src/ide_sync.ts`)**
-  - Captura en vivo de `active_file`, `cursor_position`, `selected_text`.
+- [x] **7.1. Base Client & IDE Sync (`src/ide_sync.ts`)**
+  - [x] **7.1.1** Clase `IdeSync` — debounce 150ms, subscripción a `onDidChangeActiveTextEditor`, `onDidChangeTextEditorSelection`, `onDidChangeTextEditorVisibleRanges`, `onDidChangeTextDocument`.
+  - [x] **7.1.2** Privacy Gate — parseo de `.ailienantignore` con `FileSystemWatcher` para recarga en caliente. Emite `FILE_BLOCKED` → webview desactiva submit + OCC ring a rojo.
 
-- [ ] **7.2. Panel Chat & Arquitectura de Decisión UI (`src/webview/Chat.tsx`)**
-  - **Misión:** Ley de Hick — enrutamiento intuitivo para el 80% + control granular para power users.
+- [x] **7.2. Chat Sidebar UI (`src/webview/App.tsx`, `src/webview/index.css`)**
 
-  - [ ] **7.2.1. Interfaz de Dos Niveles**
-    - **Nivel 1 (Simplificado):** botones `Small` (Rápido/Local), `Medium` (Equilibrado), `Big` (Razonamiento profundo), `Cloud` (Internet).
-    - **Nivel 2 (Experto):** engranaje despliega menú "Modelo Específico" — bypass de alias, selección directa desde LiteLLM (Claude 3.5 Sonnet, Llama 3 70B, etc.).
+  - **diseño del hud (PRESERVADO, NO MODIFICAR):**
 
-  - [ ] **7.2.2. Sistema de Templates de Hardware (One-Click Toggle)**
-    - **Local/Híbrido:** ej. `Small`→Gemma 4b, `Medium`→Qwen Code 7b, `Big`→Qwen 32b, `Cloud/Fallback`→Claude Opus.
-    - **Cloud-Only:** ej. `Small`→Haiku, `Medium`→Sonnet, `Big`→Opus.
-    - **Selector Rápido:** Toggle en cabecera del chat reasigna los botones del Nivel 1.
+             ┌───────────────────────────────────────────────────────────┐ ┌───────┐
+             │ Submit your request...                               [🎙️] ││     ▱ │
+             │                                                           │ │🟢  ▰ │
+             ├───────────────────────────────────────────────────────────┤ │╭─╮  ▰ │
+             │ [+] [/] [🌙 Dream]                        [⚙️ Auto ▾][➤]│ │     ▰ │
+             └───────────────────────────────────────────────────────────┘ └───────┘
 
-  - [ ] **7.2.3. Lector de Privacidad Local**
-    - Integración visual del estado de `.ailienantignore` — confirma qué archivos están bloqueados para Cloud.
+  - **Tema sidebar:** Variables `--vscode-*` del tema del usuario con accents mode-driven (Claude Code pattern). Paleta `#FEF9F3/#63a583` EXCLUSIVA del Web Dashboard.
 
-  - [ ] **7.2.4. Planner Manual Control Center**
-    - [ ] **7.2.4.1. Toggle Activación:** Shadcn/UI en `ChatSidebar.tsx`.
-    - [ ] **7.2.4.2. Lifecycle Guard:** bloquea cambio de modo si hay tarea activa.
-    - [ ] **7.2.4.3. Indicador de Fase:** muestra skill actual (ej. "Architect is writing SDD...").
+  - [x] **7.2.1. HUD Refactor — Interfaz de Dos Niveles** (`src/webview/components/HUD.tsx`)
+    - **Nivel 1 (Simplificado / Hick's Law):** 3 botones Reasoning Presets — 🔬 Surgeon · 🏛 Architect · 🔭 Explorer.
+    - **Nivel 2 (Experto):** Radix `Popover` con lista de modelos desde `GET /api/v1/models/available`. Override de modelo específico.
 
-- [ ] **7.3. Bento Menu Agent Launcher (`src/webview/BentoMenu.tsx`)**
-  - Grid 3x3 para evadir el Smart Router y llamar manualmente a un agente.
+  - [x] **7.2.2. Reasoning Presets** (`src/webview/hooks/useReasoningPreset.ts`)
+    - `surgeon`: temp=0.0, top_p=0.1, tool_rag_top_k=3, context_window_pct=0.5
+    - `architect`: temp=0.5, top_p=0.85, tool_rag_top_k=5, enable_mcts=true
+    - `explorer`: temp=0.2, top_p=0.9, tool_rag_top_k=10, preferred_tools=[TraceDataFlowInput, ScanDirectory]
 
-- [ ] **7.4. Control Room GraphRAG (`src/components/GraphViewer.tsx`)**
-  - Panel React Flow.
-  - **Virtualización + LOD:** estrategia de renderizado para evitar colapsos de RAM.
+  - [x] **7.2.3. Inference Tier Toggle** (`src/webview/components/TierToggle.tsx`)
+    - Radix `ToggleGroup` 3 posiciones: `LOCAL_ONLY` / `HYBRID` / `SOLO_CLOUD`. Override de `routing_decision`.
 
-- [ ] **7.5. UI/UX y Centro de Mando Local (Dashboard)**
-  - [ ] **7.5.1. Infraestructura del Dashboard Web**
-    - FastAPI sirve SPA; WebSockets bidireccionales para telemetría/logs.
-  - [ ] **7.5.2. Telemetría de Supervivencia (Hardware & Modelos)**
-    - Gauges/Charts de RAM/VRAM (`hardware_profiler.py`).
-    - Panel BYOM: endpoints (Ollama, vLLM) + API Keys.
-    - Ajuste manual de umbrales de compresión LangGraph.
-  - [ ] **7.5.3. Semáforo de Hardware (Hardware Awareness)**
-    - Selector de Modo (Secuencial / Micro-Enjambre / Enjambre).
-    - 🟢 VRAM suficiente · 🟡 Riesgo de paginación (latencia degradada) · 🔴 OOM (bloquea local, sugiere Cloud).
-  - [ ] **7.5.4. Sistema de Reglas y Directrices (Governance)**
-    - Editor "Global Custom Instructions".
-    - Mapeador de reglas por directorio (Contextual Rules) vinculado al graph DB.
-  - [ ] **7.5.5. Staging Area (Control de Calidad)**
-    - Diff Viewer (Monaco / React Diff Viewer).
-    - Aprobación/rechazo granular para refactors multi-archivo.
-  - [ ] **7.5.6. Auditoría y Resiliencia (Time-Travel)**
-    - Prompt Log Explorer.
-    - Rollback desde checkpoints SQLite/LangGraph.
+  - [x] **7.2.4. Telemetría de Supervivencia** (`src/webview/components/TelemetryHUD.tsx`)
+    - **OCC Ring:** SVG `stroke-dasharray`, verde/ámbar/rojo según `client_concurrency_conflict` + privacy gate.
+    - **Speedometer:** SVG semi-arco, TPS calculado client-side rolling 5s desde `server_token_chunk`.
+    - **TPS Sparkline:** SVG `<polyline>` 60 puntos.
+    - **FinOps Bar:** poll `GET /api/v1/telemetry/tokens` c/5s. Flash rojo en soft-gate.
 
-- [ ] **7.6. Delta State Sync (Prevención de Colisiones de UI)**
-  - Listener real-time IDE ↔ Dashboard vía WebSocket. Edición manual en VS Code mientras el Dashboard está abierto → delta actualiza el Diff Viewer instantáneamente. Previene aprobaciones sobre estado obsoleto.
+  - [x] **7.2.5. 🌙 Dreaming Mode** (`src/webview/components/DreamingMode.tsx`)
+    - Botón `[🌙 Dream]` con Radix `Popover`: ON/OFF switch + profile selector (Medium/Big/Cloud/Hybrid).
+    - Activo: glow animation `ai-dream-glow` 2.5s + borde del chat input → `#63a583`.
+    - Persiste en `vscode.workspace.state`. Envía `client_planner_mode_toggle` extendido.
 
-- [ ] **7.7. Checkpoint Gate Fase 7**
-  - Verificación de sincronía Delta IDE↔Web y UX de Staging.
+  - [x] **7.2.6. Anti-Entropy Shield** (`src/webview/components/CSSAlertBanner.tsx`)
+    - Banner sticky si `css_total < 40 || is_red_alert`. Usa `--vscode-inputValidation-error*` variables. Dismissible por sesión.
+
+  - **Adicionales implementados:** WS Health Bar, DLQ Badge, HITL Inline Card, Toast Stack (3 niveles), Skeleton CSS.
+
+- [x] **7.3. Slash Command Router** (`src/webview/components/SlashMenu.tsx`)
+  - Typeahead filtrado sin dependencias externas. Comandos: `/context`, `/context rewind` → `POST /api/v1/task/resume/{task_id}`, `/models`, `/customize`, `/dlq`. Navegación ↑↓ + Enter + Escape.
+
+- [x] **7.4. Bento Menu Agent Launcher** (`src/webview/BentoMenu.tsx`)
+  - Grid 3×3 — 8 roles canónicos + Orchestrator. Bypass badge ⚡ por 3s tras invocación. Envía `FORCE_AGENT` → extension host.
+
+- [x] **7.5. GraphRAG Control Room** (`src/webview/GraphViewer.tsx`)
+  - [x] **7.5.1.** React Flow con `onlyRenderVisibleElements`, MiniMap, Controls. 4 status colors. Node detail side panel.
+  - [x] **7.5.2. LOD Strategy:** zoom > 0.8 → FullNode (texto+firma+status) · zoom 0.4–0.8 → MediumNode (solo nombre) · zoom < 0.4 → DotNode (10px dot) + HeatmapOverlay SVG (intensidad proporcional a edge density). `requestAnimationFrame`-safe via React Flow `useViewport()`.
+
+- [x] **7.6. Advanced Dashboard — Local Command Center** (`src/dashboard/`)
+  - [x] **7.6.1.** FastAPI SPA entry `src/dashboard/main.tsx`. esbuild: `format: 'esm', splitting: true, outdir: 'dist/dashboard'`. Nav sidebar: 5 paneles.
+  - [x] **7.6.2. BYOM Panel + Hardware Monitor** (`panels/BYOMPanel.tsx`, `panels/HardwarePanel.tsx`) — endpoints Ollama/vLLM/OpenRouter, health check, RAM/VRAM gauges SVG, Hardware Semaphore 🟢/🟡/🔴, Execution Mode selector.
+  - [x] **7.6.3. Rules & Governance** (`panels/RulesPanel.tsx`) — Global Custom Instructions (SOUL.md API), directory-scoped rules → `POST /api/v1/telemetry/reject`.
+  - [x] **7.6.4. Staging Area — Monaco Diff Viewer** (`panels/StagingArea.tsx`) — **Code-split lazy** (`React.lazy` + `Suspense`). Monaco `DiffEditor` side-by-side con edición manual. Aprueba/rechaza vía `POST /api/v1/hitl/respond`. Stale-state badge bloqueante.
+  - [x] **7.6.5. HITL Cryptographic Audit Ledger** (`panels/AuditPanel.tsx`) — SOC2 read-only. Verifica chain `GET /api/v1/audit/verify` → `✅ intacto / ❌ tamper`. Paginado.
+
+- [x] **7.7. Delta State Sync** (`src/api/ws_client.ts`)
+  - [x] **7.7.1.** `_fileVersions` Map + `BroadcastChannel('ailienant_ws')`. Detecta cambio de `document_version_id` → emite `FILE_VERSION_CHANGED` al Dashboard → Staging Area marca patch como STALE → bloquea approve. Status callbacks `WsConnectionStatus` → webview `WS_STATUS` message.
+
+- [ ] **7.8. Checkpoint Gate Fase 7** (`tests/e2e/`)
+  - Framework: Playwright (Dashboard) + VS Code Extension Test API + Jest (unidades)
+  - CI gate: `npm run lint` + `tsc --noEmit` = exit 0
 
 ---
 

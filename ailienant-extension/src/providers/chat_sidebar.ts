@@ -5,12 +5,19 @@ import { WSClient } from '../api/ws_client';
 import {
     DEFAULT_PROFILE,
     IntelligenceProfile,
+    ReasoningPreset,
+    InferenceTier,
+    DreamingProfile,
     WORKSPACE_STATE_KEYS,
 } from '../shared/config';
 
 interface InitialState {
-    masterEnabled: boolean;
-    profile: IntelligenceProfile;
+    masterEnabled:   boolean;
+    profile:         IntelligenceProfile;
+    reasoningPreset: ReasoningPreset;
+    inferenceTier:   InferenceTier;
+    dreamingEnabled: boolean;
+    dreamingProfile: DreamingProfile;
 }
 
 export class AilienantChatProvider implements vscode.WebviewViewProvider {
@@ -39,6 +46,19 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
+        // Forward WS status changes to the webview
+        WSClient.getInstance().onStatus(status => {
+            this.sendMessageToWebview('WS_STATUS', status);
+        });
+
+        // Forward incoming WS server events to webview
+        WSClient.getInstance().onMessage((raw) => {
+            const msg = raw as { event_type?: string; data?: unknown };
+            if (msg.event_type) {
+                this.sendMessageToWebview(msg.event_type, msg.data);
+            }
+        });
+
         webviewView.webview.onDidReceiveMessage(async (data) => {
             switch (data.type) {
                 case 'SUBMIT_TASK': {
@@ -46,7 +66,9 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
                     const intercepted = await IntentRouter.intercept(data.value, activeDoc);
                     if (!intercepted) {
                         const session = SessionManager.getInstance();
-                        await session.startAITask(data.value);
+                        // Preset/tier params are injected into the WSClient payload by the webview;
+                        // SessionManager.startAITask handles the full task submission pipeline.
+                        await session.startAITask(data.value as string);
                     }
                     break;
                 }
@@ -54,10 +76,38 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
                     SessionManager.getInstance().abortCurrentTask();
                     break;
                 }
+                case 'HITL_RESPONSE': {
+                    WSClient.getInstance().send({
+                        event_type: 'client_hitl_response',
+                        data: {
+                            approval_id: data.approval_id,
+                            approved:    data.approved,
+                            comment:     data.comment,
+                        },
+                    });
+                    break;
+                }
+                case 'FORCE_AGENT': {
+                    const session = SessionManager.getInstance();
+                    // Force-invokes agent via blank prompt; role is encoded in the task prompt
+                    await session.startAITask(`/agent ${data.role as string}`);
+                    break;
+                }
                 case 'togglePlannerMode': {
                     WSClient.getInstance().send({
                         event_type: 'client_planner_mode_toggle',
                         data: { active: data.value as boolean },
+                    });
+                    break;
+                }
+                case 'dreaming_toggle': {
+                    const dreamingEnabled = data.value as boolean;
+                    const dreamingProfile = data.profile as DreamingProfile;
+                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.dreamingEnabled, dreamingEnabled);
+                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.dreamingProfile, dreamingProfile);
+                    WSClient.getInstance().send({
+                        event_type: 'client_planner_mode_toggle',
+                        data: { active: dreamingEnabled, dreaming_profile: dreamingProfile },
                     });
                     break;
                 }
@@ -94,18 +144,21 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
 
     private _readInitialState(): InitialState {
         return {
-            masterEnabled: this._workspaceState.get<boolean>(
-                WORKSPACE_STATE_KEYS.masterEnabled, false,
-            ),
-            profile: this._workspaceState.get<IntelligenceProfile>(
-                WORKSPACE_STATE_KEYS.profile, DEFAULT_PROFILE,
-            ),
+            masterEnabled:   this._workspaceState.get<boolean>(WORKSPACE_STATE_KEYS.masterEnabled, false),
+            profile:         this._workspaceState.get<IntelligenceProfile>(WORKSPACE_STATE_KEYS.profile, DEFAULT_PROFILE),
+            reasoningPreset: this._workspaceState.get<ReasoningPreset>(WORKSPACE_STATE_KEYS.reasoningPreset, 'architect'),
+            inferenceTier:   this._workspaceState.get<InferenceTier>(WORKSPACE_STATE_KEYS.inferenceTier, 'HYBRID'),
+            dreamingEnabled: this._workspaceState.get<boolean>(WORKSPACE_STATE_KEYS.dreamingEnabled, false),
+            dreamingProfile: this._workspaceState.get<DreamingProfile>(WORKSPACE_STATE_KEYS.dreamingProfile, 'Hybrid'),
         };
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.js')
+        );
+        const styleUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.css')
         );
         // Encode initial state on a data-* attribute (CSP-safe — no inline <script>).
         const initialAttr = JSON.stringify(this._readInitialState())
@@ -118,8 +171,9 @@ export class AilienantChatProvider implements vscode.WebviewViewProvider {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'none'; script-src ${webview.cspSource};">
-    <title>AILIENANT Chat</title>
+          content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';">
+    <title>AILIENANT</title>
+    <link rel="stylesheet" href="${styleUri}">
 </head>
 <body>
     <div id="root" data-initial='${initialAttr}'></div>
