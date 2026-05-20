@@ -1,11 +1,11 @@
 @import url("../shared/theme.css");
 
-html, body, #root { height: 100%; }
-
-/* Blend the webview seamlessly into VS Code's sidebar chrome */
-html, body {
-  background: var(--vscode-sideBar-background, var(--bg-main)) !important;
+/* Remap bg-main to match whatever VS Code theme is active */
+:root {
+  --bg-main: var(--vscode-sideBar-background, #0D1117);
 }
+
+html, body, #root { height: 100%; }
 
 /* ============================================================
    AILIENANT — Session Browser Sidebar (3 zones, dark theme)
