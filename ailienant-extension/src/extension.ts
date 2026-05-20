@@ -32,7 +32,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const now = new Date().toISOString();
         return {
             id:            makeSessionId(),
-            title:         `Session ${new Date().toLocaleString()}`,
+            title:         '',
             created_at:    now,
             last_modified: now,
             message_count: 0,
@@ -47,8 +47,16 @@ export function activate(context: vscode.ExtensionContext): void {
         onNewSession,
     );
 
+    // Auto-title pipeline: workspace_panel fires the LLM request after the first
+    // SUBMIT_TASK for a session whose title is empty; result updates sidebar.
+    workspaceManager.setTitleUpdater((sessionId, title) => {
+        sessionBrowser.updateSessionTitle(sessionId, title);
+    });
+
     const sidebarRegistration = vscode.window.registerWebviewViewProvider(
-        SessionBrowserProvider.viewType, sessionBrowser,
+        SessionBrowserProvider.viewType,
+        sessionBrowser,
+        { webviewOptions: { retainContextWhenHidden: true } },
     );
 
     // ── Commands ──────────────────────────────────────────────────────
@@ -70,8 +78,9 @@ export function activate(context: vscode.ExtensionContext): void {
         'ailienant.newSession',
         async () => {
             const s = await onNewSession();
+            // Persist to sidebar first so the session appears in the browser
+            sessionBrowser.persistSession(s);
             workspaceManager.openSession(s);
-            sessionBrowser.refresh();
         },
     );
 

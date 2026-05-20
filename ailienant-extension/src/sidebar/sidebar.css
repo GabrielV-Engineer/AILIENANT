@@ -1,37 +1,68 @@
 @import url("../shared/theme.css");
 
+html, body, #root { height: 100%; }
+
+/* Blend the webview seamlessly into VS Code's sidebar chrome */
+html, body {
+  background: var(--vscode-sideBar-background, var(--bg-main)) !important;
+}
+
 /* ============================================================
-   AILIENANT — Session Browser Sidebar
+   AILIENANT — Session Browser Sidebar (3 zones, dark theme)
    ============================================================ */
-
-html, body, #root {
-  height: 100%;
-}
-
 .sb-layout {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
   height: 100vh;
-  overflow: hidden;
-  padding: 10px 8px;
-  gap: 10px;
+  background: var(--bg-main);
 }
 
-/* ── Top action bar ────────────────────────────────────────── */
-.sb-top {
+/* ── Zone 1: brand header ────────────────────────────────── */
+.sb-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Use VS Code's own sidebar background so there's no rectangle clash at top */
+  background: var(--vscode-sideBar-background, var(--bg-main));
+  padding: 14px 12px 13px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sb-brand-name {
+  font-family: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-primary) !important;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  /* Subtle brand glow */
+  text-shadow: 0 0 18px rgba(99, 165, 131, 0.45);
+  user-select: none;
+}
+
+/* ── Zone 2: action bar ──────────────────────────────────── */
+.sb-actions {
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
+  gap: 7px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-main);
 }
 
 .sb-new-btn {
   width: 100%;
   justify-content: center;
   font-weight: 600;
+  /* explicit override — VS Code webview can wash out custom vars */
+  background: var(--accent-primary) !important;
+  border-color: var(--accent-primary) !important;
+  color: #0D1117 !important;
+}
+.sb-new-btn:hover {
+  background: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
 }
 
-/* ── Search input ──────────────────────────────────────────── */
 .sb-search-wrap {
   position: relative;
 }
@@ -46,56 +77,79 @@ html, body, #root {
 }
 
 .sb-search-input {
-  padding-left: 30px;
+  width: 100%;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+  padding: 6px 10px 6px 28px;
+  border-radius: var(--radius-smart);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+  font-family: inherit;
+  box-sizing: border-box;
 }
+.sb-search-input::placeholder { color: var(--text-disabled) !important; }
+.sb-search-input:focus { border-color: var(--accent-primary) !important; }
 
-/* ── Session list ──────────────────────────────────────────── */
+/* ── Zone 3: session list ───────────────────────────────── */
 .sb-list {
-  flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
+  padding: 6px 6px;
+  gap: 2px;
 }
-
 .sb-list::-webkit-scrollbar { width: 6px; }
 .sb-list::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 3px; }
 .sb-list::-webkit-scrollbar-thumb:hover { background: var(--bg-hover); }
 
 .sb-empty {
-  padding: 24px 12px;
+  padding: 28px 12px;
   text-align: center;
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.6;
 }
 
-/* ── Session card ──────────────────────────────────────────── */
+/* ── Session card ───────────────────────────────────────── */
 .sb-card {
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-smart);
-  padding: 8px 10px;
+  padding: 8px 10px 7px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   transition: background 0.12s ease, border-color 0.12s ease;
   position: relative;
 }
-
 .sb-card:hover {
-  background: var(--bg-hover);
+  background: var(--bg-surface);
   border-color: var(--border-subtle);
 }
-
 .sb-card[data-active="true"] {
-  background: var(--bg-hover);
+  background: var(--bg-surface);
   border-color: var(--accent-primary);
 }
 
+.sb-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sb-card-logo {
+  height: 14px;
+  width: auto;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
 .sb-card-title {
+  flex: 1;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
@@ -104,27 +158,45 @@ html, body, #root {
   text-overflow: ellipsis;
   padding-right: 22px;
 }
+.sb-card-title[data-untitled="true"] {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.sb-card-title-input {
+  flex: 1;
+  background: var(--bg-main);
+  border: 1px solid var(--accent-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  padding: 3px 6px;
+  border-radius: 3px;
+  outline: none;
+  margin-right: 22px;
+  min-width: 0;
+}
 
 .sb-card-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  gap: 5px;
+  font-size: 10px;
   color: var(--text-secondary);
 }
-
+.sb-card-sep { color: var(--text-disabled); }
 .sb-card-tier {
-  font-size: 10px;
+  font-size: 9px;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--bg-surface);
+  background: var(--bg-main);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 600;
 }
-
 .sb-card-tier[data-tier="cloud"] { color: #7B9ED9; border-color: #7B9ED9; }
 .sb-card-tier[data-tier="big"]   { color: var(--accent-primary); border-color: var(--accent-primary); }
 
@@ -132,15 +204,17 @@ html, body, #root {
   position: absolute;
   top: 6px;
   right: 6px;
-  background: transparent;
-  border: none;
-  color: var(--text-disabled);
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-disabled) !important;
   cursor: pointer;
   padding: 3px;
   border-radius: 3px;
   opacity: 0;
-  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
 }
-
 .sb-card:hover .sb-card-delete { opacity: 1; }
-.sb-card-delete:hover { color: var(--accent-alert); background: var(--bg-main); }
+.sb-card-delete:hover {
+  color: var(--accent-alert) !important;
+  background: var(--bg-main) !important;
+}

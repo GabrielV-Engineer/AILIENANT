@@ -2228,7 +2228,7 @@ var require_extension = __commonJS({
 var require_websocket = __commonJS({
   "node_modules/ws/lib/websocket.js"(exports2, module2) {
     "use strict";
-    var EventEmitter = require("events");
+    var EventEmitter3 = require("events");
     var https = require("https");
     var http = require("http");
     var net = require("net");
@@ -2260,7 +2260,7 @@ var require_websocket = __commonJS({
     var protocolVersions = [8, 13];
     var readyStates = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
     var subprotocolRegex = /^[!#$%&'*+\-.0-9A-Z^_`|a-z~]+$/;
-    var WebSocket2 = class _WebSocket extends EventEmitter {
+    var WebSocket2 = class _WebSocket extends EventEmitter3 {
       /**
        * Create a new `WebSocket`.
        *
@@ -3257,7 +3257,7 @@ var require_subprotocol = __commonJS({
 var require_websocket_server = __commonJS({
   "node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
-    var EventEmitter = require("events");
+    var EventEmitter3 = require("events");
     var http = require("http");
     var { Duplex } = require("stream");
     var { createHash: createHash2 } = require("crypto");
@@ -3270,7 +3270,7 @@ var require_websocket_server = __commonJS({
     var RUNNING = 0;
     var CLOSING = 1;
     var CLOSED = 2;
-    var WebSocketServer2 = class extends EventEmitter {
+    var WebSocketServer2 = class extends EventEmitter3 {
       /**
        * Create a `WebSocketServer` instance.
        *
@@ -3653,7 +3653,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode7 = __toESM(require("vscode"));
+var vscode12 = __toESM(require("vscode"));
 
 // src/core/IntentRouter.ts
 var vscode = __toESM(require("vscode"));
@@ -3689,7 +3689,7 @@ var IntentRouter = class _IntentRouter {
         if (pattern.regex.test(prompt)) {
           const handled = await pattern.handler(document);
           if (handled) {
-            vscode.window.setStatusBarMessage("Ailienant: Local optimization applied \u26A1", 3e3);
+            vscode.window.setStatusBarMessage("AILIENANT: Local optimization applied", 3e3);
             return true;
           }
         }
@@ -3855,6 +3855,50 @@ var APIClient = class _APIClient {
       return [];
     }
   }
+  /**
+   * Phase 3.4.5 — Read a virtual file from an MCTS "dream" node.
+   * Backs the `ailienant-vision://{node_id}/{path}` URI scheme.
+   */
+  async fetchVirtualFile(nodeId, filePath) {
+    const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/vfs?path=${encodeURIComponent(filePath)}`;
+    const response = await fetch(url, { signal: AbortSignal.timeout(5e3) });
+    if (!response.ok) {
+      throw new Error(`AILIENANT Mirror fetch failed: ${response.status} ${response.statusText}`);
+    }
+    return await response.text();
+  }
+  /**
+   * Phase 3.4.5 — One-Click Merge: apply a stable MCTS node's vfs_view to disk.
+   */
+  async applyMerge(nodeId, workspaceRoot) {
+    const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/merge`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace_root: workspaceRoot }),
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (!response.ok) {
+      throw new Error(`AILIENANT applyMerge failed: ${response.status} ${response.statusText}`);
+    }
+    return await response.json();
+  }
+  /**
+   * Phase 3.4.7 — Fire-and-forget rejection telemetry.
+   * Errors are swallowed: silent telemetry must NEVER surface to the user.
+   */
+  async reportRejection(payload) {
+    try {
+      await fetch(`${this.baseUrl}/telemetry/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(1e4)
+      });
+    } catch (e) {
+      console.warn("[ailienant] telemetry/reject failed:", e);
+    }
+  }
 };
 
 // src/core/PathResolver.ts
@@ -3905,12 +3949,21 @@ var WSClient = class _WSClient {
   // Callbacks suscritos (Patrón Observer)
   onMessageHandlers = /* @__PURE__ */ new Set();
   onErrorHandlers = /* @__PURE__ */ new Set();
+  onStatusHandlers = /* @__PURE__ */ new Set();
   // Estado de reconexión (Exponential Backoff)
   reconnectAttempts = 0;
-  maxReconnectAttempts = 5;
+  maxReconnectAttempts = 10;
   isConnecting = false;
+  _clientId = "";
+  // Delta sync: track current document_version_id per file
+  // Used to detect stale state before Dashboard approvals
+  _fileVersions = /* @__PURE__ */ new Map();
+  _dashboardBc;
   constructor() {
     this.wsUrl = "ws://127.0.0.1:8000/api/v1/ws";
+    if (typeof BroadcastChannel !== "undefined") {
+      this._dashboardBc = new BroadcastChannel("ailienant_ws");
+    }
   }
   static getInstance() {
     if (!_WSClient.instance) {
@@ -3926,6 +3979,7 @@ var WSClient = class _WSClient {
     if (this.ws?.readyState === wrapper_default.OPEN || this.isConnecting) {
       return;
     }
+    this._clientId = clientId;
     this.isConnecting = true;
     const urlWithAuth = `${this.wsUrl}/${clientId}`;
     try {
@@ -3933,28 +3987,56 @@ var WSClient = class _WSClient {
       wsInstance.on("open", () => {
         this.isConnecting = false;
         this.reconnectAttempts = 0;
-        vscode5.window.showInformationMessage("AILIENANT: T\xFAnel Cu\xE1ntico [Conectado] \u{1F7E2}");
+        this._emitStatus("connected");
       });
       wsInstance.on("message", (data) => {
         try {
           const parsedData = JSON.parse(data.toString());
           this.onMessageHandlers.forEach((handler) => handler(parsedData));
+          if (parsedData.event_type === "client_file_update") {
+            const d = parsedData.data;
+            if (d?.filepath) {
+              const prev = this._fileVersions.get(d.filepath);
+              if (prev && prev !== d.document_version_id) {
+                this._dashboardBc?.postMessage({
+                  type: "FILE_VERSION_CHANGED",
+                  filepath: d.filepath,
+                  new_version_id: d.document_version_id
+                });
+              }
+              this._fileVersions.set(d.filepath, d.document_version_id);
+            }
+          }
+          if (parsedData.event_type?.startsWith("server_")) {
+            this._dashboardBc?.postMessage(parsedData);
+          }
         } catch (e) {
           console.error("Error parseando payload de LangGraph", e);
         }
       });
       wsInstance.on("close", () => {
         this.isConnecting = false;
-        this.handleReconnection(clientId);
+        this._emitStatus("reconnecting");
+        this._handleReconnection(clientId);
       });
       wsInstance.on("error", (err) => {
         this.isConnecting = false;
         this.onErrorHandlers.forEach((handler) => handler(err));
+        this._emitStatus("disconnected");
       });
       this.ws = wsInstance;
     } catch (error) {
       this.isConnecting = false;
+      this._emitStatus("disconnected");
       console.error("Error fatal al crear WebSocket", error);
+    }
+  }
+  _emitStatus(status) {
+    this.onStatusHandlers.forEach((h) => h(status));
+    if (status === "connected") {
+      vscode5.window.showInformationMessage("AILIENANT: Quantum tunnel connected");
+    } else if (status === "disconnected") {
+      vscode5.window.showErrorMessage("AILIENANT: Connection lost");
     }
   }
   /**
@@ -3966,25 +4048,32 @@ var WSClient = class _WSClient {
       this.ws = null;
     }
   }
-  /**
-   * Algoritmo de Retroceso Exponencial para reconexión.
-   */
-  handleReconnection(clientId) {
+  _handleReconnection(clientId) {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      vscode5.window.showErrorMessage("AILIENANT: Conexi\xF3n con el n\xFAcleo perdida de forma permanente. \u{1F534}");
+      this._emitStatus("disconnected");
       return;
     }
     this.reconnectAttempts++;
-    const backoffTime = Math.pow(2, this.reconnectAttempts) * 1e3 + Math.random() * 500;
-    console.log(`Reconectando en ${Math.round(backoffTime)}ms... (Intento ${this.reconnectAttempts})`);
+    const backoffTime = Math.min(Math.pow(2, this.reconnectAttempts) * 1e3 + Math.random() * 500, 3e4);
+    console.log(`[WSClient] Reconecting in ${Math.round(backoffTime)}ms (attempt ${this.reconnectAttempts})`);
     setTimeout(() => this.connect(clientId), backoffTime);
   }
-  // Métodos de Suscripción
+  // ── Subscription methods ─────────────────────────────────────────────────
   onMessage(callback) {
     this.onMessageHandlers.add(callback);
   }
   removeMessageHandler(callback) {
     this.onMessageHandlers.delete(callback);
+  }
+  onStatus(callback) {
+    this.onStatusHandlers.add(callback);
+  }
+  removeStatusHandler(callback) {
+    this.onStatusHandlers.delete(callback);
+  }
+  /** Record a document_version_id for OCC delta sync tracking. */
+  trackFileVersion(filepath, versionId) {
+    this._fileVersions.set(filepath, versionId);
   }
   send(payload) {
     if (this.ws?.readyState === wrapper_default.OPEN) {
@@ -4034,7 +4123,7 @@ var SessionManager = class _SessionManager {
         // attachments and explicit_mentions are injected by the UI layer (Phase 1.1.0.4)
       };
       const apiClient = APIClient.getInstance();
-      vscode6.window.showInformationMessage(`AILIENANT: Analizando directiva con ${dirtyBuffers.length} buffers en contexto... \u{1F41C}`);
+      vscode6.window.showInformationMessage(`AILIENANT: Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
       await apiClient.submitTask(this.sessionId, payload);
     } catch (error) {
       if (error.name !== "AbortError") {
@@ -4049,7 +4138,7 @@ var SessionManager = class _SessionManager {
    */
   abortCurrentTask() {
     APIClient.getInstance().cancelTask(this.sessionId);
-    vscode6.window.showWarningMessage("AILIENANT: Misi\xF3n abortada por el usuario. \u{1F6D1}");
+    vscode6.window.showWarningMessage("AILIENANT: Mission aborted by user.");
   }
   // Exponemos el SessionID por si la UI lo necesita para renderizar algo
   getSessionId() {
@@ -4072,7 +4161,7 @@ var SessionManager = class _SessionManager {
     const storedVersion = this.versionSnapshot.get(doc.uri.fsPath);
     if (storedVersion !== void 0 && doc.version !== storedVersion) {
       vscode6.window.showWarningMessage(
-        `AILIENANT: \u26A1 Concurrency conflict on ${doc.fileName} \u2014 file was edited during inference. Aborting write.`
+        `AILIENANT: Concurrency conflict on ${doc.fileName} \u2014 file was edited during inference. Aborting write.`
       );
       WSClient.getInstance().send({
         event_type: "client_concurrency_conflict",
@@ -4087,27 +4176,731 @@ var SessionManager = class _SessionManager {
   }
 };
 
-// src/extension.ts
-function activate(context) {
-  console.log('Congratulations, your extension "ailienant-extension" is now active!');
-  const helloWorld = vscode7.commands.registerCommand("ailienant-extension.helloWorld", () => {
-    vscode7.window.showInformationMessage("Hello World from ailienant-extension!");
-  });
-  const runTask = vscode7.commands.registerCommand("ailienant-extension.runTask", async () => {
-    const prompt = await vscode7.window.showInputBox({
-      prompt: "Enter your directive for AILIENANT",
-      placeHolder: 'e.g. "format", "constify", or describe a complex task'
+// src/providers/session_browser_provider.ts
+var vscode7 = __toESM(require("vscode"));
+var SESSIONS_KEY = "ailienant.sessions";
+var SessionBrowserProvider = class {
+  constructor(_extensionUri, _workspaceState, _onOpenSession, _onNewSession) {
+    this._extensionUri = _extensionUri;
+    this._workspaceState = _workspaceState;
+    this._onOpenSession = _onOpenSession;
+    this._onNewSession = _onNewSession;
+  }
+  _extensionUri;
+  _workspaceState;
+  _onOpenSession;
+  _onNewSession;
+  static viewType = "ailienant.sessionBrowser";
+  _view;
+  resolveWebviewView(webviewView, _context, _token) {
+    this._view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this._extensionUri]
+    };
+    webviewView.webview.html = this._renderHtml(webviewView.webview);
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        this.refresh();
+      }
     });
-    if (!prompt) {
+    queueMicrotask(() => this.refresh());
+    webviewView.webview.onDidReceiveMessage(async (msg) => {
+      switch (msg.type) {
+        case "NEW_SESSION": {
+          const session = await this._onNewSession();
+          this._persist((prev) => [session, ...prev]);
+          this._onOpenSession(session);
+          break;
+        }
+        case "OPEN_SESSION": {
+          const sessions = this.getSessions();
+          const s = sessions.find((x) => x.id === msg.session_id);
+          if (s) {
+            this._touch(s.id);
+            this._onOpenSession(s);
+          }
+          break;
+        }
+        case "DELETE_SESSION": {
+          this._persist((prev) => prev.filter((s) => s.id !== msg.session_id));
+          break;
+        }
+        case "RENAME_SESSION": {
+          this._persist((prev) => prev.map(
+            (s) => s.id === msg.session_id ? { ...s, title: msg.title } : s
+          ));
+          break;
+        }
+      }
+    });
+  }
+  refresh() {
+    if (!this._view) {
       return;
     }
-    const doc = vscode7.window.activeTextEditor?.document;
-    const intercepted = await IntentRouter.intercept(prompt, doc);
-    if (!intercepted) {
-      await SessionManager.getInstance().startAITask(prompt);
+    this._view.webview.postMessage({ type: "SESSIONS_UPDATED", sessions: this.getSessions() });
+  }
+  getSessions() {
+    return this._workspaceState.get(SESSIONS_KEY, []);
+  }
+  touchSession(id) {
+    this._touch(id);
+  }
+  /** Called by the VS Code command (tab bar button) to add a session created outside the webview. */
+  persistSession(session) {
+    this._persist((prev) => [session, ...prev]);
+  }
+  updateSessionTitle(id, title) {
+    this._persist((prev) => prev.map(
+      (s) => s.id === id ? { ...s, title } : s
+    ));
+  }
+  incrementMessageCount(id) {
+    this._persist((prev) => prev.map(
+      (s) => s.id === id ? { ...s, message_count: (s.message_count ?? 0) + 1 } : s
+    ));
+  }
+  _touch(id) {
+    this._persist((prev) => prev.map(
+      (s) => s.id === id ? { ...s, last_modified: (/* @__PURE__ */ new Date()).toISOString() } : s
+    ).sort((a, b) => b.last_modified.localeCompare(a.last_modified)));
+  }
+  _persist(mutate) {
+    const next = mutate(this.getSessions());
+    void this._workspaceState.update(SESSIONS_KEY, next);
+    this.refresh();
+  }
+  _renderHtml(webview) {
+    const scriptUri = webview.asWebviewUri(
+      vscode7.Uri.joinPath(this._extensionUri, "dist", "sidebar.js")
+    );
+    const styleUri = webview.asWebviewUri(
+      vscode7.Uri.joinPath(this._extensionUri, "dist", "sidebar.css")
+    );
+    const logoUri = webview.asWebviewUri(
+      vscode7.Uri.joinPath(this._extensionUri, "media", "logo.svg")
+    );
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src ${webview.cspSource}; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';" />
+<title>AILIENANT Sessions</title>
+<link rel="stylesheet" href="${styleUri}" />
+</head>
+<body>
+<div id="root" data-logo="${logoUri}"></div>
+<script src="${scriptUri}"></script>
+</body>
+</html>`;
+  }
+};
+
+// src/providers/workspace_panel.ts
+var vscode9 = __toESM(require("vscode"));
+
+// src/shared/config.ts
+var WORKSPACE_STATE_KEYS = {
+  masterEnabled: "ailienant.masterEnabled",
+  profile: "ailienant.intelligenceProfile",
+  dreamingEnabled: "ailienant.dreamingEnabled",
+  dreamingProfile: "ailienant.dreamingProfile",
+  reasoningPreset: "ailienant.reasoningPreset",
+  inferenceTier: "ailienant.inferenceTier"
+};
+
+// src/shared/types.ts
+var DEFAULT_ANALYST_NAME = "Natt";
+
+// src/shared/config_loader.ts
+var vscode8 = __toESM(require("vscode"));
+var CONFIG_FILENAME = "ailienant-config.json";
+var ConfigLoader = class {
+  _config = null;
+  _watcher;
+  _onChange = new vscode8.EventEmitter();
+  onChange = this._onChange.event;
+  constructor() {
+    this._load();
+    const root = this._workspaceRoot();
+    if (root) {
+      this._watcher = vscode8.workspace.createFileSystemWatcher(
+        new vscode8.RelativePattern(root, CONFIG_FILENAME)
+      );
+      this._watcher.onDidChange(() => this._load());
+      this._watcher.onDidCreate(() => this._load());
+      this._watcher.onDidDelete(() => this._set(null));
     }
+  }
+  get current() {
+    return this._config;
+  }
+  dispose() {
+    this._watcher?.dispose();
+    this._onChange.dispose();
+  }
+  _workspaceRoot() {
+    const folders = vscode8.workspace.workspaceFolders;
+    return folders && folders.length > 0 ? folders[0].uri : void 0;
+  }
+  async _load() {
+    const root = this._workspaceRoot();
+    if (!root) {
+      this._set(null);
+      return;
+    }
+    const uri = vscode8.Uri.joinPath(root, CONFIG_FILENAME);
+    try {
+      const bytes = await vscode8.workspace.fs.readFile(uri);
+      const text = new TextDecoder("utf-8").decode(bytes);
+      const parsed = JSON.parse(text);
+      if (this._isValid(parsed)) {
+        this._set(parsed);
+      } else {
+        this._set(null);
+      }
+    } catch {
+      this._set(null);
+    }
+  }
+  _isValid(c) {
+    if (!c || typeof c !== "object") {
+      return false;
+    }
+    const obj = c;
+    if (typeof obj.engine_endpoint !== "string") {
+      return false;
+    }
+    if (!obj.agent_settings || typeof obj.agent_settings.analyst_name !== "string") {
+      return false;
+    }
+    if (!obj.tiers) {
+      return false;
+    }
+    const t = obj.tiers;
+    return typeof t.small === "string" && typeof t.medium === "string" && typeof t.big === "string";
+  }
+  _set(c) {
+    this._config = c;
+    this._onChange.fire(c);
+  }
+};
+
+// src/providers/workspace_panel.ts
+var WorkspacePanelManager = class {
+  constructor(_extensionUri, _workspaceState) {
+    this._extensionUri = _extensionUri;
+    this._workspaceState = _workspaceState;
+    this._configLoader = new ConfigLoader();
+    this._disposables.push(this._configLoader);
+    this._configLoader.onChange((cfg) => {
+      for (const panel of this._panels.values()) {
+        panel.webview.postMessage({ type: "CONFIG_UPDATED", config: cfg });
+      }
+    });
+  }
+  _extensionUri;
+  _workspaceState;
+  // One panel per AILIENANT session (session.id → panel)
+  _panels = /* @__PURE__ */ new Map();
+  _sessions = /* @__PURE__ */ new Map();
+  // Track which sessions currently have a task in-flight (for conflict warnings)
+  _runningTasks = /* @__PURE__ */ new Set();
+  // Track which sessions have the Natt pane open (gates native notifications)
+  _nattOpen = /* @__PURE__ */ new Set();
+  _configLoader;
+  _disposables = [];
+  _onTitleUpdate;
+  setTitleUpdater(updater) {
+    this._onTitleUpdate = updater;
+  }
+  dispose() {
+    for (const d of this._disposables) {
+      d.dispose();
+    }
+    for (const panel of this._panels.values()) {
+      panel.dispose();
+    }
+  }
+  /** Reveal existing panel or open a new one for the given session. */
+  openSession(session) {
+    const existing = this._panels.get(session.id);
+    if (existing) {
+      existing.reveal(vscode9.ViewColumn.One);
+      return;
+    }
+    this._createPanel(session);
+  }
+  _nattName() {
+    return this._configLoader.current?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
+  }
+  _createPanel(session) {
+    const tabTitle = session.title.trim() || "AILIENANT";
+    const panel = vscode9.window.createWebviewPanel(
+      "ailienant.workspace",
+      tabTitle,
+      vscode9.ViewColumn.One,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode9.Uri.joinPath(this._extensionUri, "dist"),
+          vscode9.Uri.joinPath(this._extensionUri, "media")
+        ]
+      }
+    );
+    panel.webview.html = this._renderHtml(panel.webview, session);
+    const wsStatusHandler = (status) => {
+      panel.webview.postMessage({ type: "WS_STATUS", payload: status });
+    };
+    WSClient.getInstance().onStatus(wsStatusHandler);
+    const wsMsgHandler = (raw) => {
+      const msg = raw;
+      if (!msg.event_type) {
+        return;
+      }
+      const data = msg.data;
+      if (data?.session_id && data.session_id !== session.id) {
+        return;
+      }
+      panel.webview.postMessage({ type: msg.event_type, payload: msg.data });
+      this._maybeFireCriticalNotif(msg, session.id, panel);
+      if (msg.event_type === "server_stream_end" || msg.event_type === "server_task_complete") {
+        this._runningTasks.delete(session.id);
+      }
+    };
+    WSClient.getInstance().onMessage(wsMsgHandler);
+    panel.webview.onDidReceiveMessage(async (data) => {
+      switch (data.type) {
+        case "SUBMIT_TASK": {
+          this._maybeAutoTitle(session, data.value, panel);
+          const parallelCount = [...this._runningTasks].filter((id) => id !== session.id).length;
+          if (parallelCount > 0) {
+            panel.webview.postMessage({
+              type: "PARALLEL_SESSION_NOTIFY",
+              count: parallelCount
+            });
+          }
+          this._runningTasks.add(session.id);
+          const activeDoc = vscode9.window.activeTextEditor?.document;
+          const intercepted = await IntentRouter.intercept(data.value, activeDoc);
+          if (!intercepted) {
+            await SessionManager.getInstance().startAITask(data.value);
+          }
+          break;
+        }
+        case "ABORT_TASK":
+          this._runningTasks.delete(session.id);
+          SessionManager.getInstance().abortCurrentTask();
+          break;
+        case "HITL_RESPONSE":
+          WSClient.getInstance().send({
+            event_type: "client_hitl_response",
+            data: {
+              approval_id: data.approval_id,
+              approved: data.approved,
+              comment: data.comment,
+              modified_content: data.modified_content
+            }
+          });
+          break;
+        case "NATT_MESSAGE":
+          WSClient.getInstance().send({
+            event_type: "client_analyst_query",
+            data: { text: data.text, session_id: data.session_id }
+          });
+          break;
+        case "NATT_VISIBILITY":
+          if (Boolean(data.open)) {
+            this._nattOpen.add(session.id);
+          } else {
+            this._nattOpen.delete(session.id);
+          }
+          break;
+        case "dreaming_toggle": {
+          const enabled = data.value;
+          const profile = data.profile;
+          await this._workspaceState.update(WORKSPACE_STATE_KEYS.dreamingEnabled, enabled);
+          await this._workspaceState.update(WORKSPACE_STATE_KEYS.dreamingProfile, profile);
+          WSClient.getInstance().send({
+            event_type: "client_planner_mode_toggle",
+            data: { active: enabled, dreaming_profile: profile }
+          });
+          break;
+        }
+        case "ATTACH_CONTEXT":
+          WSClient.getInstance().send({
+            event_type: "client_attach_context",
+            data: { kind: data.kind, payload: data.payload }
+          });
+          break;
+      }
+    });
+    panel.onDidDispose(() => {
+      WSClient.getInstance().removeMessageHandler(wsMsgHandler);
+      WSClient.getInstance().removeStatusHandler(wsStatusHandler);
+      this._panels.delete(session.id);
+      this._sessions.delete(session.id);
+      this._runningTasks.delete(session.id);
+      this._nattOpen.delete(session.id);
+    });
+    this._panels.set(session.id, panel);
+    this._sessions.set(session.id, session);
+  }
+  /**
+   * On the first SUBMIT_TASK for a session with empty title, fire
+   * /api/v1/title/generate against the small-tier LLM. Fire-and-forget.
+   */
+  _maybeAutoTitle(session, prompt, panel) {
+    if (session.title.trim().length > 0) {
+      return;
+    }
+    const updater = this._onTitleUpdate;
+    if (!updater) {
+      return;
+    }
+    const cfg = vscode9.workspace.getConfiguration("ailienant");
+    const base = cfg.get("backendUrl", "http://localhost:8000");
+    void this._fetchTitle(base, prompt).then((title) => {
+      if (title && this._sessions.has(session.id)) {
+        updater(session.id, title);
+        session.title = title;
+        panel.title = title;
+      }
+    });
+  }
+  async _fetchTitle(base, prompt) {
+    try {
+      const url = `${base.replace(/\/$/, "")}/api/v1/title/generate`;
+      const body = JSON.stringify({ prompt, max_words: 5 });
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body
+      });
+      if (!res.ok) {
+        return void 0;
+      }
+      const json = await res.json();
+      return json.title?.trim() || void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  /**
+   * Fire a native VS Code notification when:
+   *  - server_hitl_approval_request arrives, OR
+   *  - server_natt_message with is_alert=true arrives,
+   * AND the Natt pane is currently closed for this session.
+   */
+  _maybeFireCriticalNotif(msg, sessionId, panel) {
+    const eventType = msg.event_type;
+    const isHitl = eventType === "server_hitl_approval_request";
+    const data = msg.data ?? {};
+    const isAlertNatt = eventType === "server_natt_message" && Boolean(data.is_alert);
+    if (!isHitl && !isAlertNatt) {
+      return;
+    }
+    if (this._nattOpen.has(sessionId)) {
+      return;
+    }
+    const name = this._nattName();
+    const preview = typeof data.preview === "string" ? data.preview : isHitl ? "authorization required" : "has a critical update";
+    const button = `Open ${name}`;
+    void vscode9.window.showInformationMessage(
+      `${name}: ${preview}`,
+      button
+    ).then((choice) => {
+      if (choice === button) {
+        panel.reveal(vscode9.ViewColumn.One);
+        panel.webview.postMessage({ type: "OPEN_NATT" });
+      }
+    });
+  }
+  _renderHtml(webview, session) {
+    const scriptUri = webview.asWebviewUri(
+      vscode9.Uri.joinPath(this._extensionUri, "dist", "workspace.js")
+    );
+    const styleUri = webview.asWebviewUri(
+      vscode9.Uri.joinPath(this._extensionUri, "dist", "workspace.css")
+    );
+    const logoUri = webview.asWebviewUri(
+      vscode9.Uri.joinPath(this._extensionUri, "media", "logo.svg")
+    );
+    const initial = {
+      sessionId: session.id,
+      sessionTitle: session.title.trim() || "AILIENANT",
+      config: this._configLoader.current,
+      logoUri: logoUri.toString()
+    };
+    const initialAttr = JSON.stringify(initial).replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/</g, "&lt;");
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src ${webview.cspSource}; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';" />
+<title>${session.title.trim() || "AILIENANT"}</title>
+<link rel="stylesheet" href="${styleUri}" />
+</head>
+<body>
+<div id="root" data-initial='${initialAttr}' data-logo='${logoUri}'></div>
+<script src="${scriptUri}"></script>
+</body>
+</html>`;
+  }
+};
+
+// src/providers/mirror.ts
+var vscode11 = __toESM(require("vscode"));
+
+// src/providers/telemetry.ts
+var vscode10 = __toESM(require("vscode"));
+var REJECTION_RATIO = 0.7;
+var REJECTION_WINDOW_MS = 3 * 60 * 1e3;
+var BoundingBoxRegistry = class {
+  boxes = /* @__PURE__ */ new Map();
+  register(box) {
+    this.boxes.set(box.uri, { ...box, cumulativeChangedChars: 0 });
+  }
+  get(uri) {
+    return this.boxes.get(uri);
+  }
+  untrack(uri) {
+    this.boxes.delete(uri);
+  }
+  size() {
+    return this.boxes.size;
+  }
+  /**
+   * Process a TextDocumentChangeEvent. Returns the box if it just exceeded
+   * the rejection threshold, else null. Pure / testable — no I/O, no async.
+   */
+  processChange(event) {
+    const uri = event.document.uri.fsPath;
+    const box = this.boxes.get(uri);
+    if (!box) {
+      return null;
+    }
+    const now = Date.now();
+    if (now - box.timestamp > REJECTION_WINDOW_MS) {
+      this.boxes.delete(uri);
+      return null;
+    }
+    for (const change of event.contentChanges) {
+      box.cumulativeChangedChars += change.rangeLength;
+    }
+    if (box.cumulativeChangedChars >= REJECTION_RATIO * box.originalLength) {
+      return box;
+    }
+    return null;
+  }
+};
+function installDecayListener(context, registry) {
+  const subscription = vscode10.workspace.onDidChangeTextDocument(async (event) => {
+    const fired = registry.processChange(event);
+    if (!fired) {
+      return;
+    }
+    registry.untrack(fired.uri);
+    const currentUserCode = event.document.getText();
+    await APIClient.getInstance().reportRejection({
+      uri: fired.uri,
+      original_ai_code: fired.originalText,
+      current_user_code: currentUserCode,
+      timestamp: fired.timestamp,
+      workspace_root: fired.workspaceRoot
+    });
   });
-  context.subscriptions.push(helloWorld, runTask);
+  context.subscriptions.push(subscription);
+}
+var boundingBoxRegistry = new BoundingBoxRegistry();
+
+// src/providers/mirror.ts
+var MIRROR_SCHEME = "ailienant-vision";
+var MirrorContentProvider = class {
+  _onDidChange = new vscode11.EventEmitter();
+  onDidChange = this._onDidChange.event;
+  async provideTextDocumentContent(uri) {
+    const nodeId = uri.authority;
+    const relPath = uri.path.replace(/^\//, "");
+    try {
+      return await APIClient.getInstance().fetchVirtualFile(nodeId, relPath);
+    } catch (e) {
+      return `// [ailienant-vision] failed to fetch '${relPath}' from node '${nodeId}':
+// ${e?.message ?? e}
+`;
+    }
+  }
+  /**
+   * Caller can fire this when the backend MCTS state changes so VS Code
+   * re-renders any open diff views. No backend hook wires this yet (3.4.5+).
+   */
+  invalidate(uri) {
+    this._onDidChange.fire(uri);
+  }
+};
+function buildMirrorUri(nodeId, relPath) {
+  return vscode11.Uri.from({
+    scheme: MIRROR_SCHEME,
+    authority: nodeId,
+    path: "/" + relPath.replace(/^\/+/, "")
+  });
+}
+async function showMctsDiff(nodeId, relPath) {
+  const ws = vscode11.workspace.workspaceFolders?.[0];
+  if (!ws) {
+    vscode11.window.showErrorMessage("AILIENANT: no workspace folder open");
+    return;
+  }
+  const local = vscode11.Uri.joinPath(ws.uri, relPath);
+  const virtual = buildMirrorUri(nodeId, relPath);
+  const title = `${relPath} \u2194 Dream ${nodeId.slice(0, 8)}`;
+  await vscode11.commands.executeCommand("vscode.diff", local, virtual, title);
+}
+async function applyMergeCommand(nodeId) {
+  const ws = vscode11.workspace.workspaceFolders?.[0];
+  if (!ws) {
+    vscode11.window.showErrorMessage("AILIENANT: no workspace folder open");
+    return;
+  }
+  const confirm = await vscode11.window.showWarningMessage(
+    `Apply MCTS dream ${nodeId.slice(0, 8)} to disk? Files will be overwritten.`,
+    { modal: true },
+    "Apply"
+  );
+  if (confirm !== "Apply") {
+    return;
+  }
+  try {
+    const report = await APIClient.getInstance().applyMerge(nodeId, ws.uri.fsPath);
+    if (report.success) {
+      for (const relPath of report.merged_paths) {
+        try {
+          const localUri = vscode11.Uri.joinPath(ws.uri, relPath);
+          const doc = await vscode11.workspace.openTextDocument(localUri);
+          const text = doc.getText();
+          boundingBoxRegistry.register({
+            uri: localUri.fsPath,
+            workspaceRoot: ws.uri.fsPath,
+            originalText: text,
+            originalLength: text.length,
+            timestamp: Date.now()
+          });
+        } catch (boxErr) {
+          console.warn(`[ailienant] failed to register bounding box for ${relPath}:`, boxErr);
+        }
+      }
+      vscode11.window.showInformationMessage(
+        `AILIENANT: merged ${report.merged_files} file(s); pruned ${report.prune_count} node(s).`
+      );
+    } else {
+      vscode11.window.showErrorMessage(
+        `AILIENANT merge failed: ${report.errors.join("; ")}`
+      );
+    }
+  } catch (e) {
+    vscode11.window.showErrorMessage(`AILIENANT applyMerge call failed: ${e?.message ?? e}`);
+  }
+}
+
+// src/extension.ts
+function makeSessionId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return "ses-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+function activate(context) {
+  console.log("AILIENANT extension activated.");
+  const workspaceManager = new WorkspacePanelManager(context.extensionUri, context.workspaceState);
+  const onOpenSession = (s) => workspaceManager.openSession(s);
+  const onNewSession = async () => {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    return {
+      id: makeSessionId(),
+      title: "",
+      created_at: now,
+      last_modified: now,
+      message_count: 0,
+      model_tier: "medium"
+    };
+  };
+  const sessionBrowser = new SessionBrowserProvider(
+    context.extensionUri,
+    context.workspaceState,
+    onOpenSession,
+    onNewSession
+  );
+  workspaceManager.setTitleUpdater((sessionId, title) => {
+    sessionBrowser.updateSessionTitle(sessionId, title);
+  });
+  const sidebarRegistration = vscode12.window.registerWebviewViewProvider(
+    SessionBrowserProvider.viewType,
+    sessionBrowser,
+    { webviewOptions: { retainContextWhenHidden: true } }
+  );
+  const openWorkspaceCmd = vscode12.commands.registerCommand(
+    "ailienant.openWorkspace",
+    async () => {
+      const sessions = sessionBrowser.getSessions();
+      const target = sessions[0] ?? await onNewSession();
+      if (!sessions.find((s) => s.id === target.id)) {
+      }
+      workspaceManager.openSession(target);
+    }
+  );
+  const newSessionCmd = vscode12.commands.registerCommand(
+    "ailienant.newSession",
+    async () => {
+      const s = await onNewSession();
+      sessionBrowser.persistSession(s);
+      workspaceManager.openSession(s);
+    }
+  );
+  const runTaskCmd = vscode12.commands.registerCommand(
+    "ailienant-extension.runTask",
+    async () => {
+      const prompt = await vscode12.window.showInputBox({
+        prompt: "Enter your directive for AILIENANT",
+        placeHolder: 'e.g. "format", "constify", or describe a complex task'
+      });
+      if (!prompt) {
+        return;
+      }
+      const doc = vscode12.window.activeTextEditor?.document;
+      const intercepted = await IntentRouter.intercept(prompt, doc);
+      if (!intercepted) {
+        await SessionManager.getInstance().startAITask(prompt);
+      }
+    }
+  );
+  const mirrorProvider = new MirrorContentProvider();
+  const mirrorRegistration = vscode12.workspace.registerTextDocumentContentProvider(
+    MIRROR_SCHEME,
+    mirrorProvider
+  );
+  const showDiffCmd = vscode12.commands.registerCommand(
+    "ailienant.showMctsDiff",
+    (nodeId, filePath) => showMctsDiff(nodeId, filePath)
+  );
+  const applyMergeCmd = vscode12.commands.registerCommand(
+    "ailienant.applyMerge",
+    (nodeId) => applyMergeCommand(nodeId)
+  );
+  context.subscriptions.push(
+    sidebarRegistration,
+    openWorkspaceCmd,
+    newSessionCmd,
+    runTaskCmd,
+    mirrorRegistration,
+    showDiffCmd,
+    applyMergeCmd,
+    { dispose: () => workspaceManager.dispose() }
+  );
+  installDecayListener(context, boundingBoxRegistry);
 }
 function deactivate() {
 }

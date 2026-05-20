@@ -78,6 +78,23 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
         this._touch(id);
     }
 
+    /** Called by the VS Code command (tab bar button) to add a session created outside the webview. */
+    public persistSession(session: Session): void {
+        this._persist((prev) => [session, ...prev]);
+    }
+
+    public updateSessionTitle(id: string, title: string): void {
+        this._persist((prev) => prev.map(s =>
+            s.id === id ? { ...s, title } : s
+        ));
+    }
+
+    public incrementMessageCount(id: string): void {
+        this._persist((prev) => prev.map(s =>
+            s.id === id ? { ...s, message_count: (s.message_count ?? 0) + 1 } : s
+        ));
+    }
+
     private _touch(id: string): void {
         this._persist((prev) => prev.map(s =>
             s.id === id ? { ...s, last_modified: new Date().toISOString() } : s
@@ -94,6 +111,12 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'dist', 'sidebar.js')
         );
+        const styleUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, 'dist', 'sidebar.css')
+        );
+        const logoUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'logo.svg')
+        );
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -101,9 +124,10 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; img-src ${webview.cspSource}; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';" />
 <title>AILIENANT Sessions</title>
+<link rel="stylesheet" href="${styleUri}" />
 </head>
 <body>
-<div id="root"></div>
+<div id="root" data-logo="${logoUri}"></div>
 <script src="${scriptUri}"></script>
 </body>
 </html>`;
