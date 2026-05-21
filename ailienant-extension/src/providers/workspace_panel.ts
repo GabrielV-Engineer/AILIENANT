@@ -1,11 +1,37 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { SessionManager } from '../brain/session';
 import { IntentRouter } from '../core/IntentRouter';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
-import { DreamingProfile, WORKSPACE_STATE_KEYS } from '../shared/config';
+import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS } from '../shared/config';
+import { APIClient } from '../api/api_client';
 import type { AilienantConfig, Session } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { ConfigLoader } from '../shared/config_loader';
+
+function findBackendPath(extensionFsPath: string): string | null {
+    const candidates = [
+        ...(vscode.workspace.workspaceFolders ?? []).map(
+            f => path.join(f.uri.fsPath, 'ailienant-core')
+        ),
+        path.join(extensionFsPath, '..', 'ailienant-core'),
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(path.join(candidate, 'main.py'))) {
+            return candidate;
+        }
+    }
+    return null;
+}
+
+function findVenvPython(backendPath: string): string {
+    const winPy = path.join(backendPath, '.venv', 'Scripts', 'python.exe');
+    const nixPy = path.join(backendPath, '.venv', 'bin', 'python');
+    if (fs.existsSync(winPy)) { return winPy; }
+    if (fs.existsSync(nixPy)) { return nixPy; }
+    return process.platform === 'win32' ? 'python' : 'python3';
+}
 
 interface TitleUpdater {
     (sessionId: string, title: string): void;
@@ -22,6 +48,8 @@ export class WorkspacePanelManager {
     private readonly _configLoader: ConfigLoader;
     private readonly _disposables: vscode.Disposable[] = [];
     private _onTitleUpdate: TitleUpdater | undefined;
+    // 7.9.A.5 — guards against multiple panels spawning the Core concurrently.
+    private _coreStarting: boolean = false;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -36,6 +64,16 @@ export class WorkspacePanelManager {
                 panel.webview.postMessage({ type: 'CONFIG_UPDATED', config: cfg });
             }
         });
+
+        // Broadcast workspace folder changes to every open panel
+        this._disposables.push(
+            vscode.workspace.onDidChangeWorkspaceFolders(() => {
+                const folder = vscode.workspace.workspaceFolders?.[0]?.name ?? '';
+                for (const panel of this._panels.values()) {
+                    panel.webview.postMessage({ type: 'WORKSPACE_UPDATED', workspaceFolder: folder });
+                }
+            })
+        );
     }
 
     public setTitleUpdater(updater: TitleUpdater): void {
@@ -67,6 +105,81 @@ export class WorkspacePanelManager {
         return this._configLoader.current?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
     }
 
+    /**
+     * 7.9.A.5 — Spawn the Core backend in a terminal. Returns true if a spawn was
+     * initiated. When `silent`, suppresses the "cannot locate core" guidance so the
+     * auto-start path does not nag on every session open (the manual button is loud).
+     */
+    private _spawnCore(silent: boolean): boolean {
+        const backendPath = findBackendPath(this._extensionUri.fsPath);
+        if (!backendPath) {
+            const cfg = vscode.workspace.getConfiguration('ailienant');
+            const cmd = cfg.get<string>('coreStartCommand', '').trim();
+            if (!cmd) {
+                if (!silent) {
+                    void vscode.window.showWarningMessage(
+                        'Cannot locate ailienant-core/. Open the monorepo root as your workspace folder, or set "ailienant.coreStartCommand" in VS Code Settings.',
+                        'Open Settings',
+                    ).then((choice) => {
+                        if (choice === 'Open Settings') {
+                            void vscode.commands.executeCommand(
+                                'workbench.action.openSettings',
+                                'ailienant.coreStartCommand',
+                            );
+                        }
+                    });
+                }
+                return false;
+            }
+            const t = vscode.window.createTerminal({ name: 'AILIENANT Core' });
+            t.show(true);
+            t.sendText(cmd);
+            return true;
+        }
+        const python = findVenvPython(backendPath);
+        const terminal = vscode.window.createTerminal({
+            name: 'AILIENANT Core',
+            cwd: backendPath,
+        });
+        terminal.show(true);
+        terminal.sendText(`"${python}" -m uvicorn main:app --reload --port 8000`);
+        return true;
+    }
+
+    /**
+     * 7.9.A.5 — Health-aware activation, run once per session open. If the Core is
+     * reachable, open the tunnel + announce the workspace (starts the lazy indexer).
+     * If it is down and `ailienant.autoStartCore` is enabled, spawn it once and poll
+     * until healthy, then connect. On timeout the offline pill + manual button remain.
+     */
+    private async _ensureBackend(): Promise<void> {
+        const api = APIClient.getInstance();
+        if (await api.checkHealth()) {
+            SessionManager.getInstance().ensureConnected();
+            return;
+        }
+
+        const autoStart = vscode.workspace
+            .getConfiguration('ailienant')
+            .get<boolean>('autoStartCore', true);
+        if (!autoStart || this._coreStarting) { return; }
+
+        this._coreStarting = true;
+        try {
+            if (!this._spawnCore(true)) { return; }
+            // Poll while uvicorn boots (~30s budget at 1s intervals).
+            for (let i = 0; i < 30; i++) {
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                if (await api.checkHealth()) {
+                    SessionManager.getInstance().ensureConnected();
+                    return;
+                }
+            }
+        } finally {
+            this._coreStarting = false;
+        }
+    }
+
     private _createPanel(session: Session): void {
         const tabTitle = session.title.trim() || 'AILIENANT';
         const panel = vscode.window.createWebviewPanel(
@@ -82,6 +195,7 @@ export class WorkspacePanelManager {
                 ],
             },
         );
+        panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'media', 'icon-color.svg');
 
         panel.webview.html = this._renderHtml(panel.webview, session);
 
@@ -109,6 +223,9 @@ export class WorkspacePanelManager {
             }
         };
         WSClient.getInstance().onMessage(wsMsgHandler);
+
+        // ── Health-aware activation: connect now or auto-start the Core ──────
+        void this._ensureBackend();
 
         // ── Panel → extension host messages ────────────────────────────────
         panel.webview.onDidReceiveMessage(async (data) => {
@@ -176,6 +293,119 @@ export class WorkspacePanelManager {
                         data: { kind: data.kind, payload: data.payload },
                     });
                     break;
+                case 'SET_BUDGET_LIMIT': {
+                    const mode       = data.mode       as BudgetLimitMode;
+                    const weeklyUsd  = data.weeklyUsd  as number;
+                    const monthlyUsd = data.monthlyUsd as number;
+                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.budgetLimitMode, mode);
+                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.budgetWeeklyUsd, weeklyUsd);
+                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.budgetMonthlyUsd, monthlyUsd);
+                    for (const p of this._panels.values()) {
+                        p.webview.postMessage({ type: 'BUDGET_UPDATED', mode, weeklyUsd, monthlyUsd });
+                    }
+                    break;
+                }
+                case 'START_BACKEND': {
+                    this._spawnCore(false);
+                    break;
+                }
+                case 'OPEN_DASHBOARD': {
+                    const cfg = vscode.workspace.getConfiguration('ailienant');
+                    const base = cfg.get<string>('backendUrl', 'http://localhost:8000').replace(/\/$/, '');
+                    const tab = typeof data.tab === 'string' ? data.tab : '';
+                    const url = tab ? `${base}?tab=${encodeURIComponent(tab)}` : base;
+                    void vscode.env.openExternal(vscode.Uri.parse(url));
+                    break;
+                }
+                case 'OPEN_SETTINGS': {
+                    void vscode.commands.executeCommand('workbench.action.openSettings', 'ailienant');
+                    break;
+                }
+                case 'OPEN_DOCS': {
+                    const cfg = vscode.workspace.getConfiguration('ailienant');
+                    const docsUrl = cfg.get<string>('docsUrl', '').trim();
+                    if (docsUrl) {
+                        void vscode.env.openExternal(vscode.Uri.parse(docsUrl));
+                    } else {
+                        void vscode.window.showInformationMessage(
+                            'AILIENANT documentation link is not configured. Set "ailienant.docsUrl" in VS Code Settings.',
+                            'Open Settings',
+                        ).then((choice) => {
+                            if (choice === 'Open Settings') {
+                                void vscode.commands.executeCommand('workbench.action.openSettings', 'ailienant.docsUrl');
+                            }
+                        });
+                    }
+                    break;
+                }
+                case 'MENTION_FILE': {
+                    const found = await vscode.workspace.findFiles('**/*', '**/{node_modules,.git,dist,.venv}/**', 500);
+                    if (found.length === 0) {
+                        void vscode.window.showInformationMessage('AILIENANT: no workspace files found to mention.');
+                        break;
+                    }
+                    const items = found.map(u => vscode.workspace.asRelativePath(u));
+                    const picked = await vscode.window.showQuickPick(items.sort(), {
+                        title: 'Mention a project file',
+                        placeHolder: 'Type to filter workspace files',
+                        matchOnDetail: true,
+                    });
+                    if (picked) {
+                        panel.webview.postMessage({ type: 'INSERT_MENTION', path: picked });
+                    }
+                    break;
+                }
+                case 'CLEAR_CONVERSATION': {
+                    panel.webview.postMessage({ type: 'CONVERSATION_CLEARED' });
+                    break;
+                }
+                case 'GET_MODELS': {
+                    const models = await APIClient.getInstance().fetchAvailableModels();
+                    panel.webview.postMessage({ type: 'MODELS_LIST', models });
+                    break;
+                }
+                case 'GET_USAGE': {
+                    const usage = await APIClient.getInstance().fetchTokenUsage();
+                    panel.webview.postMessage({ type: 'USAGE_SNAPSHOT', usage });
+                    break;
+                }
+                case 'SET_MODEL_PREFERENCE': {
+                    const activeModelId     = (data.activeModelId as string | undefined) ?? '';
+                    const orchestrationMode = (data.orchestrationMode as OrchestrationMode | undefined) ?? 'auto';
+                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.activeModelId, activeModelId);
+                    await this._workspaceState.update(WORKSPACE_STATE_KEYS.orchestrationMode, orchestrationMode);
+                    break;
+                }
+                case 'OPEN_WORKSPACE': {
+                    void vscode.commands.executeCommand('vscode.openFolder');
+                    break;
+                }
+                case 'PICK_FILES': {
+                    const uris = await vscode.window.showOpenDialog({
+                        canSelectFiles: true,
+                        canSelectFolders: false,
+                        canSelectMany: true,
+                        title: 'Add files to context',
+                    });
+                    if (uris && uris.length > 0) {
+                        const items = uris.map(u => ({ path: u.fsPath, kind: 'file' as const }));
+                        panel.webview.postMessage({ type: 'PICKED_PATHS', items });
+                    }
+                    break;
+                }
+                case 'PICK_FOLDER': {
+                    const uris = await vscode.window.showOpenDialog({
+                        canSelectFiles: false,
+                        canSelectFolders: true,
+                        canSelectMany: false,
+                        title: 'Add folder to context',
+                    });
+                    if (uris && uris.length > 0) {
+                        const items = uris.map(u => ({ path: u.fsPath, kind: 'directory' as const }));
+                        panel.webview.postMessage({ type: 'PICKED_PATHS', items });
+                    }
+                    break;
+                }
             }
         });
 
@@ -272,7 +502,7 @@ export class WorkspacePanelManager {
             vscode.Uri.joinPath(this._extensionUri, 'dist', 'workspace.css')
         );
         const logoUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, 'media', 'logo.svg')
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'icon-color.svg')
         );
 
         const initial = {
@@ -280,6 +510,12 @@ export class WorkspacePanelManager {
             sessionTitle: session.title.trim() || 'AILIENANT',
             config:       this._configLoader.current as AilienantConfig | null,
             logoUri:      logoUri.toString(),
+            budgetLimitMode:  this._workspaceState.get<BudgetLimitMode>(WORKSPACE_STATE_KEYS.budgetLimitMode, 'none'),
+            budgetWeeklyUsd:  this._workspaceState.get<number>(WORKSPACE_STATE_KEYS.budgetWeeklyUsd, 20),
+            budgetMonthlyUsd: this._workspaceState.get<number>(WORKSPACE_STATE_KEYS.budgetMonthlyUsd, 50),
+            activeModelId:    this._workspaceState.get<string>(WORKSPACE_STATE_KEYS.activeModelId, ''),
+            orchestrationMode: this._workspaceState.get<OrchestrationMode>(WORKSPACE_STATE_KEYS.orchestrationMode, 'auto'),
+            workspaceFolder:  vscode.workspace.workspaceFolders?.[0]?.name ?? '',
         };
         const initialAttr = JSON.stringify(initial)
             .replace(/&/g, '&amp;')

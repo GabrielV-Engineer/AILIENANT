@@ -13,9 +13,11 @@ export class SessionManager {
     private versionSnapshot: Map<string, number> = new Map();
 
     private constructor() {
-        // Generamos un ID de sesión criptográficamente seguro o usamos el del IDE
-        // Esto es crucial para que FastAPI sepa a quién enviarle los WebSockets
-        this.sessionId = vscode.env.sessionId || `ailienant_usr_${Date.now()}`;
+        // vscode.env.sessionId returns a non-standard concatenated string in some VS Code builds.
+        // NOTE: Backend also requires `pip install 'uvicorn[standard]'` for WS support.
+        this.sessionId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+            ? crypto.randomUUID()
+            : `ailienant_${Date.now().toString(36)}`;
 
         // Register OCC handler once — checks file version on every incoming graph mutation.
         WSClient.getInstance().onMessage(this._onWSMessage.bind(this));
@@ -29,6 +31,28 @@ export class SessionManager {
     }
 
     /**
+     * 7.9.A.5 — Open the quantum tunnel (idempotent) and announce the workspace so
+     * the backend starts (or resumes) the lazy GraphRAG indexer. Safe to call on
+     * every session/panel open as well as before a task.
+     */
+    public ensureConnected(): void {
+        const wsClient = WSClient.getInstance();
+        wsClient.connect(this.sessionId);
+
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (workspaceRoot) {
+            wsClient.sendWhenReady({
+                event_type: 'client_workspace_init',
+                data: {
+                    workspace_root: workspaceRoot,
+                    project_id: PathResolver.resolveProjectId(),
+                    workspace_pid: process.pid,
+                },
+            });
+        }
+    }
+
+    /**
      * Inicia una misión cognitiva.
      * Orquesta la recolección de entropía, abre el túnel cuántico y despacha el WBS.
      */
@@ -36,8 +60,8 @@ export class SessionManager {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
             // Si lo hacemos al revés, podríamos perder los primeros tokens de LangGraph.
-            const wsClient = WSClient.getInstance();
-            wsClient.connect(this.sessionId);
+            // ensureConnected also (re)announces the workspace to keep the indexer alive.
+            this.ensureConnected();
 
             // 2. Extraer la Entropía Visual (Ojos) del VFS
             const dirtyBuffers = VFSReader.captureEntropy();

@@ -31,6 +31,14 @@ export interface ModelInfo {
     is_local: boolean;
 }
 
+// 7.9.A.7 — Token usage snapshot (mirrors GET /api/v1/telemetry/tokens).
+export interface TokenUsage {
+    local_tokens: number;
+    cloud_tokens: number;
+    estimated_savings_usd: number;
+    estimated_invested_usd: number;
+}
+
 // Phase 3.4.5 — MCTS Mirror response schema (mirrors FastAPI MergeReport).
 export interface MergeReport {
     success: boolean;
@@ -149,6 +157,40 @@ export class APIClient {
             return (data.models ?? []) as ModelInfo[];
         } catch {
             return [];
+        }
+    }
+
+    /**
+     * 7.9.A.7 — Fetch the per-session token-usage snapshot for the Account & Usage view.
+     * Returns null on any network error (non-blocking).
+     */
+    public async fetchTokenUsage(): Promise<TokenUsage | null> {
+        try {
+            const response = await fetch(`${this.baseUrl}/telemetry/tokens`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!response.ok) { return null; }
+            return (await response.json()) as TokenUsage;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * 7.9.A.5 — Probe whether the Core backend is reachable.
+     * The health route lives at the server origin root ("/"), not under /api/v1.
+     */
+    public async checkHealth(): Promise<boolean> {
+        try {
+            const origin = new URL(this.baseUrl).origin;
+            const response = await fetch(`${origin}/`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(2000),
+            });
+            return response.ok;
+        } catch {
+            return false;
         }
     }
 

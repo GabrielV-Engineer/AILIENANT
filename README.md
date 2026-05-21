@@ -168,8 +168,9 @@ Proyect_Ailienant/
 │   │   │   ├── index.css       #     --vscode-* base + --ai-accent/warn/error/cloud mode accents (no custom backgrounds)
 │   │   │   ├── BentoMenu.tsx   #     3×3 agent launcher grid (FORCE_AGENT postMessage)
 │   │   │   ├── GraphViewer.tsx #     React Flow + 3-tier LOD (zoom>0.8/0.4–0.8/<0.4) + heatmap SVG
-│   │   │   ├── components/     #     HUD, TierToggle, TelemetryHUD (OCC ring + speedometer + sparkline + FinOps bar),
-│   │   │   │                   #     DreamingMode (🌙 popover), CSSAlertBanner, SlashMenu, HITLCard
+│   │   │   ├── components/     #     TelemetryHUD (OCC ring + speedometer + sparkline + FinOps bar), ModeMenu,
+│   │   │   │                   #     DreamingMode (🌙 popover), CSSAlertBanner, HITLCard, ContextOverlay,
+│   │   │   │                   #     CommandPalette (sectioned /command + /settings menu, 7.9.A.7) + ModelsMenu
 │   │   │   └── hooks/          #     useReasoningPreset (surgeon/architect/explorer preset serializer)
 │   │   ├── dashboard/          #   Web Dashboard SPA (ESM + code splitting, custom palette)
 │   │   │   ├── main.tsx        #     SPA entry — lazy StagingArea (Monaco), eager HW/BYOM/Rules/Audit panels
@@ -276,6 +277,8 @@ npm run compile
 ```
 
 Then in VS Code: **F5** to launch an Extension Development Host, or run `vsce package` to build a `.vsix`.
+
+**Core activation.** Opening an AILIENANT session is health-aware: the extension probes `GET /` and, if the Core is unreachable, auto-starts it (setting `ailienant.autoStartCore`, default `true`). When the monorepo isn't the open folder, set `ailienant.coreStartCommand` to your launch command. The manual **Start Core** button in the status pill remains as a fallback. Once connected, the workspace is announced (`client_workspace_init`) and the GraphRAG lazy indexer runs, surfaced by the header indexing pill (Awaiting → Indexing % → ready).
 
 ### 3. Run the tests
 

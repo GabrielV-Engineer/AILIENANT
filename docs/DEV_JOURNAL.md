@@ -1119,3 +1119,46 @@ Phase 7 construye la capa completa de usuario de AILIENANT: la sidebar de VS Cod
 2. **Dreaming Mode:** Botón `[🌙 Dream]` prominente → Radix Popover con ON/OFF + 4 profile pills. Border de input pulsa verde (#63a583) cuando activo. Persiste en `vscode.workspace.state`.
 3. **Monaco blast radius:** Resuelto. `React.lazy()` + `Suspense` + esbuild ESM splitting. El chunk Monaco (~5 MB) solo se descarga cuando el usuario abre Staging Area.
 4. **LOD Graph:** 3 tiers por zoom. Heatmap SVG en ultra-zoom. `onlyRenderVisibleElements` en React Flow.
+
+## Hito 7.9.A.7: Sectioned Command + Settings Menu (Claude-Code-inspired) — 2026-05-21
+
+- **Status:** ✅ Shell + wire-existing + Models. `npm run compile` → 0 errores (2 warnings pre-existentes en `api_client.ts:1` y `vfs_reader.ts:1`).
+- **Files changed:**
+  - `src/workspace/components/CommandPalette.tsx` — reescrito de lista plana de 7 items a menú seccionado (`/context`, `/models`, `/customize`, `/settings`, `/support`) con búsqueda transversal, navegación ↑↓/Enter/Esc y sub-vista anidada con botón Back.
+  - `src/workspace/components/ModelsMenu.tsx` *(nuevo)* — sub-vistas Switch model (lista de `/api/v1/models/available`; vacío → deep-link BYOM), Orchestration mode (manual/auto + tiers small·medium·big·cloud desde `config.tiers`), Account & Usage (`/api/v1/telemetry/tokens`).
+  - `src/providers/workspace_panel.ts` — handlers IPC nuevos: `MENTION_FILE` (quick-pick de archivos del workspace → `INSERT_MENTION`), `CLEAR_CONVERSATION` → `CONVERSATION_CLEARED`, `GET_MODELS`/`GET_USAGE`, `SET_MODEL_PREFERENCE` (persiste en `workspaceState`), `OPEN_SETTINGS`, `OPEN_DOCS`; `OPEN_DASHBOARD` extendido con `{tab}` (`?tab=`).
+  - `src/api/api_client.ts` — `fetchTokenUsage()` + interface `TokenUsage`.
+  - `src/dashboard/main.tsx` — seeding de `activePanel` desde `?tab=` para los deep-links del menú (memory/byom).
+  - `src/workspace/components/PromptBar.tsx` — listener `INSERT_MENTION` (inserta `@path`), props de model-pref reenviadas al menú, `onOpenContext`.
+  - `src/workspace/Workspace.tsx` / `main.tsx` — estado `activeModelId`/`orchestrationMode` (seed desde initial), handler `SET_MODEL_PREFERENCE`, caso `CONVERSATION_CLEARED`.
+  - `src/shared/config.ts` — tipo `OrchestrationMode` + keys `activeModelId`/`orchestrationMode`.
+  - `src/workspace/workspace.css` — estilos `.ws-menu*`, sub-vista Models, lista de modelos, tiers, grid de uso.
+  - `package.json` — setting `ailienant.docsUrl`.
+- **Decisiones:**
+  1. **Coexistencia:** el menú nuevo *añade* secciones; ModeMenu/Dreaming/budget popovers quedan intactos (sin regresión).
+  2. **Models en chat = quick-switch; config pesada en dashboard BYOM** (deep-link). Preferencia persistida en `workspaceState`, mostrada como *default preferido*.
+  3. **Greenfield diferido:** Output styles, Agents, Hooks, Permissions, MCP Servers como **"Coming soon"** (cada uno requiere su propio backend).
+  4. **Enforcement del pin manual** (bypass del router CSS/TCI) = follow-up; el selector persiste/muestra pero no sobreescribe el router en vivo.
+
+## Hito 7.9.A.5: Core Connection + Workspace Status Accuracy (health-aware auto-start) - 2026-05-21
+
+- **Status:** OK. `npm run compile` -> 0 errores (2 warnings pre-existentes en `api_client.ts:1` y `vfs_reader.ts:1`).
+- **Causas raiz (confirmadas en codigo):**
+  1. El WebSocket solo conectaba dentro de `SessionManager.startAITask()`, es decir solo al enviar la primera tarea. Al abrir una sesion con el Core arriba no se conectaba nada y `wsStatus` quedaba en su default `'disconnected'` ("Offline"). Ademas `onStatus` solo emitia en transiciones, asi que un segundo panel abierto despues de conectar nunca recibia `'connected'`.
+  2. El indexer lazy nunca arrancaba: `client_workspace_init` (el evento que dispara `lazy_indexer.start` en el backend) no se enviaba desde el frontend. Y el contrato de progreso estaba roto: el backend emite `{current,total,percentage}` pero el webview leia `{pct,files_indexed,total_files}`; `server_indexing_started/_complete` no se emiten (el cierre es un frame 100%).
+  3. Activacion 100% manual: `activationEvents: []`, sin health-check, sin auto-start.
+- **Files changed:**
+  - `src/api/ws_client.ts` - rastrea `_status`; `onStatus` reproduce el ultimo status al suscribir (paneles nuevos son precisos); `sendWhenReady()` + cola `_pendingSends` que se vacia en `'open'` (para `client_workspace_init`).
+  - `src/api/api_client.ts` - `checkHealth()` hace `GET` al origin root (`http://127.0.0.1:8000/`, no bajo `/api/v1`) con timeout 2s.
+  - `src/brain/session.ts` - `ensureConnected()` conecta (idempotente) y emite `client_workspace_init` con `workspace_root`/`project_id`/`workspace_pid`; `startAITask()` ahora lo usa.
+  - `src/providers/workspace_panel.ts` - refactor del spawn a `_spawnCore(silent)`; nuevo `_ensureBackend()` (health-check -> connect, si caido y `autoStartCore` activo -> spawn + polling 30s -> connect) invocado una vez por panel; guard `_coreStarting` anti doble-spawn.
+  - `src/workspace/Workspace.tsx` - mapeo del progreso al contrato del backend; deriva `ready` al 100% preservando el conteo real (el frame 1/1 de cierre no clobberea el total).
+  - `package.json` - setting `ailienant.autoStartCore` (boolean, default true).
+- **Sin cambios de backend:** el handler `client_workspace_init`, el `lazy_indexer` y `broadcast_indexing_progress` ya existian; este hito solo conecta el frontend.
+- **Decisiones:**
+  1. **Auto-start health-aware:** ping al abrir; solo se lanza el Core si esta caido. El boton manual "Start Core" queda como fallback/override (camino "ruidoso" que sí muestra la guia cuando no encuentra el core).
+  2. **Replay de status en `onStatus`:** evita seedear estado extra por panel; el WS singleton es la fuente de verdad y cada suscriptor recibe el valor actual al registrarse.
+  3. **Sin tocar el backend:** menor blast radius; el contrato roto se corrige en el lado del webview.
+
+### Nota de diseno - Activacion universal (follow-up 7.9.A.5.1)
+El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`createTerminal` + `sendText`), `findBackendPath`/`findVenvPython` y puerto fijo 8000. Para distribucion a usuarios finales (extension + backend empaquetado) se requiere: (a) empaquetar o detectar un runtime de Python; (b) gestionar el Core como `child_process` administrado con ciclo de vida ligado a `activate()/deactivate()` en lugar de una terminal de usuario (start/stop/restart, captura de logs); (c) seleccion dinamica de puerto + descubrimiento por health en vez de 8000 fijo; (d) eliminar el prompt de "default terminal profile" que VS Code pide al usar `sendText` (consecuencia de usar terminal en vez de child_process). Implementacion diferida a 7.9.A.5.1.

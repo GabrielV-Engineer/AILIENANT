@@ -865,19 +865,19 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
 
   ### 7.9.A — VS Code Interface (sidebar + workspace editor tab)
 
-  - [ ] **7.9.A.1 — Editor Tab Bar entry (button next to "Split Editor")**
+  - [x] **7.9.A.1 — Editor Tab Bar entry (button next to "Split Editor")**
     - **Problem:** Falta un boton al lado del split editor de VS Code (al estilo
       Claude Code) que abra una sesion de AILIENANT directamente. Debe tener el
       logo de AILIENANT.
     - **Resolution:** _(pending design)_
 
-  - [ ] **7.9.A.2 — HUD / PromptBar size**
+  - [x] **7.9.A.2 — HUD / PromptBar size**
     - **Problem:** El HUD (barra de entrada de texto + herramientas) es muy
       ancho y un poco alto. Debe achicarse manteniendose centrado, sin ocupar
       todo el ancho disponible.
     - **Resolution:** _(pending design)_
 
-  - [ ] **7.9.A.3 — Sidebar styling regression + duplicate-on-click bug**
+  - [x] **7.9.A.3 — Sidebar styling regression + duplicate-on-click bug**
     - **Problem:** El sidebar todavia tiene los mismos defectos:
       - Logo demasiado grande.
       - Los botones "New Session", "Search" y el boton de eliminar todavia se
@@ -893,29 +893,52 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         DOM y eliminar la fuente de la duplicacion.
     - **Resolution:** _(pending design)_
 
-  - [ ] **7.9.A.4 — Attach Context button → file picker**
+  - [x] **7.9.A.4 — Attach Context button → file picker**
     - **Problem:** El boton de adjuntar archivos (`[+]` context adder) debe abrir
       el dialogo nativo de seleccion de archivos de VS Code para que el usuario
       elija el archivo a adjuntar — actualmente solo muestra un overlay de
       texto libre.
     - **Resolution:** _(pending design)_
 
-  - [ ] **7.9.A.5 — "AILIENANT Core" connection + Workspace status accuracy**
+  - [x] **7.9.A.5 — "AILIENANT Core" connection + Workspace status accuracy**
     - **Problem:** La etiqueta "AILIENANT Core · Connected/Offline" y el estado
       de workspace no reflejan la realidad: incluso con el backend corriendo y
       una carpeta abierta, sigue mostrando "Offline". Verificar la suscripcion
       al `WSClient.onStatus`, las condiciones de re-evaluacion del status, y la
       semantica de "Workspace" (folder abierto vs. workspace indexado).
-    - **Resolution:** _(pending design)_
+    - se desea es que se pueda conocer si esta conectado el backend o no, a que folder estamos trabajando y del cual proviene la memoria indexada en el graphrag, y ver el proceso de indexacion del graphrag en workingssapce si esta en proceso,indexado completamente, o no esta ni indexado ni en proceso de indexacion. creo que hay que ver como hacer que se pueda conectar con el proceso de lazy indexing que ya se habia programado en el backend que es el que permite ir creando la memoria automaticamente de manera progresiva  
+    - y creo que hay un problema que tomar en cuenta, con las pasadas refactorizaciones intentando buscar como activar el core, vsc me soliciito que colocara el input:  "python" -m uvicorn main:app --reload --port 8000. de manera predeterminada al darle clic a start core. no se si eso puede influir en como funciona la activacion forzada, pero hay que ver si ese botor de forzar activacion es viable o mejor es descartarlo. viendolo desde el punto de vista profesional y de diseño de la manejabilidad de ailienant
+    - creo que la manera mas intuitiva y correcta de proceder es que al ya abrir cualquier sesion en ailienant inmediatamente ya se comience a activar el backend y el web dashboard sin que los usuarios deban hacer nada. por supuesto tenemos que ver a futuro sabiendo que somos una extension de vsc y que el usuario al descargar la extension descarga tambien el backend y como funcionara el ´proceso de activacion para que funcione de manera universal, si para mi no es posible por que no estoy descragando nada si no que tengo todo en mi pc y son dos porocesos totalmente diferentes entonces solo dame a mi las instrucciones de como conectar y que funcione todo y soluciona el problema para que sea universal la solucion por otra parte, si es que la solucion unnivesal en mi caso a mi no me sirve
+    - **Resolution (health-aware auto-start + indexing wiring):** Tres causas raíz
+      corregidas: (1) el WS sólo conectaba al enviar la primera tarea — ahora
+      `SessionManager.ensureConnected()` abre el túnel al abrir la sesión y `WSClient`
+      reproduce el último status a cada nuevo suscriptor (paneles abiertos tras la
+      conexión muestran "Connected"); (2) el indexer lazy nunca arrancaba porque
+      `client_workspace_init` no se enviaba — ahora se emite en `ensureConnected`, y se
+      corrigió el contrato de progreso (`{current,total,percentage}`) para alimentar el
+      pill `IndexingStatus` (Indexing % → ready); (3) activación health-aware en
+      `_ensureBackend()`: al abrir la sesión se hace ping a `GET /`; si está caído y
+      `ailienant.autoStartCore` está activo, se lanza el Core y se hace polling hasta que
+      responda. El botón manual "Start Core" queda como fallback. Universalidad
+      (runtime Python empaquetado) → ver follow-up 7.9.A.5.1.
 
-  - [ ] **7.9.A.6 — New session tab branding (logo missing)**
+  - [ ] **7.9.A.5.1 — Universal Core activation (bundled runtime) [follow-up]**
+    - **Problem:** El auto-start actual sirve al layout monorepo/dev (terminal VS Code +
+      `findBackendPath` + puerto fijo 8000). Para usuarios finales que instalan la
+      extensión con el backend empaquetado esto no es suficiente.
+    - **Scope (diseño pendiente):** empaquetar/detectar un runtime de Python; gestionar el
+      Core como `child_process` administrado (start/stop/restart ligado a activate/deactivate
+      de la extensión) en vez de una terminal de usuario; selección dinámica de puerto +
+      descubrimiento por health; y resolver el prompt de "default terminal profile" que VS
+      Code pide al usar `sendText`. Ver nota de diseño en `DEV_JOURNAL.md` (Hito 7.9.A.5).
+
+  - [x] **7.9.A.6 — New session tab branding (logo missing)**
     - **Problem:** Al abrir una nueva sesion el tab muestra solo el texto
       "AILIENANT", falta colocar el logo dentro del editor tab para que se vea
       profesional.
     - **Resolution:** _(pending design)_
 
-  - [ ] **7.9.A.7 — Command Menu + Settings Menu (Claude-Code-inspired)**
-    > **🔵 DEDICATED FUTURE PLAN — placeholder only**
+  - [x] **7.9.A.7 — Command Menu + Settings Menu (Claude-Code-inspired)**
     - **Problem:** El "open command menu" actual es muy simple: solo lista
       comandos. Debe ser AILIENANT-menu + settings combinados, separado por
       secciones como Claude Code lo hace. Requiere ingenieria inversa del
@@ -923,8 +946,41 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
     - **Resolution placeholder:** se diseñara en un **plan dedicado aparte**
       (no inline). Esta entrada existe solo como ancla en el WBS para que el
       plan futuro se cuelgue aqui.
+    - Estructura del Menú Dinámico (Slash Commands)
+      /context (Gestión de Contexto RAG)
 
-  - [ ] **7.9.A.8 — Logo vs. theme brightness mismatch**
+         Attach file: Abre el explorador del SO para inyectar un archivo externo.
+         Mention file of this project: Despliega un buscador rápido para enlazar archivos del repositorio actual.
+         Clear conversation: Limpia la ventana de chat y reinicia el estado de la memoria a corto plazo.
+         Rewind: [Poder LangGraph] Retrocede el estado del autómata MCTS un paso atrás si el agente tomó un camino equivocado.
+
+      /models (Gestión del Cerebro)
+         Switch model: Lista desplegable rápida para cambiar entre los modelos pre-configurados (Tier 1 o locales).
+         Account & Usage: Resumen rápido del Max Budget consumido en la sesión actual.
+
+      /customize (Extensibilidad y Comportamiento)
+
+         Output styles: Define si el agente debe responder de forma concisa, con comentarios explicativos, o solo el código.
+         Agents: Permite cambiar el prompt maestro del orquestador u otras mas agentes que consideres viable y necesario que sean capaces de modificar los demas que no que se prohiba su modificacion (si es que tambien es viable y profesional prohibirlos) (ej. enfocarlo en Frontend, Backend, o DevOps).
+         Hooks: Scripts o comandos pre/post ejecución (ej. ejecutar el linter automáticamente después de un parche).
+         Memory: Redirige automáticamente a la pestaña de gestión vectorial/RAG en el Control Panel.
+         Permissions: Accesos directos para revocar o conceder permisos al sistema HITL (ej. escritura de archivos, ejecución de terminal).
+        MCP Servers: Configuración del Model Context Protocol para conectar herramientas externas corporativas.
+         AILIENANT Control Panel: Botón maestro que abre la vista completa del panel web dedicado.
+
+       /settings (Preferencias Globales)
+
+         General configurations: Atajos de teclado, temas visuales del chat, y configuraciones base del IDE adaptadas a AILIENANT.
+
+       /support (Ayuda)
+
+         Help documents: Enlaces directos a nuestra documentación técnica, guías de prompting y resolución de problemas.
+    
+    - deseamos que exista aparte de todas las secciones mas que se crearan una seccion adentro de este menu que se llame models, que sea para configurar que modelos se utilizaran, una opcion para usar solo un modelo de manera manual sin routing u orquestacion, y otro de configuracion del sistema de modelos (small,medium,big,cloud). aprovechando nuestra integracion de litellm para que sea intuitivo y facil desde alli solo danco clic y decidiendo siendo plug and play. creo que la mejor manera es que alla una opcion llamada switch model que es para elegir uno predeterminado de manera manual entre todos los modelos ya configurados, si no hay modelos configurados tiene que haber una opcion que diga que se requiere configurar o insertar los modelos, y que tenga como un enlace que lleve al webdashboard para configurarlos, y otro de orchestration model, donde se puede elegir el small, el medium, el big, y el cloud. todos los tamaños pueden llevar modelos cloud.
+    - **Resolution (shell + wire-existing + Models):** `CommandPalette.tsx` reescrito como menú seccionado (`/context`, `/models`, `/customize`, `/settings`, `/support`) con búsqueda y navegación por teclado. Cableados los items con backend/IPC existente: Attach file, Mention file (quick-pick + `INSERT_MENTION`), Clear conversation (`CONVERSATION_CLEARED`), Rewind, Account & Usage (`/telemetry/tokens`), Memory/Control Panel (deep-link al dashboard vía `?tab=`). Nuevo `ModelsMenu.tsx`: Switch model (lista de `/models/available`, vacío → deep-link BYOM), Orchestration mode (manual/auto small·medium·big·cloud), persistidos vía `SET_MODEL_PREFERENCE` (`workspaceState`). Items greenfield (Output styles, Agents, Hooks, Permissions, MCP Servers) quedan como **"Coming soon"** (cada uno es su propio backend). Coexisten los popovers existentes (ModeMenu/Dreaming/budget). El *enforcement* del pin manual en el router (bypass CSS/TCI) queda como follow-up: el selector persiste y muestra la preferencia, no sobreescribe el router en vivo.
+
+  - [x] **7.9.A.8 — Logo vs. theme brightness mismatch**
+    - ya esta creado el logo icon-color.svg. cambiar el anterior logo y usar ese (icon-color.svg) en todos los rincones donde se utiliza ya sea dentro del chat como en el webdashboard
     - **Problem:** El logo es demasiado brillante comparado con el template
       dark de AILIENANT. Decision binaria: o se adapta el template al brillo
       del logo, o se adapta el logo al template (probablemente atenuar el
@@ -944,6 +1000,8 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
     - **Resolution placeholder:** se diseñara en un **plan dedicado aparte**
       (no inline). Esta entrada existe solo como ancla en el WBS para que el
       plan futuro se cuelgue aqui.
+    - Para que una base de datos vectorial sea visible y fácil de manipular por el ojo humano, debes construir una interfaz de usuario (UI) que traduzca las matemáticas de alta dimensión en elementos interactivos. El ojo humano no puede interpretar vectores de 1536 dimensiones, pero sí entiende mapas visuales, etiquetas de texto y barras de control.Aquí tienes los pasos y estrategias clave para lograrlo:1. El Núcleo: Reducción Dimensional InteractivaNo muestres solo un gráfico estático. Utiliza un lienzo interactivo en 2D o 3D (con librerías como Three.js, Plotly o Deck.gl) donde apliques UMAP o t-SNE, pero añade los siguientes controles para el usuario:Zoom y Rotación: Permitir explorar el espacio libremente para identificar "galaxias" o clústeres de datos.Filtros Dinámicos: Controladores para ocultar o mostrar puntos basados en metadatos (por ejemplo, filtrar por fecha, categoría o rango de puntuación).Búsqueda en Tiempo Real: Cuando el usuario busca una palabra, el gráfico debe encender el punto correspondiente y resaltar a sus "vecinos más cercanos" con líneas de conexión.2. Pasar de Puntos Abstraídos a Tarjetas InformativasUn punto flotando en la pantalla no dice nada. Debes conectar los eventos del ratón con los datos reales:Efecto Hover (Pasar el cursor): Al posicionar el cursor sobre un punto, debe desplegarse una ventana flotante (tooltip) que muestre una vista previa del contenido (las primeras líneas del texto, la miniatura de la imagen o el nombre del archivo).Panel de Inspección: Al hacer clic en un punto, se debe abrir un panel lateral detallado que muestre los metadatos completos, el texto original y la opción de editar o eliminar ese vector.3. Sistemas de Control y Manipulación DirectaPara que sea fácil de manipular sin tocar código, la interfaz debe incluir:Lazo de Selección (Lasso Tool): Permitir al usuario dibujar un círculo con el ratón alrededor de un grupo de puntos para seleccionarlos en masa, etiquetarlos, moverlos de categoría o exportarlos.Formularios de Inserción No-Code: Un botón de "Agregar Dato" donde el usuario escribe texto plano o arrastra una imagen. Por detrás, tu sistema genera el embedding automáticamente y el punto "vuela" visualmente hacia su posición correspondiente en el mapa.Sliders de Umbral de Similitud: Una barra deslizable que permita al usuario definir qué tan estricta es la cercanía (ej. "Mostrar solo coincidencias mayores al 85%"). Esto oculta el "ruido" visual en la pantalla.4. Herramientas y Frameworks Listos para UsarSi no quieres programar todo desde cero, puedes integrar estas herramientas que ya resuelven la visualización amigable:Reka Core / Renumics Spotlight: Librerías de Python diseñadas para abrir una interfaz web interactiva en tu navegador que conecta tus vectores con imágenes, audios y textos en una tabla interactiva combinada con un mapa de puntos.Nomic Atlas: Una de las mejores plataformas actuales para este propósito. Le envías tus embeddings y te devuelve un mapa web interactivo, estético y compartible, donde puedes buscar e inspeccionar cada dato con un clic.Voxel51 FiftyOne: Excelente si tu base de datos vectorial contiene imágenes o video. Permite filtrar y visualizar embeddings geoespaciales y visuales de forma muy intuitiva.
+    - para que el sistema no colapse no es cargar todo la memoria y visualizacion entera de todas las memorias de cada repo o proyecto que maneje el cliente si no que tiene que estar separado por secciones los folders a los que memory management ha tenido acceso a indexar y cuando el usuario de clic a una seccion alli aparece la visualizacion de esa memoria. 
 
   - [ ] **7.9.B.2 — BYOM Models — test connection + local model support + validation**
     - **Problem:** Tres defectos en una sola pantalla:
