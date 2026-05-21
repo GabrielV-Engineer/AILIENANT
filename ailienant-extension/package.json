@@ -70,7 +70,27 @@
         "key": "ctrl+alt+a",
         "mac": "cmd+alt+a"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "AILIENANT",
+      "properties": {
+        "ailienant.coreStartCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Shell command to start the AILIENANT core backend. Example: 'cd ailienant-core && .venv/Scripts/python -m uvicorn main:app --reload'. Leave empty to disable the Start Core button."
+        },
+        "ailienant.autoStartCore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the AILIENANT Core backend when a session opens if it is not already reachable. The manual 'Start Core' button still works when this is disabled."
+        },
+        "ailienant.docsUrl": {
+          "type": "string",
+          "default": "",
+          "description": "URL opened by the command menu's Support → Help documents action. Leave empty to be prompted to configure it."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

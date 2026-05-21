@@ -2235,7 +2235,7 @@ var require_websocket = __commonJS({
     var tls = require("tls");
     var { randomBytes, createHash: createHash2 } = require("crypto");
     var { Duplex, Readable } = require("stream");
-    var { URL } = require("url");
+    var { URL: URL2 } = require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
     var Receiver2 = require_receiver();
     var Sender2 = require_sender();
@@ -2728,11 +2728,11 @@ var require_websocket = __commonJS({
         );
       }
       let parsedUrl;
-      if (address instanceof URL) {
+      if (address instanceof URL2) {
         parsedUrl = address;
       } else {
         try {
-          parsedUrl = new URL(address);
+          parsedUrl = new URL2(address);
         } catch {
           throw new SyntaxError(`Invalid URL: ${address}`);
         }
@@ -2869,7 +2869,7 @@ var require_websocket = __commonJS({
           req.abort();
           let addr;
           try {
-            addr = new URL(location, address);
+            addr = new URL2(location, address);
           } catch (e) {
             const err = new SyntaxError(`Invalid URL: ${location}`);
             emitErrorAndClose(websocket, err);
@@ -3856,6 +3856,40 @@ var APIClient = class _APIClient {
     }
   }
   /**
+   * 7.9.A.7 — Fetch the per-session token-usage snapshot for the Account & Usage view.
+   * Returns null on any network error (non-blocking).
+   */
+  async fetchTokenUsage() {
+    try {
+      const response = await fetch(`${this.baseUrl}/telemetry/tokens`, {
+        method: "GET",
+        signal: AbortSignal.timeout(3e3)
+      });
+      if (!response.ok) {
+        return null;
+      }
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * 7.9.A.5 — Probe whether the Core backend is reachable.
+   * The health route lives at the server origin root ("/"), not under /api/v1.
+   */
+  async checkHealth() {
+    try {
+      const origin = new URL(this.baseUrl).origin;
+      const response = await fetch(`${origin}/`, {
+        method: "GET",
+        signal: AbortSignal.timeout(2e3)
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+  /**
    * Phase 3.4.5 — Read a virtual file from an MCTS "dream" node.
    * Backs the `ailienant-vision://{node_id}/{path}` URI scheme.
    */
@@ -3955,6 +3989,11 @@ var WSClient = class _WSClient {
   maxReconnectAttempts = 10;
   isConnecting = false;
   _clientId = "";
+  // Current connection status — replayed to new subscribers so a panel opened
+  // after the tunnel is already up still learns it is connected.
+  _status = "disconnected";
+  // Payloads queued while the socket was not yet OPEN; flushed on 'open'.
+  _pendingSends = [];
   // Delta sync: track current document_version_id per file
   // Used to detect stale state before Dashboard approvals
   _fileVersions = /* @__PURE__ */ new Map();
@@ -3988,6 +4027,7 @@ var WSClient = class _WSClient {
         this.isConnecting = false;
         this.reconnectAttempts = 0;
         this._emitStatus("connected");
+        this._flushPending();
       });
       wsInstance.on("message", (data) => {
         try {
@@ -4032,6 +4072,7 @@ var WSClient = class _WSClient {
     }
   }
   _emitStatus(status) {
+    this._status = status;
     this.onStatusHandlers.forEach((h) => h(status));
     if (status === "connected") {
       vscode5.window.showInformationMessage("AILIENANT: Quantum tunnel connected");
@@ -4067,9 +4108,14 @@ var WSClient = class _WSClient {
   }
   onStatus(callback) {
     this.onStatusHandlers.add(callback);
+    callback(this._status);
   }
   removeStatusHandler(callback) {
     this.onStatusHandlers.delete(callback);
+  }
+  /** Current connection status (without subscribing). */
+  getStatus() {
+    return this._status;
   }
   /** Record a document_version_id for OCC delta sync tracking. */
   trackFileVersion(filepath, versionId) {
@@ -4082,6 +4128,28 @@ var WSClient = class _WSClient {
       console.warn("[WSClient] Cannot send: connection not open");
     }
   }
+  /**
+   * Send once the socket is OPEN. If already open, sends immediately;
+   * otherwise queues the payload and flushes it on the next 'open'.
+   * Used for client_workspace_init, which must land right after connect.
+   */
+  sendWhenReady(payload) {
+    if (this.ws?.readyState === wrapper_default.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+    } else {
+      this._pendingSends.push(payload);
+    }
+  }
+  _flushPending() {
+    if (this._pendingSends.length === 0) {
+      return;
+    }
+    const queued = this._pendingSends;
+    this._pendingSends = [];
+    for (const payload of queued) {
+      this.send(payload);
+    }
+  }
 };
 
 // src/brain/session.ts
@@ -4092,7 +4160,7 @@ var SessionManager = class _SessionManager {
   // Keyed by absolute file path; cleared on new task submission.
   versionSnapshot = /* @__PURE__ */ new Map();
   constructor() {
-    this.sessionId = vscode6.env.sessionId || `ailienant_usr_${Date.now()}`;
+    this.sessionId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `ailienant_${Date.now().toString(36)}`;
     WSClient.getInstance().onMessage(this._onWSMessage.bind(this));
   }
   static getInstance() {
@@ -4102,13 +4170,32 @@ var SessionManager = class _SessionManager {
     return _SessionManager.instance;
   }
   /**
+   * 7.9.A.5 — Open the quantum tunnel (idempotent) and announce the workspace so
+   * the backend starts (or resumes) the lazy GraphRAG indexer. Safe to call on
+   * every session/panel open as well as before a task.
+   */
+  ensureConnected() {
+    const wsClient = WSClient.getInstance();
+    wsClient.connect(this.sessionId);
+    const workspaceRoot = vscode6.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (workspaceRoot) {
+      wsClient.sendWhenReady({
+        event_type: "client_workspace_init",
+        data: {
+          workspace_root: workspaceRoot,
+          project_id: PathResolver.resolveProjectId(),
+          workspace_pid: process.pid
+        }
+      });
+    }
+  }
+  /**
    * Inicia una misión cognitiva.
    * Orquesta la recolección de entropía, abre el túnel cuántico y despacha el WBS.
    */
   async startAITask(taskPrompt) {
     try {
-      const wsClient = WSClient.getInstance();
-      wsClient.connect(this.sessionId);
+      this.ensureConnected();
       const dirtyBuffers = VFSReader.captureEntropy();
       this.versionSnapshot.clear();
       const activeDoc = vscode6.window.activeTextEditor?.document;
@@ -4282,7 +4369,7 @@ var SessionBrowserProvider = class {
       vscode7.Uri.joinPath(this._extensionUri, "dist", "sidebar.css")
     );
     const logoUri = webview.asWebviewUri(
-      vscode7.Uri.joinPath(this._extensionUri, "media", "logo.svg")
+      vscode7.Uri.joinPath(this._extensionUri, "media", "icon-color.svg")
     );
     return `<!DOCTYPE html>
 <html lang="en">
@@ -4303,6 +4390,8 @@ var SessionBrowserProvider = class {
 
 // src/providers/workspace_panel.ts
 var vscode9 = __toESM(require("vscode"));
+var path = __toESM(require("path"));
+var fs = __toESM(require("fs"));
 
 // src/shared/config.ts
 var WORKSPACE_STATE_KEYS = {
@@ -4311,7 +4400,12 @@ var WORKSPACE_STATE_KEYS = {
   dreamingEnabled: "ailienant.dreamingEnabled",
   dreamingProfile: "ailienant.dreamingProfile",
   reasoningPreset: "ailienant.reasoningPreset",
-  inferenceTier: "ailienant.inferenceTier"
+  inferenceTier: "ailienant.inferenceTier",
+  budgetLimitMode: "ailienant.budgetLimitMode",
+  budgetWeeklyUsd: "ailienant.budgetWeeklyUsd",
+  budgetMonthlyUsd: "ailienant.budgetMonthlyUsd",
+  activeModelId: "ailienant.activeModelId",
+  orchestrationMode: "ailienant.orchestrationMode"
 };
 
 // src/shared/types.ts
@@ -4392,6 +4486,31 @@ var ConfigLoader = class {
 };
 
 // src/providers/workspace_panel.ts
+function findBackendPath(extensionFsPath) {
+  const candidates = [
+    ...(vscode9.workspace.workspaceFolders ?? []).map(
+      (f) => path.join(f.uri.fsPath, "ailienant-core")
+    ),
+    path.join(extensionFsPath, "..", "ailienant-core")
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, "main.py"))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+function findVenvPython(backendPath) {
+  const winPy = path.join(backendPath, ".venv", "Scripts", "python.exe");
+  const nixPy = path.join(backendPath, ".venv", "bin", "python");
+  if (fs.existsSync(winPy)) {
+    return winPy;
+  }
+  if (fs.existsSync(nixPy)) {
+    return nixPy;
+  }
+  return process.platform === "win32" ? "python" : "python3";
+}
 var WorkspacePanelManager = class {
   constructor(_extensionUri, _workspaceState) {
     this._extensionUri = _extensionUri;
@@ -4403,6 +4522,14 @@ var WorkspacePanelManager = class {
         panel.webview.postMessage({ type: "CONFIG_UPDATED", config: cfg });
       }
     });
+    this._disposables.push(
+      vscode9.workspace.onDidChangeWorkspaceFolders(() => {
+        const folder = vscode9.workspace.workspaceFolders?.[0]?.name ?? "";
+        for (const panel of this._panels.values()) {
+          panel.webview.postMessage({ type: "WORKSPACE_UPDATED", workspaceFolder: folder });
+        }
+      })
+    );
   }
   _extensionUri;
   _workspaceState;
@@ -4416,6 +4543,8 @@ var WorkspacePanelManager = class {
   _configLoader;
   _disposables = [];
   _onTitleUpdate;
+  // 7.9.A.5 — guards against multiple panels spawning the Core concurrently.
+  _coreStarting = false;
   setTitleUpdater(updater) {
     this._onTitleUpdate = updater;
   }
@@ -4446,6 +4575,78 @@ var WorkspacePanelManager = class {
   _nattName() {
     return this._configLoader.current?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
   }
+  /**
+   * 7.9.A.5 — Spawn the Core backend in a terminal. Returns true if a spawn was
+   * initiated. When `silent`, suppresses the "cannot locate core" guidance so the
+   * auto-start path does not nag on every session open (the manual button is loud).
+   */
+  _spawnCore(silent) {
+    const backendPath = findBackendPath(this._extensionUri.fsPath);
+    if (!backendPath) {
+      const cfg = vscode9.workspace.getConfiguration("ailienant");
+      const cmd = cfg.get("coreStartCommand", "").trim();
+      if (!cmd) {
+        if (!silent) {
+          void vscode9.window.showWarningMessage(
+            'Cannot locate ailienant-core/. Open the monorepo root as your workspace folder, or set "ailienant.coreStartCommand" in VS Code Settings.',
+            "Open Settings"
+          ).then((choice) => {
+            if (choice === "Open Settings") {
+              void vscode9.commands.executeCommand(
+                "workbench.action.openSettings",
+                "ailienant.coreStartCommand"
+              );
+            }
+          });
+        }
+        return false;
+      }
+      const t = vscode9.window.createTerminal({ name: "AILIENANT Core" });
+      t.show(true);
+      t.sendText(cmd);
+      return true;
+    }
+    const python = findVenvPython(backendPath);
+    const terminal = vscode9.window.createTerminal({
+      name: "AILIENANT Core",
+      cwd: backendPath
+    });
+    terminal.show(true);
+    terminal.sendText(`"${python}" -m uvicorn main:app --reload --port 8000`);
+    return true;
+  }
+  /**
+   * 7.9.A.5 — Health-aware activation, run once per session open. If the Core is
+   * reachable, open the tunnel + announce the workspace (starts the lazy indexer).
+   * If it is down and `ailienant.autoStartCore` is enabled, spawn it once and poll
+   * until healthy, then connect. On timeout the offline pill + manual button remain.
+   */
+  async _ensureBackend() {
+    const api = APIClient.getInstance();
+    if (await api.checkHealth()) {
+      SessionManager.getInstance().ensureConnected();
+      return;
+    }
+    const autoStart = vscode9.workspace.getConfiguration("ailienant").get("autoStartCore", true);
+    if (!autoStart || this._coreStarting) {
+      return;
+    }
+    this._coreStarting = true;
+    try {
+      if (!this._spawnCore(true)) {
+        return;
+      }
+      for (let i = 0; i < 30; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1e3));
+        if (await api.checkHealth()) {
+          SessionManager.getInstance().ensureConnected();
+          return;
+        }
+      }
+    } finally {
+      this._coreStarting = false;
+    }
+  }
   _createPanel(session) {
     const tabTitle = session.title.trim() || "AILIENANT";
     const panel = vscode9.window.createWebviewPanel(
@@ -4461,6 +4662,7 @@ var WorkspacePanelManager = class {
         ]
       }
     );
+    panel.iconPath = vscode9.Uri.joinPath(this._extensionUri, "media", "icon-color.svg");
     panel.webview.html = this._renderHtml(panel.webview, session);
     const wsStatusHandler = (status) => {
       panel.webview.postMessage({ type: "WS_STATUS", payload: status });
@@ -4482,6 +4684,7 @@ var WorkspacePanelManager = class {
       }
     };
     WSClient.getInstance().onMessage(wsMsgHandler);
+    void this._ensureBackend();
     panel.webview.onDidReceiveMessage(async (data) => {
       switch (data.type) {
         case "SUBMIT_TASK": {
@@ -4546,6 +4749,119 @@ var WorkspacePanelManager = class {
             data: { kind: data.kind, payload: data.payload }
           });
           break;
+        case "SET_BUDGET_LIMIT": {
+          const mode = data.mode;
+          const weeklyUsd = data.weeklyUsd;
+          const monthlyUsd = data.monthlyUsd;
+          await this._workspaceState.update(WORKSPACE_STATE_KEYS.budgetLimitMode, mode);
+          await this._workspaceState.update(WORKSPACE_STATE_KEYS.budgetWeeklyUsd, weeklyUsd);
+          await this._workspaceState.update(WORKSPACE_STATE_KEYS.budgetMonthlyUsd, monthlyUsd);
+          for (const p of this._panels.values()) {
+            p.webview.postMessage({ type: "BUDGET_UPDATED", mode, weeklyUsd, monthlyUsd });
+          }
+          break;
+        }
+        case "START_BACKEND": {
+          this._spawnCore(false);
+          break;
+        }
+        case "OPEN_DASHBOARD": {
+          const cfg = vscode9.workspace.getConfiguration("ailienant");
+          const base = cfg.get("backendUrl", "http://localhost:8000").replace(/\/$/, "");
+          const tab = typeof data.tab === "string" ? data.tab : "";
+          const url = tab ? `${base}?tab=${encodeURIComponent(tab)}` : base;
+          void vscode9.env.openExternal(vscode9.Uri.parse(url));
+          break;
+        }
+        case "OPEN_SETTINGS": {
+          void vscode9.commands.executeCommand("workbench.action.openSettings", "ailienant");
+          break;
+        }
+        case "OPEN_DOCS": {
+          const cfg = vscode9.workspace.getConfiguration("ailienant");
+          const docsUrl = cfg.get("docsUrl", "").trim();
+          if (docsUrl) {
+            void vscode9.env.openExternal(vscode9.Uri.parse(docsUrl));
+          } else {
+            void vscode9.window.showInformationMessage(
+              'AILIENANT documentation link is not configured. Set "ailienant.docsUrl" in VS Code Settings.',
+              "Open Settings"
+            ).then((choice) => {
+              if (choice === "Open Settings") {
+                void vscode9.commands.executeCommand("workbench.action.openSettings", "ailienant.docsUrl");
+              }
+            });
+          }
+          break;
+        }
+        case "MENTION_FILE": {
+          const found = await vscode9.workspace.findFiles("**/*", "**/{node_modules,.git,dist,.venv}/**", 500);
+          if (found.length === 0) {
+            void vscode9.window.showInformationMessage("AILIENANT: no workspace files found to mention.");
+            break;
+          }
+          const items = found.map((u) => vscode9.workspace.asRelativePath(u));
+          const picked = await vscode9.window.showQuickPick(items.sort(), {
+            title: "Mention a project file",
+            placeHolder: "Type to filter workspace files",
+            matchOnDetail: true
+          });
+          if (picked) {
+            panel.webview.postMessage({ type: "INSERT_MENTION", path: picked });
+          }
+          break;
+        }
+        case "CLEAR_CONVERSATION": {
+          panel.webview.postMessage({ type: "CONVERSATION_CLEARED" });
+          break;
+        }
+        case "GET_MODELS": {
+          const models = await APIClient.getInstance().fetchAvailableModels();
+          panel.webview.postMessage({ type: "MODELS_LIST", models });
+          break;
+        }
+        case "GET_USAGE": {
+          const usage = await APIClient.getInstance().fetchTokenUsage();
+          panel.webview.postMessage({ type: "USAGE_SNAPSHOT", usage });
+          break;
+        }
+        case "SET_MODEL_PREFERENCE": {
+          const activeModelId = data.activeModelId ?? "";
+          const orchestrationMode = data.orchestrationMode ?? "auto";
+          await this._workspaceState.update(WORKSPACE_STATE_KEYS.activeModelId, activeModelId);
+          await this._workspaceState.update(WORKSPACE_STATE_KEYS.orchestrationMode, orchestrationMode);
+          break;
+        }
+        case "OPEN_WORKSPACE": {
+          void vscode9.commands.executeCommand("vscode.openFolder");
+          break;
+        }
+        case "PICK_FILES": {
+          const uris = await vscode9.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: true,
+            title: "Add files to context"
+          });
+          if (uris && uris.length > 0) {
+            const items = uris.map((u) => ({ path: u.fsPath, kind: "file" }));
+            panel.webview.postMessage({ type: "PICKED_PATHS", items });
+          }
+          break;
+        }
+        case "PICK_FOLDER": {
+          const uris = await vscode9.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            title: "Add folder to context"
+          });
+          if (uris && uris.length > 0) {
+            const items = uris.map((u) => ({ path: u.fsPath, kind: "directory" }));
+            panel.webview.postMessage({ type: "PICKED_PATHS", items });
+          }
+          break;
+        }
       }
     });
     panel.onDidDispose(() => {
@@ -4637,13 +4953,19 @@ var WorkspacePanelManager = class {
       vscode9.Uri.joinPath(this._extensionUri, "dist", "workspace.css")
     );
     const logoUri = webview.asWebviewUri(
-      vscode9.Uri.joinPath(this._extensionUri, "media", "logo.svg")
+      vscode9.Uri.joinPath(this._extensionUri, "media", "icon-color.svg")
     );
     const initial = {
       sessionId: session.id,
       sessionTitle: session.title.trim() || "AILIENANT",
       config: this._configLoader.current,
-      logoUri: logoUri.toString()
+      logoUri: logoUri.toString(),
+      budgetLimitMode: this._workspaceState.get(WORKSPACE_STATE_KEYS.budgetLimitMode, "none"),
+      budgetWeeklyUsd: this._workspaceState.get(WORKSPACE_STATE_KEYS.budgetWeeklyUsd, 20),
+      budgetMonthlyUsd: this._workspaceState.get(WORKSPACE_STATE_KEYS.budgetMonthlyUsd, 50),
+      activeModelId: this._workspaceState.get(WORKSPACE_STATE_KEYS.activeModelId, ""),
+      orchestrationMode: this._workspaceState.get(WORKSPACE_STATE_KEYS.orchestrationMode, "auto"),
+      workspaceFolder: vscode9.workspace.workspaceFolders?.[0]?.name ?? ""
     };
     const initialAttr = JSON.stringify(initial).replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/</g, "&lt;");
     return `<!DOCTYPE html>

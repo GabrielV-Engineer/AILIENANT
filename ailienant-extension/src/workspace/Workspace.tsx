@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
+import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
 import {
-    ReasoningPreset, InferenceTier, DreamingProfile,
-    WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot,
+    BudgetLimitMode, ReasoningPreset, InferenceTier, DreamingProfile,
+    WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
 } from '../shared/config';
 import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
@@ -24,12 +25,19 @@ let _toastId = 0;
 
 interface Message { role: 'user' | 'assistant'; content: string; streaming?: boolean; }
 interface NattMessage { role: 'natt' | 'user'; content: string; }
+interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
 interface InitialState {
-    sessionId: string;
-    sessionTitle: string;
-    config: AilienantConfig | null;
-    logoUri: string;
+    sessionId:        string;
+    sessionTitle:     string;
+    config:           AilienantConfig | null;
+    logoUri:          string;
+    budgetLimitMode:  BudgetLimitMode;
+    budgetWeeklyUsd:  number;
+    budgetMonthlyUsd: number;
+    activeModelId:    string;
+    orchestrationMode: OrchestrationMode;
+    workspaceFolder:  string;
 }
 
 export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
@@ -45,8 +53,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [dreamingActive, setDreamingActive] = useState(false);
     const [dreamingProfile, setDreamingProfile] = useState<DreamingProfile>('Hybrid');
 
-    // Budget
-    const [budgetUsd] = useState(config?.finops?.budget_usd ?? 0);
+    // Models menu preferences (persisted via SET_MODEL_PREFERENCE)
+    const [activeModelId, setActiveModelId] = useState<string>(initial.activeModelId ?? '');
+    const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>(initial.orchestrationMode ?? 'auto');
+
+    // Budget — global persistent setting, not per-session
+    const [budgetLimitMode,  setBudgetLimitMode]  = useState<BudgetLimitMode>(initial.budgetLimitMode);
+    const [budgetWeeklyUsd,  setBudgetWeeklyUsd]  = useState<number>(initial.budgetWeeklyUsd);
+    const [budgetMonthlyUsd, setBudgetMonthlyUsd] = useState<number>(initial.budgetMonthlyUsd);
+    const budgetUsd = budgetLimitMode === 'weekly'  ? budgetWeeklyUsd
+                    : budgetLimitMode === 'monthly' ? budgetMonthlyUsd : 0;
 
     // Chat
     const [messages, setMessages] = useState<Message[]>([]);
@@ -66,6 +82,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [telemetry, setTelemetry] = useState<TelemetryFrame | undefined>();
     const [snapshot, setSnapshot] = useState<TokenSnapshot | undefined>();
     const [indexing, setIndexing] = useState<IndexingState>({ state: 'idle' });
+
+    // Core start menu
+    const [coreMenuOpen, setCoreMenuOpen] = useState(false);
+
+    // Workspace folder (live-updated when VS Code opens/closes a folder)
+    const [workspaceFolder, setWorkspaceFolder] = useState<string>(initial.workspaceFolder ?? '');
+
+    // Attached context items (files/folders added via the picker)
+    const [attachedItems, setAttachedItems] = useState<AttachedItem[]>([]);
 
     // Toasts
     const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -141,13 +166,28 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_indexing_progress':
                 case 'INDEXING_PROGRESS': {
-                    const d = msg.payload as { pct?: number; files_indexed?: number; total_files?: number };
-                    setIndexing({
-                        state: 'indexing',
-                        pct: d?.pct ?? 0,
-                        files_indexed: d?.files_indexed,
-                        total_files: d?.total_files,
-                    });
+                    // Backend wire format is { current, total, percentage } (websocket_manager.py).
+                    // Completion is signalled as a 100% frame (current === total), so derive 'ready' here.
+                    const d = msg.payload as { current?: number; total?: number; percentage?: number };
+                    const filesIndexed = d?.current ?? 0;
+                    const totalFiles = d?.total ?? 0;
+                    const pct = d?.percentage ?? 0;
+                    if (pct >= 100) {
+                        // The completion signal arrives as a 1/1 frame after the real total frame;
+                        // keep the larger count so it doesn't clobber the true node count.
+                        const reported = totalFiles || filesIndexed;
+                        setIndexing(prev => {
+                            const prevCount = prev.state === 'ready' ? prev.node_count : 0;
+                            return { state: 'ready', node_count: Math.max(prevCount, reported) };
+                        });
+                    } else {
+                        setIndexing({
+                            state: 'indexing',
+                            pct,
+                            files_indexed: filesIndexed,
+                            total_files: totalFiles,
+                        });
+                    }
                     break;
                 }
                 case 'server_indexing_complete': {
@@ -185,6 +225,34 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     addToast('info', `${count} parallel ${label} running — AILIENANT isolates each independently.`);
                     break;
                 }
+                case 'BUDGET_UPDATED': {
+                    const d = msg as unknown as { mode: BudgetLimitMode; weeklyUsd: number; monthlyUsd: number };
+                    setBudgetLimitMode(d.mode);
+                    setBudgetWeeklyUsd(d.weeklyUsd);
+                    setBudgetMonthlyUsd(d.monthlyUsd);
+                    break;
+                }
+                case 'WORKSPACE_UPDATED': {
+                    const d = msg as unknown as { workspaceFolder: string };
+                    setWorkspaceFolder(d.workspaceFolder);
+                    break;
+                }
+                case 'CONVERSATION_CLEARED': {
+                    setMessages([]);
+                    break;
+                }
+                case 'PICKED_PATHS': {
+                    const d = msg as unknown as { items: { path: string; kind: 'file' | 'directory' }[] };
+                    const stamp = Date.now();
+                    for (const item of d.items) {
+                        vscode.postMessage({ type: 'ATTACH_CONTEXT', kind: item.kind, payload: item.path });
+                    }
+                    setAttachedItems(prev => [
+                        ...prev,
+                        ...d.items.map((item, i) => ({ id: `${stamp}-${i}`, path: item.path, kind: item.kind })),
+                    ]);
+                    break;
+                }
             }
         };
         window.addEventListener('message', handler);
@@ -218,6 +286,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         setDreamingProfile(p);
     }, []);
 
+    const handleModelPrefChange = useCallback((id: string, m: OrchestrationMode) => {
+        setActiveModelId(id);
+        setOrchestrationMode(m);
+        vscode.postMessage({ type: 'SET_MODEL_PREFERENCE', activeModelId: id, orchestrationMode: m });
+    }, []);
+
     const handleNattSubmit = useCallback((text: string) => {
         setNattMessages(prev => [...prev, { role: 'user', content: text }]);
         vscode.postMessage({ type: 'NATT_MESSAGE', text, session_id: initial.sessionId });
@@ -225,6 +299,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     const handleResolveHitl = useCallback((_id: string) => {
         setHitlPending(undefined);
+    }, []);
+
+    const handleBudgetChange = useCallback((
+        mode: BudgetLimitMode, weeklyUsd: number, monthlyUsd: number,
+    ) => {
+        setBudgetLimitMode(mode);
+        setBudgetWeeklyUsd(weeklyUsd);
+        setBudgetMonthlyUsd(monthlyUsd);
+        vscode.postMessage({ type: 'SET_BUDGET_LIMIT', mode, weeklyUsd, monthlyUsd });
     }, []);
 
     const rootAttrs: Record<string, string> = {
@@ -257,16 +340,93 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
                 {/* Status strip */}
                 <div className="ws-status">
-                    <AiTooltip content={wsTip}>
+                    {wsStatus === 'connected' ? (
+                        <AiTooltip content={wsTip}>
+                            <div className="ws-status-pill">
+                                <Icon name="network" size={12} />
+                                <span className="ws-status-dot" data-status={wsStatus} />
+                                <span>{wsLabel}</span>
+                            </div>
+                        </AiTooltip>
+                    ) : (
+                        <Popover.Root open={coreMenuOpen} onOpenChange={setCoreMenuOpen} modal={false}>
+                            <AiTooltip content={wsTip}>
+                                <Popover.Trigger asChild>
+                                    <button className="ws-status-pill ws-status-pill--btn" aria-label="Backend options">
+                                        <Icon name="network" size={12} />
+                                        <span className="ws-status-dot" data-status={wsStatus} />
+                                        <span>{wsLabel}</span>
+                                    </button>
+                                </Popover.Trigger>
+                            </AiTooltip>
+                            <Popover.Portal>
+                                <Popover.Content
+                                    className="ws-core-menu"
+                                    side="bottom"
+                                    align="center"
+                                    sideOffset={6}
+                                    collisionPadding={8}
+                                >
+                                    <div className="ws-core-menu-head">AILIENANT Core</div>
+                                    <div className="ws-core-menu-actions">
+                                        <button
+                                            className="ws-core-menu-btn"
+                                            onClick={() => {
+                                                vscode.postMessage({ type: 'START_BACKEND' });
+                                                setCoreMenuOpen(false);
+                                            }}
+                                        >
+                                            <Icon name="play" size={12} />
+                                            Start Core
+                                        </button>
+                                        <button
+                                            className="ws-core-menu-btn"
+                                            onClick={() => {
+                                                vscode.postMessage({ type: 'OPEN_DASHBOARD' });
+                                                setCoreMenuOpen(false);
+                                            }}
+                                        >
+                                            <Icon name="external-link" size={12} />
+                                            Open Dashboard
+                                        </button>
+                                    </div>
+                                </Popover.Content>
+                            </Popover.Portal>
+                        </Popover.Root>
+                    )}
+                    {/* Workspace folder pill */}
+                    {workspaceFolder ? (
                         <div className="ws-status-pill">
-                            <Icon name="network" size={12} />
-                            <span className="ws-status-dot" data-status={wsStatus} />
-                            <span>{wsLabel}</span>
+                            <Icon name="folder" size={12} />
+                            <span>{workspaceFolder}</span>
                         </div>
-                    </AiTooltip>
+                    ) : (
+                        <Popover.Root modal={false}>
+                            <Popover.Trigger asChild>
+                                <button className="ws-status-pill ws-status-pill--btn ws-status-pill--warn" aria-label="Workspace options">
+                                    <Icon name="folder" size={12} />
+                                    <span>Awaiting Workspace</span>
+                                </button>
+                            </Popover.Trigger>
+                            <Popover.Portal>
+                                <Popover.Content className="ws-core-menu" side="bottom" align="center" sideOffset={6} collisionPadding={8}>
+                                    <div className="ws-core-menu-head">Workspace Folder</div>
+                                    <p className="ws-core-menu-desc">Open a folder so AILIENANT knows which project to work on.</p>
+                                    <div className="ws-core-menu-actions">
+                                        <button
+                                            className="ws-core-menu-btn"
+                                            onClick={() => vscode.postMessage({ type: 'OPEN_WORKSPACE' })}
+                                        >
+                                            <Icon name="folder" size={12} />
+                                            Open Folder…
+                                        </button>
+                                    </div>
+                                </Popover.Content>
+                            </Popover.Portal>
+                        </Popover.Root>
+                    )}
                     <span className="ws-status-divider" />
                     <IndexingStatus state={indexing} />
-                    <span className="ws-spacer" />
                 </div>
 
                 {/* Main split-grid */}
@@ -298,6 +458,28 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             <div ref={messagesEndRef} />
                         </div>
 
+                        {/* Attached context chips */}
+                        {attachedItems.length > 0 && (
+                            <div className="ws-attached-bar">
+                                {attachedItems.map(item => {
+                                    const label = item.path.split(/[/\\]/).pop() ?? item.path;
+                                    return (
+                                        <div key={item.id} className="ws-attached-chip" title={item.path}>
+                                            <Icon name={item.kind === 'directory' ? 'folder' : 'file'} size={11} />
+                                            <span>{label}</span>
+                                            <button
+                                                className="ws-attached-chip-remove"
+                                                aria-label={`Remove ${label}`}
+                                                onClick={() => setAttachedItems(prev => prev.filter(i => i.id !== item.id))}
+                                            >
+                                                <Icon name="x" size={10} />
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
                         {/* PromptBar + Telemetry sibling cards (matches manifest §7.2) */}
                         <div className="ws-bottom">
                             <PromptBar
@@ -315,6 +497,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 dreamingActive={dreamingActive}
                                 dreamingProfile={dreamingProfile}
                                 onDreamingToggle={handleDreamingToggle}
+                                activeModelId={activeModelId}
+                                orchestrationMode={orchestrationMode}
+                                onModelPrefChange={handleModelPrefChange}
                                 onSubmit={handleSubmit}
                                 onAbort={handleAbort}
                             />
@@ -325,6 +510,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 snapshot={snapshot}
                                 budgetUsd={budgetUsd}
                                 telemetry={telemetry}
+                                budgetLimitMode={budgetLimitMode}
+                                budgetWeeklyUsd={budgetWeeklyUsd}
+                                budgetMonthlyUsd={budgetMonthlyUsd}
+                                onBudgetChange={handleBudgetChange}
                             />
                         </div>
                     </section>

@@ -23,6 +23,12 @@ export class WSClient {
     private isConnecting: boolean = false;
     private _clientId: string = '';
 
+    // Current connection status — replayed to new subscribers so a panel opened
+    // after the tunnel is already up still learns it is connected.
+    private _status: WsConnectionStatus = 'disconnected';
+    // Payloads queued while the socket was not yet OPEN; flushed on 'open'.
+    private _pendingSends: unknown[] = [];
+
     // Delta sync: track current document_version_id per file
     // Used to detect stale state before Dashboard approvals
     private _fileVersions: Map<string, string> = new Map();
@@ -62,6 +68,7 @@ export class WSClient {
                 this.isConnecting = false;
                 this.reconnectAttempts = 0;
                 this._emitStatus('connected');
+                this._flushPending();
             });
 
             wsInstance.on('message', (data: WebSocket.RawData) => {
@@ -117,6 +124,7 @@ export class WSClient {
     }
 
     private _emitStatus(status: WsConnectionStatus): void {
+        this._status = status;
         this.onStatusHandlers.forEach(h => h(status));
         if (status === 'connected') {
             vscode.window.showInformationMessage('AILIENANT: Quantum tunnel connected');
@@ -151,8 +159,15 @@ export class WSClient {
     // ── Subscription methods ─────────────────────────────────────────────────
     public onMessage(callback: WSMessageCallback): void      { this.onMessageHandlers.add(callback); }
     public removeMessageHandler(callback: WSMessageCallback): void { this.onMessageHandlers.delete(callback); }
-    public onStatus(callback: WSStatusCallback): void        { this.onStatusHandlers.add(callback); }
+    public onStatus(callback: WSStatusCallback): void {
+        this.onStatusHandlers.add(callback);
+        // Replay the latest status so subscribers registering after connect are accurate.
+        callback(this._status);
+    }
     public removeStatusHandler(callback: WSStatusCallback): void  { this.onStatusHandlers.delete(callback); }
+
+    /** Current connection status (without subscribing). */
+    public getStatus(): WsConnectionStatus { return this._status; }
 
     /** Record a document_version_id for OCC delta sync tracking. */
     public trackFileVersion(filepath: string, versionId: string): void {
@@ -164,6 +179,28 @@ export class WSClient {
             this.ws.send(JSON.stringify(payload));
         } else {
             console.warn('[WSClient] Cannot send: connection not open');
+        }
+    }
+
+    /**
+     * Send once the socket is OPEN. If already open, sends immediately;
+     * otherwise queues the payload and flushes it on the next 'open'.
+     * Used for client_workspace_init, which must land right after connect.
+     */
+    public sendWhenReady(payload: unknown): void {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(payload));
+        } else {
+            this._pendingSends.push(payload);
+        }
+    }
+
+    private _flushPending(): void {
+        if (this._pendingSends.length === 0) { return; }
+        const queued = this._pendingSends;
+        this._pendingSends = [];
+        for (const payload of queued) {
+            this.send(payload);
         }
     }
 }
