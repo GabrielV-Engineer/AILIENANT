@@ -44,6 +44,7 @@ from core.rules import rule_manager
 
 # --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
 from core.token_ledger import token_ledger
+from core.telemetry import recent_oom_events, recent_routing_decisions
 
 # --- IMPORTACIONES FASE 3.5 (Memory Janitor) ---
 from core.janitor import JanitorReport, run_janitor
@@ -412,6 +413,22 @@ async def http_telemetry_reject(payload: RejectTelemetryPayload) -> Dict[str, ob
 async def http_telemetry_tokens() -> Dict[str, float]:
     """Phase 3.4.8 — return the TokenLedger snapshot (local vs cloud + savings)."""
     return token_ledger.snapshot()
+
+
+@app.get("/api/v1/telemetry/routing")
+async def http_telemetry_routing(limit: int = 50, offset: int = 0) -> Dict[str, object]:
+    """Phase 7.9.B.6 — read recent routing decisions for the dashboard.
+
+    Pagination is clamped server-side (S4+S6) and ``reason`` is secret-masked
+    (S1) inside the helper, so this read path is safe to expose read-only.
+    """
+    return {"decisions": recent_routing_decisions(limit=limit, offset=offset)}
+
+
+@app.get("/api/v1/telemetry/oom")
+async def http_telemetry_oom(limit: int = 50, offset: int = 0) -> Dict[str, object]:
+    """Phase 7.9.B.6 — read recent OOM rescue-swap events for the dashboard."""
+    return {"events": recent_oom_events(limit=limit, offset=offset)}
 
 
 # =====================================================================
