@@ -179,7 +179,8 @@ Proyect_Ailienant/
 │   │   │   ├── panels/         #     HardwarePanel (VRAM gauges), BYOMPanel (Phase 7.9.B.2 — test/config/presets), RulesPanel (SOUL.md editor),
 │   │   │   │                   #     StagingArea (Monaco DiffEditor, lazy-loaded, stale OCC badge), AuditPanel (blake2b chain viewer),
 │   │   │   │                   #     MemoryManagement (Phase 7.9.B.1 — sectioned GraphRAG viewer, REST pull),
-│   │   │   │                   #     OverviewPanel + ExtensionsPanel (MCP/Skills sub-tabs) + TelemetryPanel (Phase 7.9.B.6 — landing + observability)
+│   │   │   │                   #     OverviewPanel + ExtensionsPanel (MCP/Skills sub-tabs) + TelemetryPanel (Phase 7.9.B.6 — landing + observability),
+│   │   │                   #     RuntimePanel (Phase 7.9.B.7 — sandbox tier badge, Docker daemon probe, Start Docker lifecycle button)
 │   │   │   │   ├── memory/     #       api.ts (REST client), SectionsList, CodeGraphLayer (ReactFlow/PPR), VectorMapLayer (regl-scatterplot WebGL + PCA scatter)
 │   │   │   │   └── byom/       #       api.ts (REST client Phase 7.9.B.2 — fetchBYOMConfig/saveBYOMConfig/testEndpoint)
 │   │   ├── api/                #   WSClient (BroadcastChannel delta sync, exponential reconnect), HTTP clients
@@ -273,6 +274,8 @@ The server exposes:
 | `GET /api/v1/telemetry/tokens` | Snapshot the token ledger |
 | `GET /api/v1/telemetry/routing` | Phase 7.9.B.6 — recent routing decisions, paginated; reason secret-masked, OFFSET hard-capped (read-only) |
 | `GET /api/v1/telemetry/oom` | Phase 7.9.B.6 — recent OOM rescue-swap events, paginated (read-only) |
+| `GET /api/v1/runtime/status` | Phase 7.9.B.7 — live sandbox tier + Docker daemon probe (5 s cache); returns tier, docker_reachable, image_exists, container_running, mode_label |
+| `POST /api/v1/runtime/start-docker` | Phase 7.9.B.7 — platform-specific Docker Desktop launcher (S7-A/B/C/D hardened; loopback-only) |
 | `POST /api/v1/system/janitor` | Trigger the memory janitor (vector GC + MCTS purge) |
 | `GET /api/v1/memory/sections` | Enumerate indexed folders per project (dashboard, no vectors loaded) |
 | `GET /api/v1/memory/graph` | Code dependency graph for one section (nodes by PageRank) |
