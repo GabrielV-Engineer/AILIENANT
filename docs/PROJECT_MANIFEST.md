@@ -1074,7 +1074,7 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       GET `/api/v1/audit/log`, `/api/v1/audit/stats`, `/api/v1/audit/verify`
       implementados en `api/audit.py` con URI de solo lectura SQLite.
 
-  - [ ] **7.9.B.6 — Additional Dashboard Segments — analysis & expansion**
+  - [x] **7.9.B.6 — Additional Dashboard Segments — analysis & expansion**
     - **Problem:** Analizar si es necesario y posible agregar mas segmentos al
       Web Dashboard para que sea mas completo y profesional. Candidatos
       iniciales a evaluar (no decision tomada todavia):
@@ -1084,8 +1084,33 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       - GraphRAG Inspector (dependiente de 7.9.B.1).
       - Logs / Telemetry Stream Viewer.
       - Settings & Configuration (mover `ailienant-config.json` a UI).
-    - **Resolution:** _(pending design — incluye decision de cuales segmentos
-      agregar, en que orden, y wireframes para cada uno)_
+      - MCP management and skills
+    - **Resolution:** Analisis de viabilidad por dato-de-respaldo + 3 segmentos
+      nuevos construidos:
+      - **Overview** (`OverviewPanel.tsx`) — landing/home y tab por defecto:
+        tarjetas de uso de tokens, conteo de servidores MCP, HITL pendientes y
+        mini-grafico de actividad de routing (ultimas 12h). Compone endpoints
+        existentes + el nuevo read de telemetria.
+      - **Extensions** (`ExtensionsPanel.tsx`) — un solo item de nav con
+        sub-tabs MCP Servers + Skills; superficie en el dashboard de los
+        backends MCP/Skills ya enviados en 7.9.A.7.e/.f (sin backend nuevo).
+      - **Telemetry** (`TelemetryPanel.tsx`) — snapshot de costo (token_ledger)
+        + log de decisiones de routing paginado. Unico backend nuevo:
+        `GET /api/v1/telemetry/routing` + `/oom` (read-only sobre
+        `telemetry.sqlite`, antes solo de escritura).
+      - **Endurecimiento de seguridad (revision):** enmascarado server-side de
+        secretos en `reason` (ReDoS-safe, truncado a 2k, regex no-greedy sin
+        cuantificadores anidados); clamp de paginacion + OFFSET hard-cap (10k)
+        contra DoS del lock SQLite; allowlist estricto de comandos MCP por
+        basename (sin fallback "existe en disco", rechaza path-traversal) con
+        error generico al cliente y log real solo server-side; render de texto
+        plano (sin `dangerouslySetInnerHTML`).
+      - **GraphRAG Inspector** ya existia como el panel **Memory Management**.
+      - **Diferidos (requieren persistencia/instrumentacion nueva):** historia
+        de costo (token_ledger es in-memory), Agent Performance (sin
+        instrumentacion de latencia/exito por rol), Sessions Browser
+        cross-workspace (las sesiones viven en el estado del cliente VS Code),
+        y la migracion completa de `ailienant-config.json` a UI.
 
 ---
 

@@ -174,11 +174,12 @@ Proyect_Ailienant/
 │   │   │   │                   #     + CustomizeMenu (7.9.A.7 permissions/output-styles/agents/hooks/mcp) + SkillsMenu (7.9.A.7.f insert/create)
 │   │   │   └── hooks/          #     useReasoningPreset (surgeon/architect/explorer preset serializer)
 │   │   ├── dashboard/          #   Web Dashboard SPA (ESM + code splitting, custom palette)
-│   │   │   ├── main.tsx        #     SPA entry — lazy StagingArea (Monaco), eager HW/BYOM/Rules/Audit panels
+│   │   │   ├── main.tsx        #     SPA entry — default Overview tab, lazy StagingArea (Monaco), eager HW/BYOM/Rules/Audit/Extensions/Telemetry panels
 │   │   │   ├── dashboard.css   #     full palette: --color-bg #FEF9F3, --color-primary #63a583, --color-dark #233237
 │   │   │   ├── panels/         #     HardwarePanel (VRAM gauges), BYOMPanel (Phase 7.9.B.2 — test/config/presets), RulesPanel (SOUL.md editor),
 │   │   │   │                   #     StagingArea (Monaco DiffEditor, lazy-loaded, stale OCC badge), AuditPanel (blake2b chain viewer),
-│   │   │   │                   #     MemoryManagement (Phase 7.9.B.1 — sectioned GraphRAG viewer, REST pull)
+│   │   │   │                   #     MemoryManagement (Phase 7.9.B.1 — sectioned GraphRAG viewer, REST pull),
+│   │   │   │                   #     OverviewPanel + ExtensionsPanel (MCP/Skills sub-tabs) + TelemetryPanel (Phase 7.9.B.6 — landing + observability)
 │   │   │   │   ├── memory/     #       api.ts (REST client), SectionsList, CodeGraphLayer (ReactFlow/PPR), VectorMapLayer (regl-scatterplot WebGL + PCA scatter)
 │   │   │   │   └── byom/       #       api.ts (REST client Phase 7.9.B.2 — fetchBYOMConfig/saveBYOMConfig/testEndpoint)
 │   │   ├── api/                #   WSClient (BroadcastChannel delta sync, exponential reconnect), HTTP clients
@@ -270,6 +271,8 @@ The server exposes:
 | `POST /api/v1/mcts/{node_id}/merge` | Apply a stable MCTS branch to disk |
 | `POST /api/v1/telemetry/reject` | Report a silent rejection (extension uses this) |
 | `GET /api/v1/telemetry/tokens` | Snapshot the token ledger |
+| `GET /api/v1/telemetry/routing` | Phase 7.9.B.6 — recent routing decisions, paginated; reason secret-masked, OFFSET hard-capped (read-only) |
+| `GET /api/v1/telemetry/oom` | Phase 7.9.B.6 — recent OOM rescue-swap events, paginated (read-only) |
 | `POST /api/v1/system/janitor` | Trigger the memory janitor (vector GC + MCTS purge) |
 | `GET /api/v1/memory/sections` | Enumerate indexed folders per project (dashboard, no vectors loaded) |
 | `GET /api/v1/memory/graph` | Code dependency graph for one section (nodes by PageRank) |

@@ -1277,3 +1277,24 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Backend EDIT: `core/db.py` (+4 tablas +CRUD), `api/system_settings.py` (+lock +output_style/permission_mode +hooks endpoints), `core/task_service.py` (+seed permission_mode), `main.py` (+3 routers).
   - Frontend NUEVO: `src/workspace/components/CustomizeMenu.tsx`, `src/workspace/components/SkillsMenu.tsx`.
   - Frontend EDIT: `CommandPalette.tsx`, `PromptBar.tsx` (+INSERT_PROMPT), `api/api_client.ts` (+metodos), `providers/workspace_panel.ts` (+IPC cases), `shared/types.ts` (+tipos), `workspace.css` (+.ws-input).
+
+## Hito 7.9.B.6: Additional Dashboard Segments (Overview / Extensions / Telemetry) -- 2026-05-22
+
+- **Status:** OK. Backend `mypy` (modo modulo) limpio en `core.telemetry` y `api.mcp_servers`; `pytest tests/test_dashboard_segments.py` 10 passed; suite completa 537 passed (mismos 6 fallos pre-existentes de `test_execution_tools.py` -> `Sandbox adapter not initialized`, ajenos). Frontend `npm run compile` exit 0 (tsc 0 err, eslint 0 err, 4 bundles). Smoke HTTP loopback: `/telemetry/routing` y `/oom` devuelven listas; MCP `/test` y `/servers` rechazan comandos no-allowlisted con error generico; comando allowlisted-pero-inexistente pasa el guard y falla en 0.12s sin zombie.
+- **Analisis de viabilidad (entregable del 7.9.B.6):** se clasifico cada candidato por dato-de-respaldo. CONSTRUIDOS: MCP+Skills (backend ya existia, solo UI), snapshot de costo (`/telemetry/tokens`), viewer de telemetria (read-only nuevo), Overview (compone endpoints existentes). YA EXISTIA: GraphRAG Inspector = panel Memory Management. DIFERIDOS por requerir persistencia/instrumentacion nueva: historia de costo (token_ledger es in-memory), Agent Performance, Sessions Browser cross-workspace (sesiones en estado del cliente VS Code), migracion completa de `ailienant-config.json`.
+- **3 paneles nuevos (patron AuditPanel: `fetch` same-origin + clases `db-*`, sin APIClient ni dependencia de charts):**
+  - `OverviewPanel.tsx` — tab por defecto; 3 tarjetas (uso de tokens desde-arranque, servidores MCP, HITL pendientes con deep-link) + mini-grafico de barras de actividad de routing (ultimas 12h, bucketing por hora UTC).
+  - `ExtensionsPanel.tsx` — un nav-item con sub-tabs MCP Servers + Skills; superficie en dashboard de los backends de 7.9.A.7.e/.f.
+  - `TelemetryPanel.tsx` — card de costo (split local/cloud en gauges + invested/savings) + log de routing paginado con "Load more" y expander "Reveal" por fila.
+- **Unico backend nuevo:** `core/telemetry.py` pasa de solo-escritura a tener `recent_routing_decisions()` / `recent_oom_events()`; expuestos inline en `main.py` como `GET /api/v1/telemetry/routing` y `/oom` (junto a `/tokens`).
+- **Endurecimiento de seguridad (de la revision del usuario, S1-S6):**
+  1. **S1 enmascarado server-side** de secretos en `reason` antes de cruzar el cable (sk-/AKIA/bearer/kv pairs/blobs hex-base64).
+  2. **S5 ReDoS-safe:** truncado a 2k chars antes de la regex; patrones sin cuantificadores anidados; kv con operador no-greedy (`.*?`) para no tragar la linea entera con multiples secretos.
+  3. **S4+S6 paginacion:** `_clamp_pagination` coerce a `int()`, clamp `limit` 1..200 y `offset` 0..10000 (OFFSET hard-cap), params (no f-strings) — contra SQLi y DoS del lock SQLite global.
+  4. **S2 inyeccion de comandos MCP:** `_validate_mcp_command` con allowlist estricto por basename (npx/npm/node/python/uv/uvx/deno/docker), SIN fallback "existe en disco", rechaza path-traversal; aplicado en `POST /servers` y `POST /test`; error generico `"Command not allowed by system policy"` al cliente, comando real solo en log server-side. Refuerzo: el server debe seguir en loopback `127.0.0.1` (default uvicorn; nunca `--host 0.0.0.0`).
+  5. **S3 XSS:** todo texto de usuario/agente (skill body, reason) se renderiza como nodo de texto React; prohibido `dangerouslySetInnerHTML`.
+- **Files changed:**
+  - Backend EDIT: `core/telemetry.py` (+helpers de lectura +masking +clamp), `main.py` (+2 endpoints +import), `api/mcp_servers.py` (+`_validate_mcp_command` en /servers y /test).
+  - Backend NUEVO: `tests/test_dashboard_segments.py`.
+  - Frontend NUEVO: `src/dashboard/panels/OverviewPanel.tsx`, `ExtensionsPanel.tsx`, `TelemetryPanel.tsx`.
+  - Frontend EDIT: `src/dashboard/main.tsx` (+PanelId +NAV +render +default tab overview).
