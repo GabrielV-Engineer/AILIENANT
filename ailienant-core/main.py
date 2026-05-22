@@ -69,6 +69,11 @@ from core.execution_mode import get_mode as get_execution_mode_pref
 from api.system_settings import router as system_settings_router
 from api.audit import router as audit_router
 
+# --- IMPORTACIONES FASE 7.9.A.7 (Command-menu backends: agents/mcp/skills) ---
+from api.agent_roles import router as agents_router
+from api.mcp_servers import router as mcp_router
+from api.skills import router as skills_router
+
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
 from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
 from shared.contracts import (
@@ -175,6 +180,11 @@ app.include_router(system_settings_router)
 
 # Phase 7.9.B.5 — Audit Ledger REST endpoints (log/stats/verify)
 app.include_router(audit_router)
+
+# Phase 7.9.A.7 — Command-menu backends (agent role overrides, MCP registry, skills)
+app.include_router(agents_router)
+app.include_router(mcp_router)
+app.include_router(skills_router)
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
