@@ -21,12 +21,14 @@ import { HardwarePanel } from './panels/HardwarePanel';
 import { OverviewPanel } from './panels/OverviewPanel';
 import { ExtensionsPanel } from './panels/ExtensionsPanel';
 import { TelemetryPanel } from './panels/TelemetryPanel';
+import { RuntimePanel } from './panels/RuntimePanel';
 
-type PanelId = 'overview' | 'hardware' | 'memory' | 'byom' | 'rules' | 'staging' | 'audit' | 'extensions' | 'telemetry';
+type PanelId = 'overview' | 'hardware' | 'memory' | 'byom' | 'rules' | 'staging' | 'audit' | 'extensions' | 'telemetry' | 'runtime';
 
 const NAV: { id: PanelId; icon: IconName; label: string; desc: string }[] = [
     { id: 'overview',   icon: 'gauge',     label: 'Overview',           desc: 'At-a-glance summary of cost, MCP, HITL and activity' },
     { id: 'hardware',   icon: 'cpu',       label: 'Hardware Monitor',   desc: 'Live RAM/VRAM gauges and execution mode' },
+    { id: 'runtime',    icon: 'zap',       label: 'Runtime',            desc: 'Sandbox tier, Docker status and lifecycle controls' },
     { id: 'memory',     icon: 'network',   label: 'Memory Management',  desc: 'Interactive GraphRAG node viewer' },
     { id: 'byom',       icon: 'plug',      label: 'BYOM Models',        desc: 'Manage local & cloud model endpoints' },
     { id: 'extensions', icon: 'wand',      label: 'Extensions',         desc: 'MCP servers and reusable skill templates' },
@@ -83,6 +85,7 @@ function Dashboard(): JSX.Element {
                 <main className="db-main">
                     {activePanel === 'overview'   && <OverviewPanel onNavigate={(id) => setActivePanel(id as PanelId)} />}
                     {activePanel === 'hardware'   && <HardwarePanel />}
+                    {activePanel === 'runtime'    && <RuntimePanel />}
                     {activePanel === 'memory'     && <MemoryManagement />}
                     {activePanel === 'byom'       && <BYOMPanel />}
                     {activePanel === 'extensions' && <ExtensionsPanel />}
