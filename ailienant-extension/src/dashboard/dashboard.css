@@ -442,3 +442,140 @@ html, body, #root { height: 100%; }
 .react-flow__minimap { background: var(--bg-surface) !important; }
 .react-flow__attribution { background: transparent !important; color: var(--text-disabled) !important; }
 .react-flow__handle { background: var(--accent-primary) !important; border-color: var(--bg-main) !important; }
+
+/* ============================================================
+   7.9.B.2 — BYOM Models panel
+   ============================================================ */
+
+/* Status dot next to endpoint name */
+.byom-status-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+@keyframes byom-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+.byom-status-dot--pulse { animation: byom-pulse 1s ease-in-out infinite; }
+
+/* Field-level validation messages */
+.byom-field-error {
+  font-size: 11px;
+  color: #F85149;
+  margin-top: 3px;
+}
+.byom-field-warn {
+  font-size: 11px;
+  color: #E3B341;
+  margin-top: 3px;
+}
+
+/* Input highlighted red on validation failure */
+.byom-input-error {
+  border-color: #F85149 !important;
+}
+
+/* Collapsible model list after a successful test */
+.byom-model-list {
+  list-style: none;
+  margin: 6px 0 0 0;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-height: 160px;
+  overflow-y: auto;
+}
+.byom-model-list li { padding: 2px 0; }
+.byom-model-list li + li { border-top: 1px solid var(--border-subtle); padding-top: 4px; margin-top: 2px; }
+
+/* Error state card */
+.byom-error {
+  color: #F85149;
+  border-color: #F85149;
+}
+
+/* Preset grid — horizontal wrapping cards */
+.byom-preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.byom-preset-card {
+  flex: 1 1 200px;
+  max-width: 280px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.15s;
+}
+.byom-preset-card--active {
+  border-color: var(--accent-primary, #63a583);
+}
+
+.byom-preset-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+.byom-preset-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.byom-preset-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.byom-preset-tier-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  gap: 8px;
+}
+.byom-preset-tier-label {
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+.byom-preset-tier-val {
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.byom-tier-combobox {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.byom-preset-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.byom-preset-card:has(.byom-preset-edit-form) {
+  flex: 1 1 280px;
+  max-width: 360px;
+}

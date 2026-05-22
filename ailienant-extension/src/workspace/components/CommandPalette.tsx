@@ -1,80 +1,198 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Icon, type IconName } from '../../shared/Icon';
 import { vscode } from '../vscode_bridge';
+import { ModelsMenu, type ModelsView } from './ModelsMenu';
+import type { AilienantConfig } from '../../shared/types';
+import type { OrchestrationMode } from '../../shared/config';
 
-export interface SlashCommand {
-    cmd: string;
+interface MenuItem {
+    key: string;
+    cmd: string;       // slash hint, used for filtering + display
+    label: string;
     desc: string;
+    icon: IconName;
+    run: () => void;
+    opensView?: boolean; // keep menu open (nested view)
+    soon?: boolean;      // disabled "Coming soon" placeholder
+}
+
+interface MenuSection {
+    id: string;
+    title: string;     // e.g. "/context — Context"
+    items: MenuItem[];
 }
 
 interface Props {
     query: string;
     activeTaskId?: string;
+    config: AilienantConfig | null;
+    activeModelId: string;
+    orchestrationMode: OrchestrationMode;
+    onPrefChange: (activeModelId: string, orchestrationMode: OrchestrationMode) => void;
+    onOpenContext: () => void;
     onClose: () => void;
-    onCommandSelect?: (cmd: string) => void;
 }
 
-function buildCommands(): SlashCommand[] {
-    return [
-        { cmd: '/context',        desc: 'Attach files, terminal output, or directories to the context window' },
-        { cmd: '/context rewind', desc: 'Roll back the agent graph to its last checkpoint' },
-        { cmd: '/explain',        desc: 'Generate an architectural context map for the current selection' },
-        { cmd: '/patch',          desc: 'Invoke the VFS staging arena for diff validation' },
-        { cmd: '/models',         desc: 'Open the expert model selector popover' },
-        { cmd: '/customize',      desc: 'Edit persona and custom instructions' },
-        { cmd: '/dlq',            desc: 'List pending dead-letter recovery episodes' },
-    ];
-}
+const MODELS_VIEW_TITLES: Record<ModelsView, string> = {
+    switch:        'Switch model',
+    orchestration: 'Orchestration mode',
+    usage:         'Account & Usage',
+    preset:        'Switch model preset',
+};
 
-export function CommandPalette({ query, activeTaskId, onClose, onCommandSelect }: Props): JSX.Element | null {
-    const all = buildCommands();
-    const q = query.toLowerCase();
-    const filtered = all.filter(c => c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q));
+export function CommandPalette({
+    query, activeTaskId, config, activeModelId, orchestrationMode, onPrefChange, onOpenContext, onClose,
+}: Props): JSX.Element | null {
+    const [view, setView] = useState<'root' | ModelsView>('root');
     const [focused, setFocused] = useState(0);
 
-    useEffect(() => { setFocused(0); }, [query]);
+    const post = useCallback((message: Record<string, unknown>) => {
+        vscode.postMessage(message);
+    }, []);
 
-    const execute = useCallback((cmd: SlashCommand) => {
-        if (cmd.cmd === '/context rewind') {
-            vscode.postMessage({ type: 'SUBMIT_TASK', value: `/context rewind ${activeTaskId ?? ''}` });
-        } else if (cmd.cmd === '/models' || cmd.cmd === '/customize') {
-            // Display-only commands; close palette
-        } else {
-            vscode.postMessage({ type: 'SUBMIT_TASK', value: cmd.cmd });
-        }
-        onCommandSelect?.(cmd.cmd);
-        onClose();
-    }, [activeTaskId, onCommandSelect, onClose]);
+    const sections = useMemo<MenuSection[]>(() => [
+        {
+            id: 'context',
+            title: '/context — Context',
+            items: [
+                { key: 'ctx-attach',  cmd: '/context attach',  label: 'Attach file',        desc: 'Add files, folders, or terminal output to context', icon: 'plus',     run: onOpenContext },
+                { key: 'ctx-mention', cmd: '/context mention', label: 'Mention file',       desc: 'Reference a project file inline (@path)',           icon: 'search',   run: () => post({ type: 'MENTION_FILE' }) },
+                { key: 'ctx-clear',   cmd: '/context clear',   label: 'Clear conversation', desc: 'Clear the chat window and short-term memory',       icon: 'trash',    run: () => post({ type: 'CLEAR_CONVERSATION' }) },
+                { key: 'ctx-rewind',  cmd: '/context rewind',  label: 'Rewind',             desc: 'Roll back the agent graph to its last checkpoint',  icon: 'clock',    run: () => post({ type: 'SUBMIT_TASK', value: `/context rewind ${activeTaskId ?? ''}` }) },
+            ],
+        },
+        {
+            id: 'models',
+            title: '/models — Brain',
+            items: [
+                { key: 'mdl-switch',  cmd: '/models switch',        label: 'Switch model',        desc: 'Pick the active model from discovered list',   icon: 'cpu',     opensView: true, run: () => setView('switch') },
+                { key: 'mdl-orch',   cmd: '/models orchestration', label: 'Orchestration mode',  desc: 'Manual single-model vs. auto tier routing',    icon: 'network', opensView: true, run: () => setView('orchestration') },
+                { key: 'mdl-usage',  cmd: '/models usage',         label: 'Account & Usage',     desc: 'Token counts and estimated cost this session',  icon: 'wallet',  opensView: true, run: () => setView('usage') },
+                { key: 'mdl-preset', cmd: '/models preset',        label: 'Switch model preset', desc: 'Apply a saved model configuration preset',     icon: 'sparkles',  opensView: true, run: () => setView('preset') },
+                { key: 'mdl-cfg',    cmd: '/models configure',     label: 'Configure models…',   desc: 'Open the dashboard BYOM panel',                icon: 'plug',    run: () => post({ type: 'OPEN_DASHBOARD', tab: 'byom' }) },
+            ],
+        },
+        {
+            id: 'customize',
+            title: '/customize — Customize',
+            items: [
+                { key: 'cz-styles', cmd: '/customize output-styles', label: 'Output styles', desc: 'Concise, explanatory, or code-only responses', icon: 'pencil', soon: true, run: () => {} },
+                { key: 'cz-agents', cmd: '/customize agents',        label: 'Agents',        desc: 'Edit orchestrator and sub-agent prompts',     icon: 'bot',    soon: true, run: () => {} },
+                { key: 'cz-hooks',  cmd: '/customize hooks',         label: 'Hooks',         desc: 'Pre/post-execution scripts',                  icon: 'zap',    soon: true, run: () => {} },
+                { key: 'cz-memory', cmd: '/customize memory',        label: 'Memory',        desc: 'Open the Vector/RAG management panel',         icon: 'brain',  run: () => post({ type: 'OPEN_DASHBOARD', tab: 'memory' }) },
+                { key: 'cz-perms',  cmd: '/customize permissions',   label: 'Permissions',   desc: 'Grant or revoke HITL permissions',            icon: 'shield', soon: true, run: () => {} },
+                { key: 'cz-mcp',    cmd: '/customize mcp',           label: 'MCP Servers',   desc: 'Model Context Protocol server config',         icon: 'plug',   soon: true, run: () => {} },
+                { key: 'cz-panel',  cmd: '/customize control-panel', label: 'AILIENANT Control Panel', desc: 'Open the full web dashboard',         icon: 'gauge',  run: () => post({ type: 'OPEN_DASHBOARD' }) },
+            ],
+        },
+        {
+            id: 'settings',
+            title: '/settings — Settings',
+            items: [
+                { key: 'set-general', cmd: '/settings general', label: 'General configurations', desc: 'Open AILIENANT settings in VS Code', icon: 'settings', run: () => post({ type: 'OPEN_SETTINGS' }) },
+            ],
+        },
+        {
+            id: 'support',
+            title: '/support — Support',
+            items: [
+                { key: 'sup-docs', cmd: '/support help', label: 'Help documents', desc: 'Open the technical documentation', icon: 'external-link', run: () => post({ type: 'OPEN_DOCS' }) },
+            ],
+        },
+    ], [activeTaskId, onOpenContext, post]);
+
+    const q = query.toLowerCase();
+    const visibleSections = useMemo<MenuSection[]>(() => {
+        if (!q) { return sections; }
+        return sections
+            .map(s => ({ ...s, items: s.items.filter(i =>
+                i.cmd.toLowerCase().includes(q) || i.label.toLowerCase().includes(q) || i.desc.toLowerCase().includes(q)) }))
+            .filter(s => s.items.length > 0);
+    }, [sections, q]);
+
+    const flat = useMemo<MenuItem[]>(() => visibleSections.flatMap(s => s.items), [visibleSections]);
+
+    useEffect(() => { setFocused(0); }, [query, view]);
+
+    const execute = useCallback((item: MenuItem) => {
+        if (item.soon) { return; }
+        item.run();
+        if (!item.opensView) { onClose(); }
+    }, [onClose]);
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent): void => {
-            if (filtered.length === 0) { return; }
-            if (e.key === 'ArrowDown') { e.preventDefault(); setFocused(f => (f + 1) % filtered.length); }
-            else if (e.key === 'ArrowUp') { e.preventDefault(); setFocused(f => (f - 1 + filtered.length) % filtered.length); }
-            else if (e.key === 'Enter') { e.preventDefault(); execute(filtered[focused]); }
-            else if (e.key === 'Escape') { onClose(); }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                if (view !== 'root') { setView('root'); } else { onClose(); }
+                return;
+            }
+            if (view !== 'root') { return; }
+            if (flat.length === 0) { return; }
+            if (e.key === 'ArrowDown') { e.preventDefault(); setFocused(f => (f + 1) % flat.length); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setFocused(f => (f - 1 + flat.length) % flat.length); }
+            else if (e.key === 'Enter') { e.preventDefault(); execute(flat[focused]); }
         };
         document.addEventListener('keydown', onKey);
         return () => document.removeEventListener('keydown', onKey);
-    }, [filtered, focused, execute, onClose]);
+    }, [flat, focused, execute, onClose, view]);
 
-    if (filtered.length === 0) { return null; }
-
-    return (
-        <div className="ws-palette" role="listbox" aria-label="Command palette">
-            <div className="ws-palette-hint">Command palette · ↑↓ navigate · Enter to run · Esc to close</div>
-            {filtered.map((c, i) => (
-                <button
-                    key={c.cmd}
-                    className="ws-palette-item"
-                    data-focused={i === focused ? 'true' : 'false'}
-                    role="option"
-                    aria-selected={i === focused}
-                    onMouseEnter={() => setFocused(i)}
-                    onClick={() => execute(c)}
-                >
-                    <span className="ws-palette-cmd">{c.cmd}</span>
-                    <span className="ws-palette-desc">{c.desc}</span>
+    // ── Nested Models sub-view ───────────────────────────────────
+    if (view !== 'root') {
+        return (
+            <div className="ws-palette ws-menu" role="dialog" aria-label={MODELS_VIEW_TITLES[view]}>
+                <button className="ws-menu-back" onClick={() => setView('root')} aria-label="Back">
+                    <Icon name="chevron-right" size={13} className="ws-menu-back-icon" />
+                    <span>{MODELS_VIEW_TITLES[view]}</span>
                 </button>
+                <ModelsMenu
+                    view={view}
+                    config={config}
+                    activeModelId={activeModelId}
+                    orchestrationMode={orchestrationMode}
+                    onPrefChange={onPrefChange}
+                    onClose={onClose}
+                />
+            </div>
+        );
+    }
+
+    if (flat.length === 0) { return null; }
+
+    // ── Root sectioned list ──────────────────────────────────────
+    let runningIndex = -1;
+    return (
+        <div className="ws-palette ws-menu" role="listbox" aria-label="Command menu">
+            <div className="ws-palette-hint">Command menu · ↑↓ navigate · Enter to run · Esc to close</div>
+            {visibleSections.map(section => (
+                <div key={section.id} className="ws-menu-section">
+                    <div className="ws-mode-label ws-menu-section-title">{section.title}</div>
+                    {section.items.map(item => {
+                        runningIndex += 1;
+                        const idx = runningIndex;
+                        return (
+                            <button
+                                key={item.key}
+                                className="ws-palette-item ws-menu-item"
+                                data-focused={idx === focused ? 'true' : 'false'}
+                                data-soon={item.soon ? 'true' : 'false'}
+                                role="option"
+                                aria-selected={idx === focused}
+                                aria-disabled={item.soon ? 'true' : undefined}
+                                onMouseEnter={() => setFocused(idx)}
+                                onClick={() => execute(item)}
+                            >
+                                <Icon name={item.icon} size={14} className="ws-menu-item-icon" />
+                                <span className="ws-menu-item-text">
+                                    <span className="ws-menu-item-label">{item.label}</span>
+                                    <span className="ws-palette-desc">{item.desc}</span>
+                                </span>
+                                {item.soon && <span className="ws-menu-soon">Soon</span>}
+                                {item.opensView && !item.soon && <Icon name="chevron-right" size={13} />}
+                            </button>
+                        );
+                    })}
+                </div>
             ))}
         </div>
     );

@@ -178,6 +178,40 @@ export class APIClient {
     }
 
     /**
+     * 7.9.B.2 — Fetch BYOM config (endpoints + presets + active preset).
+     */
+    public async fetchBYOMConfig(): Promise<{ presets: unknown[]; active_preset_id: string | null } | null> {
+        try {
+            const response = await fetch(`${this.baseUrl}/byom/config`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(5000),
+            });
+            if (!response.ok) { return null; }
+            return response.json() as Promise<{ presets: unknown[]; active_preset_id: string | null }>;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * 7.9.B.2 — Merge-save BYOM config (partial patch; server preserves unset fields).
+     */
+    public async saveBYOMConfig(payload: Record<string, unknown>): Promise<{ presets: unknown[]; active_preset_id: string | null } | null> {
+        try {
+            const response = await fetch(`${this.baseUrl}/byom/config`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(10000),
+            });
+            if (!response.ok) { return null; }
+            return response.json() as Promise<{ presets: unknown[]; active_preset_id: string | null }>;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * 7.9.A.5 — Probe whether the Core backend is reachable.
      * The health route lives at the server origin root ("/"), not under /api/v1.
      */

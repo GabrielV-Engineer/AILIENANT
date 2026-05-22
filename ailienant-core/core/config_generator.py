@@ -183,3 +183,83 @@ async def write_config(output_path: str = CONFIG_YAML_PATH) -> dict:
     }
     logger.info("LiteLLM config written: %s", summary)
     return summary
+
+
+def write_config_with_overrides(
+    output_path: str,
+    tier_overrides: dict,
+) -> None:
+    """Phase 7.9.B.2 — Write config.yaml synchronously with user-defined tier overrides.
+
+    ``tier_overrides`` maps LiteLLM alias names to concrete litellm_params.model
+    values, e.g. ``{"ailienant/small": "ollama/phi3", "ailienant/big": "gpt-4o"}``.
+    Entries not in the override dict are written from the existing file unchanged,
+    or omitted if no existing file is found (the auto-discovery flow handles that
+    case at startup; this function is called from async context via to_thread).
+
+    The write is atomic (mkstemp → os.replace) to prevent truncation on power
+    loss.  config.yaml contains no secrets so 0600 is not required here, but
+    the atomic guarantee still applies.
+    """
+    import stat as _stat
+    import tempfile as _tempfile
+
+    # Read the current config.yaml as the base (best-effort; fall back to empty list).
+    try:
+        with open(output_path, "r", encoding="utf-8") as f:
+            existing = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        existing = {}
+
+    model_list: List[dict] = list(existing.get("model_list", []))
+
+    if tier_overrides:
+        # Build an index of existing entries by model_name for fast lookup.
+        by_alias: dict = {entry["model_name"]: entry for entry in model_list}
+
+        for alias, model_id in tier_overrides.items():
+            if not model_id:
+                continue  # skip empty overrides
+            if alias in by_alias:
+                by_alias[alias]["litellm_params"]["model"] = model_id
+                # Remove api_base if switching from Ollama to a remote provider.
+                if not model_id.startswith("ollama/"):
+                    by_alias[alias]["litellm_params"].pop("api_base", None)
+                elif "api_base" not in by_alias[alias]["litellm_params"]:
+                    by_alias[alias]["litellm_params"]["api_base"] = OLLAMA_API_BASE
+            else:
+                # Alias not yet in the file — add a new entry.
+                params: dict = {"model": model_id}
+                if model_id.startswith("ollama/"):
+                    params["api_base"] = OLLAMA_API_BASE
+                by_alias[alias] = {"model_name": alias, "litellm_params": params}
+
+        model_list = list(by_alias.values())
+
+    # Fallback: keep LiteLLM from failing on an empty model list.
+    if not model_list:
+        model_list.append({
+            "model_name": "ailienant/medium",
+            "litellm_params": {"model": "ollama/llama3.1", "api_base": OLLAMA_API_BASE},
+        })
+
+    content = yaml.dump(
+        {"model_list": model_list}, default_flow_style=False, allow_unicode=True
+    )
+
+    # Atomic write: write to a temp file then os.replace to prevent partial writes.
+    import pathlib as _pl
+    parent = _pl.Path(output_path).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = _tempfile.mkstemp(dir=parent, prefix=".tmp_cfg_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, output_path)
+        logger.info("config.yaml written with %d overrides → %s", len(tier_overrides), output_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

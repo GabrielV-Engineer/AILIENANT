@@ -1188,3 +1188,37 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   4. **regl-scatterplot WebGL** con manejo de pérdida de contexto GPU (re-init + redraw desde puntos en memoria, sin refetch).
   5. **Read-only primero:** edición de vectores (lasso/insert/delete) y búsqueda NN diferidas a sub-fase 7.9.B.1.x. Layer de docs disabled (sin fuente de datos aún).
 - **Criterios de aceptación cubiertos:** al cargar solo dispara `GET /sections`; clic en sección dispara un `/graph` + un `/vectors` scopeados; sin BroadcastChannel/WBS residual; sin bulk-load de todos los proyectos; layout vectorial estable entre refrescos.
+
+## Hito 7.9.B.2: BYOM Models — Test Connection real + validación + soporte local + Model Presets - 2026-05-21
+
+- **Status:** OK. `npm run compile` → 0 errores (2 warnings pre-existentes sin relación). Backend importable sin errores de sintaxis.
+- **Problemas corregidos (3 defectos confirmados en código):**
+  1. `testConnection()` llamaba siempre `GET /api/v1/models/available` (global) ignorando el endpoint configurado. → Reemplazado por `POST /api/v1/byom/test` que sondea el URL/key/provider específico.
+  2. Clic en Test con campos vacíos → estado `'unknown'` silencioso. → Validación inline en el frontend: si `url.trim()===''` o `name.trim()===''`, muestra texto rojo "URL is required" / "Name is required" sin tocar el backend.
+  3. Config efímera en React state → se pierde al cerrar la pestaña. → `GET /api/v1/byom/config` al montar + `PUT /api/v1/byom/config` al guardar; persistencia en `byom_config.json`.
+- **Nueva funcionalidad: Model Presets.** Término correcto para lo que el usuario llamó "templates". 3 built-in (Local Only / Hybrid / Cloud Only) calculados dinámicamente de modelos descubiertos en tiempo real; presets custom creados desde el panel. Activar un preset → `write_config_with_overrides()` (atómico) → `POST localhost:4000/reload` (`Authorization: Bearer`). Switcher en `CommandPalette` (`/models preset` → `ModelsMenu` vista `preset` via PostMessage IPC).
+- **Mitigaciones de seguridad y robustez implementadas (todas las del plan):**
+  1. **Merge strategy en `PUT /config`:** carga estado existente del disco, aplica solo campos presentes en el body (`exclude_unset=True` equivalente en Python dict), preserva claves API si se devuelve el valor enmascarado.
+  2. **Path absoluto para `byom_config.json`:** derivado de `AILIENANT_CATALOG_DB` env var → `BYOM_CONFIG_PATH = Path(catalog).resolve().parent / "byom_config.json"` — nunca relativo al CWD del proceso.
+  3. **`_normalize_url()`:** auto-prepend `http://` a URLs sin esquema (`localhost:11434` → `http://localhost:11434`) antes de pasar a `httpx` → previene `UnsupportedProtocol`.
+  4. **UTF-8 explícito:** `os.fdopen(fd, "w", encoding="utf-8")` → previene corrupción CP1252 en Windows.
+  5. **Escritura atómica + 0600:** `tempfile.mkstemp()` → `os.chmod(tmp, 0o600)` → `os.replace()` para `byom_config.json`. Limpieza segura del temp en `except: try: os.unlink(tmp) except OSError: pass; raise`.
+  6. **API keys enmascaradas en GET:** `mask_api_key()` → `"sk-••••" + last4`. `is_masked_key()` en PUT previene sobreescribir la clave real con el valor enmascarado.
+  7. **LiteLLM reload con header estándar:** `Authorization: Bearer {LITELLM_PROXY_API_KEY}` — no el header no-estándar `api_key`.
+  8. **httpx.AsyncClient** para todos los probes (no `requests` síncrono) → sin bloqueo del event loop de FastAPI.
+- **Files changed:**
+  - `ailienant-core/core/config/byom_config.py` — **NUEVO.** Schema Pydantic (`EndpointConfig`, `ModelPreset`, `BYOMConfig`) + `BYOM_CONFIG_PATH` + `load_byom_config()` + `save_byom_config()` (atómica/0600/UTF-8) + helpers de enmascaramiento.
+  - `ailienant-core/api/byom.py` — **NUEVO.** `APIRouter("/api/v1/byom")`: `POST /test` (httpx probe por proveedor), `GET /config` (config + built-ins dinámicos + discovered), `PUT /config` (merge strategy + apply preset).
+  - `ailienant-core/core/config_generator.py` — `write_config_with_overrides()` sincrónica (lectura config.yaml existente, aplica overrides de tiers, escritura atómica).
+  - `ailienant-core/main.py` — `include_router(byom_router)`.
+  - `ailienant-extension/src/dashboard/panels/byom/api.ts` — **NUEVO.** Fetch same-origin + tipos TS.
+  - `ailienant-extension/src/dashboard/panels/BYOMPanel.tsx` — **REESCRITO.** Sección Endpoints (test real, validación inline, lista de modelos descubiertos, Save) + sección Model Presets (grid de cards, Activate, New Preset inline, Delete).
+  - `ailienant-extension/src/dashboard/dashboard.css` — clases `byom-status-dot`, `byom-field-error/warn`, `byom-input-error`, `byom-model-list`, `byom-error`, `byom-preset-grid/card/name/desc/tiers/tier-row`.
+  - `ailienant-extension/src/workspace/components/CommandPalette.tsx` — item `/models preset` + `'preset'` en `MODELS_VIEW_TITLES`.
+  - `ailienant-extension/src/workspace/components/ModelsMenu.tsx` — tipo `ModelsView` extendido + estado `byomConfig`/`activating` + handlers PostMessage `BYOM_CONFIG` + vista `preset`.
+  - `ailienant-extension/src/providers/workspace_panel.ts` — casos `GET_BYOM_CONFIG` y `ACTIVATE_PRESET`.
+  - `ailienant-extension/src/api/api_client.ts` — `fetchBYOMConfig()` y `saveBYOMConfig()`.
+- **Decisiones de diseño:**
+  1. **Presets built-in dinámicos:** calculados en `GET /config` desde `discover_models()` — el usuario siempre ve qué modelos reales aplican según lo que está corriendo, sin almacenar presets que se vuelven stale.
+  2. **Merge strategy en PUT:** un `ACTIVATE_PRESET` desde el CommandPalette envía solo `{active_preset_id}` — Pydantic con defaults vacíos borraría endpoints/presets. La estrategia de merge es mandatoria para este patrón de IPC partial-payload.
+  3. **Presets custom almacenados, built-ins generados:** solo los presets del usuario van a disco; los built-in se regeneran en cada GET → sin datos stale si cambia Ollama.

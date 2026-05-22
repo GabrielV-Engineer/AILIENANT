@@ -372,6 +372,17 @@ export class WorkspacePanelManager {
                     panel.webview.postMessage({ type: 'USAGE_SNAPSHOT', usage });
                     break;
                 }
+                case 'GET_BYOM_CONFIG': {
+                    const byomData = await APIClient.getInstance().fetchBYOMConfig();
+                    panel.webview.postMessage({ type: 'BYOM_CONFIG', data: byomData });
+                    break;
+                }
+                case 'ACTIVATE_PRESET': {
+                    const presetId = (data.presetId as string | undefined) ?? '';
+                    const result = await APIClient.getInstance().saveBYOMConfig({ active_preset_id: presetId });
+                    panel.webview.postMessage({ type: 'BYOM_CONFIG', data: result });
+                    break;
+                }
                 case 'SET_MODEL_PREFERENCE': {
                     const activeModelId     = (data.activeModelId as string | undefined) ?? '';
                     const orchestrationMode = (data.orchestrationMode as OrchestrationMode | undefined) ?? 'auto';
