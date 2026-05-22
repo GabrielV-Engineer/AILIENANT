@@ -266,7 +266,12 @@ export class WorkspacePanelManager {
                 case 'NATT_MESSAGE':
                     WSClient.getInstance().send({
                         event_type: 'client_analyst_query',
-                        data: { text: data.text, session_id: data.session_id },
+                        data: {
+                            text: data.text,
+                            session_id: data.session_id,
+                            ...(Array.isArray(data.context_paths) && data.context_paths.length > 0
+                                && { context_paths: data.context_paths }),
+                        },
                     });
                     break;
                 case 'NATT_VISIBILITY':
@@ -417,6 +422,32 @@ export class WorkspacePanelManager {
                     if (uris && uris.length > 0) {
                         const items = uris.map(u => ({ path: u.fsPath, kind: 'directory' as const }));
                         panel.webview.postMessage({ type: 'PICKED_PATHS', items });
+                    }
+                    break;
+                }
+                case 'PICK_NATT_FILES': {
+                    const uris = await vscode.window.showOpenDialog({
+                        canSelectFiles: true,
+                        canSelectFolders: false,
+                        canSelectMany: true,
+                        title: 'Attach files to Natt context',
+                    });
+                    if (uris && uris.length > 0) {
+                        const items = uris.map(u => ({ path: u.fsPath, kind: 'file' as const }));
+                        panel.webview.postMessage({ type: 'PICKED_NATT_PATHS', items });
+                    }
+                    break;
+                }
+                case 'PICK_NATT_FOLDER': {
+                    const uris = await vscode.window.showOpenDialog({
+                        canSelectFiles: false,
+                        canSelectFolders: true,
+                        canSelectMany: false,
+                        title: 'Attach folder to Natt context',
+                    });
+                    if (uris && uris.length > 0) {
+                        const items = uris.map(u => ({ path: u.fsPath, kind: 'directory' as const }));
+                        panel.webview.postMessage({ type: 'PICKED_NATT_PATHS', items });
                     }
                     break;
                 }
