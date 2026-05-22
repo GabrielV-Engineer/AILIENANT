@@ -61,6 +61,10 @@ from api.memory_dashboard import router as memory_router
 # --- IMPORTACIONES FASE 7.9.B.2 (BYOM Models REST surface) ---
 from api.byom import router as byom_router
 
+# --- IMPORTACIONES FASE 7.9.B.3 (Hardware Monitor REST surface) ---
+from api.hardware import router as hardware_router, _get_profile as _get_hw_profile
+from core.execution_mode import get_mode as get_execution_mode_pref
+
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
 from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
 from shared.contracts import (
@@ -159,6 +163,9 @@ app.include_router(memory_router)
 # Phase 7.9.B.2 — BYOM Models REST endpoints (test/config)
 app.include_router(byom_router)
 
+# Phase 7.9.B.3 — Hardware Monitor REST endpoints (profile/mode)
+app.include_router(hardware_router)
+
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
 
@@ -240,8 +247,21 @@ async def submit_task(
     Endpoint puro de enrutamiento HTTP. Valida I/O y delega la asimilación.
     """
     try:
-        # Delegación a la capa de servicio (O(1) Memory Ingestion)
-        result = await task_service.process_task(session_id=x_task_id, payload=payload)
+        # Resolve execution mode — Zero-Trust hardware gate (Phase 7.9.B.3)
+        hw = await _get_hw_profile()
+        pref = get_execution_mode_pref()
+        if pref == "AUTO":
+            resolved_mode = hw.suggested_mode
+        elif pref == "FULL_SWARM" and hw.suggested_mode in ("SEQUENTIAL", "MICRO_SWARM"):
+            resolved_mode = hw.suggested_mode   # hardware degraded; silent downgrade
+        elif pref == "MICRO_SWARM" and hw.suggested_mode == "SEQUENTIAL":
+            resolved_mode = "SEQUENTIAL"
+        else:
+            resolved_mode = pref
+
+        result = await task_service.process_task(
+            session_id=x_task_id, payload=payload, execution_mode=resolved_mode
+        )
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
