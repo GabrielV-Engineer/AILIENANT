@@ -18,16 +18,22 @@ import { BYOMPanel }    from './panels/BYOMPanel';
 import { RulesPanel }   from './panels/RulesPanel';
 import { AuditPanel }   from './panels/AuditPanel';
 import { HardwarePanel } from './panels/HardwarePanel';
+import { OverviewPanel } from './panels/OverviewPanel';
+import { ExtensionsPanel } from './panels/ExtensionsPanel';
+import { TelemetryPanel } from './panels/TelemetryPanel';
 
-type PanelId = 'hardware' | 'memory' | 'byom' | 'rules' | 'staging' | 'audit';
+type PanelId = 'overview' | 'hardware' | 'memory' | 'byom' | 'rules' | 'staging' | 'audit' | 'extensions' | 'telemetry';
 
 const NAV: { id: PanelId; icon: IconName; label: string; desc: string }[] = [
-    { id: 'hardware', icon: 'cpu',       label: 'Hardware Monitor',   desc: 'Live RAM/VRAM gauges and execution mode' },
-    { id: 'memory',   icon: 'network',   label: 'Memory Management',  desc: 'Interactive GraphRAG node viewer' },
-    { id: 'byom',     icon: 'plug',      label: 'BYOM Models',        desc: 'Manage local & cloud model endpoints' },
-    { id: 'rules',    icon: 'clipboard', label: 'Rules & Governance', desc: 'Directory rules and custom instructions' },
-    { id: 'staging',  icon: 'eye',       label: 'Staging Area',       desc: 'HITL review of pending patches' },
-    { id: 'audit',    icon: 'shield',    label: 'Audit Ledger',       desc: 'Blake2b-verified HITL audit log' },
+    { id: 'overview',   icon: 'gauge',     label: 'Overview',           desc: 'At-a-glance summary of cost, MCP, HITL and activity' },
+    { id: 'hardware',   icon: 'cpu',       label: 'Hardware Monitor',   desc: 'Live RAM/VRAM gauges and execution mode' },
+    { id: 'memory',     icon: 'network',   label: 'Memory Management',  desc: 'Interactive GraphRAG node viewer' },
+    { id: 'byom',       icon: 'plug',      label: 'BYOM Models',        desc: 'Manage local & cloud model endpoints' },
+    { id: 'extensions', icon: 'wand',      label: 'Extensions',         desc: 'MCP servers and reusable skill templates' },
+    { id: 'rules',      icon: 'clipboard', label: 'Rules & Governance', desc: 'Directory rules and custom instructions' },
+    { id: 'telemetry',  icon: 'telescope', label: 'Telemetry',          desc: 'Token cost snapshot and routing decision log' },
+    { id: 'staging',    icon: 'eye',       label: 'Staging Area',       desc: 'HITL review of pending patches' },
+    { id: 'audit',      icon: 'shield',    label: 'Audit Ledger',       desc: 'Blake2b-verified HITL audit log' },
 ];
 
 function StagingAreaSkeleton(): JSX.Element {
@@ -41,8 +47,14 @@ function StagingAreaSkeleton(): JSX.Element {
     );
 }
 
+function getInitialPanel(): PanelId {
+    const requested = new URLSearchParams(window.location.search).get('tab');
+    const ids = NAV.map(n => n.id) as string[];
+    return requested && ids.includes(requested) ? (requested as PanelId) : 'overview';
+}
+
 function Dashboard(): JSX.Element {
-    const [activePanel, setActivePanel] = useState<PanelId>('hardware');
+    const [activePanel, setActivePanel] = useState<PanelId>(getInitialPanel);
 
     return (
         <Tooltip.Provider delayDuration={400} skipDelayDuration={150}>
@@ -69,16 +81,19 @@ function Dashboard(): JSX.Element {
                 </nav>
 
                 <main className="db-main">
-                    {activePanel === 'hardware' && <HardwarePanel />}
-                    {activePanel === 'memory'   && <MemoryManagement />}
-                    {activePanel === 'byom'     && <BYOMPanel />}
-                    {activePanel === 'rules'    && <RulesPanel />}
-                    {activePanel === 'staging'  && (
+                    {activePanel === 'overview'   && <OverviewPanel onNavigate={(id) => setActivePanel(id as PanelId)} />}
+                    {activePanel === 'hardware'   && <HardwarePanel />}
+                    {activePanel === 'memory'     && <MemoryManagement />}
+                    {activePanel === 'byom'       && <BYOMPanel />}
+                    {activePanel === 'extensions' && <ExtensionsPanel />}
+                    {activePanel === 'rules'      && <RulesPanel />}
+                    {activePanel === 'telemetry'  && <TelemetryPanel />}
+                    {activePanel === 'staging'    && (
                         <Suspense fallback={<StagingAreaSkeleton />}>
                             <StagingArea />
                         </Suspense>
                     )}
-                    {activePanel === 'audit'    && <AuditPanel />}
+                    {activePanel === 'audit'      && <AuditPanel />}
                 </main>
             </div>
         </Tooltip.Provider>
