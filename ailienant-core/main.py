@@ -58,6 +58,9 @@ from core.indexer import lazy_indexer
 # --- IMPORTACIONES FASE 7.9.B.1 (Memory Dashboard REST surface) ---
 from api.memory_dashboard import router as memory_router
 
+# --- IMPORTACIONES FASE 7.9.B.2 (BYOM Models REST surface) ---
+from api.byom import router as byom_router
+
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
 from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
 from shared.contracts import (
@@ -152,6 +155,9 @@ if os.path.isdir(_DASHBOARD_DIR):
 
 # Phase 7.9.B.1 — Memory dashboard REST endpoints (sections/graph/vectors)
 app.include_router(memory_router)
+
+# Phase 7.9.B.2 — BYOM Models REST endpoints (test/config)
+app.include_router(byom_router)
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()

@@ -152,7 +152,7 @@ Proyect_Ailienant/
 │   │   ├── supervisor.py       #   Phase 6.5 — deterministic FinOps Supervisor: ledger→state sync, budget hard-kill (1.10×) / soft HITL gate (1.00×) / token-spike trip; spliced finops_gate→supervisor_node→apply_patch
 │   │   ├── audit.py            #   Phase 6.6 — append-only SOC2 HITL audit ledger: hitl_audit_log table, blake2b chain, _scrub (secrets redaction), log_audit_event / get_chain_head / verify_chain
 │   │   └── rules.py            #   .ailienant rule manager
-│   ├── api/                    # WebSocket manager + MCTS mirror endpoints + memory_dashboard.py (Phase 7.9.B.1 — /api/v1/memory sections/graph/vectors REST surface)
+│   ├── api/                    # WebSocket manager + MCTS mirror endpoints + memory_dashboard.py (Phase 7.9.B.1 — /api/v1/memory sections/graph/vectors REST surface) + byom.py (Phase 7.9.B.2 — /api/v1/byom test/config)
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX); llm_gateway.py (Phase 6.3 — OOM Cascade: ainvoke traps ContextWindowExceeded/CUDA-OOM, purges VRAM, trims context, re-emits to cloud Haiku fallback; Phase 6.8 — _oom_cascade emits telemetry.log_oom_event with swap latency)
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe, logging_filters.py (Phase 6.7 — SecretsScrubber DLP filter)
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
@@ -175,10 +175,11 @@ Proyect_Ailienant/
 │   │   ├── dashboard/          #   Web Dashboard SPA (ESM + code splitting, custom palette)
 │   │   │   ├── main.tsx        #     SPA entry — lazy StagingArea (Monaco), eager HW/BYOM/Rules/Audit panels
 │   │   │   ├── dashboard.css   #     full palette: --color-bg #FEF9F3, --color-primary #63a583, --color-dark #233237
-│   │   │   ├── panels/         #     HardwarePanel (VRAM gauges), BYOMPanel (endpoint forms), RulesPanel (SOUL.md editor),
+│   │   │   ├── panels/         #     HardwarePanel (VRAM gauges), BYOMPanel (Phase 7.9.B.2 — test/config/presets), RulesPanel (SOUL.md editor),
 │   │   │   │                   #     StagingArea (Monaco DiffEditor, lazy-loaded, stale OCC badge), AuditPanel (blake2b chain viewer),
 │   │   │   │                   #     MemoryManagement (Phase 7.9.B.1 — sectioned GraphRAG viewer, REST pull)
-│   │   │   │   └── memory/     #       api.ts (REST client), SectionsList, CodeGraphLayer (ReactFlow/PPR), VectorMapLayer (regl-scatterplot WebGL + PCA scatter)
+│   │   │   │   ├── memory/     #       api.ts (REST client), SectionsList, CodeGraphLayer (ReactFlow/PPR), VectorMapLayer (regl-scatterplot WebGL + PCA scatter)
+│   │   │   │   └── byom/       #       api.ts (REST client Phase 7.9.B.2 — fetchBYOMConfig/saveBYOMConfig/testEndpoint)
 │   │   ├── api/                #   WSClient (BroadcastChannel delta sync, exponential reconnect), HTTP clients
 │   │   ├── editor/             #   vfs_reader (dirty buffer capture)
 │   │   └── core/               #   IntentRouter, PathResolver
@@ -272,6 +273,9 @@ The server exposes:
 | `GET /api/v1/memory/sections` | Enumerate indexed folders per project (dashboard, no vectors loaded) |
 | `GET /api/v1/memory/graph` | Code dependency graph for one section (nodes by PageRank) |
 | `GET /api/v1/memory/vectors` | 2D PCA projection of a section's embeddings (vector map) |
+| `POST /api/v1/byom/test` | Probe a specific model endpoint; returns discovered model list + latency |
+| `GET /api/v1/byom/config` | Load BYOM config (endpoints + presets + active preset + live models) |
+| `PUT /api/v1/byom/config` | Merge-save BYOM config; activate preset → config.yaml → LiteLLM reload |
 
 ### 2. Extension
 
