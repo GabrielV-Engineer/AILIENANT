@@ -5,15 +5,24 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+_MICRO_SWARM_MIN_GB = 4.0
+_FULL_SWARM_MIN_GB = 12.0
+
 
 class HardwareProfile(BaseModel):
     """Snapshot of host hardware capabilities used by the 3D routing engine."""
 
     os_type: str = Field(description="Operating system: 'windows' | 'macos' | 'linux'")
     is_apple_silicon: bool = Field(description="True when running on arm64 macOS (M-series chip).")
-    vram_gb: float = Field(default=0.0, description="NVIDIA VRAM in GB via pynvml; 0.0 if no GPU or driver unavailable.")
+    vram_gb: float = Field(default=0.0, description="NVIDIA VRAM total in GB via pynvml; 0.0 if no GPU or driver unavailable.")
+    vram_used_gb: float = Field(default=0.0, description="NVIDIA VRAM currently used in GB.")
     gpu_name: Optional[str] = Field(default=None, description="Human-readable GPU model name.")
     ram_gb: float = Field(default=0.0, description="Total system RAM in GB via psutil; 0.0 if psutil unavailable.")
+    ram_available_gb: float = Field(default=0.0, description="Available (free + reclaimable) system RAM in GB.")
+    cpu_name: str = Field(default="", description="Human-readable CPU model string.")
+    cpu_cores: int = Field(default=0, description="Physical (non-hyperthreaded) CPU core count.")
+    cpu_freq_mhz: float = Field(default=0.0, description="Maximum CPU frequency in MHz.")
+    suggested_mode: str = Field(default="SEQUENTIAL", description="Hardware-derived recommended execution mode.")
 
 
 class HardwareDetector:
@@ -27,41 +36,108 @@ class HardwareDetector:
     @staticmethod
     def detect() -> HardwareProfile:
         os_raw = platform.system().lower()
-        # Normalise Darwin → macos; keep linux/windows as-is
         os_type = "macos" if os_raw == "darwin" else os_raw
         is_apple_silicon = os_type == "macos" and platform.machine() == "arm64"
 
-        ram_gb = HardwareDetector._detect_ram()
-        vram_gb, gpu_name = HardwareDetector._detect_vram()
+        ram_gb, ram_available_gb = HardwareDetector._detect_ram()
+        vram_gb, vram_used_gb, gpu_name = HardwareDetector._detect_vram()
+        cpu_name, cpu_cores, cpu_freq_mhz = HardwareDetector._detect_cpu()
+
+        # Effective memory for swarm mode gating:
+        # Apple Silicon unified memory → use RAM available;
+        # discrete GPU → use VRAM free (total − used).
+        if is_apple_silicon:
+            effective_gb = ram_available_gb
+        else:
+            effective_gb = max(0.0, vram_gb - vram_used_gb)
+
+        if effective_gb >= _FULL_SWARM_MIN_GB:
+            suggested_mode = "FULL_SWARM"
+        elif effective_gb >= _MICRO_SWARM_MIN_GB:
+            suggested_mode = "MICRO_SWARM"
+        else:
+            suggested_mode = "SEQUENTIAL"
 
         return HardwareProfile(
             os_type=os_type,
             is_apple_silicon=is_apple_silicon,
             vram_gb=vram_gb,
+            vram_used_gb=vram_used_gb,
             gpu_name=gpu_name,
             ram_gb=ram_gb,
+            ram_available_gb=ram_available_gb,
+            cpu_name=cpu_name,
+            cpu_cores=cpu_cores,
+            cpu_freq_mhz=cpu_freq_mhz,
+            suggested_mode=suggested_mode,
         )
 
     @staticmethod
-    def _detect_ram() -> float:
+    def _detect_ram() -> tuple[float, float]:
         try:
             import psutil  # type: ignore[import]
-            return psutil.virtual_memory().total / (1024 ** 3)
+            vm = psutil.virtual_memory()
+            return vm.total / (1024 ** 3), vm.available / (1024 ** 3)
         except Exception:
-            return 0.0
+            return 0.0, 0.0
 
     @staticmethod
-    def _detect_vram() -> tuple[float, Optional[str]]:
+    def _detect_vram() -> tuple[float, float, Optional[str]]:
         try:
             import pynvml  # type: ignore[import]
             pynvml.nvmlInit()
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             info = pynvml.nvmlDeviceGetMemoryInfo(handle)
             name: str = pynvml.nvmlDeviceGetName(handle)
-            # pynvml may return bytes on older versions
             gpu_name = name.decode("utf-8") if isinstance(name, bytes) else name
-            vram_gb = info.total / (1024 ** 3)
+            vram_total = info.total / (1024 ** 3)
+            vram_used = info.used / (1024 ** 3)
             pynvml.nvmlShutdown()
-            return vram_gb, gpu_name
+            return vram_total, vram_used, gpu_name
         except Exception:
-            return 0.0, None
+            return 0.0, 0.0, None
+
+    @staticmethod
+    def _detect_cpu() -> tuple[str, int, float]:
+        """Returns (cpu_name, physical_cores, max_freq_mhz). No new dependencies."""
+        import subprocess
+
+        name = ""
+        os_type = platform.system()
+        try:
+            if os_type == "Darwin":
+                name = subprocess.check_output(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"],
+                    text=True, timeout=2,
+                ).strip()
+            elif os_type == "Linux":
+                with open("/proc/cpuinfo", encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith("model name"):
+                            name = line.split(":", 1)[1].strip()
+                            break
+            elif os_type == "Windows":
+                import winreg
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                ) as key:
+                    name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+        except Exception:
+            pass
+
+        if not name:
+            name = platform.processor() or "Unknown CPU"
+
+        cores: int = 0
+        freq_mhz: float = 0.0
+        try:
+            import psutil  # type: ignore[import]
+            cores = psutil.cpu_count(logical=False) or 0
+            fi = psutil.cpu_freq()
+            if fi:
+                freq_mhz = fi.max or fi.current or 0.0
+        except Exception:
+            pass
+
+        return name, cores, freq_mhz

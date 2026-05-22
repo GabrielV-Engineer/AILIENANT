@@ -38,7 +38,7 @@ class TaskService:
         self.vfs = VFSMiddleware()
 
     async def process_task(
-        self, session_id: str, payload: TaskPayload
+        self, session_id: str, payload: TaskPayload, execution_mode: str = "SEQUENTIAL"
     ) -> Dict[str, Any]:
         """
         Asimila la entropía y dispara el motor cognitivo.
@@ -79,6 +79,7 @@ class TaskService:
             "has_images": any(a.type == "image" for a in payload.attachments),
             "routing_warning": None,
             "hardware_profile": None,
+            "execution_mode": execution_mode,
             "provider": "CLOUD",
             "generated_code": {},
             "errors": [],
