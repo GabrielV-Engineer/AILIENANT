@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, List, Optional, cast
 
 import httpx
+import os
 
 # --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
 from api.api_contracts import ModelInfo, ModelsAvailableResponse
@@ -19,6 +20,7 @@ from core.task_service import TaskPayload, TaskService
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 
@@ -52,6 +54,9 @@ from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
 
 # --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
 from core.indexer import lazy_indexer
+
+# --- IMPORTACIONES FASE 7.9.B.1 (Memory Dashboard REST surface) ---
+from api.memory_dashboard import router as memory_router
 
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
 from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
@@ -139,6 +144,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Dashboard SPA — Phase 7.6 (served at /dashboard)
+_DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "ailienant-extension", "dist", "dashboard")
+if os.path.isdir(_DASHBOARD_DIR):
+    app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")
+
+# Phase 7.9.B.1 — Memory dashboard REST endpoints (sections/graph/vectors)
+app.include_router(memory_router)
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
@@ -353,6 +366,56 @@ async def http_telemetry_reject(payload: RejectTelemetryPayload) -> Dict[str, ob
 async def http_telemetry_tokens() -> Dict[str, float]:
     """Phase 3.4.8 — return the TokenLedger snapshot (local vs cloud + savings)."""
     return token_ledger.snapshot()
+
+
+# =====================================================================
+# PHASE 7.1 — Session title auto-generation
+# =====================================================================
+
+class TitleGenerateRequest(BaseModel):
+    prompt: str
+    max_words: int = 5
+
+
+class TitleGenerateResponse(BaseModel):
+    title: str
+
+
+@app.post("/api/v1/title/generate", response_model=TitleGenerateResponse)
+async def http_generate_title(req: TitleGenerateRequest) -> TitleGenerateResponse:
+    """Summarize the user's first prompt into a 3–5 word session title.
+
+    Uses the small-tier model via LLMGateway. Falls back to a truncated prompt
+    on any error so the UI never hangs on this fire-and-forget call.
+    """
+    from tools.llm_gateway import LLMGateway
+    from shared.config import MODEL_SMALL
+
+    fallback = req.prompt.strip()[:30].rstrip() + ("…" if len(req.prompt.strip()) > 30 else "")
+    try:
+        sys_prompt = (
+            f"Summarize this user request into a {req.max_words}-word title. "
+            "No punctuation. No quotes. Output only the title in title case."
+        )
+        response = await LLMGateway.ainvoke(
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": req.prompt[:400]},
+            ],
+            model=MODEL_SMALL,
+            temperature=0.0,
+            max_tokens=24,
+            timeout=15.0,
+        )
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return TitleGenerateResponse(title=fallback)
+        raw = getattr(choices[0].message, "content", "") or ""
+        title = " ".join(raw.strip().strip('"\'').split())[:60]
+        return TitleGenerateResponse(title=title or fallback)
+    except Exception as exc:
+        logger.warning("title/generate fallback (%s): %s", type(exc).__name__, exc)
+        return TitleGenerateResponse(title=fallback)
 
 
 # =====================================================================

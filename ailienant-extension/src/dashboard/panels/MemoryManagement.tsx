@@ -1,209 +1,201 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import ReactFlow, {
-    Background, Controls, MiniMap, type Node, type Edge, type NodeTypes,
-    useNodesState, useEdgesState, useViewport, type NodeProps,
-} from 'reactflow';
-import 'reactflow/dist/style.css';
+import { useState, useEffect, useCallback } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
+import { SectionsList } from './memory/SectionsList';
+import { CodeGraphLayer } from './memory/CodeGraphLayer';
+import { VectorMapLayer } from './memory/VectorMapLayer';
+import {
+    fetchSections, fetchGraph, fetchVectors,
+    type SectionInfo, type GraphResponse, type GraphNode,
+    type VectorMapResponse, type VectorPoint,
+} from './memory/api';
 
-const STATUS_COLORS: Record<string, string> = {
-    pending:     '#8B949E',
-    in_progress: '#E3B341',
-    completed:   '#63a583',
-    failed:      '#F85149',
-};
+type Layer = 'code' | 'vector';
 
-function FullNode({ data }: NodeProps): JSX.Element {
-    const color = STATUS_COLORS[data.status] ?? '#8B949E';
-    return (
-        <div className="mm-node mm-node--full" style={{ borderColor: color }}>
-            <div className="mm-node-title" style={{ color }}>{data.label}</div>
-            <div className="mm-node-role">{data.role ?? data.type}</div>
-            <span className="mm-node-pill" style={{ background: color }}>{data.status}</span>
-        </div>
-    );
+interface SelectedSection {
+    project_id: string;
+    abs_prefix: string;
+    folder: string;
 }
 
-function MediumNode({ data }: NodeProps): JSX.Element {
-    const color = STATUS_COLORS[data.status] ?? '#8B949E';
-    return (
-        <div className="mm-node mm-node--medium" style={{ borderColor: color }}>{data.label}</div>
-    );
-}
-
-function DotNode({ data }: NodeProps): JSX.Element {
-    const color = STATUS_COLORS[data.status] ?? '#8B949E';
-    return <div className="mm-node-dot" style={{ background: color }} title={data.label} />;
-}
-
-function LodNode(props: NodeProps): JSX.Element {
-    const { zoom } = useViewport();
-    if (zoom > 0.8) { return <FullNode {...props} />; }
-    if (zoom > 0.4) { return <MediumNode {...props} />; }
-    return <DotNode {...props} />;
-}
-
-const NODE_TYPES: NodeTypes = { lodNode: LodNode };
-
-function HeatmapOverlay({ edgeDensity }: { edgeDensity: number }): JSX.Element | null {
-    const { zoom } = useViewport();
-    if (zoom >= 0.4) { return null; }
-    const intensity = Math.min(edgeDensity / 20, 1);
-    return (
-        <div className="mm-heatmap" style={{ background: `rgba(99, 165, 131, ${intensity * 0.22})` }} />
-    );
-}
-
-interface GraphMutationEvent {
-    step_number: number;
-    new_status: string;
-    agent_name: string;
-}
-
-interface LayerToggles {
-    vector: boolean;
-    code:   boolean;
-    docs:   boolean;
-}
+type Detail =
+    | { kind: 'node'; node: GraphNode }
+    | { kind: 'point'; point: VectorPoint }
+    | null;
 
 export function MemoryManagement(): JSX.Element {
-    const [nodes, setNodes, onNodesChange] = useNodesState([]);
-    const [edges, _setEdges, onEdgesChange] = useEdgesState([]);
-    const [selected, setSelected] = useState<Node | null>(null);
+    const [sections, setSections] = useState<SectionInfo[] | null>(null);
+    const [projectCount, setProjectCount] = useState(0);
+    const [sectionsLoading, setSectionsLoading] = useState(true);
+    const [sectionsError, setSectionsError] = useState<string | null>(null);
+
+    const [selected, setSelected] = useState<SelectedSection | null>(null);
+    const [layer, setLayer] = useState<Layer>('code');
     const [search, setSearch] = useState('');
-    const [layers, setLayers] = useState<LayerToggles>({ vector: true, code: true, docs: true });
-    const [mutations, setMutations] = useState<GraphMutationEvent[]>([]);
 
-    // BroadcastChannel listener for live graph mutations
-    useEffect(() => {
-        const ch = new BroadcastChannel('ailienant_graph');
-        ch.onmessage = (e) => {
-            const data = e.data as GraphMutationEvent;
-            if (typeof data?.step_number === 'number') {
-                setMutations(prev => [...prev, data]);
-            }
-        };
-        return () => ch.close();
+    const [graph, setGraph] = useState<GraphResponse | null>(null);
+    const [graphLoading, setGraphLoading] = useState(false);
+    const [graphError, setGraphError] = useState<string | null>(null);
+
+    const [vectors, setVectors] = useState<VectorMapResponse | null>(null);
+    const [vectorsLoading, setVectorsLoading] = useState(false);
+    const [vectorsError, setVectorsError] = useState<string | null>(null);
+
+    const [detail, setDetail] = useState<Detail>(null);
+
+    const loadSections = useCallback(async () => {
+        setSectionsLoading(true);
+        setSectionsError(null);
+        try {
+            const res = await fetchSections();
+            setSections(res.sections);
+            setProjectCount(res.project_count);
+        } catch {
+            setSectionsError('Backend offline — start the AILIENANT Core.');
+            setSections(null);
+        } finally {
+            setSectionsLoading(false);
+        }
     }, []);
 
-    useMemo(() => {
-        setNodes(prev => {
-            const next = [...prev];
-            for (const m of mutations) {
-                const id = String(m.step_number);
-                const idx = next.findIndex(n => n.id === id);
-                const nodeData = {
-                    label:  `Step ${m.step_number}: ${m.agent_name}`,
-                    status: m.new_status,
-                    role:   m.agent_name,
-                };
-                if (idx >= 0) {
-                    next[idx] = { ...next[idx], data: nodeData };
-                } else {
-                    next.push({
-                        id,
-                        type: 'lodNode',
-                        position: { x: (m.step_number % 5) * 180, y: Math.floor(m.step_number / 5) * 130 },
-                        data: nodeData,
-                    });
-                }
-            }
-            return next;
-        });
-    }, [mutations, setNodes]);
+    useEffect(() => { void loadSections(); }, [loadSections]);
 
-    const filtered = useMemo(() => {
-        if (!search.trim()) { return nodes; }
-        const q = search.toLowerCase();
-        return nodes.map(n => ({
-            ...n,
-            hidden: !((n.data?.label ?? '').toLowerCase().includes(q)),
-        }));
-    }, [nodes, search]);
+    // Load a section's two layers — only on click (never bulk-load all sections).
+    const onSelectSection = useCallback((s: SectionInfo) => {
+        setSelected({ project_id: s.project_id, abs_prefix: s.abs_prefix, folder: s.folder });
+        setDetail(null);
+        setGraph(null);
+        setVectors(null);
 
-    const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-        setSelected(node);
+        setGraphLoading(true);
+        setGraphError(null);
+        fetchGraph(s.project_id, s.abs_prefix)
+            .then(setGraph)
+            .catch(() => setGraphError('Failed to load the dependency graph.'))
+            .finally(() => setGraphLoading(false));
+
+        setVectorsLoading(true);
+        setVectorsError(null);
+        fetchVectors(s.project_id, s.abs_prefix)
+            .then(setVectors)
+            .catch(() => setVectorsError('Failed to load the vector map.'))
+            .finally(() => setVectorsLoading(false));
     }, []);
+
+    const onSelectNode = useCallback((node: GraphNode) => setDetail({ kind: 'node', node }), []);
+    const onSelectPoint = useCallback(
+        (point: VectorPoint | null) => setDetail(point ? { kind: 'point', point } : null),
+        [],
+    );
+
+    const renderMain = (): JSX.Element => {
+        if (!selected) {
+            return (
+                <div className="mm-empty mm-empty--center">
+                    <Icon name="network" size={28} />
+                    <span>Select a section on the left to load its memory graph.</span>
+                </div>
+            );
+        }
+        if (layer === 'code') {
+            if (graphLoading) { return <div className="mm-overlay">Loading dependency graph…</div>; }
+            if (graphError) { return <div className="mm-empty">{graphError}</div>; }
+            if (graph) { return <CodeGraphLayer graph={graph} search={search} onSelectNode={onSelectNode} />; }
+            return <div className="mm-empty">No graph data.</div>;
+        }
+        if (vectorsLoading) { return <div className="mm-overlay">Loading vector map…</div>; }
+        if (vectorsError) { return <div className="mm-empty">{vectorsError}</div>; }
+        if (vectors) { return <VectorMapLayer data={vectors} search={search} onSelectPoint={onSelectPoint} />; }
+        return <div className="mm-empty">No vector data.</div>;
+    };
 
     return (
-        <div className="mm-root">
-            <div className="mm-toolbar">
-                <div className="mm-search">
-                    <Icon name="search" size={14} />
-                    <input
-                        className="ai-input"
-                        placeholder="Search nodes…"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                    />
-                </div>
-                <div className="mm-layers">
-                    <span className="mm-layer-label">Layers</span>
-                    {([
-                        { key: 'vector' as const, label: 'Vector index' },
-                        { key: 'code' as const,   label: 'Code entities' },
-                        { key: 'docs' as const,   label: 'Doc chunks' },
-                    ]).map(l => (
-                        <Tooltip key={l.key} content={`Toggle ${l.label} layer`}>
-                            <button
-                                className="ai-btn"
-                                data-variant={layers[l.key] ? 'primary' : 'ghost'}
-                                onClick={() => setLayers(p => ({ ...p, [l.key]: !p[l.key] }))}
-                                aria-pressed={layers[l.key]}
-                            >
-                                {l.label}
+        <div className="mm-layout">
+            <aside className="mm-rail">
+                <div className="db-section-title mm-rail-title">Sections</div>
+                <SectionsList
+                    sections={sections}
+                    projectCount={projectCount}
+                    selected={selected}
+                    loading={sectionsLoading}
+                    error={sectionsError}
+                    onSelect={onSelectSection}
+                    onRetry={() => void loadSections()}
+                />
+            </aside>
+
+            <div className="mm-root">
+                <div className="mm-toolbar">
+                    <div className="mm-search">
+                        <Icon name="search" size={14} />
+                        <input
+                            className="ai-input"
+                            placeholder="Search nodes…"
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                        />
+                    </div>
+                    <div className="mm-layers">
+                        <span className="mm-layer-label">Layer</span>
+                        <button
+                            className="ai-btn"
+                            data-variant={layer === 'vector' ? 'primary' : 'ghost'}
+                            onClick={() => setLayer('vector')}
+                            aria-pressed={layer === 'vector'}
+                        >
+                            Vector map
+                        </button>
+                        <button
+                            className="ai-btn"
+                            data-variant={layer === 'code' ? 'primary' : 'ghost'}
+                            onClick={() => setLayer('code')}
+                            aria-pressed={layer === 'code'}
+                        >
+                            Code graph
+                        </button>
+                        <Tooltip content="Document chunks are not indexed yet">
+                            <button className="ai-btn" data-variant="ghost" disabled aria-disabled>
+                                Doc chunks
                             </button>
                         </Tooltip>
-                    ))}
-                </div>
-            </div>
-
-            <div className="mm-graph">
-                <ReactFlow
-                    nodes={filtered}
-                    edges={edges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    onNodeClick={onNodeClick}
-                    nodeTypes={NODE_TYPES}
-                    onlyRenderVisibleElements
-                    fitView
-                    minZoom={0.1}
-                    maxZoom={2}
-                >
-                    <Background color="#30363D" gap={26} />
-                    <Controls className="mm-controls" />
-                    <MiniMap
-                        nodeColor={n => STATUS_COLORS[n.data?.status ?? 'pending'] ?? '#8B949E'}
-                        maskColor="rgba(13, 17, 23, 0.6)"
-                        style={{ background: '#161B22', border: '1px solid #30363D' }}
-                    />
-                </ReactFlow>
-                <HeatmapOverlay edgeDensity={edges.length} />
-
-                {selected && (
-                    <div className="mm-detail ai-card">
-                        <div className="mm-detail-head">
-                            <strong>{selected.data?.label}</strong>
-                            <Tooltip content="Close detail panel" side="left">
-                                <button
-                                    className="ai-btn"
-                                    data-variant="ghost"
-                                    onClick={() => setSelected(null)}
-                                    aria-label="Close"
-                                >
-                                    <Icon name="x" size={14} />
-                                </button>
-                            </Tooltip>
-                        </div>
-                        <div className="mm-detail-rows">
-                            <div><span className="mm-detail-label">Status</span><span>{selected.data?.status}</span></div>
-                            <div><span className="mm-detail-label">Role</span><span>{selected.data?.role}</span></div>
-                            <div><span className="mm-detail-label">Node ID</span><span>{selected.id}</span></div>
-                        </div>
                     </div>
-                )}
+                </div>
+
+                <div className="mm-graph">
+                    {renderMain()}
+
+                    {detail && (
+                        <div className="mm-detail ai-card">
+                            <div className="mm-detail-head">
+                                <strong>{detail.kind === 'node' ? detail.node.label : detail.point.label}</strong>
+                                <Tooltip content="Close detail panel" side="left">
+                                    <button
+                                        className="ai-btn"
+                                        data-variant="ghost"
+                                        onClick={() => setDetail(null)}
+                                        aria-label="Close"
+                                    >
+                                        <Icon name="x" size={14} />
+                                    </button>
+                                </Tooltip>
+                            </div>
+                            {detail.kind === 'node' ? (
+                                <div className="mm-detail-rows">
+                                    <div><span className="mm-detail-label">PageRank</span><span>{detail.node.ppr_score.toFixed(5)}</span></div>
+                                    <div><span className="mm-detail-label">In / Out</span><span>{detail.node.in_degree} / {detail.node.out_degree}</span></div>
+                                    <div><span className="mm-detail-label">Type</span><span>{detail.node.is_external ? 'external module' : 'source file'}</span></div>
+                                    <div className="mm-detail-path"><span className="mm-detail-label">Path</span><span>{detail.node.full_path}</span></div>
+                                </div>
+                            ) : (
+                                <div className="mm-detail-rows">
+                                    <div><span className="mm-detail-label">Tokens</span><span>{detail.point.token_count}</span></div>
+                                    <div className="mm-detail-path"><span className="mm-detail-label">Path</span><span>{detail.point.file_path}</span></div>
+                                    <div className="mm-detail-snippet">{detail.point.snippet}</div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );

@@ -989,7 +989,7 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
 
   ### 7.9.B — Web Dashboard (browser SPA)
 
-  - [ ] **7.9.B.1 — Memory Management panel still broken**
+  - [x] **7.9.B.1 — Memory Management panel still broken**
     > **🔵 DEDICATED FUTURE PLAN — placeholder only**
     - **Problem:** El panel Memory Management sigue sin funcionar a pesar del
       hotfix del freeze loop. Requiere un plan completo separado que cubra:
@@ -997,11 +997,23 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       arquitectura del visor GraphRAG, contrato de eventos backend → dashboard,
       LOD strategy, side-panel de detalles, layers de vector/code/docs, y
       criterios de aceptacion.
-    - **Resolution placeholder:** se diseñara en un **plan dedicado aparte**
-      (no inline). Esta entrada existe solo como ancla en el WBS para que el
-      plan futuro se cuelgue aqui.
+    - **Resolution (implementado):** diagnóstico raíz — el panel escuchaba
+      `BroadcastChannel('ailienant_graph')` mientras el host posteaba a
+      `'ailienant_ws'` (y ese canal nunca cruza del host Node al SPA del
+      navegador); además consumía mutaciones de pasos WBS, no memoria. Se
+      reemplazó el modelo push por **REST pull same-origin** y un visor
+      **seccionado, read-only**: rail de secciones (folders indexados) que
+      carga la visualización **solo al hacer clic** (anti-colapso). Dos layers
+      con toggle — **code graph** (ReactFlow, nodos por PageRank) y **vector map**
+      (regl-scatterplot WebGL, proyección PCA vía numpy SVD en el backend).
+      Tooltips hover, side-panel de detalles, slider de umbral de vecinos y
+      manejo de `webglcontextlost/restored`. Nuevos endpoints
+      `GET /api/v1/memory/{sections,graph,vectors}`. Layer de docs marcado
+      disabled (sin fuente aún). Bug colateral corregido: `OPEN_DASHBOARD`
+      abría la raíz del API en vez de `/dashboard/`. Edición de vectores
+      (lasso/insert/delete) y búsqueda NN quedan como sub-fase 7.9.B.1.x.
     - Para que una base de datos vectorial sea visible y fácil de manipular por el ojo humano, debes construir una interfaz de usuario (UI) que traduzca las matemáticas de alta dimensión en elementos interactivos. El ojo humano no puede interpretar vectores de 1536 dimensiones, pero sí entiende mapas visuales, etiquetas de texto y barras de control.Aquí tienes los pasos y estrategias clave para lograrlo:1. El Núcleo: Reducción Dimensional InteractivaNo muestres solo un gráfico estático. Utiliza un lienzo interactivo en 2D o 3D (con librerías como Three.js, Plotly o Deck.gl) donde apliques UMAP o t-SNE, pero añade los siguientes controles para el usuario:Zoom y Rotación: Permitir explorar el espacio libremente para identificar "galaxias" o clústeres de datos.Filtros Dinámicos: Controladores para ocultar o mostrar puntos basados en metadatos (por ejemplo, filtrar por fecha, categoría o rango de puntuación).Búsqueda en Tiempo Real: Cuando el usuario busca una palabra, el gráfico debe encender el punto correspondiente y resaltar a sus "vecinos más cercanos" con líneas de conexión.2. Pasar de Puntos Abstraídos a Tarjetas InformativasUn punto flotando en la pantalla no dice nada. Debes conectar los eventos del ratón con los datos reales:Efecto Hover (Pasar el cursor): Al posicionar el cursor sobre un punto, debe desplegarse una ventana flotante (tooltip) que muestre una vista previa del contenido (las primeras líneas del texto, la miniatura de la imagen o el nombre del archivo).Panel de Inspección: Al hacer clic en un punto, se debe abrir un panel lateral detallado que muestre los metadatos completos, el texto original y la opción de editar o eliminar ese vector.3. Sistemas de Control y Manipulación DirectaPara que sea fácil de manipular sin tocar código, la interfaz debe incluir:Lazo de Selección (Lasso Tool): Permitir al usuario dibujar un círculo con el ratón alrededor de un grupo de puntos para seleccionarlos en masa, etiquetarlos, moverlos de categoría o exportarlos.Formularios de Inserción No-Code: Un botón de "Agregar Dato" donde el usuario escribe texto plano o arrastra una imagen. Por detrás, tu sistema genera el embedding automáticamente y el punto "vuela" visualmente hacia su posición correspondiente en el mapa.Sliders de Umbral de Similitud: Una barra deslizable que permita al usuario definir qué tan estricta es la cercanía (ej. "Mostrar solo coincidencias mayores al 85%"). Esto oculta el "ruido" visual en la pantalla.4. Herramientas y Frameworks Listos para UsarSi no quieres programar todo desde cero, puedes integrar estas herramientas que ya resuelven la visualización amigable:Reka Core / Renumics Spotlight: Librerías de Python diseñadas para abrir una interfaz web interactiva en tu navegador que conecta tus vectores con imágenes, audios y textos en una tabla interactiva combinada con un mapa de puntos.Nomic Atlas: Una de las mejores plataformas actuales para este propósito. Le envías tus embeddings y te devuelve un mapa web interactivo, estético y compartible, donde puedes buscar e inspeccionar cada dato con un clic.Voxel51 FiftyOne: Excelente si tu base de datos vectorial contiene imágenes o video. Permite filtrar y visualizar embeddings geoespaciales y visuales de forma muy intuitiva.
-    - para que el sistema no colapse no es cargar todo la memoria y visualizacion entera de todas las memorias de cada repo o proyecto que maneje el cliente si no que tiene que estar separado por secciones los folders a los que memory management ha tenido acceso a indexar y cuando el usuario de clic a una seccion alli aparece la visualizacion de esa memoria. 
+    - para que el sistema no colapse pienso que es buen plan no cargar todo la memoria y visualizacion entera de todas las memorias de cada repo o proyecto que maneje el cliente si no que tiene que estar separado por secciones los folders a los que memory management ha tenido acceso a indexar y cuando el usuario de clic a una seccion alli aparece la visualizacion de esa memoria. 
 
   - [ ] **7.9.B.2 — BYOM Models — test connection + local model support + validation**
     - **Problem:** Tres defectos en una sola pantalla:

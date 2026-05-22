@@ -236,6 +236,45 @@ async def get_top_ppr_files(project_id: str = "", limit: int = 20) -> List[Tuple
             return [(r[0], float(r[1])) for r in await cur.fetchall()]
 
 
+async def get_all_indexed_files() -> List[Tuple[str, str]]:
+    """Return every (file_path, project_id) pair the LazyIndexer has recorded.
+
+    Used by the Memory dashboard /sections endpoint to enumerate indexed folders
+    without touching the vector store. Cheap — a single full scan of indexed_files.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT file_path, project_id FROM indexed_files"
+        ) as cur:
+            return [(r[0], r[1]) for r in await cur.fetchall()]
+
+
+async def get_ppr_scores_bulk(
+    file_paths: List[str], project_id: str = ""
+) -> Dict[str, float]:
+    """Batch-fetch PPR scores for many files in one project. Missing files omitted.
+
+    Chunks the IN-clause to stay under SQLite's 999-variable limit. Used by the
+    Memory dashboard /graph endpoint to size/color nodes by centrality.
+    """
+    if not file_paths:
+        return {}
+    scores: Dict[str, float] = {}
+    chunk_size = 900  # leave headroom under SQLite's default SQLITE_MAX_VARIABLE_NUMBER
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        for start in range(0, len(file_paths), chunk_size):
+            chunk = file_paths[start:start + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            async with db.execute(
+                f"SELECT file_path, ppr_score FROM ppr_scores "
+                f"WHERE project_id=? AND file_path IN ({placeholders})",
+                (project_id, *chunk),
+            ) as cur:
+                for r in await cur.fetchall():
+                    scores[r[0]] = float(r[1])
+    return scores
+
+
 # ── Phase 2.1.13: Ghost Pruning (BranchSwitchHandler) ─────────────────────────
 
 async def purge_file_nodes(filepath: str, project_id: str = "") -> None:
