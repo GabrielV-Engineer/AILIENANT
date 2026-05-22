@@ -763,7 +763,6 @@ html, body, #root { height: 100%; }
 
 /* ── Natt Canvas ─────────────────────────────────────────── */
 .ws-natt {
-  position: relative;
   background: var(--bg-surface);
   border-left: 1px solid var(--border-subtle);
   display: grid;
@@ -824,6 +823,7 @@ html, body, #root { height: 100%; }
 
 /* Natt prompt bar */
 .ws-natt-prompt {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 6px;
@@ -1142,3 +1142,20 @@ html, body, #root { height: 100%; }
   transition: color 0.1s;
 }
 .ws-attached-chip-remove:hover { color: var(--accent-alert); }
+
+/* ── Phase 7.9.A.7 — Command-menu form inputs (Customize / Skills) ───── */
+.ws-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 6px 9px;
+  border-radius: var(--radius-smart);
+  font-size: 12px;
+  outline: none;
+  font-family: inherit;
+  resize: vertical;
+}
+.ws-input:focus { border-color: var(--accent-primary); }
+.ws-input::placeholder { color: var(--text-disabled); }

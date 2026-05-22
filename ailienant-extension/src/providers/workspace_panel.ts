@@ -451,6 +451,84 @@ export class WorkspacePanelManager {
                     }
                     break;
                 }
+                // ── Phase 7.9.A.7 — Command-menu config (Permissions / Output styles /
+                //    Agents / Hooks / MCP / Skills). All go host → APIClient → backend. ──
+                case 'GET_SYSTEM_SETTINGS': {
+                    const settings = await APIClient.getInstance().getSystemSettings();
+                    panel.webview.postMessage({ type: 'SYSTEM_SETTINGS', data: settings });
+                    break;
+                }
+                case 'SET_OUTPUT_STYLE': {
+                    const settings = await APIClient.getInstance().saveSystemSettings({ output_style: String(data.style ?? 'default') });
+                    panel.webview.postMessage({ type: 'SYSTEM_SETTINGS', data: settings });
+                    break;
+                }
+                case 'SET_PERMISSION_MODE': {
+                    const settings = await APIClient.getInstance().saveSystemSettings({ permission_mode: String(data.mode ?? 'default') });
+                    panel.webview.postMessage({ type: 'SYSTEM_SETTINGS', data: settings });
+                    break;
+                }
+                case 'GET_HOOKS': {
+                    const res = await APIClient.getInstance().getHooks();
+                    panel.webview.postMessage({ type: 'HOOKS_DATA', hooks: res?.hooks ?? [] });
+                    break;
+                }
+                case 'SAVE_HOOK': {
+                    const res = await APIClient.getInstance().saveHook((data.hook as Record<string, unknown>) ?? {});
+                    panel.webview.postMessage({ type: 'HOOKS_DATA', hooks: res?.hooks ?? [] });
+                    break;
+                }
+                case 'DELETE_HOOK': {
+                    const res = await APIClient.getInstance().deleteHook(String(data.id ?? ''));
+                    panel.webview.postMessage({ type: 'HOOKS_DATA', hooks: res?.hooks ?? [] });
+                    break;
+                }
+                case 'GET_AGENT_ROLES': {
+                    const roles = await APIClient.getInstance().getAgentRoles();
+                    panel.webview.postMessage({ type: 'AGENT_ROLES', data: roles });
+                    break;
+                }
+                case 'SAVE_AGENT_ROLE': {
+                    await APIClient.getInstance().saveAgentRole(String(data.role ?? ''), String(data.system_prompt ?? ''));
+                    const roles = await APIClient.getInstance().getAgentRoles();
+                    panel.webview.postMessage({ type: 'AGENT_ROLES', data: roles });
+                    break;
+                }
+                case 'GET_MCP_SERVERS': {
+                    const res = await APIClient.getInstance().getMcpServers();
+                    panel.webview.postMessage({ type: 'MCP_SERVERS', servers: res?.servers ?? [] });
+                    break;
+                }
+                case 'SAVE_MCP_SERVER': {
+                    const res = await APIClient.getInstance().saveMcpServer((data.server as Record<string, unknown>) ?? {});
+                    panel.webview.postMessage({ type: 'MCP_SERVERS', servers: res?.servers ?? [] });
+                    break;
+                }
+                case 'DELETE_MCP_SERVER': {
+                    const res = await APIClient.getInstance().deleteMcpServer(String(data.id ?? ''));
+                    panel.webview.postMessage({ type: 'MCP_SERVERS', servers: res?.servers ?? [] });
+                    break;
+                }
+                case 'TEST_MCP_SERVER': {
+                    const result = await APIClient.getInstance().testMcpServer(String(data.uri ?? ''));
+                    panel.webview.postMessage({ type: 'MCP_TEST_RESULT', id: data.id, result });
+                    break;
+                }
+                case 'GET_SKILLS': {
+                    const res = await APIClient.getInstance().getSkills();
+                    panel.webview.postMessage({ type: 'SKILLS_DATA', skills: res?.skills ?? [] });
+                    break;
+                }
+                case 'SAVE_SKILL': {
+                    const res = await APIClient.getInstance().saveSkill((data.skill as Record<string, unknown>) ?? {});
+                    panel.webview.postMessage({ type: 'SKILLS_DATA', skills: res?.skills ?? [] });
+                    break;
+                }
+                case 'DELETE_SKILL': {
+                    const res = await APIClient.getInstance().deleteSkill(String(data.id ?? ''));
+                    panel.webview.postMessage({ type: 'SKILLS_DATA', skills: res?.skills ?? [] });
+                    break;
+                }
             }
         });
 
