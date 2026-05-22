@@ -258,6 +258,78 @@ export class APIClient {
         return (await response.json()) as MergeReport;
     }
 
+    // ── Phase 7.9.A.7 — Command-menu config endpoints ────────────────────────
+
+    /** Generic JSON request helper. Returns null on any network/parse error (non-blocking). */
+    private async _json<T>(path: string, init?: RequestInit, timeoutMs = 5000): Promise<T | null> {
+        try {
+            const response = await fetch(`${this.baseUrl}${path}`, {
+                headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(timeoutMs),
+                ...init,
+            });
+            if (!response.ok) { return null; }
+            return (await response.json()) as T;
+        } catch {
+            return null;
+        }
+    }
+
+    // System settings (scalars: analyst_name, output_style, permission_mode)
+    public getSystemSettings(): Promise<Record<string, unknown> | null> {
+        return this._json('/system/settings', { method: 'GET' });
+    }
+    public saveSystemSettings(patch: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+        return this._json('/system/settings', { method: 'POST', body: JSON.stringify(patch) });
+    }
+
+    // Hooks (config-capture only)
+    public getHooks(): Promise<{ hooks: unknown[] } | null> {
+        return this._json('/system/hooks', { method: 'GET' });
+    }
+    public saveHook(body: Record<string, unknown>): Promise<{ hooks: unknown[] } | null> {
+        return this._json('/system/hooks', { method: 'POST', body: JSON.stringify(body) });
+    }
+    public deleteHook(id: string): Promise<{ hooks: unknown[] } | null> {
+        return this._json(`/system/hooks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    }
+
+    // Agent role overrides
+    public getAgentRoles(): Promise<{ base_coder_prompt: string; roles: unknown[] } | null> {
+        return this._json('/agents/roles', { method: 'GET' });
+    }
+    public saveAgentRole(role: string, systemPrompt: string): Promise<unknown> {
+        return this._json(`/agents/roles/${encodeURIComponent(role)}`, {
+            method: 'POST', body: JSON.stringify({ system_prompt: systemPrompt }),
+        });
+    }
+
+    // MCP server registry + zombie-safe connection probe
+    public getMcpServers(): Promise<{ servers: unknown[] } | null> {
+        return this._json('/mcp/servers', { method: 'GET' });
+    }
+    public saveMcpServer(body: Record<string, unknown>): Promise<{ servers: unknown[] } | null> {
+        return this._json('/mcp/servers', { method: 'POST', body: JSON.stringify(body) });
+    }
+    public deleteMcpServer(id: string): Promise<{ servers: unknown[] } | null> {
+        return this._json(`/mcp/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    }
+    public testMcpServer(uri: string): Promise<{ reachable: boolean; tool_count: number; error?: string } | null> {
+        // Generous timeout: probe spawns a subprocess + handshake before reaping.
+        return this._json('/mcp/test', { method: 'POST', body: JSON.stringify({ uri }) }, 15000);
+    }
+
+    // Skills (prompt templates)
+    public getSkills(): Promise<{ skills: unknown[] } | null> {
+        return this._json('/skills', { method: 'GET' });
+    }
+    public saveSkill(body: Record<string, unknown>): Promise<{ skills: unknown[] } | null> {
+        return this._json('/skills', { method: 'POST', body: JSON.stringify(body) });
+    }
+    public deleteSkill(id: string): Promise<{ skills: unknown[] } | null> {
+        return this._json(`/skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    }
+
     /**
      * Phase 3.4.7 — Fire-and-forget rejection telemetry.
      * Errors are swallowed: silent telemetry must NEVER surface to the user.

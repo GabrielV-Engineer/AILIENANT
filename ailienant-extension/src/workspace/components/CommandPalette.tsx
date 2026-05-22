@@ -2,8 +2,14 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Icon, type IconName } from '../../shared/Icon';
 import { vscode } from '../vscode_bridge';
 import { ModelsMenu, type ModelsView } from './ModelsMenu';
+import { CustomizeMenu, type CustomizeView } from './CustomizeMenu';
+import { SkillsMenu, type SkillsView } from './SkillsMenu';
 import type { AilienantConfig } from '../../shared/types';
 import type { OrchestrationMode } from '../../shared/config';
+
+type SubView = ModelsView | CustomizeView | SkillsView;
+const MODELS_VIEWS: ModelsView[] = ['switch', 'orchestration', 'usage', 'preset'];
+const SKILLS_VIEWS: SkillsView[] = ['skills-insert', 'skills-create'];
 
 interface MenuItem {
     key: string;
@@ -33,17 +39,24 @@ interface Props {
     onClose: () => void;
 }
 
-const MODELS_VIEW_TITLES: Record<ModelsView, string> = {
-    switch:        'Switch model',
-    orchestration: 'Orchestration mode',
-    usage:         'Account & Usage',
-    preset:        'Switch model preset',
+const VIEW_TITLES: Record<SubView, string> = {
+    switch:          'Switch model',
+    orchestration:   'Orchestration mode',
+    usage:           'Account & Usage',
+    preset:          'Switch model preset',
+    permissions:     'Permissions',
+    'output-styles': 'Output styles',
+    agents:          'Agents',
+    hooks:           'Hooks',
+    mcp:             'MCP Servers',
+    'skills-insert': 'Insert skill',
+    'skills-create': 'Create skill',
 };
 
 export function CommandPalette({
     query, activeTaskId, config, activeModelId, orchestrationMode, onPrefChange, onOpenContext, onClose,
 }: Props): JSX.Element | null {
-    const [view, setView] = useState<'root' | ModelsView>('root');
+    const [view, setView] = useState<'root' | SubView>('root');
     const [focused, setFocused] = useState(0);
 
     const post = useCallback((message: Record<string, unknown>) => {
@@ -76,13 +89,21 @@ export function CommandPalette({
             id: 'customize',
             title: '/customize — Customize',
             items: [
-                { key: 'cz-styles', cmd: '/customize output-styles', label: 'Output styles', desc: 'Concise, explanatory, or code-only responses', icon: 'pencil', soon: true, run: () => {} },
-                { key: 'cz-agents', cmd: '/customize agents',        label: 'Agents',        desc: 'Edit orchestrator and sub-agent prompts',     icon: 'bot',    soon: true, run: () => {} },
-                { key: 'cz-hooks',  cmd: '/customize hooks',         label: 'Hooks',         desc: 'Pre/post-execution scripts',                  icon: 'zap',    soon: true, run: () => {} },
+                { key: 'cz-styles', cmd: '/customize output-styles', label: 'Output styles', desc: 'Concise, explanatory, or code-only responses', icon: 'pencil', opensView: true, run: () => setView('output-styles') },
+                { key: 'cz-agents', cmd: '/customize agents',        label: 'Agents',        desc: 'Edit orchestrator and sub-agent prompts',     icon: 'bot',    opensView: true, run: () => setView('agents') },
+                { key: 'cz-hooks',  cmd: '/customize hooks',         label: 'Hooks',         desc: 'Pre/post-execution scripts',                  icon: 'zap',    opensView: true, run: () => setView('hooks') },
                 { key: 'cz-memory', cmd: '/customize memory',        label: 'Memory',        desc: 'Open the Vector/RAG management panel',         icon: 'brain',  run: () => post({ type: 'OPEN_DASHBOARD', tab: 'memory' }) },
-                { key: 'cz-perms',  cmd: '/customize permissions',   label: 'Permissions',   desc: 'Grant or revoke HITL permissions',            icon: 'shield', soon: true, run: () => {} },
-                { key: 'cz-mcp',    cmd: '/customize mcp',           label: 'MCP Servers',   desc: 'Model Context Protocol server config',         icon: 'plug',   soon: true, run: () => {} },
+                { key: 'cz-perms',  cmd: '/customize permissions',   label: 'Permissions',   desc: 'Grant or revoke HITL permissions',            icon: 'shield', opensView: true, run: () => setView('permissions') },
+                { key: 'cz-mcp',    cmd: '/customize mcp',           label: 'MCP Servers',   desc: 'Model Context Protocol server config',         icon: 'plug',   opensView: true, run: () => setView('mcp') },
                 { key: 'cz-panel',  cmd: '/customize control-panel', label: 'AILIENANT Control Panel', desc: 'Open the full web dashboard',         icon: 'gauge',  run: () => post({ type: 'OPEN_DASHBOARD' }) },
+            ],
+        },
+        {
+            id: 'skills',
+            title: '/skills — Skills',
+            items: [
+                { key: 'sk-insert', cmd: '/skills insert', label: 'Insert skill', desc: 'Insert a saved prompt template into the prompt', icon: 'plus',   opensView: true, run: () => setView('skills-insert') },
+                { key: 'sk-create', cmd: '/skills create', label: 'Create skill', desc: 'Author and save a reusable prompt template',     icon: 'pencil', opensView: true, run: () => setView('skills-create') },
             ],
         },
         {
@@ -137,22 +158,30 @@ export function CommandPalette({
         return () => document.removeEventListener('keydown', onKey);
     }, [flat, focused, execute, onClose, view]);
 
-    // ── Nested Models sub-view ───────────────────────────────────
+    // ── Nested sub-views (Models / Customize / Skills) ───────────
     if (view !== 'root') {
+        const isModels = (MODELS_VIEWS as string[]).includes(view);
+        const isSkills = (SKILLS_VIEWS as string[]).includes(view);
         return (
-            <div className="ws-palette ws-menu" role="dialog" aria-label={MODELS_VIEW_TITLES[view]}>
+            <div className="ws-palette ws-menu" role="dialog" aria-label={VIEW_TITLES[view]}>
                 <button className="ws-menu-back" onClick={() => setView('root')} aria-label="Back">
                     <Icon name="chevron-right" size={13} className="ws-menu-back-icon" />
-                    <span>{MODELS_VIEW_TITLES[view]}</span>
+                    <span>{VIEW_TITLES[view]}</span>
                 </button>
-                <ModelsMenu
-                    view={view}
-                    config={config}
-                    activeModelId={activeModelId}
-                    orchestrationMode={orchestrationMode}
-                    onPrefChange={onPrefChange}
-                    onClose={onClose}
-                />
+                {isModels ? (
+                    <ModelsMenu
+                        view={view as ModelsView}
+                        config={config}
+                        activeModelId={activeModelId}
+                        orchestrationMode={orchestrationMode}
+                        onPrefChange={onPrefChange}
+                        onClose={onClose}
+                    />
+                ) : isSkills ? (
+                    <SkillsMenu view={view as SkillsView} onClose={onClose} onSwitchView={(v) => setView(v)} />
+                ) : (
+                    <CustomizeMenu view={view as CustomizeView} onClose={onClose} />
+                )}
             </div>
         );
     }
