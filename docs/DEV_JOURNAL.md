@@ -1298,3 +1298,19 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Backend NUEVO: `tests/test_dashboard_segments.py`.
   - Frontend NUEVO: `src/dashboard/panels/OverviewPanel.tsx`, `ExtensionsPanel.tsx`, `TelemetryPanel.tsx`.
   - Frontend EDIT: `src/dashboard/main.tsx` (+PanelId +NAV +render +default tab overview).
+
+## Hito 7.9.B.7: Runtime/Environment Dashboard Panel — 2026-05-22
+
+- **Status:** OK. Backend `mypy -m api.runtime` limpio; `pytest tests/test_runtime_status.py` 10 passed; suite completa 537 passed (0 regresiones). Frontend `npm run compile` exit 0 (tsc 0 err, eslint 0 err, 4 bundles, 2 warnings pre-existentes ajenos).
+- **Motivacion:** El tier de sandbox (Docker/Wasm/NativeHITL) era una garantia de seguridad invisible: no habia forma de saber de un vistazo si el sistema corria en modo aislado. Fallos por Docker-inaccesible causaban saltos silenciosos al modo host.
+- **Arquitectura:** nuevo `api/runtime.py` con `APIRouter(prefix="/api/v1/runtime")`; consumo de `core.sandbox.get_active_tier()` / `get_active_adapter()` + sondeo live del daemon via `docker.from_env().ping()` (cache 5s, timeout 1.5s). Incluido en `main.py` junto al hardware router. Frontend: nuevo `RuntimePanel.tsx` con polling cada 5s (clearInterval en unmount).
+- **Endurecimiento S7 (4 capas en `POST /start-docker`):**
+  1. **S7-A:** argv fijo por plataforma, `shell=False` siempre; sin input de usuario en subprocess.
+  2. **S7-B:** rutas Windows resueltas via `os.environ.get("LOCALAPPDATA")` + `pathlib.Path` antes del Popen (shell=False no expande `%LOCALAPPDATA%` — FileNotFoundError literal de otro modo).
+  3. **S7-C:** `_last_launch_time: float` con `_LAUNCH_COOLDOWN_S=30.0`; la marca se setea ANTES del Popen para que un fallo tambien engage el cooldown y evite retry-flooding.
+  4. **S7-D:** verificacion del header `Origin` en la capa de aplicacion (no en CORS middleware, que tiene `allow_origins=["*"]`): ausente (same-origin SPA) → pass; `vscode-webview://` → pass; cualquier otro origen → HTTP 403.
+- **Files changed:**
+  - Backend NUEVO: `api/runtime.py`, `tests/test_runtime_status.py`.
+  - Backend EDIT: `main.py` (+import runtime_router +include_router +comentario fase 7.9.B.7).
+  - Frontend NUEVO: `src/dashboard/panels/RuntimePanel.tsx`.
+  - Frontend EDIT: `src/dashboard/main.tsx` (+`'runtime'` en PanelId union +entrada NAV icon=zap +import RuntimePanel +render line).

@@ -1112,6 +1112,33 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         cross-workspace (las sesiones viven en el estado del cliente VS Code),
         y la migracion completa de `ailienant-config.json` a UI.
 
+  - [x] **7.9.B.7 — Runtime/Environment Dashboard Panel**
+    - **Problem:** El tier de sandbox (Docker / Wasm / NativeHITL) es una
+      garantia de seguridad invisible: no hay forma de ver de un vistazo si el
+      sistema corre en modo aislado. Cuando Docker no esta en ejecucion, los
+      tests fallan silenciosamente y el sistema degrada a modo host sin
+      notificacion al usuario.
+    - **Resolution:** Nuevo panel `Runtime / Environment` con 2 tarjetas:
+      - **Sandbox Status:** sondeo en vivo del daemon Docker (cache 5s,
+        timeout 1.5s), badge del tier activo con dot de color + animacion pulse
+        para daemon activo, 3 filas de estado (daemon, imagen, contenedor).
+      - **Lifecycle Controls:** boton "Start Docker" (solo visible cuando daemon
+        inaccesible) que hace POST a `POST /api/v1/runtime/start-docker`; UI
+        reanuda el poll tras el lanzamiento.
+      - **Backend nuevo:** `api/runtime.py` con `GET /api/v1/runtime/status` y
+        `POST /api/v1/runtime/start-docker`; incluido en `main.py` via router.
+      - **Endurecimiento S7 (4 capas):**
+        - S7-A: sin input de usuario en subprocess; shell=False siempre.
+        - S7-B: rutas Windows resueltas via `os.environ` + `pathlib.Path`
+          (shell=False no expande `%LOCALAPPDATA%`).
+        - S7-C: cooldown de 30s server-side serializa intentos de boot
+          (evita multi-launch DoS cuando Docker tarda 10-30s en arrancar).
+        - S7-D: verificacion del header `Origin` en capa de aplicacion para
+          el POST (CORS es allow_origins=["*"], tokens custom no son efectivos).
+      - **Tests:** 10 tests unitarios en `tests/test_runtime_status.py`.
+      - **Diferidos:** streaming de stdout/stderr del contenedor (requiere
+        WebSocket + Docker attach API), inspeccion estilo Portainer.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
