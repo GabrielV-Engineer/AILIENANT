@@ -1262,3 +1262,18 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - `ailienant-core/api/audit.py` — NUEVO.
   - `ailienant-core/main.py` — +import +include_router.
   - `ailienant-extension/src/dashboard/panels/AuditPanel.tsx` — targeted edits.
+
+## Hito 7.9.A.7.a-f: Command Menu greenfield completion (Permissions / Agents / Output styles / Hooks / MCP / Skills) -- 2026-05-22
+
+- **Status:** OK. Backend `mypy` limpio en los archivos nuevos; `pytest tests/test_command_menu_config.py` 7 passed; suite completa 527 passed (6 fallos pre-existentes en `test_execution_tools.py` -> `RuntimeError: Sandbox adapter not initialized` de Fase 6.2, requieren el lifespan; ajenos a esta fase). Frontend `npm run compile` exit 0.
+- **Scope (config-capture-first, confirmado con usuario):** los 5 items "Coming soon" + Skills nuevo entregados como selectores/editores con persistencia; el *enforcement* en vivo queda como follow-up explicito.
+- **Trampa de concurrencia (feedback del usuario, Opcion A):** colecciones CRUD (skills/mcp/hooks/role-overrides) NO van a `settings.json` (read-modify-write concurrente pierde updates) sino al catalogo **SQLite WAL** (`core/db.py`, motor serializa escrituras). `settings.json` solo escalares (`output_style`, `permission_mode`, `analyst_name`) con `asyncio.Lock` en `_read_settings`/`_write_settings`.
+- **Colision de nombres de modulo:** `api/mcp.py` shadoweaba el paquete `mcp` y `api/agents.py` el paquete `agents` (ImportError bajo pytest). Renombrados a `api/mcp_servers.py` y `api/agent_roles.py`.
+- **MCP /test zombie-safe:** probe aislado (no toca el singleton de `bootstrap_mcp_session`); handshake bajo `asyncio.wait_for(MCP_HANDSHAKE_TIMEOUT_SEC)` dentro de `async with AsyncExitStack`; el cleanup de `stdio_client` (verificado en el SDK: `_terminate_process_tree`, SIGTERM->SIGKILL) reapa el arbol de procesos en el frame de la corutina. Devuelve `{reachable, tool_count, error?}`.
+- **Permissions:** `task_service.process_task` siembra `state["session_permission_mode"]` desde el settings (uppercase); el motor `evaluate_action()` de Fase 5.1 ya enforza in-graph.
+- **Skills = prompt templates (Manifest Update, CLAUDE.md 3 Opcion B):** version ligera adelantada a Fase 7; Fase 9.4 (Skills-as-Tools) es superconjunto futuro, no se duplica. Insert inyecta la plantilla en la prompt bar via `INSERT_PROMPT` (espejo de `INSERT_MENTION`).
+- **Files changed:**
+  - Backend NUEVO: `api/skills.py`, `api/mcp_servers.py`, `api/agent_roles.py`, `tests/test_command_menu_config.py`.
+  - Backend EDIT: `core/db.py` (+4 tablas +CRUD), `api/system_settings.py` (+lock +output_style/permission_mode +hooks endpoints), `core/task_service.py` (+seed permission_mode), `main.py` (+3 routers).
+  - Frontend NUEVO: `src/workspace/components/CustomizeMenu.tsx`, `src/workspace/components/SkillsMenu.tsx`.
+  - Frontend EDIT: `CommandPalette.tsx`, `PromptBar.tsx` (+INSERT_PROMPT), `api/api_client.ts` (+metodos), `providers/workspace_panel.ts` (+IPC cases), `shared/types.ts` (+tipos), `workspace.css` (+.ws-input).
