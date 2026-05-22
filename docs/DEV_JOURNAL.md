@@ -1162,3 +1162,29 @@ Phase 7 construye la capa completa de usuario de AILIENANT: la sidebar de VS Cod
 
 ### Nota de diseno - Activacion universal (follow-up 7.9.A.5.1)
 El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`createTerminal` + `sendText`), `findBackendPath`/`findVenvPython` y puerto fijo 8000. Para distribucion a usuarios finales (extension + backend empaquetado) se requiere: (a) empaquetar o detectar un runtime de Python; (b) gestionar el Core como `child_process` administrado con ciclo de vida ligado a `activate()/deactivate()` en lugar de una terminal de usuario (start/stop/restart, captura de logs); (c) seleccion dinamica de puerto + descubrimiento por health en vez de 8000 fijo; (d) eliminar el prompt de "default terminal profile" que VS Code pide al usar `sendText` (consecuencia de usar terminal en vez de child_process). Implementacion diferida a 7.9.A.5.1.
+
+## Hito 7.9.B.1: Memory Management — Visor GraphRAG seccionado + mapa vectorial - 2026-05-21
+
+- **Status:** OK. `npm run compile` -> 0 errores (2 warnings pre-existentes en `api_client.ts:1` y `vfs_reader.ts:1`). `py_compile` OK + smoke tests de los 3 endpoints contra el catálogo real (200) y validación del path de lectura LanceDB con tabla temporal (aislamiento por workspace_hash + filtro de folder correctos).
+- **Causas raíz (confirmadas en código):**
+  1. **Data path muerto:** el panel escuchaba `BroadcastChannel('ailienant_graph')` pero el host postea a `'ailienant_ws'` (`ws_client.ts`), y ese canal nunca cruza del host Node al SPA del navegador. El dashboard se abre en navegador externo (`vscode.env.openExternal`) servido por FastAPI en `/dashboard` — el push por BroadcastChannel es arquitectónicamente imposible aquí.
+  2. **Modelo de datos equivocado:** consumía `GraphMutationPayload` (`step_number/new_status/agent_name`), que son pasos WBS del orquestador, no memoria. El panel nunca estuvo cableado a datos de memoria.
+  3. **Bug colateral:** `OPEN_DASHBOARD` abría `backendUrl` (raíz del API → JSON) en vez de `/dashboard/`.
+- **Solución:** se reemplazó el modelo push por **REST pull same-origin** y un visor **seccionado read-only**. Constraint clave del usuario: nunca cargar toda la memoria de todos los proyectos a la vez — se listan *secciones* (folders indexados) y la visualización carga **solo al hacer clic**.
+- **Files changed:**
+  - `ailienant-core/api/memory_dashboard.py` — **NUEVO**. `APIRouter` con `GET /api/v1/memory/{sections,graph,vectors}` + modelos pydantic. `/sections` agrega `indexed_files` en Python (normaliza separadores, `os.path.commonpath`); `/graph` filtra edges por prefijo de folder, marca `is_external` para módulos no-fuente, cap top-N por PPR; `/vectors` proyecta a 2D vía PCA.
+  - `ailienant-core/core/db.py` — `get_all_indexed_files()` y `get_ppr_scores_bulk()` (IN-query chunked a 900).
+  - `ailienant-core/core/memory/semantic_memory.py` — `dump_vectors()`/`_dump_vectors_sync()` (lectura LanceDB con **PyArrow compute Expression**, no string SQL; fallbacks a `scanner()` y `to_arrow()` acotado) + `pca_project_2d()` (numpy SVD, mean-center, sign-flip determinista, normalización a [-1,1]).
+  - `ailienant-core/main.py` — `include_router(memory_router)`.
+  - `ailienant-extension/src/dashboard/panels/MemoryManagement.tsx` — reescrito como orquestador (sin BroadcastChannel/WBS); rail de secciones + toolbar (search, toggle Code/Vector, Doc disabled) + side-panel de detalles.
+  - `ailienant-extension/src/dashboard/panels/memory/` — **NUEVO**: `api.ts` (fetch same-origin + tipos), `SectionsList.tsx`, `CodeGraphLayer.tsx` (ReactFlow, nodos por PageRank, layout filotaxis, LOD), `VectorMapLayer.tsx` (regl-scatterplot lazy/code-split, hover tooltip, slider de vecinos client-side, manejo `webglcontextlost/restored`).
+  - `ailienant-extension/src/dashboard/dashboard.css` — clases `mm-layout/rail/sections/scatter/tooltip/threshold/slider/overlay/banner/empty`.
+  - `ailienant-extension/src/providers/workspace_panel.ts` — fix `OPEN_DASHBOARD` → `/dashboard/`.
+  - `ailienant-extension/package.json` — dep `regl-scatterplot` (code-split a `dist/dashboard/chunks/regl-scatterplot.esm-*.js`).
+- **Decisiones:**
+  1. **REST pull, no push:** el SPA del navegador es same-origin con el API; BroadcastChannel desde el host Node nunca llega. El pull encaja perfecto con el constraint "cargar al clic".
+  2. **PCA vía numpy SVD** (cero deps nuevas) en vez de UMAP (umap-learn arrastra numba/scipy/scikit-learn). Sign-flip determinista evita el "mirror" entre refrescos.
+  3. **LanceDB con PyArrow Expression** (no `filter=` string): robusto entre versiones e inmune a inyección.
+  4. **regl-scatterplot WebGL** con manejo de pérdida de contexto GPU (re-init + redraw desde puntos en memoria, sin refetch).
+  5. **Read-only primero:** edición de vectores (lasso/insert/delete) y búsqueda NN diferidas a sub-fase 7.9.B.1.x. Layer de docs disabled (sin fuente de datos aún).
+- **Criterios de aceptación cubiertos:** al cargar solo dispara `GET /sections`; clic en sección dispara un `/graph` + un `/vectors` scopeados; sin BroadcastChannel/WBS residual; sin bulk-load de todos los proyectos; layout vectorial estable entre refrescos.

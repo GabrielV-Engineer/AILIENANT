@@ -313,7 +313,10 @@ export class WorkspacePanelManager {
                     const cfg = vscode.workspace.getConfiguration('ailienant');
                     const base = cfg.get<string>('backendUrl', 'http://localhost:8000').replace(/\/$/, '');
                     const tab = typeof data.tab === 'string' ? data.tab : '';
-                    const url = tab ? `${base}?tab=${encodeURIComponent(tab)}` : base;
+                    // The dashboard SPA is mounted at /dashboard (StaticFiles), not the API root.
+                    const url = tab
+                        ? `${base}/dashboard/?tab=${encodeURIComponent(tab)}`
+                        : `${base}/dashboard/`;
                     void vscode.env.openExternal(vscode.Uri.parse(url));
                     break;
                 }

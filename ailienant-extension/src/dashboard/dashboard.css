@@ -228,11 +228,102 @@ html, body, #root { height: 100%; }
 /* ============================================================
    Memory Management — React Flow Container
    ============================================================ */
+.mm-layout {
+  display: flex;
+  height: calc(100vh - 56px - 40px);
+  gap: 14px;
+}
+
+.mm-rail {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.mm-rail-title { margin-bottom: 10px; font-size: 14px; }
+
 .mm-root {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 56px - 40px);
+  flex: 1;
+  min-width: 0;
   gap: 14px;
+}
+
+/* ── Sections rail ───────────────────────────────────────── */
+.mm-sections { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; padding-right: 4px; }
+.mm-section-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.mm-section-project {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-secondary); padding: 6px 4px 2px;
+}
+.mm-section-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: var(--radius-smart);
+  border: 1px solid transparent; background: transparent;
+  color: var(--text-secondary); cursor: pointer; text-align: left; width: 100%;
+}
+.mm-section-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.mm-section-item[data-active="true"] {
+  background: var(--bg-hover); color: var(--accent-primary);
+  border-color: var(--border-subtle);
+}
+.mm-section-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.mm-section-count {
+  font-size: 10px; color: var(--text-disabled);
+  background: var(--bg-main); border-radius: 8px; padding: 1px 7px;
+}
+.mm-section-skeleton { height: 34px; border-radius: var(--radius-smart); background: var(--bg-hover); opacity: 0.5; }
+
+/* ── States / banners ────────────────────────────────────── */
+.mm-empty, .mm-error {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  color: var(--text-secondary); font-size: 12px; text-align: center; padding: 24px;
+}
+.mm-empty--center { justify-content: center; height: 100%; }
+.mm-banner {
+  position: absolute; top: 10px; left: 10px; z-index: 5;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-smart); padding: 5px 10px;
+  font-size: 11px; color: var(--text-secondary);
+}
+.mm-overlay {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary); font-size: 13px; pointer-events: none; z-index: 4;
+}
+.mm-overlay--soft { align-items: flex-start; padding-top: 16px; }
+
+/* ── Vector scatter ──────────────────────────────────────── */
+.mm-scatter { position: absolute; inset: 0; }
+.mm-scatter-canvas { width: 100%; height: 100%; display: block; }
+.mm-tooltip {
+  position: absolute; transform: translate(-50%, calc(-100% - 8px));
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-smart); padding: 4px 8px;
+  font-size: 11px; color: var(--text-primary); pointer-events: none; z-index: 12; white-space: nowrap;
+}
+.mm-threshold {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; z-index: 11;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-smart); padding: 6px 12px;
+}
+.mm-threshold-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+.mm-threshold-val { font-size: 11px; color: var(--text-primary); min-width: 28px; text-align: right; }
+.mm-slider { position: relative; display: flex; align-items: center; width: 140px; height: 18px; }
+.mm-slider-track { position: relative; flex: 1; height: 4px; border-radius: 2px; background: var(--bg-main); }
+.mm-slider-range { position: absolute; height: 100%; border-radius: 2px; background: var(--accent-primary); }
+.mm-slider-thumb { display: block; width: 13px; height: 13px; border-radius: 50%; background: var(--accent-primary); }
+.mm-slider-thumb:focus { outline: none; box-shadow: 0 0 0 3px rgba(99,165,131,0.3); }
+
+/* ── Detail extras ───────────────────────────────────────── */
+.mm-detail-path span:last-child { word-break: break-all; font-size: 11px; text-align: right; }
+.mm-detail-snippet {
+  margin-top: 4px; font-size: 11px; color: var(--text-secondary);
+  background: var(--bg-main); border-radius: 4px; padding: 8px;
+  max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
 }
 
 .mm-toolbar {

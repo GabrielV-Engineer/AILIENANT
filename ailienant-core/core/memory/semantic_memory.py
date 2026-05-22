@@ -20,7 +20,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
 import lancedb  # type: ignore[import-untyped]
+import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 import tiktoken
 
 import litellm
@@ -291,8 +293,132 @@ class SemanticMemoryManager:
         file_paths = [fp for fp, _ in pairs]
         return score, file_paths
 
+    # ── Phase 7.9.B.1: Vector-map dump (dashboard GraphRAG viewer) ─────
+
+    async def dump_vectors(
+        self,
+        workspace_hash: str,
+        folder_prefix: str = "",
+        max_rows: int = 5000,
+    ) -> List[Dict[str, Any]]:
+        """Read all stored vectors for one workspace (optionally folder-filtered).
+
+        Powers the Memory dashboard /vectors endpoint. Returns a list of
+        {file_path, content_snippet, token_count, vector} dicts. Returns [] on
+        empty table, sanitization failure, or any error (non-fatal). The blocking
+        LanceDB read runs inside asyncio.to_thread.
+        """
+        if not workspace_hash or not _SAFE_ID_RE.match(workspace_hash):
+            logger.warning(
+                "SemanticMemory.dump_vectors: workspace_hash %r failed sanitization.",
+                workspace_hash,
+            )
+            return []
+        try:
+            return await asyncio.to_thread(
+                self._dump_vectors_sync, workspace_hash, folder_prefix, max_rows
+            )
+        except Exception as err:
+            logger.warning("SemanticMemory.dump_vectors: failed (non-fatal): %s", err)
+            return []
+
+    def _dump_vectors_sync(
+        self, workspace_hash: str, folder_prefix: str, max_rows: int
+    ) -> List[Dict[str, Any]]:
+        db = lancedb.connect(self._lancedb_path)
+        if _TABLE_NAME not in db.table_names():
+            return []
+        tbl = db.open_table(_TABLE_NAME)
+
+        cols = ["file_path", "content_snippet", "token_count", "vector"]
+        # Predicate pushdown via a PyArrow compute Expression — NOT an SQL string.
+        # Lance is version-strict about SQL-string filters; an Expression is both
+        # robust and injection-proof (workspace_hash is bound, never interpolated).
+        expr = pc.field("workspace_hash") == workspace_hash
+        rows: List[Dict[str, Any]]
+        try:
+            ds = tbl.to_lance()
+            try:
+                arrow_tbl = ds.to_table(columns=cols, filter=expr)
+            except (TypeError, AttributeError):
+                # Older/newer Lance: scanner() path with the same Expression.
+                arrow_tbl = ds.scanner(columns=cols, filter=expr).to_table()
+            rows = arrow_tbl.to_pylist()
+        except Exception as primary_err:
+            # Last resort: bounded full-table read, then filter in Python. Capped
+            # hard so a large multi-project table can never blow up memory.
+            logger.debug(
+                "dump_vectors: pushdown path unavailable (%s) — bounded fallback.",
+                primary_err,
+            )
+            arrow_tbl = tbl.to_arrow()
+            rows = [
+                r for r in arrow_tbl.to_pylist()
+                if str(r.get("workspace_hash", "")) == workspace_hash
+            ]
+
+        if folder_prefix:
+            fp = folder_prefix.replace("\\", "/")
+            rows = [
+                r for r in rows
+                if str(r.get("file_path", "")).replace("\\", "/").startswith(fp)
+            ]
+        return rows[:max_rows]
+
 
 # ── Module-level helpers ───────────────────────────────────────────────────
+
+
+def pca_project_2d(vectors: List[List[float]]) -> Tuple[List[List[float]], List[float], bool]:
+    """Project N high-dim vectors to 2D via numpy SVD (PCA). Pure, deterministic.
+
+    Returns (coords, variance_explained, degenerate):
+      - coords: list of [x, y] normalized per-axis to [-1, 1].
+      - variance_explained: [pc1_frac, pc2_frac] of total variance.
+      - degenerate: True when <3 points or the data has no separable variance.
+
+    Determinism: SVD component signs are arbitrary, so each axis is sign-flipped
+    to make its largest-magnitude entry positive — this keeps the layout stable
+    (no mirror-flip) across repeated requests. No external deps beyond numpy.
+    """
+    n = len(vectors)
+    if n == 0:
+        return [], [0.0, 0.0], True
+    if n < 3:
+        # Too few points to project meaningfully — lay out on a deterministic line.
+        coords = [[float(i), 0.0] for i in range(n)]
+        return coords, [0.0, 0.0], True
+
+    mat = np.asarray(vectors, dtype=np.float64)
+    mean = mat.mean(axis=0)
+    centered = mat - mean  # PCA requires mean-centering
+    # Economy SVD: centered = U S Vt; principal axes are the rows of Vt.
+    _u, s, vt = np.linalg.svd(centered, full_matrices=False)
+    comps = vt[:2]                       # (2, dim)
+    scores = centered @ comps.T          # (n, 2) projection
+
+    # Deterministic sign per component.
+    for j in range(scores.shape[1]):
+        col = scores[:, j]
+        k = int(np.argmax(np.abs(col)))
+        if col[k] < 0:
+            scores[:, j] = -col
+
+    total_var = float((s ** 2).sum())
+    if total_var > 0:
+        var_exp = [float((s[0] ** 2) / total_var), float((s[1] ** 2) / total_var)]
+    else:
+        var_exp = [0.0, 0.0]
+
+    # Normalize each axis to [-1, 1] (guard a zero-range/degenerate axis).
+    for j in range(scores.shape[1]):
+        col = scores[:, j]
+        lo, hi = float(col.min()), float(col.max())
+        rng = hi - lo
+        scores[:, j] = (2.0 * (col - lo) / rng - 1.0) if rng > 1e-12 else 0.0
+
+    degenerate = bool(var_exp[0] + var_exp[1] < 1e-9)
+    return scores.tolist(), var_exp, degenerate
 
 
 async def _get_embedding(text: str) -> List[float]:

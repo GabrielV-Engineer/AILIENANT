@@ -132,6 +132,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "reactflow": "^11.11.4",
+    "regl-scatterplot": "^1.16.0",
     "ws": "^8.20.0"
   }
 }
