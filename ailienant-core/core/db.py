@@ -50,6 +50,37 @@ _DDL = [
         PRIMARY KEY (file_path, project_id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_if_project ON indexed_files(project_id)",
+    # Phase 7.9.A.7 — Command-menu config stores (concurrency-safe via WAL).
+    # Entity collections live here (not settings.json) so concurrent CRUD from
+    # independent routers cannot lose updates (last-writer-wins on a JSON file).
+    """CREATE TABLE IF NOT EXISTS skills (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        body        TEXT NOT NULL,
+        created_at  REAL NOT NULL,
+        updated_at  REAL NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS mcp_servers (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        transport   TEXT NOT NULL DEFAULT 'stdio',
+        uri         TEXT NOT NULL,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  REAL NOT NULL,
+        updated_at  REAL NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS hooks (
+        id          TEXT PRIMARY KEY,
+        event       TEXT NOT NULL,
+        command     TEXT NOT NULL,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  REAL NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS agent_role_overrides (
+        role          TEXT PRIMARY KEY,
+        system_prompt TEXT NOT NULL,
+        updated_at    REAL NOT NULL
+    )""",
 ]
 
 # ── Sync connection (for use from VFSMiddleware.read_safe) ───────────────────
@@ -301,6 +332,129 @@ async def purge_file_nodes(filepath: str, project_id: str = "") -> None:
 
 
 # ── Phase 2.2.B: WAL Safety ───────────────────────────────────────────────────
+
+# ── Phase 7.9.A.7 — Command-menu config CRUD ─────────────────────────────────
+# All entity collections (skills, mcp_servers, hooks, agent_role_overrides) are
+# persisted here rather than in settings.json so concurrent writes from separate
+# routers are serialized by the WAL engine instead of clobbering a JSON file.
+
+
+async def list_skills() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, name, body, created_at, updated_at FROM skills ORDER BY name"
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def upsert_skill(skill_id: str, name: str, body: str) -> None:
+    now = time.time()
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "INSERT INTO skills (id, name, body, created_at, updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, body=excluded.body, "
+            "updated_at=excluded.updated_at",
+            (skill_id, name, body, now, now),
+        )
+        await db.commit()
+
+
+async def delete_skill(skill_id: str) -> None:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute("DELETE FROM skills WHERE id=?", (skill_id,))
+        await db.commit()
+
+
+async def list_mcp_servers() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, name, transport, uri, enabled, created_at, updated_at "
+            "FROM mcp_servers ORDER BY name"
+        ) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+    for r in rows:
+        r["enabled"] = bool(r["enabled"])
+    return rows
+
+
+async def upsert_mcp_server(
+    server_id: str, name: str, uri: str, transport: str = "stdio", enabled: bool = True
+) -> None:
+    now = time.time()
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "INSERT INTO mcp_servers (id, name, transport, uri, enabled, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, transport=excluded.transport, "
+            "uri=excluded.uri, enabled=excluded.enabled, updated_at=excluded.updated_at",
+            (server_id, name, transport, uri, int(enabled), now, now),
+        )
+        await db.commit()
+
+
+async def delete_mcp_server(server_id: str) -> None:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute("DELETE FROM mcp_servers WHERE id=?", (server_id,))
+        await db.commit()
+
+
+async def list_hooks() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, event, command, enabled, created_at FROM hooks ORDER BY created_at"
+        ) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+    for r in rows:
+        r["enabled"] = bool(r["enabled"])
+    return rows
+
+
+async def upsert_hook(
+    hook_id: str, event: str, command: str, enabled: bool = True
+) -> None:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "INSERT INTO hooks (id, event, command, enabled, created_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET event=excluded.event, command=excluded.command, "
+            "enabled=excluded.enabled",
+            (hook_id, event, command, int(enabled), time.time()),
+        )
+        await db.commit()
+
+
+async def delete_hook(hook_id: str) -> None:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute("DELETE FROM hooks WHERE id=?", (hook_id,))
+        await db.commit()
+
+
+async def list_agent_overrides() -> Dict[str, str]:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT role, system_prompt FROM agent_role_overrides"
+        ) as cur:
+            return {r[0]: r[1] for r in await cur.fetchall()}
+
+
+async def upsert_agent_override(role: str, system_prompt: str) -> None:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "INSERT INTO agent_role_overrides (role, system_prompt, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(role) DO UPDATE SET system_prompt=excluded.system_prompt, "
+            "updated_at=excluded.updated_at",
+            (role, system_prompt, time.time()),
+        )
+        await db.commit()
+
+
+async def delete_agent_override(role: str) -> None:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute("DELETE FROM agent_role_overrides WHERE role=?", (role,))
+        await db.commit()
+
 
 async def wal_checkpoint() -> None:
     """Force PRAGMA wal_checkpoint(TRUNCATE) on the catalog DB.

@@ -1,0 +1,39 @@
+# ailienant-core/api/skills.py
+"""Phase 7.9.A.7.f — Skills (prompt/command templates).
+
+A "skill" here is a reusable instruction snippet the user can insert into the
+prompt bar (insert) or author and save (create). Persisted in the WAL-mode
+catalog DB (not settings.json) so concurrent CRUD cannot lose updates.
+
+This is the lightweight Phase-7 template feature; the Phase 9.4 Skills-as-Tools
+marketplace is a future superset.
+"""
+import uuid
+
+from fastapi import APIRouter
+
+import core.db as catalog_db
+
+router = APIRouter(prefix="/api/v1/skills", tags=["skills"])
+
+
+@router.get("")
+async def list_skills() -> dict:
+    return {"skills": await catalog_db.list_skills()}
+
+
+@router.post("")
+async def save_skill(body: dict) -> dict:
+    name = str(body.get("name", "")).strip()
+    skill_body = str(body.get("body", "")).strip()
+    if not name or not skill_body:
+        return {"ok": False, "error": "name and body are required"}
+    skill_id = str(body.get("id") or uuid.uuid4().hex)
+    await catalog_db.upsert_skill(skill_id, name, skill_body)
+    return {"ok": True, "skills": await catalog_db.list_skills()}
+
+
+@router.delete("/{skill_id}")
+async def delete_skill(skill_id: str) -> dict:
+    await catalog_db.delete_skill(skill_id)
+    return {"ok": True, "skills": await catalog_db.list_skills()}

@@ -95,6 +95,18 @@ class TaskService:
             "current_cost_usd": 0.0,
             "max_budget_usd": float(os.getenv("AILIENANT_MAX_BUDGET_USD", "inf")),
         }
+
+        # Phase 7.9.A.7.a — seed the session HITL policy from the user's persisted
+        # preference (the in-graph evaluate_action() engine already enforces it).
+        # Local import avoids any api↔core import-order coupling at module load.
+        try:
+            from api.system_settings import _read_settings as _read_sys_settings
+            _pref_mode = str(_read_sys_settings().get("permission_mode", "default")).upper()
+            if _pref_mode in ("DEFAULT", "PLAN", "AUTO"):
+                initial_state["session_permission_mode"] = _pref_mode
+        except Exception:  # noqa: BLE001 — preference seeding must never block a task
+            pass
+
         config: RunnableConfig = {"configurable": {"thread_id": session_id}}
 
         # 3. Ejecución del grafo con streaming de actualizaciones
