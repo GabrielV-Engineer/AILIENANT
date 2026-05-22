@@ -12,9 +12,10 @@ Auto-connecting saved servers at task time is a tracked follow-up.
 """
 import asyncio
 import logging
+import ntpath
 import uuid
 from contextlib import AsyncExitStack
-from typing import Sized, cast
+from typing import FrozenSet, Sized, cast
 
 from fastapi import APIRouter
 from mcp import ClientSession  # type: ignore[attr-defined]  # mcp ships partial stubs
@@ -27,6 +28,38 @@ from tools.mcp_adapter import _parse_mcp_uri
 logger = logging.getLogger("MCP_API")
 
 router = APIRouter(prefix="/api/v1/mcp", tags=["mcp"])
+
+# S2 — command-injection defense for stdio:// MCP servers. A URI maps to an
+# arbitrary executable, so we enforce a strict basename allowlist on BOTH the
+# save and test paths. There is deliberately NO "any file that exists on disk"
+# fallback (that would let stdio://../../bin/bash through). Full paths are
+# accepted only when their basename is allowlisted; path-traversal is rejected.
+_ALLOWED_MCP_COMMANDS: FrozenSet[str] = frozenset(
+    {"npx", "npm", "node", "python", "python3", "py", "uv", "uvx", "deno", "docker"}
+)
+_POLICY_ERROR: str = "Command not allowed by system policy"
+
+
+def _validate_mcp_command(uri: str) -> None:
+    """Raise ValueError(_POLICY_ERROR) unless the stdio command is allowlisted.
+
+    Logs the actual rejected command server-side only — the caller surfaces the
+    generic ``_POLICY_ERROR`` to the client so attempted payloads never leak.
+    """
+    params = _parse_mcp_uri(uri)  # may raise ValueError for malformed URIs
+    command = params.command
+    # Reject path-traversal outright before any basename inspection. ntpath
+    # splits on both "/" and "\" regardless of host OS.
+    segments = command.replace("\\", "/").split("/")
+    if ".." in segments:
+        logger.warning("[mcp] rejected path-traversal command: %r", command)
+        raise ValueError(_POLICY_ERROR)
+    # Strip any directory + extension; compare the bare program name.
+    basename = ntpath.basename(command)
+    stem = basename.rsplit(".", 1)[0] if "." in basename else basename
+    if stem.lower() not in _ALLOWED_MCP_COMMANDS:
+        logger.warning("[mcp] rejected non-allowlisted command: %r", command)
+        raise ValueError(_POLICY_ERROR)
 
 
 @router.get("/servers")
@@ -43,6 +76,11 @@ async def save_server(body: dict) -> dict:
     server_id = str(body.get("id") or uuid.uuid4().hex)
     transport = str(body.get("transport") or "stdio").strip()
     enabled = bool(body.get("enabled", True))
+    if transport == "stdio":
+        try:
+            _validate_mcp_command(uri)  # S2 — reject non-allowlisted commands
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
     await catalog_db.upsert_mcp_server(server_id, name, uri, transport, enabled)
     return {"ok": True, "servers": await catalog_db.list_mcp_servers()}
 
@@ -66,6 +104,11 @@ async def test_server(body: dict) -> dict:
     uri = str(body.get("uri", "")).strip()
     if not uri:
         return {"reachable": False, "tool_count": 0, "error": "uri is required"}
+
+    try:
+        _validate_mcp_command(uri)  # S2 — reject non-allowlisted commands pre-spawn
+    except ValueError as exc:
+        return {"reachable": False, "tool_count": 0, "error": str(exc)}
 
     try:
         params = _parse_mcp_uri(uri)

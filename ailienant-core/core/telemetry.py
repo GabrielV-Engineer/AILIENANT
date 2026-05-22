@@ -3,10 +3,11 @@
 # Phase 2.23 — Append-only SQLite routing audit trail.
 
 import logging
+import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger("TELEMETRY")
 
@@ -14,6 +15,54 @@ _DEFAULT_DB_PATH: Path = Path("data") / "telemetry.sqlite"
 
 _conn: Optional[sqlite3.Connection] = None
 _lock: threading.Lock = threading.Lock()
+
+# --- Read-path hardening (Phase 7.9.B.6) -----------------------------------
+# S6: deepest OFFSET we will ever serve, so a spammed/huge-offset request can
+# never hold the global _lock long enough to starve telemetry writes.
+_OFFSET_HARD_CAP: int = 10_000
+_LIMIT_MAX: int = 200
+# S5: cap the text fed to the masking regex so a giant log line cannot trigger
+# catastrophic backtracking (ReDoS) and pin a CPU.
+_MASK_INPUT_CAP: int = 2_000
+_REDACTED: str = "***REDACTED***"
+
+# S1/S5: ReDoS-safe secret patterns — bounded quantifiers, no nesting. The
+# key=value pattern uses a non-greedy value capture so a single mask never
+# swallows an entire line that holds several secrets.
+_KV_SECRET_RE: re.Pattern[str] = re.compile(
+    r"(?i)\b(password|passwd|secret|token|api[_-]?key|authorization)(\s*[=:]\s*)(\S+?)(?=\s|$)"
+)
+_SECRET_PATTERNS: List[re.Pattern[str]] = [
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),          # OpenAI-style keys
+    re.compile(r"AKIA[0-9A-Z]{8,}"),               # AWS access key id
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._-]{8,}"),  # bearer tokens
+    re.compile(r"\b[A-Fa-f0-9]{32,}\b"),           # long hex blobs
+    re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"),   # long base64 blobs
+]
+
+
+def _mask_sensitive(text: Optional[str]) -> Optional[str]:
+    """Redact secrets from a free-text field before it leaves the server (S1).
+
+    ReDoS-safe (S5): input is truncated to ``_MASK_INPUT_CAP`` chars before any
+    regex runs, and every pattern uses bounded/non-nested quantifiers.
+    """
+    if not text:
+        return text
+    snippet = text[:_MASK_INPUT_CAP]
+    snippet = _KV_SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{_REDACTED}", snippet)
+    for pat in _SECRET_PATTERNS:
+        snippet = pat.sub(_REDACTED, snippet)
+    if len(text) > _MASK_INPUT_CAP:
+        snippet += "…"
+    return snippet
+
+
+def _clamp_pagination(limit: int, offset: int) -> Tuple[int, int]:
+    """S4+S6: coerce to int, clamp limit to 1.._LIMIT_MAX and offset to 0..cap."""
+    safe_limit = max(1, min(int(limit), _LIMIT_MAX))
+    safe_offset = max(0, min(int(offset), _OFFSET_HARD_CAP))
+    return safe_limit, safe_offset
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS routing_decisions (
@@ -115,6 +164,81 @@ async def log_oom_event(
             _conn.commit()
         except sqlite3.Error as exc:
             logger.warning("OOM telemetry write failed: %s", exc)
+
+
+def recent_routing_decisions(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """Return recent routing decisions, newest first. Read path for the dashboard.
+
+    Pagination is clamped (S4+S6) and the free-text ``reason``/``hardware_constraint``
+    fields are secret-masked (S1) before returning. Returns ``[]`` if the DB is
+    not initialised.
+    """
+    if _conn is None:
+        return []
+    safe_limit, safe_offset = _clamp_pagination(limit, offset)
+    with _lock:
+        try:
+            cursor = _conn.execute(
+                "SELECT id, timestamp, session_id, source_node, target_node, "
+                "reason, css_score, tci_score, hardware_constraint "
+                "FROM routing_decisions ORDER BY id DESC LIMIT ? OFFSET ?",
+                (safe_limit, safe_offset),
+            )
+            rows = cursor.fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("Telemetry read failed: %s", exc)
+            return []
+    return [
+        {
+            "id": r[0],
+            "timestamp": r[1],
+            "session_id": r[2],
+            "source_node": r[3],
+            "target_node": r[4],
+            "reason": _mask_sensitive(r[5]),
+            "css_score": r[6],
+            "tci_score": r[7],
+            "hardware_constraint": _mask_sensitive(r[8]),
+        }
+        for r in rows
+    ]
+
+
+def recent_oom_events(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """Return recent OOM rescue-swap events, newest first. Read path for the dashboard.
+
+    Same clamping (S4+S6) and masking (S1) discipline as
+    :func:`recent_routing_decisions`. Returns ``[]`` if the DB is not initialised.
+    """
+    if _conn is None:
+        return []
+    safe_limit, safe_offset = _clamp_pagination(limit, offset)
+    with _lock:
+        try:
+            cursor = _conn.execute(
+                "SELECT id, timestamp, session_id, event, reason, original_model, "
+                "fallback_model, tokens_at_failure, swap_latency_ms "
+                "FROM oom_fallback_events ORDER BY id DESC LIMIT ? OFFSET ?",
+                (safe_limit, safe_offset),
+            )
+            rows = cursor.fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("OOM telemetry read failed: %s", exc)
+            return []
+    return [
+        {
+            "id": r[0],
+            "timestamp": r[1],
+            "session_id": r[2],
+            "event": r[3],
+            "reason": _mask_sensitive(r[4]),
+            "original_model": r[5],
+            "fallback_model": r[6],
+            "tokens_at_failure": r[7],
+            "swap_latency_ms": r[8],
+        }
+        for r in rows
+    ]
 
 
 def shutdown_telemetry_db() -> None:
