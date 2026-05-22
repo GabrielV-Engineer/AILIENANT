@@ -415,17 +415,15 @@ export function BYOMPanel(): JSX.Element {
                                                 {isBusy ? 'Applying…' : 'Activate'}
                                             </button>
                                         )}
+                                        <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
+                                            onClick={() => { setEditingPresetId(preset.id); setEditForm({ name: preset.name, tiers: { ...preset.tiers } }); setNewPreset(null); }}>
+                                            Edit
+                                        </button>
                                         {!preset.is_builtin && (
-                                            <>
-                                                <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
-                                                    onClick={() => { setEditingPresetId(preset.id); setEditForm({ name: preset.name, tiers: { ...preset.tiers } }); setNewPreset(null); }}>
-                                                    Edit
-                                                </button>
-                                                <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
-                                                    onClick={() => handleDeletePreset(preset.id)}>
-                                                    Delete
-                                                </button>
-                                            </>
+                                            <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
+                                                onClick={() => handleDeletePreset(preset.id)}>
+                                                Delete
+                                            </button>
                                         )}
                                     </div>
                                 </>
