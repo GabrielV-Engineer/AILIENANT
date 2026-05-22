@@ -89,8 +89,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // Workspace folder (live-updated when VS Code opens/closes a folder)
     const [workspaceFolder, setWorkspaceFolder] = useState<string>(initial.workspaceFolder ?? '');
 
-    // Attached context items (files/folders added via the picker)
+    // Attached context items (files/folders added via the main workspace picker)
     const [attachedItems, setAttachedItems] = useState<AttachedItem[]>([]);
+    // Isolated Natt context items — never mixed with attachedItems
+    const [nattAttachedItems, setNattAttachedItems] = useState<AttachedItem[]>([]);
 
     // Toasts
     const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -195,6 +197,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     setIndexing({ state: 'ready', node_count: d?.node_count ?? 0 });
                     break;
                 }
+                case 'server_indexing_error': {
+                    const d = msg.payload as { reason?: string };
+                    setIndexing({ state: 'error', reason: d?.reason ?? 'LLM configuration missing' });
+                    break;
+                }
                 case 'server_model_warmup': {
                     const d = msg.payload as { model_name: string; is_local: boolean };
                     addToast('info', `Warming up ${d.model_name} (${d.is_local ? 'local' : 'cloud'})`);
@@ -253,6 +260,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     ]);
                     break;
                 }
+                case 'PICKED_NATT_PATHS': {
+                    const d = msg as unknown as { items: { path: string; kind: 'file' | 'directory' }[] };
+                    const stamp = Date.now();
+                    setNattAttachedItems(prev => [
+                        ...prev,
+                        ...d.items.map((item, i) => ({ id: `n-${stamp}-${i}`, path: item.path, kind: item.kind })),
+                    ]);
+                    break;
+                }
             }
         };
         window.addEventListener('message', handler);
@@ -294,8 +310,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     const handleNattSubmit = useCallback((text: string) => {
         setNattMessages(prev => [...prev, { role: 'user', content: text }]);
-        vscode.postMessage({ type: 'NATT_MESSAGE', text, session_id: initial.sessionId });
-    }, [initial.sessionId]);
+        const contextPaths = nattAttachedItems.map(i => i.path);
+        vscode.postMessage({
+            type: 'NATT_MESSAGE',
+            text,
+            session_id: initial.sessionId,
+            ...(contextPaths.length > 0 && { context_paths: contextPaths }),
+        });
+        setNattAttachedItems([]);
+    }, [initial.sessionId, nattAttachedItems]);
 
     const handleResolveHitl = useCallback((_id: string) => {
         setHitlPending(undefined);
@@ -425,7 +448,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             </Popover.Portal>
                         </Popover.Root>
                     )}
-                    <span className="ws-status-divider" />
                     <IndexingStatus state={indexing} />
                 </div>
 
@@ -525,6 +547,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             messages={nattMessages}
                             pendingIntervention={hitlPending}
                             disabled={Boolean(hitlPending)}
+                            nattAttachedItems={nattAttachedItems}
+                            onNattRemoveAttached={(id) => setNattAttachedItems(prev => prev.filter(i => i.id !== id))}
                             onClose={() => setNattOpen(false)}
                             onResolveIntervention={handleResolveHitl}
                             onSendMessage={handleNattSubmit}

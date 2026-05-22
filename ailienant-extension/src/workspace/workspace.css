@@ -36,6 +36,9 @@ html, body, #root { height: 100%; }
   padding: 0 14px;
   background: transparent;
   gap: 12px;
+  max-width: 676px;
+  margin: 0 auto;
+  width: 100%;
 }
 .ws-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ws-logo { height: 18px; width: auto; }
@@ -53,11 +56,15 @@ html, body, #root { height: 100%; }
 .ws-status {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   padding: 0 14px;
   background: transparent;
   font-size: 11px;
   color: var(--text-secondary);
+  max-width: 676px;
+  margin: 0 auto;
+  width: 100%;
 }
 .ws-status-pill {
   display: inline-flex;
@@ -82,7 +89,6 @@ html, body, #root { height: 100%; }
   height: 14px;
   background: var(--border-subtle);
 }
-.ws-spacer { flex: 1; }
 
 /* ── IndexingStatus ──────────────────────────────────────── */
 .ws-indexing {
@@ -107,6 +113,7 @@ html, body, #root { height: 100%; }
   box-shadow: 0 0 6px var(--accent-primary);
 }
 .ws-indexing[data-state="ready"] { color: var(--text-primary); }
+.ws-indexing[data-state="error"] { color: #e6a817; border-color: #e6a81740; }
 .ws-indexing-bar {
   display: inline-block;
   width: 60px; height: 4px;
@@ -240,19 +247,27 @@ html, body, #root { height: 100%; }
 }
 
 .ws-prompt-input-row {
-  padding: 5px 10px 1px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 10px 2px;
+  min-height: 0;
 }
 .ws-prompt-input {
+  flex: 1;
   width: 100%;
   appearance: none;
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 11px;
   font-family: inherit;
   resize: none;
   outline: none;
-  line-height: 1.45;
+  line-height: 1.4;
+  padding: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 .ws-prompt-input::placeholder { color: var(--text-disabled); }
 .ws-prompt-input:disabled { opacity: 0.5; }
@@ -261,7 +276,7 @@ html, body, #root { height: 100%; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1px 6px 4px;
+  padding: 0px 6px 2px;
   border-top: 1px solid var(--border-subtle);
   gap: 4px;
 }
@@ -276,7 +291,7 @@ html, body, #root { height: 100%; }
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-secondary);
-  padding: 3px 5px;
+  padding: 2px 4px;
   border-radius: 4px;
   cursor: pointer;
   display: inline-flex;
@@ -521,6 +536,120 @@ html, body, #root { height: 100%; }
 }
 .ws-palette-desc { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ── Sectioned Command Menu (7.9.A.7) ──────────────────────── */
+.ws-menu { width: 340px; max-height: 380px; }
+.ws-menu-section { display: flex; flex-direction: column; gap: 1px; }
+.ws-menu-section + .ws-menu-section { margin-top: 6px; }
+.ws-menu-section-title {
+  padding: 5px 9px 3px;
+  border-bottom: none;
+  margin-bottom: 0;
+}
+.ws-menu-item { gap: 9px; align-items: flex-start; }
+.ws-menu-item-icon { flex-shrink: 0; margin-top: 1px; color: var(--accent-primary); }
+.ws-menu-item-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.ws-menu-item-label { font-weight: 600; color: var(--text-primary); }
+.ws-menu-item[data-soon="true"] { cursor: default; opacity: 0.55; }
+.ws-menu-item[data-soon="true"]:hover { background: transparent; }
+.ws-menu-soon {
+  flex-shrink: 0;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 1px 6px;
+  align-self: center;
+}
+.ws-menu-back {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ws-menu-back:hover { color: var(--accent-primary); }
+.ws-menu-back-icon { transform: rotate(180deg); }
+
+/* Models nested views */
+.ws-models-body { display: flex; flex-direction: column; gap: 6px; padding: 2px; }
+.ws-models-list { display: flex; flex-direction: column; gap: 1px; }
+.ws-models-row {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  cursor: pointer;
+  text-align: left;
+}
+.ws-models-row:hover { background: var(--bg-hover); }
+.ws-models-row[data-active="true"] { background: var(--bg-hover); border-color: var(--accent-primary); }
+.ws-models-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ws-models-row-name { font-size: 12px; font-weight: 600; }
+.ws-models-row-meta { display: flex; gap: 4px; }
+.ws-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.ws-models-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 9px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ws-models-note { font-size: 10px; color: var(--text-secondary); padding: 2px 9px 4px; margin: 0; }
+.ws-models-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 0;
+  padding: 4px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+.ws-models-tier { display: flex; justify-content: space-between; gap: 8px; padding: 3px 5px; font-size: 11px; }
+.ws-models-tier-name { text-transform: capitalize; color: var(--text-secondary); }
+.ws-models-tier-model { font-family: monospace; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Account & Usage grid */
+.ws-usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 2px; }
+.ws-usage-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+.ws-usage-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
+.ws-usage-value { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+
 /* ── ContextOverlay (compact) ──────────────────────────────── */
 .ws-context-overlay {
   position: absolute;
@@ -569,12 +698,13 @@ html, body, #root { height: 100%; }
 /* ── Telemetry card (2-col grid, right of PromptBar) ──────── */
 .ws-telemetry-card {
   display: grid;
-  grid-template-columns: 48px 16px;
+  grid-template-columns: 36px 14px;
   grid-template-rows: 1fr 1fr;
-  gap: 4px;
-  padding: 6px;
-  width: 92px;
+  gap: 2px;
+  padding: 4px;
+  width: 72px;
   align-items: center;
+  position: relative;
 }
 .ws-telemetry-left {
   grid-column: 1;
@@ -591,7 +721,9 @@ html, body, #root { height: 100%; }
   grid-row: 1 / span 2;
   height: 100%;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
 }
 .ws-telemetry-cell {
   display: flex;
@@ -631,6 +763,7 @@ html, body, #root { height: 100%; }
 
 /* ── Natt Canvas ─────────────────────────────────────────── */
 .ws-natt {
+  position: relative;
   background: var(--bg-surface);
   border-left: 1px solid var(--border-subtle);
   display: grid;
@@ -791,3 +924,221 @@ html, body, #root { height: 100%; }
 }
 .ws-toast[data-level="warn"]  { border-left-color: var(--accent-warn); }
 .ws-toast[data-level="error"] { border-left-color: var(--accent-alert); }
+
+/* ── FinOps column icons ─────────────────────────────────── */
+.ws-finops-bar-wrapper { flex: 1; display: flex; align-items: stretch; padding: 2px 0; }
+.ws-telemetry-right .ws-finops-vertical { height: auto; min-height: 0; flex: 1; }
+
+.ws-finops-icon-static {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  opacity: 0.6;
+}
+.ws-finops-budget-wrap {
+  display: contents;
+}
+.ws-finops-cfg-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 2px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, background 0.12s;
+}
+.ws-finops-cfg-btn:hover {
+  color: var(--accent-primary);
+  background: rgba(99, 165, 131, 0.1);
+}
+
+/* ── BudgetMenu popover ─────────────────────────────────── */
+.ws-budget-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-smart);
+  box-shadow: var(--shadow-elevation);
+  padding: 10px;
+  min-width: 180px;
+  max-width: 210px;
+  color: var(--text-primary);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-budget-head {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+.ws-budget-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ws-budget-row-info { display: flex; flex-direction: column; gap: 1px; flex: 1; }
+.ws-budget-label { font-size: 12px; color: var(--text-primary); }
+.ws-budget-input {
+  width: 56px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  text-align: right;
+}
+.ws-budget-input:focus { border-color: var(--accent-primary); }
+.ws-budget-input:disabled { opacity: 0.4; }
+
+/* ── Status pill — interactive variant (offline / reconnecting) ── */
+.ws-status-pill--btn {
+  appearance: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: inherit;
+  font-size: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: border-color 0.12s, background 0.12s;
+}
+.ws-status-pill--btn:hover {
+  border-color: var(--accent-warn);
+  background: rgba(227, 179, 65, 0.06);
+}
+
+/* ── Core start popover menu ─────────────────────────────────── */
+.ws-core-menu {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-smart);
+  box-shadow: var(--shadow-elevation);
+  padding: 10px;
+  min-width: 180px;
+  max-width: 220px;
+  color: var(--text-primary);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-core-menu-head {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+.ws-core-menu-folder {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-core-menu-actions { display: flex; flex-direction: column; gap: 4px; }
+.ws-core-menu-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 5px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.ws-core-menu-btn:hover {
+  background: rgba(99, 165, 131, 0.08);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+/* ── Smaller send / abort button ─────────────────────────────── */
+.ws-send-btn {
+  padding: 2px 6px !important;
+  min-width: unset !important;
+}
+
+/* ── Workspace status pill — warn (amber) variant ─────────────── */
+.ws-status-pill--warn { border-color: var(--accent-warn); color: var(--accent-warn); }
+.ws-status-pill--warn:hover { background: rgba(227, 179, 65, 0.08); }
+
+/* Short description line inside core / workspace menus */
+.ws-core-menu-desc { font-size: 11px; color: var(--text-secondary); margin: 0; line-height: 1.4; }
+
+/* Browse buttons inside ContextOverlay */
+.ws-context-browse-group { display: flex; flex-direction: column; gap: 5px; }
+.ws-context-browse-btn { width: 100%; justify-content: center; }
+
+/* ── Attached context bar (above HUD) ───────────────────── */
+.ws-attached-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 10px 2px;
+  max-width: 648px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+.ws-attached-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 4px 2px 7px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  max-width: 180px;
+  min-width: 0;
+}
+.ws-attached-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ws-attached-chip-remove {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 1px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+.ws-attached-chip-remove:hover { color: var(--accent-alert); }
