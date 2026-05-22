@@ -16,9 +16,16 @@ interface ChainStatus {
     error?:  string;
 }
 
+interface AuditStats {
+    total:          number;
+    by_resolution:  { approved: number; rejected: number; pending: number };
+    by_type:        Record<string, number>;
+}
+
 export function AuditPanel(): JSX.Element {
     const [entries,     setEntries]     = useState<AuditEntry[]>([]);
     const [chainStatus, setChainStatus] = useState<ChainStatus | undefined>();
+    const [stats,       setStats]       = useState<AuditStats | null>(null);
     const [loading,     setLoading]     = useState(false);
     const [page,        setPage]        = useState(0);
     const PAGE_SIZE = 20;
@@ -48,29 +55,77 @@ export function AuditPanel(): JSX.Element {
 
     useEffect(() => { loadEntries(); }, [page]);
 
+    useEffect(() => {
+        fetch('/api/v1/audit/stats')
+            .then(r => r.ok ? r.json() : null)
+            .then((d: AuditStats | null) => { if (d) setStats(d); })
+            .catch(() => {});
+    }, []);
+
     return (
         <div>
-            <div className="db-section-title">HITL Audit Ledger</div>
+            <div className="db-section-title">Approval Ledger</div>
+
+            {/* Metrics row */}
+            {stats && (
+                <div className="db-row" style={{ gap: 12, marginBottom: 16, alignItems: 'stretch' }}>
+                    <div className="db-card" style={{ flex: 1, marginBottom: 0 }}>
+                        <div className="db-card-title">Total Events</div>
+                        <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.total}</div>
+                    </div>
+                    <div className="db-card" style={{ flex: 2, marginBottom: 0 }}>
+                        <div className="db-card-title">Resolutions</div>
+                        <div className="db-row" style={{ gap: 16, flexWrap: 'wrap' }}>
+                            <span style={{ color: '#63a583', fontWeight: 600 }}>&#10003; {stats.by_resolution.approved} approved</span>
+                            <span style={{ color: '#F85149', fontWeight: 600 }}>&#10007; {stats.by_resolution.rejected} rejected</span>
+                            <span style={{ color: '#E3B341', fontWeight: 600 }}>&#8987; {stats.by_resolution.pending} pending</span>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Chain verification */}
             <div className="db-card">
-                <div className="db-card-title">Blake2b Chain Integrity</div>
-                <div className="db-row" style={{ marginBottom: chainStatus ? 10 : 0 }}>
+                <div className="db-card-title" title="Secured with Blake2b cryptographic chain">Tamper-Evident Seal</div>
+                <div className="db-row">
                     <button className="db-btn db-btn-primary" onClick={verifyChain}>
-                        Verify Chain
+                        Verify Seal
                     </button>
-                    {chainStatus && (
-                        <div className="db-row" style={{ gap: 6 }}>
-                            <span style={{ fontWeight: 600, color: chainStatus.valid ? '#63a583' : '#F85149' }}>
-                                {chainStatus.valid
-                                    ? `Chain intact — ${chainStatus.checked} events verified`
-                                    : `Tamper detected — ${chainStatus.error ?? 'unknown error'}`
-                                }
-                            </span>
-                        </div>
-                    )}
                 </div>
+                {chainStatus && (
+                    <div className="db-traffic-light" style={{ marginTop: 10 }}>
+                        <div className="db-tl-dot"
+                            style={{ background: chainStatus.valid ? '#63a583' : '#F85149' }} />
+                        <span style={{ fontWeight: 600, fontSize: 12 }}>
+                            {chainStatus.valid
+                                ? `Seal intact — ${chainStatus.checked} sessions verified`
+                                : `Seal broken — ${chainStatus.error ?? 'tamper detected'}`}
+                        </span>
+                    </div>
+                )}
             </div>
+
+            {/* Event-type breakdown */}
+            {stats && Object.keys(stats.by_type).length > 0 && (
+                <div className="db-card">
+                    <div className="db-card-title">Event Types</div>
+                    {Object.entries(stats.by_type)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([kind, count]) => (
+                            <div key={kind} style={{ marginBottom: 8 }}>
+                                <div className="db-row" style={{ justifyContent: 'space-between', marginBottom: 3 }}>
+                                    <span className="db-label" style={{ marginBottom: 0 }}>{kind.replace(/_/g, ' ')}</span>
+                                    <span className="db-muted">{count}</span>
+                                </div>
+                                <div className="db-gauge-track">
+                                    <div className="db-gauge-fill"
+                                        style={{ width: `${stats.total > 0 ? (count / stats.total) * 100 : 0}%` }} />
+                                </div>
+                            </div>
+                        ))
+                    }
+                </div>
+            )}
 
             {/* Audit log */}
             <div className="db-card">

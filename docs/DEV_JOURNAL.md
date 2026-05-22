@@ -1222,3 +1222,43 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   1. **Presets built-in dinámicos:** calculados en `GET /config` desde `discover_models()` — el usuario siempre ve qué modelos reales aplican según lo que está corriendo, sin almacenar presets que se vuelven stale.
   2. **Merge strategy en PUT:** un `ACTIVATE_PRESET` desde el CommandPalette envía solo `{active_preset_id}` — Pydantic con defaults vacíos borraría endpoints/presets. La estrategia de merge es mandatoria para este patrón de IPC partial-payload.
   3. **Presets custom almacenados, built-ins generados:** solo los presets del usuario van a disco; los built-in se regeneran en cada GET → sin datos stale si cambia Ollama.
+
+## Hito 7.9.B.4: Rules & Governance — SOUL.md description + Analyst name editor — 2026-05-21
+
+- **Status:** OK. `npm run compile` → 0 errores. Backend importable sin errores.
+- **Problemas corregidos:**
+  1. `GET /api/v1/system/soul` no existía → textarea de SOUL.md abría vacío en cada mount.
+  2. Sin input para renombrar el Analyst Agent (solo vía `ailienant-config.json`).
+  3. Sin descripción contextual explicando el propósito de SOUL.md para el usuario no-técnico.
+- **Implementación:**
+  - `RulesPanel.tsx`: `useEffect` de mount carga SOUL.md y analyst_name desde los nuevos endpoints. Nueva card "Agent Identity" con input de nombre. Párrafo descriptivo bajo el título de SOUL.md que referencia dinámicamente el nombre configurado.
+  - `api/system_settings.py` (NUEVO): `GET/POST /api/v1/system/soul` (lee/escribe `~/.ailienant/SOUL.md` respetando `AILIENANT_SOUL_PATH`). `GET/POST /api/v1/system/settings` (lee/escribe `~/.ailienant/settings.json`).
+  - `main.py`: `include_router(system_settings_router)`.
+- **Decisiones de diseño:**
+  1. **Almacenamiento en `~/.ailienant/settings.json`:** consistente con SOUL.md en `~/.ailienant/SOUL.md` y reglas globales en `~/.ailienant/.ailienant.json` — todos los datos de configuración del usuario bajo el mismo directorio home.
+  2. **Excepción específica en `_read_settings()`:** `except (FileNotFoundError, json.JSONDecodeError)` — IOError/PermissionError se propaga como 500 en lugar de sobreescribir silenciosamente un archivo inaccesible.
+- **Files changed:**
+  - `ailienant-core/api/system_settings.py` — NUEVO.
+  - `ailienant-core/main.py` — +import +include_router.
+  - `ailienant-extension/src/dashboard/panels/RulesPanel.tsx` — +state +useEffect +UI.
+
+## Hito 7.9.B.5: Audit Ledger — Professional dashboards + intuitive naming — 2026-05-21
+
+- **Status:** OK. `npm run compile` → 0 errores. Backend importable sin errores.
+- **Problemas corregidos:**
+  1. `GET /api/v1/audit/log` y `GET /api/v1/audit/verify` no estaban implementados → panel no cargaba datos.
+  2. Nombre "Blake2b Chain Integrity" opaco para usuarios no-técnicos.
+  3. Sin métricas agregadas — solo lista plana sin resumen visible.
+- **Implementación:**
+  - `AuditPanel.tsx`: sección renombrada a "Approval Ledger". Card de integridad → "Tamper-Evident Seal" (Blake2b en `title` tooltip). Fila de métricas (Total Events + Resolutions breakdown). Card de Event Types con barras de gauge proporcionales usando clases existentes `.db-gauge-track`/`.db-gauge-fill`.
+  - `api/audit.py` (NUEVO): `GET /api/v1/audit/log` (paginado, cap 100), `GET /api/v1/audit/stats` (total + by_resolution + by_type), `GET /api/v1/audit/verify` (itera todas las sesiones via `core.audit.verify_chain`).
+  - `main.py`: `include_router(audit_router)`.
+- **Decisiones de diseño y seguridad:**
+  1. **URI read-only SQLite (`?mode=ro`):** los tres endpoints usan `f"file:{DB_CATALOG_PATH}?mode=ro"` para evitar conflictos WAL con el escritor de audit (`websocket_manager.py`).
+  2. **`action_description` no expuesto:** solo `request_kind` (enum) sale al frontend — previene fuga de contenido operacional en la respuesta API.
+  3. **Mensajes de error genéricos en verify:** `AuditChainBrokenError` se captura y devuelve `"Tamper detected"` sin hash values — previene análisis de texto elegido.
+  4. **`pending` + `timeout` combinados:** `by_res.get("pending", 0) + by_res.get("timeout", 0)` — el schema actual usa `"timeout"` para decisiones no tomadas (NOT NULL), pero el guard mantiene compatibilidad forward si el enum se extiende.
+- **Files changed:**
+  - `ailienant-core/api/audit.py` — NUEVO.
+  - `ailienant-core/main.py` — +import +include_router.
+  - `ailienant-extension/src/dashboard/panels/AuditPanel.tsx` — targeted edits.

@@ -152,7 +152,7 @@ Proyect_Ailienant/
 │   │   ├── supervisor.py       #   Phase 6.5 — deterministic FinOps Supervisor: ledger→state sync, budget hard-kill (1.10×) / soft HITL gate (1.00×) / token-spike trip; spliced finops_gate→supervisor_node→apply_patch
 │   │   ├── audit.py            #   Phase 6.6 — append-only SOC2 HITL audit ledger: hitl_audit_log table, blake2b chain, _scrub (secrets redaction), log_audit_event / get_chain_head / verify_chain
 │   │   └── rules.py            #   .ailienant rule manager
-│   ├── api/                    # WebSocket manager + MCTS mirror endpoints + memory_dashboard.py (Phase 7.9.B.1 — /api/v1/memory sections/graph/vectors REST surface) + byom.py (Phase 7.9.B.2 — /api/v1/byom test/config)
+│   ├── api/                    # WebSocket manager + MCTS mirror endpoints + memory_dashboard.py (Phase 7.9.B.1 — /api/v1/memory sections/graph/vectors REST surface) + byom.py (Phase 7.9.B.2 — /api/v1/byom test/config) + hardware.py (Phase 7.9.B.3 — /api/v1/hardware profile/mode) + system_settings.py (Phase 7.9.B.4 — /api/v1/system soul/settings) + audit.py (Phase 7.9.B.5 — /api/v1/audit log/stats/verify)
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX); llm_gateway.py (Phase 6.3 — OOM Cascade: ainvoke traps ContextWindowExceeded/CUDA-OOM, purges VRAM, trims context, re-emits to cloud Haiku fallback; Phase 6.8 — _oom_cascade emits telemetry.log_oom_event with swap latency)
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe, logging_filters.py (Phase 6.7 — SecretsScrubber DLP filter)
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
@@ -276,6 +276,16 @@ The server exposes:
 | `POST /api/v1/byom/test` | Probe a specific model endpoint; returns discovered model list + latency |
 | `GET /api/v1/byom/config` | Load BYOM config (endpoints + presets + active preset + live models) |
 | `PUT /api/v1/byom/config` | Merge-save BYOM config; activate preset → config.yaml → LiteLLM reload |
+| `GET /api/v1/hardware/profile` | Live CPU/RAM/VRAM snapshot (3 s cache) |
+| `GET /api/v1/hardware/mode` | Current execution mode preference + suggested mode |
+| `POST /api/v1/hardware/mode` | Set execution mode preference (AUTO / SEQUENTIAL / MICRO_SWARM / FULL_SWARM) |
+| `GET /api/v1/system/soul` | Read current SOUL.md persona content |
+| `POST /api/v1/system/soul` | Persist SOUL.md persona content |
+| `GET /api/v1/system/settings` | Read user settings (analyst_name) from `~/.ailienant/settings.json` |
+| `POST /api/v1/system/settings` | Persist user settings |
+| `GET /api/v1/audit/log` | Paginated HITL audit log (request_kind enum, resolution, chain hash) |
+| `GET /api/v1/audit/stats` | Aggregate metrics: total events, by-resolution, by-type breakdown |
+| `GET /api/v1/audit/verify` | Re-walk all session chains and verify Blake2b integrity |
 
 ### 2. Extension
 

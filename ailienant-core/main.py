@@ -65,6 +65,10 @@ from api.byom import router as byom_router
 from api.hardware import router as hardware_router, _get_profile as _get_hw_profile
 from core.execution_mode import get_mode as get_execution_mode_pref
 
+# --- IMPORTACIONES FASE 7.9.B.4 + 7.9.B.5 (System Settings + Audit REST surface) ---
+from api.system_settings import router as system_settings_router
+from api.audit import router as audit_router
+
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
 from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
 from shared.contracts import (
@@ -165,6 +169,12 @@ app.include_router(byom_router)
 
 # Phase 7.9.B.3 — Hardware Monitor REST endpoints (profile/mode)
 app.include_router(hardware_router)
+
+# Phase 7.9.B.4 — System Settings (SOUL.md + analyst name)
+app.include_router(system_settings_router)
+
+# Phase 7.9.B.5 — Audit Ledger REST endpoints (log/stats/verify)
+app.include_router(audit_router)
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
