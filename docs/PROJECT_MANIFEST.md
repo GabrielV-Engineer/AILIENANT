@@ -1024,7 +1024,7 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         insertar y configurar modelos locales (Ollama, vLLM, etc.).
     - **Resolution:** Test Connection reemplazado por `POST /api/v1/byom/test` que sondea el endpoint especifico del usuario (Ollama `/api/tags`, OpenAI-compat `/v1/models`) via `httpx.AsyncClient`. Validacion inline en el frontend (URL y Name requeridos, error rojo inmediato, sin llamada al backend). Config persiste en `byom_config.json` co-localizado con el SQLite (path derivado de `AILIENANT_CATALOG_DB`, no CWD). Escritura atomica + 0600 + UTF-8 en `save_byom_config`. Estrategia de merge en `PUT /config` para prevenir perdida de datos en actualizaciones parciales. API keys enmascaradas en GET (`sk-••••LAST4`). Model Presets: 3 built-in (Local Only/Hybrid/Cloud Only) calculados de modelos vivos + presets custom; activar un preset escribe `config.yaml` (atomico) y senaliza `POST /reload` a LiteLLM (`Authorization: Bearer`). Preset switcher en `CommandPalette` (`/models preset`) + `ModelsMenu` preset view via PostMessage IPC. `npm run compile` -> 0 errores.
 
-  - [ ] **7.9.B.3 — Hardware Monitor — real metrics + execution-mode gating**
+  - [x] **7.9.B.3 — Hardware Monitor — real metrics + execution-mode gating**
     - **Problem:** El Hardware Monitor actualmente no detecta hardware real.
       Debe indicar y mostrar:
       - Cantidad total y disponible de RAM.
@@ -1039,16 +1039,19 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         que.
     - **Resolution:** _(pending design)_
 
-  - [ ] **7.9.B.4 — Rules & Governance — SOUL.md docs + Analyst rename**
+  - [x] **7.9.B.4 — Rules & Governance — SOUL.md docs + Analyst rename**
     - **Problem:** En el panel "Rules & Governance":
       - La seccion `SOUL.md` no explica para que sirve — debe guiar al usuario
         diciendo que es la persona / instrucciones globales para Natt (el
         Analyst Agent).
       - Falta un boton / input para cambiar el nombre del Analyst Agent
         (actualmente solo es editable via `ailienant-config.json`).
-    - **Resolution:** _(pending design)_
+    - **Resolution:** Nueva card "Agent Identity" con input para el nombre del
+      agente. Descripcion contextual bajo el titulo de SOUL.md. GET/POST
+      `/api/v1/system/soul` y `/api/v1/system/settings` implementados en
+      `api/system_settings.py`. Nombre persiste en `~/.ailienant/settings.json`.
 
-  - [ ] **7.9.B.5 — Audit Ledger — professional dashboards + intuitive naming**
+  - [x] **7.9.B.5 — Audit Ledger — professional dashboards + intuitive naming**
     - **Problem:** Dos defectos:
       - El titulo "Blake2b Chain Integrity" es dificil de entender para
         usuarios no-tecnicos. Debe usar un nombre mas intuitivo sin perder
@@ -1057,7 +1060,11 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       - El panel necesita dashboards visuales mas profesionales — actualmente
         es una lista plana de filas. Agregar metricas agregadas: count total
         de eventos, breakdown por tipo, integridad del chain, timeline visual.
-    - **Resolution:** _(pending design)_
+    - **Resolution:** Panel renombrado a "Approval Ledger". Card de integridad
+      renombrada a "Tamper-Evident Seal" (Blake2b en tooltip). Fila de metricas
+      (Total Events + Resolutions). Card de Event Types con barras de gauge.
+      GET `/api/v1/audit/log`, `/api/v1/audit/stats`, `/api/v1/audit/verify`
+      implementados en `api/audit.py` con URI de solo lectura SQLite.
 
   - [ ] **7.9.B.6 — Additional Dashboard Segments — analysis & expansion**
     - **Problem:** Analizar si es necesario y posible agregar mas segmentos al

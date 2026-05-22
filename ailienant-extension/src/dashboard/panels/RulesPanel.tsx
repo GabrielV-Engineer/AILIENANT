@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface DirectoryRule {
     id:        string;
@@ -11,10 +11,22 @@ function makeId(): string { return String(_ruleId++); }
 
 export function RulesPanel(): JSX.Element {
     const [globalInstructions, setGlobalInstructions] = useState('');
+    const [analystName, setAnalystName]               = useState('Natt');
     const [dirRules, setDirRules] = useState<DirectoryRule[]>([
         { id: makeId(), directory: '/src/auth', rules: 'All mutations must use strict typing.\nNo external dependencies.' },
     ]);
     const [saved, setSaved] = useState(false);
+
+    useEffect(() => {
+        fetch('/api/v1/system/soul')
+            .then(r => r.ok ? r.json() : null)
+            .then((d: { content?: string } | null) => { if (d?.content !== undefined) setGlobalInstructions(d.content); })
+            .catch(() => {});
+        fetch('/api/v1/system/settings')
+            .then(r => r.ok ? r.json() : null)
+            .then((d: { analyst_name?: string } | null) => { if (d?.analyst_name) setAnalystName(d.analyst_name); })
+            .catch(() => {});
+    }, []);
 
     const addRule = (): void => {
         setDirRules(prev => [...prev, { id: makeId(), directory: '', rules: '' }]);
@@ -31,13 +43,16 @@ export function RulesPanel(): JSX.Element {
     const saveAll = async (): Promise<void> => {
         setSaved(false);
         try {
-            // Persist global instructions
             await fetch('/api/v1/system/soul', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ content: globalInstructions }),
             });
-            // Persist directory rules
+            await fetch('/api/v1/system/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ analyst_name: analystName }),
+            });
             for (const r of dirRules) {
                 if (!r.directory) { continue; }
                 await fetch('/api/v1/telemetry/reject', {
@@ -55,9 +70,29 @@ export function RulesPanel(): JSX.Element {
         <div>
             <div className="db-section-title">Rules & Governance</div>
 
+            {/* Agent Identity */}
+            <div className="db-card">
+                <div className="db-card-title">Agent Identity</div>
+                <div className="db-label" style={{ marginBottom: 5 }}>Analyst Agent Name</div>
+                <input
+                    className="db-input"
+                    value={analystName}
+                    onChange={e => setAnalystName(e.target.value)}
+                    placeholder="Natt"
+                    style={{ fontSize: 12, maxWidth: 240 }}
+                />
+                <div className="db-muted" style={{ marginTop: 6, fontSize: 11 }}>
+                    This is the name the Analyst Agent uses when communicating with you.
+                </div>
+            </div>
+
             {/* Global instructions */}
             <div className="db-card">
                 <div className="db-card-title">Global Custom Instructions (SOUL.md)</div>
+                <div className="db-muted" style={{ fontSize: 11, marginBottom: 10 }}>
+                    These instructions define <strong>{analystName}</strong>'s persona and global behavior.
+                    They are loaded on every Analyst turn and can be hot-reloaded without restarting the server.
+                </div>
                 <textarea
                     className="db-input"
                     rows={6}
