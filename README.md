@@ -174,7 +174,7 @@ Proyect_Ailienant/
 │   │   │   ├── BentoMenu.tsx   #     3×3 agent launcher grid (FORCE_AGENT postMessage)
 │   │   │   ├── GraphViewer.tsx #     React Flow + 3-tier LOD (zoom>0.8/0.4–0.8/<0.4) + heatmap SVG
 │   │   │   ├── components/     #     TelemetryHUD (OCC ring + speedometer + sparkline + FinOps bar), ModeMenu,
-│   │   │   │                   #     IndexingStatus, PipelineProgress (Phase 7.9.B.12 — ephemeral node-progress ticker, not chat),
+│   │   │   │                   #     IndexingStatus, PipelineProgress (Phase 7.9.B.14 — collapsible per-turn 'Thinking' execution trace, not chat),
 │   │   │   │                   #     DreamingMode (🌙 popover), CSSAlertBanner, HITLCard, ContextOverlay,
 │   │   │   │                   #     CommandPalette (sectioned /command + /settings menu, 7.9.A.7) + ModelsMenu
 │   │   │   │                   #     + CustomizeMenu (7.9.A.7 permissions/output-styles/agents/hooks/mcp) + SkillsMenu (7.9.A.7.f insert/create)

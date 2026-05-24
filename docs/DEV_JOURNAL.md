@@ -2,6 +2,25 @@
 
 ---
 
+## Hito 7.9.B.14: Collapsible "Thinking" Execution Trace UX — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.14
+
+**Files changed:**
+- `ailienant-extension/src/workspace/Workspace.tsx` — `Message` gains `steps` / `stepsDone`; removed the ephemeral `pipelineSteps` state; `server_pipeline_step` attaches nodes to the active assistant turn (creating a placeholder before tokens), `server_stream_end` sets `stepsDone`; the trace renders per turn (via `Fragment`) immediately preceding its bubble, with the empty bubble suppressed during the thinking phase
+- `ailienant-extension/src/workspace/components/PipelineProgress.tsx` — Rebuilt as a collapsible accordion: muted header (spinner + current node) → click expands the vertical node stepper; spinner→check + step-count label + auto-collapse on `done`, still re-expandable
+- `ailienant-extension/src/workspace/workspace.css` — Replaced `.ws-pipeline*` with `.ws-thinking*` rules using `var(--vscode-*)` tokens (native, subtle, distinct from chat bubbles); reuses `@keyframes ws-spin`
+
+**Architectural outcomes:**
+- **Per-turn trace ownership:** execution traces are now bound to the specific assistant message, so each turn keeps its own inspectable, collapsed history with no cross-talk — instead of one global ticker that vanished.
+- **Transparency without clutter:** the default state is a single muted line; the full graph path is one click away and auto-collapses on completion, matching modern reasoning-model UX.
+- **Native theming:** VS Code CSS variables make the block read as an IDE element rather than a chat bubble.
+- **No backend/contract changes:** the existing `server_pipeline_step` / `server_token_chunk` / `server_stream_end` events already carried everything needed.
+
+**Verification:** `npm run compile` 0 errors (2 pre-existing lint warnings, unrelated files); `pytest` 565 passed (backend untouched).
+
+---
+
 ## Hito 7.9.B.13: From Stubs to Live LLM — Status Sync, Live Main Chat & Live Analyst — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.13

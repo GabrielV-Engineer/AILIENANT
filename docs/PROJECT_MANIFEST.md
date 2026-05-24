@@ -1318,6 +1318,25 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       main chat uses a direct conversational completion for now.
     - **Tests:** 565/565 · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.14 — Collapsible "Thinking" Execution Trace UX**
+    - **Problem:** the `server_pipeline_step` trace rendered as a single ephemeral
+      floating ticker that vanished when the answer arrived and was not tied to a turn —
+      no transparency into past executions, and no way to inspect the graph path.
+    - **Resolution (frontend-only):**
+      - **Per-turn state:** the step trace now lives on the assistant `Message`
+        (`steps`, `stepsDone`) instead of a transient `pipelineSteps` array. The
+        `server_pipeline_step` handler attaches nodes to the active turn (creating a
+        placeholder before tokens arrive); `server_stream_end` marks the turn done.
+      - **Collapsible component:** `PipelineProgress` rebuilt as an accordion — muted
+        single line with spinner + current node by default; click expands the vertical
+        node stepper (current node highlighted); on completion the spinner becomes a ✓,
+        the label shows the step count, and it auto-collapses while staying re-expandable.
+      - **Placement:** rendered per turn immediately *preceding* its assistant bubble;
+        the empty bubble is suppressed during the pre-token "thinking" phase.
+      - **Styling:** `.ws-thinking*` rules use `var(--vscode-*)` tokens for a native,
+        subtle IDE look distinct from chat bubbles (replaces `.ws-pipeline*`).
+    - **Tests:** 565/565 · `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante

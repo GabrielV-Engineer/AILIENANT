@@ -131,27 +131,61 @@ html, body, #root { height: 100%; }
 .ws-indexing-spin { animation: ws-spin 1s linear infinite; }
 @keyframes ws-spin { to { transform: rotate(360deg); } }
 
-/* ── Pipeline progress ticker (Phase 7.9.B.12) ─────────────── */
-.ws-pipeline {
+/* ── 'Thinking' execution trace (Phase 7.9.B.14) ─────────────── */
+.ws-thinking {
+  margin: 2px 0 6px;
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, var(--bg-main));
+  overflow: hidden;
+  font-size: 12px;
+}
+.ws-thinking-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 4px 0;
+  width: 100%;
   padding: 6px 10px;
-  border-radius: 6px;
-  background: var(--bg-main);
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground, var(--text-secondary));
+  text-align: left;
+  font: inherit;
   font-size: 12px;
-  color: var(--text-secondary, #9aa0a6);
 }
-.ws-pipeline-spin { animation: ws-spin 1s linear infinite; flex-shrink: 0; }
-.ws-pipeline-label { font-weight: 600; color: var(--text-secondary, #9aa0a6); }
-.ws-pipeline-node {
-  font-family: var(--font-mono, monospace);
-  color: var(--accent-primary);
+.ws-thinking-header:hover { color: var(--vscode-foreground, var(--text-primary)); }
+.ws-thinking-spin { animation: ws-spin 1s linear infinite; flex-shrink: 0; }
+.ws-thinking-check { color: var(--accent-primary, #63a583); flex-shrink: 0; }
+.ws-thinking-label { flex: 1; text-transform: capitalize; }
+.ws-thinking-chevron { opacity: 0.6; flex-shrink: 0; }
+.ws-thinking-steps {
+  list-style: none;
+  margin: 0;
+  padding: 4px 10px 8px 14px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.06));
+}
+.ws-thinking-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  color: var(--vscode-descriptionForeground, var(--text-secondary));
   text-transform: capitalize;
 }
-.ws-pipeline-count { margin-left: auto; opacity: 0.7; }
+.ws-thinking-step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--vscode-descriptionForeground, var(--text-secondary));
+  opacity: 0.5;
+}
+.ws-thinking-step[data-current="true"] { color: var(--vscode-foreground, var(--text-primary)); }
+.ws-thinking-step[data-current="true"] .ws-thinking-step-dot {
+  background: var(--accent-primary, #63a583);
+  opacity: 1;
+}
 
 /* ── Main split-grid ───────────────────────────────────────── */
 .ws-main {
