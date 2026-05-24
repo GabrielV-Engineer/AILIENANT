@@ -1328,3 +1328,20 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Backend EDIT: `core/sandbox.py` (+`_SANDBOX_REMOTE_REPO`/`_SANDBOX_REMOTE_TAG`; `pull_sandbox_image()` + `_pull_and_tag_sync()`).
   - Backend EDIT: `tests/test_runtime_status.py` (+reset `_pull_in_progress`; +12 tests).
   - Frontend REWRITE: `src/dashboard/panels/RuntimePanel.tsx`.
+
+## Hito 7.9.B.9: GHCR Migration, CI/CD Automation & Test Debt Payoff — 2026-05-23
+
+- **Status:** OK. `mypy -m core.sandbox -m api.runtime` limpio; `pytest tests/test_execution_tools.py tests/test_runtime_status.py` 38/38 passed (0 fallos; los 6 ambientales históricos quedan corregidos). `npm run compile` exit 0 (tsc 0 err); `npm run lint` exit 0 (2 warnings pre-existentes ajenos).
+- **Motivacion:** Tres deudas abiertas tras 7.9.B.8: (1) `_SANDBOX_REMOTE_REPO` apuntaba al placeholder de Docker Hub (`ailienant/sandbox`) en lugar del registry de producción GHCR; (2) no había pipeline CI/CD — cada cambio al Dockerfile requería un `docker push` manual; (3) 6 tests en `test_execution_tools.py` fallaban porque `get_active_adapter()` retorna `None` sin lifespan de FastAPI.
+- **Migracion GHCR:** `_SANDBOX_REMOTE_REPO` cambiado a `"ghcr.io/gabrielv-engineer/ailienant-sandbox"` en `core/sandbox.py` (una línea). Snippet CLI de fallback en `RuntimePanel.tsx` actualizado al mismo path (`REMOTE_IMAGE` const). El tag local (`ailienant-sandbox:latest`) y la lógica de retag no cambian.
+- **Dockerfile extraido:** `ailienant-core/Dockerfile` creado con el contenido exacto de `_DOCKERFILE_TEXT`. El string embebido en `sandbox.py` se mantiene como fallback de auto-build del adapter — ambas representaciones son idénticas; el archivo es la fuente de verdad para CI/CD.
+- **GitHub Actions CI/CD:** `.github/workflows/docker-publish.yml` — dispara en push a `main` cuando cambia `ailienant-core/Dockerfile` o `ailienant-core/core/sandbox.py`; usa `GITHUB_TOKEN` + `packages: write` (sin secretos adicionales); `docker/build-push-action@v5` pushea `ghcr.io/gabrielv-engineer/ailienant-sandbox:latest`.
+- **Test debt:** `tests/conftest.py` extendido con fixture `autouse` `_resolve_adapter` (monkeypatch): liga `core.sandbox.ACTIVE_ADAPTER` a `_DirectAdapter`, un test-double que ejecuta subprocesos directamente (sin gate HITL, sin Docker). La aserción de timeout en `test_sandbox_bash_timeout_kills_process` actualizada de `startswith("[sandbox_bash] TIMEOUT")` → `"[sandbox_bash] exit=124" in out` (formato real de la herramienta post-6.2). Compatible con `test_phase6_checkpoint_gate.py` (monkeypatch revierte tras cada test) y con los mocks directos de `test_runtime_status.py`.
+- **Files changed:**
+  - Backend EDIT: `core/sandbox.py` (`_SANDBOX_REMOTE_REPO` → GHCR).
+  - Backend NUEVO: `ailienant-core/Dockerfile` (extraido de `_DOCKERFILE_TEXT`).
+  - Backend EDIT: `tests/conftest.py` (+`_DirectAdapter` + fixture `_resolve_adapter` autouse).
+  - Backend EDIT: `tests/test_execution_tools.py` (aserción timeout corregida).
+  - Frontend EDIT: `src/dashboard/panels/RuntimePanel.tsx` (`REMOTE_IMAGE` → GHCR).
+  - CI/CD NUEVO: `.github/workflows/docker-publish.yml`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (+`[x] 7.9.B.9`), `README.md` (layout tree + API table), `DEV_JOURNAL.md` (este hito).

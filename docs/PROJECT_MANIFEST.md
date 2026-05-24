@@ -1174,6 +1174,34 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       capas via WebSocket), publicacion real de la imagen en un registry,
       controles stop/restart del contenedor.
 
+  - [x] **7.9.B.9 — GHCR Migration, CI/CD Automation & Test Debt Payoff**
+    - **Problem:** Tres deudas abiertas tras 7.9.B.8: (1) `_SANDBOX_REMOTE_REPO`
+      apuntaba al placeholder de Docker Hub (`ailienant/sandbox`) en lugar del
+      registry de produccion; (2) no habia pipeline CI/CD — cada cambio al
+      Dockerfile requeria un `docker push` manual; (3) 6 tests de
+      `test_execution_tools.py` fallaban porque `get_active_adapter()` retorna
+      `None` sin lifespan de FastAPI.
+    - **Resolution:**
+      - **Migracion GHCR:** `_SANDBOX_REMOTE_REPO` actualizado a
+        `"ghcr.io/gabrielv-engineer/ailienant-sandbox"` en `core/sandbox.py`.
+        Snippet CLI de fallback en `RuntimePanel.tsx` actualizado al mismo
+        path de GHCR.
+      - **Dockerfile extraido:** `ailienant-core/Dockerfile` creado con el
+        contenido exacto de `_DOCKERFILE_TEXT` — fuente de verdad para CI/CD.
+        El string embebido en `sandbox.py` se mantiene como fallback de
+        auto-build del adapter.
+      - **GitHub Actions:** `.github/workflows/docker-publish.yml` — dispara
+        en push a `main` cuando cambia `Dockerfile` o `core/sandbox.py`;
+        usa `GITHUB_TOKEN` (sin secretos extra) y `packages: write` para
+        pushear a GHCR automaticamente.
+      - **Test debt:** `tests/conftest.py` extendido con fixture `autouse`
+        `_resolve_adapter` (monkeypatch) que liga `ACTIVE_ADAPTER` a un
+        `_DirectAdapter` (subproceso directo, sin gate HITL ni Docker). La
+        asercion de timeout en `test_sandbox_bash_timeout_kills_process`
+        actualizada al formato de salida actual (`exit=124`). Resultado: 38/38
+        tests pasan sin lifespan de FastAPI.
+    - **Tests:** 38/38 en `test_execution_tools.py` + `test_runtime_status.py`.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante

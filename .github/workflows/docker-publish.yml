@@ -1,0 +1,31 @@
+name: Publish Sandbox Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ailienant-core/Dockerfile'
+      - 'ailienant-core/core/sandbox.py'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./ailienant-core
+          file: ./ailienant-core/Dockerfile
+          push: true
+          tags: ghcr.io/gabrielv-engineer/ailienant-sandbox:latest

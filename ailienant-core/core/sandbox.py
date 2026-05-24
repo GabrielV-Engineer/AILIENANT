@@ -54,7 +54,7 @@ logger = logging.getLogger("AILIENANT_SANDBOX")
 
 _SANDBOX_IMAGE_TAG: str = "ailienant-sandbox:latest"
 _SANDBOX_CONTAINER_NAME: str = "ailienant-sandbox-daemon"
-_SANDBOX_REMOTE_REPO: str = "ailienant/sandbox"   # placeholder public registry repo
+_SANDBOX_REMOTE_REPO: str = "ghcr.io/gabrielv-engineer/ailienant-sandbox"
 _SANDBOX_REMOTE_TAG: str = "latest"
 _CONTAINER_WORKDIR: str = "/workspace"
 _CONTAINER_TMPFS_PATH: str = "/work"
