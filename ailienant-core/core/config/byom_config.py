@@ -53,10 +53,26 @@ class ModelPreset(BaseModel):
     tiers: dict[str, str] = Field(default_factory=dict)
 
 
+class EmbeddingTarget(BaseModel):
+    """Resolved embedding backend, derived from the active preset's provider.
+
+    Persisted so the core layer (indexer preflight + semantic memory) can route
+    embeddings without importing the api layer. Provider-agnostic: api_base is
+    set for local + custom/openrouter; api_key carries the cloud secret.
+    """
+    model: str                      # litellm model id, e.g. "ollama/nomic-embed-text"
+    provider: str                   # ollama | lmstudio | vllm | openai | openrouter | anthropic | custom
+    api_base: Optional[str] = None  # local engine / custom base URL; None for native openai
+    api_key: str = ""               # cloud key (byom_config.json is already 0600)
+    dim: int = 768                  # expected vector dimension (verified dynamically at write)
+    is_local: bool = True
+
+
 class BYOMConfig(BaseModel):
     endpoints: list[EndpointConfig] = Field(default_factory=list)
     presets: list[ModelPreset] = Field(default_factory=list)
     active_preset_id: Optional[str] = None
+    embedding: Optional[EmbeddingTarget] = None  # persisted by _apply_preset (Phase 7.9.B.12)
 
 
 # ---------------------------------------------------------------------------

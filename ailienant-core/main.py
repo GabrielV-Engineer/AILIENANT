@@ -1,10 +1,16 @@
 import asyncio
 import logging
+import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, List, Optional, cast
 
 import httpx
-import os
+
+# Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
+# When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
+_AUTH_TOKEN: Optional[str] = os.environ.get("AILIENANT_AUTH_TOKEN") or None
+_API_PORT: int = int(os.environ.get("AILIENANT_API_PORT", "8000"))
 
 # --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
 from api.api_contracts import ModelInfo, ModelsAvailableResponse
@@ -39,7 +45,7 @@ from langchain_core.runnables import RunnableConfig
 from api.mcts_mirror import MergeReport, apply_merge, get_virtual_file
 
 # --- IMPORTACIONES FASE 3.4.7 (Silent Telemetry + Rule Distillation) ---
-from agents.analyst import distill_rejection_to_rule
+from agents.analyst import distill_rejection_to_rule, generate_analyst_reply
 from core.rules import rule_manager
 
 # --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
@@ -157,13 +163,69 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# SecOps: CORS es crítico para el Webview (vscode-webview://)
+# SecOps: CORS es crítico para el Webview (vscode-webview://).
+# Phase 7.9.A.5.1: replaced wildcard with explicit allowlist.
+# vscode-webview:// sub-origins change per panel — regex required.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción limitaremos al URI estricto del Webview
-    allow_methods=["*"],
+    allow_origin_regex=r"vscode-webview://[a-z0-9]+",
+    allow_origins=[
+        f"http://localhost:{_API_PORT}",
+        f"http://127.0.0.1:{_API_PORT}",
+        "http://localhost",
+        "http://127.0.0.1",
+        "null",
+    ],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Phase 7.9.A.5.1 — HTTP auth middleware.
+# Validates X-AILIENANT-TOKEN (or Authorization: Bearer) on every non-health request
+# when AILIENANT_AUTH_TOKEN env var is set. Dev-mode bypass: if the var is absent,
+# all requests pass. Dashboard SPA (same-origin) is exempt: S7-D CSRF already guards it.
+from fastapi import Request
+from fastapi.responses import JSONResponse as _JSONResponse
+
+@app.middleware("http")
+async def _require_token(request: Request, call_next):  # type: ignore[no-untyped-def]
+    if not _AUTH_TOKEN:
+        return await call_next(request)          # dev mode: no token configured
+    if request.url.path == "/":
+        return await call_next(request)          # health check: always public
+
+    # Dashboard static files: direct browser navigation sends no Origin header.
+    if request.url.path.startswith("/dashboard"):
+        return await call_next(request)
+
+    # Dashboard SPA API calls: same-origin GETs carry Referer but not Origin.
+    referer = request.headers.get("referer", "")
+    if referer.startswith((
+        f"http://localhost:{_API_PORT}/dashboard",
+        f"http://127.0.0.1:{_API_PORT}/dashboard",
+    )):
+        return await call_next(request)
+
+    origin = request.headers.get("origin", "")
+    # Dashboard SPA at http://localhost:{port} cannot receive VS Code postMessage
+    # so it cannot obtain the token. S7-D CSRF on mutation endpoints guards it.
+    if origin in (
+        f"http://localhost:{_API_PORT}",
+        f"http://127.0.0.1:{_API_PORT}",
+        "null",
+    ):
+        return await call_next(request)
+
+    raw = (
+        request.headers.get("X-AILIENANT-TOKEN", "")
+        or request.headers.get("authorization", "").removeprefix("Bearer ")
+    )
+    # secrets.compare_digest: constant-time comparison — timing attacks are feasible
+    # on localhost where network jitter cannot mask micro-second differences.
+    if not raw or not secrets.compare_digest(raw, _AUTH_TOKEN):
+        return _JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return await call_next(request)
+
 
 # Dashboard SPA — Phase 7.6 (served at /dashboard)
 _DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "ailienant-extension", "dist", "dashboard")
@@ -580,8 +642,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     La Puerta Principal de Streaming (WebSockets).
     Ruta estandarizada para coincidir con ws_client.ts.
     """
-    # 1. El Manager acepta y registra la conexión
-    await vfs_manager.connect(client_id, websocket)
+    # 1. El Manager acepta y registra la conexión.
+    # Phase 7.9.A.5.1: pass ephemeral token; connect() validates first message.
+    connected = await vfs_manager.connect(client_id, websocket, auth_token=_AUTH_TOKEN)
+    if not connected:
+        return
 
     try:
         # 2. El Bucle Infinito de Escucha
@@ -667,6 +732,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     valid_event.data.project_id,
                 )
 
+            elif valid_event.event_type == "client_analyst_query":
+                # Phase 7.9.B.12 — Natt analyst pane bridge (DEBUG analyst path).
+                reply = await generate_analyst_reply(valid_event.data.text)
+                await vfs_manager.send_natt_message(client_id, reply)
+                logger.info(
+                    "[Session: %s] Analyst query handled (%d chars in)",
+                    client_id, len(valid_event.data.text),
+                )
+
             elif valid_event.event_type == "client_file_delete":
                 io_coalescer.submit_unlink(
                     valid_event.data.filepath, valid_event.data.project_id
@@ -707,3 +781,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
         if client_id in _session_workspace_pid:
             _pid = _session_workspace_pid.pop(client_id)
             asyncio.create_task(lifecycle_manager.shutdown_workspace(_pid))
+
+
+# Phase 7.9.A.5.1 — explicit entry point so the extension can spawn with dynamic port.
+# The extension always passes --host 127.0.0.1 --port {port} as spawn args; _API_PORT
+# is the fallback for manual `python main.py` runs during development.
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=_API_PORT, reload=False)

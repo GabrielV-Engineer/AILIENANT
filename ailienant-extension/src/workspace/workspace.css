@@ -131,6 +131,28 @@ html, body, #root { height: 100%; }
 .ws-indexing-spin { animation: ws-spin 1s linear infinite; }
 @keyframes ws-spin { to { transform: rotate(360deg); } }
 
+/* ── Pipeline progress ticker (Phase 7.9.B.12) ─────────────── */
+.ws-pipeline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  font-size: 12px;
+  color: var(--text-secondary, #9aa0a6);
+}
+.ws-pipeline-spin { animation: ws-spin 1s linear infinite; flex-shrink: 0; }
+.ws-pipeline-label { font-weight: 600; color: var(--text-secondary, #9aa0a6); }
+.ws-pipeline-node {
+  font-family: var(--font-mono, monospace);
+  color: var(--accent-primary);
+  text-transform: capitalize;
+}
+.ws-pipeline-count { margin-left: auto; opacity: 0.7; }
+
 /* ── Main split-grid ───────────────────────────────────────── */
 .ws-main {
   display: grid;

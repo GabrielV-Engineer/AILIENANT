@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 from core.config.byom_config import (
     BYOM_CONFIG_PATH,
     BYOMConfig,
+    EmbeddingTarget,
     EndpointConfig,
     ModelPreset,
     is_masked_key,
@@ -29,6 +31,7 @@ from core.config.byom_config import (
     mask_api_key,
     save_byom_config,
 )
+from core.config import embedding_resolver
 from core.config_generator import (
     CONFIG_YAML_PATH,
     LM_STUDIO_API_BASE,
@@ -42,6 +45,21 @@ from core.config_generator import (
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 from api.websocket_manager import vfs_manager
 from core.indexer import lazy_indexer
+
+# ---------------------------------------------------------------------------
+# Embedding-target derivation (Phase 7.9.B.12) — provider-agnostic.
+# Per-provider default embed models (overridable via env for power users).
+# ---------------------------------------------------------------------------
+_OLLAMA_EMBED_MODEL = os.getenv("AILIENANT_OLLAMA_EMBED_MODEL", "ollama/nomic-embed-text")
+_LMSTUDIO_EMBED_MODEL = os.getenv("AILIENANT_LMSTUDIO_EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
+_CUSTOM_EMBED_MODEL = os.getenv("AILIENANT_CUSTOM_EMBED_MODEL", "text-embedding-3-small")
+_OPENAI_EMBED_MODEL = os.getenv("AILIENANT_OPENAI_EMBED_MODEL", "text-embedding-3-small")
+
+_KNOWN_PROVIDERS = {"ollama", "lmstudio", "vllm", "openai", "openrouter", "anthropic", "custom"}
+# Local-first selection: cheap local embeddings preferred, cloud as fallback.
+_EMBED_PROVIDER_PRIORITY = ["ollama", "lmstudio", "vllm", "custom", "openai", "openrouter", "anthropic"]
+_DIM_OLLAMA = 768
+_DIM_OPENAI = 1536
 
 logger = logging.getLogger("BYOM_API")
 router = APIRouter(prefix="/api/v1/byom", tags=["byom"])
@@ -219,6 +237,115 @@ def _merge_patch(existing: BYOMConfig, raw_body: dict) -> BYOMConfig:
     )
 
 
+def _ensure_v1(url: str) -> str:
+    """Normalize an OpenAI-compatible base URL to end in /v1 (LM Studio, vLLM, custom)."""
+    u = url.strip().rstrip("/")
+    return u if u.endswith("/v1") else f"{u}/v1"
+
+
+def _provider_of_model(model_id: str, endpoints: list[EndpointConfig]) -> Optional[str]:
+    """Infer the provider for a tier's model id.
+
+    Prefixed ids ("ollama/phi3", "openai/gpt-4o") resolve by prefix. A bare cloud
+    id ("gpt-4o") is attributed to the single non-local endpoint when unambiguous.
+    """
+    if not model_id:
+        return None
+    if "/" in model_id:
+        prefix = model_id.split("/", 1)[0].lower()
+        if prefix in _KNOWN_PROVIDERS:
+            return prefix
+    cloud_eps = [
+        e for e in endpoints
+        if e.provider in ("openai", "openrouter", "anthropic", "custom", "vllm")
+    ]
+    if len(cloud_eps) == 1:
+        return cloud_eps[0].provider
+    return None
+
+
+def _endpoint_for(provider: str, endpoints: list[EndpointConfig]) -> Optional[EndpointConfig]:
+    return next((e for e in endpoints if e.provider == provider), None)
+
+
+def _build_embedding_target(
+    provider: str, endpoints: list[EndpointConfig], has_ollama: bool
+) -> EmbeddingTarget:
+    """Map a chosen provider to a concrete, litellm-ready embedding target."""
+    if provider == "ollama":
+        ep = _endpoint_for("ollama", endpoints)
+        return EmbeddingTarget(
+            model=_OLLAMA_EMBED_MODEL, provider="ollama",
+            api_base=(ep.url if ep else OLLAMA_API_BASE), api_key="",
+            dim=_DIM_OLLAMA, is_local=True,
+        )
+    if provider == "lmstudio":
+        ep = _endpoint_for("lmstudio", endpoints)
+        base = _ensure_v1(ep.url if ep else LM_STUDIO_API_BASE)
+        return EmbeddingTarget(
+            model=f"openai/{_LMSTUDIO_EMBED_MODEL}", provider="lmstudio",
+            api_base=base, api_key=(ep.api_key if ep and ep.api_key else "sk-noauth"),
+            dim=_DIM_OLLAMA, is_local=True,
+        )
+    if provider in ("vllm", "custom"):
+        ep = _endpoint_for(provider, endpoints)
+        base = _ensure_v1(ep.url) if ep and ep.url else None
+        return EmbeddingTarget(
+            model=f"openai/{_CUSTOM_EMBED_MODEL}", provider=provider,
+            api_base=base, api_key=(ep.api_key if ep and ep.api_key else "sk-noauth"),
+            dim=_DIM_OPENAI, is_local=True,
+        )
+    if provider in ("openai", "openrouter"):
+        # OpenRouter has no stable embeddings API → use OpenAI embeddings.
+        ep = _endpoint_for("openai", endpoints)
+        key = ep.api_key if ep and ep.api_key else os.getenv("OPENAI_API_KEY", "")
+        return EmbeddingTarget(
+            model=_OPENAI_EMBED_MODEL, provider="openai",
+            api_base=None, api_key=key, dim=_DIM_OPENAI, is_local=False,
+        )
+    if provider == "anthropic":
+        # Anthropic has no embeddings API → fallback chain: OpenAI key → local Ollama.
+        key = os.getenv("OPENAI_API_KEY", "")
+        if key:
+            return EmbeddingTarget(
+                model=_OPENAI_EMBED_MODEL, provider="openai",
+                api_base=None, api_key=key, dim=_DIM_OPENAI, is_local=False,
+            )
+        if has_ollama:
+            return EmbeddingTarget(
+                model=_OLLAMA_EMBED_MODEL, provider="ollama",
+                api_base=OLLAMA_API_BASE, api_key="", dim=_DIM_OLLAMA, is_local=True,
+            )
+        # No embedding backend available — preflight surfaces the actionable error.
+        return EmbeddingTarget(
+            model="(none)", provider="anthropic",
+            api_base=None, api_key="", dim=_DIM_OPENAI, is_local=False,
+        )
+    # Unknown provider → default to local Ollama.
+    return EmbeddingTarget(
+        model=_OLLAMA_EMBED_MODEL, provider="ollama",
+        api_base=OLLAMA_API_BASE, api_key="", dim=_DIM_OLLAMA, is_local=True,
+    )
+
+
+def _derive_embedding_target(
+    preset: ModelPreset,
+    endpoints: list[EndpointConfig],
+    discovered: list["DiscoveredModelItem"],
+) -> EmbeddingTarget:
+    """Pick the embedding backend that matches the active preset's provider posture."""
+    providers: list[str] = []
+    for tier_val in preset.tiers.values():
+        p = _provider_of_model(tier_val, endpoints)
+        if p and p not in providers:
+            providers.append(p)
+    chosen = next((p for p in _EMBED_PROVIDER_PRIORITY if p in providers), None)
+    has_ollama = any(d.id.startswith("ollama/") for d in discovered)
+    if chosen is None:
+        chosen = "ollama" if has_ollama else "openai"
+    return _build_embedding_target(chosen, endpoints, has_ollama)
+
+
 async def _apply_preset(preset: ModelPreset) -> None:
     """Write config.yaml with tier overrides, then signal LiteLLM to reload."""
     tier_overrides: dict[str, str] = {
@@ -311,11 +438,16 @@ async def put_config(request: Request) -> BYOMConfigResponse:
 
     # Apply preset → config.yaml → LiteLLM reload.
     if merged.active_preset_id:
-        builtin_presets, _ = await _build_builtin_presets()
+        builtin_presets, discovered = await _build_builtin_presets()
         all_presets = {p.id: p for p in builtin_presets + merged.presets}
         active = all_presets.get(merged.active_preset_id)
         if active:
             await _apply_preset(active)
+            # Phase 7.9.B.12 — derive + persist the provider-agnostic embedding
+            # target so the indexer preflight + semantic memory route correctly.
+            merged.embedding = _derive_embedding_target(active, merged.endpoints, discovered)
+            await asyncio.to_thread(save_byom_config, merged)
+            embedding_resolver.refresh()
             await vfs_manager.broadcast_byom_config_applied(active.id, active.name)
             await lazy_indexer.retry()
 

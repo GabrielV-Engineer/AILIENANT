@@ -21,6 +21,9 @@ from api.ws_contracts import (
     ServerIndexingErrorEvent, IndexingErrorPayload,
     ServerVfsPatchApprovedEvent, VfsPatchApprovedPayload,
     ServerByomConfigAppliedEvent, ByomConfigAppliedPayload,
+    ServerNattMessageEvent, NattMessagePayload,
+    ServerPipelineStepEvent, PipelineStepPayload,
+    ServerStreamEndEvent,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -236,6 +239,32 @@ class ConnectionManager:
             session_id,
             ServerIndexingErrorEvent(data=IndexingErrorPayload(reason=reason)),
         )
+
+    # ------------------------------------------------------------------
+    # Phase 7.9.B.12 — Analyst pane + pipeline progress + stream end
+    # ------------------------------------------------------------------
+
+    async def send_natt_message(
+        self, session_id: str, content: str, is_alert: bool = False
+    ) -> None:
+        """Deliver an analyst reply to the Natt canvas of a single client."""
+        await self.send_personal_message(
+            session_id,
+            ServerNattMessageEvent(data=NattMessagePayload(content=content, is_alert=is_alert)),
+        )
+
+    async def broadcast_pipeline_step(
+        self, session_id: str, node_name: str, step_id: Optional[int] = None
+    ) -> None:
+        """Report that a LangGraph node completed (progress UI, not chat content)."""
+        await self.send_personal_message(
+            session_id,
+            ServerPipelineStepEvent(data=PipelineStepPayload(node_name=node_name, step_id=step_id)),
+        )
+
+    async def broadcast_stream_end(self, session_id: str) -> None:
+        """Finalize the streaming assistant message bubble on the client."""
+        await self.send_personal_message(session_id, ServerStreamEndEvent())
 
     # ------------------------------------------------------------------
     # Phase 2.22.4 — VFS Patch Approved (IPC Bridge)

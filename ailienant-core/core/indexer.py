@@ -106,34 +106,69 @@ class LazyIndexer:
         """
         Verify the embedding backend is reachable before touching any files.
 
-        Returns None if OK, or a human-readable reason string if the config is
-        missing/unreachable. Resets _is_running so a later retry (after the user
-        configures the LLM) will re-enter start().
+        Provider-agnostic (Phase 7.9.B.12): resolves the active embedding target
+        from the BYOM preset and validates it per provider — local engines are
+        probed; cloud providers are gated on key presence (never a local-port
+        ping). Returns None if OK, else a human-readable, actionable reason.
+        Resets _is_running so a later retry (after the user fixes config) re-enters.
         """
-        from shared.config import LITELLM_PROXY_BASE_URL, MODEL_EMBEDDING
+        import httpx
+        from core.config.embedding_resolver import get_embedding_target
 
-        # Direct provider models (e.g. "openai/text-embedding-ada-002") don't need
-        # the local proxy — assume they're configured correctly if the key exists.
-        if not MODEL_EMBEDDING.startswith("ailienant/"):
+        t = get_embedding_target()
+
+        # --- Non-local targets: cloud key validation or legacy proxy health -----
+        if not t.is_local:
+            if t.provider == "proxy":
+                try:
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(f"{t.api_base}/health", timeout=3.0)
+                        if resp.status_code >= 500:
+                            return (
+                                f"LiteLLM proxy at {t.api_base} returned HTTP "
+                                f"{resp.status_code}. Check your proxy configuration."
+                            )
+                except Exception:
+                    return (
+                        f"LiteLLM proxy not reachable at {t.api_base}. Apply a BYOM "
+                        "preset, start the proxy, or set AILIENANT_MODEL_EMBEDDING."
+                    )
+                return None
+            if t.model == "(none)" or t.provider == "anthropic":
+                return (
+                    "Anthropic has no embeddings API. Set OPENAI_API_KEY or enable a "
+                    "local engine (Ollama/LM Studio) for workspace indexing."
+                )
+            if not t.api_key:
+                return (
+                    f"API key required for {t.provider} embeddings. Add it to the BYOM "
+                    "endpoint configuration."
+                )
             return None
 
+        # --- Local engines: probe the endpoint + verify the embed model ---------
+        if not t.api_base:
+            return "No embedding endpoint configured. Apply a BYOM preset to set one."
         try:
-            import httpx
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"{LITELLM_PROXY_BASE_URL}/health",
-                    timeout=3.0,
-                )
-                if resp.status_code >= 500:
-                    return (
-                        f"LiteLLM proxy at {LITELLM_PROXY_BASE_URL} returned "
-                        f"HTTP {resp.status_code}. Check your proxy configuration."
-                    )
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                if t.provider == "ollama":
+                    resp = await client.get(f"{t.api_base}/api/tags")
+                    resp.raise_for_status()
+                    names = {m.get("name", "") for m in resp.json().get("models", [])}
+                    want = t.model.split("/", 1)[1] if "/" in t.model else t.model
+                    if want and not any(n == want or n.startswith(want) for n in names):
+                        return (
+                            f"Embedding model '{want}' not installed in Ollama. "
+                            f"Run: ollama pull {want}"
+                        )
+                else:
+                    # LM Studio / vLLM / custom — OpenAI-compatible /v1/models
+                    resp = await client.get(f"{t.api_base}/models")
+                    resp.raise_for_status()
         except Exception:
             return (
-                f"LiteLLM proxy not reachable at {LITELLM_PROXY_BASE_URL}. "
-                "Start the proxy or set a direct provider model via "
-                "AILIENANT_MODEL_EMBEDDING."
+                f"{t.provider} engine not reachable at {t.api_base}. Start it or "
+                "update the BYOM endpoint, then it will index automatically."
             )
         return None
 
