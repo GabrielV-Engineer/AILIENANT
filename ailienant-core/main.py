@@ -732,6 +732,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     valid_event.data.project_id,
                 )
 
+            elif valid_event.event_type == "client_clear_conversation":
+                # Phase 7.9.B.15 — drop short-term chat memory for this session.
+                task_service.clear_conversation(client_id)
+                logger.info("[Session: %s] Conversation memory cleared.", client_id)
+
             elif valid_event.event_type == "client_analyst_query":
                 # Phase 7.9.B.13 — Natt analyst pane bridge (live BYOM completion).
                 reply = await generate_analyst_reply(

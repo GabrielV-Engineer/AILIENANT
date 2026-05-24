@@ -24,6 +24,13 @@ _CHAT_SYSTEM_PROMPT: str = (
     "If the request is ambiguous, state the assumption you are making and proceed."
 )
 
+# Phase 7.9.B.15 — short-term session memory + GraphRAG injection.
+# In-memory and ephemeral by design (matches the "/context clear" UX wording);
+# keyed by the stable session_id (== WS client_id == X-Task-ID).
+_MAX_HISTORY_MESSAGES: int = 24      # ~12 turns retained per conversation
+_RAG_TOP_K: int = 5
+_conversations: Dict[str, List[Dict[str, str]]] = {}
+
 
 # Replicamos el contrato del frontend (api_client.ts)
 class TaskPayload(BaseModel):
@@ -145,7 +152,9 @@ class TaskService:
         # 4. Stream a real answer from the active BYOM chat model — unless the graph
         # suspended on HITL/ideation, which already broadcast its own question.
         if not merged_state.get("hitl_pending"):
-            await self._stream_chat_answer(session_id, payload.task_prompt)
+            await self._stream_chat_answer(
+                session_id, payload.task_prompt, payload.project_id
+            )
 
         return {
             "status": "success",
@@ -154,24 +163,75 @@ class TaskService:
             "output": final_output,
         }
 
-    async def _stream_chat_answer(self, session_id: str, task_prompt: str) -> None:
+    def _append_history(self, session_id: str, role: str, content: str) -> None:
+        """Append a turn message to the session's short-term memory (bounded)."""
+        history = _conversations.setdefault(session_id, [])
+        history.append({"role": role, "content": content})
+        if len(history) > _MAX_HISTORY_MESSAGES:
+            del history[: len(history) - _MAX_HISTORY_MESSAGES]
+
+    def clear_conversation(self, session_id: str) -> None:
+        """Drop the session's short-term memory (wired to /context clear)."""
+        _conversations.pop(session_id, None)
+
+    async def _build_rag_context(self, task_prompt: str, project_id: Optional[str]) -> str:
+        """Fetch top-k LanceDB snippets for the prompt and format them for the system prompt.
+
+        Returns '' when no project, no index, or any failure — RAG is best-effort
+        and must never block or break a chat turn.
+        """
+        if not project_id:
+            return ""
+        try:
+            from core.memory.semantic_memory import SemanticMemoryManager
+            snippets = await SemanticMemoryManager().search_snippets(
+                task_prompt, workspace_hash=project_id, k=_RAG_TOP_K
+            )
+        except Exception as exc:  # noqa: BLE001 — RAG fetch is non-fatal
+            logger.debug("RAG context fetch failed (non-fatal): %s", exc)
+            return ""
+        if not snippets:
+            return ""
+        blocks = "\n\n".join(f"### {path}\n{snip}" for path, snip in snippets if snip)
+        if not blocks:
+            return ""
+        return (
+            "\n\n# Relevant workspace context (GraphRAG)\n"
+            "Code excerpts from the user's project that may be relevant. "
+            "Use them when helpful; ignore them otherwise.\n\n" + blocks
+        )
+
+    async def _stream_chat_answer(
+        self, session_id: str, task_prompt: str, project_id: Optional[str] = None
+    ) -> None:
         """Stream a live completion from the active BYOM chat model to the IDE.
 
-        Always finalizes with broadcast_stream_end. On any failure (no preset,
-        engine down) it broadcasts an actionable message instead of hanging.
+        Injects short-term session memory + GraphRAG snippets. Persists the turn
+        only on a successful, non-empty reply. Always finalizes with
+        broadcast_stream_end; on failure it broadcasts an actionable message.
         """
-        messages = [
-            {"role": "system", "content": _CHAT_SYSTEM_PROMPT},
+        system_content = _CHAT_SYSTEM_PROMPT + await self._build_rag_context(
+            task_prompt, project_id
+        )
+        history = _conversations.get(session_id, [])
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_content},
+            *history,
             {"role": "user", "content": task_prompt},
         ]
-        produced = False
+        reply_parts: List[str] = []
         try:
             async for delta in LLMGateway.astream_byom(
                 messages, tier="medium", session_id=session_id
             ):
-                produced = True
+                reply_parts.append(delta)
                 await vfs_manager.broadcast_token(session_id, delta)
-            if not produced:
+            reply = "".join(reply_parts)
+            if reply:
+                # Persist only completed turns so a failure never poisons memory.
+                self._append_history(session_id, "user", task_prompt)
+                self._append_history(session_id, "assistant", reply)
+            else:
                 await vfs_manager.broadcast_token(
                     session_id,
                     "No response was produced. Check that a BYOM preset is active and "

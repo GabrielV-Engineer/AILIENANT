@@ -1337,6 +1337,28 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         subtle IDE look distinct from chat bubbles (replaces `.ws-pipeline*`).
     - **Tests:** 565/565 · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.15 — Session Memory + GraphRAG Injection for the Live Chat**
+    - **Problem:** the live main chat was a stateless, context-blind oracle —
+      `_stream_chat_answer` sent only `[system, user]`, so it forgot prior turns
+      (amnesia) and never saw the project (blindness).
+    - **Resolution:**
+      - **Session memory:** in-memory, ephemeral per-session history
+        (`_conversations`, keyed by the stable `session_id == WS client_id ==
+        X-Task-ID`), bounded to `_MAX_HISTORY_MESSAGES=24`. `_stream_chat_answer`
+        prepends the history; the turn is persisted only on a successful non-empty
+        reply (failures never poison memory).
+      - **GraphRAG injection:** `SemanticMemoryManager.search_snippets()` returns
+        top-k `(file_path, content_snippet)` from LanceDB; `_build_rag_context()`
+        formats them and appends them to the system prompt invisibly. Best-effort:
+        no project / no index / embed failure → no injection, chat still answers.
+      - **Clear wiring:** new `client_clear_conversation` WS contract; `main.py`
+        routes it to `task_service.clear_conversation(client_id)`; the `/context
+        clear` command (`workspace_panel.ts`) now notifies the backend in addition
+        to clearing the webview — honoring its "clears short-term memory" promise.
+    - **Scope note:** LangGraph planner/coder un-stub remains deferred; this targets
+      the direct conversational chat path only.
+    - **Tests:** 565/565 · `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante

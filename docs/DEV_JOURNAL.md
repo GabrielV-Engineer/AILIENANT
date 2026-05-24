@@ -2,6 +2,27 @@
 
 ---
 
+## Hito 7.9.B.15: Session Memory + GraphRAG Injection for the Live Chat — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.15
+
+**Files changed:**
+- `ailienant-core/core/memory/semantic_memory.py` — Added `search_snippets()` + `_query_snippets()` returning top-k `(file_path, content_snippet)` for live-chat RAG (reuses the sanitized `workspace_hash` cosine query; `[]` on empty/failure)
+- `ailienant-core/core/task_service.py` — Short-term per-session memory (`_conversations` keyed by `session_id`, bounded by `_MAX_HISTORY_MESSAGES=24`) via `_append_history`/`clear_conversation`; `_build_rag_context()` injects LanceDB snippets into the system prompt; `_stream_chat_answer(session_id, task_prompt, project_id)` now sends `[system+RAG, *history, user]`, accumulates the reply, and persists the turn only on success
+- `ailienant-core/api/ws_contracts.py` — Added `ClientClearConversationEvent` + union entry
+- `ailienant-core/main.py` — WS handler: `client_clear_conversation` → `task_service.clear_conversation(client_id)`
+- `ailienant-extension/src/providers/workspace_panel.ts` — `CLEAR_CONVERSATION` now also sends the `client_clear_conversation` WS event (backend memory reset), not just `CONVERSATION_CLEARED` to the webview
+
+**Architectural outcomes:**
+- **Iterative partner, not an oracle:** the chat remembers prior turns within a session; memory keys on the already-stable `session_id` (== WS client_id == X-Task-ID), so no new identity plumbing was needed.
+- **Invisible project sight:** every turn runs a semantic search against the workspace embeddings and folds the most relevant snippets into the system prompt — the user gets project-aware answers without manually attaching context.
+- **Graceful by construction:** RAG and memory are both best-effort and ephemeral ("short-term"); missing index/preset/engine degrades to a plain (or actionable-fallback) answer, never a hang. Failed turns are not stored.
+- **Honest clear:** `/context clear` finally clears what its description promised — the backend short-term memory — by routing through a new WS event.
+
+**Verification:** `pytest` 565 passed; `npm run compile` 0 errors (2 pre-existing lint warnings, unrelated files).
+
+---
+
 ## Hito 7.9.B.14: Collapsible "Thinking" Execution Trace UX — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.14
