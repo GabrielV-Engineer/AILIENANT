@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 interface RuntimeStatus {
     tier:              'DOCKER' | 'WASM' | 'NATIVE_HITL' | null;
@@ -8,29 +8,38 @@ interface RuntimeStatus {
     mode_label:        string;
 }
 
-interface LaunchResult {
-    launched: boolean;
-    platform: 'windows' | 'macos' | 'linux';
-    message:  string;
-}
+interface LaunchResult { launched: boolean; platform: string; message: string; }
+interface PullResult { pulled: boolean; image?: string; error?: string; message: string; }
 
 const POLL_INTERVAL_MS = 5_000;
+const LAUNCH_TIMEOUT_MS = 30_000;
+const REMOTE_IMAGE = 'ailienant/sandbox:latest';
 const SEMAPHORE = { green: '#63a583', yellow: '#E3B341', red: '#F85149', gray: '#888888' } as const;
+type Tone = 'ok' | 'warn' | 'bad';
 
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function StatusRow({ ok, label, pulse }: { ok: boolean; label: string; pulse?: boolean }): JSX.Element {
-    const color = ok ? SEMAPHORE.green : SEMAPHORE.red;
+function StatusRow({ tone, label, pulse }: { tone: Tone; label: string; pulse?: boolean }): JSX.Element {
+    const color = tone === 'ok' ? SEMAPHORE.green : tone === 'warn' ? SEMAPHORE.yellow : SEMAPHORE.red;
     return (
         <div className="db-traffic-light" style={{ marginBottom: 8 }}>
             <div
-                className={`db-tl-dot${pulse && ok ? ' byom-status-dot--pulse' : ''}`}
+                className={`db-tl-dot${pulse && tone === 'ok' ? ' byom-status-dot--pulse' : ''}`}
                 style={{ background: color }}
             />
             <span className="db-muted" style={{ fontSize: 12 }}>{label}</span>
         </div>
+    );
+}
+
+function CliSnippet({ cmd }: { cmd: string }): JSX.Element {
+    return (
+        <div style={{
+            fontFamily: 'var(--font-mono, monospace)', fontSize: 11, background: 'var(--bg-hover)',
+            borderRadius: 4, padding: '6px 8px', marginTop: 6, userSelect: 'all', wordBreak: 'break-all',
+        }}>{cmd}</div>
     );
 }
 
@@ -39,13 +48,17 @@ function StatusRow({ ok, label, pulse }: { ok: boolean; label: string; pulse?: b
 // ---------------------------------------------------------------------------
 
 export function RuntimePanel(): JSX.Element {
-    const [status, setStatus]     = useState<RuntimeStatus | null>(null);
-    const [launching, setLaunching] = useState(false);
-    const [launchMsg, setLaunchMsg] = useState<string>('');
+    const [status, setStatus]         = useState<RuntimeStatus | null>(null);
+    const [launching, setLaunching]   = useState(false);   // waiting for daemon after a launch
+    const [launchMsg, setLaunchMsg]   = useState('');
+    const [downloading, setDownloading] = useState(false);
+    const [downloadMsg, setDownloadMsg] = useState('');
+    const [showFallback, setShowFallback] = useState(false);
+    const launchDeadlineRef = useRef<number>(0);
 
-    const fetchStatus = useCallback(async (): Promise<void> => {
+    const fetchStatus = useCallback(async (force = false): Promise<void> => {
         try {
-            const r = await fetch('/api/v1/runtime/status');
+            const r = await fetch(force ? '/api/v1/runtime/status?force=true' : '/api/v1/runtime/status');
             if (r.ok) { setStatus(await r.json() as RuntimeStatus); }
         } catch { /* backend offline */ }
     }, []);
@@ -53,39 +66,78 @@ export function RuntimePanel(): JSX.Element {
     // Poll every 5 s; clear on unmount.
     useEffect(() => {
         fetchStatus();
-        const id = setInterval(fetchStatus, POLL_INTERVAL_MS);
+        const id = setInterval(() => fetchStatus(), POLL_INTERVAL_MS);
         return () => clearInterval(id);
     }, [fetchStatus]);
 
+    // Escape hatch: clear "launching" once daemon is up OR the 30 s deadline passes.
+    useEffect(() => {
+        if (!launching) { return; }
+        if (status?.docker_reachable) {
+            setLaunching(false);
+            setLaunchMsg('Docker is now reachable.');
+            return;
+        }
+        const id = setInterval(() => {
+            if (Date.now() > launchDeadlineRef.current) {
+                setLaunching(false);
+                setLaunchMsg('Docker did not become reachable in time. Use Force Retry or start it manually.');
+            }
+        }, 1_000);
+        return () => clearInterval(id);
+    }, [launching, status?.docker_reachable]);
+
     const handleStartDocker = async (): Promise<void> => {
-        setLaunching(true);
         setLaunchMsg('');
         try {
             const r = await fetch('/api/v1/runtime/start-docker', { method: 'POST' });
-            if (r.ok) {
-                const data = await r.json() as LaunchResult;
+            const data = r.ok ? (await r.json() as LaunchResult) : null;
+            if (data?.launched) {
+                setLaunching(true);
+                launchDeadlineRef.current = Date.now() + LAUNCH_TIMEOUT_MS;
                 setLaunchMsg(data.message);
             } else {
-                setLaunchMsg('Request failed. Please start Docker manually.');
+                setLaunchMsg(data?.message ?? 'Request failed. Please start Docker manually.');
             }
         } catch {
             setLaunchMsg('Could not reach the backend. Is Core running?');
+        }
+    };
+
+    const handleForceRetry = async (): Promise<void> => {
+        setLaunching(false);
+        setLaunchMsg('');
+        launchDeadlineRef.current = 0;
+        await fetchStatus(true);
+    };
+
+    const handleDownloadImage = async (): Promise<void> => {
+        setDownloading(true);
+        setDownloadMsg('Downloading… this may take a few minutes depending on your connection.');
+        try {
+            const r = await fetch('/api/v1/runtime/pull-image', { method: 'POST' });
+            const data = r.ok ? (await r.json() as PullResult) : null;
+            setDownloadMsg(data?.message ?? 'Download failed. See the manual fallback below.');
+            await fetchStatus(true);
+        } catch {
+            setDownloadMsg('Could not reach the backend. Is Core running?');
         } finally {
-            setLaunching(false);
+            setDownloading(false);
         }
     };
 
     // ── derived display values ─────────────────────────────────────────────
     const tierColor: string =
-        status?.docker_reachable                  ? SEMAPHORE.green  :
-        status?.tier === 'WASM'                   ? SEMAPHORE.yellow :
-        status?.tier === 'NATIVE_HITL'            ? SEMAPHORE.red    :
-                                                    SEMAPHORE.gray;
+        status?.docker_reachable       ? SEMAPHORE.green  :
+        status?.tier === 'WASM'        ? SEMAPHORE.yellow :
+        status?.tier === 'NATIVE_HITL' ? SEMAPHORE.red    :
+                                         SEMAPHORE.gray;
 
-    const modeLabel  = status?.mode_label ?? 'Loading…';
-    const reachable  = status?.docker_reachable ?? false;
-    const hasImage   = status?.image_exists ?? false;
-    const isRunning  = status?.container_running ?? false;
+    const modeLabel = status?.mode_label ?? 'Loading…';
+    const reachable = status?.docker_reachable ?? false;
+    const hasImage  = status?.image_exists ?? false;
+    const isRunning = status?.container_running ?? false;
+    const imageTone: Tone = hasImage ? 'ok' : reachable ? 'warn' : 'bad';
 
     return (
         <div>
@@ -103,16 +155,18 @@ export function RuntimePanel(): JSX.Element {
 
                 {/* Three status rows */}
                 <StatusRow
-                    ok={reachable}
-                    label={reachable ? 'Docker Daemon — reachable' : 'Docker Daemon — unreachable'}
+                    tone={reachable ? 'ok' : 'bad'}
                     pulse
+                    label={reachable ? 'Docker Daemon — reachable' : 'Docker Daemon — unreachable / degraded'}
                 />
                 <StatusRow
-                    ok={hasImage}
-                    label={hasImage ? `Sandbox image present (${status?.tier === 'DOCKER' ? 'ailienant-sandbox:latest' : 'N/A'})` : 'Sandbox image not built'}
+                    tone={imageTone}
+                    label={hasImage
+                        ? 'Sandbox image present (ailienant-sandbox:latest)'
+                        : reachable ? 'Sandbox image not downloaded' : 'Sandbox image — unknown (daemon down)'}
                 />
                 <StatusRow
-                    ok={isRunning}
+                    tone={isRunning ? 'ok' : 'bad'}
                     label={isRunning ? 'Container running' : 'Container stopped / not started'}
                 />
 
@@ -141,15 +195,51 @@ export function RuntimePanel(): JSX.Element {
                             disabled={launching}
                             onClick={handleStartDocker}
                         >
-                            {launching ? 'Launching…' : 'Start Docker'}
+                            {launching ? 'Launching… polling for status' : 'Start Docker'}
                         </button>
                     </>
                 )}
 
+                {/* Escape hatch — always available so the user is never trapped. */}
+                <button
+                    className="db-btn db-btn-secondary"
+                    style={{ marginLeft: reachable ? 0 : 8, marginTop: reachable ? 12 : 0 }}
+                    onClick={handleForceRetry}
+                >
+                    Force Retry / Re-check
+                </button>
+
                 {/* Launch result message — plain text node, never dangerouslySetInnerHTML */}
                 {launchMsg !== '' && (
-                    <div className="db-muted" style={{ marginTop: 8, fontSize: 12 }}>
-                        {launchMsg}
+                    <div className="db-muted" style={{ marginTop: 8, fontSize: 12 }}>{launchMsg}</div>
+                )}
+
+                {/* Image download block — only when daemon is up but image missing. */}
+                {reachable && !hasImage && (
+                    <div style={{ marginTop: 16, borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Sandbox image not installed</div>
+                        <div className="db-muted" style={{ fontSize: 12, marginBottom: 10 }}>
+                            Download the pre-built isolated sandbox environment to enable Docker-tier execution.
+                        </div>
+                        <button className="db-btn db-btn-primary" disabled={downloading} onClick={handleDownloadImage}>
+                            {downloading ? 'Downloading…' : 'Download Sandbox Environment'}
+                        </button>
+                        {downloadMsg !== '' && (
+                            <div className="db-muted" style={{ marginTop: 8, fontSize: 12 }}>{downloadMsg}</div>
+                        )}
+                        <button
+                            className="db-btn db-btn-secondary"
+                            style={{ marginTop: 10 }}
+                            onClick={() => setShowFallback(v => !v)}
+                        >
+                            {showFallback ? 'Hide manual install' : 'Manual install (advanced / offline)'}
+                        </button>
+                        {showFallback && (
+                            <div style={{ marginTop: 8 }}>
+                                <div className="db-muted" style={{ fontSize: 11 }}>Run from a terminal with Docker access:</div>
+                                <CliSnippet cmd={`docker pull ${REMOTE_IMAGE}`} />
+                            </div>
+                        )}
                     </div>
                 )}
 
