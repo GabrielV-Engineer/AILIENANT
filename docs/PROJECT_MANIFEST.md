@@ -1139,6 +1139,41 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       - **Diferidos:** streaming de stdout/stderr del contenedor (requiere
         WebSocket + Docker attach API), inspeccion estilo Portainer.
 
+  - [x] **7.9.B.8 — Runtime Resilience & Zero-Config Image Pull**
+    - **Problem:** El smoke test en Windows revelo dos huecos: (1) `client.ping()`
+      sigue respondiendo OK aunque el motor WSL2 este roto, dejando el dashboard
+      atrapado en `docker_reachable=True` sin via de recuperacion (el boton
+      desaparece); (2) habilitar el tier Docker exige construir/pullear la imagen
+      del sandbox manualmente desde terminal.
+    - **Resolution:**
+      - **Sonda profunda:** `_probe_docker` ahora usa `client.info()` (no `ping`)
+        con timeout 2s y captura granular (`docker.errors.APIError`,
+        `requests.exceptions.ConnectionError`, `TimeoutError`) → un motor
+        degradado se reporta DOWN. La cache de 5s se auto-refresca; nuevo
+        parametro `force` (query `?force=true`) la omite para recuperacion
+        inmediata.
+      - **Escape hatch (frontend):** boton "Force Retry / Re-check" siempre
+        visible; el estado "Launching…" se auto-limpia cuando el daemon responde
+        o tras un deadline de 30s — el usuario nunca queda atrapado.
+      - **Pull zero-config:** nuevo `POST /api/v1/runtime/pull-image` (no
+        bloqueante via `asyncio.to_thread`) + helper `pull_sandbox_image()` en
+        `core/sandbox.py` que pullea `ailienant/sandbox:latest` (placeholder) y
+        lo re-etiqueta al tag local `ailienant-sandbox:latest`. Errores
+        estructurados: `no_connection` / `image_not_found` / `disk_full` /
+        `registry_error` / `in_progress` / `docker_down`. Guard `_pull_in_progress`
+        serializa descargas; reusa el guard CSRF S7-D.
+      - **UX accionable:** fila de imagen tri-estado (amarillo = falta pero
+        recuperable); boton "Download Sandbox Environment" + acordeon de fallback
+        manual con snippet `docker pull ailienant/sandbox:latest`.
+    - **Nota arquitectonica:** `ailienant/sandbox:latest` es un tag placeholder
+      (la imagen aun no esta publicada); hasta entonces el pull devuelve
+      `image_not_found` y el auto-build existente del adapter sigue como fallback.
+    - **Tests:** +12 tests en `tests/test_runtime_status.py` (22 en total):
+      sonda info()/APIError/ConnectionError/force, y los 7 caminos del pull.
+    - **Diferidos:** barra de progreso en vivo del pull (requiere streaming de
+      capas via WebSocket), publicacion real de la imagen en un registry,
+      controles stop/restart del contenedor.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante

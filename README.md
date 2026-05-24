@@ -274,8 +274,9 @@ The server exposes:
 | `GET /api/v1/telemetry/tokens` | Snapshot the token ledger |
 | `GET /api/v1/telemetry/routing` | Phase 7.9.B.6 — recent routing decisions, paginated; reason secret-masked, OFFSET hard-capped (read-only) |
 | `GET /api/v1/telemetry/oom` | Phase 7.9.B.6 — recent OOM rescue-swap events, paginated (read-only) |
-| `GET /api/v1/runtime/status` | Phase 7.9.B.7 — live sandbox tier + Docker daemon probe (5 s cache); returns tier, docker_reachable, image_exists, container_running, mode_label |
+| `GET /api/v1/runtime/status` | Phase 7.9.B.7/8 — live sandbox tier + deep Docker engine probe via `info()` (5 s cache; `?force=true` bypasses); returns tier, docker_reachable, image_exists, container_running, mode_label |
 | `POST /api/v1/runtime/start-docker` | Phase 7.9.B.7 — platform-specific Docker Desktop launcher (S7-A/B/C/D hardened; loopback-only) |
+| `POST /api/v1/runtime/pull-image` | Phase 7.9.B.8 — zero-config pull of the pre-built sandbox image from the public registry (non-blocking; structured errors: no_connection / image_not_found / disk_full); reuses S7-D Origin guard |
 | `POST /api/v1/system/janitor` | Trigger the memory janitor (vector GC + MCTS purge) |
 | `GET /api/v1/memory/sections` | Enumerate indexed folders per project (dashboard, no vectors loaded) |
 | `GET /api/v1/memory/graph` | Code dependency graph for one section (nodes by PageRank) |
