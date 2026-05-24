@@ -186,7 +186,13 @@ async def generate_analyst_reply(text: str, session_id: str = "") -> str:
     Degrades to an actionable message if no preset is active or the engine is down.
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
+    from core.config.model_resolver import get_chat_target
     system_prompt = soul_manager.get_prompt()
+    _target = get_chat_target("medium")
+    logger.debug(
+        "Analyst resolving model=%s base=%s",
+        getattr(_target, "model", None), getattr(_target, "api_base", None),
+    )
     try:
         reply = await LLMGateway.acomplete_byom(
             messages=[
@@ -195,12 +201,17 @@ async def generate_analyst_reply(text: str, session_id: str = "") -> str:
             ],
             tier="medium",
             temperature=0.5,
-            max_tokens=800,
+            max_tokens=512,
+            timeout=45.0,
             session_id=session_id,
         )
         return reply.strip() or "(no response)"
     except Exception as exc:  # noqa: BLE001 — analyst must never crash the WS loop
-        logger.warning("Analyst live reply failed: %s", exc)
+        logger.warning(
+            "Analyst live reply failed [%s: %s] (model=%s base=%s)",
+            type(exc).__name__, exc,
+            getattr(_target, "model", None), getattr(_target, "api_base", None),
+        )
         return (
             "I can't reach the configured model right now. Activate a BYOM preset "
             "(Dashboard → BYOM) and make sure its engine is running, then ask me again."

@@ -2,6 +2,34 @@
 
 ---
 
+## Hito 7.9.B.17: Fix "Neural Network Collapse" — HTTP/Pipeline Decoupling + Ollama Chat Route — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.17
+
+**Root cause (the user's embedding-exception hypothesis was wrong — those paths were already fully guarded):**
+- **The crash = a 10s client HTTP timeout, not a WebSocket collapse.** After 7.9.B.16 made the agents do real LLM work, `POST /task/submit` (`main.py`) blocked the response until the entire planner+coder/chat pipeline finished — far longer than `api_client.ts`'s 10s `AbortController`. The abort reason was passed as a *string*, so the rejected fetch error had no `.name`/`.message`, rendering "Network error: undefined" + "Neural network collapse" while the WS kept streaming the real answer underneath.
+- **`<|im_start|>` spam + analyst failures = wrong Ollama litellm route.** Chat models resolved as `ollama/<m>` (litellm's `/api/generate`), which flattens messages and skips the chat template, leaking ChatML tokens. `ollama_chat/<m>` (`/api/chat`) applies the template.
+- **Persistent "nomic-embed-text not installed" toast = brittle name match** (Ollama reports `nomic-embed-text:latest`).
+
+**Files changed:**
+- `ailienant-core/main.py` — `submit_task` is now fire-and-forget: schedules `process_task` on a background task (strong-ref set) and returns `202 {"status":"accepted"}` immediately; runner wraps failures into an actionable WS token + `broadcast_stream_end`. Analyst WS dispatch (`client_analyst_query`) also runs off the receive loop so a slow model never stalls inbound messages.
+- `ailienant-extension/src/api/api_client.ts` — `submitTask` catch detects abort via `controller.signal.aborted` (not `error.name`), uses `error?.message ?? String(error)` (never "undefined"), and re-throws a normalized `AbortError` so `session.ts`'s existing suppression keeps the collapse toast quiet.
+- `ailienant-core/core/config/model_resolver.py` — `get_chat_target` normalizes `ollama/<m>` → `ollama_chat/<m>` at read time (fixes already-persisted presets without a re-apply).
+- `ailienant-core/api/byom.py` — `_normalize_chat_model` emits `ollama_chat/<m>` for the ollama provider so newly-applied presets persist correctly.
+- `ailienant-core/core/indexer.py` — new pure `_ollama_model_present(names, want)`: tag-/case-insensitive, bidirectional prefix match; used by `_preflight_check`.
+- `ailienant-core/agents/analyst.py` — `generate_analyst_reply` logs the resolved model/base + exception class and uses an explicit `timeout`/lower `max_tokens` for fast, visible failure.
+- `ailienant-core/tests/test_model_resolver.py`, `tests/test_indexer_preflight.py` — new focused unit tests.
+- `ailienant-core/tests/test_hybrid_routing.py` — `test_ainvoke_tier_overrides_explicit_model` now patches `get_chat_target`→None to isolate tier-precedence from the machine's active BYOM preset (the BYOM-aware `ainvoke` would otherwise resolve the alias).
+
+**Architectural outcomes:**
+- **Streaming-correct transport:** the HTTP layer only acknowledges; all results flow over the WebSocket (already wired). The 10s timeout now covers an instant dispatch, so it effectively never trips on real LLM work.
+- **One chokepoint fixes three symptoms:** routing Ollama chat through `ollama_chat/` repairs the main chat template leak, the analyst, and planner/coder JSON quality at the single `get_chat_target` resolution point.
+- **Graceful, honest degradation:** background-runner failures surface as an actionable chat message + stream end; a genuinely-down core now reads "check the connection", never "undefined".
+
+**Verification:** `pytest` 575 passed; `npm run compile` 0 errors (2 pre-existing lint warnings, unrelated files).
+
+---
+
 ## Hito 7.9.B.16: Un-stubbing the Agents — Real Planner + Coder (Propose & Review MVP) — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.16

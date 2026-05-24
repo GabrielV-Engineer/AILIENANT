@@ -32,6 +32,23 @@ def _load() -> Dict[str, ModelTarget]:
     return _cached
 
 
+def _normalize_for_chat(target: ModelTarget) -> ModelTarget:
+    """Route Ollama chat models through litellm's chat endpoint.
+
+    `ollama/<m>` resolves to Ollama's completion endpoint (`/api/generate`), which
+    flattens messages into a raw prompt and never applies the model's chat
+    template — leaking ChatML control tokens (e.g. `<|im_start|>`) and degrading
+    quality. `ollama_chat/<m>` uses `/api/chat`, which applies the template. This
+    normalizes at read time so already-persisted presets are fixed without a
+    re-apply. Embeddings keep `ollama/` (there is no `ollama_chat` embed route).
+    """
+    if target.provider == "ollama" and target.model.startswith("ollama/"):
+        return target.model_copy(
+            update={"model": "ollama_chat/" + target.model.split("/", 1)[1]}
+        )
+    return target
+
+
 def get_chat_target(tier: str = "medium") -> Optional[ModelTarget]:
     """Return the chat ModelTarget for ``tier``, with graceful fallback.
 
@@ -43,14 +60,14 @@ def get_chat_target(tier: str = "medium") -> Optional[ModelTarget]:
     if not targets:
         return None
     if tier in targets:
-        return targets[tier]
+        return _normalize_for_chat(targets[tier])
     for t in _FALLBACK_ORDER:
         if t in targets:
             logger.info("Chat tier '%s' unset — falling back to '%s'.", tier, t)
-            return targets[t]
+            return _normalize_for_chat(targets[t])
     # Any remaining target (deterministic by sorted key).
     first_key = sorted(targets.keys())[0]
-    return targets[first_key]
+    return _normalize_for_chat(targets[first_key])
 
 
 def refresh() -> None:

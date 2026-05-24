@@ -379,11 +379,17 @@ def _normalize_chat_model(model_id: str, provider: str) -> str:
     """Make a tier model id litellm-routable for its provider.
 
     OpenAI-compatible local servers (LM Studio / vLLM / custom) must be addressed
-    via the `openai/<model>` provider with a custom api_base.
+    via the `openai/<model>` provider with a custom api_base. Ollama chat models
+    must use `ollama_chat/<model>` (litellm's `/api/chat` route) so the model's
+    chat template is applied — `ollama/<model>` hits `/api/generate` and leaks raw
+    template tokens.
     """
     if provider in ("lmstudio", "vllm", "custom"):
         base_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
         return f"openai/{base_name}"
+    if provider == "ollama":
+        base_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        return f"ollama_chat/{base_name}"
     return model_id
 
 

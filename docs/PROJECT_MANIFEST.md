@@ -1385,6 +1385,35 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
     - **Tests:** 566/566 (updated coder/planner-DEBUG tests + new diff test) ·
       `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.17 — Fix "Neural Network Collapse": HTTP/Pipeline Decoupling + Ollama Chat Route**
+    - **Problem:** after 7.9.B.16 the chat threw "Neural network collapse" + "Network
+      error: undefined", the analyst kept replying "I couldn't reach the configured
+      model" with an active preset, the "nomic-embed-text not installed" toast persisted
+      after pulling, and the model emitted `<|im_start|>` spam. (The reported cause —
+      an embedding exception collapsing the WS — was wrong; those paths were already
+      guarded.)
+    - **Root cause:** (1) `POST /task/submit` `await`ed the *entire* LLM pipeline while
+      `api_client.ts` aborted after 10s; the abort reason was a string, so the error had
+      no `.name`/`.message` → "undefined" + collapse, while the WS streamed the real
+      answer underneath. (2) chat models resolved as `ollama/<m>` (litellm completion
+      endpoint, no chat template → ChatML leakage). (3) brittle Ollama model-name match.
+    - **Resolution:**
+      - **Fire-and-forget dispatch:** `submit_task` schedules `process_task` in the
+        background and returns `202` immediately; all output streams over the WS;
+        runner failures surface as an actionable token + `stream_end`.
+      - **Abort-reason fix (`api_client.ts`):** detect abort via `signal.aborted`,
+        never render `undefined`, normalize the thrown error so the collapse toast
+        stays quiet on timeout.
+      - **Ollama chat route:** `get_chat_target` + `_normalize_chat_model` emit
+        `ollama_chat/<m>` (`/api/chat`) — fixes the template leak, the analyst, and
+        planner/coder JSON at one chokepoint (works on already-persisted presets).
+      - **Robust embed match:** `_ollama_model_present` (tag-/case-insensitive,
+        bidirectional) eliminates the false "not installed".
+      - **Analyst:** diagnostic logging + explicit timeout/lower max_tokens for fast,
+        visible failure; WS dispatch now non-blocking.
+    - **Tests:** 575/575 (new `test_model_resolver` + `test_indexer_preflight`;
+      isolated `test_ainvoke_tier_overrides_explicit_model`) · `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
