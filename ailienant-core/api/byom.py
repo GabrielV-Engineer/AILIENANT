@@ -26,12 +26,13 @@ from core.config.byom_config import (
     EmbeddingTarget,
     EndpointConfig,
     ModelPreset,
+    ModelTarget,
     is_masked_key,
     load_byom_config,
     mask_api_key,
     save_byom_config,
 )
-from core.config import embedding_resolver
+from core.config import embedding_resolver, model_resolver
 from core.config_generator import (
     CONFIG_YAML_PATH,
     LM_STUDIO_API_BASE,
@@ -346,6 +347,59 @@ def _derive_embedding_target(
     return _build_embedding_target(chosen, endpoints, has_ollama)
 
 
+def _connection_for_provider(
+    provider: str, endpoints: list[EndpointConfig]
+) -> tuple[Optional[str], str, bool]:
+    """Resolve (api_base, api_key, is_local) for a chat provider from BYOM config.
+
+    Local engines carry an api_base; cloud providers carry a key (endpoint or env).
+    """
+    ep = _endpoint_for(provider, endpoints)
+    if provider == "ollama":
+        return (ep.url if ep and ep.url else OLLAMA_API_BASE), "", True
+    if provider == "lmstudio":
+        return _ensure_v1(ep.url if ep and ep.url else LM_STUDIO_API_BASE), (
+            ep.api_key if ep and ep.api_key else "sk-noauth"
+        ), True
+    if provider in ("vllm", "custom"):
+        base = _ensure_v1(ep.url) if ep and ep.url else None
+        return base, (ep.api_key if ep and ep.api_key else "sk-noauth"), True
+    if provider == "openai":
+        return None, (ep.api_key if ep and ep.api_key else os.getenv("OPENAI_API_KEY", "")), False
+    if provider == "openrouter":
+        return "https://openrouter.ai/api/v1", (
+            ep.api_key if ep and ep.api_key else os.getenv("OPENROUTER_API_KEY", "")
+        ), False
+    if provider == "anthropic":
+        return None, (ep.api_key if ep and ep.api_key else os.getenv("ANTHROPIC_API_KEY", "")), False
+    return None, (ep.api_key if ep and ep.api_key else ""), False
+
+
+def _normalize_chat_model(model_id: str, provider: str) -> str:
+    """Make a tier model id litellm-routable for its provider.
+
+    OpenAI-compatible local servers (LM Studio / vLLM / custom) must be addressed
+    via the `openai/<model>` provider with a custom api_base.
+    """
+    if provider in ("lmstudio", "vllm", "custom"):
+        base_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        return f"openai/{base_name}"
+    return model_id
+
+
+def _build_chat_target(model_id: str, endpoints: list[EndpointConfig]) -> ModelTarget:
+    """Resolve a preset tier's concrete model id into a litellm-ready ModelTarget."""
+    provider = _provider_of_model(model_id, endpoints) or ("ollama" if model_id.startswith("ollama/") else "openai")
+    api_base, api_key, is_local = _connection_for_provider(provider, endpoints)
+    return ModelTarget(
+        model=_normalize_chat_model(model_id, provider),
+        provider=provider,
+        api_base=api_base,
+        api_key=api_key,
+        is_local=is_local,
+    )
+
+
 async def _apply_preset(preset: ModelPreset) -> None:
     """Write config.yaml with tier overrides, then signal LiteLLM to reload."""
     tier_overrides: dict[str, str] = {
@@ -446,8 +500,15 @@ async def put_config(request: Request) -> BYOMConfigResponse:
             # Phase 7.9.B.12 — derive + persist the provider-agnostic embedding
             # target so the indexer preflight + semantic memory route correctly.
             merged.embedding = _derive_embedding_target(active, merged.endpoints, discovered)
+            # Phase 7.9.B.13 — persist per-tier chat targets so the main chat +
+            # analyst can call the active model directly (no proxy).
+            merged.chat_models = {
+                tier: _build_chat_target(model_id, merged.endpoints)
+                for tier, model_id in active.tiers.items() if model_id
+            }
             await asyncio.to_thread(save_byom_config, merged)
             embedding_resolver.refresh()
+            model_resolver.refresh()
             await vfs_manager.broadcast_byom_config_applied(active.id, active.name)
             await lazy_indexer.retry()
 

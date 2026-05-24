@@ -2,6 +2,31 @@
 
 ---
 
+## Hito 7.9.B.13: From Stubs to Live LLM — Status Sync, Live Main Chat & Live Analyst — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.13
+
+**Files changed:**
+- `ailienant-extension/src/workspace/Workspace.tsx` — `server_indexing_error` now calls `addToast('error', reason)` so the actionable preflight remediation (e.g. `ollama pull nomic-embed-text`) is visible, not just a tooltip
+- `ailienant-core/core/config/byom_config.py` — New `ModelTarget` (model/provider/api_base/api_key/is_local) + `BYOMConfig.chat_models: dict[str, ModelTarget]`
+- `ailienant-core/api/byom.py` — `_connection_for_provider()` + `_normalize_chat_model()` + `_build_chat_target()`; `put_config` persists `chat_models` for the active preset's tiers and calls `model_resolver.refresh()`
+- `ailienant-core/core/config/model_resolver.py` *(new)* — `get_chat_target(tier="medium")` (cached; medium→small→big→cloud fallback) + `refresh()`, mirrors `embedding_resolver`
+- `ailienant-core/tools/llm_gateway.py` — `acomplete_byom()` + `astream_byom()` resolve a `ModelTarget` and call `litellm` directly (api_base/api_key), bypassing the proxy
+- `ailienant-core/core/task_service.py` — Removed `_summarize_result`; added `_CHAT_SYSTEM_PROMPT` + `_stream_chat_answer()`; the main chat now streams a real completion (medium tier) → `broadcast_token` → `broadcast_stream_end`, with a graceful actionable fallback
+- `ailienant-core/agents/analyst.py` — `generate_analyst_reply()` now calls `acomplete_byom` with the SOUL persona system prompt (DEBUG template removed); graceful fallback on failure
+- `ailienant-core/main.py` — `client_analyst_query` handler passes `session_id=client_id` to `generate_analyst_reply`
+
+**Architectural outcomes:**
+- **Proxy-free live chat:** the active preset's tiers (already concrete model ids) are persisted as per-tier `ModelTarget`s; `LLMGateway.acomplete_byom/astream_byom` call the model directly via api_base/api_key. No LiteLLM proxy required for the chat surfaces.
+- **Symmetry with embeddings:** `model_resolver` is the chat twin of `embedding_resolver` — api layer derives + persists targets, core layer reads + caches them, preserving the `byom.py ↔ core` decoupling.
+- **No static placeholders:** the synthetic planner-stub answer is gone from the user surface; both the main chat (streaming) and Natt analyst (one-shot) return real LLM output, with actionable messages instead of hangs when no preset/engine is available.
+- **Status honesty:** preflight failures now produce a visible, copy-pasteable remediation toast.
+- **Deferred:** full agent-graph un-stub (planner/coder real LLM via the graph) — the stubbed graph still runs to feed the progress ticker; the answer is a direct conversational completion.
+
+**Verification:** `pytest` 565 passed; `npm run compile` 0 errors (2 pre-existing lint warnings, unrelated files).
+
+---
+
 ## Hito 7.9.B.12: Core Integration — Provider-Agnostic Embeddings, Chat Streaming & Analyst Routing — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.12

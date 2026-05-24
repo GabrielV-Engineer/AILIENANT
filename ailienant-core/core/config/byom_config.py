@@ -68,11 +68,26 @@ class EmbeddingTarget(BaseModel):
     is_local: bool = True
 
 
+class ModelTarget(BaseModel):
+    """A litellm-ready chat model resolved from a preset tier (Phase 7.9.B.13).
+
+    Lets the core layer call the active BYOM chat model directly (no proxy):
+    api_base is set for local engines + custom/openrouter; api_key carries the
+    cloud secret (byom_config.json is already 0600).
+    """
+    model: str                      # litellm model id, e.g. "ollama/llama3.1", "gpt-4o"
+    provider: str                   # ollama | lmstudio | vllm | openai | openrouter | anthropic | custom
+    api_base: Optional[str] = None  # local engine / custom base URL; None for native openai
+    api_key: str = ""
+    is_local: bool = True
+
+
 class BYOMConfig(BaseModel):
     endpoints: list[EndpointConfig] = Field(default_factory=list)
     presets: list[ModelPreset] = Field(default_factory=list)
     active_preset_id: Optional[str] = None
     embedding: Optional[EmbeddingTarget] = None  # persisted by _apply_preset (Phase 7.9.B.12)
+    chat_models: dict[str, ModelTarget] = Field(default_factory=dict)  # tier → target (Phase 7.9.B.13)
 
 
 # ---------------------------------------------------------------------------

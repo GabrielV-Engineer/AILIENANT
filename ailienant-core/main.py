@@ -733,8 +733,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 )
 
             elif valid_event.event_type == "client_analyst_query":
-                # Phase 7.9.B.12 — Natt analyst pane bridge (DEBUG analyst path).
-                reply = await generate_analyst_reply(valid_event.data.text)
+                # Phase 7.9.B.13 — Natt analyst pane bridge (live BYOM completion).
+                reply = await generate_analyst_reply(
+                    valid_event.data.text, session_id=client_id
+                )
                 await vfs_manager.send_natt_message(client_id, reply)
                 logger.info(
                     "[Session: %s] Analyst query handled (%d chars in)",
