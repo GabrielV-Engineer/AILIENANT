@@ -10,7 +10,7 @@ from tools.llm_gateway import LLMGateway
 from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
-from prompts import build_safe_prompt
+from agents.prompts import build_safe_prompt
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
@@ -31,8 +31,9 @@ MAX_PLANNER_RETRIES: int = 2
 logger = logging.getLogger("PLANNER_NODE")
 
 # Phase 3.6: promoted to module-level so tests can patch it.
-# Set AILIENANT_PLANNER_DEBUG=0 in production to enable full LLM path.
-DEBUG_MODE: bool = _os.getenv("AILIENANT_PLANNER_DEBUG", "1") != "0"
+# Phase 7.9.B.16: default OFF — the real LLM path now runs (BYOM-aware ainvoke).
+# Set AILIENANT_PLANNER_DEBUG=1 to force the synthetic stub (CI/UI smoke tests).
+DEBUG_MODE: bool = _os.getenv("AILIENANT_PLANNER_DEBUG", "0") != "0"
 
 _POLYGLOT_WARNING = (
     " [!] POLYGLOT FILE DETECTED: {target_file}. "

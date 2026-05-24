@@ -17,6 +17,8 @@
 #   Full chain (async):
 #     6. planner(tci=90) → route_to_coders → ≥2 Sends for SWARM (MANUAL_PLANNING=False path)
 
+from unittest.mock import patch
+
 import pytest
 from langgraph.constants import Send
 
@@ -81,7 +83,8 @@ def test_route_to_coders_emits_multiple_sends_in_swarm_mode() -> None:
 async def test_planner_yields_parallel_tasks_for_high_tci() -> None:
     """DEBUG_MODE=True, tci>80 → parallel_tasks contains ≥2 WBSSteps."""
     state = {"tci": 90.0, "css": 100.0}
-    result = await run_planner_node(state)
+    with patch("agents.planner.DEBUG_MODE", True):
+        result = await run_planner_node(state)
     assert len(result["parallel_tasks"]) >= 2, (
         f"Expected ≥2 parallel tasks for tci=90, got {len(result['parallel_tasks'])}"
     )
@@ -90,7 +93,8 @@ async def test_planner_yields_parallel_tasks_for_high_tci() -> None:
 @pytest.mark.anyio
 async def test_planner_plus_router_swarm_chain_emits_sends() -> None:
     """Full MANUAL_PLANNING=False chain: planner(tci=90) → route_to_coders → ≥2 Sends."""
-    planner_result = await run_planner_node({"tci": 90.0, "css": 100.0})
+    with patch("agents.planner.DEBUG_MODE", True):
+        planner_result = await run_planner_node({"tci": 90.0, "css": 100.0})
 
     router_state = {
         "provider": "CLOUD",

@@ -131,7 +131,8 @@ async def test_planner_freezes_immutable_wbs_on_first_turn() -> None:
         "css": 100.0,
         "task_id": "t5",
     }
-    result = await run_planner_node(state)
+    with patch("agents.planner.DEBUG_MODE", True):
+        result = await run_planner_node(state)
 
     assert "immutable_wbs" in result, "PlannerAgent must set immutable_wbs on first turn"
     assert result["immutable_wbs"] is not None
@@ -154,7 +155,8 @@ async def test_planner_does_not_overwrite_immutable_wbs_on_retry() -> None:
         "css": 100.0,
         "task_id": "t6",
     }
-    result = await run_planner_node(state)
+    with patch("agents.planner.DEBUG_MODE", True):
+        result = await run_planner_node(state)
 
     # Either the key is absent (planner didn't touch it) or value unchanged
     if "immutable_wbs" in result:

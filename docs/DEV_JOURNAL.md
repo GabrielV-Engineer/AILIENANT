@@ -2,6 +2,31 @@
 
 ---
 
+## Hito 7.9.B.16: Un-stubbing the Agents — Real Planner + Coder (Propose & Review MVP) — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.16
+
+**Files changed:**
+- `ailienant-core/tools/llm_gateway.py` — `ainvoke` is now BYOM-aware: `ailienant/{tier}` aliases resolve via `model_resolver.get_chat_target` and call litellm directly (api_base/api_key, no proxy), preserving `response_format` + token accounting; proxy path retained as fallback
+- `ailienant-core/agents/planner.py` — `DEBUG_MODE` default flipped to OFF (`AILIENANT_PLANNER_DEBUG` defaults `"0"`); the real SDD/LLM path now runs
+- `ailienant-core/agents/coder.py` — full real implementation of `run_coder_node`: GraphRAG-aware system prompt, JSON `AtomicPatch` edits via BYOM `ainvoke` (JSON mode), `AtomicPatchInput` validation, applied to an in-memory copy through `apply_patch_to_vfs` (exact→fuzzy→AST), per-file unified diffs returned in `pending_patches`; preserves role HITL-trigger `security_flags`; skips read_file/run_command steps; no disk or RAM-VFS write
+- `ailienant-core/core/task_service.py` — intent routing (`_classify_intent`: heuristic + cheap small-tier tie-break, safe default question); `_run_coding_task` orchestrates `run_planner_node` + bounded `run_coder_node` loop, streams a plan summary + ```diff blocks, emits `emit_vfs_patch_approved` per file, persists the turn to memory; questions still use `_stream_chat_answer`; the full `alienant_app.astream` is no longer driven from the chat path
+- `ailienant-core/tests/test_coder_agent.py` — fixture now mocks LLM/VFS/RAG; allowed-state-keys include `pending_patches`; new test asserts a valid edit yields a unified diff
+- `ailienant-core/tests/test_swarms.py`, `tests/test_drift_monitor.py` — planner-synthetic tests now opt into `patch("agents.planner.DEBUG_MODE", True)` (default flipped)
+
+**Architectural outcomes:**
+- **Agents do real work:** the planner produces a validated `MissionSpecification` and the coder generates real search/replace edits → reviewable unified diffs, all via the active BYOM model (no proxy).
+- **Single chokepoint enablement:** making `ainvoke` BYOM-aware un-stubbed the planner, its mini-judge, and the coder at once, rather than rerouting many call sites.
+- **Deterministic chat-edit path:** driving `run_planner_node` + `run_coder_node` directly (vs the full graph's RELAY/SWARM + guardrail middle nodes) yields an all-edits-in-one-turn result, sidestepping the under-exercised orchestration and the HTTP-timeout-vs-HITL-suspension wrinkle.
+- **Safety by construction:** nothing is written to the user's files this phase — the MVP proposes diffs for review; the HITL-before-write guarantee is trivially preserved. Generation/parse/patch failures degrade to soft error lines, never crashes.
+- **Intent routing** keeps the conversational chat (memory + RAG) fast for questions and reserves the agent pipeline for edit/coding requests.
+
+**Deferred:** disk-write of approved patches (HITL-gated WorkspaceEdit), and re-integrating the graph's guardrail nodes + RELAY/SWARM into the chat path.
+
+**Verification:** `pytest` 566 passed; `npm run compile` 0 errors (2 pre-existing lint warnings, unrelated files).
+
+---
+
 ## Hito 7.9.B.15: Session Memory + GraphRAG Injection for the Live Chat — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.15

@@ -261,22 +261,57 @@ class LLMGateway:
         effective_model: str = (
             _PRIORITY_MODEL_MAP[tier] if tier is not None else model
         )
-        cfg = get_litellm_config()
-        logger.debug(
-            "LLM ainvoke — model=%s tier=%s base_url=%s trace=%s",
-            effective_model, tier, cfg["base_url"], trace_id,
-        )
-        kwargs: dict[str, Any] = dict(
-            model=effective_model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            max_retries=2,
-            metadata={"session_id": trace_id},
-            extra_headers={"X-Ailienant-Trace-ID": trace_id},
-            **cfg,
-        )
+
+        # Phase 7.9.B.16 — BYOM-aware routing. Resolve `ailienant/*` tier aliases to
+        # the active preset's concrete model and call it directly (no proxy). Falls
+        # back to the LiteLLM proxy when no preset is active (back-compat). This is
+        # the single chokepoint that un-stubs the planner + mini-judge + coder.
+        byom_kwargs: Optional[dict[str, Any]] = None
+        if effective_model.startswith("ailienant/"):
+            from core.config.model_resolver import get_chat_target
+            _alias_tier = effective_model.split("/", 1)[1]
+            _target = get_chat_target(
+                _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
+            )
+            if _target is not None:
+                byom_kwargs = {"model": _target.model}
+                if _target.api_base:
+                    byom_kwargs["api_base"] = _target.api_base
+                if _target.api_key:
+                    byom_kwargs["api_key"] = _target.api_key
+
+        if byom_kwargs is not None:
+            logger.debug(
+                "LLM ainvoke (BYOM) — alias=%s model=%s trace=%s",
+                effective_model, byom_kwargs["model"], trace_id,
+            )
+            kwargs: dict[str, Any] = dict(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=2,
+                metadata={"session_id": trace_id},
+                extra_headers={"X-Ailienant-Trace-ID": trace_id},
+                **byom_kwargs,
+            )
+        else:
+            cfg = get_litellm_config()
+            logger.debug(
+                "LLM ainvoke — model=%s tier=%s base_url=%s trace=%s",
+                effective_model, tier, cfg["base_url"], trace_id,
+            )
+            kwargs = dict(
+                model=effective_model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=2,
+                metadata={"session_id": trace_id},
+                extra_headers={"X-Ailienant-Trace-ID": trace_id},
+                **cfg,
+            )
         if response_format:
             kwargs["response_format"] = response_format
         try:

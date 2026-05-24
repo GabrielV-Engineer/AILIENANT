@@ -1,19 +1,15 @@
-import asyncio
+import json
 import os
+import re
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, cast
+from typing import List, Dict, Any, Optional
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
-from brain.state import ManualAttachment, AIlienantGraphState
-from brain.engine import alienant_app
+from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager
 from tools.llm_gateway import LLMGateway
-from langchain_core.runnables import RunnableConfig
 import logging
 
 logger = logging.getLogger(__name__)
-
-# Strong reference set: prevents GC from destroying broadcast tasks mid-flight.
-_background_tasks: set = set()
 
 
 # Phase 7.9.B.13 — persona for the live main-chat completion (direct BYOM call).
@@ -30,6 +26,24 @@ _CHAT_SYSTEM_PROMPT: str = (
 _MAX_HISTORY_MESSAGES: int = 24      # ~12 turns retained per conversation
 _RAG_TOP_K: int = 5
 _conversations: Dict[str, List[Dict[str, str]]] = {}
+
+# Phase 7.9.B.16 — intent routing (edit/coding task vs conversational question).
+_MAX_CODER_STEPS: int = 6
+_EDIT_VERBS: tuple[str, ...] = (
+    "add", "create", "write", "implement", "refactor", "fix", "rename", "delete",
+    "remove", "change", "modify", "update", "move", "replace", "insert", "extract",
+    "generate", "build", "make", "wire", "scaffold", "patch",
+)
+_QUESTION_STARTERS: tuple[str, ...] = (
+    "how", "what", "why", "when", "where", "who", "which", "is ", "are ", "can ",
+    "does ", "do ", "should ", "explain", "describe", "summarize", "list ",
+)
+_INTENT_SYSTEM_PROMPT: str = (
+    "Classify the user's message for a coding IDE assistant as either an 'edit' "
+    "(a request to write, modify, create, refactor or delete code/files) or a "
+    "'question' (asking for information, explanation or discussion). "
+    'Respond with ONLY JSON: {"intent": "edit"} or {"intent": "question"}.'
+)
 
 
 # Replicamos el contrato del frontend (api_client.ts)
@@ -57,21 +71,36 @@ class TaskService:
     async def process_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str = "SEQUENTIAL"
     ) -> Dict[str, Any]:
-        """
-        Asimila la entropía y dispara el motor cognitivo.
-        """
+        """Route a chat turn: an edit/coding task runs the agents (plan → code →
+        propose diffs); a question uses the direct chat completion (memory + RAG)."""
         logger.info(
-            "[Session: %s][Project: %s] Initiating graph invocation. "
-            "buffers=%d mentions=%d attachments=%d planner_mode=%s",
+            "[Session: %s][Project: %s] Task received. buffers=%d mentions=%d planner_mode=%s",
             session_id, payload.project_id, len(payload.dirty_buffers),
-            len(payload.explicit_mentions), len(payload.attachments),
-            payload.planner_mode_active,
+            len(payload.explicit_mentions), payload.planner_mode_active,
         )
 
         # 1. Asimilación de Entropía O(1)
         self.vfs.ingest_dirty_buffers(payload.dirty_buffers)
 
-        # 2. Construcción del estado inicial para LangGraph
+        # 2. Intent routing. Planner-mode toggle forces the coding path.
+        intent = "edit" if payload.planner_mode_active else await self._classify_intent(
+            payload.task_prompt
+        )
+        logger.info("[Session: %s] routed intent=%s", session_id, intent)
+
+        if intent == "edit":
+            await self._run_coding_task(session_id, payload, execution_mode)
+        else:
+            await self._stream_chat_answer(
+                session_id, payload.task_prompt, payload.project_id
+            )
+
+        return {"status": "success", "message": "Task completed.", "session_id": session_id}
+
+    def _build_initial_state(
+        self, session_id: str, payload: TaskPayload, execution_mode: str
+    ) -> dict:
+        """Construct the AIlienantGraphState seed consumed by run_planner_node."""
         initial_state: dict = {
             "task_id": session_id,
             "user_input": payload.task_prompt,
@@ -112,10 +141,6 @@ class TaskService:
             "current_cost_usd": 0.0,
             "max_budget_usd": float(os.getenv("AILIENANT_MAX_BUDGET_USD", "inf")),
         }
-
-        # Phase 7.9.A.7.a — seed the session HITL policy from the user's persisted
-        # preference (the in-graph evaluate_action() engine already enforces it).
-        # Local import avoids any api↔core import-order coupling at module load.
         try:
             from api.system_settings import _read_settings as _read_sys_settings
             _pref_mode = str(_read_sys_settings().get("permission_mode", "default")).upper()
@@ -123,45 +148,121 @@ class TaskService:
                 initial_state["session_permission_mode"] = _pref_mode
         except Exception:  # noqa: BLE001 — preference seeding must never block a task
             pass
+        return initial_state
 
-        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
-
-        # 3. Ejecución del grafo con streaming de actualizaciones
-        # Phase 7.9.B.12 — node completions flow on the dedicated pipeline-progress
-        # channel (ephemeral stepper UI), NOT as chat tokens. merged_state flattens
-        # the per-node deltas so we can synthesize one real assistant answer.
-        final_output: dict = {}
-        merged_state: dict = {}
-        async for update in alienant_app.astream(
-            cast(AIlienantGraphState, initial_state), config=config, stream_mode="updates"
-        ):
-            for node_name, node_output in update.items():
-                step_id = (
-                    node_output.get("current_step_id")
-                    if isinstance(node_output, dict) else None
-                )
-                task = asyncio.create_task(
-                    vfs_manager.broadcast_pipeline_step(session_id, node_name, step_id=step_id)
-                )
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
-                if isinstance(node_output, dict):
-                    merged_state.update(node_output)
-            final_output.update(update)
-
-        # 4. Stream a real answer from the active BYOM chat model — unless the graph
-        # suspended on HITL/ideation, which already broadcast its own question.
-        if not merged_state.get("hitl_pending"):
-            await self._stream_chat_answer(
-                session_id, payload.task_prompt, payload.project_id
+    async def _classify_intent(self, prompt: str) -> str:
+        """Return 'edit' or 'question'. Heuristic first, cheap LLM tie-break, safe default."""
+        text = prompt.strip().lower()
+        if not text:
+            return "question"
+        starts_question = text.startswith(_QUESTION_STARTERS) or text.endswith("?")
+        has_edit_verb = any(re.search(rf"\b{v}\b", text) for v in _EDIT_VERBS)
+        if has_edit_verb and not starts_question:
+            return "edit"
+        if starts_question and not has_edit_verb:
+            return "question"
+        # Ambiguous → cheap small-tier classifier; default to 'question' (never silently edit).
+        try:
+            from shared.config import MODEL_SMALL
+            resp = await LLMGateway.ainvoke(
+                messages=[
+                    {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                model=MODEL_SMALL, temperature=0.0,
+                response_format={"type": "json_object"}, max_tokens=20,
             )
+            raw = LLMGateway._sanitize_json_response(resp.choices[0].message.content or "")
+            intent = str(json.loads(raw).get("intent", "question")).lower()
+            return "edit" if intent == "edit" else "question"
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Intent classification failed (defaulting to question): %s", exc)
+            return "question"
 
-        return {
-            "status": "success",
-            "message": "Graph execution completed.",
-            "session_id": session_id,
-            "output": final_output,
-        }
+    async def _run_coding_task(
+        self, session_id: str, payload: TaskPayload, execution_mode: str
+    ) -> None:
+        """Drive the planner + coder agents to propose patches (review-only, no disk write)."""
+        from agents.planner import run_planner_node  # deferred — avoids import cycle
+        from agents.coder import run_coder_node
+
+        state = self._build_initial_state(session_id, payload, execution_mode)
+
+        await vfs_manager.broadcast_pipeline_step(session_id, "planner_agent")
+        try:
+            plan = await run_planner_node(state)
+        except Exception as exc:  # noqa: BLE001 — planner failure must not crash the task
+            logger.warning("Planner failed: %s", exc)
+            await vfs_manager.broadcast_token(
+                session_id,
+                "I couldn't draft a plan — make sure a BYOM preset is active and its "
+                f"engine is running. ({exc})",
+            )
+            await vfs_manager.broadcast_stream_end(session_id)
+            return
+
+        mission = plan.get("mission_spec")
+        if mission is None:
+            errs = plan.get("errors") or ["the planner did not return a plan"]
+            await vfs_manager.broadcast_token(
+                session_id, "I couldn't draft a plan: " + "; ".join(errs)
+            )
+            await vfs_manager.broadcast_stream_end(session_id)
+            return
+
+        patches: Dict[str, str] = {}
+        errors: List[str] = []
+        for step in list(mission.tasks)[:_MAX_CODER_STEPS]:
+            await vfs_manager.broadcast_pipeline_step(
+                session_id, "coder_agent", step_id=step.step_number
+            )
+            try:
+                cres = await run_coder_node(
+                    {**state, "mission_spec": mission, "current_step_id": step.step_number}
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"step #{step.step_number}: {exc}")
+                continue
+            patches.update(cres.get("pending_patches") or {})
+            errors.extend(cres.get("errors") or [])
+
+        summary = self._format_coding_summary(mission, patches, errors)
+        await vfs_manager.broadcast_token(session_id, summary)
+        await vfs_manager.broadcast_stream_end(session_id)
+
+        # Surface diffs to the dashboard staging area (best-effort).
+        for fp, diff in patches.items():
+            try:
+                await vfs_manager.emit_vfs_patch_approved(session_id, fp, diff, "supervision")
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Remember the proposal so follow-ups have context.
+        self._append_history(session_id, "user", payload.task_prompt)
+        self._append_history(session_id, "assistant", summary)
+
+    @staticmethod
+    def _format_coding_summary(
+        mission: Any, patches: Dict[str, str], errors: List[str]
+    ) -> str:
+        """Render the plan outcome + proposed diffs as a reviewable chat message."""
+        lines: List[str] = []
+        outcome = getattr(mission, "outcome", "") or ""
+        if outcome:
+            lines.append(str(outcome))
+        if patches:
+            lines.append(f"\nProposed changes to {len(patches)} file(s):")
+            for fp, diff in patches.items():
+                lines.append(f"\n**{fp}**\n```diff\n{diff.rstrip()}\n```")
+            lines.append(
+                "\n_Review the proposed diffs above. Applying changes to disk is not "
+                "yet enabled._"
+            )
+        else:
+            lines.append("\nI drafted a plan but produced no concrete edits for this request.")
+        if errors:
+            lines.append("\n_Notes:_ " + "; ".join(errors[:5]))
+        return "\n".join(lines)
 
     def _append_history(self, session_id: str, role: str, content: str) -> None:
         """Append a turn message to the session's short-term memory (bounded)."""
