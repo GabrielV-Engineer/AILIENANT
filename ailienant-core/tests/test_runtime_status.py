@@ -18,13 +18,16 @@ import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import docker  # type: ignore[import-untyped]
 import pytest
+import requests  # type: ignore[import-untyped]
 from fastapi import HTTPException
 
 import api.runtime as runtime_mod
 from api.runtime import (
     _probe_docker,
     get_runtime_status,
+    pull_image,
     start_docker,
 )
 
@@ -35,6 +38,7 @@ def _reset_module_state() -> None:
     """Clear cached state between tests."""
     runtime_mod._docker_cache = {}
     runtime_mod._last_launch_time = 0.0
+    runtime_mod._pull_in_progress = False
 
 
 def _make_request(origin: str = "") -> Any:
@@ -98,9 +102,12 @@ def test_status_docker_reachable_false_propagates() -> None:
 
 
 def test_probe_docker_returns_false_on_exception() -> None:
-    """_probe_docker catches any exception from the daemon ping and returns False."""
+    """_probe_docker catches any exception from the daemon probe and returns False."""
     _reset_module_state()
     with patch("api.runtime.docker") as mock_docker:
+        # Restore the real errors module so the granular except tuple holds
+        # genuine exception classes (a bare MagicMock there is a TypeError).
+        mock_docker.errors = docker.errors
         mock_docker.from_env.side_effect = Exception("daemon unreachable")
         result = asyncio.run(_probe_docker())
     assert result is False
@@ -187,3 +194,165 @@ def test_start_docker_csrf_allows_no_origin_header() -> None:
     ):
         result = asyncio.run(start_docker(req))
     assert "launched" in result
+
+
+# ── _probe_docker — deep health check (7.9.B.8) ──────────────────────────────
+
+def _make_docker_client(info_side_effect: Any = None) -> MagicMock:
+    """Mock a docker client whose .info() can raise or return."""
+    client = MagicMock()
+    if info_side_effect is not None:
+        client.info.side_effect = info_side_effect
+    else:
+        client.info.return_value = {"ServerVersion": "27.0"}
+    return client
+
+
+def test_probe_docker_uses_info_not_ping() -> None:
+    """A healthy engine: info() is queried (not ping) and the probe is True."""
+    _reset_module_state()
+    client = _make_docker_client()
+    with patch("api.runtime.docker") as mock_docker:
+        mock_docker.from_env.return_value = client
+        result = asyncio.run(_probe_docker(force=True))
+    assert result is True
+    client.info.assert_called_once()
+    client.ping.assert_not_called()
+
+
+def test_probe_docker_apierror_returns_false() -> None:
+    """A degraded engine raising APIError on info() → reachable False."""
+    _reset_module_state()
+    client = _make_docker_client(info_side_effect=docker.errors.APIError("engine broken"))
+    with patch("api.runtime.docker") as mock_docker:
+        mock_docker.errors = docker.errors
+        mock_docker.from_env.return_value = client
+        result = asyncio.run(_probe_docker(force=True))
+    assert result is False
+
+
+def test_probe_docker_connection_error_returns_false() -> None:
+    """No daemon socket: ConnectionError on info() → reachable False."""
+    _reset_module_state()
+    client = _make_docker_client(info_side_effect=requests.exceptions.ConnectionError("no socket"))
+    with patch("api.runtime.docker") as mock_docker:
+        mock_docker.errors = docker.errors
+        mock_docker.from_env.return_value = client
+        result = asyncio.run(_probe_docker(force=True))
+    assert result is False
+
+
+def test_probe_docker_force_bypasses_cache() -> None:
+    """A fresh True cache must NOT trap a now-degraded engine when force=True."""
+    _reset_module_state()
+    runtime_mod._docker_cache = {"reachable": True, "ts": time.monotonic()}
+    client = _make_docker_client(info_side_effect=docker.errors.APIError("engine broken"))
+    with patch("api.runtime.docker") as mock_docker:
+        mock_docker.errors = docker.errors
+        mock_docker.from_env.return_value = client
+        result = asyncio.run(_probe_docker(force=True))
+    assert result is False  # cache bypassed; live probe wins
+
+
+def test_status_passes_force_to_probe() -> None:
+    """get_runtime_status(force=True) forwards force to the probe."""
+    _reset_module_state()
+    probe = AsyncMock(return_value=False)
+    with (
+        patch("api.runtime.get_active_tier", return_value=None),
+        patch("api.runtime._probe_docker", probe),
+        patch("api.runtime._check_image_exists", new_callable=AsyncMock, return_value=False),
+        patch("api.runtime._check_container_running", return_value=False),
+    ):
+        asyncio.run(get_runtime_status(force=True))
+    probe.assert_awaited_once_with(force=True)
+
+
+# ── POST /pull-image (7.9.B.8) ───────────────────────────────────────────────
+
+def test_pull_image_success() -> None:
+    """Daemon up + pull succeeds → pulled True, local image tag returned."""
+    _reset_module_state()
+    with (
+        patch("api.runtime._probe_docker", new_callable=AsyncMock, return_value=True),
+        patch("api.runtime.pull_sandbox_image", new_callable=AsyncMock) as mock_pull,
+    ):
+        result = asyncio.run(pull_image(_make_request()))
+    assert result["pulled"] is True
+    assert result["image"] == runtime_mod._SANDBOX_IMAGE_TAG
+    mock_pull.assert_awaited_once()
+
+
+def test_pull_image_docker_down() -> None:
+    """Daemon unreachable → docker_down error, pull not attempted."""
+    _reset_module_state()
+    with (
+        patch("api.runtime._probe_docker", new_callable=AsyncMock, return_value=False),
+        patch("api.runtime.pull_sandbox_image", new_callable=AsyncMock) as mock_pull,
+    ):
+        result = asyncio.run(pull_image(_make_request()))
+    assert result["pulled"] is False
+    assert result["error"] == "docker_down"
+    mock_pull.assert_not_awaited()
+
+
+def test_pull_image_not_found() -> None:
+    """Image absent from registry → image_not_found error."""
+    _reset_module_state()
+    with (
+        patch("api.runtime._probe_docker", new_callable=AsyncMock, return_value=True),
+        patch("api.runtime.pull_sandbox_image", new_callable=AsyncMock,
+              side_effect=docker.errors.NotFound("no such image")),
+    ):
+        result = asyncio.run(pull_image(_make_request()))
+    assert result["pulled"] is False
+    assert result["error"] == "image_not_found"
+
+
+def test_pull_image_no_connection() -> None:
+    """No internet to the registry → no_connection error."""
+    _reset_module_state()
+    with (
+        patch("api.runtime._probe_docker", new_callable=AsyncMock, return_value=True),
+        patch("api.runtime.pull_sandbox_image", new_callable=AsyncMock,
+              side_effect=requests.exceptions.ConnectionError("dns fail")),
+    ):
+        result = asyncio.run(pull_image(_make_request()))
+    assert result["pulled"] is False
+    assert result["error"] == "no_connection"
+
+
+def test_pull_image_disk_full() -> None:
+    """APIError mentioning no space → disk_full error."""
+    _reset_module_state()
+    with (
+        patch("api.runtime._probe_docker", new_callable=AsyncMock, return_value=True),
+        patch("api.runtime.pull_sandbox_image", new_callable=AsyncMock,
+              side_effect=docker.errors.APIError("no space left on device")),
+    ):
+        result = asyncio.run(pull_image(_make_request()))
+    assert result["pulled"] is False
+    assert result["error"] == "disk_full"
+
+
+def test_pull_image_in_progress() -> None:
+    """A second concurrent pull is rejected without attempting another pull."""
+    _reset_module_state()
+    runtime_mod._pull_in_progress = True
+    with (
+        patch("api.runtime._probe_docker", new_callable=AsyncMock, return_value=True),
+        patch("api.runtime.pull_sandbox_image", new_callable=AsyncMock) as mock_pull,
+    ):
+        result = asyncio.run(pull_image(_make_request()))
+    assert result["pulled"] is False
+    assert result["error"] == "in_progress"
+    mock_pull.assert_not_awaited()
+
+
+def test_pull_image_csrf_rejects_foreign_origin() -> None:
+    """S7-D: pull-image from a foreign Origin raises HTTP 403."""
+    _reset_module_state()
+    req = _make_request(origin="https://evil.example.com")
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(pull_image(req))
+    assert exc_info.value.status_code == 403
