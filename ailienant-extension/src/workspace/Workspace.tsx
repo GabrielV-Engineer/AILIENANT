@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { Fragment, useState, useCallback, useEffect, useRef } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
@@ -24,7 +24,13 @@ type ToastLevel = 'info' | 'warn' | 'error';
 interface ToastItem { id: number; level: ToastLevel; message: string; }
 let _toastId = 0;
 
-interface Message { role: 'user' | 'assistant'; content: string; streaming?: boolean; }
+interface Message {
+    role: 'user' | 'assistant';
+    content: string;
+    streaming?: boolean;
+    steps?: string[];      // pipeline node trace for this assistant turn (Phase 7.9.B.14)
+    stepsDone?: boolean;   // true after server_stream_end → ✓ + auto-collapse
+}
 interface NattMessage { role: 'natt' | 'user'; content: string; }
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
@@ -69,8 +75,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [messages, setMessages] = useState<Message[]>([]);
     const [isStreaming, setIsStreaming] = useState(false);
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
-    // Ephemeral LangGraph node-progress ticker (NOT chat content) — Phase 7.9.B.12
-    const [pipelineSteps, setPipelineSteps] = useState<string[]>([]);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Natt
@@ -131,7 +135,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     const d = msg.payload as { token: string };
                     recordChunk();
                     setIsStreaming(true);
-                    setPipelineSteps([]);   // answer arriving — retire the progress ticker
                     setMessages(prev => {
                         const last = prev[prev.length - 1];
                         if (last?.role === 'assistant' && last.streaming) {
@@ -142,17 +145,24 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     break;
                 }
                 case 'server_pipeline_step': {
-                    // Ephemeral progress only — never appended to the chat transcript.
+                    // Attach the node trace to the active assistant turn (Phase 7.9.B.14).
+                    // Steps arrive before tokens, so create the turn placeholder if needed.
                     const d = msg.payload as { node_name?: string };
-                    if (d?.node_name) {
-                        setPipelineSteps(prev => [...prev, d.node_name as string]);
-                    }
+                    if (!d?.node_name) { break; }
+                    const node = d.node_name;
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (last?.role === 'assistant' && last.streaming) {
+                            return [...prev.slice(0, -1), { ...last, steps: [...(last.steps ?? []), node] }];
+                        }
+                        return [...prev, { role: 'assistant', content: '', streaming: true, steps: [node] }];
+                    });
                     break;
                 }
                 case 'server_stream_end':
                     setIsStreaming(false);
-                    setPipelineSteps([]);
-                    setMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, streaming: false } : m));
+                    setMessages(prev => prev.map((m, i) =>
+                        i === prev.length - 1 ? { ...m, streaming: false, stepsDone: true } : m));
                     break;
                 case 'server_telemetry': {
                     const frame = msg.payload as TelemetryFrame;
@@ -245,7 +255,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 case 'TASK_STARTED': {
                     const d = msg.payload as { task_id: string };
                     setActiveTaskId(d.task_id);
-                    setPipelineSteps([]);
                     break;
                 }
                 case 'PARALLEL_SESSION_NOTIFY': {
@@ -480,16 +489,21 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 </div>
                             )}
                             {messages.map((m, i) => (
-                                <div
-                                    key={i}
-                                    className="ws-msg"
-                                    data-role={m.role}
-                                    data-streaming={m.streaming ? 'true' : 'false'}
-                                >
-                                    {m.content}
-                                </div>
+                                <Fragment key={i}>
+                                    {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
+                                        <PipelineProgress steps={m.steps} done={!!m.stepsDone} />
+                                    )}
+                                    {(m.role === 'user' || m.content) && (
+                                        <div
+                                            className="ws-msg"
+                                            data-role={m.role}
+                                            data-streaming={m.streaming ? 'true' : 'false'}
+                                        >
+                                            {m.content}
+                                        </div>
+                                    )}
+                                </Fragment>
                             ))}
-                            <PipelineProgress steps={pipelineSteps} />
                             <div ref={messagesEndRef} />
                         </div>
 
