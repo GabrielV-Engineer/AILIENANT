@@ -327,6 +327,62 @@ class SemanticMemoryManager:
         file_paths = [fp for fp, _ in pairs]
         return score, file_paths
 
+    # ── Phase 7.9.B.15: snippet retrieval for live-chat GraphRAG injection ─────
+
+    def _query_snippets(
+        self, vector: List[float], workspace_hash: str, k: int
+    ) -> List[Tuple[str, str]]:
+        """Return (file_path, content_snippet) pairs for the top-k nearest vectors."""
+        db = lancedb.connect(self._lancedb_path)
+        if _TABLE_NAME not in db.table_names():
+            return []
+
+        tbl = db.open_table(_TABLE_NAME)
+        query = tbl.search(vector).metric("cosine").limit(k)
+
+        if workspace_hash and _SAFE_ID_RE.match(workspace_hash):
+            query = query.where(f"workspace_hash = '{workspace_hash}'")
+        elif workspace_hash:
+            logger.warning(
+                "SemanticMemory: workspace_hash %r failed sanitization — filter skipped.",
+                workspace_hash,
+            )
+
+        rows: List[Any] = query.to_list()
+        return [
+            (str(r.get("file_path", "")), str(r.get("content_snippet", "")))
+            for r in rows
+            if r.get("file_path")
+        ]
+
+    async def search_snippets(
+        self,
+        user_input: str,
+        workspace_hash: str = "",
+        k: int = _TOP_K,
+    ) -> List[Tuple[str, str]]:
+        """Return (file_path, content_snippet) pairs most relevant to user_input.
+
+        Powers invisible GraphRAG context injection into the live chat system
+        prompt. Returns [] on empty input or any failure (non-fatal).
+        """
+        if not user_input.strip():
+            return []
+
+        try:
+            vector = await _get_embedding(user_input)
+        except Exception as embed_err:  # noqa: BLE001 — RAG must never break a chat turn
+            logger.warning("SemanticMemory.search_snippets: embed failed (non-fatal): %s", embed_err)
+            return []
+
+        try:
+            return await asyncio.to_thread(
+                self._query_snippets, vector, workspace_hash, k
+            )
+        except Exception as query_err:  # noqa: BLE001
+            logger.warning("SemanticMemory.search_snippets: query failed (non-fatal): %s", query_err)
+            return []
+
     # ── Phase 7.9.B.1: Vector-map dump (dashboard GraphRAG viewer) ─────
 
     async def dump_vectors(

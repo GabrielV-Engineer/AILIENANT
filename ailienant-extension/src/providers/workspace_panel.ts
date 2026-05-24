@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as cp from 'child_process';
+import * as net from 'net';
+import * as crypto from 'crypto';
 import { SessionManager } from '../brain/session';
 import { IntentRouter } from '../core/IntentRouter';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
@@ -26,11 +29,153 @@ function findBackendPath(extensionFsPath: string): string | null {
 }
 
 function findVenvPython(backendPath: string): string {
-    const winPy = path.join(backendPath, '.venv', 'Scripts', 'python.exe');
-    const nixPy = path.join(backendPath, '.venv', 'bin', 'python');
-    if (fs.existsSync(winPy)) { return winPy; }
-    if (fs.existsSync(nixPy)) { return nixPy; }
+    const candidates = [
+        path.join(backendPath, '.venv', 'Scripts', 'python.exe'),  // dot-venv Windows
+        path.join(backendPath, 'venv',  'Scripts', 'python.exe'),  // plain venv Windows
+        path.join(backendPath, '.venv', 'bin', 'python'),          // dot-venv Unix
+        path.join(backendPath, 'venv',  'bin', 'python'),          // plain venv Unix
+    ];
+    for (const p of candidates) {
+        if (fs.existsSync(p)) { return p; }
+    }
     return process.platform === 'win32' ? 'python' : 'python3';
+}
+
+export function findFreePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const server = net.createServer();
+        server.listen(0, '127.0.0.1', () => {
+            const port = (server.address() as net.AddressInfo).port;
+            server.close(() => resolve(port));
+        });
+        server.on('error', reject);
+    });
+}
+
+type CoreState = 'stopped' | 'starting' | 'running' | 'crashed';
+
+export class CoreProcessManager {
+    private _proc: cp.ChildProcess | null = null;
+    private _state: CoreState = 'stopped';
+    private readonly _outputChannel: vscode.OutputChannel;
+    private _crashRetries = 0;
+    private static readonly MAX_RETRIES = 3;
+    private static readonly RETRY_DELAY_MS = 2000;
+
+    readonly port: number;
+    readonly token: string;
+    private readonly _extensionFsPath: string;
+
+    constructor(port: number, token: string, extensionFsPath: string) {
+        this.port = port;
+        this.token = token;
+        this._extensionFsPath = extensionFsPath;
+        this._outputChannel = vscode.window.createOutputChannel('AILIENANT Core');
+    }
+
+    getState(): CoreState { return this._state; }
+
+    async start(): Promise<void> {
+        if (this._state === 'starting' || this._state === 'running') { return; }
+        this._state = 'starting';
+
+        const backendPath = findBackendPath(this._extensionFsPath);
+        if (!backendPath) {
+            this._state = 'crashed';
+            this._outputChannel.appendLine('[AILIENANT] Cannot locate ailienant-core/. Open the monorepo root as workspace or set ailienant.coreStartCommand.');
+            void vscode.window.showWarningMessage(
+                'AILIENANT: Cannot locate ailienant-core/.',
+                'Show Output', 'Open Settings',
+            ).then((choice) => {
+                if (choice === 'Show Output') { this._outputChannel.show(); }
+                if (choice === 'Open Settings') {
+                    void vscode.commands.executeCommand('workbench.action.openSettings', 'ailienant.coreStartCommand');
+                }
+            });
+            return;
+        }
+
+        const python = findVenvPython(backendPath);
+        const env = {
+            ...process.env,
+            AILIENANT_API_PORT: String(this.port),
+            AILIENANT_AUTH_TOKEN: this.token,
+        };
+
+        this._outputChannel.appendLine(`[AILIENANT] Starting Core on 127.0.0.1:${this.port} ...`);
+
+        const proc = cp.spawn(
+            python,
+            ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(this.port)],
+            { cwd: backendPath, env, detached: false },
+        );
+
+        proc.stdout?.on('data', (chunk: Buffer) => this._outputChannel.append(chunk.toString()));
+        proc.stderr?.on('data', (chunk: Buffer) => this._outputChannel.append(chunk.toString()));
+
+        proc.on('error', (err) => {
+            this._outputChannel.appendLine(`[AILIENANT] Failed to start: ${err.message}`);
+            this._state = 'crashed';
+        });
+
+        proc.on('close', (code) => {
+            this._proc = null;
+            if (this._state === 'stopped') { return; }  // intentional stop — no retry
+            if (this._crashRetries < CoreProcessManager.MAX_RETRIES) {
+                this._crashRetries++;
+                this._outputChannel.appendLine(
+                    `[AILIENANT] Process exited (code ${code}). Retrying in ${CoreProcessManager.RETRY_DELAY_MS}ms (${this._crashRetries}/${CoreProcessManager.MAX_RETRIES})...`
+                );
+                this._state = 'starting';
+                setTimeout(() => { void this.start(); }, CoreProcessManager.RETRY_DELAY_MS);
+            } else {
+                this._state = 'crashed';
+                this._outputChannel.appendLine(`[AILIENANT] Core stopped (code ${code}). Max retries reached.`);
+                void vscode.window.showErrorMessage(
+                    'AILIENANT: Core process stopped unexpectedly.', 'Show Output'
+                ).then((choice) => {
+                    if (choice === 'Show Output') { this._outputChannel.show(); }
+                });
+            }
+        });
+
+        this._proc = proc;
+        this._state = 'running';
+    }
+
+    async stop(): Promise<void> {
+        if (!this._proc) { this._state = 'stopped'; return; }
+        const proc = this._proc;
+        this._proc = null;
+        this._state = 'stopped';  // prevents close handler from auto-retrying
+        return new Promise<void>((resolve) => {
+            proc.once('close', () => resolve());
+            if (process.platform === 'win32') {
+                proc.kill();
+            } else {
+                proc.kill('SIGTERM');
+                setTimeout(() => {
+                    try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+                }, 3000);
+            }
+        });
+    }
+
+    async restart(): Promise<void> {
+        this._crashRetries = 0;
+        await this.stop();
+        await this.start();
+    }
+
+    dispose(): void {
+        void this.stop();
+        this._outputChannel.dispose();
+    }
+}
+
+// Generate a 256-bit ephemeral auth token (64-char hex). Called once per activate().
+export function generateAuthToken(): string {
+    return crypto.randomBytes(32).toString('hex');
 }
 
 interface TitleUpdater {
@@ -48,8 +193,8 @@ export class WorkspacePanelManager {
     private readonly _configLoader: ConfigLoader;
     private readonly _disposables: vscode.Disposable[] = [];
     private _onTitleUpdate: TitleUpdater | undefined;
-    // 7.9.A.5 — guards against multiple panels spawning the Core concurrently.
-    private _coreStarting: boolean = false;
+    // Phase 7.9.A.5.1 — managed child process; set from activate() via setCoreManager().
+    private _coreManager: CoreProcessManager | null = null;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -80,7 +225,12 @@ export class WorkspacePanelManager {
         this._onTitleUpdate = updater;
     }
 
+    public setCoreManager(manager: CoreProcessManager): void {
+        this._coreManager = manager;
+    }
+
     public dispose(): void {
+        this._coreManager?.dispose();
         for (const d of this._disposables) { d.dispose(); }
         for (const panel of this._panels.values()) { panel.dispose(); }
     }
@@ -106,51 +256,10 @@ export class WorkspacePanelManager {
     }
 
     /**
-     * 7.9.A.5 — Spawn the Core backend in a terminal. Returns true if a spawn was
-     * initiated. When `silent`, suppresses the "cannot locate core" guidance so the
-     * auto-start path does not nag on every session open (the manual button is loud).
-     */
-    private _spawnCore(silent: boolean): boolean {
-        const backendPath = findBackendPath(this._extensionUri.fsPath);
-        if (!backendPath) {
-            const cfg = vscode.workspace.getConfiguration('ailienant');
-            const cmd = cfg.get<string>('coreStartCommand', '').trim();
-            if (!cmd) {
-                if (!silent) {
-                    void vscode.window.showWarningMessage(
-                        'Cannot locate ailienant-core/. Open the monorepo root as your workspace folder, or set "ailienant.coreStartCommand" in VS Code Settings.',
-                        'Open Settings',
-                    ).then((choice) => {
-                        if (choice === 'Open Settings') {
-                            void vscode.commands.executeCommand(
-                                'workbench.action.openSettings',
-                                'ailienant.coreStartCommand',
-                            );
-                        }
-                    });
-                }
-                return false;
-            }
-            const t = vscode.window.createTerminal({ name: 'AILIENANT Core' });
-            t.show(true);
-            t.sendText(cmd);
-            return true;
-        }
-        const python = findVenvPython(backendPath);
-        const terminal = vscode.window.createTerminal({
-            name: 'AILIENANT Core',
-            cwd: backendPath,
-        });
-        terminal.show(true);
-        terminal.sendText(`"${python}" -m uvicorn main:app --reload --port 8000`);
-        return true;
-    }
-
-    /**
-     * 7.9.A.5 — Health-aware activation, run once per session open. If the Core is
-     * reachable, open the tunnel + announce the workspace (starts the lazy indexer).
-     * If it is down and `ailienant.autoStartCore` is enabled, spawn it once and poll
-     * until healthy, then connect. On timeout the offline pill + manual button remain.
+     * Phase 7.9.A.5.1 — Health-aware activation, run once per session open.
+     * If the Core is already healthy, connect immediately. Otherwise poll while
+     * CoreProcessManager starts it (~30 s budget). Falls back gracefully if no
+     * manager is configured (e.g. manual external backend).
      */
     private async _ensureBackend(): Promise<void> {
         const api = APIClient.getInstance();
@@ -158,25 +267,13 @@ export class WorkspacePanelManager {
             SessionManager.getInstance().ensureConnected();
             return;
         }
-
-        const autoStart = vscode.workspace
-            .getConfiguration('ailienant')
-            .get<boolean>('autoStartCore', true);
-        if (!autoStart || this._coreStarting) { return; }
-
-        this._coreStarting = true;
-        try {
-            if (!this._spawnCore(true)) { return; }
-            // Poll while uvicorn boots (~30s budget at 1s intervals).
-            for (let i = 0; i < 30; i++) {
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-                if (await api.checkHealth()) {
-                    SessionManager.getInstance().ensureConnected();
-                    return;
-                }
+        if (!this._coreManager) { return; }
+        for (let i = 0; i < 30; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            if (await api.checkHealth()) {
+                SessionManager.getInstance().ensureConnected();
+                return;
             }
-        } finally {
-            this._coreStarting = false;
         }
     }
 
@@ -310,15 +407,18 @@ export class WorkspacePanelManager {
                     }
                     break;
                 }
-                case 'START_BACKEND': {
-                    this._spawnCore(false);
+                case 'RESTART_BACKEND': {
+                    if (this._coreManager) {
+                        void this._coreManager.restart();
+                    }
                     break;
                 }
                 case 'OPEN_DASHBOARD': {
                     const cfg = vscode.workspace.getConfiguration('ailienant');
-                    const base = cfg.get<string>('backendUrl', 'http://localhost:8000').replace(/\/$/, '');
+                    const base = this._coreManager?.port
+                        ? `http://127.0.0.1:${this._coreManager.port}`
+                        : cfg.get<string>('backendUrl', 'http://localhost:8000').replace(/\/$/, '');
                     const tab = typeof data.tab === 'string' ? data.tab : '';
-                    // The dashboard SPA is mounted at /dashboard (StaticFiles), not the API root.
                     const url = tab
                         ? `${base}/dashboard/?tab=${encodeURIComponent(tab)}`
                         : `${base}/dashboard/`;
@@ -364,6 +464,8 @@ export class WorkspacePanelManager {
                     break;
                 }
                 case 'CLEAR_CONVERSATION': {
+                    // Phase 7.9.B.15 — also drop the backend's short-term memory.
+                    WSClient.getInstance().send({ event_type: 'client_clear_conversation', data: {} });
                     panel.webview.postMessage({ type: 'CONVERSATION_CLEARED' });
                     break;
                 }
@@ -556,8 +658,11 @@ export class WorkspacePanelManager {
         if (!updater) { return; }
 
         const cfg = vscode.workspace.getConfiguration('ailienant');
-        const base = cfg.get<string>('backendUrl', 'http://localhost:8000');
-        void this._fetchTitle(base, prompt).then((title) => {
+        const base = this._coreManager?.port
+            ? `http://127.0.0.1:${this._coreManager.port}`
+            : cfg.get<string>('backendUrl', 'http://localhost:8000').replace(/\/$/, '');
+        const token = this._coreManager?.token ?? '';
+        void this._fetchTitle(base, prompt, token).then((title) => {
             if (title && this._sessions.has(session.id)) {
                 updater(session.id, title);
                 session.title = title;
@@ -566,15 +671,13 @@ export class WorkspacePanelManager {
         });
     }
 
-    private async _fetchTitle(base: string, prompt: string): Promise<string | undefined> {
+    private async _fetchTitle(base: string, prompt: string, token: string = ''): Promise<string | undefined> {
         try {
             const url = `${base.replace(/\/$/, '')}/api/v1/title/generate`;
             const body = JSON.stringify({ prompt, max_words: 5 });
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body,
-            });
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (token) { headers['X-AILIENANT-TOKEN'] = token; }
+            const res = await fetch(url, { method: 'POST', headers, body });
             if (!res.ok) { return undefined; }
             const json = await res.json() as { title?: string };
             return json.title?.trim() || undefined;

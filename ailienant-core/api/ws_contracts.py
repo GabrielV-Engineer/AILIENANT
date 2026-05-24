@@ -343,6 +343,12 @@ class ServerStreamEndEvent(BaseModel):
     data: dict = Field(default_factory=dict)
 
 
+class ClientClearConversationEvent(BaseModel):
+    """Client → server: drop the session's short-term chat memory (Phase 7.9.B.15)."""
+    event_type: Literal["client_clear_conversation"] = "client_clear_conversation"
+    data: dict = Field(default_factory=dict)
+
+
 # =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
@@ -375,4 +381,5 @@ WebSocketMessage = Union[
     ServerNattMessageEvent,          # Phase 7.9.B.12 — analyst reply
     ServerPipelineStepEvent,         # Phase 7.9.B.12 — pipeline node progress
     ServerStreamEndEvent,            # Phase 7.9.B.12 — assistant stream finalized
+    ClientClearConversationEvent,    # Phase 7.9.B.15 — clear short-term chat memory
 ]
