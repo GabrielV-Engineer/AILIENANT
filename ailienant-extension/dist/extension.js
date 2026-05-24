@@ -3828,11 +3828,12 @@ var APIClient = class _APIClient {
       }
       return await response.json();
     } catch (error) {
-      if (error.name === "AbortError") {
+      if (controller.signal.aborted) {
         vscode3.window.showWarningMessage(`AILIENANT: Tarea ${taskId} cancelada por el usuario o por timeout.`);
-      } else {
-        vscode3.window.showErrorMessage(`AILIENANT Error de red: ${error.message}`);
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
       }
+      const detail = error?.message ?? String(error);
+      vscode3.window.showErrorMessage(`AILIENANT Error de red: ${detail}`);
       throw error;
     } finally {
       clearTimeout(timeoutId);
@@ -5058,6 +5059,7 @@ var WorkspacePanelManager = class {
           break;
         }
         case "CLEAR_CONVERSATION": {
+          WSClient.getInstance().send({ event_type: "client_clear_conversation", data: {} });
           panel.webview.postMessage({ type: "CONVERSATION_CLEARED" });
           break;
         }

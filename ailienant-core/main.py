@@ -265,6 +265,10 @@ planner_mode_registry: Dict[str, bool] = {}
 _ppr_tasks: Dict[str, asyncio.Task[None]] = {}
 _PPR_DEBOUNCE_S: float = 2.0
 
+# Fire-and-forget task runners (Phase 7.9.B.17). Strong refs prevent the event
+# loop from GC-ing an in-flight submit before the agent pipeline finishes.
+_task_submit_tasks: set = set()
+
 # Workspace registry — populated on client_workspace_init; used by mass change handler
 _workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
 _session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root (Phase 3.4.1)
@@ -325,38 +329,57 @@ async def get_available_models() -> ModelsAvailableResponse:
     return ModelsAvailableResponse(models=models, litellm_available=litellm_available)
 
 
-@app.post("/api/v1/task/submit")
+@app.post("/api/v1/task/submit", status_code=202)
 async def submit_task(
     payload: TaskPayload,
     x_task_id: str = Header(
         ..., alias="X-Task-ID"
     ),  # Trazabilidad desde el frontend TS
 ):
-    """
-    Endpoint puro de enrutamiento HTTP. Valida I/O y delega la asimilación.
-    """
-    try:
-        # Resolve execution mode — Zero-Trust hardware gate (Phase 7.9.B.3)
-        hw = await _get_hw_profile()
-        pref = get_execution_mode_pref()
-        if pref == "AUTO":
-            resolved_mode = hw.suggested_mode
-        elif pref == "FULL_SWARM" and hw.suggested_mode in ("SEQUENTIAL", "MICRO_SWARM"):
-            resolved_mode = hw.suggested_mode   # hardware degraded; silent downgrade
-        elif pref == "MICRO_SWARM" and hw.suggested_mode == "SEQUENTIAL":
-            resolved_mode = "SEQUENTIAL"
-        else:
-            resolved_mode = pref
+    """Dispatch a cognitive mission and return immediately (202 Accepted).
 
-        result = await task_service.process_task(
-            session_id=x_task_id, payload=payload, execution_mode=resolved_mode
-        )
-        return result
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        logger.error(f"Fallo crítico en el motor cognitivo: {str(e)}")
-        raise HTTPException(status_code=500, detail="Colapso interno en el orquestador")
+    The agent pipeline (planner + coder, or the streaming chat completion) can run
+    for far longer than the client's HTTP timeout, so the request must NOT block on
+    it. We schedule process_task in the background and stream every result over the
+    WebSocket; the HTTP response only acknowledges receipt. Errors inside the runner
+    are surfaced over the WS (actionable token + stream_end) so the UI never hangs.
+    """
+
+    async def _runner() -> None:
+        try:
+            # Resolve execution mode — Zero-Trust hardware gate (Phase 7.9.B.3)
+            hw = await _get_hw_profile()
+            pref = get_execution_mode_pref()
+            if pref == "AUTO":
+                resolved_mode = hw.suggested_mode
+            elif pref == "FULL_SWARM" and hw.suggested_mode in ("SEQUENTIAL", "MICRO_SWARM"):
+                resolved_mode = hw.suggested_mode   # hardware degraded; silent downgrade
+            elif pref == "MICRO_SWARM" and hw.suggested_mode == "SEQUENTIAL":
+                resolved_mode = "SEQUENTIAL"
+            else:
+                resolved_mode = pref
+
+            await task_service.process_task(
+                session_id=x_task_id, payload=payload, execution_mode=resolved_mode
+            )
+        except Exception as exc:  # noqa: BLE001 — a background failure must reach the UI, not vanish
+            logger.error("Fallo crítico en el motor cognitivo: %s", exc, exc_info=True)
+            try:
+                await vfs_manager.broadcast_token(
+                    x_task_id,
+                    "AILIENANT hit an internal error processing this request. "
+                    "Check the core logs; if a model is configured, make sure its "
+                    "engine is reachable.",
+                )
+                await vfs_manager.broadcast_stream_end(x_task_id)
+            except Exception:  # noqa: BLE001 — never raise out of the background runner
+                pass
+
+    _t = asyncio.create_task(_runner(), name=f"task_submit:{x_task_id}")
+    _task_submit_tasks.add(_t)
+    _t.add_done_callback(_task_submit_tasks.discard)
+
+    return {"status": "accepted", "session_id": x_task_id}
 
 
 # =====================================================================
@@ -739,14 +762,20 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
             elif valid_event.event_type == "client_analyst_query":
                 # Phase 7.9.B.13 — Natt analyst pane bridge (live BYOM completion).
-                reply = await generate_analyst_reply(
-                    valid_event.data.text, session_id=client_id
-                )
-                await vfs_manager.send_natt_message(client_id, reply)
-                logger.info(
-                    "[Session: %s] Analyst query handled (%d chars in)",
-                    client_id, len(valid_event.data.text),
-                )
+                # Phase 7.9.B.17 — run it off the WS receive loop so a slow model
+                # never stalls inbound message processing for this session.
+                _query_text = valid_event.data.text
+
+                async def _analyst_runner(text: str = _query_text, sid: str = client_id) -> None:
+                    reply = await generate_analyst_reply(text, session_id=sid)
+                    await vfs_manager.send_natt_message(sid, reply)
+                    logger.info(
+                        "[Session: %s] Analyst query handled (%d chars in)", sid, len(text)
+                    )
+
+                _at = asyncio.create_task(_analyst_runner(), name=f"analyst:{client_id}")
+                _task_submit_tasks.add(_at)
+                _at.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_file_delete":
                 io_coalescer.submit_unlink(

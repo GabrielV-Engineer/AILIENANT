@@ -139,7 +139,12 @@ async def test_ainvoke_without_tier_classifies_model_big_as_cloud() -> None:
 
 @pytest.mark.anyio
 async def test_ainvoke_tier_overrides_explicit_model() -> None:
-    """When both `tier` and `model` are passed, `tier` wins."""
+    """When both `tier` and `model` are passed, `tier` wins.
+
+    Forces the proxy/alias path (no active BYOM preset) so the assertion checks
+    the tier→alias resolution itself, isolated from any preset on the test
+    machine that the BYOM-aware short-circuit would otherwise resolve.
+    """
     from shared.config import MODEL_SMALL
     fake = _fake_llm_response("ok", prompt_tokens=3, completion_tokens=1)
     call_capture: dict[str, Any] = {}
@@ -148,7 +153,8 @@ async def test_ainvoke_tier_overrides_explicit_model() -> None:
         call_capture.update(kwargs)
         return fake
 
-    with patch("tools.llm_gateway.litellm.acompletion", new=_capture):
+    with patch("core.config.model_resolver.get_chat_target", return_value=None), \
+         patch("tools.llm_gateway.litellm.acompletion", new=_capture):
         await LLMGateway.ainvoke(
             messages=[{"role": "user", "content": "x"}],
             model=MODEL_SMALL,

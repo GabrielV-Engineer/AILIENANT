@@ -62,14 +62,15 @@ export interface RejectTelemetryPayload {
 
 export class APIClient {
     private static instance: APIClient;
-    private readonly baseUrl: string;
+    // Phase 7.9.A.5.1: mutable so configure() can update after dynamic port is resolved.
+    private _baseUrl: string;
+    private _token: string = '';
 
     // Almacenamos los controladores de aborto para poder cancelar peticiones en vuelo
     private activeRequests: Map<string, AbortController> = new Map();
 
     private constructor() {
-        // En el futuro, esto vendrá de las configuraciones de VS Code (settings.json)
-        this.baseUrl = 'http://127.0.0.1:8000/api/v1';
+        this._baseUrl = 'http://127.0.0.1:8000/api/v1';
     }
 
     public static getInstance(): APIClient {
@@ -77,6 +78,20 @@ export class APIClient {
             APIClient.instance = new APIClient();
         }
         return APIClient.instance;
+    }
+
+    /**
+     * Phase 7.9.A.5.1 — called from activate() once the CoreProcessManager has a port/token.
+     * All subsequent requests will target the new URL and include the auth header.
+     */
+    public configure(baseUrl: string, token: string): void {
+        this._baseUrl = baseUrl;
+        this._token = token;
+    }
+
+    /** Build auth headers. Health check path (GET /) is excluded by the caller. */
+    private _authHeaders(): Record<string, string> {
+        return this._token ? { 'X-AILIENANT-TOKEN': this._token } : {};
     }
 
     /**
@@ -98,11 +113,12 @@ export class APIClient {
         }, timeoutMs);
 
         try {
-            const response = await fetch(`${this.baseUrl}/task/submit`, {
+            const response = await fetch(`${this._baseUrl}/task/submit`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Task-ID': taskId // Header de trazabilidad
+                    'X-Task-ID': taskId, // Header de trazabilidad
+                    ...this._authHeaders(),
                 },
                 body: JSON.stringify(payload),
                 signal: controller.signal // Enlazamos el control de aborto
@@ -116,11 +132,16 @@ export class APIClient {
             return await response.json();
 
         } catch (error: any) {
-            if (error.name === 'AbortError') {
+            // Detect abort via the signal, not error.name: when abort() is given a
+            // string reason the rejection IS that string (no .name/.message), which
+            // previously rendered "Error de red: undefined".
+            if (controller.signal.aborted) {
                 vscode.window.showWarningMessage(`AILIENANT: Tarea ${taskId} cancelada por el usuario o por timeout.`);
-            } else {
-                vscode.window.showErrorMessage(`AILIENANT Error de red: ${error.message}`);
+                // Normalize so SessionManager's AbortError suppression keeps quiet.
+                throw Object.assign(new Error('aborted'), { name: 'AbortError' });
             }
+            const detail = error?.message ?? String(error);
+            vscode.window.showErrorMessage(`AILIENANT Error de red: ${detail}`);
             throw error; // Re-lanzamos para que la UI lo maneje
         } finally {
             // 3. Limpieza: Liberar memoria y evitar bloqueos en el Event Loop
@@ -148,8 +169,9 @@ export class APIClient {
      */
     public async fetchAvailableModels(): Promise<ModelInfo[]> {
         try {
-            const response = await fetch(`${this.baseUrl}/models/available`, {
+            const response = await fetch(`${this._baseUrl}/models/available`, {
                 method: 'GET',
+                headers: { ...this._authHeaders() },
                 signal: AbortSignal.timeout(3000),
             });
             if (!response.ok) { return []; }
@@ -166,8 +188,9 @@ export class APIClient {
      */
     public async fetchTokenUsage(): Promise<TokenUsage | null> {
         try {
-            const response = await fetch(`${this.baseUrl}/telemetry/tokens`, {
+            const response = await fetch(`${this._baseUrl}/telemetry/tokens`, {
                 method: 'GET',
+                headers: { ...this._authHeaders() },
                 signal: AbortSignal.timeout(3000),
             });
             if (!response.ok) { return null; }
@@ -182,8 +205,9 @@ export class APIClient {
      */
     public async fetchBYOMConfig(): Promise<{ presets: unknown[]; active_preset_id: string | null } | null> {
         try {
-            const response = await fetch(`${this.baseUrl}/byom/config`, {
+            const response = await fetch(`${this._baseUrl}/byom/config`, {
                 method: 'GET',
+                headers: { ...this._authHeaders() },
                 signal: AbortSignal.timeout(5000),
             });
             if (!response.ok) { return null; }
@@ -198,9 +222,9 @@ export class APIClient {
      */
     public async saveBYOMConfig(payload: Record<string, unknown>): Promise<{ presets: unknown[]; active_preset_id: string | null } | null> {
         try {
-            const response = await fetch(`${this.baseUrl}/byom/config`, {
+            const response = await fetch(`${this._baseUrl}/byom/config`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
                 body: JSON.stringify(payload),
                 signal: AbortSignal.timeout(10000),
             });
@@ -217,7 +241,7 @@ export class APIClient {
      */
     public async checkHealth(): Promise<boolean> {
         try {
-            const origin = new URL(this.baseUrl).origin;
+            const origin = new URL(this._baseUrl).origin;
             const response = await fetch(`${origin}/`, {
                 method: 'GET',
                 signal: AbortSignal.timeout(2000),
@@ -233,8 +257,8 @@ export class APIClient {
      * Backs the `ailienant-vision://{node_id}/{path}` URI scheme.
      */
     public async fetchVirtualFile(nodeId: string, filePath: string): Promise<string> {
-        const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/vfs?path=${encodeURIComponent(filePath)}`;
-        const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        const url = `${this._baseUrl}/mcts/${encodeURIComponent(nodeId)}/vfs?path=${encodeURIComponent(filePath)}`;
+        const response = await fetch(url, { headers: { ...this._authHeaders() }, signal: AbortSignal.timeout(5000) });
         if (!response.ok) {
             throw new Error(`AILIENANT Mirror fetch failed: ${response.status} ${response.statusText}`);
         }
@@ -245,10 +269,10 @@ export class APIClient {
      * Phase 3.4.5 — One-Click Merge: apply a stable MCTS node's vfs_view to disk.
      */
     public async applyMerge(nodeId: string, workspaceRoot: string): Promise<MergeReport> {
-        const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/merge`;
+        const url = `${this._baseUrl}/mcts/${encodeURIComponent(nodeId)}/merge`;
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: JSON.stringify({ workspace_root: workspaceRoot }),
             signal: AbortSignal.timeout(15000),
         });
@@ -263,8 +287,8 @@ export class APIClient {
     /** Generic JSON request helper. Returns null on any network/parse error (non-blocking). */
     private async _json<T>(path: string, init?: RequestInit, timeoutMs = 5000): Promise<T | null> {
         try {
-            const response = await fetch(`${this.baseUrl}${path}`, {
-                headers: { 'Content-Type': 'application/json' },
+            const response = await fetch(`${this._baseUrl}${path}`, {
+                headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
                 signal: AbortSignal.timeout(timeoutMs),
                 ...init,
             });
@@ -336,9 +360,9 @@ export class APIClient {
      */
     public async reportRejection(payload: RejectTelemetryPayload): Promise<void> {
         try {
-            await fetch(`${this.baseUrl}/telemetry/reject`, {
+            await fetch(`${this._baseUrl}/telemetry/reject`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
                 body: JSON.stringify(payload),
                 signal: AbortSignal.timeout(10000),
             });

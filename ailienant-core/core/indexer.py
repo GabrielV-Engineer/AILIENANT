@@ -45,6 +45,30 @@ def _collect_eligible_files(workspace_root: str) -> List[str]:
     return eligible
 
 
+def _ollama_model_present(names: set[str], want: str) -> bool:
+    """Return True if `want` matches any installed Ollama model name.
+
+    Ollama's /api/tags reports tagged names (e.g. "nomic-embed-text:latest"), so a
+    naive equality check falsely reports a freshly-pulled model as missing. Match
+    on the tag-stripped, lowercased base name with either-direction prefix so
+    "nomic-embed-text" ≡ "nomic-embed-text:latest" and registry-qualified names
+    still resolve.
+    """
+    def _base(n: str) -> str:
+        return n.split(":", 1)[0].strip().lower()
+
+    want_base = _base(want)
+    if not want_base:
+        return False
+    return any(
+        _base(n) == want_base
+        or _base(n).startswith(want_base)
+        or want_base.startswith(_base(n))
+        for n in names
+        if n
+    )
+
+
 def _set_low_priority(pid: int) -> None:
     """Set a process to low OS scheduling priority (best-effort, non-fatal)."""
     try:
@@ -156,7 +180,7 @@ class LazyIndexer:
                     resp.raise_for_status()
                     names = {m.get("name", "") for m in resp.json().get("models", [])}
                     want = t.model.split("/", 1)[1] if "/" in t.model else t.model
-                    if want and not any(n == want or n.startswith(want) for n in names):
+                    if want and not _ollama_model_present(names, want):
                         return (
                             f"Embedding model '{want}' not installed in Ollama. "
                             f"Run: ollama pull {want}"
