@@ -63,7 +63,7 @@ async def test_sandbox_bash_timeout_kills_process() -> None:
         command=f'{sys.executable} -c "import time; time.sleep(5)"',
         timeout_sec=0.5,
     )
-    assert out.startswith("[sandbox_bash] TIMEOUT")
+    assert "[sandbox_bash] exit=124" in out  # exit 124 = timeout (GNU timeout / _DirectAdapter)
 
 
 @pytest.mark.anyio

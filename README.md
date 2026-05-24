@@ -122,7 +122,11 @@ State is checkpointed by a `HybridCheckpointer` over SQLite WAL — every node t
 
 ```
 Proyect_Ailienant/
+├── .github/
+│   └── workflows/
+│       └── docker-publish.yml  #   CI/CD: builds + pushes ailienant-sandbox to GHCR on main push (Phase 7.9.B.9)
 ├── ailienant-core/             # Python orchestration engine
+│   ├── Dockerfile              #   Sandbox image definition (python:3.13-slim + sandbox user; source of truth for CI/CD; Phase 7.9.B.9)
 │   ├── main.py                 # FastAPI app + WebSocket gateway
 │   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator)
 │   ├── brain/                  # State machine + MCTS + checkpointing
@@ -156,7 +160,7 @@ Proyect_Ailienant/
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX); llm_gateway.py (Phase 6.3 — OOM Cascade: ainvoke traps ContextWindowExceeded/CUDA-OOM, purges VRAM, trims context, re-emits to cloud Haiku fallback; Phase 6.8 — _oom_cascade emits telemetry.log_oom_event with swap latency)
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe, logging_filters.py (Phase 6.7 — SecretsScrubber DLP filter)
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # 496 passing tests (incl. tests/chaos/ — Phase 4.5 crucible; test_permissions.py — Phase 5.1; test_tool_rag_selection.py + test_mcp_handshake.py — Phase 5.2; test_perception_tools.py — Phase 5.3; test_mutation_tools.py — Phase 5.4; test_execution_tools.py + test_control_tools.py — Phase 5.5/5.6; test_phase5_7_checkpoint_gate.py — Phase 5.7; test_audit_chain.py — Phase 6.6 HITL audit chain E1/E2; test_logging_filters.py — Phase 6.7 secrets scrubber; test_oom_cascade.py — Phase 6.8 OOM cascade + telemetry; test_dead_letter.py — Phase 6.9 DLQ decorator + resume; test_phase6_checkpoint_gate.py — Phase 6.10 adversarial E2E gate, 12 scenarios A1–G2)
+│   └── tests/                  # conftest.py (Phase 7.9.B.9 — _DirectAdapter autouse fixture; 38/38 execution + runtime tests pass without FastAPI lifespan); test_execution_tools.py + test_runtime_status.py; test_phase6_checkpoint_gate.py — Phase 6.10 adversarial E2E gate; test_permissions.py, test_tool_rag_selection.py, test_mcp_handshake.py, test_perception_tools.py, test_mutation_tools.py, test_control_tools.py, test_phase5_7_checkpoint_gate.py, test_audit_chain.py, test_logging_filters.py, test_oom_cascade.py, test_dead_letter.py + tests/chaos/ crucible
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry
@@ -276,7 +280,7 @@ The server exposes:
 | `GET /api/v1/telemetry/oom` | Phase 7.9.B.6 — recent OOM rescue-swap events, paginated (read-only) |
 | `GET /api/v1/runtime/status` | Phase 7.9.B.7/8 — live sandbox tier + deep Docker engine probe via `info()` (5 s cache; `?force=true` bypasses); returns tier, docker_reachable, image_exists, container_running, mode_label |
 | `POST /api/v1/runtime/start-docker` | Phase 7.9.B.7 — platform-specific Docker Desktop launcher (S7-A/B/C/D hardened; loopback-only) |
-| `POST /api/v1/runtime/pull-image` | Phase 7.9.B.8 — zero-config pull of the pre-built sandbox image from the public registry (non-blocking; structured errors: no_connection / image_not_found / disk_full); reuses S7-D Origin guard |
+| `POST /api/v1/runtime/pull-image` | Phase 7.9.B.8/9 — zero-config pull from GHCR (`ghcr.io/gabrielv-engineer/ailienant-sandbox:latest`); non-blocking via `asyncio.to_thread`; structured errors: no_connection / image_not_found / disk_full; reuses S7-D Origin guard |
 | `POST /api/v1/system/janitor` | Trigger the memory janitor (vector GC + MCTS purge) |
 | `GET /api/v1/memory/sections` | Enumerate indexed folders per project (dashboard, no vectors loaded) |
 | `GET /api/v1/memory/graph` | Code dependency graph for one section (nodes by PageRank) |

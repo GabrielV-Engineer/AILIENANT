@@ -13,7 +13,7 @@ interface PullResult { pulled: boolean; image?: string; error?: string; message:
 
 const POLL_INTERVAL_MS = 5_000;
 const LAUNCH_TIMEOUT_MS = 30_000;
-const REMOTE_IMAGE = 'ailienant/sandbox:latest';
+const REMOTE_IMAGE = 'ghcr.io/gabrielv-engineer/ailienant-sandbox:latest';
 const SEMAPHORE = { green: '#63a583', yellow: '#E3B341', red: '#F85149', gray: '#888888' } as const;
 type Tone = 'ok' | 'warn' | 'bad';
 
