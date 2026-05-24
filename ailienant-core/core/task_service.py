@@ -15,6 +15,45 @@ logger = logging.getLogger(__name__)
 _background_tasks: set = set()
 
 
+def _summarize_result(state: Dict[str, Any]) -> str:
+    """Phase 7.9.B.12 — synthesize a user-facing answer from the merged graph state.
+
+    Defensive against partially-stubbed agents: reports the mission outcome, any
+    changed files, validation issues and errors, falling back to a generic line
+    when no meaningful output was produced.
+    """
+    parts: List[str] = []
+
+    mission = state.get("mission_spec")
+    outcome = getattr(mission, "outcome", None) if mission is not None else None
+    if outcome:
+        parts.append(str(outcome))
+
+    changed: set = set()
+    pending = state.get("pending_patches")
+    generated = state.get("generated_code")
+    if isinstance(pending, dict):
+        changed.update(pending.keys())
+    if isinstance(generated, dict):
+        changed.update(generated.keys())
+    if changed:
+        listed = ", ".join(sorted(changed)[:8])
+        more = "" if len(changed) <= 8 else f" (+{len(changed) - 8} more)"
+        parts.append(f"Files changed: {listed}{more}.")
+
+    if state.get("guardrail_failed"):
+        feedback = state.get("validation_feedback")
+        parts.append(f"Validation flagged an issue{f': {feedback}' if feedback else ''}.")
+
+    errors = state.get("errors")
+    if isinstance(errors, list) and errors:
+        parts.append(f"{len(errors)} error(s) encountered: {errors[-1]}")
+
+    if not parts:
+        return "Task processed through the pipeline. No code changes were produced."
+    return "\n".join(parts)
+
+
 # Replicamos el contrato del frontend (api_client.ts)
 class TaskPayload(BaseModel):
     task_prompt: str
@@ -110,24 +149,34 @@ class TaskService:
         config: RunnableConfig = {"configurable": {"thread_id": session_id}}
 
         # 3. Ejecución del grafo con streaming de actualizaciones
+        # Phase 7.9.B.12 — node completions flow on the dedicated pipeline-progress
+        # channel (ephemeral stepper UI), NOT as chat tokens. merged_state flattens
+        # the per-node deltas so we can synthesize one real assistant answer.
         final_output: dict = {}
+        merged_state: dict = {}
         async for update in alienant_app.astream(
             cast(AIlienantGraphState, initial_state), config=config, stream_mode="updates"
         ):
             for node_name, node_output in update.items():
+                step_id = (
+                    node_output.get("current_step_id")
+                    if isinstance(node_output, dict) else None
+                )
                 task = asyncio.create_task(
-                    vfs_manager.broadcast_token(
-                        session_id,
-                        f"[{node_name}] completed",
-                        step_id=(
-                            node_output.get("current_step_id")
-                            if isinstance(node_output, dict) else None
-                        ),
-                    )
+                    vfs_manager.broadcast_pipeline_step(session_id, node_name, step_id=step_id)
                 )
                 _background_tasks.add(task)
                 task.add_done_callback(_background_tasks.discard)
+                if isinstance(node_output, dict):
+                    merged_state.update(node_output)
             final_output.update(update)
+
+        # 4. Stream the final answer — unless the graph suspended on HITL/ideation,
+        # which already broadcast its own Socratic question via broadcast_token.
+        if not merged_state.get("hitl_pending"):
+            summary = _summarize_result(merged_state)
+            await vfs_manager.broadcast_token(session_id, summary)
+            await vfs_manager.broadcast_stream_end(session_id)
 
         return {
             "status": "success",

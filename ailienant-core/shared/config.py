@@ -8,6 +8,13 @@ import os
 LITELLM_PROXY_BASE_URL: str = os.getenv("LITELLM_PROXY_BASE_URL", "http://localhost:4000")
 LITELLM_PROXY_API_KEY: str = os.getenv("LITELLM_PROXY_API_KEY", "sk-ailienant-local")
 
+# ---------------------------------------------------------------------------
+# Local engine base URLs (Phase 7.9.B.12) — shared by config_generator,
+# the embedding resolver and the indexer preflight so all probes agree.
+# ---------------------------------------------------------------------------
+OLLAMA_API_BASE: str = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+LM_STUDIO_API_BASE: str = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234")
+
 # Ailienant model alias tiers — mapped to real models inside LiteLLM proxy config.yaml.
 # Override via env to switch providers without touching code (Phase 1.6.2).
 MODEL_SMALL: str = os.getenv("AILIENANT_MODEL_SMALL", "ailienant/small")
@@ -48,6 +55,9 @@ DB_CATALOG_PATH: str = os.getenv("AILIENANT_CATALOG_DB", "ailienant_catalog.sqli
 
 # Trajectory Memory (Phase 3.0.1) — LanceDB store and embedding model alias.
 LANCEDB_PATH: str = os.getenv("AILIENANT_LANCEDB_PATH", "ailienant_lancedb")
+# Phase 7.9.B.12 — advanced override ONLY. When unset, the embedding backend is
+# resolved per-provider from the active BYOM preset (core/config/embedding_resolver.py).
+# Setting this env var forces a fixed embedding model regardless of the preset.
 MODEL_EMBEDDING: str = os.getenv("AILIENANT_MODEL_EMBEDDING", "ailienant/embedding")
 MINI_JUDGE_MODEL: str = os.getenv("AILIENANT_MINI_JUDGE_MODEL", MODEL_SMALL)
 

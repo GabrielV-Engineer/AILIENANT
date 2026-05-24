@@ -298,6 +298,52 @@ class AuthEvent(BaseModel):
 
 
 # =====================================================================
+# 12. PHASE 7.9.B.12 — ANALYST PANE BRIDGE + PIPELINE PROGRESS
+# =====================================================================
+
+
+class AnalystQueryPayload(BaseModel):
+    """Client → server: a message directed at the Natt analyst pane."""
+    text: str
+    session_id: Optional[str] = None
+    context_paths: list[str] = Field(default_factory=list)
+
+
+class ClientAnalystQueryEvent(BaseModel):
+    event_type: Literal["client_analyst_query"] = "client_analyst_query"
+    data: AnalystQueryPayload
+
+
+class NattMessagePayload(BaseModel):
+    """Server → client: an analyst reply rendered in the Natt canvas."""
+    content: str
+    is_alert: bool = False
+
+
+class ServerNattMessageEvent(BaseModel):
+    event_type: Literal["server_natt_message"] = "server_natt_message"
+    data: NattMessagePayload
+
+
+class PipelineStepPayload(BaseModel):
+    """Server → client: a single LangGraph node completed (progress, NOT chat)."""
+    node_name: str
+    status: Literal["completed"] = "completed"
+    step_id: Optional[int] = None
+
+
+class ServerPipelineStepEvent(BaseModel):
+    event_type: Literal["server_pipeline_step"] = "server_pipeline_step"
+    data: PipelineStepPayload
+
+
+class ServerStreamEndEvent(BaseModel):
+    """Server → client: the assistant message stream is finalized."""
+    event_type: Literal["server_stream_end"] = "server_stream_end"
+    data: dict = Field(default_factory=dict)
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -325,4 +371,8 @@ WebSocketMessage = Union[
     ClientMasterToggleEvent,         # Phase 3.4.1
     ClientProfileChangeEvent,        # Phase 3.4.1
     AuthEvent,                       # Phase 7.9.A.5.1 — ephemeral auth handshake
+    ClientAnalystQueryEvent,         # Phase 7.9.B.12 — Natt analyst pane query
+    ServerNattMessageEvent,          # Phase 7.9.B.12 — analyst reply
+    ServerPipelineStepEvent,         # Phase 7.9.B.12 — pipeline node progress
+    ServerStreamEndEvent,            # Phase 7.9.B.12 — assistant stream finalized
 ]

@@ -2,6 +2,37 @@
 
 ---
 
+## Hito 7.9.B.12: Core Integration — Provider-Agnostic Embeddings, Chat Streaming & Analyst Routing — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.12
+
+**Files changed:**
+- `ailienant-core/core/config/byom_config.py` — New `EmbeddingTarget` model (model/provider/api_base/api_key/dim/is_local); `BYOMConfig.embedding` optional field persisted by `_apply_preset`
+- `ailienant-core/core/config/embedding_resolver.py` *(new)* — Provider-agnostic single source of truth: `get_embedding_target()` (cached; env override → persisted preset target → legacy proxy fallback) + `refresh()`
+- `ailienant-core/shared/config.py` — `MODEL_EMBEDDING` documented as advanced env override only; added shared `OLLAMA_API_BASE` / `LM_STUDIO_API_BASE`
+- `ailienant-core/api/byom.py` — `_derive_embedding_target()` picks the embed backend from the active preset's provider (local-first: ollama→lmstudio→vllm/custom→openai→openrouter→anthropic); per-provider default models; OpenRouter→OpenAI and Anthropic→(OpenAI key|local Ollama|actionable error) fallbacks; `put_config` persists the target + calls `embedding_resolver.refresh()`
+- `ailienant-core/core/memory/semantic_memory.py` — `_get_embedding` routes by resolved target (api_base for local/custom, api_key for cloud); `_write_record` is now dimension-dynamic (`_schema_for_dim` + drop/recreate on dim change)
+- `ailienant-core/core/indexer.py` — `_preflight_check` provider-aware: local engines probed (Ollama `/api/tags`, OpenAI-compatible `/v1/models` + embed-model presence); cloud gated on key presence (no local-port ping); legacy proxy `/health` fallback
+- `ailienant-core/api/ws_contracts.py` — Added `ClientAnalystQueryEvent`, `ServerNattMessageEvent`, `ServerPipelineStepEvent`, `ServerStreamEndEvent` + payloads; extended `WebSocketMessage` union
+- `ailienant-core/api/websocket_manager.py` — Added `send_natt_message()`, `broadcast_pipeline_step()`, `broadcast_stream_end()`
+- `ailienant-core/agents/analyst.py` — Added graph-free `generate_analyst_reply()` (DEBUG Socratic path) for the Natt pane
+- `ailienant-core/main.py` — WS dispatch: new `client_analyst_query` branch → `generate_analyst_reply` → `send_natt_message`
+- `ailienant-core/core/task_service.py` — Node completions now stream via `broadcast_pipeline_step` (not chat tokens); after the graph, `_summarize_result()` synthesizes one assistant answer + `broadcast_stream_end` (skipped when `hitl_pending`)
+- `ailienant-extension/src/workspace/Workspace.tsx` — New `server_pipeline_step` case → ephemeral `pipelineSteps` (never chat); cleared on token arrival / `TASK_STARTED` / `server_stream_end`; renders `<PipelineProgress>`
+- `ailienant-extension/src/workspace/components/PipelineProgress.tsx` *(new)* — Ephemeral node-progress ticker
+- `ailienant-extension/src/workspace/workspace.css` — `.ws-pipeline*` ticker styling (reuses `ws-spin`)
+
+**Architectural outcomes:**
+- **BYOM honored end-to-end:** embeddings follow the active preset's provider — no hardcoded Ollama assumption. LM Studio-only, cloud-only and hybrid setups all index. Cloud providers never trigger a local-port ping; missing keys produce actionable errors. Anthropic (no embeddings API) falls back to an OpenAI key or a local engine.
+- **api↔core decoupling:** the api layer *derives* and persists the `EmbeddingTarget`; the core layer only *reads* it through `embedding_resolver`, avoiding the `byom.py ↔ indexer.py` import cycle.
+- **Dimension safety:** the LanceDB vector schema is derived from the real vector length and the table is recreated on a dimension change, so 768/1024/1536 providers can be swapped without manual cleanup.
+- **Execution trace off the chat channel:** node progress is a first-class ephemeral UI (`server_pipeline_step`), and the chat receives exactly one synthesized answer finalized by `server_stream_end` — the `[node] completed` leakage is structurally impossible.
+- **Analyst pane no longer a silent dead end:** the previously-undefined `client_analyst_query` is now a real contract with a handler; the DEBUG analyst replies until the Phase 4 LLM path lands.
+
+**Verification:** `pytest` 565 passed; `npm run compile` 0 errors (2 pre-existing lint warnings, unrelated files).
+
+---
+
 ## Hito 7.9.B.11: BYOM Bug Fixes — State Propagation, UI Feedback & Preset Safety — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.11

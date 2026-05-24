@@ -178,6 +178,32 @@ async def _generate_question_llm(messages: List[Dict], user_input: str) -> str:
     )
 
 
+async def generate_analyst_reply(text: str, has_prior: bool = False) -> str:
+    """Phase 7.9.B.12 — standalone analyst reply for the Natt pane.
+
+    Graph-free entry point used by the WebSocket dispatch loop so the Natt canvas
+    is responsive end-to-end. Mirrors the Socratic DEBUG questions emitted by
+    run_analyst_node; the real LLM path (_generate_question_llm) is still deferred.
+    """
+    if _is_agreement(text):
+        return (
+            "Understood — I'll treat the goal as locked. When the planner runs it "
+            "will synthesize the WBS from this shared understanding."
+        )
+    if not has_prior:
+        return (
+            f"[Analyst] Before any code, let's frame the goal. Task: '{text[:80]}'. "
+            "What is the primary deliverable, and what does 'done' look like? "
+            "Recommended: a working feature with existing tests green plus new unit "
+            "tests covering the change." + _CLOSE_HINT
+        )
+    return (
+        "[Analyst] What are the non-functional constraints (performance budget, "
+        "security surface, dependency limits)? Recommended: O(n) max, no new external "
+        "dependencies, all inputs sanitised at the boundary." + _CLOSE_HINT
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase 3.4.3a — Nightmare Protocol
 # ---------------------------------------------------------------------------

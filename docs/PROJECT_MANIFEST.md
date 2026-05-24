@@ -1263,6 +1263,35 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         field, revealing all datalist options (resolves HTML5 filtering behavior).
     - **Tests:** 565/565 · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.12 — Core Integration: Provider-Agnostic Embeddings, Chat Streaming & Analyst Routing**
+    - **Problem:** Three deeper core failures surfaced after 7.9.B.11: (1) indexing
+      stayed yellow even after a preset was applied because the `LazyIndexer` preflight
+      always pinged the LiteLLM proxy (`:4000`) while the user ran a local engine —
+      `_apply_preset` never configured embeddings; (2) the Natt analyst pane was a dead
+      end — the webview sent `client_analyst_query` / listened for `server_natt_message`
+      but neither contract existed, so the message was rejected at the Pydantic frontier
+      and silently dropped; (3) normal chat rendered the raw node trace
+      (`[planner_agent] completed` …) instead of an answer, because `task_service`
+      broadcast every node name through `broadcast_token` and never streamed the result.
+    - **Resolution:**
+      - **Provider-agnostic embeddings:** new `EmbeddingTarget` (persisted on `BYOMConfig`)
+        + `core/config/embedding_resolver.py` single source of truth. `api/byom.py`
+        `_derive_embedding_target()` picks the embed backend from the active preset's
+        provider (Ollama / LM Studio / vLLM / OpenAI / OpenRouter→OpenAI /
+        Anthropic→fallback), local-first. `_get_embedding` routes by target (api_base vs
+        api_key); `_preflight_check` probes local engines but gates cloud on key presence
+        (no local-port ping). LanceDB schema is now dimension-dynamic (drop/recreate on
+        768↔1536 change).
+      - **Analyst WS bridge:** `ClientAnalystQueryEvent` + `ServerNattMessageEvent`
+        contracts; `send_natt_message()` manager method; `generate_analyst_reply()`
+        standalone DEBUG analyst; `main.py` `client_analyst_query` handler.
+      - **Pipeline progress + final answer:** `ServerPipelineStepEvent` +
+        `ServerStreamEndEvent`; `task_service` streams node completions on the dedicated
+        progress channel and synthesizes one assistant answer via `_summarize_result()`
+        (skipped when the graph suspends on HITL/ideation). `Workspace.tsx` renders an
+        ephemeral `PipelineProgress` ticker (never chat) cleared when the answer arrives.
+    - **Tests:** 565/565 · `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante

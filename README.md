@@ -155,7 +155,8 @@ Proyect_Ailienant/
 │   │   ├── dead_letter.py      #   Phase 6.4 — DLQ: dead_letter_decorator + dead_letter_tasks table + resume helpers
 │   │   ├── supervisor.py       #   Phase 6.5 — deterministic FinOps Supervisor: ledger→state sync, budget hard-kill (1.10×) / soft HITL gate (1.00×) / token-spike trip; spliced finops_gate→supervisor_node→apply_patch
 │   │   ├── audit.py            #   Phase 6.6 — append-only SOC2 HITL audit ledger: hitl_audit_log table, blake2b chain, _scrub (secrets redaction), log_audit_event / get_chain_head / verify_chain
-│   │   └── rules.py            #   .ailienant rule manager
+│   │   ├── rules.py            #   .ailienant rule manager
+│   │   └── config/             #   byom_config.py (BYOM schema + EmbeddingTarget) + embedding_resolver.py (Phase 7.9.B.12 — provider-agnostic embed target: ollama/lmstudio/vllm/openai/anthropic) + profile.py
 │   ├── api/                    # WebSocket manager + MCTS mirror endpoints + memory_dashboard.py (Phase 7.9.B.1 — /api/v1/memory sections/graph/vectors REST surface) + byom.py (Phase 7.9.B.2 — /api/v1/byom test/config) + hardware.py (Phase 7.9.B.3 — /api/v1/hardware profile/mode) + system_settings.py (Phase 7.9.B.4 — /api/v1/system soul/settings + Phase 7.9.A.7 output_style/permission_mode + /system/hooks) + audit.py (Phase 7.9.B.5 — /api/v1/audit log/stats/verify) + agent_roles.py (Phase 7.9.A.7.b — /api/v1/agents/roles overrides) + mcp_servers.py (Phase 7.9.A.7.e — /api/v1/mcp servers CRUD + zombie-safe /test probe) + skills.py (Phase 7.9.A.7.f — /api/v1/skills prompt-template CRUD)
 │   ├── tools/                  # LLM gateway, validation pipeline (AST + LSP), MCP adapter, perception_tools.py (Phase 5.3 ReadOnly), mutation_tools.py (Phase 5.4 WRITE bundle, ACID via Unit-of-Work), execution_tools.py (Phase 5.5 EXECUTE bundle + BackgroundTaskManager; Phase 6.2 — sandbox_bash + check_type_integrity routed through core.sandbox.ACTIVE_ADAPTER), control_tools.py (Phase 5.6 CONTROL bundle + DANGEROUS_COMMANDS_REGEX); llm_gateway.py (Phase 6.3 — OOM Cascade: ainvoke traps ContextWindowExceeded/CUDA-OOM, purges VRAM, trims context, re-emits to cloud Haiku fallback; Phase 6.8 — _oom_cascade emits telemetry.log_oom_event with swap latency)
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe, logging_filters.py (Phase 6.7 — SecretsScrubber DLP filter)
@@ -173,6 +174,7 @@ Proyect_Ailienant/
 │   │   │   ├── BentoMenu.tsx   #     3×3 agent launcher grid (FORCE_AGENT postMessage)
 │   │   │   ├── GraphViewer.tsx #     React Flow + 3-tier LOD (zoom>0.8/0.4–0.8/<0.4) + heatmap SVG
 │   │   │   ├── components/     #     TelemetryHUD (OCC ring + speedometer + sparkline + FinOps bar), ModeMenu,
+│   │   │   │                   #     IndexingStatus, PipelineProgress (Phase 7.9.B.12 — ephemeral node-progress ticker, not chat),
 │   │   │   │                   #     DreamingMode (🌙 popover), CSSAlertBanner, HITLCard, ContextOverlay,
 │   │   │   │                   #     CommandPalette (sectioned /command + /settings menu, 7.9.A.7) + ModelsMenu
 │   │   │   │                   #     + CustomizeMenu (7.9.A.7 permissions/output-styles/agents/hooks/mcp) + SkillsMenu (7.9.A.7.f insert/create)
@@ -260,8 +262,10 @@ pip install -r requirements.txt
 # Copy and edit env vars
 copy ..\.env.example ..\.env     # Unix: cp ../.env.example ../.env
 
-# Launch the orchestration server
+# Launch the orchestration server (manual dev mode — port 8000 by default)
+# When started by the extension, port and auth token are injected automatically via env vars.
 uvicorn main:app --reload --port 8000
+# Or let Python choose a free port:  AILIENANT_API_PORT=0 is NOT supported; omit for 8000.
 ```
 
 The server exposes:

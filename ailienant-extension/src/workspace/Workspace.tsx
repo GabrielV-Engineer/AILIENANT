@@ -16,6 +16,7 @@ import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
 import { IndexingStatus } from './components/IndexingStatus';
+import { PipelineProgress } from './components/PipelineProgress';
 import type { HITLIntervention } from './components/HITLInterventionCard';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 
@@ -68,6 +69,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [messages, setMessages] = useState<Message[]>([]);
     const [isStreaming, setIsStreaming] = useState(false);
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
+    // Ephemeral LangGraph node-progress ticker (NOT chat content) — Phase 7.9.B.12
+    const [pipelineSteps, setPipelineSteps] = useState<string[]>([]);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Natt
@@ -128,6 +131,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     const d = msg.payload as { token: string };
                     recordChunk();
                     setIsStreaming(true);
+                    setPipelineSteps([]);   // answer arriving — retire the progress ticker
                     setMessages(prev => {
                         const last = prev[prev.length - 1];
                         if (last?.role === 'assistant' && last.streaming) {
@@ -137,8 +141,17 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     });
                     break;
                 }
+                case 'server_pipeline_step': {
+                    // Ephemeral progress only — never appended to the chat transcript.
+                    const d = msg.payload as { node_name?: string };
+                    if (d?.node_name) {
+                        setPipelineSteps(prev => [...prev, d.node_name as string]);
+                    }
+                    break;
+                }
                 case 'server_stream_end':
                     setIsStreaming(false);
+                    setPipelineSteps([]);
                     setMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, streaming: false } : m));
                     break;
                 case 'server_telemetry': {
@@ -230,6 +243,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 case 'TASK_STARTED': {
                     const d = msg.payload as { task_id: string };
                     setActiveTaskId(d.task_id);
+                    setPipelineSteps([]);
                     break;
                 }
                 case 'PARALLEL_SESSION_NOTIFY': {
@@ -473,6 +487,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     {m.content}
                                 </div>
                             ))}
+                            <PipelineProgress steps={pipelineSteps} />
                             <div ref={messagesEndRef} />
                         </div>
 

@@ -27,7 +27,8 @@ import tiktoken
 
 import litellm
 
-from shared.config import LANCEDB_PATH, LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL, MODEL_EMBEDDING
+from shared.config import LANCEDB_PATH
+from core.config.embedding_resolver import get_embedding_target
 
 logger = logging.getLogger("SEMANTIC_MEMORY")
 
@@ -158,6 +159,26 @@ class SemanticMemoryManager:
 
     # ── Blocking helpers (asyncio.to_thread) ──────────────────────────
 
+    @staticmethod
+    def _schema_for_dim(dim: int) -> pa.Schema:
+        """Build the workspace schema for a concrete embedding dimension."""
+        return pa.schema([
+            pa.field("file_path",       pa.utf8()),
+            pa.field("workspace_hash",  pa.utf8()),
+            pa.field("content_snippet", pa.utf8()),
+            pa.field("token_count",     pa.int32()),
+            pa.field("vector",          pa.list_(pa.float32(), list_size=dim)),
+            pa.field("indexed_at",      pa.utf8()),
+        ])
+
+    @staticmethod
+    def _table_vector_dim(tbl: Any) -> Optional[int]:
+        """Return the fixed vector dimension of an existing table, or None."""
+        try:
+            return tbl.schema.field("vector").type.list_size
+        except Exception:
+            return None
+
     def _write_record(
         self,
         record: Dict[str, Any],
@@ -166,10 +187,23 @@ class SemanticMemoryManager:
         hash_valid: bool,
     ) -> None:
         db = lancedb.connect(self._lancedb_path)
+        # Provider-agnostic dimension safety: the real vector length wins. If the
+        # active embedding provider changed (e.g. 1536 → 768), drop & recreate the
+        # table so heterogeneous-dim vectors never collide in one schema.
+        vec_dim = len(record["vector"])
+        schema = self._schema_for_dim(vec_dim)
         if _TABLE_NAME in db.table_names():
             tbl = db.open_table(_TABLE_NAME)
+            existing_dim = self._table_vector_dim(tbl)
+            if existing_dim is not None and existing_dim != vec_dim:
+                logger.warning(
+                    "SemanticMemory: embedding dim changed %d → %d — recreating table.",
+                    existing_dim, vec_dim,
+                )
+                db.drop_table(_TABLE_NAME)
+                tbl = db.create_table(_TABLE_NAME, schema=schema)
         else:
-            tbl = db.create_table(_TABLE_NAME, schema=_WORKSPACE_SCHEMA)
+            tbl = db.create_table(_TABLE_NAME, schema=schema)
 
         if hash_valid:
             safe_path = file_path.replace("'", "''")  # standard SQL single-quote escape
@@ -422,13 +456,19 @@ def pca_project_2d(vectors: List[List[float]]) -> Tuple[List[List[float]], List[
 
 
 async def _get_embedding(text: str) -> List[float]:
-    """Call embedding model via LiteLLM proxy. Async — does NOT block event loop."""
-    resp = await litellm.aembedding(
-        model=MODEL_EMBEDDING,
-        input=[text],
-        api_key=LITELLM_PROXY_API_KEY,
-        api_base=LITELLM_PROXY_BASE_URL,
-    )
+    """Embed text via the active provider-agnostic target. Async — non-blocking.
+
+    Routing is resolved per the active BYOM preset (Ollama / LM Studio / vLLM /
+    OpenAI / custom / legacy proxy). api_base + api_key are applied only when the
+    resolved target provides them, so the same call path serves every provider.
+    """
+    t = get_embedding_target()
+    kwargs: Dict[str, Any] = {"model": t.model, "input": [text]}
+    if t.api_base:
+        kwargs["api_base"] = t.api_base
+    if t.api_key:
+        kwargs["api_key"] = t.api_key
+    resp = await litellm.aembedding(**kwargs)
     data: Any = resp.data[0]
     embedding: List[float] = (
         data["embedding"] if isinstance(data, dict) else data.embedding
