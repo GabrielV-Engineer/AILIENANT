@@ -208,6 +208,27 @@ class ServerIndexingProgressEvent(BaseModel):
     data: IndexingProgressPayload
 
 
+class IndexingErrorPayload(BaseModel):
+    """Server signals that indexing cannot start due to a configuration error."""
+    reason: str
+
+
+class ServerIndexingErrorEvent(BaseModel):
+    event_type: Literal["server_indexing_error"] = "server_indexing_error"
+    data: IndexingErrorPayload
+
+
+class ByomConfigAppliedPayload(BaseModel):
+    """Emitted after a BYOM preset is saved and applied to config.yaml."""
+    preset_id: str
+    preset_name: str
+
+
+class ServerByomConfigAppliedEvent(BaseModel):
+    event_type: Literal["server_byom_config_applied"] = "server_byom_config_applied"
+    data: ByomConfigAppliedPayload
+
+
 # =====================================================================
 # 8. PHASE 2.1.13 — FILE DELETE / UNLINK EVENTS
 # =====================================================================
@@ -266,6 +287,17 @@ class ClientProfileChangeEvent(BaseModel):
 
 
 # =====================================================================
+# 11. PHASE 7.9.A.5.1 — EPHEMERAL AUTH HANDSHAKE
+# =====================================================================
+
+
+class AuthEvent(BaseModel):
+    """First message sent by the client after WS connect — consumed by connect() before the loop."""
+    event_type: Literal["auth"] = "auth"
+    token: str
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -286,8 +318,11 @@ WebSocketMessage = Union[
     ServerModelWarmupEvent,
     ClientWorkspaceInitEvent,        # Phase 2.5
     ServerIndexingProgressEvent,     # Phase 2.5
+    ServerIndexingErrorEvent,        # Phase 2.5 — pre-flight error
+    ServerByomConfigAppliedEvent,    # Phase 7.9.B.11 — preset applied notification
     ClientFileDeleteEvent,           # Phase 2.1.13
     ServerVfsPatchApprovedEvent,     # Phase 2.22.4
     ClientMasterToggleEvent,         # Phase 3.4.1
     ClientProfileChangeEvent,        # Phase 3.4.1
+    AuthEvent,                       # Phase 7.9.A.5.1 — ephemeral auth handshake
 ]

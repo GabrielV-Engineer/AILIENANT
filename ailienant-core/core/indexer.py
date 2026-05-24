@@ -87,6 +87,10 @@ class LazyIndexer:
         self._is_running: bool = False
         self._current: int = 0
         self._total: int = 0
+        # Stored on each start() call so retry() can re-enter without a new WS event.
+        self._last_workspace_root: str | None = None
+        self._last_project_id: str | None = None
+        self._last_session_id: str | None = None
 
     @property
     def is_complete(self) -> bool:
@@ -98,21 +102,82 @@ class LazyIndexer:
             return 0.0
         return round(self._current / self._total * 100.0, 1)
 
+    async def _preflight_check(self) -> str | None:
+        """
+        Verify the embedding backend is reachable before touching any files.
+
+        Returns None if OK, or a human-readable reason string if the config is
+        missing/unreachable. Resets _is_running so a later retry (after the user
+        configures the LLM) will re-enter start().
+        """
+        from shared.config import LITELLM_PROXY_BASE_URL, MODEL_EMBEDDING
+
+        # Direct provider models (e.g. "openai/text-embedding-ada-002") don't need
+        # the local proxy — assume they're configured correctly if the key exists.
+        if not MODEL_EMBEDDING.startswith("ailienant/"):
+            return None
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{LITELLM_PROXY_BASE_URL}/health",
+                    timeout=3.0,
+                )
+                if resp.status_code >= 500:
+                    return (
+                        f"LiteLLM proxy at {LITELLM_PROXY_BASE_URL} returned "
+                        f"HTTP {resp.status_code}. Check your proxy configuration."
+                    )
+        except Exception:
+            return (
+                f"LiteLLM proxy not reachable at {LITELLM_PROXY_BASE_URL}. "
+                "Start the proxy or set a direct provider model via "
+                "AILIENANT_MODEL_EMBEDDING."
+            )
+        return None
+
     async def start(self, workspace_root: str, project_id: str, session_id: str) -> None:
         """Trigger background indexing. No-op if already running or completed."""
         if self._is_running or self._is_complete:
             return
+        self._last_workspace_root = workspace_root
+        self._last_project_id = project_id
+        self._last_session_id = session_id
         self._is_running = True
         asyncio.create_task(
             self._run(workspace_root, project_id, session_id),
             name=f"lazy_index:{project_id}",
         )
 
+    async def retry(self) -> bool:
+        """Re-attempt indexing after a preflight failure.
+
+        No-op if already running, complete, or no workspace is known yet.
+        Returns True if a retry task was enqueued.
+        """
+        if self._is_running or self._is_complete or not self._last_workspace_root:
+            return False
+        await self.start(
+            self._last_workspace_root,
+            self._last_project_id or "",
+            self._last_session_id or "",
+        )
+        return True
+
     async def _run(self, workspace_root: str, project_id: str, session_id: str) -> None:
         # Deferred import to break indexer → websocket_manager circular load at module level
         from api.websocket_manager import vfs_manager
 
         try:
+            # Pre-flight: abort immediately if embedding backend is unreachable.
+            reason = await self._preflight_check()
+            if reason:
+                logger.warning("LazyIndexer: pre-flight failed — %s", reason)
+                self._is_running = False  # allow retry after config is fixed
+                await vfs_manager.broadcast_indexing_error(session_id, reason)
+                return
+
             eligible = _collect_eligible_files(workspace_root)
             self._total = len(eligible)
 

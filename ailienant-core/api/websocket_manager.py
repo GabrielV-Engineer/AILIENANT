@@ -1,14 +1,16 @@
 # alienant-core/api/websocket_manager.py
 
 import asyncio
+import json
 import logging
+import secrets
 import uuid
 from typing import Any, Dict, Optional, Set
 
 from fastapi import WebSocket
 from pydantic import ValidationError, TypeAdapter
 
-from ws_contracts import (
+from api.ws_contracts import (
     WebSocketMessage,
     ServerTokenChunkEvent, TokenChunkPayload,
     ServerTelemetryEvent, TelemetryPayload,
@@ -16,7 +18,9 @@ from ws_contracts import (
     ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
     ServerModelWarmupEvent, ModelWarmupPayload,
     ServerIndexingProgressEvent, IndexingProgressPayload,
+    ServerIndexingErrorEvent, IndexingErrorPayload,
     ServerVfsPatchApprovedEvent, VfsPatchApprovedPayload,
+    ServerByomConfigAppliedEvent, ByomConfigAppliedPayload,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -55,17 +59,44 @@ class ConnectionManager:
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self, client_id: str, websocket: WebSocket) -> None:
+    async def connect(
+        self, client_id: str, websocket: WebSocket, auth_token: Optional[str] = None
+    ) -> bool:
+        """Accept a WebSocket connection, optionally validating an ephemeral auth token.
+
+        Phase 7.9.A.5.1: when auth_token is set, the very first message must be
+        {"event_type": "auth", "token": "<token>"}. Constant-time comparison
+        (secrets.compare_digest) prevents timing attacks on localhost.
+        Returns True if the connection was accepted, False if rejected.
+        """
         if self.shutting_down:
             await websocket.close(code=1001)
-            return
+            return False
         await websocket.accept()
+        if auth_token:
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
+                msg = json.loads(raw)
+                token_provided = msg.get("token", "")
+                # secrets.compare_digest: constant-time — timing attacks are feasible
+                # on localhost where network latency is near-zero.
+                if msg.get("event_type") != "auth" or not secrets.compare_digest(
+                    token_provided, auth_token
+                ):
+                    await websocket.close(code=4001)
+                    logger.warning("🔐 WS auth rejected for client_id=%s", client_id)
+                    return False
+            except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
+                await websocket.close(code=4001)
+                logger.warning("🔐 WS auth timeout/invalid for client_id=%s", client_id)
+                return False
         self.active_connections[client_id] = websocket
         logger.info(
             "🟢 IDE Conectado: %s. Total activos: %d",
             client_id,
             len(self.active_connections),
         )
+        return True
 
     def disconnect(self, client_id: str) -> None:
         if client_id in self.active_connections:
@@ -186,6 +217,25 @@ class ConnectionManager:
     async def broadcast_indexing_complete(self, session_id: str) -> None:
         """Signal 100% indexing completion to the IDE."""
         await self.broadcast_indexing_progress(session_id, current=1, total=1)
+
+    async def broadcast_byom_config_applied(self, preset_id: str, preset_name: str) -> None:
+        """Notify all connected clients that a BYOM preset was applied."""
+        event = ServerByomConfigAppliedEvent(
+            data=ByomConfigAppliedPayload(preset_id=preset_id, preset_name=preset_name)
+        )
+        payload = ws_adapter.dump_json(event).decode("utf-8")
+        for ws in list(self.active_connections.values()):
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                pass
+
+    async def broadcast_indexing_error(self, session_id: str, reason: str) -> None:
+        """Signal to the IDE that indexing could not start due to a configuration error."""
+        await self.send_personal_message(
+            session_id,
+            ServerIndexingErrorEvent(data=IndexingErrorPayload(reason=reason)),
+        )
 
     # ------------------------------------------------------------------
     # Phase 2.22.4 — VFS Patch Approved (IPC Bridge)
