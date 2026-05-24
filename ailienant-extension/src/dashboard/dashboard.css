@@ -758,3 +758,62 @@ html, body, #root { height: 100%; }
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
 }
+
+/* ── Phase 7.9.B.11 — Save feedback, built-in badge, tier clear button ─── */
+
+.byom-save-success {
+  font-size: 12px;
+  color: #63a583;
+  font-weight: 600;
+  margin-left: 8px;
+  animation: byom-fade-out 2s forwards;
+}
+
+@keyframes byom-fade-out {
+  0%, 60% { opacity: 1; }
+  100%     { opacity: 0; }
+}
+
+.byom-save-error {
+  font-size: 11px;
+  color: #E3B341;
+  margin-top: 4px;
+}
+
+.byom-preset-builtin-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.byom-tier-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.byom-tier-row .db-input {
+  flex: 1;
+}
+
+.byom-tier-clear {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  font-size: 15px;
+  padding: 0 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.byom-tier-clear:hover {
+  color: #c0392b;
+}

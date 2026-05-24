@@ -40,6 +40,8 @@ from core.config_generator import (
     write_config_with_overrides,
 )
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
+from api.websocket_manager import vfs_manager
+from core.indexer import lazy_indexer
 
 logger = logging.getLogger("BYOM_API")
 router = APIRouter(prefix="/api/v1/byom", tags=["byom"])
@@ -314,6 +316,8 @@ async def put_config(request: Request) -> BYOMConfigResponse:
         active = all_presets.get(merged.active_preset_id)
         if active:
             await _apply_preset(active)
+            await vfs_manager.broadcast_byom_config_applied(active.id, active.name)
+            await lazy_indexer.retry()
 
     return await get_config()
 

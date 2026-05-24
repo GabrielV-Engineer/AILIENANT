@@ -202,6 +202,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     setIndexing({ state: 'error', reason: d?.reason ?? 'LLM configuration missing' });
                     break;
                 }
+                case 'server_byom_config_applied': {
+                    const d = msg.payload as { preset_id?: string; preset_name?: string };
+                    addToast('info', `Preset "${d.preset_name ?? ''}" applied — retrying indexer…`);
+                    setIndexing(prev => prev.state === 'error' ? { state: 'idle' } : prev);
+                    break;
+                }
                 case 'server_model_warmup': {
                     const d = msg.payload as { model_name: string; is_local: boolean };
                     addToast('info', `Warming up ${d.model_name} (${d.is_local ? 'local' : 'cloud'})`);
@@ -363,60 +369,50 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
                 {/* Status strip */}
                 <div className="ws-status">
-                    {wsStatus === 'connected' ? (
+                    <Popover.Root open={coreMenuOpen} onOpenChange={setCoreMenuOpen} modal={false}>
                         <AiTooltip content={wsTip}>
-                            <div className="ws-status-pill">
-                                <Icon name="network" size={12} />
-                                <span className="ws-status-dot" data-status={wsStatus} />
-                                <span>{wsLabel}</span>
-                            </div>
+                            <Popover.Trigger asChild>
+                                <button className="ws-status-pill ws-status-pill--btn" aria-label="Backend options">
+                                    <Icon name="network" size={12} />
+                                    <span className="ws-status-dot" data-status={wsStatus} />
+                                    <span>{wsLabel}</span>
+                                </button>
+                            </Popover.Trigger>
                         </AiTooltip>
-                    ) : (
-                        <Popover.Root open={coreMenuOpen} onOpenChange={setCoreMenuOpen} modal={false}>
-                            <AiTooltip content={wsTip}>
-                                <Popover.Trigger asChild>
-                                    <button className="ws-status-pill ws-status-pill--btn" aria-label="Backend options">
-                                        <Icon name="network" size={12} />
-                                        <span className="ws-status-dot" data-status={wsStatus} />
-                                        <span>{wsLabel}</span>
+                        <Popover.Portal>
+                            <Popover.Content
+                                className="ws-core-menu"
+                                side="bottom"
+                                align="center"
+                                sideOffset={6}
+                                collisionPadding={8}
+                            >
+                                <div className="ws-core-menu-head">AILIENANT Core</div>
+                                <div className="ws-core-menu-actions">
+                                    <button
+                                        className="ws-core-menu-btn"
+                                        onClick={() => {
+                                            vscode.postMessage({ type: 'RESTART_BACKEND' });
+                                            setCoreMenuOpen(false);
+                                        }}
+                                    >
+                                        <Icon name="play" size={12} />
+                                        Restart Core
                                     </button>
-                                </Popover.Trigger>
-                            </AiTooltip>
-                            <Popover.Portal>
-                                <Popover.Content
-                                    className="ws-core-menu"
-                                    side="bottom"
-                                    align="center"
-                                    sideOffset={6}
-                                    collisionPadding={8}
-                                >
-                                    <div className="ws-core-menu-head">AILIENANT Core</div>
-                                    <div className="ws-core-menu-actions">
-                                        <button
-                                            className="ws-core-menu-btn"
-                                            onClick={() => {
-                                                vscode.postMessage({ type: 'START_BACKEND' });
-                                                setCoreMenuOpen(false);
-                                            }}
-                                        >
-                                            <Icon name="play" size={12} />
-                                            Start Core
-                                        </button>
-                                        <button
-                                            className="ws-core-menu-btn"
-                                            onClick={() => {
-                                                vscode.postMessage({ type: 'OPEN_DASHBOARD' });
-                                                setCoreMenuOpen(false);
-                                            }}
-                                        >
-                                            <Icon name="external-link" size={12} />
-                                            Open Dashboard
-                                        </button>
-                                    </div>
-                                </Popover.Content>
-                            </Popover.Portal>
-                        </Popover.Root>
-                    )}
+                                    <button
+                                        className="ws-core-menu-btn"
+                                        onClick={() => {
+                                            vscode.postMessage({ type: 'OPEN_DASHBOARD' });
+                                            setCoreMenuOpen(false);
+                                        }}
+                                    >
+                                        <Icon name="external-link" size={12} />
+                                        Open Dashboard
+                                    </button>
+                                </div>
+                            </Popover.Content>
+                        </Popover.Portal>
+                    </Popover.Root>
                     {/* Workspace folder pill */}
                     {workspaceFolder ? (
                         <div className="ws-status-pill">

@@ -1235,6 +1235,34 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         de modelos detectados; `.db-btn-danger` rojo para acciones destructivas.
     - **Tests:** 565/565 · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.11 — BYOM Bug Fixes: State Propagation, UI Feedback & Preset Safety**
+    - **Problem:** Three regressions found during 7.9.B.10 user testing: (1) activating
+      a BYOM preset left `IndexingStatus` yellow ("Waiting for AI configuration") because
+      no WebSocket event was broadcast and the `LazyIndexer` had no retry path after a
+      preflight failure; (2) all save handlers (`handleSave`, `handleSaveEdit`,
+      `handleCreatePreset`) gave zero visual feedback on success or failure; (3) built-in
+      presets ("Local Only", "Hybrid") appeared without explanation, their "Edit" silently
+      dropped changes (filtered by `is_builtin` before PUT), and the HTML5 datalist
+      filtered suggestions to only the current value when a tier was pre-filled.
+    - **Resolution:**
+      - **`LazyIndexer.retry()`:** stores last `workspace_root/project_id/session_id` on
+        each `start()` call; `retry()` re-enters `start()` if `_is_running=False` and
+        `_is_complete=False` (already guaranteed after a preflight failure).
+      - **`server_byom_config_applied` event:** new WS contract in `ws_contracts.py`;
+        `broadcast_byom_config_applied()` broadcasts to all active connections. Called
+        from `put_config` after `_apply_preset`; also calls `lazy_indexer.retry()`.
+      - **`Workspace.tsx`:** handles `server_byom_config_applied` → toast + clears error
+        state; indexer retry is triggered server-side.
+      - **Save feedback:** `endpointSavedAt` / `presetSavedAt` timestamps with 2 s
+        `setTimeout` drive `✓ Saved` indicators; preset errors now surface explicitly
+        instead of silent `catch {}`.
+      - **Built-in preset badge + Clone:** `byom-preset-builtin-badge` pill on
+        `is_builtin` presets; "Edit" replaced with "Clone & Customize" which saves a
+        `is_builtin: false` copy and immediately opens its edit form.
+      - **Tier clear button:** each tier combobox now has a `×` button that clears the
+        field, revealing all datalist options (resolves HTML5 filtering behavior).
+    - **Tests:** 565/565 · `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante

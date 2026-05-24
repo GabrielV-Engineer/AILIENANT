@@ -2,6 +2,29 @@
 
 ---
 
+## Hito 7.9.B.11: BYOM Bug Fixes — State Propagation, UI Feedback & Preset Safety — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.11
+
+**Files changed:**
+- `ailienant-core/core/indexer.py` — `LazyIndexer.__init__` stores `_last_workspace_root/project_id/session_id`; `start()` saves params before setting `_is_running`; new `retry()` method re-enters `start()` when `_is_running=False, _is_complete=False` (already guaranteed after preflight failure)
+- `ailienant-core/api/ws_contracts.py` — Added `ByomConfigAppliedPayload` + `ServerByomConfigAppliedEvent`; added to `WebSocketMessage` union
+- `ailienant-core/api/websocket_manager.py` — Imported new event types; added `broadcast_byom_config_applied()` that iterates `active_connections` and fan-outs to all clients
+- `ailienant-core/api/byom.py` — Imported `vfs_manager` and `lazy_indexer` at module level; after `_apply_preset()` in `put_config`, calls `broadcast_byom_config_applied` + `lazy_indexer.retry()`
+- `ailienant-extension/src/workspace/Workspace.tsx` — New `case 'server_byom_config_applied':` clears error indexing state + shows toast
+- `ailienant-extension/src/dashboard/panels/BYOMPanel.tsx` — (1) `handleActivatePreset` now calls `setDiscovered(cfg.discovered)`; (2) `endpointSavedAt`/`presetSavedAt` timestamp states with 2 s timeout drive `✓ Saved` indicators; (3) `presetSaveError` surfaced in UI; (4) `handleClonePreset` creates `is_builtin: false` copy and opens its edit form; (5) builtin badge on `is_builtin` presets; "Edit" replaced with "Clone & Customize" for builtins; (6) tier comboboxes wrapped in `byom-tier-row` with `×` clear button
+- `ailienant-extension/src/dashboard/dashboard.css` — Added `.byom-save-success` (fade-out animation), `.byom-save-error`, `.byom-preset-builtin-badge`, `.byom-tier-row`, `.byom-tier-clear`
+
+**Architectural outcomes:**
+- **Full retry chain:** activating a preset now unconditionally retries the `LazyIndexer` preflight. If LiteLLM was previously unreachable (yellow status), the indexer transitions from error → idle → indexing without requiring a VS Code restart
+- **WS fan-out pattern:** `broadcast_byom_config_applied` iterates all `active_connections` rather than targeting a single session_id — correct for HTTP-originated events that lack a client_id context
+- **Built-in preset immutability enforced in UX:** `is_builtin` presets are now read-only with a badge; cloning creates an editable `is_builtin: false` copy, making the previously-silent edit-then-revert loop impossible
+- **Datalist filtering resolved:** `×` clear button is the minimal-invasive fix — preserves free-text input capability while making all options visible on demand
+
+**Verification:** `pytest` 565 passed; `npm run compile` 0 errors.
+
+---
+
 ## Hito 7.9.B.10: BYOM UX & Architecture Overhaul — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.10

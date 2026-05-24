@@ -96,6 +96,10 @@ export function BYOMPanel(): JSX.Element {
     const [confirm, setConfirm] = useState<ConfirmState>({ open: false, title: '', body: '', onConfirm: () => {} });
     const closeConfirm = () => setConfirm(s => ({ ...s, open: false }));
 
+    const [endpointSavedAt, setEndpointSavedAt] = useState<number | null>(null);
+    const [presetSavedAt, setPresetSavedAt] = useState<number | null>(null);
+    const [presetSaveError, setPresetSaveError] = useState<string | null>(null);
+
     const endpointsRef = useRef(endpoints);
     endpointsRef.current = endpoints;
 
@@ -168,6 +172,8 @@ export function BYOMPanel(): JSX.Element {
             setPresets(cfg.presets);
             setActivePresetId(cfg.active_preset_id);
             setDiscovered(cfg.discovered);
+            setEndpointSavedAt(Date.now());
+            setTimeout(() => setEndpointSavedAt(null), 2000);
         } catch (err) {
             setSaveError(String(err));
         } finally {
@@ -181,6 +187,7 @@ export function BYOMPanel(): JSX.Element {
             const cfg = await saveBYOMConfig({ active_preset_id: presetId });
             setActivePresetId(cfg.active_preset_id);
             setPresets(cfg.presets);
+            setDiscovered(cfg.discovered);
         } catch {
             // keep existing state
         } finally {
@@ -202,8 +209,11 @@ export function BYOMPanel(): JSX.Element {
         try {
             const cfg = await saveBYOMConfig({ presets: [...userPresets, preset] });
             setPresets(cfg.presets);
+            setDiscovered(cfg.discovered);
             setNewPreset(null);
-        } catch { /* ignore */ }
+            setPresetSavedAt(Date.now());
+            setTimeout(() => setPresetSavedAt(null), 2000);
+        } catch (err) { setPresetSaveError(String(err)); }
     }, [newPreset, presets]);
 
     const handleDeletePreset = useCallback(async (presetId: string): Promise<void> => {
@@ -224,10 +234,31 @@ export function BYOMPanel(): JSX.Element {
         try {
             const cfg = await saveBYOMConfig({ presets: userPresets });
             setPresets(cfg.presets);
+            setDiscovered(cfg.discovered);
             setEditingPresetId(null);
             setEditForm(null);
-        } catch { /* leave edit open on failure */ }
+            setPresetSavedAt(Date.now());
+            setTimeout(() => setPresetSavedAt(null), 2000);
+        } catch (err) { setPresetSaveError(String(err)); }
     }, [editingPresetId, editForm, presets]);
+
+    const handleClonePreset = useCallback(async (original: ModelPreset): Promise<void> => {
+        const clone: ModelPreset = {
+            ...original,
+            id: makeId(),
+            name: `${original.name} (Custom)`,
+            is_builtin: false,
+        };
+        try {
+            const userPresets = presets.filter(p => !p.is_builtin);
+            const cfg = await saveBYOMConfig({ presets: [...userPresets, clone] });
+            setPresets(cfg.presets);
+            setDiscovered(cfg.discovered);
+            setEditingPresetId(clone.id);
+            setEditForm({ name: clone.name, tiers: { ...clone.tiers } });
+            setNewPreset(null);
+        } catch (err) { setPresetSaveError(String(err)); }
+    }, [presets]);
 
     // ---- URL scheme soft warning ----
     const urlWarning = (url: string): string | null =>
@@ -432,6 +463,7 @@ export function BYOMPanel(): JSX.Element {
                     {saving ? 'Saving…' : 'Save Endpoints'}
                 </button>
                 {saveError && <span className="byom-field-error">{saveError}</span>}
+                {endpointSavedAt && <span className="byom-save-success">✓ Saved</span>}
             </div>
 
             {/* ===== DETECTED MODELS (collapsible) ===== */}
@@ -458,6 +490,7 @@ export function BYOMPanel(): JSX.Element {
             {/* ===== MODEL PRESETS SECTION ===== */}
             <div className="db-row" style={{ marginBottom: 12, alignItems: 'center' }}>
                 <span className="db-section-title" style={{ marginBottom: 0 }}>Model Presets</span>
+                {presetSavedAt && <span className="byom-save-success">✓ Saved</span>}
                 <button className="db-btn db-btn-secondary" style={{ marginLeft: 'auto' }}
                     onClick={() => { setNewPreset({ name: '', tiers: { small: '', medium: '', big: '', cloud: '' } }); setEditingPresetId(null); setEditForm(null); }}>
                     + New Preset
@@ -490,12 +523,19 @@ export function BYOMPanel(): JSX.Element {
                                     {Object.entries(TIER_LABELS).map(([key, label]) => (
                                         <div key={key} style={{ marginBottom: 8 }}>
                                             <label className="db-label">{label} model</label>
-                                            <input
-                                                className="db-input byom-tier-combobox"
-                                                list="byom-models-datalist"
-                                                value={editForm.tiers[key] ?? ''}
-                                                onChange={e => setEditForm(f => f && ({ ...f, tiers: { ...f.tiers, [key]: e.target.value } }))}
-                                                placeholder="— inherit from config.yaml —" />
+                                            <div className="byom-tier-row">
+                                                <input
+                                                    className="db-input byom-tier-combobox"
+                                                    list="byom-models-datalist"
+                                                    value={editForm.tiers[key] ?? ''}
+                                                    onChange={e => setEditForm(f => f && ({ ...f, tiers: { ...f.tiers, [key]: e.target.value } }))}
+                                                    placeholder="— inherit from config.yaml —" />
+                                                {editForm.tiers[key] && (
+                                                    <button type="button" className="byom-tier-clear"
+                                                        title="Clear to see all available models"
+                                                        onClick={() => setEditForm(f => f && ({ ...f, tiers: { ...f.tiers, [key]: '' } }))}>×</button>
+                                                )}
+                                            </div>
                                         </div>
                                     ))}
                                     <div className="db-row" style={{ gap: 8, marginTop: 12 }}>
@@ -505,12 +545,18 @@ export function BYOMPanel(): JSX.Element {
                                             onClick={handleSaveEdit}>Save</button>
                                         <button className="db-btn db-btn-secondary"
                                             style={{ fontSize: 11, padding: '4px 8px' }}
-                                            onClick={() => { setEditingPresetId(null); setEditForm(null); }}>Cancel</button>
+                                            onClick={() => { setEditingPresetId(null); setEditForm(null); setPresetSaveError(null); }}>Cancel</button>
                                     </div>
+                                    {presetSaveError && <div className="byom-save-error" style={{ marginTop: 4 }}>{presetSaveError}</div>}
                                 </div>
                             ) : (
                                 <>
-                                    <div className="byom-preset-name">{preset.name}</div>
+                                    <div className="byom-preset-name">
+                                        {preset.name}
+                                        {preset.is_builtin && (
+                                            <span className="byom-preset-builtin-badge" title="Auto-generated from connected engines. Clone &amp; Customize to edit.">Built-in</span>
+                                        )}
+                                    </div>
                                     {preset.description && <div className="byom-preset-desc">{preset.description}</div>}
                                     <div className="byom-preset-tiers">
                                         {Object.entries(TIER_LABELS).map(([key, label]) => (
@@ -541,10 +587,18 @@ export function BYOMPanel(): JSX.Element {
                                                 {isBusy ? 'Applying…' : 'Activate'}
                                             </button>
                                         )}
-                                        <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
-                                            onClick={() => { setEditingPresetId(preset.id); setEditForm({ name: preset.name, tiers: { ...preset.tiers } }); setNewPreset(null); }}>
-                                            Edit
-                                        </button>
+                                        {preset.is_builtin ? (
+                                            <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
+                                                onClick={() => void handleClonePreset(preset)}
+                                                title="Create a user-defined copy to customize">
+                                                Clone &amp; Customize
+                                            </button>
+                                        ) : (
+                                            <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
+                                                onClick={() => { setEditingPresetId(preset.id); setEditForm({ name: preset.name, tiers: { ...preset.tiers } }); setNewPreset(null); }}>
+                                                Edit
+                                            </button>
+                                        )}
                                         {!preset.is_builtin && (
                                             <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
                                                 onClick={() => setConfirm({
@@ -581,13 +635,20 @@ export function BYOMPanel(): JSX.Element {
                     {Object.entries(TIER_LABELS).map(([key, label]) => (
                         <div key={key} style={{ marginBottom: 8 }}>
                             <label className="db-label">{label} model</label>
-                            <input
-                                className="db-input byom-tier-combobox"
-                                list="byom-models-datalist"
-                                value={newPreset.tiers[key] ?? ''}
-                                onChange={e => setNewPreset(p => p && ({ ...p, tiers: { ...p.tiers, [key]: e.target.value } }))}
-                                placeholder="— inherit from config.yaml —"
-                            />
+                            <div className="byom-tier-row">
+                                <input
+                                    className="db-input byom-tier-combobox"
+                                    list="byom-models-datalist"
+                                    value={newPreset.tiers[key] ?? ''}
+                                    onChange={e => setNewPreset(p => p && ({ ...p, tiers: { ...p.tiers, [key]: e.target.value } }))}
+                                    placeholder="— inherit from config.yaml —"
+                                />
+                                {newPreset.tiers[key] && (
+                                    <button type="button" className="byom-tier-clear"
+                                        title="Clear to see all available models"
+                                        onClick={() => setNewPreset(p => p && ({ ...p, tiers: { ...p.tiers, [key]: '' } }))}>×</button>
+                                )}
+                            </div>
                         </div>
                     ))}
                     <div className="db-row" style={{ gap: 8, marginTop: 12 }}>
