@@ -6,6 +6,7 @@ from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment, AIlienantGraphState
 from brain.engine import alienant_app
 from api.websocket_manager import vfs_manager
+from tools.llm_gateway import LLMGateway
 from langchain_core.runnables import RunnableConfig
 import logging
 
@@ -15,43 +16,13 @@ logger = logging.getLogger(__name__)
 _background_tasks: set = set()
 
 
-def _summarize_result(state: Dict[str, Any]) -> str:
-    """Phase 7.9.B.12 — synthesize a user-facing answer from the merged graph state.
-
-    Defensive against partially-stubbed agents: reports the mission outcome, any
-    changed files, validation issues and errors, falling back to a generic line
-    when no meaningful output was produced.
-    """
-    parts: List[str] = []
-
-    mission = state.get("mission_spec")
-    outcome = getattr(mission, "outcome", None) if mission is not None else None
-    if outcome:
-        parts.append(str(outcome))
-
-    changed: set = set()
-    pending = state.get("pending_patches")
-    generated = state.get("generated_code")
-    if isinstance(pending, dict):
-        changed.update(pending.keys())
-    if isinstance(generated, dict):
-        changed.update(generated.keys())
-    if changed:
-        listed = ", ".join(sorted(changed)[:8])
-        more = "" if len(changed) <= 8 else f" (+{len(changed) - 8} more)"
-        parts.append(f"Files changed: {listed}{more}.")
-
-    if state.get("guardrail_failed"):
-        feedback = state.get("validation_feedback")
-        parts.append(f"Validation flagged an issue{f': {feedback}' if feedback else ''}.")
-
-    errors = state.get("errors")
-    if isinstance(errors, list) and errors:
-        parts.append(f"{len(errors)} error(s) encountered: {errors[-1]}")
-
-    if not parts:
-        return "Task processed through the pipeline. No code changes were produced."
-    return "\n".join(parts)
+# Phase 7.9.B.13 — persona for the live main-chat completion (direct BYOM call).
+_CHAT_SYSTEM_PROMPT: str = (
+    "You are AILIENANT, an expert AI coding assistant embedded in the user's IDE. "
+    "Answer the user's request directly and concisely. When the task involves code, "
+    "provide correct, idiomatic snippets and explain the key decisions briefly. "
+    "If the request is ambiguous, state the assumption you are making and proceed."
+)
 
 
 # Replicamos el contrato del frontend (api_client.ts)
@@ -171,12 +142,10 @@ class TaskService:
                     merged_state.update(node_output)
             final_output.update(update)
 
-        # 4. Stream the final answer — unless the graph suspended on HITL/ideation,
-        # which already broadcast its own Socratic question via broadcast_token.
+        # 4. Stream a real answer from the active BYOM chat model — unless the graph
+        # suspended on HITL/ideation, which already broadcast its own question.
         if not merged_state.get("hitl_pending"):
-            summary = _summarize_result(merged_state)
-            await vfs_manager.broadcast_token(session_id, summary)
-            await vfs_manager.broadcast_stream_end(session_id)
+            await self._stream_chat_answer(session_id, payload.task_prompt)
 
         return {
             "status": "success",
@@ -184,3 +153,36 @@ class TaskService:
             "session_id": session_id,
             "output": final_output,
         }
+
+    async def _stream_chat_answer(self, session_id: str, task_prompt: str) -> None:
+        """Stream a live completion from the active BYOM chat model to the IDE.
+
+        Always finalizes with broadcast_stream_end. On any failure (no preset,
+        engine down) it broadcasts an actionable message instead of hanging.
+        """
+        messages = [
+            {"role": "system", "content": _CHAT_SYSTEM_PROMPT},
+            {"role": "user", "content": task_prompt},
+        ]
+        produced = False
+        try:
+            async for delta in LLMGateway.astream_byom(
+                messages, tier="medium", session_id=session_id
+            ):
+                produced = True
+                await vfs_manager.broadcast_token(session_id, delta)
+            if not produced:
+                await vfs_manager.broadcast_token(
+                    session_id,
+                    "No response was produced. Check that a BYOM preset is active and "
+                    "its model is reachable (Dashboard → BYOM).",
+                )
+        except Exception as exc:  # noqa: BLE001 — a chat failure must never crash the task
+            logger.warning("Live chat completion failed: %s", exc)
+            await vfs_manager.broadcast_token(
+                session_id,
+                "I couldn't reach the configured model. Activate a BYOM preset "
+                "(Dashboard → BYOM) and make sure its engine is running, then try again.",
+            )
+        finally:
+            await vfs_manager.broadcast_stream_end(session_id)

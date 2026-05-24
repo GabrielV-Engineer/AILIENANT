@@ -178,30 +178,33 @@ async def _generate_question_llm(messages: List[Dict], user_input: str) -> str:
     )
 
 
-async def generate_analyst_reply(text: str, has_prior: bool = False) -> str:
-    """Phase 7.9.B.12 — standalone analyst reply for the Natt pane.
+async def generate_analyst_reply(text: str, session_id: str = "") -> str:
+    """Phase 7.9.B.13 — live analyst reply for the Natt pane.
 
-    Graph-free entry point used by the WebSocket dispatch loop so the Natt canvas
-    is responsive end-to-end. Mirrors the Socratic DEBUG questions emitted by
-    run_analyst_node; the real LLM path (_generate_question_llm) is still deferred.
+    Calls the active BYOM chat model directly (no proxy) with the SOUL persona as
+    the system prompt. Graph-free entry point used by the WebSocket dispatch loop.
+    Degrades to an actionable message if no preset is active or the engine is down.
     """
-    if _is_agreement(text):
-        return (
-            "Understood — I'll treat the goal as locked. When the planner runs it "
-            "will synthesize the WBS from this shared understanding."
+    from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
+    system_prompt = soul_manager.get_prompt()
+    try:
+        reply = await LLMGateway.acomplete_byom(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            tier="medium",
+            temperature=0.5,
+            max_tokens=800,
+            session_id=session_id,
         )
-    if not has_prior:
+        return reply.strip() or "(no response)"
+    except Exception as exc:  # noqa: BLE001 — analyst must never crash the WS loop
+        logger.warning("Analyst live reply failed: %s", exc)
         return (
-            f"[Analyst] Before any code, let's frame the goal. Task: '{text[:80]}'. "
-            "What is the primary deliverable, and what does 'done' look like? "
-            "Recommended: a working feature with existing tests green plus new unit "
-            "tests covering the change." + _CLOSE_HINT
+            "I can't reach the configured model right now. Activate a BYOM preset "
+            "(Dashboard → BYOM) and make sure its engine is running, then ask me again."
         )
-    return (
-        "[Analyst] What are the non-functional constraints (performance budget, "
-        "security surface, dependency limits)? Recommended: O(n) max, no new external "
-        "dependencies, all inputs sanitised at the boundary." + _CLOSE_HINT
-    )
 
 
 # ---------------------------------------------------------------------------

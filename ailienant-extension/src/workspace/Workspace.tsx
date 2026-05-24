@@ -212,7 +212,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_indexing_error': {
                     const d = msg.payload as { reason?: string };
-                    setIndexing({ state: 'error', reason: d?.reason ?? 'LLM configuration missing' });
+                    const reason = d?.reason ?? 'LLM configuration missing';
+                    setIndexing({ state: 'error', reason });
+                    addToast('error', reason);   // carries the exact actionable command (e.g. ollama pull …)
                     break;
                 }
                 case 'server_byom_config_applied': {

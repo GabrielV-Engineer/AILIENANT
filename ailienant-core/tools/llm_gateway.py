@@ -361,6 +361,75 @@ class LLMGateway:
             logger.error("LLM astream failed [trace=%s]: %s", trace_id, e)
             raise
 
+    # -------------------------------------------------------------------------
+    # Phase 7.9.B.13 — Direct BYOM calls (proxy-free)
+    # -------------------------------------------------------------------------
+    # These bypass get_litellm_config() / the LiteLLM proxy and call the active
+    # BYOM preset's model directly via its resolved api_base/api_key. Used by the
+    # live main chat (astream_byom) and the Natt analyst (acomplete_byom).
+
+    @staticmethod
+    def _byom_kwargs(target: Any, messages: list[dict[str, Any]], **opts: Any) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"model": target.model, "messages": messages, **opts}
+        if target.api_base:
+            kwargs["api_base"] = target.api_base
+        if target.api_key:
+            kwargs["api_key"] = target.api_key
+        return kwargs
+
+    @staticmethod
+    async def acomplete_byom(
+        messages: list[dict[str, Any]],
+        tier: str = "medium",
+        temperature: float = 0.4,
+        max_tokens: int = 1024,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """Non-streaming completion against the active BYOM chat model (direct)."""
+        from core.config.model_resolver import get_chat_target  # deferred — load order
+        target = get_chat_target(tier)
+        if target is None:
+            raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
+        trace_id = session_id or str(uuid.uuid4())
+        kwargs = LLMGateway._byom_kwargs(
+            target, messages, temperature=temperature, max_tokens=max_tokens,
+            timeout=timeout, max_retries=2,
+        )
+        logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
+        resp: ModelResponse = await litellm.acompletion(**kwargs)
+        return resp.choices[0].message.content or ""
+
+    @staticmethod
+    async def astream_byom(
+        messages: list[dict[str, Any]],
+        tier: str = "medium",
+        temperature: float = 0.4,
+        max_tokens: int = 1024,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        """Streaming completion against the active BYOM chat model (direct).
+
+        Yields non-empty token-delta strings for WebSocket broadcast. Raises
+        NoAvailableProviderError when no BYOM preset is active.
+        """
+        from core.config.model_resolver import get_chat_target  # deferred — load order
+        target = get_chat_target(tier)
+        if target is None:
+            raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
+        trace_id = session_id or str(uuid.uuid4())
+        kwargs = LLMGateway._byom_kwargs(
+            target, messages, temperature=temperature, max_tokens=max_tokens,
+            timeout=timeout, stream=True, max_retries=2,
+        )
+        logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
+        response = await litellm.acompletion(**kwargs)
+        async for chunk in response:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                yield delta
+
     @staticmethod
     async def heartbeat(url: str) -> bool:
         """Async HEAD request to *url* with a 5s timeout, result cached for 60s.

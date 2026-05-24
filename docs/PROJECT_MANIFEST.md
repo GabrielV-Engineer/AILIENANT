@@ -1292,6 +1292,32 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         ephemeral `PipelineProgress` ticker (never chat) cleared when the answer arrives.
     - **Tests:** 565/565 · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.13 — From Stubs to Live LLM: Status Sync, Live Main Chat & Live Analyst**
+    - **Problem:** After 7.9.B.12 the system hit its DEBUG/stub seams: (1) the status
+      badge stayed yellow because `server_indexing_error`'s actionable reason (e.g.
+      "Run: ollama pull nomic-embed-text") lived only in a hover tooltip — no toast;
+      (2) the main chat always returned the planner's DEBUG stub
+      ("Análisis inicial completado de forma sintética.") because every LLM call routes
+      through the LiteLLM proxy (`:4000`) the user doesn't run; (3) the Natt analyst
+      replied with a hardcoded Socratic template instead of an LLM.
+    - **Resolution:**
+      - **Status toast:** `Workspace.tsx` `server_indexing_error` now calls
+        `addToast('error', reason)` so the exact remediation command is visible; the
+        existing 100 %-progress → `ready` path already turns the badge green.
+      - **Direct BYOM chat (no proxy):** new `ModelTarget` + `BYOMConfig.chat_models`
+        (tier → target) persisted by `_apply_preset`; `core/config/model_resolver.py`
+        reads/caches them (mirrors `embedding_resolver`); `LLMGateway.acomplete_byom()`
+        / `astream_byom()` call litellm directly via the resolved api_base/api_key.
+      - **Live main chat:** `task_service._stream_chat_answer()` streams a real
+        completion (medium tier) → `broadcast_token` deltas → `broadcast_stream_end`;
+        `_summarize_result` removed. The stubbed graph still runs for the progress
+        ticker. Graceful actionable fallback when no preset/engine is available.
+      - **Live analyst:** `generate_analyst_reply()` now calls `acomplete_byom` with the
+        SOUL persona system prompt; `main.py` passes `session_id` for tracing.
+    - **Scope note:** full agent-graph un-stub (planner/coder real LLM) deferred — the
+      main chat uses a direct conversational completion for now.
+    - **Tests:** 565/565 · `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
