@@ -20,7 +20,7 @@ async function _json<T>(path: string, init?: RequestInit): Promise<T> {
 // Types
 // ---------------------------------------------------------------------------
 
-export type Provider = 'ollama' | 'vllm' | 'openai' | 'openrouter' | 'anthropic' | 'custom';
+export type Provider = 'ollama' | 'lmstudio' | 'vllm' | 'openai' | 'openrouter' | 'anthropic' | 'custom';
 
 export interface EndpointConfig {
     id: string;
@@ -70,6 +70,15 @@ export interface BYOMConfigPayload {
     active_preset_id?: string | null;
 }
 
+export interface EngineStatus {
+    id: string;           // "ollama" | "lmstudio"
+    name: string;
+    url: string;
+    running: boolean;
+    model_count: number;
+    models: string[];
+}
+
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
@@ -90,4 +99,8 @@ export function testEndpoint(req: TestConnectionRequest): Promise<TestConnection
         method: 'POST',
         body: JSON.stringify(req),
     });
+}
+
+export function fetchEngineStatus(): Promise<EngineStatus[]> {
+    return _json<EngineStatus[]>('/engines');
 }

@@ -1,8 +1,9 @@
-"""api/byom.py — Phase 7.9.B.2.
+"""api/byom.py — Phase 7.9.B.2 / 7.9.B.10.
 
 BYOM (Bring Your Own Model) REST surface for the Web Dashboard.
 
 Endpoints (prefix /api/v1/byom):
+  GET  /engines     — probe local AI engines (Ollama, LM Studio); return health status.
   POST /test        — probe a specific model endpoint; returns discovered models.
   GET  /config      — load BYOM config + 3 built-in presets + currently discovered models.
   PUT  /config      — merge-save BYOM config; apply preset → config.yaml → LiteLLM reload.
@@ -30,7 +31,11 @@ from core.config.byom_config import (
 )
 from core.config_generator import (
     CONFIG_YAML_PATH,
+    LM_STUDIO_API_BASE,
+    OLLAMA_API_BASE,
     _infer_tier,
+    _probe_lmstudio,
+    _probe_ollama,
     discover_models,
     write_config_with_overrides,
 )
@@ -77,6 +82,16 @@ class BYOMConfigResponse(BaseModel):
     presets: list[ModelPreset]          # built-ins first, then user-defined
     active_preset_id: Optional[str]
     discovered: list[DiscoveredModelItem]  # all live models for preset dropdowns
+
+
+class EngineStatusItem(BaseModel):
+    """Health status of a known local AI engine (Ollama, LM Studio, etc.)."""
+    id: str           # "ollama" | "lmstudio"
+    name: str         # human-readable label
+    url: str          # default base URL for this engine
+    running: bool
+    model_count: int
+    models: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -301,3 +316,29 @@ async def put_config(request: Request) -> BYOMConfigResponse:
             await _apply_preset(active)
 
     return await get_config()
+
+
+@router.get("/engines", response_model=list[EngineStatusItem])
+async def get_engine_status() -> list[EngineStatusItem]:
+    """Probe known local AI engines and return their health status."""
+    ollama_models, lmstudio_models = await asyncio.gather(
+        _probe_ollama(), _probe_lmstudio()
+    )
+    return [
+        EngineStatusItem(
+            id="ollama",
+            name="Ollama",
+            url=OLLAMA_API_BASE,
+            running=ollama_models is not None,
+            model_count=len(ollama_models or []),
+            models=ollama_models or [],
+        ),
+        EngineStatusItem(
+            id="lmstudio",
+            name="LM Studio",
+            url=LM_STUDIO_API_BASE,
+            running=lmstudio_models is not None,
+            model_count=len(lmstudio_models or []),
+            models=lmstudio_models or [],
+        ),
+    ]

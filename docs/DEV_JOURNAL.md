@@ -1,5 +1,56 @@
 # Diario de Desarrollo - Ialienant 🐜
 
+---
+
+## Hito 7.9.B.10: BYOM UX & Architecture Overhaul — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.10
+
+**Files changed:**
+- `ailienant-core/core/config_generator.py` — Added `LM_STUDIO_API_BASE` constant (configurable via env var); added `_probe_lmstudio()` using OpenAI-compatible `/v1/models` endpoint with same `_PROBE_TIMEOUT`
+- `ailienant-core/core/config/byom_config.py` — `EndpointConfig.provider` Literal extended with `"lmstudio"` (falls into existing OpenAI-compatible branch in `POST /test`)
+- `ailienant-core/api/byom.py` — Added `EngineStatusItem` Pydantic model; new `GET /api/v1/byom/engines` route probes Ollama + LM Studio in parallel via `asyncio.gather`; imported `_probe_lmstudio`, `_probe_ollama`, `LM_STUDIO_API_BASE`, `OLLAMA_API_BASE` from `config_generator`
+- `ailienant-extension/src/dashboard/panels/byom/api.ts` — `lmstudio` added to `Provider` union type; `EngineStatus` interface added; `fetchEngineStatus()` function added (GET `/api/v1/byom/engines`)
+- `ailienant-extension/src/dashboard/panels/BYOMPanel.tsx` — Full refactor: (1) `PROVIDER_DEFAULTS` map with auto-fill URL and per-provider description + key hint; (2) `urlAutoFilled` flag tracks whether URL was auto-set (allows re-fill on provider change); (3) confirmation modal (`ConfirmState`) for Remove endpoint, Delete preset, Activate preset (switch); (4) Engine health bar fetched on mount alongside config; (5) Detected Models section collapsible, grouped by provider prefix; (6) LM Studio option in provider `<select>`; (7) API Key label shows "— not required for local engines" hint
+- `ailienant-extension/src/dashboard/dashboard.css` — New CSS: `.byom-confirm-overlay/modal/title/body/warning`, `.db-btn-danger`, `.byom-engine-bar/chip/dot/name/count/offline/add`, `.byom-provider-hint`, `.byom-api-key-hint`, `.byom-discovered-section/toggle/group/group-label/model-row/model-name/model-id`
+
+**Architectural outcomes:**
+- **Engine-agnostic probe layer** — `_probe_lmstudio()` mirrors `_probe_ollama()` pattern; new engine types can be added by extending `GET /engines` without changes to the frontend contract
+- **Zero-config endpoint setup** — users no longer need to know base URLs; selecting a provider auto-fills the default URL; the "Add" button in the engine bar pre-fills the entire form from the detected daemon
+- **Destructive action guards** — all delete/remove/switch actions now require explicit confirmation via a modal overlay with cancel safety
+- **Self-documenting Custom provider** — inline description replaces the previous opaque empty state
+- **Discovered models surfaced** — previously hidden in a `<datalist>`, now a collapsible section grouped by engine prefix (e.g., `ollama/`, `anthropic/`)
+
+**Verification:** `pytest` 565 passed; `npm run compile` 0 errors.
+
+---
+
+## Hito 7.9.A.5.1: Universal Core Activation & Enterprise Security — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.A.5.1
+
+**Files changed:**
+- `ailienant-core/api/ws_contracts.py` — Added `AuthEvent` model; appended to `WebSocketMessage` union
+- `ailienant-core/api/runtime.py` — `_ALLOWED_ORIGINS` and `_API_PORT` now read from `AILIENANT_API_PORT` env var (dynamic port support; S7-D CSRF guard preserved)
+- `ailienant-core/api/websocket_manager.py` — Added `import json, secrets`; `connect()` now accepts `auth_token: Optional[str]`; first-message WS auth with `secrets.compare_digest` (constant-time; timing-attack safe on localhost)
+- `ailienant-core/main.py` — Reads `AILIENANT_AUTH_TOKEN` / `AILIENANT_API_PORT` env vars; HTTP auth middleware with `secrets.compare_digest` (health `/` + same-origin dashboard exempt; dev-mode bypass when no token); CORS hardened (`allow_origin_regex` for `vscode-webview://` + explicit origin list); WS endpoint passes token to `connect()`; uvicorn `__main__` entry added
+- `ailienant-extension/src/api/api_client.ts` — `_baseUrl` and `_token` made mutable; `configure(baseUrl, token)` added; `_authHeaders()` helper; all `fetch` calls updated to use `_baseUrl` + auth header (health check at `/` naturally excluded)
+- `ailienant-extension/src/api/ws_client.ts` — `_wsUrl` / `_token` mutable; `configure(wsUrl, token)` added; first-message `{"event_type":"auth","token":"..."}` sent in `onopen` before `_flushPending()`; `close(4001)` handler added (no retry on auth rejection)
+- `ailienant-extension/src/providers/workspace_panel.ts` — Added `import cp, net, crypto`; new `findFreePort()` (OS `listen(0)`), `generateAuthToken()` (256-bit hex), and `CoreProcessManager` class (state machine: stopped/starting/running/crashed; stdout/stderr → VS Code output channel; up to 3 auto-recovery retries with 2 s backoff; `stop()` prevents spurious retry via state guard; Windows `proc.kill()`, Unix `SIGTERM→SIGKILL`); `WorkspacePanelManager` receives manager via `setCoreManager()`; `_spawnCore()` removed; `_ensureBackend()` simplified to poll-only; `START_BACKEND` → `RESTART_BACKEND`; `OPEN_DASHBOARD` uses managed port; `_maybeAutoTitle` + `_fetchTitle` use managed port + auth header
+- `ailienant-extension/src/extension.ts` — `activate()` made async; `findFreePort()` + `generateAuthToken()` called at startup; `APIClient` and `WSClient` configured before first use; `CoreProcessManager` created and passed to `WorkspacePanelManager`; auto-start respects `ailienant.autoStartCore` setting
+- `ailienant-extension/src/workspace/Workspace.tsx` — `START_BACKEND` → `RESTART_BACKEND`; button label "Start Core" → "Restart Core"
+
+**Architectural outcomes:**
+- **No terminal profile prompt** — child_process.spawn replaces createTerminal + sendText entirely
+- **Dynamic port** — OS assigns ephemeral port via `listen(0)`; all components (HTTP, WS, CORS, dashboard URL) use the resolved value
+- **Enterprise auth** — 256-bit ephemeral token injected as env var into child process; validated on every HTTP request and WS handshake using `secrets.compare_digest` (constant-time; timing-attack safe on localhost); dev-mode bypass (no env var = no auth) preserved for manual backend runs
+- **Lifecycle ownership** — Core process owned by extension host; proper `stop()` on deactivate via subscription disposal chain
+- **Python bundling** — deferred to Phase 7.9.A.5.2 (complex platform matrix; scope boundary held)
+
+**Verification:** `pytest` 565 passed; `npm run compile` 0 errors; pre-existing mypy warnings unchanged.
+
+---
+
 ## Hito 0.1: Cimentación del Core y WebSockets - 05/04/2026
 * **Estructura de Archivos:** Se determinó que los archivos fuente (`main.py`, `state.py`) deben residir en la raíz del módulo (`alienant-core/`) y **nunca** dentro de la carpeta `venv/`. Esto asegura compatibilidad con Git y previene la pérdida de código fuente.
 * **Troubleshooting (Pylance):** Si VS Code no reconoce dependencias como `pydantic`, se debe forzar el intérprete (`Ctrl+Shift+P` -> `Python: Select Interpreter`) apuntando directamente al binario dentro de `venv/Scripts/python.exe`.

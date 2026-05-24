@@ -2231,9 +2231,9 @@ var require_websocket = __commonJS({
     var EventEmitter3 = require("events");
     var https = require("https");
     var http = require("http");
-    var net = require("net");
+    var net2 = require("net");
     var tls = require("tls");
-    var { randomBytes, createHash: createHash2 } = require("crypto");
+    var { randomBytes: randomBytes2, createHash: createHash2 } = require("crypto");
     var { Duplex, Readable } = require("stream");
     var { URL: URL2 } = require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -2763,7 +2763,7 @@ var require_websocket = __commonJS({
         }
       }
       const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes(16).toString("base64");
+      const key = randomBytes2(16).toString("base64");
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
@@ -2965,12 +2965,12 @@ var require_websocket = __commonJS({
     }
     function netConnect(options) {
       options.path = options.socketPath;
-      return net.connect(options);
+      return net2.connect(options);
     }
     function tlsConnect(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
-        options.servername = net.isIP(options.host) ? "" : options.host;
+        options.servername = net2.isIP(options.host) ? "" : options.host;
       }
       return tls.connect(options);
     }
@@ -3771,17 +3771,31 @@ var VFSReader = class {
 var vscode3 = __toESM(require("vscode"));
 var APIClient = class _APIClient {
   static instance;
-  baseUrl;
+  // Phase 7.9.A.5.1: mutable so configure() can update after dynamic port is resolved.
+  _baseUrl;
+  _token = "";
   // Almacenamos los controladores de aborto para poder cancelar peticiones en vuelo
   activeRequests = /* @__PURE__ */ new Map();
   constructor() {
-    this.baseUrl = "http://127.0.0.1:8000/api/v1";
+    this._baseUrl = "http://127.0.0.1:8000/api/v1";
   }
   static getInstance() {
     if (!_APIClient.instance) {
       _APIClient.instance = new _APIClient();
     }
     return _APIClient.instance;
+  }
+  /**
+   * Phase 7.9.A.5.1 — called from activate() once the CoreProcessManager has a port/token.
+   * All subsequent requests will target the new URL and include the auth header.
+   */
+  configure(baseUrl, token) {
+    this._baseUrl = baseUrl;
+    this._token = token;
+  }
+  /** Build auth headers. Health check path (GET /) is excluded by the caller. */
+  _authHeaders() {
+    return this._token ? { "X-AILIENANT-TOKEN": this._token } : {};
   }
   /**
    * Envía la entropía del IDE y la tarea al motor LangGraph.
@@ -3797,12 +3811,13 @@ var APIClient = class _APIClient {
       controller.abort(`Timeout de ${timeoutMs}ms excedido.`);
     }, timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}/task/submit`, {
+      const response = await fetch(`${this._baseUrl}/task/submit`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Task-ID": taskId
+          "X-Task-ID": taskId,
           // Header de trazabilidad
+          ...this._authHeaders()
         },
         body: JSON.stringify(payload),
         signal: controller.signal
@@ -3842,8 +3857,9 @@ var APIClient = class _APIClient {
    */
   async fetchAvailableModels() {
     try {
-      const response = await fetch(`${this.baseUrl}/models/available`, {
+      const response = await fetch(`${this._baseUrl}/models/available`, {
         method: "GET",
+        headers: { ...this._authHeaders() },
         signal: AbortSignal.timeout(3e3)
       });
       if (!response.ok) {
@@ -3861,8 +3877,9 @@ var APIClient = class _APIClient {
    */
   async fetchTokenUsage() {
     try {
-      const response = await fetch(`${this.baseUrl}/telemetry/tokens`, {
+      const response = await fetch(`${this._baseUrl}/telemetry/tokens`, {
         method: "GET",
+        headers: { ...this._authHeaders() },
         signal: AbortSignal.timeout(3e3)
       });
       if (!response.ok) {
@@ -3874,12 +3891,49 @@ var APIClient = class _APIClient {
     }
   }
   /**
+   * 7.9.B.2 — Fetch BYOM config (endpoints + presets + active preset).
+   */
+  async fetchBYOMConfig() {
+    try {
+      const response = await fetch(`${this._baseUrl}/byom/config`, {
+        method: "GET",
+        headers: { ...this._authHeaders() },
+        signal: AbortSignal.timeout(5e3)
+      });
+      if (!response.ok) {
+        return null;
+      }
+      return response.json();
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * 7.9.B.2 — Merge-save BYOM config (partial patch; server preserves unset fields).
+   */
+  async saveBYOMConfig(payload) {
+    try {
+      const response = await fetch(`${this._baseUrl}/byom/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...this._authHeaders() },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(1e4)
+      });
+      if (!response.ok) {
+        return null;
+      }
+      return response.json();
+    } catch {
+      return null;
+    }
+  }
+  /**
    * 7.9.A.5 — Probe whether the Core backend is reachable.
    * The health route lives at the server origin root ("/"), not under /api/v1.
    */
   async checkHealth() {
     try {
-      const origin = new URL(this.baseUrl).origin;
+      const origin = new URL(this._baseUrl).origin;
       const response = await fetch(`${origin}/`, {
         method: "GET",
         signal: AbortSignal.timeout(2e3)
@@ -3894,8 +3948,8 @@ var APIClient = class _APIClient {
    * Backs the `ailienant-vision://{node_id}/{path}` URI scheme.
    */
   async fetchVirtualFile(nodeId, filePath) {
-    const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/vfs?path=${encodeURIComponent(filePath)}`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(5e3) });
+    const url = `${this._baseUrl}/mcts/${encodeURIComponent(nodeId)}/vfs?path=${encodeURIComponent(filePath)}`;
+    const response = await fetch(url, { headers: { ...this._authHeaders() }, signal: AbortSignal.timeout(5e3) });
     if (!response.ok) {
       throw new Error(`AILIENANT Mirror fetch failed: ${response.status} ${response.statusText}`);
     }
@@ -3905,10 +3959,10 @@ var APIClient = class _APIClient {
    * Phase 3.4.5 — One-Click Merge: apply a stable MCTS node's vfs_view to disk.
    */
   async applyMerge(nodeId, workspaceRoot) {
-    const url = `${this.baseUrl}/mcts/${encodeURIComponent(nodeId)}/merge`;
+    const url = `${this._baseUrl}/mcts/${encodeURIComponent(nodeId)}/merge`;
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...this._authHeaders() },
       body: JSON.stringify({ workspace_root: workspaceRoot }),
       signal: AbortSignal.timeout(15e3)
     });
@@ -3917,15 +3971,82 @@ var APIClient = class _APIClient {
     }
     return await response.json();
   }
+  // ── Phase 7.9.A.7 — Command-menu config endpoints ────────────────────────
+  /** Generic JSON request helper. Returns null on any network/parse error (non-blocking). */
+  async _json(path2, init, timeoutMs = 5e3) {
+    try {
+      const response = await fetch(`${this._baseUrl}${path2}`, {
+        headers: { "Content-Type": "application/json", ...this._authHeaders() },
+        signal: AbortSignal.timeout(timeoutMs),
+        ...init
+      });
+      if (!response.ok) {
+        return null;
+      }
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+  // System settings (scalars: analyst_name, output_style, permission_mode)
+  getSystemSettings() {
+    return this._json("/system/settings", { method: "GET" });
+  }
+  saveSystemSettings(patch) {
+    return this._json("/system/settings", { method: "POST", body: JSON.stringify(patch) });
+  }
+  // Hooks (config-capture only)
+  getHooks() {
+    return this._json("/system/hooks", { method: "GET" });
+  }
+  saveHook(body) {
+    return this._json("/system/hooks", { method: "POST", body: JSON.stringify(body) });
+  }
+  deleteHook(id) {
+    return this._json(`/system/hooks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+  // Agent role overrides
+  getAgentRoles() {
+    return this._json("/agents/roles", { method: "GET" });
+  }
+  saveAgentRole(role, systemPrompt) {
+    return this._json(`/agents/roles/${encodeURIComponent(role)}`, {
+      method: "POST",
+      body: JSON.stringify({ system_prompt: systemPrompt })
+    });
+  }
+  // MCP server registry + zombie-safe connection probe
+  getMcpServers() {
+    return this._json("/mcp/servers", { method: "GET" });
+  }
+  saveMcpServer(body) {
+    return this._json("/mcp/servers", { method: "POST", body: JSON.stringify(body) });
+  }
+  deleteMcpServer(id) {
+    return this._json(`/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+  testMcpServer(uri) {
+    return this._json("/mcp/test", { method: "POST", body: JSON.stringify({ uri }) }, 15e3);
+  }
+  // Skills (prompt templates)
+  getSkills() {
+    return this._json("/skills", { method: "GET" });
+  }
+  saveSkill(body) {
+    return this._json("/skills", { method: "POST", body: JSON.stringify(body) });
+  }
+  deleteSkill(id) {
+    return this._json(`/skills/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
   /**
    * Phase 3.4.7 — Fire-and-forget rejection telemetry.
    * Errors are swallowed: silent telemetry must NEVER surface to the user.
    */
   async reportRejection(payload) {
     try {
-      await fetch(`${this.baseUrl}/telemetry/reject`, {
+      await fetch(`${this._baseUrl}/telemetry/reject`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...this._authHeaders() },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(1e4)
       });
@@ -3979,7 +4100,9 @@ var vscode5 = __toESM(require("vscode"));
 var WSClient = class _WSClient {
   static instance;
   ws = null;
-  wsUrl;
+  // Phase 7.9.A.5.1: mutable so configure() can update after dynamic port is resolved.
+  _wsUrl;
+  _token = "";
   // Callbacks suscritos (Patrón Observer)
   onMessageHandlers = /* @__PURE__ */ new Set();
   onErrorHandlers = /* @__PURE__ */ new Set();
@@ -3999,7 +4122,7 @@ var WSClient = class _WSClient {
   _fileVersions = /* @__PURE__ */ new Map();
   _dashboardBc;
   constructor() {
-    this.wsUrl = "ws://127.0.0.1:8000/api/v1/ws";
+    this._wsUrl = "ws://127.0.0.1:8000/api/v1/ws";
     if (typeof BroadcastChannel !== "undefined") {
       this._dashboardBc = new BroadcastChannel("ailienant_ws");
     }
@@ -4011,6 +4134,14 @@ var WSClient = class _WSClient {
     return _WSClient.instance;
   }
   /**
+   * Phase 7.9.A.5.1 — called from activate() once the CoreProcessManager has a port/token.
+   * All subsequent connections will target the new URL and send the auth handshake.
+   */
+  configure(wsUrl, token) {
+    this._wsUrl = wsUrl;
+    this._token = token;
+  }
+  /**
    * Inicia el túnel de red.
    * Protegido contra llamadas concurrentes.
    */
@@ -4020,12 +4151,15 @@ var WSClient = class _WSClient {
     }
     this._clientId = clientId;
     this.isConnecting = true;
-    const urlWithAuth = `${this.wsUrl}/${clientId}`;
+    const urlWithAuth = `${this._wsUrl}/${clientId}`;
     try {
       const wsInstance = new wrapper_default(urlWithAuth);
       wsInstance.on("open", () => {
         this.isConnecting = false;
         this.reconnectAttempts = 0;
+        if (this._token) {
+          wsInstance.send(JSON.stringify({ event_type: "auth", token: this._token }));
+        }
         this._emitStatus("connected");
         this._flushPending();
       });
@@ -4054,8 +4188,13 @@ var WSClient = class _WSClient {
           console.error("Error parseando payload de LangGraph", e);
         }
       });
-      wsInstance.on("close", () => {
+      wsInstance.on("close", (code) => {
         this.isConnecting = false;
+        if (code === 4001) {
+          this._emitStatus("disconnected");
+          vscode5.window.showErrorMessage("AILIENANT: WebSocket auth rejected (token mismatch). Restart the extension.");
+          return;
+        }
         this._emitStatus("reconnecting");
         this._handleReconnection(clientId);
       });
@@ -4392,6 +4531,9 @@ var SessionBrowserProvider = class {
 var vscode9 = __toESM(require("vscode"));
 var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
+var cp = __toESM(require("child_process"));
+var net = __toESM(require("net"));
+var crypto2 = __toESM(require("crypto"));
 
 // src/shared/config.ts
 var WORKSPACE_STATE_KEYS = {
@@ -4501,15 +4643,158 @@ function findBackendPath(extensionFsPath) {
   return null;
 }
 function findVenvPython(backendPath) {
-  const winPy = path.join(backendPath, ".venv", "Scripts", "python.exe");
-  const nixPy = path.join(backendPath, ".venv", "bin", "python");
-  if (fs.existsSync(winPy)) {
-    return winPy;
-  }
-  if (fs.existsSync(nixPy)) {
-    return nixPy;
+  const candidates = [
+    path.join(backendPath, ".venv", "Scripts", "python.exe"),
+    // dot-venv Windows
+    path.join(backendPath, "venv", "Scripts", "python.exe"),
+    // plain venv Windows
+    path.join(backendPath, ".venv", "bin", "python"),
+    // dot-venv Unix
+    path.join(backendPath, "venv", "bin", "python")
+    // plain venv Unix
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      return p;
+    }
   }
   return process.platform === "win32" ? "python" : "python3";
+}
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+    server.on("error", reject);
+  });
+}
+var CoreProcessManager = class _CoreProcessManager {
+  _proc = null;
+  _state = "stopped";
+  _outputChannel;
+  _crashRetries = 0;
+  static MAX_RETRIES = 3;
+  static RETRY_DELAY_MS = 2e3;
+  port;
+  token;
+  _extensionFsPath;
+  constructor(port, token, extensionFsPath) {
+    this.port = port;
+    this.token = token;
+    this._extensionFsPath = extensionFsPath;
+    this._outputChannel = vscode9.window.createOutputChannel("AILIENANT Core");
+  }
+  getState() {
+    return this._state;
+  }
+  async start() {
+    if (this._state === "starting" || this._state === "running") {
+      return;
+    }
+    this._state = "starting";
+    const backendPath = findBackendPath(this._extensionFsPath);
+    if (!backendPath) {
+      this._state = "crashed";
+      this._outputChannel.appendLine("[AILIENANT] Cannot locate ailienant-core/. Open the monorepo root as workspace or set ailienant.coreStartCommand.");
+      void vscode9.window.showWarningMessage(
+        "AILIENANT: Cannot locate ailienant-core/.",
+        "Show Output",
+        "Open Settings"
+      ).then((choice) => {
+        if (choice === "Show Output") {
+          this._outputChannel.show();
+        }
+        if (choice === "Open Settings") {
+          void vscode9.commands.executeCommand("workbench.action.openSettings", "ailienant.coreStartCommand");
+        }
+      });
+      return;
+    }
+    const python = findVenvPython(backendPath);
+    const env2 = {
+      ...process.env,
+      AILIENANT_API_PORT: String(this.port),
+      AILIENANT_AUTH_TOKEN: this.token
+    };
+    this._outputChannel.appendLine(`[AILIENANT] Starting Core on 127.0.0.1:${this.port} ...`);
+    const proc = cp.spawn(
+      python,
+      ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(this.port)],
+      { cwd: backendPath, env: env2, detached: false }
+    );
+    proc.stdout?.on("data", (chunk) => this._outputChannel.append(chunk.toString()));
+    proc.stderr?.on("data", (chunk) => this._outputChannel.append(chunk.toString()));
+    proc.on("error", (err) => {
+      this._outputChannel.appendLine(`[AILIENANT] Failed to start: ${err.message}`);
+      this._state = "crashed";
+    });
+    proc.on("close", (code) => {
+      this._proc = null;
+      if (this._state === "stopped") {
+        return;
+      }
+      if (this._crashRetries < _CoreProcessManager.MAX_RETRIES) {
+        this._crashRetries++;
+        this._outputChannel.appendLine(
+          `[AILIENANT] Process exited (code ${code}). Retrying in ${_CoreProcessManager.RETRY_DELAY_MS}ms (${this._crashRetries}/${_CoreProcessManager.MAX_RETRIES})...`
+        );
+        this._state = "starting";
+        setTimeout(() => {
+          void this.start();
+        }, _CoreProcessManager.RETRY_DELAY_MS);
+      } else {
+        this._state = "crashed";
+        this._outputChannel.appendLine(`[AILIENANT] Core stopped (code ${code}). Max retries reached.`);
+        void vscode9.window.showErrorMessage(
+          "AILIENANT: Core process stopped unexpectedly.",
+          "Show Output"
+        ).then((choice) => {
+          if (choice === "Show Output") {
+            this._outputChannel.show();
+          }
+        });
+      }
+    });
+    this._proc = proc;
+    this._state = "running";
+  }
+  async stop() {
+    if (!this._proc) {
+      this._state = "stopped";
+      return;
+    }
+    const proc = this._proc;
+    this._proc = null;
+    this._state = "stopped";
+    return new Promise((resolve) => {
+      proc.once("close", () => resolve());
+      if (process.platform === "win32") {
+        proc.kill();
+      } else {
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+          }
+        }, 3e3);
+      }
+    });
+  }
+  async restart() {
+    this._crashRetries = 0;
+    await this.stop();
+    await this.start();
+  }
+  dispose() {
+    void this.stop();
+    this._outputChannel.dispose();
+  }
+};
+function generateAuthToken() {
+  return crypto2.randomBytes(32).toString("hex");
 }
 var WorkspacePanelManager = class {
   constructor(_extensionUri, _workspaceState) {
@@ -4543,12 +4828,16 @@ var WorkspacePanelManager = class {
   _configLoader;
   _disposables = [];
   _onTitleUpdate;
-  // 7.9.A.5 — guards against multiple panels spawning the Core concurrently.
-  _coreStarting = false;
+  // Phase 7.9.A.5.1 — managed child process; set from activate() via setCoreManager().
+  _coreManager = null;
   setTitleUpdater(updater) {
     this._onTitleUpdate = updater;
   }
+  setCoreManager(manager) {
+    this._coreManager = manager;
+  }
   dispose() {
+    this._coreManager?.dispose();
     for (const d of this._disposables) {
       d.dispose();
     }
@@ -4576,50 +4865,10 @@ var WorkspacePanelManager = class {
     return this._configLoader.current?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
   }
   /**
-   * 7.9.A.5 — Spawn the Core backend in a terminal. Returns true if a spawn was
-   * initiated. When `silent`, suppresses the "cannot locate core" guidance so the
-   * auto-start path does not nag on every session open (the manual button is loud).
-   */
-  _spawnCore(silent) {
-    const backendPath = findBackendPath(this._extensionUri.fsPath);
-    if (!backendPath) {
-      const cfg = vscode9.workspace.getConfiguration("ailienant");
-      const cmd = cfg.get("coreStartCommand", "").trim();
-      if (!cmd) {
-        if (!silent) {
-          void vscode9.window.showWarningMessage(
-            'Cannot locate ailienant-core/. Open the monorepo root as your workspace folder, or set "ailienant.coreStartCommand" in VS Code Settings.',
-            "Open Settings"
-          ).then((choice) => {
-            if (choice === "Open Settings") {
-              void vscode9.commands.executeCommand(
-                "workbench.action.openSettings",
-                "ailienant.coreStartCommand"
-              );
-            }
-          });
-        }
-        return false;
-      }
-      const t = vscode9.window.createTerminal({ name: "AILIENANT Core" });
-      t.show(true);
-      t.sendText(cmd);
-      return true;
-    }
-    const python = findVenvPython(backendPath);
-    const terminal = vscode9.window.createTerminal({
-      name: "AILIENANT Core",
-      cwd: backendPath
-    });
-    terminal.show(true);
-    terminal.sendText(`"${python}" -m uvicorn main:app --reload --port 8000`);
-    return true;
-  }
-  /**
-   * 7.9.A.5 — Health-aware activation, run once per session open. If the Core is
-   * reachable, open the tunnel + announce the workspace (starts the lazy indexer).
-   * If it is down and `ailienant.autoStartCore` is enabled, spawn it once and poll
-   * until healthy, then connect. On timeout the offline pill + manual button remain.
+   * Phase 7.9.A.5.1 — Health-aware activation, run once per session open.
+   * If the Core is already healthy, connect immediately. Otherwise poll while
+   * CoreProcessManager starts it (~30 s budget). Falls back gracefully if no
+   * manager is configured (e.g. manual external backend).
    */
   async _ensureBackend() {
     const api = APIClient.getInstance();
@@ -4627,24 +4876,15 @@ var WorkspacePanelManager = class {
       SessionManager.getInstance().ensureConnected();
       return;
     }
-    const autoStart = vscode9.workspace.getConfiguration("ailienant").get("autoStartCore", true);
-    if (!autoStart || this._coreStarting) {
+    if (!this._coreManager) {
       return;
     }
-    this._coreStarting = true;
-    try {
-      if (!this._spawnCore(true)) {
+    for (let i = 0; i < 30; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1e3));
+      if (await api.checkHealth()) {
+        SessionManager.getInstance().ensureConnected();
         return;
       }
-      for (let i = 0; i < 30; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1e3));
-        if (await api.checkHealth()) {
-          SessionManager.getInstance().ensureConnected();
-          return;
-        }
-      }
-    } finally {
-      this._coreStarting = false;
     }
   }
   _createPanel(session) {
@@ -4722,7 +4962,11 @@ var WorkspacePanelManager = class {
         case "NATT_MESSAGE":
           WSClient.getInstance().send({
             event_type: "client_analyst_query",
-            data: { text: data.text, session_id: data.session_id }
+            data: {
+              text: data.text,
+              session_id: data.session_id,
+              ...Array.isArray(data.context_paths) && data.context_paths.length > 0 && { context_paths: data.context_paths }
+            }
           });
           break;
         case "NATT_VISIBILITY":
@@ -4761,15 +5005,17 @@ var WorkspacePanelManager = class {
           }
           break;
         }
-        case "START_BACKEND": {
-          this._spawnCore(false);
+        case "RESTART_BACKEND": {
+          if (this._coreManager) {
+            void this._coreManager.restart();
+          }
           break;
         }
         case "OPEN_DASHBOARD": {
           const cfg = vscode9.workspace.getConfiguration("ailienant");
-          const base = cfg.get("backendUrl", "http://localhost:8000").replace(/\/$/, "");
+          const base = this._coreManager?.port ? `http://127.0.0.1:${this._coreManager.port}` : cfg.get("backendUrl", "http://localhost:8000").replace(/\/$/, "");
           const tab = typeof data.tab === "string" ? data.tab : "";
-          const url = tab ? `${base}?tab=${encodeURIComponent(tab)}` : base;
+          const url = tab ? `${base}/dashboard/?tab=${encodeURIComponent(tab)}` : `${base}/dashboard/`;
           void vscode9.env.openExternal(vscode9.Uri.parse(url));
           break;
         }
@@ -4825,6 +5071,17 @@ var WorkspacePanelManager = class {
           panel.webview.postMessage({ type: "USAGE_SNAPSHOT", usage });
           break;
         }
+        case "GET_BYOM_CONFIG": {
+          const byomData = await APIClient.getInstance().fetchBYOMConfig();
+          panel.webview.postMessage({ type: "BYOM_CONFIG", data: byomData });
+          break;
+        }
+        case "ACTIVATE_PRESET": {
+          const presetId = data.presetId ?? "";
+          const result = await APIClient.getInstance().saveBYOMConfig({ active_preset_id: presetId });
+          panel.webview.postMessage({ type: "BYOM_CONFIG", data: result });
+          break;
+        }
         case "SET_MODEL_PREFERENCE": {
           const activeModelId = data.activeModelId ?? "";
           const orchestrationMode = data.orchestrationMode ?? "auto";
@@ -4862,6 +5119,110 @@ var WorkspacePanelManager = class {
           }
           break;
         }
+        case "PICK_NATT_FILES": {
+          const uris = await vscode9.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: true,
+            title: "Attach files to Natt context"
+          });
+          if (uris && uris.length > 0) {
+            const items = uris.map((u) => ({ path: u.fsPath, kind: "file" }));
+            panel.webview.postMessage({ type: "PICKED_NATT_PATHS", items });
+          }
+          break;
+        }
+        case "PICK_NATT_FOLDER": {
+          const uris = await vscode9.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            title: "Attach folder to Natt context"
+          });
+          if (uris && uris.length > 0) {
+            const items = uris.map((u) => ({ path: u.fsPath, kind: "directory" }));
+            panel.webview.postMessage({ type: "PICKED_NATT_PATHS", items });
+          }
+          break;
+        }
+        // ── Phase 7.9.A.7 — Command-menu config (Permissions / Output styles /
+        //    Agents / Hooks / MCP / Skills). All go host → APIClient → backend. ──
+        case "GET_SYSTEM_SETTINGS": {
+          const settings = await APIClient.getInstance().getSystemSettings();
+          panel.webview.postMessage({ type: "SYSTEM_SETTINGS", data: settings });
+          break;
+        }
+        case "SET_OUTPUT_STYLE": {
+          const settings = await APIClient.getInstance().saveSystemSettings({ output_style: String(data.style ?? "default") });
+          panel.webview.postMessage({ type: "SYSTEM_SETTINGS", data: settings });
+          break;
+        }
+        case "SET_PERMISSION_MODE": {
+          const settings = await APIClient.getInstance().saveSystemSettings({ permission_mode: String(data.mode ?? "default") });
+          panel.webview.postMessage({ type: "SYSTEM_SETTINGS", data: settings });
+          break;
+        }
+        case "GET_HOOKS": {
+          const res = await APIClient.getInstance().getHooks();
+          panel.webview.postMessage({ type: "HOOKS_DATA", hooks: res?.hooks ?? [] });
+          break;
+        }
+        case "SAVE_HOOK": {
+          const res = await APIClient.getInstance().saveHook(data.hook ?? {});
+          panel.webview.postMessage({ type: "HOOKS_DATA", hooks: res?.hooks ?? [] });
+          break;
+        }
+        case "DELETE_HOOK": {
+          const res = await APIClient.getInstance().deleteHook(String(data.id ?? ""));
+          panel.webview.postMessage({ type: "HOOKS_DATA", hooks: res?.hooks ?? [] });
+          break;
+        }
+        case "GET_AGENT_ROLES": {
+          const roles = await APIClient.getInstance().getAgentRoles();
+          panel.webview.postMessage({ type: "AGENT_ROLES", data: roles });
+          break;
+        }
+        case "SAVE_AGENT_ROLE": {
+          await APIClient.getInstance().saveAgentRole(String(data.role ?? ""), String(data.system_prompt ?? ""));
+          const roles = await APIClient.getInstance().getAgentRoles();
+          panel.webview.postMessage({ type: "AGENT_ROLES", data: roles });
+          break;
+        }
+        case "GET_MCP_SERVERS": {
+          const res = await APIClient.getInstance().getMcpServers();
+          panel.webview.postMessage({ type: "MCP_SERVERS", servers: res?.servers ?? [] });
+          break;
+        }
+        case "SAVE_MCP_SERVER": {
+          const res = await APIClient.getInstance().saveMcpServer(data.server ?? {});
+          panel.webview.postMessage({ type: "MCP_SERVERS", servers: res?.servers ?? [] });
+          break;
+        }
+        case "DELETE_MCP_SERVER": {
+          const res = await APIClient.getInstance().deleteMcpServer(String(data.id ?? ""));
+          panel.webview.postMessage({ type: "MCP_SERVERS", servers: res?.servers ?? [] });
+          break;
+        }
+        case "TEST_MCP_SERVER": {
+          const result = await APIClient.getInstance().testMcpServer(String(data.uri ?? ""));
+          panel.webview.postMessage({ type: "MCP_TEST_RESULT", id: data.id, result });
+          break;
+        }
+        case "GET_SKILLS": {
+          const res = await APIClient.getInstance().getSkills();
+          panel.webview.postMessage({ type: "SKILLS_DATA", skills: res?.skills ?? [] });
+          break;
+        }
+        case "SAVE_SKILL": {
+          const res = await APIClient.getInstance().saveSkill(data.skill ?? {});
+          panel.webview.postMessage({ type: "SKILLS_DATA", skills: res?.skills ?? [] });
+          break;
+        }
+        case "DELETE_SKILL": {
+          const res = await APIClient.getInstance().deleteSkill(String(data.id ?? ""));
+          panel.webview.postMessage({ type: "SKILLS_DATA", skills: res?.skills ?? [] });
+          break;
+        }
       }
     });
     panel.onDidDispose(() => {
@@ -4888,8 +5249,9 @@ var WorkspacePanelManager = class {
       return;
     }
     const cfg = vscode9.workspace.getConfiguration("ailienant");
-    const base = cfg.get("backendUrl", "http://localhost:8000");
-    void this._fetchTitle(base, prompt).then((title) => {
+    const base = this._coreManager?.port ? `http://127.0.0.1:${this._coreManager.port}` : cfg.get("backendUrl", "http://localhost:8000").replace(/\/$/, "");
+    const token = this._coreManager?.token ?? "";
+    void this._fetchTitle(base, prompt, token).then((title) => {
       if (title && this._sessions.has(session.id)) {
         updater(session.id, title);
         session.title = title;
@@ -4897,15 +5259,15 @@ var WorkspacePanelManager = class {
       }
     });
   }
-  async _fetchTitle(base, prompt) {
+  async _fetchTitle(base, prompt, token = "") {
     try {
       const url = `${base.replace(/\/$/, "")}/api/v1/title/generate`;
       const body = JSON.stringify({ prompt, max_words: 5 });
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body
-      });
+      const headers = { "Content-Type": "application/json" };
+      if (token) {
+        headers["X-AILIENANT-TOKEN"] = token;
+      }
+      const res = await fetch(url, { method: "POST", headers, body });
       if (!res.ok) {
         return void 0;
       }
@@ -5145,9 +5507,18 @@ function makeSessionId() {
   }
   return "ses-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
 }
-function activate(context) {
+async function activate(context) {
   console.log("AILIENANT extension activated.");
+  const port = await findFreePort();
+  const token = generateAuthToken();
+  APIClient.getInstance().configure(`http://127.0.0.1:${port}/api/v1`, token);
+  WSClient.getInstance().configure(`ws://127.0.0.1:${port}/api/v1/ws`, token);
+  const coreManager = new CoreProcessManager(port, token, context.extensionUri.fsPath);
   const workspaceManager = new WorkspacePanelManager(context.extensionUri, context.workspaceState);
+  workspaceManager.setCoreManager(coreManager);
+  if (vscode12.workspace.getConfiguration("ailienant").get("autoStartCore", true)) {
+    void coreManager.start();
+  }
   const onOpenSession = (s) => workspaceManager.openSession(s);
   const onNewSession = async () => {
     const now = (/* @__PURE__ */ new Date()).toISOString();
