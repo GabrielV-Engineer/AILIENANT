@@ -23,9 +23,15 @@ import time
 from typing import Any, Dict, Optional
 
 import docker  # type: ignore[import-untyped]
+import requests  # type: ignore[import-untyped]  # docker-py dependency (requirements.txt:49)
 from fastapi import APIRouter, HTTPException, Request
 
-from core.sandbox import DockerSandboxAdapter, get_active_adapter, get_active_tier
+from core.sandbox import (
+    DockerSandboxAdapter,
+    get_active_adapter,
+    get_active_tier,
+    pull_sandbox_image,
+)
 
 logger = logging.getLogger("AILIENANT_RUNTIME")
 
@@ -35,7 +41,7 @@ router = APIRouter(prefix="/api/v1/runtime", tags=["runtime"])
 
 _SANDBOX_IMAGE_TAG: str = "ailienant-sandbox:latest"
 _CACHE_TTL_S: float = 5.0
-_PING_TIMEOUT_S: float = 1.5
+_PROBE_TIMEOUT_S: float = 2.0  # info() does more work than ping(); needs headroom
 _LAUNCH_COOLDOWN_S: float = 30.0
 
 _MODE_LABELS: Dict[Optional[str], str] = {
@@ -69,6 +75,7 @@ _ALLOWED_ORIGINS: frozenset[str] = frozenset({
 
 _docker_cache: Dict[str, Any] = {}   # {"reachable": bool, "ts": float}
 _last_launch_time: float = 0.0       # S7-C cooldown anchor
+_pull_in_progress: bool = False      # serialises image pulls (no stacking)
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
@@ -81,19 +88,36 @@ def _platform() -> str:
     return "linux"
 
 
-async def _probe_docker() -> bool:
-    """Live Docker daemon ping, result cached for _CACHE_TTL_S seconds."""
+async def _probe_docker(force: bool = False) -> bool:
+    """Deep Docker daemon health check, cached for _CACHE_TTL_S seconds.
+
+    Uses client.info() rather than client.ping(): a degraded WSL2 / engine
+    backend keeps answering ping() at the HTTP API layer even when the engine
+    itself is broken. info() queries real engine state, so a degraded daemon
+    makes it hang (caught by the 2 s timeout) or raise APIError.
+
+    force=True bypasses the cache so a healthy→degraded transition is never
+    trapped behind a stale True (frontend "Force Retry" + post-mutation refresh).
+    """
     global _docker_cache
     now = time.monotonic()
-    cached_ts: float = _docker_cache.get("ts", 0.0)  # type: ignore[assignment]
-    if cached_ts and (now - cached_ts) < _CACHE_TTL_S:
-        return bool(_docker_cache["reachable"])
+    if not force:
+        cached_ts: float = _docker_cache.get("ts", 0.0)  # type: ignore[assignment]
+        if cached_ts and (now - cached_ts) < _CACHE_TTL_S:
+            return bool(_docker_cache["reachable"])
     try:
         client = await asyncio.to_thread(docker.from_env)
-        await asyncio.wait_for(asyncio.to_thread(client.ping), timeout=_PING_TIMEOUT_S)
+        await asyncio.wait_for(asyncio.to_thread(client.info), timeout=_PROBE_TIMEOUT_S)
         _docker_cache = {"reachable": True, "ts": now}
         return True
-    except Exception:  # noqa: BLE001
+    except (docker.errors.APIError, requests.exceptions.ConnectionError, TimeoutError) as exc:
+        # Engine degraded (broken WSL2, daemon mid-shutdown) — treat as DOWN.
+        # asyncio.wait_for raises asyncio.TimeoutError, which IS TimeoutError on 3.11+.
+        logger.warning("[runtime] Docker engine degraded/unreachable: %s", type(exc).__name__)
+        _docker_cache = {"reachable": False, "ts": now}
+        return False
+    except Exception as exc:  # noqa: BLE001 — any other failure → DOWN, never propagate
+        logger.warning("[runtime] Docker probe failed: %s", type(exc).__name__)
         _docker_cache = {"reachable": False, "ts": now}
         return False
 
@@ -128,10 +152,14 @@ def _check_container_running() -> bool:
 # ── endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/status")
-async def get_runtime_status() -> Dict[str, object]:
-    """Live sandbox tier + Docker daemon reachability (5 s cache)."""
+async def get_runtime_status(force: bool = False) -> Dict[str, object]:
+    """Live sandbox tier + Docker daemon reachability (5 s cache).
+
+    force=true (query) bypasses the reachability cache — wired to the frontend
+    "Force Retry" escape hatch so a stuck state can be re-probed on demand.
+    """
     tier = get_active_tier()
-    reachable = await _probe_docker()
+    reachable = await _probe_docker(force=force)
     image = await _check_image_exists(reachable)
     running = _check_container_running()
     return {
@@ -215,3 +243,83 @@ async def start_docker(request: Request) -> Dict[str, object]:
             "platform": platform,
             "message": "Could not launch Docker. Please start it manually.",
         }
+
+
+@router.post("/pull-image")
+async def pull_image(request: Request) -> Dict[str, object]:
+    """Pull the pre-built sandbox image from the public registry (zero-config).
+
+    Blocking SDK call offloaded via asyncio.to_thread (pull can take minutes).
+    Structured errors let the client distinguish no-connection / not-found /
+    disk-full. Generic surface: no raw OS/registry strings echoed to the client.
+    """
+    global _pull_in_progress
+
+    # S7-D — same application-layer CSRF guard as start-docker.
+    origin = request.headers.get("origin", "")
+    if origin and not (
+        origin.startswith("vscode-webview://") or origin in _ALLOWED_ORIGINS
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if _pull_in_progress:
+        return {
+            "pulled": False,
+            "error": "in_progress",
+            "message": "A download is already in progress. Please wait.",
+        }
+
+    if not await _probe_docker():
+        return {
+            "pulled": False,
+            "error": "docker_down",
+            "message": "Docker daemon is not reachable. Start Docker first.",
+        }
+
+    _pull_in_progress = True
+    try:
+        await pull_sandbox_image()
+        logger.info("[runtime] sandbox image pulled and tagged %s", _SANDBOX_IMAGE_TAG)
+        return {
+            "pulled": True,
+            "image": _SANDBOX_IMAGE_TAG,
+            "message": "Sandbox image downloaded successfully.",
+        }
+    except docker.errors.NotFound:
+        logger.warning("[runtime] pull-image: image not found on registry.")
+        return {
+            "pulled": False,
+            "error": "image_not_found",
+            "message": "Sandbox image was not found on the registry.",
+        }
+    except requests.exceptions.ConnectionError:
+        logger.warning("[runtime] pull-image: no connection to registry.")
+        return {
+            "pulled": False,
+            "error": "no_connection",
+            "message": "No internet connection to the image registry.",
+        }
+    except docker.errors.APIError as exc:
+        detail = str(exc).lower()
+        if "no space" in detail or "disk" in detail:
+            logger.error("[runtime] pull-image: disk full.")
+            return {
+                "pulled": False,
+                "error": "disk_full",
+                "message": "Not enough disk space to download the image.",
+            }
+        logger.exception("[runtime] pull-image: registry/API error.")
+        return {
+            "pulled": False,
+            "error": "registry_error",
+            "message": "Registry error while downloading the image.",
+        }
+    except Exception:  # noqa: BLE001
+        logger.exception("[runtime] pull-image: unexpected failure.")
+        return {
+            "pulled": False,
+            "error": "unknown",
+            "message": "Could not download the sandbox image. See the manual fallback.",
+        }
+    finally:
+        _pull_in_progress = False

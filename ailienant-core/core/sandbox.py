@@ -54,6 +54,8 @@ logger = logging.getLogger("AILIENANT_SANDBOX")
 
 _SANDBOX_IMAGE_TAG: str = "ailienant-sandbox:latest"
 _SANDBOX_CONTAINER_NAME: str = "ailienant-sandbox-daemon"
+_SANDBOX_REMOTE_REPO: str = "ailienant/sandbox"   # placeholder public registry repo
+_SANDBOX_REMOTE_TAG: str = "latest"
 _CONTAINER_WORKDIR: str = "/workspace"
 _CONTAINER_TMPFS_PATH: str = "/work"
 _DEFAULT_BUILD_TIMEOUT_S: int = 600
@@ -801,3 +803,27 @@ def get_active_adapter() -> Optional[SandboxAdapter]:
     ``None``.
     """
     return ACTIVE_ADAPTER
+
+
+# ── Zero-config image pull (Phase 7.9.B.8) ───────────────────────────────────
+
+
+async def pull_sandbox_image() -> None:
+    """Pull the pre-built sandbox image from the public registry and retag it
+    to the local adapter tag so :class:`DockerSandboxAdapter` finds it without
+    a build.
+
+    Blocking SDK calls are offloaded to a worker thread. Propagates
+    ``docker.errors.*`` / connection errors to the caller for structured
+    handling (the ``api.runtime`` endpoint maps them to client error codes).
+    """
+    client = await asyncio.to_thread(docker.from_env)
+    await asyncio.to_thread(_pull_and_tag_sync, client)
+
+
+def _pull_and_tag_sync(client: Any) -> None:
+    """Blocking pull + local retag (always called via asyncio.to_thread)."""
+    image = client.images.pull(_SANDBOX_REMOTE_REPO, tag=_SANDBOX_REMOTE_TAG)
+    # Retag to the local tag the adapter's _image_exists() / run() expect.
+    repo, _, tag = _SANDBOX_IMAGE_TAG.partition(":")
+    image.tag(repo, tag=tag or "latest")
