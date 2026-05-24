@@ -4,13 +4,29 @@ import {
     type BYOMConfigPayload,
     type DiscoveredModel,
     type EndpointConfig,
+    type EngineStatus,
     type ModelPreset,
     type Provider,
     type TestConnectionResponse,
     fetchBYOMConfig,
+    fetchEngineStatus,
     saveBYOMConfig,
     testEndpoint,
 } from './byom/api';
+
+// ---------------------------------------------------------------------------
+// Provider defaults — auto-fill Base URL and guidance per provider
+// ---------------------------------------------------------------------------
+
+const PROVIDER_DEFAULTS: Record<Provider, { url: string; needsKey: boolean; keyHint: string; description: string }> = {
+    ollama:     { url: 'http://localhost:11434',    needsKey: false, keyHint: '',          description: 'Local AI runtime — no key needed' },
+    lmstudio:   { url: 'http://localhost:1234',     needsKey: false, keyHint: '',          description: 'LM Studio local server — no key needed' },
+    vllm:       { url: 'http://localhost:8000',     needsKey: false, keyHint: '',          description: 'vLLM OpenAI-compatible server' },
+    openai:     { url: 'https://api.openai.com',    needsKey: true,  keyHint: 'sk-…',     description: 'OpenAI official API' },
+    openrouter: { url: 'https://openrouter.ai/api', needsKey: true,  keyHint: 'sk-or-…',  description: 'Multi-provider routing' },
+    anthropic:  { url: 'https://api.anthropic.com', needsKey: true,  keyHint: 'sk-ant-…', description: 'Anthropic Claude API' },
+    custom:     { url: '',                          needsKey: false, keyHint: '',          description: 'Any OpenAI-compatible API (/v1/models + /v1/chat/completions). Works with LocalAI, kobold.cpp, TabbyAPI.' },
+};
 
 // ---------------------------------------------------------------------------
 // Local state extensions (not persisted — ephemeral UI state only)
@@ -23,11 +39,20 @@ interface EndpointUi extends EndpointConfig {
     discoveredModels: DiscoveredModel[];
     showModels: boolean;
     showKey: boolean;
+    urlAutoFilled: boolean;
 }
 
 interface NewPresetForm {
     name: string;
     tiers: Record<string, string>;
+}
+
+interface ConfirmState {
+    open: boolean;
+    title: string;
+    body: string;
+    warning?: string;
+    onConfirm: () => void;
 }
 
 const TIER_LABELS: Record<string, string> = {
@@ -41,7 +66,7 @@ let _nextId = 1;
 function makeId(): string { return `ep-${Date.now()}-${_nextId++}`; }
 
 function toUi(ep: EndpointConfig): EndpointUi {
-    return { ...ep, status: 'unknown', testError: null, fieldErrors: {}, discoveredModels: [], showModels: false, showKey: false };
+    return { ...ep, status: 'unknown', testError: null, fieldErrors: {}, discoveredModels: [], showModels: false, showKey: false, urlAutoFilled: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -59,10 +84,17 @@ export function BYOMPanel(): JSX.Element {
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
 
+    const [engines, setEngines] = useState<EngineStatus[]>([]);
+    const [enginesLoading, setEnginesLoading] = useState(true);
+
     const [newPreset, setNewPreset] = useState<NewPresetForm | null>(null);
     const [activating, setActivating] = useState<string | null>(null);
     const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
     const [editForm, setEditForm] = useState<NewPresetForm | null>(null);
+    const [showDiscovered, setShowDiscovered] = useState(false);
+
+    const [confirm, setConfirm] = useState<ConfirmState>({ open: false, title: '', body: '', onConfirm: () => {} });
+    const closeConfirm = () => setConfirm(s => ({ ...s, open: false }));
 
     const endpointsRef = useRef(endpoints);
     endpointsRef.current = endpoints;
@@ -79,12 +111,27 @@ export function BYOMPanel(): JSX.Element {
             })
             .catch(err => setLoadError(String(err)))
             .finally(() => setLoading(false));
+
+        fetchEngineStatus()
+            .then(setEngines)
+            .catch(() => setEngines([]))
+            .finally(() => setEnginesLoading(false));
     }, []);
 
     // ---- Endpoint helpers ----
     const updateEndpoint = useCallback((id: string, patch: Partial<EndpointUi>): void => {
         setEndpoints(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e));
     }, []);
+
+    const handleProviderChange = useCallback((ep: EndpointUi, provider: Provider): void => {
+        const def = PROVIDER_DEFAULTS[provider];
+        const shouldFill = !ep.url || ep.urlAutoFilled;
+        updateEndpoint(ep.id, {
+            provider,
+            url: shouldFill ? def.url : ep.url,
+            urlAutoFilled: shouldFill,
+        });
+    }, [updateEndpoint]);
 
     const handleTest = useCallback(async (ep: EndpointUi): Promise<void> => {
         const errs: EndpointUi['fieldErrors'] = {};
@@ -188,6 +235,13 @@ export function BYOMPanel(): JSX.Element {
             ? 'URL should start with http:// or https://'
             : null;
 
+    // ---- Group discovered models by provider prefix ----
+    const modelsByGroup = discovered.reduce<Record<string, DiscoveredModel[]>>((acc, m) => {
+        const group = m.id.includes('/') ? m.id.split('/')[0] : 'other';
+        (acc[group] = acc[group] ?? []).push(m);
+        return acc;
+    }, {});
+
     // ====================================================================
     // Render
     // ====================================================================
@@ -210,6 +264,35 @@ export function BYOMPanel(): JSX.Element {
 
     return (
         <div>
+            {/* ===== ENGINE HEALTH BAR ===== */}
+            {!enginesLoading && engines.length > 0 && (
+                <div className="byom-engine-bar">
+                    <span className="byom-engine-bar-label">Local Engines</span>
+                    {engines.map(eng => (
+                        <div key={eng.id} className={`byom-engine-chip${eng.running ? ' byom-engine-chip--running' : ''}`}>
+                            <span className={`byom-engine-dot${eng.running ? ' byom-engine-dot--on' : ''}`} />
+                            <span className="byom-engine-name">{eng.name}</span>
+                            {eng.running
+                                ? <span className="byom-engine-count">{eng.model_count} model{eng.model_count !== 1 ? 's' : ''}</span>
+                                : <span className="byom-engine-offline">Not running</span>
+                            }
+                            {eng.running && (
+                                <button className="db-btn db-btn-secondary byom-engine-add"
+                                    onClick={() => setEndpoints(prev => [...prev, toUi({
+                                        id: makeId(),
+                                        name: eng.name,
+                                        url: eng.url,
+                                        api_key: '',
+                                        provider: eng.id as Provider,
+                                    })])}>
+                                    + Add
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+
             {/* ===== ENDPOINTS SECTION ===== */}
             <div className="db-row" style={{ marginBottom: 12, alignItems: 'center' }}>
                 <span className="db-section-title" style={{ marginBottom: 0 }}>Endpoints</span>
@@ -221,13 +304,14 @@ export function BYOMPanel(): JSX.Element {
 
             {endpoints.length === 0 && (
                 <div className="db-card" style={{ color: 'var(--vscode-descriptionForeground)', textAlign: 'center' }}>
-                    No endpoints configured. Add one to get started.
+                    No endpoints configured. Add one above or click <strong>+ Add</strong> next to a running local engine.
                 </div>
             )}
 
             {endpoints.map(ep => {
                 const warn = urlWarning(ep.url);
                 const dotColor = ep.status === 'ok' ? '#63a583' : ep.status === 'error' ? '#F85149' : ep.status === 'testing' ? '#E3B341' : '#484F58';
+                const def = PROVIDER_DEFAULTS[ep.provider];
                 return (
                     <div key={ep.id} className="db-card" style={{ marginBottom: 12 }}>
                         {/* Name row */}
@@ -248,7 +332,12 @@ export function BYOMPanel(): JSX.Element {
                                 title={ep.status}
                             />
                             <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
-                                onClick={() => setEndpoints(prev => prev.filter(e => e.id !== ep.id))}>
+                                onClick={() => setConfirm({
+                                    open: true,
+                                    title: 'Remove endpoint?',
+                                    body: `"${ep.name || 'This endpoint'}" will be removed. Click Save Endpoints to persist.`,
+                                    onConfirm: () => { setEndpoints(prev => prev.filter(e => e.id !== ep.id)); closeConfirm(); },
+                                })}>
                                 Remove
                             </button>
                         </div>
@@ -258,22 +347,24 @@ export function BYOMPanel(): JSX.Element {
                             <div>
                                 <label className="db-label">Provider</label>
                                 <select className="db-input" value={ep.provider}
-                                    onChange={e => updateEndpoint(ep.id, { provider: e.target.value as Provider })}>
+                                    onChange={e => handleProviderChange(ep, e.target.value as Provider)}>
                                     <option value="ollama">Ollama</option>
+                                    <option value="lmstudio">LM Studio</option>
                                     <option value="vllm">vLLM</option>
                                     <option value="openai">OpenAI</option>
                                     <option value="openrouter">OpenRouter</option>
                                     <option value="anthropic">Anthropic</option>
                                     <option value="custom">Custom</option>
                                 </select>
+                                <div className="byom-provider-hint">{def.description}</div>
                             </div>
                             <div>
                                 <label className="db-label">Base URL</label>
                                 <input
                                     className={`db-input${ep.fieldErrors.url ? ' byom-input-error' : ''}`}
                                     value={ep.url}
-                                    onChange={e => updateEndpoint(ep.id, { url: e.target.value, fieldErrors: { ...ep.fieldErrors, url: undefined } })}
-                                    placeholder="http://localhost:11434"
+                                    onChange={e => updateEndpoint(ep.id, { url: e.target.value, urlAutoFilled: false, fieldErrors: { ...ep.fieldErrors, url: undefined } })}
+                                    placeholder={def.url || 'https://…'}
                                 />
                                 {ep.fieldErrors.url && <div className="byom-field-error">{ep.fieldErrors.url}</div>}
                                 {!ep.fieldErrors.url && warn && <div className="byom-field-warn">{warn}</div>}
@@ -282,14 +373,17 @@ export function BYOMPanel(): JSX.Element {
 
                         {/* API Key */}
                         <div style={{ marginBottom: 10 }}>
-                            <label className="db-label">API Key</label>
+                            <label className="db-label">
+                                API Key
+                                {!def.needsKey && <span className="byom-api-key-hint"> — not required for local engines</span>}
+                            </label>
                             <div className="db-row">
                                 <input
                                     className="db-input"
                                     type={ep.showKey ? 'text' : 'password'}
                                     value={ep.api_key}
                                     onChange={e => updateEndpoint(ep.id, { api_key: e.target.value })}
-                                    placeholder="sk-… or leave empty for local"
+                                    placeholder={def.keyHint || (def.needsKey ? 'sk-…' : 'Leave empty for local')}
                                     style={{ flex: 1 }}
                                 />
                                 <button
@@ -333,12 +427,33 @@ export function BYOMPanel(): JSX.Element {
                 );
             })}
 
-            <div className="db-row" style={{ marginBottom: 28 }}>
+            <div className="db-row" style={{ marginBottom: 20 }}>
                 <button className="db-btn db-btn-primary" onClick={handleSave} disabled={saving}>
                     {saving ? 'Saving…' : 'Save Endpoints'}
                 </button>
                 {saveError && <span className="byom-field-error">{saveError}</span>}
             </div>
+
+            {/* ===== DETECTED MODELS (collapsible) ===== */}
+            {discovered.length > 0 && (
+                <div className="db-card byom-discovered-section" style={{ marginBottom: 20 }}>
+                    <button className="byom-discovered-toggle"
+                        onClick={() => setShowDiscovered(v => !v)}>
+                        {showDiscovered ? '▾' : '▸'} Detected Models ({discovered.length} total)
+                    </button>
+                    {showDiscovered && Object.entries(modelsByGroup).map(([group, models]) => (
+                        <div key={group} className="byom-discovered-group">
+                            <div className="byom-discovered-group-label">{group}</div>
+                            {models.map(m => (
+                                <div key={m.id} className="byom-discovered-model-row">
+                                    <span className="byom-discovered-model-name">{m.name}</span>
+                                    <span className="byom-discovered-model-id">{m.id}</span>
+                                </div>
+                            ))}
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {/* ===== MODEL PRESETS SECTION ===== */}
             <div className="db-row" style={{ marginBottom: 12, alignItems: 'center' }}>
@@ -411,7 +526,18 @@ export function BYOMPanel(): JSX.Element {
                                         ) : (
                                             <button className="db-btn db-btn-primary" style={{ fontSize: 11, padding: '4px 10px' }}
                                                 disabled={isBusy}
-                                                onClick={() => handleActivatePreset(preset.id)}>
+                                                onClick={() => {
+                                                    if (activePresetId && activePresetId !== preset.id) {
+                                                        setConfirm({
+                                                            open: true,
+                                                            title: 'Switch active preset?',
+                                                            body: `This will rewrite config.yaml and reload LiteLLM to use "${preset.name}".`,
+                                                            onConfirm: () => { void handleActivatePreset(preset.id); closeConfirm(); },
+                                                        });
+                                                    } else {
+                                                        void handleActivatePreset(preset.id);
+                                                    }
+                                                }}>
                                                 {isBusy ? 'Applying…' : 'Activate'}
                                             </button>
                                         )}
@@ -421,7 +547,13 @@ export function BYOMPanel(): JSX.Element {
                                         </button>
                                         {!preset.is_builtin && (
                                             <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
-                                                onClick={() => handleDeletePreset(preset.id)}>
+                                                onClick={() => setConfirm({
+                                                    open: true,
+                                                    title: 'Delete preset?',
+                                                    body: `"${preset.name}" will be permanently deleted.`,
+                                                    warning: preset.id === activePresetId ? 'This is your currently active preset.' : undefined,
+                                                    onConfirm: () => { void handleDeletePreset(preset.id); closeConfirm(); },
+                                                })}>
                                                 Delete
                                             </button>
                                         )}
@@ -464,6 +596,21 @@ export function BYOMPanel(): JSX.Element {
                             Create
                         </button>
                         <button className="db-btn db-btn-secondary" onClick={() => setNewPreset(null)}>Cancel</button>
+                    </div>
+                </div>
+            )}
+
+            {/* ===== CONFIRMATION MODAL ===== */}
+            {confirm.open && (
+                <div className="byom-confirm-overlay" onClick={closeConfirm}>
+                    <div className="byom-confirm-modal" onClick={e => e.stopPropagation()}>
+                        <div className="byom-confirm-title">{confirm.title}</div>
+                        <div className="byom-confirm-body">{confirm.body}</div>
+                        {confirm.warning && <div className="byom-confirm-warning">{confirm.warning}</div>}
+                        <div className="db-row" style={{ gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+                            <button className="db-btn db-btn-secondary" onClick={closeConfirm}>Cancel</button>
+                            <button className="db-btn db-btn-danger" onClick={confirm.onConfirm}>Confirm</button>
+                        </div>
                     </div>
                 </div>
             )}

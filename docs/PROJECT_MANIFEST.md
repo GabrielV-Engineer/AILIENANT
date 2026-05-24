@@ -922,15 +922,16 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       responda. El botón manual "Start Core" queda como fallback. Universalidad
       (runtime Python empaquetado) → ver follow-up 7.9.A.5.1.
 
-  - [ ] **7.9.A.5.1 — Universal Core activation (bundled runtime) [follow-up]**
+  - [x] **7.9.A.5.1 — Universal Core activation (bundled runtime) [follow-up]**
     - **Problem:** El auto-start actual sirve al layout monorepo/dev (terminal VS Code +
       `findBackendPath` + puerto fijo 8000). Para usuarios finales que instalan la
       extensión con el backend empaquetado esto no es suficiente.
-    - **Scope (diseño pendiente):** empaquetar/detectar un runtime de Python; gestionar el
-      Core como `child_process` administrado (start/stop/restart ligado a activate/deactivate
-      de la extensión) en vez de una terminal de usuario; selección dinámica de puerto +
-      descubrimiento por health; y resolver el prompt de "default terminal profile" que VS
-      Code pide al usar `sendText`. Ver nota de diseño en `DEV_JOURNAL.md` (Hito 7.9.A.5).
+    - **Resolution:** Replaced terminal spawn with `child_process.spawn()` managed by
+      `CoreProcessManager`; dynamic port via OS `listen(0)`; 256-bit ephemeral auth token
+      validated on every HTTP request (`secrets.compare_digest`) and WS first-message;
+      CORS hardened (explicit origins + `vscode-webview://` regex); WS close-4001 no-retry;
+      auto-recovery up to 3 retries with 2 s backoff; output channel replaces terminal.
+      Python bundling deferred → Phase 7.9.A.5.2.
 
   - [x] **7.9.A.6 — New session tab branding (logo missing)**
     - **Problem:** Al abrir una nueva sesion el tab muestra solo el texto
@@ -1201,6 +1202,38 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
         actualizada al formato de salida actual (`exit=124`). Resultado: 38/38
         tests pasan sin lifespan de FastAPI.
     - **Tests:** 38/38 en `test_execution_tools.py` + `test_runtime_status.py`.
+
+  - [x] **7.9.B.10 — BYOM UX & Architecture Overhaul**
+    - **Problem:** El panel BYOM requería conocimiento experto previo: el usuario
+      debía saber la base URL de cada provider, no había indicadores de si los
+      daemons locales (Ollama, LM Studio) estaban activos, y las acciones
+      destructivas (borrar preset, eliminar endpoint) se ejecutaban sin ningún
+      diálogo de confirmación.
+    - **Resolution:**
+      - **Backend `GET /api/v1/byom/engines`:** nuevo endpoint que sondea Ollama
+        y LM Studio en paralelo (`asyncio.gather`) y retorna salud + conteo de
+        modelos. `_probe_lmstudio()` agregado a `config_generator.py`; constante
+        `LM_STUDIO_API_BASE` configurable via env var.
+      - **`lmstudio` provider:** añadido al `Literal` de `EndpointConfig.provider`
+        en `byom_config.py` y al tipo `Provider` en `api.ts`; usa la rama
+        OpenAI-compatible de `POST /test` sin cambios adicionales.
+      - **Engine Health Bar (frontend):** barra compacta sobre la sección
+        Endpoints que muestra cada engine con dot verde/gris, conteo de modelos
+        y botón `+ Add` que pre-rellena el formulario con URL y provider correctos.
+      - **`PROVIDER_DEFAULTS` + auto-fill URL:** al cambiar el provider en el
+        selector, la Base URL se auto-completa si el campo estaba vacío o
+        fue auto-rellenado previamente. Hint de descripción visible bajo el
+        selector (documenta "Custom" de forma explícita).
+      - **Confirmation modal:** overlay de confirmación en inglés para Remove
+        endpoint, Delete preset y Activate preset (cuando ya hay uno activo).
+        El modal muestra aviso adicional si el preset a borrar es el activo.
+      - **API Key hint:** etiqueta "— not required for local engines" para
+        Ollama, LM Studio y vLLM; placeholder dinámico por provider.
+      - **Detected Models section:** sección colapsable que agrupa los modelos
+        descubiertos por prefijo de provider (antes solo un `<datalist>` oculto).
+      - **CSS:** clases nuevas para modal, engine bar, provider hints y sección
+        de modelos detectados; `.db-btn-danger` rojo para acciones destructivas.
+    - **Tests:** 565/565 · `npm run compile` → 0 errors.
 
 ---
 

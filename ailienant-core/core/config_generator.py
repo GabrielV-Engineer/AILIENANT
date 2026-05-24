@@ -21,6 +21,7 @@ logger = logging.getLogger("ConfigGenerator")
 # ---------------------------------------------------------------------------
 
 OLLAMA_API_BASE: str = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+LM_STUDIO_API_BASE: str = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234")
 CONFIG_YAML_PATH: str = os.getenv("LITELLM_CONFIG_PATH", "config.yaml")
 _PROBE_TIMEOUT: float = 2.0  # seconds — fast enough not to block startup
 
@@ -75,6 +76,17 @@ async def _probe_ollama() -> Optional[List[str]]:
             resp = await client.get(f"{OLLAMA_API_BASE}/api/tags")
             resp.raise_for_status()
             return [m["name"] for m in resp.json().get("models", [])]
+    except Exception:
+        return None
+
+
+async def _probe_lmstudio() -> Optional[List[str]]:
+    """GET /v1/models from LM Studio (OpenAI-compatible). Returns model IDs or None."""
+    try:
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as client:
+            resp = await client.get(f"{LM_STUDIO_API_BASE}/v1/models")
+            resp.raise_for_status()
+            return [m["id"] for m in resp.json().get("data", []) if m.get("id")]
     except Exception:
         return None
 

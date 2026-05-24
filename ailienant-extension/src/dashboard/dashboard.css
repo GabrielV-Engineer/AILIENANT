@@ -579,3 +579,182 @@ html, body, #root { height: 100%; }
   flex: 1 1 280px;
   max-width: 360px;
 }
+
+/* ---- Confirmation modal ---- */
+.byom-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.byom-confirm-modal {
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  padding: 20px 24px;
+  min-width: 320px;
+  max-width: 480px;
+}
+
+.byom-confirm-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.byom-confirm-body {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+
+.byom-confirm-warning {
+  font-size: 11px;
+  color: #E3B341;
+  margin-top: 6px;
+}
+
+.db-btn-danger {
+  background: #c0392b;
+  color: #fff;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.db-btn-danger:hover {
+  background: #e74c3c;
+}
+
+/* ---- Engine health bar ---- */
+.byom-engine-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: var(--vscode-sideBar-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+}
+
+.byom-engine-bar-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vscode-descriptionForeground);
+  margin-right: 4px;
+}
+
+.byom-engine-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.byom-engine-chip--running {
+  border-color: #63a583;
+}
+
+.byom-engine-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #484F58;
+  flex-shrink: 0;
+}
+
+.byom-engine-dot--on {
+  background: #63a583;
+}
+
+.byom-engine-name {
+  font-weight: 600;
+}
+
+.byom-engine-count,
+.byom-engine-offline {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.byom-engine-add {
+  font-size: 10px !important;
+  padding: 2px 6px !important;
+}
+
+/* ---- Provider description hint ---- */
+.byom-provider-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.4;
+}
+
+.byom-api-key-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ---- Discovered models grouped section ---- */
+.byom-discovered-section {
+  padding: 10px 14px;
+}
+
+.byom-discovered-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+  width: 100%;
+  text-align: left;
+}
+
+.byom-discovered-group {
+  margin-top: 10px;
+}
+
+.byom-discovered-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+
+.byom-discovered-model-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-size: 12px;
+}
+
+.byom-discovered-model-name {
+  font-weight: 500;
+}
+
+.byom-discovered-model-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}

@@ -40,7 +40,7 @@ class EndpointConfig(BaseModel):
     name: str
     url: str
     api_key: str = ""
-    provider: Literal["ollama", "vllm", "openai", "openrouter", "anthropic", "custom"]
+    provider: Literal["ollama", "lmstudio", "vllm", "openai", "openrouter", "anthropic", "custom"]
 
 
 class ModelPreset(BaseModel):
