@@ -11,12 +11,18 @@ Four tests cover:
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from brain.state import MissionSpecification, WBSStep
+
+
+def _fake_llm_response(content: str) -> Any:
+    """Minimal stand-in for a litellm ModelResponse (resp.choices[0].message.content)."""
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,11 +72,25 @@ def _make_state(mission: MissionSpecification, step_id: int = 1, **overrides: An
 
 
 @pytest.fixture(autouse=True)
-def _mock_websocket_emit() -> Any:
-    """Suppress the real WebSocket broadcast in run_coder_node — tests run without uvicorn."""
+def _mock_coder_io() -> Any:
+    """Isolate run_coder_node from I/O: WS broadcast, RAG, VFS read, and the LLM.
+
+    Defaults: LLM returns an empty edit set, the file reads as simple Python, RAG is
+    empty. Individual tests can nest their own patches to override these.
+    """
+    from core.vfs_middleware import VFSReadResult
     with patch(
         "api.websocket_manager.vfs_manager.emit_graph_mutation",
         new=AsyncMock(return_value=None),
+    ), patch(
+        "core.memory.semantic_memory.SemanticMemoryManager.search_snippets",
+        new=AsyncMock(return_value=[]),
+    ), patch(
+        "core.vfs_middleware.VFSMiddleware.read_safe",
+        return_value=VFSReadResult(content="def foo():\n    return 1\n"),
+    ), patch(
+        "tools.llm_gateway.LLMGateway.ainvoke",
+        new=AsyncMock(return_value=_fake_llm_response('{"edits": []}')),
     ):
         yield
 
@@ -136,6 +156,7 @@ async def test_coder_agent_ephemeral_system_prompt_does_not_leak_to_messages_or_
     # Every returned key must be a declared field on AIlienantGraphState.
     allowed_state_keys = {
         "vfs_buffer",
+        "pending_patches",   # Phase 7.9.B.16 — coder now proposes diffs
         "target_role",
         "current_step_id",
         "current_cost_usd",
@@ -172,3 +193,34 @@ async def test_coder_agent_legacy_role_migrates_to_new_via_validator() -> None:
     result = await run_coder_node(state)
 
     assert result["target_role"] == "qa_tester"
+
+
+# ── Test E — a valid AtomicPatch edit produces a unified diff (Phase 7.9.B.16) ─
+
+
+@pytest.mark.anyio
+async def test_coder_produces_unified_diff_for_valid_edit() -> None:
+    from core.vfs_middleware import VFSReadResult
+    from agents.coder import run_coder_node
+
+    content = "def calculate(x):\n    return x + 1\n"
+    edit_json = (
+        '{"edits": [{"file_path": "calc.py", '
+        '"search_block": "    return x + 1", "replace_block": "    return x + 2"}]}'
+    )
+    step = _make_step(action="edit_file", target_file="calc.py", description="Bump increment.")
+    state = _make_state(_make_mission([step]))
+
+    with patch(
+        "core.vfs_middleware.VFSMiddleware.read_safe",
+        return_value=VFSReadResult(content=content),
+    ), patch(
+        "tools.llm_gateway.LLMGateway.ainvoke",
+        new=AsyncMock(return_value=_fake_llm_response(edit_json)),
+    ):
+        result = await run_coder_node(state)
+
+    assert "pending_patches" in result
+    assert "calc.py" in result["pending_patches"], result
+    diff = result["pending_patches"]["calc.py"]
+    assert "return x + 2" in diff and "return x + 1" in diff

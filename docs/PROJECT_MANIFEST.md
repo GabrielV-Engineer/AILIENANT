@@ -1359,6 +1359,32 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       the direct conversational chat path only.
     - **Tests:** 565/565 · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.16 — Un-stubbing the Agents: Real Planner + Coder (Propose & Review MVP)**
+    - **Problem:** the LangGraph agents were paralysed — the planner ran in `DEBUG_MODE`
+      (synthetic spec) and the coder was a full stub with no LLM path; every agent LLM
+      call routed through the dead LiteLLM proxy; nothing produced real code.
+    - **Resolution (MVP = propose + review, no auto disk-write):**
+      - **BYOM-aware `LLMGateway.ainvoke`:** `ailienant/{tier}` aliases now resolve to
+        the active preset model and call litellm directly (no proxy), preserving
+        `response_format` + token accounting; proxy fallback retained. One chokepoint
+        un-stubs the planner, its mini-judge, and the coder.
+      - **Planner:** `DEBUG_MODE` default flipped OFF — the real SDD path runs and
+        validates a `MissionSpecification`.
+      - **Coder (new real impl):** structured single-shot — GraphRAG-aware prompt →
+        JSON `AtomicPatch` edits → `AtomicPatchInput` validation → applied to an
+        in-memory copy via the existing `apply_patch_to_vfs` (exact→fuzzy→AST) →
+        per-file unified diffs in `pending_patches`. No disk/RAM-VFS write.
+      - **Intent routing (`task_service`):** edit/coding prompts run `run_planner_node`
+        + `run_coder_node` directly (deterministic, all-steps-in-one-turn, bounded by
+        `_MAX_CODER_STEPS`) and stream a plan summary + ```diff blocks; questions keep
+        the 7.9.B.15 direct chat (memory + RAG). Diffs also emitted via
+        `emit_vfs_patch_approved` for the dashboard staging area.
+    - **Deferred:** persisting approved patches to disk (HITL-gated WorkspaceEdit) and
+      re-integrating the full graph's guardrail middle nodes (drift/contract/finops/
+      supervisor/validate) + RELAY/SWARM execution into the chat path.
+    - **Tests:** 566/566 (updated coder/planner-DEBUG tests + new diff test) ·
+      `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
