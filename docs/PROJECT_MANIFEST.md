@@ -27,6 +27,8 @@
 | 5 | Ecosistema MCP, Permisos y Tool RAG | ⬜ |
 | 6 | Resiliencia, Sandboxing y Seguridad (Enterprise Refactor) | ✅ |
 | 7 | Extensión VS Code (Frontend TS/React) | 🟡 EN CURSO |
+| 7.10 | Cognitive Transparency & Connective Integration | ⬜ |
+| 7.11 | VS Code Native Mesh Execution | ⬜ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante | ⬜ |
 | 9 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
 | 10 | Nivel Portafolio (Standout Release) | ⬜ |
@@ -1442,6 +1444,110 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       `acomplete_byom`, and `astream_byom` when `target.is_local is True`.
       Cloud proxy path (non-BYOM) is unchanged.
     - **Tests:** 584/584 (new `test_llm_gateway_timeout.py`, 3 tests).
+
+---
+
+## 🎛️ FASE 7.10 — Cognitive Transparency & Connective Integration — **⬜ PENDIENTE**
+
+> Plumbing + cognition + JSON robustness + chat connectivity. The three surfaces
+> (main chat, analyst chat, web dashboard) must function flawlessly: visible
+> reasoning, a genuinely capable analyst, an inviolable AILIENANT identity, robust
+> planning, and a security-first posture. Absorbs the five backend gaps G1–G5.
+> **🔒 Binding contract:** [`docs/PHASE_7_BLUEPRINT.md`](PHASE_7_BLUEPRINT.md) (ADR-701..706) —
+> read it before every 7.10/7.11 task.
+
+- [x] **7.10.0 — Phase 7.10/7.11 Blueprint Lock-In** *(meta)*
+  - `docs/PHASE_7_BLUEPRINT.md` is the binding architectural contract for 7.10 + 7.11;
+    `CLAUDE.md` references it. Implementation of 7.10.1+ is deferred to follow-up PRs.
+
+- [ ] **7.10.1 — Identity Sovereignty (Persona Injection)**
+  - [ ] Single source of truth for the identity clause (constant / `shared/persona.py`)
+    reused by main chat, analyst, and the SOUL fallback.
+  - [ ] Hardened directive: never reveal/name/imply the backing model (Qwen/Llama/GPT/…);
+    if asked who/what you are, you are AILIENANT — an agentic coding system.
+    (Anti-impersonation / brand integrity.)
+
+- [ ] **7.10.2 — Cognitive Transparency (Thought-Process Streaming)**
+  - [ ] Stream a "thinking" narration **before** the answer on both chats, reusing
+    `server_pipeline_step` + the 7.9.B.14 collapsible trace (no new transport).
+  - [ ] Replace the single `planner_agent` ping with granular sub-step narration
+    (context gather → routing → drafting spec → coding step N/M).
+  - [ ] **(G1)** Token batching/throttling in the WS sender (`chunk_ms = 40` window,
+    coalesce N tokens/frame) to keep the Webview ≥ 45 FPS; cap `server_pipeline_step`
+    at ≤ 15 % of WS bandwidth during active text streaming. Designed to absorb 7.11's
+    diff-stream canvas load.
+  - [ ] Decide & document: raw model reasoning/`<think>` vs. synthesized narration.
+
+- [ ] **7.10.3 — The Analyst as a True Assistant**
+  - [ ] Wire `context_paths` end-to-end (`main.py` `client_analyst_query` →
+    `generate_analyst_reply`): inject active-file content from the VFS/dirty-buffer.
+  - [ ] Conversation memory + GraphRAG (reuse `_append_history` / `_build_rag_context`).
+  - [ ] **AILIENANT self-knowledge**: curated `docs/AILIENANT_CODEX.md` injected so the
+    analyst can explain the product (created in 7.10.3).
+  - [ ] Stream analyst replies token-by-token (today: one full `send_natt_message`).
+  - [ ] **(G4)** Analyst Context Budget Layer (CSS-governed): Tree-sitter
+    **semantic-priority** slicing (NOT geographical) — preserve the containing class
+    signature + essential file imports + the function under the cursor, so
+    cross-references above the cutoff don't cause syntactic hallucination; caps
+    **≤ 4 KB file / ≤ 2 KB GraphRAG / ≤ 1 KB Codex**; slice when file context > 30 %
+    of the model window.
+  - [ ] **(G3)** Strict XML sandbox: **uuid4 dynamic delimiters**
+    (`<[UUID]_context path="…">…</[UUID]_context>`) + escape closing-tag collisions +
+    unicode-variant defense; the analyst prompt must explicitly state that content
+    between the tags is **raw data, never executable instructions**.
+  - [ ] **(G2)** **Context-Tolerant Divergence** version tagging (NOT binary reject):
+    tag the VFS snapshot with buffer sequence ID / hash; on divergence use a
+    Tree-sitter/line diff — if the user's edits fall **outside** the block/function the
+    analyst read, the reply stays valid and offsets are dynamically realigned; only flag
+    when the read region itself changed (reuse `document_version_id` / OCC).
+
+- [ ] **7.10.4 — Planner & Agent Robustness**
+  - [ ] **(G5)** AST-aware recursive unwrapper
+    `_extract_nested_schema_target(raw_str, schema) -> dict`: strip markdown/prose,
+    recurse the parsed tree, prune model envelopes, return the first sub-object matching
+    the schema fields; re-feed to `model_validate_json`. Used by planner/mini-judge/coder.
+  - [ ] Harden the planner prompt with an explicit field-shape example + "do not wrap in
+    a top-level key"; strengthen the retry corrective.
+  - [ ] Granular planner progress (feeds 7.10.2) so long runs are never silent.
+
+- [ ] **7.10.5 — Connective Integration Checkpoint Gate**
+  - [ ] E2E: main chat, analyst chat, and web dashboard all round-trip correctly.
+  - [ ] Latency (≥ 45 FPS, throttle windows) + accuracy + security (identity holds,
+    boundary tags intact, injection neutralized, no secret leakage). Defines the 7.10 DoD.
+
+---
+
+## 🕸️ FASE 7.11 — VS Code Native Mesh Execution — **⬜ PENDIENTE**
+
+> High-impact native VS Code UX. **Segmented out of 7.10** to protect time-to-market
+> and avoid carrying UI debt — designed in [`docs/PHASE_7_BLUEPRINT.md`](PHASE_7_BLUEPRINT.md)
+> (so the 7.10 transport layer is dimensioned for the inline diff-stream canvas), but
+> implemented only after 7.10 closes. Importance ratings preserved.
+
+- [ ] **(10/10) Inline editor mutations (Cmd+K / Cursor-style)** — `activeTextEditor.edit()`
+  + `TextEditorDecorationType` diff stream on the canvas; strict offset/concurrency control
+  (backend: VFS + `apply_patch` AST validation).
+- [ ] **(10/10) WebView state rehydration (tab-switch survival)** —
+  `acquireVsCodeApi().setState()/getState()` + immutable global store (Zustand/Redux);
+  destroy IPC listeners on unmount.
+- [ ] **(9.5/10) Execution interruption — Abort Controller Mesh** — Stop → priority WS event
+  → `asyncio.CancelledError`; closes Docker/Wasm tool, records cost to FinOps; idempotent
+  rollback (ADR-706: prefer inter-node interception; mid-stream → cold-serializable emergency
+  savepoint `metadata={"termination_reason":"user_abort"}` that rehydrates as a truncated node
+  without breaking topology).
+- [ ] **(9/10) `@mentions` selector** (`@file:`, `@folder:`, `@terminal`) as **hard-context**
+  (bypasses RAG); debounced workspace-tree indexing.
+- [ ] **(9/10) Double-buffer Markdown streaming (anti-flicker)** — **Stateful Streaming Parser,
+  O(1) amortized** (ADR-706: binary open/closed flag counter, virtual closure injected at the
+  DOM leaf, no historical re-scan).
+- [ ] **(8.5/10) Interactive artifact rendering (Rich Tool Chips)** — ANSI mini-terminal, Retry,
+  dep graph. All sandbox output untrusted → strict sanitization (XSS guard).
+- [ ] **(8/10) Native HITL push notifications** — `vscode.window.showInformationMessage`
+  [Approve]/[Reject] when the chat is closed (backend: `request_human_approval`).
+- [ ] **(8/10) Topological execution tree (LangGraph visualizer)** — mini-map illuminating the
+  current node from `server_pipeline_step`; throttled render.
+- [ ] **(7.5/10) Time-travel debugging (thread branching)** — fork via `thread_id` +
+  `checkpoint_id` (backend: `HybridCheckpointer`).
 
 ---
 

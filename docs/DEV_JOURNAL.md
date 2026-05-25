@@ -2,6 +2,32 @@
 
 ---
 
+## Hito 7.10/7.11: Cognitive Transparency, Connective Integration & VS Code Native Mesh — SCOPED — 2026-05-25
+
+**Status:** SCOPED (docs only — implementation deferred to 7.10.1+) | **Phase:** 7.10 + 7.11
+
+**Goal:** move past "MVP" so the three surfaces (main chat, analyst chat, web dashboard) function flawlessly — visible reasoning, a genuinely capable analyst, an inviolable AILIENANT identity, robust planning, security-first, at min latency.
+
+**Four shortcomings driving the stage (verified in code):** (1) identity leakage — chat/analyst prompts let the backing model self-identify ("I am Qwen"); (2) no cognitive transparency — the coding path emits one `planner_agent` ping then runs a multi-minute planner silently; (3) the analyst is context-blind — `generate_analyst_reply` ignores `context_paths`, has no file/memory/RAG/self-knowledge; (4) planner schema fragility — local models wrap the spec as `{"MissionSpecification": {...}}`, so `model_validate_json` reports all 6 fields missing and burns every retry.
+
+**Architectural audit absorbed (5 backend gaps, G1–G5):** token batching/throttling (RPC congestion); context-tolerant version tagging (VFS race); uuid-tag XML sandboxing (prompt injection); Analyst Context Budget Layer with Tree-sitter semantic slicing (token blowout/OOM); AST-aware recursive envelope unwrap.
+
+**Decisions:** new top-level stages **7.10** (transport + cognition, G1–G5) and **7.11** (nine native-VS-Code mesh items, segmented out to protect time-to-market); **one** binding blueprint designs both (so the transport layer is sized for 7.11's inline diff-stream canvas); persona enforced **prompt-only** (no output filter); docs-only this pass.
+
+**Files changed:**
+- `docs/PROJECT_MANIFEST.md` — new stages 7.10 (7.10.0 `[x]` meta lock-in; 7.10.1–7.10.5 `[ ]`) and 7.11 (nine mesh items `[ ]`, importance preserved); two quick-reference rows.
+- `docs/PHASE_7_BLUEPRINT.md` — **NEW** binding blueprint (9 sections; ADR-701..706 with exact specs: `chunk_ms=40`, ≤15% narration bandwidth, 4/2/1 KB analyst budget, 30% slice threshold, semantic-priority slicing, context-tolerant divergence, `_extract_nested_schema_target`, cold-serializable `user_abort` savepoint, O(1) stateful streaming markdown parser).
+- `CLAUDE.md` — Phase 7.10/7.11 lock-in directive + Supporting-Docs reference.
+
+**Architectural outcomes:**
+- **One contract, two cadences:** 7.10 closes first; 7.11 designed-now/implemented-later against the same transport budget.
+- **Reuse over rebuild:** narration on `server_pipeline_step` + the 7.9.B.14 trace; G3 on the planner uuid boundary pattern; G2 on OCC `document_version_id`; G4 on `GraphRAGDynamicExtractor` Tree-sitter; abort on `HybridCheckpointer`.
+- **Security baked in:** identity sovereignty as anti-impersonation; injected content sandboxed + escaped + raw-data-clause; untrusted sandbox output sanitized; secrets scrubbed.
+
+**Verification:** docs-only — manifest renders (7.10/7.11 after 7.9, only 7.10.0 `[x]`); blueprint has all 9 sections with resolving citations; CLAUDE.md lock-in links the blueprint. No source changes.
+
+---
+
 ## Hito 7.9.B.19: Local LLM Timeout Increase — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.19
