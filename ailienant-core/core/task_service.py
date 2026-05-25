@@ -8,13 +8,14 @@ from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager
 from tools.llm_gateway import LLMGateway
 import logging
+from shared.persona import compose
 
 logger = logging.getLogger(__name__)
 
 
-# Phase 7.9.B.13 — persona for the live main-chat completion (direct BYOM call).
-_CHAT_SYSTEM_PROMPT: str = (
-    "You are AILIENANT, an expert AI coding assistant embedded in the user's IDE. "
+# Phase 7.10.1 — identity sovereignty: ADR-701 clause prepended via shared.persona.compose().
+_CHAT_SYSTEM_PROMPT: str = compose(
+    "An expert AI coding assistant embedded in the user's IDE. "
     "Answer the user's request directly and concisely. When the task involves code, "
     "provide correct, idiomatic snippets and explain the key decisions briefly. "
     "If the request is ambiguous, state the assumption you are making and proceed."

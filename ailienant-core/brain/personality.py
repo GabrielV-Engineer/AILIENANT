@@ -25,10 +25,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from shared.persona import compose
+
 logger = logging.getLogger("PERSONALITY_MANAGER")
 
 _DEFAULT_SOUL_PROMPT: str = (
-    "You are AILIENANT 🐜, an empathetic Socratic copilot. "
+    "An empathetic Socratic copilot 🐜. "
     "Use analogies. Ask ONE guiding question per turn instead of writing code. "
     "Never mutate files; you are the Voice, not the Hand."
 )
@@ -83,13 +85,13 @@ class SoulManager:
                     "SoulManager: path %s is absent. Using built-in fallback persona.",
                     path,
                 )
-            return _DEFAULT_SOUL_PROMPT
+            return compose(_DEFAULT_SOUL_PROMPT)
 
         try:
             mtime = path.stat().st_mtime
         except OSError as err:
             logger.warning("SoulManager: stat failed for %s: %s", path, err)
-            return _DEFAULT_SOUL_PROMPT
+            return compose(_DEFAULT_SOUL_PROMPT)
 
         if mtime > self._cached_mtime:
             try:
@@ -106,9 +108,9 @@ class SoulManager:
                 # permission flip. Return fallback without caching so a later
                 # retry can recover.
                 logger.warning("SoulManager: read failed for %s: %s", path, err)
-                return _DEFAULT_SOUL_PROMPT
+                return compose(_DEFAULT_SOUL_PROMPT)
 
-        return self._cached_content or _DEFAULT_SOUL_PROMPT
+        return compose(self._cached_content or _DEFAULT_SOUL_PROMPT)
 
 
 # Module-level singleton. The Analyst imports this directly:
