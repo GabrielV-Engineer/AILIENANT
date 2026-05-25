@@ -1445,6 +1445,26 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       Cloud proxy path (non-BYOM) is unchanged.
     - **Tests:** 584/584 (new `test_llm_gateway_timeout.py`, 3 tests).
 
+  - [x] **7.9.B.20 — Session History Persistence (chat survives VS Code close)**
+    - **Problem:** closing VS Code emptied every session. The session *list* persisted
+      in `workspaceState`, but the chat **messages** lived only in React state
+      (`useState<Message[]>([])`) and the backend memory (`_conversations`) is ephemeral —
+      so reopened sessions appeared blank and the model lost continuity.
+    - **Resolution:**
+      - **Display persistence (host-side, per `session.id`):** `workspace_panel.ts` stores
+        a bounded transcript (main chat + analyst) in `workspaceState` keyed by `session.id`;
+        the webview persists on change (`PERSIST_TRANSCRIPT`, debounced) and restores from the
+        `data-initial` bootstrap (`initialMessages` / `initialNattMessages`). Deleting a session
+        drops its transcript; clearing the conversation clears it too.
+      - **Memory continuity (backend):** new `client_restore_history` WS contract;
+        `task_service.restore_conversation` re-seeds `_conversations` on reopen
+        (seed-if-absent, bounded to `_MAX_HISTORY_MESSAGES`) so the model keeps context.
+        Sent once per WS (re)connect from the panel.
+    - **Known limit:** backend memory is window-scoped (one WS `client_id` per VS Code window);
+      per-session backend memory with multiple sessions open at once is deferred to 7.11.2
+      (WebView state rehydration) / a future per-session memory-keying refactor.
+    - **Tests:** 588/588 (new `test_restore_conversation.py`, 4 tests) · `npm run compile` → 0 errors.
+
 ---
 
 ## 🎛️ FASE 7.10 — Cognitive Transparency & Connective Integration — **⬜ PENDIENTE**

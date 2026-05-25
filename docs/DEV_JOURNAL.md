@@ -2,6 +2,32 @@
 
 ---
 
+## Hito 7.9.B.20: Session History Persistence — chat survives VS Code close — 2026-05-25
+
+**Status:** COMPLETED | **Phase:** 7.9.B.20
+
+**Problem:** every time VS Code closed, all conversation history was lost and sessions reopened empty. The session *list* persisted in `workspaceState`, but the chat **messages** lived only in React state (`useState<Message[]>([])`, [Workspace.tsx](../ailienant-extension/src/workspace/Workspace.tsx)) and the backend memory (`_conversations`, [task_service.py](../ailienant-core/core/task_service.py)) is ephemeral — so the webview was recreated blank on reopen and the model lost continuity.
+
+**Approach:** persist the transcript host-side keyed by the stable panel `session.id`, restore it into the webview on open, and re-seed the backend's short-term memory on reconnect for continuity. User-chosen scope: history **+ memory continuity**, covering **both** the main chat and the analyst (Natt) pane.
+
+**Files changed:**
+- `ailienant-extension/src/providers/workspace_panel.ts` — per-session transcript store in `workspaceState` (`ailienant.transcript.<id>`, bounded to 200); inject `initialMessages`/`initialNattMessages` into the `data-initial` bootstrap; handle `PERSIST_TRANSCRIPT`; on WS `connected` send `client_restore_history` once; `clearTranscript()` helper.
+- `ailienant-extension/src/workspace/main.tsx` + `Workspace.tsx` — bootstrap the two new arrays; init chat/analyst state from them; debounced `PERSIST_TRANSCRIPT` effect (strips transient stream flags); exported `Message`/`NattMessage`.
+- `ailienant-extension/src/extension.ts` — `onDeleteSession` also clears the persisted transcript.
+- `ailienant-core/api/ws_contracts.py` — `ChatTurn` + `RestoreHistoryPayload` + `ClientRestoreHistoryEvent`; registered in the `WebSocketMessage` union.
+- `ailienant-core/core/task_service.py` — `restore_conversation()` (seed-if-absent, bounded to `_MAX_HISTORY_MESSAGES`); `clear_conversation` unchanged.
+- `ailienant-core/main.py` — `client_restore_history` WS handler → `task_service.restore_conversation`.
+- Tests: `tests/test_restore_conversation.py` (new, 4 tests).
+
+**Architectural outcomes:**
+- **Display is fully per-session** (stable `session.id`), so the reported bug — empty sessions after a restart — is resolved.
+- **Backend memory continuity is seed-if-absent**, so a reopened session regains context without ever clobbering a live conversation.
+- **Known limit (documented):** backend memory is window-scoped (one WS `client_id` per window). Per-session backend memory with several sessions open simultaneously is deferred to 7.11.2 / a future per-session memory-keying refactor.
+
+**Verification:** `pytest` 588 passed; `npm run compile` 0 type errors (2 pre-existing lint warnings, unrelated files).
+
+---
+
 ## Hito 7.10/7.11: Cognitive Transparency, Connective Integration & VS Code Native Mesh — SCOPED — 2026-05-25
 
 **Status:** SCOPED (docs only — implementation deferred to 7.10.1+) | **Phase:** 7.10 + 7.11
