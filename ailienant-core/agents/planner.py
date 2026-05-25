@@ -76,6 +76,15 @@ async def run_planner_node(state: dict) -> dict:
         state.get("task_id") or state.get("session_id") or str(uuid.uuid4())
     )
 
+    # Phase 7.10.2 (ADR-702): granular sub-step narration. task_service injects an
+    # async emitter via state["narrate"]; the planner stays decoupled from the
+    # transport layer (never imports vfs_manager) — cognitive-isolation fence intact.
+    _narrate = state.get("narrate")
+
+    async def _emit(node_name: str) -> None:
+        if _narrate is not None:
+            await _narrate(node_name)
+
     # =====================================================================
     # 0. MODO SIMULACRO (Circuito Corto para Pruebas UI/Backend)
     # =====================================================================
@@ -361,6 +370,8 @@ async def run_planner_node(state: dict) -> dict:
         logger.warning("Phase 3.3: cascade failed (non-fatal): %s", _cascade_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
+    await _emit("routing_decision")  # Phase 7.10.2 — routing/cascade resolved.
+
     # Phase 4.1.2 — consume the Researcher's Skeleton Map when available.
     # Injected as a sandboxed block so the LLM treats it as inert data (matches the
     # XML-boundary discipline used for dirty buffers throughout this module).
@@ -399,6 +410,7 @@ async def run_planner_node(state: dict) -> dict:
     # 4. INVOCACIÓN AL MOTOR LLM (Con Validación Pydantic Forzada)
     # =====================================================================
     logger.info("⏳ Esperando Especificación Técnica (SDD) del LLM...")
+    await _emit("drafting_spec")  # Phase 7.10.2 — about to draft the MissionSpecification.
 
     # Phase 4.1.2 — blueprint §4.1.2 mandates Heavy/Opus for the Planner.
     # ResourceBroker still arbitrates the VRAM lock; we just request BIG by default.
@@ -415,6 +427,7 @@ async def run_planner_node(state: dict) -> dict:
     try:
         while retry_count <= MAX_PLANNER_RETRIES:
             if retry_count > 0 and last_validation_err:
+                await _emit("validation_retry")  # Phase 7.10.2 — re-drafting after schema failure.
                 corrective: str = (
                     f"\n\nYour previous attempt failed strict schema validation. "
                     f"Pydantic reported:\n{last_validation_err}\n"

@@ -1480,23 +1480,24 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
   - `docs/PHASE_7_BLUEPRINT.md` is the binding architectural contract for 7.10 + 7.11;
     `CLAUDE.md` references it. Implementation of 7.10.1+ is deferred to follow-up PRs.
 
-- [ ] **7.10.1 — Identity Sovereignty (Persona Injection)**
-  - [ ] Single source of truth for the identity clause (constant / `shared/persona.py`)
+- [x] **7.10.1 — Identity Sovereignty (Persona Injection)**
+  - [x] Single source of truth for the identity clause (constant / `shared/persona.py`)
     reused by main chat, analyst, and the SOUL fallback.
-  - [ ] Hardened directive: never reveal/name/imply the backing model (Qwen/Llama/GPT/…);
+  - [x] Hardened directive: never reveal/name/imply the backing model (Qwen/Llama/GPT/…);
     if asked who/what you are, you are AILIENANT — an agentic coding system.
     (Anti-impersonation / brand integrity.)
 
-- [ ] **7.10.2 — Cognitive Transparency (Thought-Process Streaming)**
-  - [ ] Stream a "thinking" narration **before** the answer on both chats, reusing
+- [x] **7.10.2 — Cognitive Transparency (Thought-Process Streaming)**
+  - [x] Stream a "thinking" narration **before** the answer on both chats, reusing
     `server_pipeline_step` + the 7.9.B.14 collapsible trace (no new transport).
-  - [ ] Replace the single `planner_agent` ping with granular sub-step narration
+  - [x] Replace the single `planner_agent` ping with granular sub-step narration
     (context gather → routing → drafting spec → coding step N/M).
-  - [ ] **(G1)** Token batching/throttling in the WS sender (`chunk_ms = 40` window,
+  - [x] **(G1)** Token batching/throttling in the WS sender (`chunk_ms = 40` window,
     coalesce N tokens/frame) to keep the Webview ≥ 45 FPS; cap `server_pipeline_step`
     at ≤ 15 % of WS bandwidth during active text streaming. Designed to absorb 7.11's
     diff-stream canvas load.
-  - [ ] Decide & document: raw model reasoning/`<think>` vs. synthesized narration.
+  - [x] Decide & document: raw model reasoning/`<think>` vs. synthesized narration
+    (ADR-702 decision: **synthesized** structured status text, not raw CoT).
 
 - [ ] **7.10.3 — The Analyst as a True Assistant**
   - [ ] Wire `context_paths` end-to-end (`main.py` `client_analyst_query` →
