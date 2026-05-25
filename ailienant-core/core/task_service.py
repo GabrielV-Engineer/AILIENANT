@@ -9,6 +9,7 @@ from api.websocket_manager import vfs_manager
 from tools.llm_gateway import LLMGateway
 import logging
 from shared.persona import compose
+from transport.token_batcher import batch_tokens, NarrationGate
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,20 @@ class TaskService:
 
         state = self._build_initial_state(session_id, payload, execution_mode)
 
-        await vfs_manager.broadcast_pipeline_step(session_id, "planner_agent")
+        # Phase 7.10.2 (ADR-702): granular sub-step narration over server_pipeline_step.
+        # A NarrationGate keeps narration <= 15% of streamed volume once the answer is
+        # live; pre-answer phases (answer_bytes == 0) are never suppressed. The emitter
+        # is injected into the graph state so the planner can narrate without importing
+        # the transport layer (cognitive-isolation fence stays intact).
+        gate = NarrationGate()
+
+        async def _narrate(node_name: str, step_id: Optional[int] = None) -> None:
+            if gate.allow(len(node_name.encode())):
+                await vfs_manager.broadcast_pipeline_step(session_id, node_name, step_id)
+
+        state["narrate"] = _narrate
+
+        await _narrate("context_gather")
         try:
             plan = await run_planner_node(state)
         except Exception as exc:  # noqa: BLE001 — planner failure must not crash the task
@@ -215,10 +229,11 @@ class TaskService:
         contents: Dict[str, str] = {}
         base_hashes: Dict[str, str] = {}
         errors: List[str] = []
-        for step in list(mission.tasks)[:_MAX_CODER_STEPS]:
-            await vfs_manager.broadcast_pipeline_step(
-                session_id, "coder_agent", step_id=step.step_number
-            )
+        coder_steps = list(mission.tasks)[:_MAX_CODER_STEPS]
+        total_steps = len(coder_steps)
+        for idx, step in enumerate(coder_steps, start=1):
+            # "coding step N/M" rides in node_name — PipelineStepPayload schema unchanged.
+            await _narrate(f"coder_agent ({idx}/{total_steps})", step_id=step.step_number)
             try:
                 cres = await run_coder_node(
                     {**state, "mission_spec": mission, "current_step_id": step.step_number}
@@ -233,6 +248,7 @@ class TaskService:
 
         # 1) Stream the plan + proposed diffs as a reviewable message.
         summary = self._format_coding_summary(mission, patches, errors)
+        gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
         await vfs_manager.broadcast_token(session_id, summary)
         await vfs_manager.broadcast_stream_end(session_id)
         self._append_history(session_id, "user", payload.task_prompt)
@@ -252,9 +268,9 @@ class TaskService:
             proposed_content=combined_diff,
         )
         if not decision or not decision.get("approved"):
-            await vfs_manager.broadcast_token(
-                session_id, "Changes discarded — no files were modified."
-            )
+            discarded = "Changes discarded — no files were modified."
+            gate.record_answer(len(discarded.encode()))
+            await vfs_manager.broadcast_token(session_id, discarded)
             await vfs_manager.broadcast_stream_end(session_id)
             return
 
@@ -280,6 +296,7 @@ class TaskService:
             result_msg = "⚠️ Could not apply the changes: " + str(
                 res.get("error") or "unknown error"
             )
+        gate.record_answer(len(result_msg.encode()))
         await vfs_manager.broadcast_token(session_id, result_msg)
         await vfs_manager.broadcast_stream_end(session_id)
         self._append_history(session_id, "assistant", result_msg)
@@ -386,11 +403,15 @@ class TaskService:
         ]
         reply_parts: List[str] = []
         try:
-            async for delta in LLMGateway.astream_byom(
+            # Phase 7.10.2 (ADR-702/G1): coalesce deltas into chunk_ms=40 frames so
+            # the Webview never receives one WS frame per token. Concatenation is
+            # preserved, so reply_parts still reconstructs the full answer.
+            raw_stream = LLMGateway.astream_byom(
                 messages, tier="medium", session_id=session_id
-            ):
-                reply_parts.append(delta)
-                await vfs_manager.broadcast_token(session_id, delta)
+            )
+            async for chunk in batch_tokens(raw_stream, chunk_ms=40):
+                reply_parts.append(chunk)
+                await vfs_manager.broadcast_token(session_id, chunk)
             reply = "".join(reply_parts)
             if reply:
                 # Persist only completed turns so a failure never poisons memory.
