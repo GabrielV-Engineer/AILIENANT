@@ -20,6 +20,7 @@ from api.ws_contracts import (
     ServerIndexingProgressEvent, IndexingProgressPayload,
     ServerIndexingErrorEvent, IndexingErrorPayload,
     ServerVfsPatchApprovedEvent, VfsPatchApprovedPayload,
+    ServerApplyWorkspaceEditEvent, ApplyWorkspaceEditPayload,
     ServerByomConfigAppliedEvent, ByomConfigAppliedPayload,
     ServerNattMessageEvent, NattMessagePayload,
     ServerPipelineStepEvent, PipelineStepPayload,
@@ -57,6 +58,13 @@ class ConnectionManager:
         # HITL state — keyed by approval_id (UUID4), NOT session_id
         self._hitl_pending: Dict[str, asyncio.Event] = {}
         self._hitl_responses: Dict[str, dict] = {}
+        # Phase 7.9.B.18 — write-pipeline acks, keyed by patch_id (UUID4 hex)
+        self._patch_acks: Dict[str, asyncio.Event] = {}
+        self._patch_ack_results: Dict[str, dict] = {}
+
+    def has_client(self, session_id: str) -> bool:
+        """True if a live WS client is connected for this session (gates disk writes)."""
+        return session_id in self.active_connections
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -290,6 +298,41 @@ class ConnectionManager:
         )
 
     # ------------------------------------------------------------------
+    # Phase 7.9.B.18 — Write pipeline: dispatch applyEdit + await host ack
+    # ------------------------------------------------------------------
+
+    async def emit_apply_workspace_edit(
+        self, session_id: str, payload: ApplyWorkspaceEditPayload
+    ) -> None:
+        """Dispatch a set of file edits to the VS Code host for applyEdit + save."""
+        await self.send_personal_message(
+            session_id, ServerApplyWorkspaceEditEvent(data=payload)
+        )
+
+    async def wait_patch_ack(
+        self, patch_id: str, timeout: float = 30.0
+    ) -> Optional[dict]:
+        """Suspend until the host acks patch_id (client_patch_applied) or timeout fires."""
+        event = asyncio.Event()
+        self._patch_acks[patch_id] = event
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return self._patch_ack_results.pop(patch_id, None)
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ patch ack timeout (patch_id=%s)", patch_id)
+            return None
+        finally:
+            self._patch_acks.pop(patch_id, None)
+
+    def resolve_patch_ack(self, patch_id: str, result: dict) -> None:
+        """Called from the WS receive loop on client_patch_applied — unblocks the waiter."""
+        self._patch_ack_results[patch_id] = result
+        if patch_id in self._patch_acks:
+            self._patch_acks[patch_id].set()
+        else:
+            logger.warning("⚠️ patch ack for unknown patch_id: %s", patch_id)
+
+    # ------------------------------------------------------------------
     # HITL — Human-in-the-Loop suspension
     # ------------------------------------------------------------------
 
@@ -357,14 +400,25 @@ class ConnectionManager:
         return decision
 
     def resolve_human_approval(
-        self, approval_id: str, approved: bool, comment: Optional[str] = None
+        self,
+        approval_id: str,
+        approved: bool,
+        comment: Optional[str] = None,
+        modified_content: Optional[str] = None,
     ) -> None:
         """
         Called from the WS receive loop when client_hitl_response arrives.
         Stores the response and unblocks the waiting coroutine.
         Silently ignores unknown approval_ids (e.g. late responses after timeout).
+
+        modified_content (Phase 7.9.B.18) carries an optional edited payload from the
+        HITL card's edit mode — consumed by the write pipeline for single-file patches.
         """
-        self._hitl_responses[approval_id] = {"approved": approved, "comment": comment}
+        self._hitl_responses[approval_id] = {
+            "approved": approved,
+            "comment": comment,
+            "modified_content": modified_content,
+        }
         if approval_id in self._hitl_pending:
             self._hitl_pending[approval_id].set()
         else:

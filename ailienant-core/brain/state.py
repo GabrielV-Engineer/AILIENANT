@@ -371,6 +371,11 @@ class AIlienantGraphState(TypedDict):
     # CoderAgent (Phase 4) writes unified diffs here; apply_patch_node consumes them.
     # operator.or_ merges dicts by preferring the right-hand (latest) value per key.
     pending_patches: Annotated[Dict[str, str], operator.or_]  # filepath → unified diff
+    # Phase 7.9.B.18 — write pipeline: the coder also emits the full new content and
+    # a pre-edit hash per changed file so the approved patch can be actuated via the
+    # VS Code applyEdit bridge (content) with a stale-file guard (hash).
+    pending_contents: Annotated[Dict[str, str], operator.or_]   # filepath → full new content
+    pending_base_hash: Annotated[Dict[str, str], operator.or_]  # filepath → sha256(pre-edit, EOL-normalized)
 
     # --- FinOps Budget Gate (Phase 2.18) ---
     # operator.add reducer required: parallel Send() fan-out means multiple CoderAgent

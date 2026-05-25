@@ -157,6 +157,8 @@ async def test_coder_agent_ephemeral_system_prompt_does_not_leak_to_messages_or_
     allowed_state_keys = {
         "vfs_buffer",
         "pending_patches",   # Phase 7.9.B.16 — coder now proposes diffs
+        "pending_contents",  # Phase 7.9.B.18 — full new content for the write pipeline
+        "pending_base_hash", # Phase 7.9.B.18 — pre-edit hash for the stale guard
         "target_role",
         "current_step_id",
         "current_cost_usd",
@@ -224,3 +226,8 @@ async def test_coder_produces_unified_diff_for_valid_edit() -> None:
     assert "calc.py" in result["pending_patches"], result
     diff = result["pending_patches"]["calc.py"]
     assert "return x + 2" in diff and "return x + 1" in diff
+
+    # Phase 7.9.B.18 — the coder also emits the full new content + a pre-edit hash.
+    from agents.coder import content_hash
+    assert result["pending_contents"]["calc.py"] == "def calculate(x):\n    return x + 2\n"
+    assert result["pending_base_hash"]["calc.py"] == content_hash(content)

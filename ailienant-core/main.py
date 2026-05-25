@@ -721,12 +721,24 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     approval_id=valid_event.data.approval_id,
                     approved=valid_event.data.approved,
                     comment=valid_event.data.comment,
+                    modified_content=valid_event.data.modified_content,
                 )
                 logger.info(
                     "✅ HITL response from %s: approved=%s (approval_id=%s)",
                     client_id,
                     valid_event.data.approved,
                     valid_event.data.approval_id,
+                )
+
+            elif valid_event.event_type == "client_patch_applied":
+                # Phase 7.9.B.18 — host ack for an applyEdit dispatch; unblocks
+                # write_pipeline.apply_patch_set's waiter.
+                vfs_manager.resolve_patch_ack(
+                    valid_event.data.patch_id, valid_event.data.model_dump()
+                )
+                logger.info(
+                    "🩹 Patch ack from %s: patch_id=%s ok=%s",
+                    client_id, valid_event.data.patch_id, valid_event.data.ok,
                 )
 
             elif valid_event.event_type == "client_concurrency_conflict":

@@ -107,6 +107,9 @@ class HITLResponsePayload(BaseModel):
     approval_id: str                    # Must match the approval_id from the request
     approved: bool
     comment: Optional[str] = None
+    # Phase 7.9.B.18 — optional edited payload from the HITL card's edit mode.
+    # For a single-file patch, this overrides the proposed content before apply.
+    modified_content: Optional[str] = None
 
 
 # --- Server → Client Events ---
@@ -264,6 +267,47 @@ class ServerVfsPatchApprovedEvent(BaseModel):
 
 
 # =====================================================================
+# 9b. PHASE 7.9.B.18 — ENTERPRISE WRITE PIPELINE (VS Code applyEdit bridge)
+# =====================================================================
+
+
+class WorkspaceEditItem(BaseModel):
+    """One file edit dispatched to the VS Code applyEdit actuator."""
+
+    file_path: str                       # absolute or workspace-relative (host resolves)
+    new_content: str                     # full replacement content
+    base_hash: Optional[str] = None      # sha256(pre-edit, EOL-normalized) for the stale guard
+
+
+class ApplyWorkspaceEditPayload(BaseModel):
+    """Server → host: apply a set of file edits atomically via vscode.workspace.applyEdit."""
+
+    patch_id: str
+    save: bool = True
+    edits: list[WorkspaceEditItem]
+
+
+class ServerApplyWorkspaceEditEvent(BaseModel):
+    event_type: Literal["server_apply_workspace_edit"] = "server_apply_workspace_edit"
+    data: ApplyWorkspaceEditPayload
+
+
+class PatchAppliedPayload(BaseModel):
+    """Host → server: result ack for a dispatched applyEdit."""
+
+    patch_id: str
+    ok: bool
+    applied_files: list[str] = Field(default_factory=list)
+    stale_files: list[str] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class ClientPatchAppliedEvent(BaseModel):
+    event_type: Literal["client_patch_applied"] = "client_patch_applied"
+    data: PatchAppliedPayload
+
+
+# =====================================================================
 # 10. PHASE 3.4.1 — INTELLIGENCE PROFILE / MASTER TOGGLE EVENTS
 # =====================================================================
 
@@ -374,6 +418,8 @@ WebSocketMessage = Union[
     ServerByomConfigAppliedEvent,    # Phase 7.9.B.11 — preset applied notification
     ClientFileDeleteEvent,           # Phase 2.1.13
     ServerVfsPatchApprovedEvent,     # Phase 2.22.4
+    ServerApplyWorkspaceEditEvent,   # Phase 7.9.B.18 — write pipeline dispatch
+    ClientPatchAppliedEvent,         # Phase 7.9.B.18 — write pipeline ack
     ClientMasterToggleEvent,         # Phase 3.4.1
     ClientProfileChangeEvent,        # Phase 3.4.1
     AuthEvent,                       # Phase 7.9.A.5.1 — ephemeral auth handshake

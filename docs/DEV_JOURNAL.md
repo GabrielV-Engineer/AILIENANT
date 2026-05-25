@@ -2,6 +2,35 @@
 
 ---
 
+## Hito 7.9.B.18: The Enterprise Write Pipeline — VS Code applyEdit Bridge — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.18
+
+**Problem:** the propose-&-review MVP never wrote anything — the coder discarded its new content (returned diff strings only) and the RAM-VFS had no write method. We needed approved patches to land on disk safely and reversibly.
+
+**Approach (strict scope):** actuation is 100% VS Code `applyEdit` + `save()` in the extension host; undo is native Ctrl+Z / VS Code Local History only. **No** custom history/backup, **no** `.bak`/manifest, **no** headless disk writes — if no VS Code client is connected the apply is refused.
+
+**Files changed:**
+- `ailienant-core/agents/coder.py` — added `content_hash()` (EOL-normalized sha256) and now returns `pending_contents` (full new content) + `pending_base_hash` (pre-edit hash) alongside `pending_patches`.
+- `ailienant-core/brain/state.py` — new `pending_contents` + `pending_base_hash` state channels (`operator.or_`).
+- `ailienant-core/api/ws_contracts.py` — `ServerApplyWorkspaceEditEvent` (+ `WorkspaceEditItem`/`ApplyWorkspaceEditPayload`), `ClientPatchAppliedEvent` (+ `PatchAppliedPayload`); `HITLResponsePayload.modified_content`; registered in the union.
+- `ailienant-core/api/websocket_manager.py` — `has_client()`, `emit_apply_workspace_edit()`, `wait_patch_ack()`/`resolve_patch_ack()` (asyncio.Event keyed by patch_id); `resolve_human_approval()` now carries `modified_content`.
+- `ailienant-core/core/write_pipeline.py` — **NEW** lean `apply_patch_set()`: gate on `has_client` (else actionable error), dispatch, await ack. No filesystem I/O.
+- `ailienant-core/core/task_service.py` — `_run_coding_task` now streams the diff summary, requests **one** HITL authorization for the whole set, and on approval actuates via `apply_patch_set` (with single-file edit-before-apply); rejection discards.
+- `ailienant-core/main.py` — WS loop handles `client_patch_applied` → `resolve_patch_ack`; forwards `modified_content` on `client_hitl_response`.
+- `ailienant-extension/src/core/PatchActuator.ts` — **NEW** host actuator: resolve path vs workspace root, hash-based **stale guard** (block & warn, atomic whole-set), one `WorkspaceEdit` (create new / full-range replace), `applyEdit` + `save()`, ack back.
+- `ailienant-extension/src/providers/workspace_panel.ts` — `wsMsgHandler` intercepts `server_apply_workspace_edit` → `PatchActuator.apply` → `client_patch_applied` (never forwarded to the webview).
+- Tests: `tests/test_write_pipeline.py`, `tests/test_task_service_apply.py` (new); `tests/test_coder_agent.py` updated for the two new state keys.
+
+**Architectural outcomes:**
+- **Native-first:** Ctrl+Z + Local History are the undo story; no bespoke history subsystem to maintain.
+- **Conflict-safe:** EOL-normalized hash guard blocks a stale set rather than clobbering user edits; whole-set atomic `WorkspaceEdit`.
+- **No silent disk writes:** Python never touches the filesystem; a missing client returns "No VS Code client connected to apply edits."
+
+**Verification:** `pytest` 581 passed; `npm run compile` 0 errors (2 pre-existing lint warnings, unrelated files).
+
+---
+
 ## Hito 7.9.B.17: Fix "Neural Network Collapse" — HTTP/Pipeline Decoupling + Ollama Chat Route — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.17
