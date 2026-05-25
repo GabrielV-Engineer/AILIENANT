@@ -17,7 +17,7 @@ import os
 import uuid
 from typing import Any, Dict, List
 
-from prompts import build_safe_prompt
+from agents.prompts import build_safe_prompt
 from shared.config import MODEL_MEDIUM
 from shared.rbac import RESEARCHER_IDENTITY
 from tools.llm_gateway import LLMGateway

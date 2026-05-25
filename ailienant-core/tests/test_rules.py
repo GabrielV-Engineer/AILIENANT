@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from core.rules import rule_manager
-from prompts import build_safe_prompt
+from agents.prompts import build_safe_prompt
 from shared.rbac import PLANNER_IDENTITY
 
 

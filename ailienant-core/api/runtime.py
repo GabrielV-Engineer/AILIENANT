@@ -63,9 +63,11 @@ if _local_appdata:
 # S7-D: Origin values the POST /start-docker endpoint accepts.
 # Same-origin SPA requests from the dashboard send no Origin header at all (origin="") — those pass.
 # Cross-origin CSRF attacks always include a foreign Origin → rejected.
+# Phase 7.9.A.5.1: port is dynamic; read AILIENANT_API_PORT so the frozenset matches.
+_API_PORT: int = int(os.environ.get("AILIENANT_API_PORT", "8000"))
 _ALLOWED_ORIGINS: frozenset[str] = frozenset({
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
+    f"http://localhost:{_API_PORT}",
+    f"http://127.0.0.1:{_API_PORT}",
     "http://localhost",
     "http://127.0.0.1",
     "null",  # VS Code webview sandboxed context occasionally sends this
