@@ -2,6 +2,26 @@
 
 ---
 
+## Hito 7.9.B.19: Local LLM Timeout Increase — 2026-05-24
+
+**Status:** COMPLETED | **Phase:** 7.9.B.19
+
+**Problem:** complex Planner tasks (e.g., "create a CRM project") exceeded the 60 s LiteLLM timeout when running against a local Ollama model that generates large structured JSON. `litellm.Timeout: Connection timed out. Timeout passed=60.0, time taken=60.288 seconds`.
+
+**Approach:** added a single module-level constant `_LOCAL_LLM_TIMEOUT_S = 300.0` in `tools/llm_gateway.py` and applied it at the three direct-call sites when `target.is_local is True`. The cloud proxy path is unchanged (keeps the caller-supplied 60 s default).
+
+**Files changed:**
+- `ailienant-core/tools/llm_gateway.py` — `_LOCAL_LLM_TIMEOUT_S: float = 300.0`; `ainvoke` BYOM branch computes `_effective_timeout = _LOCAL_LLM_TIMEOUT_S if _target.is_local else timeout`; same pattern in `acomplete_byom` and `astream_byom`.
+- `ailienant-core/tests/test_llm_gateway_timeout.py` — **NEW** 3 tests: local BYOM gets 300 s, cloud BYOM keeps 60 s, `acomplete_byom` local gets 300 s.
+
+**Architectural outcomes:**
+- `ModelTarget.is_local` (already set by the BYOM preset layer) is now the decision axis; no new config surface.
+- Cloud routing is entirely unaffected — zero risk of regressing API-hosted model calls.
+
+**Verification:** `pytest` 584 passed.
+
+---
+
 ## Hito 7.9.B.18: The Enterprise Write Pipeline — VS Code applyEdit Bridge — 2026-05-24
 
 **Status:** COMPLETED | **Phase:** 7.9.B.18

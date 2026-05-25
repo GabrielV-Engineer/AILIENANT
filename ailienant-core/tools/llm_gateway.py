@@ -41,6 +41,10 @@ _OOM_CUDA_RE = re.compile(r"cuda|out of memory", re.IGNORECASE)
 # StateSummarizer's own failure fallback (brain/summarizer.py KEEP_LAST_N).
 _OOM_FALLBACK_KEEP_LAST_N: int = 6
 
+# Generous budget for local models (Ollama on CPU/low-VRAM can be slow for
+# structured JSON).  Cloud calls keep the caller-supplied default (60 s).
+_LOCAL_LLM_TIMEOUT_S: float = 300.0
+
 
 def _looks_like_oom(exc: Exception) -> bool:
     """True when an APIConnectionError message reveals a CUDA / VRAM OOM."""
@@ -274,6 +278,7 @@ class LLMGateway:
                 _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
             )
             if _target is not None:
+                _effective_timeout = _LOCAL_LLM_TIMEOUT_S if _target.is_local else timeout
                 byom_kwargs = {"model": _target.model}
                 if _target.api_base:
                     byom_kwargs["api_base"] = _target.api_base
@@ -289,7 +294,7 @@ class LLMGateway:
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                timeout=timeout,
+                timeout=_effective_timeout,
                 max_retries=2,
                 metadata={"session_id": trace_id},
                 extra_headers={"X-Ailienant-Trace-ID": trace_id},
@@ -427,9 +432,10 @@ class LLMGateway:
         if target is None:
             raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
         trace_id = session_id or str(uuid.uuid4())
+        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=timeout, max_retries=2,
+            timeout=_effective_timeout, max_retries=2,
         )
         logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
         resp: ModelResponse = await litellm.acompletion(**kwargs)
@@ -454,9 +460,10 @@ class LLMGateway:
         if target is None:
             raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
         trace_id = session_id or str(uuid.uuid4())
+        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=timeout, stream=True, max_retries=2,
+            timeout=_effective_timeout, stream=True, max_retries=2,
         )
         logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
         response = await litellm.acompletion(**kwargs)
