@@ -3,7 +3,6 @@ import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { HITLInterventionCard, type HITLIntervention } from './HITLInterventionCard';
 import { NattPromptBar } from './NattPromptBar';
-import { NattContextOverlay } from './NattContextOverlay';
 
 interface NattMessage {
     role: 'natt' | 'user';
@@ -30,7 +29,6 @@ export function NattCanvas({
     onClose, onResolveIntervention, onSendMessage,
 }: Props): JSX.Element {
     const bodyRef = useRef<HTMLDivElement>(null);
-    const [nattContextOpen, setNattContextOpen] = useState(false);
 
     useEffect(() => {
         bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' });
@@ -38,7 +36,6 @@ export function NattCanvas({
 
     return (
         <aside className="ws-natt">
-            {nattContextOpen && <NattContextOverlay onClose={() => setNattContextOpen(false)} />}
             <header className="ws-natt-head">
                 <div className="ws-natt-head-title">
                     <Icon name="bot" size={16} color="var(--accent-primary)" />
@@ -107,7 +104,6 @@ export function NattCanvas({
             <NattPromptBar
                 nattName={nattName}
                 disabled={disabled}
-                onOpenContext={() => setNattContextOpen(v => !v)}
                 onSubmit={onSendMessage}
             />
         </aside>

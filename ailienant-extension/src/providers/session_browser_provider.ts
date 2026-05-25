@@ -117,7 +117,7 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
             vscode.Uri.joinPath(this._extensionUri, 'dist', 'sidebar.css')
         );
         const logoUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, 'media', 'logo.svg')
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'icon-color.svg')
         );
         return `<!DOCTYPE html>
 <html lang="en">

@@ -5,5 +5,6 @@ import { SessionBrowser } from './SessionBrowser';
 document.addEventListener('DOMContentLoaded', () => {
     const root = document.getElementById('root');
     if (!root) { return; }
-    createRoot(root).render(<SessionBrowser />);
+    const logoUri = root.dataset.logo ?? '';
+    createRoot(root).render(<SessionBrowser boot={{ logoUri }} />);
 });

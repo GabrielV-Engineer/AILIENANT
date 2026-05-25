@@ -10,7 +10,9 @@ export type WSStatusCallback = (status: WsConnectionStatus) => void;
 export class WSClient {
     private static instance: WSClient;
     private ws: WebSocket | null = null;
-    private readonly wsUrl: string;
+    // Phase 7.9.A.5.1: mutable so configure() can update after dynamic port is resolved.
+    private _wsUrl: string;
+    private _token: string = '';
 
     // Callbacks suscritos (Patrón Observer)
     private onMessageHandlers: Set<WSMessageCallback> = new Set();
@@ -35,7 +37,7 @@ export class WSClient {
     private _dashboardBc: BroadcastChannel | undefined;
 
     private constructor() {
-        this.wsUrl = 'ws://127.0.0.1:8000/api/v1/ws';
+        this._wsUrl = 'ws://127.0.0.1:8000/api/v1/ws';
         // BroadcastChannel to push WS events to Dashboard SPA in the browser
         if (typeof BroadcastChannel !== 'undefined') {
             this._dashboardBc = new BroadcastChannel('ailienant_ws');
@@ -50,6 +52,15 @@ export class WSClient {
     }
 
     /**
+     * Phase 7.9.A.5.1 — called from activate() once the CoreProcessManager has a port/token.
+     * All subsequent connections will target the new URL and send the auth handshake.
+     */
+    public configure(wsUrl: string, token: string): void {
+        this._wsUrl = wsUrl;
+        this._token = token;
+    }
+
+    /**
      * Inicia el túnel de red.
      * Protegido contra llamadas concurrentes.
      */
@@ -59,7 +70,7 @@ export class WSClient {
         }
         this._clientId = clientId;
         this.isConnecting = true;
-        const urlWithAuth = `${this.wsUrl}/${clientId}`;
+        const urlWithAuth = `${this._wsUrl}/${clientId}`;
 
         try {
             const wsInstance = new WebSocket(urlWithAuth);
@@ -67,6 +78,11 @@ export class WSClient {
             wsInstance.on('open', () => {
                 this.isConnecting = false;
                 this.reconnectAttempts = 0;
+                // Phase 7.9.A.5.1 — send auth handshake before flushing any queued payloads.
+                // Token in URL query params would appear in server logs; first-message is portable.
+                if (this._token) {
+                    wsInstance.send(JSON.stringify({ event_type: 'auth', token: this._token }));
+                }
                 this._emitStatus('connected');
                 this._flushPending();
             });
@@ -102,8 +118,15 @@ export class WSClient {
                 }
             });
 
-            wsInstance.on('close', () => {
+            wsInstance.on('close', (code: number) => {
                 this.isConnecting = false;
+                // Phase 7.9.A.5.1 — close code 4001 = server rejected auth token.
+                // Do not retry: the token is wrong for this server instance.
+                if (code === 4001) {
+                    this._emitStatus('disconnected');
+                    vscode.window.showErrorMessage('AILIENANT: WebSocket auth rejected (token mismatch). Restart the extension.');
+                    return;
+                }
                 this._emitStatus('reconnecting');
                 this._handleReconnection(clientId);
             });

@@ -30,6 +30,11 @@ export type AgentRole =
 
 export type WsConnectionStatus = "connected" | "reconnecting" | "disconnected";
 
+export type BudgetLimitMode = 'weekly' | 'monthly' | 'none';
+
+// 7.9.A.7 — Models menu. 'manual' pins one model (no routing); 'auto' uses tiered orchestration.
+export type OrchestrationMode = 'manual' | 'auto';
+
 export type OccStatus = "clear" | "soft_conflict" | "hard_conflict";
 
 export interface TelemetryFrame {
@@ -57,13 +62,19 @@ export type WebviewToHostMessage =
     | { type: "profile_change";     value: IntelligenceProfile }
     | { type: "dreaming_toggle";    value: boolean; profile: DreamingProfile }
     | { type: "FORCE_AGENT";        role: AgentRole }
-    | { type: "FILE_BLOCKED_ACK" };
+    | { type: "FILE_BLOCKED_ACK" }
+    | { type: "SET_BUDGET_LIMIT"; mode: BudgetLimitMode; weeklyUsd: number; monthlyUsd: number };
 
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",
     profile:         "ailienant.intelligenceProfile",
     dreamingEnabled: "ailienant.dreamingEnabled",
     dreamingProfile: "ailienant.dreamingProfile",
-    reasoningPreset: "ailienant.reasoningPreset",
-    inferenceTier:   "ailienant.inferenceTier",
+    reasoningPreset:   "ailienant.reasoningPreset",
+    inferenceTier:     "ailienant.inferenceTier",
+    budgetLimitMode:   "ailienant.budgetLimitMode",
+    budgetWeeklyUsd:   "ailienant.budgetWeeklyUsd",
+    budgetMonthlyUsd:  "ailienant.budgetMonthlyUsd",
+    activeModelId:     "ailienant.activeModelId",
+    orchestrationMode: "ailienant.orchestrationMode",
 } as const;
