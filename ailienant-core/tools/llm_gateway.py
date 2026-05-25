@@ -1,17 +1,19 @@
 # ailienant-core/tools/llm_gateway.py
 
+import json
 import logging
 import os
 import re
 import time
 import uuid
 from enum import Enum
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Type
 
 import httpx
 import litellm
 from litellm import ModelResponse
 from litellm.exceptions import APIConnectionError, ContextWindowExceededError
+from pydantic import BaseModel
 
 from shared.config import (
     MODEL_SMALL,
@@ -29,6 +31,52 @@ litellm.suppress_debug_info = True
 
 # Matches optional leading/trailing whitespace and markdown code fences (```json ... ``` or ``` ... ```).
 _MD_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _loads_or_slice(text: str) -> Any:
+    """Parse JSON, tolerating conversational prose around the object (ADR-704 Step A/B).
+
+    Tries ``json.loads`` directly; on failure slices the outermost ``{…}``/``[…]`` span
+    (drops leading/trailing prose) and retries. Returns ``None`` when unparseable.
+    """
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    spans: List[tuple[int, int]] = []
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start != -1 and end != -1 and end > start:
+            spans.append((start, end))
+    if not spans:
+        return None
+    start, end = min(spans, key=lambda se: se[0])  # earliest opener = outermost wrapper
+    try:
+        return json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _find_superset_node(node: Any, required: "set[str]") -> Optional[Dict[str, Any]]:
+    """Return the first dict in the tree whose key set is a superset of ``required``.
+
+    Walks dict values and list items recursively (ADR-704 Step C). An empty ``required``
+    set matches the first dict encountered (nothing to unwrap).
+    """
+    if isinstance(node, dict):
+        if required.issubset(node.keys()):
+            return node
+        for value in node.values():
+            found = _find_superset_node(value, required)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_superset_node(item, required)
+            if found is not None:
+                return found
+    return None
 
 # ── Phase 6.3 — OOM Cascade & Inference Resilience ──────────────────────────
 # ainvoke() is the single LLM chokepoint. When a local model exhausts its
@@ -203,6 +251,45 @@ class LLMGateway:
         """
         match = _MD_FENCE_RE.match(content)
         return match.group(1).strip() if match else content.strip()
+
+    @staticmethod
+    def _extract_nested_schema_target(
+        raw_str: str, schema_class: Type[BaseModel]
+    ) -> Dict[str, Any]:
+        """Phase 7.10.4 (ADR-704 / G5) — AST-aware recursive envelope unwrapper.
+
+        Local/BYOM models routinely wrap structured output: a markdown fence,
+        conversational prose around the object, or a top-level envelope key such as
+        ``{"MissionSpecification": {…}}`` or ``{"json": {"result": {…}}}``. A flat
+        single-key lookup fails on all of these. This finds the *real* schema object by
+        recursively walking the parsed tree and returning the first dict whose key set is
+        a superset of ``schema_class``'s REQUIRED fields.
+
+        Centralized beside ``_sanitize_json_response`` so every structured agent call can
+        reuse it (planner, Mini-Judge, …). Never raises — the caller feeds the returned
+        dict to ``model_validate`` and lets Pydantic surface a native ``ValidationError``.
+
+        Returns:
+            The unwrapped object dict; the base parsed dict when no node matches (so the
+            caller's validation still fails loudly); or ``{}`` when the text is unparseable.
+        """
+        cleaned = LLMGateway._sanitize_json_response(raw_str)
+
+        # Step B — parse; on failure, slice the outermost JSON span to drop prose, retry.
+        parsed: Any = _loads_or_slice(cleaned)
+        if parsed is None:
+            return {}
+
+        # Step C — find the node whose keys ⊇ the schema's required fields.
+        required: set[str] = {
+            name for name, field in schema_class.model_fields.items() if field.is_required()
+        }
+        target = _find_superset_node(parsed, required)
+        if target is not None:
+            return target
+
+        # Step D — no match: return the base dict so Pydantic raises natively; else {}.
+        return parsed if isinstance(parsed, dict) else {}
 
     @staticmethod
     def invoke(
