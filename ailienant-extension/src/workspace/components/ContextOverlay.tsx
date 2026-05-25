@@ -3,80 +3,100 @@ import { Icon, type IconName } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { vscode } from '../vscode_bridge';
 
-type Kind = 'file' | 'terminal' | 'directory';
+type Kind = 'file' | 'terminal';
 
-interface Tab { id: Kind; label: string; icon: IconName; placeholder: string; }
+interface Tab { id: Kind; label: string; icon: IconName; }
 const TABS: Tab[] = [
-    { id: 'file',      label: 'Files',     icon: 'file',     placeholder: 'src/app.ts' },
-    { id: 'terminal',  label: 'Terminal',  icon: 'terminal', placeholder: 'last 40 lines of npm output' },
-    { id: 'directory', label: 'Directory', icon: 'folder',   placeholder: 'src/components/' },
+    { id: 'file',     label: 'Files',    icon: 'file' },
+    { id: 'terminal', label: 'Terminal', icon: 'terminal' },
 ];
 
 interface Props {
     onClose: () => void;
-    onAttach?: (kind: Kind, payload: string) => void;
 }
 
-export function ContextOverlay({ onClose, onAttach }: Props): JSX.Element {
+export function ContextOverlay({ onClose }: Props): JSX.Element {
     const [active, setActive] = useState<Kind>('file');
     const [payload, setPayload] = useState('');
 
-    const submit = (): void => {
+    const submitTerminal = (): void => {
         const value = payload.trim();
         if (!value) { return; }
-        vscode.postMessage({ type: 'ATTACH_CONTEXT', kind: active, payload: value });
-        onAttach?.(active, value);
+        vscode.postMessage({ type: 'ATTACH_CONTEXT', kind: 'terminal', payload: value });
         setPayload('');
         onClose();
     };
 
+    const browseFiles = (): void => {
+        vscode.postMessage({ type: 'PICK_FILES' });
+        onClose();
+    };
+
+    const browseFolder = (): void => {
+        vscode.postMessage({ type: 'PICK_FOLDER' });
+        onClose();
+    };
+
     return (
-        <div className="ws-context-overlay ai-card" role="dialog" aria-label="Attach context">
+        <div className="ws-context-overlay ai-card" role="dialog" aria-label="Add to context">
+            <div className="ws-context-head">
+                <span className="ws-mode-label">Add to context</span>
+                <Tooltip content="Close" side="left">
+                    <button
+                        className="ai-btn"
+                        data-variant="ghost"
+                        onClick={onClose}
+                        aria-label="Close"
+                    >
+                        <Icon name="x" size={12} />
+                    </button>
+                </Tooltip>
+            </div>
             <div className="ws-context-tabs">
                 {TABS.map(t => (
                     <Tooltip key={t.id} content={`Attach ${t.label.toLowerCase()}`}>
                         <button
                             className="ws-context-tab"
                             data-active={active === t.id ? 'true' : 'false'}
-                            onClick={() => setActive(t.id)}
+                            onClick={() => { setActive(t.id); setPayload(''); }}
                         >
-                            <Icon name={t.icon} size={14} />
+                            <Icon name={t.icon} size={12} />
                             <span>{t.label}</span>
                         </button>
                     </Tooltip>
                 ))}
-                <span style={{ flex: 1 }} />
-                <Tooltip content="Close" side="left">
-                    <button
-                        className="ai-btn"
-                        data-variant="ghost"
-                        onClick={onClose}
-                        aria-label="Close context overlay"
-                    >
-                        <Icon name="x" size={14} />
-                    </button>
-                </Tooltip>
             </div>
-            <input
-                className="ai-input"
-                placeholder={TABS.find(t => t.id === active)?.placeholder}
-                value={payload}
-                onChange={(e) => setPayload(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { submit(); } }}
-                autoFocus
-            />
-            <div className="ws-context-actions">
-                <Tooltip content="Attach to current prompt context">
+            {active === 'terminal' ? (
+                <>
+                    <input
+                        className="ws-context-input"
+                        placeholder="last 40 lines of npm output"
+                        value={payload}
+                        onChange={(e) => setPayload(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { submitTerminal(); } }}
+                        autoFocus
+                    />
                     <button
-                        className="ai-btn"
+                        className="ai-btn ws-context-submit"
                         data-variant="primary"
-                        onClick={submit}
+                        onClick={submitTerminal}
                         disabled={!payload.trim()}
                     >
-                        <Icon name="plus" size={14} /><span>Attach</span>
+                        <Icon name="plus" size={12} /><span>Attach</span>
                     </button>
-                </Tooltip>
-            </div>
+                </>
+            ) : (
+                <div className="ws-context-browse-group">
+                    <button className="ws-core-menu-btn ws-context-browse-btn" onClick={browseFiles}>
+                        <Icon name="file" size={13} />
+                        Browse files…
+                    </button>
+                    <button className="ws-core-menu-btn ws-context-browse-btn" onClick={browseFolder}>
+                        <Icon name="folder" size={13} />
+                        Browse folder…
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

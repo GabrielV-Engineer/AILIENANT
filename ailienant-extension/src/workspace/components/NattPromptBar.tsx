@@ -1,16 +1,17 @@
 import { useState, useCallback } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
+import { NattContextOverlay } from './NattContextOverlay';
 
 interface Props {
     nattName: string;
     disabled?: boolean;
-    onOpenContext?: () => void;
     onSubmit: (text: string) => void;
 }
 
-export function NattPromptBar({ nattName, disabled, onOpenContext, onSubmit }: Props): JSX.Element {
+export function NattPromptBar({ nattName, disabled, onSubmit }: Props): JSX.Element {
     const [value, setValue] = useState('');
+    const [contextOpen, setContextOpen] = useState(false);
 
     const submit = useCallback(() => {
         const t = value.trim();
@@ -21,18 +22,17 @@ export function NattPromptBar({ nattName, disabled, onOpenContext, onSubmit }: P
 
     return (
         <div className="ws-natt-prompt">
-            {onOpenContext && (
-                <Tooltip content="Attach files to Natt context">
-                    <button
-                        className="ws-prompt-icon-btn"
-                        onClick={onOpenContext}
-                        aria-label="Attach files to Natt"
-                        disabled={disabled}
-                    >
-                        <Icon name="plus" size={15} />
-                    </button>
-                </Tooltip>
-            )}
+            {contextOpen && <NattContextOverlay onClose={() => setContextOpen(false)} />}
+            <Tooltip content="Attach files to Natt context">
+                <button
+                    className="ws-prompt-icon-btn"
+                    onClick={() => setContextOpen(v => !v)}
+                    aria-label="Attach files to Natt"
+                    disabled={disabled}
+                >
+                    <Icon name="plus" size={15} />
+                </button>
+            </Tooltip>
             <textarea
                 className="ws-natt-prompt-input"
                 rows={2}

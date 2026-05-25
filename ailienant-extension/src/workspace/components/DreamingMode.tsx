@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { DreamingProfile } from '../../shared/config';
+import type { AilienantConfig } from '../../shared/types';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { vscode } from '../vscode_bridge';
@@ -8,17 +9,34 @@ import { vscode } from '../vscode_bridge';
 interface Props {
     active: boolean;
     profile: DreamingProfile;
+    config: AilienantConfig | null;
     onToggle: (next: boolean, profile: DreamingProfile) => void;
 }
 
-const PROFILES: { value: DreamingProfile; label: string; desc: string }[] = [
-    { value: 'Medium', label: 'Medium', desc: 'Llama 3.1 8B · 1 task · 3 files · <60min' },
-    { value: 'Big',    label: 'Big',    desc: 'Qwen 32B / 70B · 3 tasks · 10 files · nightly' },
-    { value: 'Cloud',  label: 'Cloud',  desc: 'Claude / GPT · 1 task · 5 files · token-capped' },
-    { value: 'Hybrid', label: 'Hybrid', desc: 'Cloud System 2 + Local System 1.5' },
+interface ProfileMeta {
+    value: DreamingProfile;
+    label: string;
+    limits: string;
+}
+
+const PROFILES: ProfileMeta[] = [
+    { value: 'Medium', label: 'Medium', limits: '1 task · 3 files · 60min' },
+    { value: 'Big',    label: 'Big',    limits: '3 tasks · 10 files · nightly' },
+    { value: 'Cloud',  label: 'Cloud',  limits: '1 task · 5 files · token-capped' },
+    { value: 'Hybrid', label: 'Hybrid', limits: 'Cloud thinks, local edits · 2 tasks · 6 files' },
 ];
 
-export function DreamingMode({ active, profile, onToggle }: Props): JSX.Element {
+function modelForProfile(p: DreamingProfile, config: AilienantConfig | null): string {
+    if (!config) { return '—'; }
+    switch (p) {
+        case 'Medium': return config.tiers.medium ?? '—';
+        case 'Big':    return config.tiers.big ?? '—';
+        case 'Cloud':  return config.tiers.cloud ?? '—';
+        case 'Hybrid': return '—';
+    }
+}
+
+export function DreamingMode({ active, profile, config, onToggle }: Props): JSX.Element {
     const [open, setOpen] = useState(false);
     const [currentProfile, setCurrentProfile] = useState<DreamingProfile>(profile);
 
@@ -43,28 +61,28 @@ export function DreamingMode({ active, profile, onToggle }: Props): JSX.Element 
             <Tooltip content={triggerLabel}>
                 <Popover.Trigger asChild>
                     <button
-                        className="ws-dream-btn"
+                        className="ws-prompt-icon-btn ws-dream-btn"
                         data-active={active ? 'true' : 'false'}
                         aria-label="Dreaming mode"
                     >
-                        <Icon name="moon" size={14} />
-                        <span>{active ? 'Dreaming' : 'Dream'}</span>
+                        <Icon name="moon" size={15} />
                     </button>
                 </Popover.Trigger>
             </Tooltip>
             <Popover.Portal>
                 <Popover.Content
-                    className="ws-popover"
-                    side="bottom"
-                    align="end"
+                    className="ws-dream-menu"
+                    side="top"
+                    align="start"
                     sideOffset={6}
+                    collisionPadding={8}
                 >
-                    <div className="ws-popover-header">
+                    <div className="ws-dream-head">
                         <div>
-                            <div className="ws-popover-label">Dreaming Mode</div>
+                            <div className="ws-dream-title">Dreaming Mode</div>
                             <div className="ws-muted">Autonomous background optimization</div>
                         </div>
-                        <Tooltip content="Toggle dreaming on/off">
+                        <Tooltip content="Toggle dreaming on / off">
                             <label className="ws-switch" aria-label="Toggle dreaming">
                                 <input type="checkbox" checked={active} onChange={handleToggle} />
                                 <span className="ws-switch-track" />
@@ -73,12 +91,16 @@ export function DreamingMode({ active, profile, onToggle }: Props): JSX.Element 
                         </Tooltip>
                     </div>
 
-                    <hr className="ws-hr" />
+                    <hr className="ws-mode-hr" />
 
-                    <div className="ws-popover-label">Profile</div>
-                    <div className="ws-profile-list">
+                    <div className="ws-mode-label">Profile</div>
+                    <div className="ws-dream-list">
                         {PROFILES.map(p => (
-                            <label key={p.value} className="ws-profile-item" data-active={currentProfile === p.value}>
+                            <label
+                                key={p.value}
+                                className="ws-dream-row"
+                                data-active={currentProfile === p.value}
+                            >
                                 <input
                                     type="radio"
                                     name="dreaming-profile"
@@ -86,19 +108,19 @@ export function DreamingMode({ active, profile, onToggle }: Props): JSX.Element 
                                     checked={currentProfile === p.value}
                                     onChange={() => handleProfileChange(p.value)}
                                 />
-                                <div className="ws-profile-text">
-                                    <div className="ws-profile-name">{p.label}</div>
-                                    <div className="ws-muted">{p.desc}</div>
+                                <div className="ws-dream-row-text">
+                                    <div className="ws-dream-row-top">
+                                        <span className="ws-dream-row-label">{p.label}</span>
+                                        <span className="ws-dream-row-model">{modelForProfile(p.value, config)}</span>
+                                    </div>
+                                    <div className="ws-dream-row-limits">{p.limits}</div>
                                 </div>
                             </label>
                         ))}
                     </div>
 
-                    <hr className="ws-hr" />
-
-                    <div className="ws-muted ws-tiny">
-                        Blast radius: 8 files / session.<br />
-                        L1 Local → L2 Cloud-Fixer → L3 Circuit Breaker.
+                    <div className="ws-muted ws-tiny ws-dream-footer">
+                        Runs in the background. Stops if errors compound.
                     </div>
                 </Popover.Content>
             </Popover.Portal>
