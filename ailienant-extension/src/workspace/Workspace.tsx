@@ -24,14 +24,14 @@ type ToastLevel = 'info' | 'warn' | 'error';
 interface ToastItem { id: number; level: ToastLevel; message: string; }
 let _toastId = 0;
 
-interface Message {
+export interface Message {
     role: 'user' | 'assistant';
     content: string;
     streaming?: boolean;
     steps?: string[];      // pipeline node trace for this assistant turn (Phase 7.9.B.14)
     stepsDone?: boolean;   // true after server_stream_end → ✓ + auto-collapse
 }
-interface NattMessage { role: 'natt' | 'user'; content: string; }
+export interface NattMessage { role: 'natt' | 'user'; content: string; }
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
 interface InitialState {
@@ -45,6 +45,8 @@ interface InitialState {
     activeModelId:    string;
     orchestrationMode: OrchestrationMode;
     workspaceFolder:  string;
+    initialMessages?:     Message[];      // Phase 7.9.B.20 — restored chat transcript
+    initialNattMessages?: NattMessage[];  // Phase 7.9.B.20 — restored analyst transcript
 }
 
 export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
@@ -71,15 +73,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const budgetUsd = budgetLimitMode === 'weekly'  ? budgetWeeklyUsd
                     : budgetLimitMode === 'monthly' ? budgetMonthlyUsd : 0;
 
-    // Chat
-    const [messages, setMessages] = useState<Message[]>([]);
+    // Chat — Phase 7.9.B.20: restored from the persisted per-session transcript.
+    const [messages, setMessages] = useState<Message[]>(initial.initialMessages ?? []);
     const [isStreaming, setIsStreaming] = useState(false);
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Natt
     const [nattOpen, setNattOpen] = useState(false);
-    const [nattMessages, setNattMessages] = useState<NattMessage[]>([]);
+    const [nattMessages, setNattMessages] = useState<NattMessage[]>(initial.initialNattMessages ?? []);
     const [hitlPending, setHitlPending] = useState<HITLIntervention | undefined>();
 
     // Telemetry
@@ -115,6 +117,21 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     useEffect(() => {
         vscode.postMessage({ type: 'NATT_VISIBILITY', open: nattOpen });
     }, [nattOpen]);
+
+    // Phase 7.9.B.20 — persist the per-session transcript so closing VS Code no
+    // longer empties the session. Debounced; transient stream flags are stripped.
+    useEffect(() => {
+        const handle = setTimeout(() => {
+            vscode.postMessage({
+                type: 'PERSIST_TRANSCRIPT',
+                messages: messages.map(({ role, content, steps, stepsDone }) => ({
+                    role, content, steps, stepsDone,
+                })),
+                nattMessages,
+            });
+        }, 400);
+        return () => clearTimeout(handle);
+    }, [messages, nattMessages]);
 
     // ── WS / extension message handler ─────────────────────────
     useEffect(() => {

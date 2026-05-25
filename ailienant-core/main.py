@@ -772,6 +772,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 task_service.clear_conversation(client_id)
                 logger.info("[Session: %s] Conversation memory cleared.", client_id)
 
+            elif valid_event.event_type == "client_restore_history":
+                # Phase 7.9.B.20 — rehydrate a reopened session's memory for continuity.
+                task_service.restore_conversation(
+                    client_id, [m.model_dump() for m in valid_event.data.messages]
+                )
+
             elif valid_event.event_type == "client_analyst_query":
                 # Phase 7.9.B.13 — Natt analyst pane bridge (live BYOM completion).
                 # Phase 7.9.B.17 — run it off the WS receive loop so a slow model

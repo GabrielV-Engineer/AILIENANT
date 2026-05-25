@@ -183,6 +183,14 @@ interface TitleUpdater {
     (sessionId: string, title: string): void;
 }
 
+// Phase 7.9.B.20 — per-session chat transcript persistence (survives VS Code close).
+const TRANSCRIPT_KEY_PREFIX = 'ailienant.transcript.';
+const MAX_PERSISTED_MESSAGES = 200;  // bound storage growth per session
+
+interface StoredMessage { role: 'user' | 'assistant'; content: string; steps?: string[]; stepsDone?: boolean; }
+interface StoredNattMessage { role: 'natt' | 'user'; content: string; }
+interface StoredTranscript { messages: StoredMessage[]; nattMessages: StoredNattMessage[]; }
+
 export class WorkspacePanelManager {
     // One panel per AILIENANT session (session.id → panel)
     private _panels: Map<string, vscode.WebviewPanel> = new Map();
@@ -242,6 +250,26 @@ export class WorkspacePanelManager {
         if (panel) { panel.dispose(); }
     }
 
+    // ── Phase 7.9.B.20 — transcript persistence (host-side, per session.id) ──
+    private _getTranscript(sessionId: string): StoredTranscript {
+        return this._workspaceState.get<StoredTranscript>(
+            TRANSCRIPT_KEY_PREFIX + sessionId,
+            { messages: [], nattMessages: [] },
+        );
+    }
+
+    private _saveTranscript(sessionId: string, t: StoredTranscript): void {
+        void this._workspaceState.update(TRANSCRIPT_KEY_PREFIX + sessionId, {
+            messages: t.messages.slice(-MAX_PERSISTED_MESSAGES),
+            nattMessages: t.nattMessages.slice(-MAX_PERSISTED_MESSAGES),
+        });
+    }
+
+    /** Drop a deleted session's persisted transcript. */
+    public clearTranscript(sessionId: string): void {
+        void this._workspaceState.update(TRANSCRIPT_KEY_PREFIX + sessionId, undefined);
+    }
+
     /** Reveal existing panel or open a new one for the given session. */
     public openSession(session: Session): void {
         const existing = this._panels.get(session.id);
@@ -298,8 +326,23 @@ export class WorkspacePanelManager {
         panel.webview.html = this._renderHtml(panel.webview, session);
 
         // ── WS status → forward to this panel ──────────────────────────────
+        // Phase 7.9.B.20 — on (re)connect, re-seed the backend's short-term memory
+        // from this session's persisted transcript so a reopened session keeps
+        // conversational continuity. Seed-if-absent on the server; sent once per
+        // connection so an in-flight conversation is never clobbered.
+        let _historyRestored = false;
         const wsStatusHandler: WSStatusCallback = (status) => {
             panel.webview.postMessage({ type: 'WS_STATUS', payload: status });
+            if (status === 'connected' && !_historyRestored) {
+                const stored = this._getTranscript(session.id).messages;
+                if (stored.length > 0) {
+                    WSClient.getInstance().send({
+                        event_type: 'client_restore_history',
+                        data: { messages: stored.map(m => ({ role: m.role, content: m.content })) },
+                    });
+                }
+                _historyRestored = true;
+            }
         };
         WSClient.getInstance().onStatus(wsStatusHandler);
 
@@ -478,6 +521,16 @@ export class WorkspacePanelManager {
                     // Phase 7.9.B.15 — also drop the backend's short-term memory.
                     WSClient.getInstance().send({ event_type: 'client_clear_conversation', data: {} });
                     panel.webview.postMessage({ type: 'CONVERSATION_CLEARED' });
+                    // Phase 7.9.B.20 — and the persisted transcript for this session.
+                    this.clearTranscript(session.id);
+                    break;
+                }
+                case 'PERSIST_TRANSCRIPT': {
+                    // Phase 7.9.B.20 — save the per-session transcript so closing VS Code
+                    // no longer empties the session.
+                    const msgs = Array.isArray(data.messages) ? data.messages as StoredMessage[] : [];
+                    const natt = Array.isArray(data.nattMessages) ? data.nattMessages as StoredNattMessage[] : [];
+                    this._saveTranscript(session.id, { messages: msgs, nattMessages: natt });
                     break;
                 }
                 case 'GET_MODELS': {
@@ -742,6 +795,7 @@ export class WorkspacePanelManager {
             vscode.Uri.joinPath(this._extensionUri, 'media', 'icon-color.svg')
         );
 
+        const transcript = this._getTranscript(session.id);
         const initial = {
             sessionId:    session.id,
             sessionTitle: session.title.trim() || 'AILIENANT',
@@ -753,6 +807,8 @@ export class WorkspacePanelManager {
             activeModelId:    this._workspaceState.get<string>(WORKSPACE_STATE_KEYS.activeModelId, ''),
             orchestrationMode: this._workspaceState.get<OrchestrationMode>(WORKSPACE_STATE_KEYS.orchestrationMode, 'auto'),
             workspaceFolder:  vscode.workspace.workspaceFolders?.[0]?.name ?? '',
+            initialMessages:     transcript.messages,      // Phase 7.9.B.20 — restore chat
+            initialNattMessages: transcript.nattMessages,  // Phase 7.9.B.20 — restore analyst
         };
         const initialAttr = JSON.stringify(initial)
             .replace(/&/g, '&amp;')
