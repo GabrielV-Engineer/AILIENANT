@@ -264,11 +264,19 @@ _NIGHTMARE_FAILSAFE: NightmareEvaluation = NightmareEvaluation(
 
 
 def _parse_nightmare_response(raw_content: Optional[str]) -> NightmareEvaluation:
-    """Parse the JSON body of a Nightmare/SupremeJudge response. Failsafe on bad input."""
+    """Parse the JSON body of a Nightmare/SupremeJudge response. Failsafe on bad input.
+
+    Phase 7.10.4 (ADR-704) — routes through the gateway's envelope unwrapper so a wrapped
+    verdict ({"result": {…}}, fenced, or prose-prefixed) is still scored instead of
+    failsafing to 0.0. Returns the failsafe only when the text is genuinely unparseable.
+    """
     if raw_content is None:
         return _NIGHTMARE_FAILSAFE
+    from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
+    parsed = LLMGateway._extract_nested_schema_target(raw_content, NightmareEvaluation)
+    if not parsed:
+        return _NIGHTMARE_FAILSAFE
     try:
-        parsed = json.loads(raw_content)
         clamped_reward: float = max(0.0, min(1.0, float(parsed.get("reward", 0.0))))
         violated = parsed.get("violated_rules", [])
         if not isinstance(violated, list):
@@ -277,7 +285,7 @@ def _parse_nightmare_response(raw_content: Optional[str]) -> NightmareEvaluation
             reward=clamped_reward,
             violated_rules=[str(v) for v in violated],
         )
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return _NIGHTMARE_FAILSAFE
 
 

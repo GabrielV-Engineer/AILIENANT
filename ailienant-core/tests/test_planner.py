@@ -145,10 +145,13 @@ async def test_planner_retries_on_malformed_json_then_succeeds() -> None:
     assert mock_ainvoke.call_count == 2
 
     # The second call's user message must contain the corrective banner.
+    # Phase 7.10.4 (ADR-704) — corrective now names the envelope failure mode + feeds errors.
     second_call_messages: List[Dict[str, str]] = mock_ainvoke.call_args_list[1].kwargs[
         "messages"
     ]
-    assert "failed strict schema validation" in second_call_messages[-1]["content"]
+    corrective = second_call_messages[-1]["content"]
+    assert "failed schema validation with these errors" in corrective
+    assert "DO NOT wrap it in any top-level key" in corrective
 
 
 # ── Test 2: retries exhausted → clean error return ────────────────────────────

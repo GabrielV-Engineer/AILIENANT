@@ -398,7 +398,14 @@ async def run_planner_node(state: dict) -> dict:
         "Tu única tarea es generar una especificación técnica completa y lógica (MissionSpecification). "
         "Define de forma estricta el Outcome, Scope, Constraints, Decisions, las Tasks secuenciales (WBS) "
         "asignando un target_role válido ('Refactor', 'Infra', 'Doc', 'SecOps', 'Test') a cada tarea, "
-        "y los Checks de validación QA."
+        "y los Checks de validación QA.\n\n"
+        # Phase 7.10.4 (ADR-704) — flat-JSON contract to stop envelope wrapping.
+        "CRITICAL FORMATTING RULE: Return ONLY the raw JSON object. DO NOT wrap it in any "
+        "top-level key such as 'response', 'mission', 'result', or 'MissionSpecification'. "
+        "No prose, no markdown fences. Emit exactly these top-level fields: "
+        "outcome, scope, constraints, decisions, tasks, checks. "
+        'Example shape: {"outcome": "...", "scope": [...], "constraints": [...], '
+        '"decisions": [...], "tasks": [...], "checks": [...]}.'
     )
 
     messages = [
@@ -427,12 +434,15 @@ async def run_planner_node(state: dict) -> dict:
     try:
         while retry_count <= MAX_PLANNER_RETRIES:
             if retry_count > 0 and last_validation_err:
-                await _emit("validation_retry")  # Phase 7.10.2 — re-drafting after schema failure.
+                # Phase 7.10.2/7.10.4 — narrate the retry with its attempt count.
+                await _emit(f"validation_retry ({retry_count}/{MAX_PLANNER_RETRIES})")
                 corrective: str = (
-                    f"\n\nYour previous attempt failed strict schema validation. "
-                    f"Pydantic reported:\n{last_validation_err}\n"
-                    f"Regenerate a fully valid MissionSpecification JSON. "
-                    f"Do not omit required fields."
+                    f"\n\nYour previous attempt failed schema validation with these errors:\n"
+                    f"{last_validation_err}\n"
+                    f"Fix them and emit ONLY the raw JSON object for MissionSpecification. "
+                    f"DO NOT wrap it in any top-level key (e.g. 'response', 'mission', "
+                    f"'MissionSpecification'), do not add prose or markdown fences, and do "
+                    f"not omit required fields."
                 )
                 messages[-1] = {
                     **messages[-1],
@@ -448,8 +458,14 @@ async def run_planner_node(state: dict) -> dict:
                     session_id=session_id,
                 )
                 raw_content = response.choices[0].message.content or ""
-                raw_json = LLMGateway._sanitize_json_response(raw_content)
-                mission_plan = MissionSpecification.model_validate_json(raw_json)
+                # Phase 7.10.4 (ADR-704/G5): unwrap envelopes (markdown / prose /
+                # top-level key) before validation so a wrapped-but-valid plan no longer
+                # burns a retry. No-match returns the base dict → Pydantic still fails loudly.
+                await _emit("unwrapping_schema")
+                extracted = LLMGateway._extract_nested_schema_target(
+                    raw_content, MissionSpecification
+                )
+                mission_plan = MissionSpecification.model_validate(extracted)
                 mission_plan = mission_plan.model_copy(update={   # Phase 2.22.6
                     "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
                 })

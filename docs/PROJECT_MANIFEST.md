@@ -1525,14 +1525,17 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
     (reply stays valid when edits fall outside the read region). *Backend contract done;
     extension-side divergence is 7.11 mesh scope.*
 
-- [ ] **7.10.4 — Planner & Agent Robustness**
-  - [ ] **(G5)** AST-aware recursive unwrapper
-    `_extract_nested_schema_target(raw_str, schema) -> dict`: strip markdown/prose,
-    recurse the parsed tree, prune model envelopes, return the first sub-object matching
-    the schema fields; re-feed to `model_validate_json`. Used by planner/mini-judge/coder.
-  - [ ] Harden the planner prompt with an explicit field-shape example + "do not wrap in
-    a top-level key"; strengthen the retry corrective.
-  - [ ] Granular planner progress (feeds 7.10.2) so long runs are never silent.
+- [x] **7.10.4 — Planner & Agent Robustness**
+  - [x] **(G5)** AST-aware recursive unwrapper
+    `_extract_nested_schema_target(raw_str, schema) -> dict` (in `tools/llm_gateway.py`
+    beside `_sanitize_json_response`): strip markdown/prose, recurse the parsed tree, prune
+    model envelopes, return the first sub-object whose keys ⊇ the schema's required fields;
+    re-feed to `model_validate`. Wired into planner + Mini-Judge (`_parse_nightmare_response`);
+    coder keeps its `edits` parse until it gains a response schema.
+  - [x] Harden the planner prompt with an explicit field-shape example + "do not wrap in
+    a top-level key"; strengthen the retry corrective (names the envelope failure + feeds errors).
+  - [x] Granular planner progress (feeds 7.10.2): emits `unwrapping_schema` +
+    `validation_retry (n/max)`.
 
 - [ ] **7.10.5 — Connective Integration Checkpoint Gate**
   - [ ] E2E: main chat, analyst chat, and web dashboard all round-trip correctly.
