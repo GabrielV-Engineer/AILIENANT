@@ -2233,7 +2233,7 @@ var require_websocket = __commonJS({
     var http = require("http");
     var net2 = require("net");
     var tls = require("tls");
-    var { randomBytes: randomBytes2, createHash: createHash2 } = require("crypto");
+    var { randomBytes: randomBytes2, createHash: createHash3 } = require("crypto");
     var { Duplex, Readable } = require("stream");
     var { URL: URL2 } = require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -2893,7 +2893,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash2("sha1").update(key + GUID).digest("base64");
+        const digest = createHash3("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3260,7 +3260,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter3 = require("events");
     var http = require("http");
     var { Duplex } = require("stream");
-    var { createHash: createHash2 } = require("crypto");
+    var { createHash: createHash3 } = require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3561,7 +3561,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash2("sha1").update(key + GUID).digest("base64");
+        const digest = createHash3("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -3653,7 +3653,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode12 = __toESM(require("vscode"));
+var vscode13 = __toESM(require("vscode"));
 
 // src/core/IntentRouter.ts
 var vscode = __toESM(require("vscode"));
@@ -3974,9 +3974,9 @@ var APIClient = class _APIClient {
   }
   // ── Phase 7.9.A.7 — Command-menu config endpoints ────────────────────────
   /** Generic JSON request helper. Returns null on any network/parse error (non-blocking). */
-  async _json(path2, init, timeoutMs = 5e3) {
+  async _json(path3, init, timeoutMs = 5e3) {
     try {
-      const response = await fetch(`${this._baseUrl}${path2}`, {
+      const response = await fetch(`${this._baseUrl}${path3}`, {
         headers: { "Content-Type": "application/json", ...this._authHeaders() },
         signal: AbortSignal.timeout(timeoutMs),
         ...init
@@ -4529,12 +4529,101 @@ var SessionBrowserProvider = class {
 };
 
 // src/providers/workspace_panel.ts
-var vscode9 = __toESM(require("vscode"));
-var path = __toESM(require("path"));
+var vscode10 = __toESM(require("vscode"));
+var path2 = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 var cp = __toESM(require("child_process"));
 var net = __toESM(require("net"));
+var crypto3 = __toESM(require("crypto"));
+
+// src/core/PatchActuator.ts
+var vscode8 = __toESM(require("vscode"));
+var path = __toESM(require("path"));
 var crypto2 = __toESM(require("crypto"));
+var PatchActuator = class _PatchActuator {
+  /** SHA-256 over EOL-normalized text — must match the Python coder's content_hash. */
+  static _hash(text) {
+    const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    return crypto2.createHash("sha256").update(normalized, "utf8").digest("hex");
+  }
+  static _resolveUri(filePath) {
+    if (path.isAbsolute(filePath)) {
+      return vscode8.Uri.file(filePath);
+    }
+    const root = vscode8.workspace.workspaceFolders?.[0]?.uri;
+    return root ? vscode8.Uri.joinPath(root, filePath) : vscode8.Uri.file(filePath);
+  }
+  static async _openExisting(uri) {
+    try {
+      return await vscode8.workspace.openTextDocument(uri);
+    } catch {
+      return null;
+    }
+  }
+  static async apply(payload) {
+    const result = {
+      patch_id: payload.patch_id,
+      ok: false,
+      applied_files: [],
+      stale_files: []
+    };
+    try {
+      const edit = new vscode8.WorkspaceEdit();
+      const toSave = [];
+      const resolved = [];
+      for (const item of payload.edits) {
+        const uri = _PatchActuator._resolveUri(item.file_path);
+        const doc = await _PatchActuator._openExisting(uri);
+        const currentHash = doc ? _PatchActuator._hash(doc.getText()) : _PatchActuator._hash("");
+        if (item.base_hash && currentHash !== item.base_hash) {
+          result.stale_files.push(item.file_path);
+        }
+        resolved.push({ uri, doc, item });
+      }
+      if (result.stale_files.length > 0) {
+        void vscode8.window.showWarningMessage(
+          `AILIENANT: not applied \u2014 ${result.stale_files.length} file(s) changed since the patch was proposed: ${result.stale_files.join(", ")}.`
+        );
+        return result;
+      }
+      for (const { uri, doc, item } of resolved) {
+        if (!doc) {
+          edit.createFile(uri, { ignoreIfExists: true });
+          edit.insert(uri, new vscode8.Position(0, 0), item.new_content);
+        } else {
+          const fullRange = new vscode8.Range(
+            new vscode8.Position(0, 0),
+            doc.lineAt(Math.max(doc.lineCount - 1, 0)).range.end
+          );
+          edit.replace(uri, fullRange, item.new_content);
+        }
+        toSave.push(uri);
+        result.applied_files.push(item.file_path);
+      }
+      const applied = await vscode8.workspace.applyEdit(edit);
+      if (!applied) {
+        result.applied_files = [];
+        result.error = "VS Code rejected the workspace edit.";
+        return result;
+      }
+      if (payload.save !== false) {
+        for (const uri of toSave) {
+          const d = await vscode8.workspace.openTextDocument(uri);
+          if (d.isDirty) {
+            await d.save();
+          }
+        }
+      }
+      result.ok = true;
+      return result;
+    } catch (err) {
+      result.ok = false;
+      result.applied_files = [];
+      result.error = err instanceof Error ? err.message : String(err);
+      return result;
+    }
+  }
+};
 
 // src/shared/config.ts
 var WORKSPACE_STATE_KEYS = {
@@ -4555,19 +4644,19 @@ var WORKSPACE_STATE_KEYS = {
 var DEFAULT_ANALYST_NAME = "Natt";
 
 // src/shared/config_loader.ts
-var vscode8 = __toESM(require("vscode"));
+var vscode9 = __toESM(require("vscode"));
 var CONFIG_FILENAME = "ailienant-config.json";
 var ConfigLoader = class {
   _config = null;
   _watcher;
-  _onChange = new vscode8.EventEmitter();
+  _onChange = new vscode9.EventEmitter();
   onChange = this._onChange.event;
   constructor() {
     this._load();
     const root = this._workspaceRoot();
     if (root) {
-      this._watcher = vscode8.workspace.createFileSystemWatcher(
-        new vscode8.RelativePattern(root, CONFIG_FILENAME)
+      this._watcher = vscode9.workspace.createFileSystemWatcher(
+        new vscode9.RelativePattern(root, CONFIG_FILENAME)
       );
       this._watcher.onDidChange(() => this._load());
       this._watcher.onDidCreate(() => this._load());
@@ -4582,7 +4671,7 @@ var ConfigLoader = class {
     this._onChange.dispose();
   }
   _workspaceRoot() {
-    const folders = vscode8.workspace.workspaceFolders;
+    const folders = vscode9.workspace.workspaceFolders;
     return folders && folders.length > 0 ? folders[0].uri : void 0;
   }
   async _load() {
@@ -4591,9 +4680,9 @@ var ConfigLoader = class {
       this._set(null);
       return;
     }
-    const uri = vscode8.Uri.joinPath(root, CONFIG_FILENAME);
+    const uri = vscode9.Uri.joinPath(root, CONFIG_FILENAME);
     try {
-      const bytes = await vscode8.workspace.fs.readFile(uri);
+      const bytes = await vscode9.workspace.fs.readFile(uri);
       const text = new TextDecoder("utf-8").decode(bytes);
       const parsed = JSON.parse(text);
       if (this._isValid(parsed)) {
@@ -4631,13 +4720,13 @@ var ConfigLoader = class {
 // src/providers/workspace_panel.ts
 function findBackendPath(extensionFsPath) {
   const candidates = [
-    ...(vscode9.workspace.workspaceFolders ?? []).map(
-      (f) => path.join(f.uri.fsPath, "ailienant-core")
+    ...(vscode10.workspace.workspaceFolders ?? []).map(
+      (f) => path2.join(f.uri.fsPath, "ailienant-core")
     ),
-    path.join(extensionFsPath, "..", "ailienant-core")
+    path2.join(extensionFsPath, "..", "ailienant-core")
   ];
   for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, "main.py"))) {
+    if (fs.existsSync(path2.join(candidate, "main.py"))) {
       return candidate;
     }
   }
@@ -4645,13 +4734,13 @@ function findBackendPath(extensionFsPath) {
 }
 function findVenvPython(backendPath) {
   const candidates = [
-    path.join(backendPath, ".venv", "Scripts", "python.exe"),
+    path2.join(backendPath, ".venv", "Scripts", "python.exe"),
     // dot-venv Windows
-    path.join(backendPath, "venv", "Scripts", "python.exe"),
+    path2.join(backendPath, "venv", "Scripts", "python.exe"),
     // plain venv Windows
-    path.join(backendPath, ".venv", "bin", "python"),
+    path2.join(backendPath, ".venv", "bin", "python"),
     // dot-venv Unix
-    path.join(backendPath, "venv", "bin", "python")
+    path2.join(backendPath, "venv", "bin", "python")
     // plain venv Unix
   ];
   for (const p of candidates) {
@@ -4685,7 +4774,7 @@ var CoreProcessManager = class _CoreProcessManager {
     this.port = port;
     this.token = token;
     this._extensionFsPath = extensionFsPath;
-    this._outputChannel = vscode9.window.createOutputChannel("AILIENANT Core");
+    this._outputChannel = vscode10.window.createOutputChannel("AILIENANT Core");
   }
   getState() {
     return this._state;
@@ -4699,7 +4788,7 @@ var CoreProcessManager = class _CoreProcessManager {
     if (!backendPath) {
       this._state = "crashed";
       this._outputChannel.appendLine("[AILIENANT] Cannot locate ailienant-core/. Open the monorepo root as workspace or set ailienant.coreStartCommand.");
-      void vscode9.window.showWarningMessage(
+      void vscode10.window.showWarningMessage(
         "AILIENANT: Cannot locate ailienant-core/.",
         "Show Output",
         "Open Settings"
@@ -4708,7 +4797,7 @@ var CoreProcessManager = class _CoreProcessManager {
           this._outputChannel.show();
         }
         if (choice === "Open Settings") {
-          void vscode9.commands.executeCommand("workbench.action.openSettings", "ailienant.coreStartCommand");
+          void vscode10.commands.executeCommand("workbench.action.openSettings", "ailienant.coreStartCommand");
         }
       });
       return;
@@ -4748,7 +4837,7 @@ var CoreProcessManager = class _CoreProcessManager {
       } else {
         this._state = "crashed";
         this._outputChannel.appendLine(`[AILIENANT] Core stopped (code ${code}). Max retries reached.`);
-        void vscode9.window.showErrorMessage(
+        void vscode10.window.showErrorMessage(
           "AILIENANT: Core process stopped unexpectedly.",
           "Show Output"
         ).then((choice) => {
@@ -4795,7 +4884,7 @@ var CoreProcessManager = class _CoreProcessManager {
   }
 };
 function generateAuthToken() {
-  return crypto2.randomBytes(32).toString("hex");
+  return crypto3.randomBytes(32).toString("hex");
 }
 var WorkspacePanelManager = class {
   constructor(_extensionUri, _workspaceState) {
@@ -4809,8 +4898,8 @@ var WorkspacePanelManager = class {
       }
     });
     this._disposables.push(
-      vscode9.workspace.onDidChangeWorkspaceFolders(() => {
-        const folder = vscode9.workspace.workspaceFolders?.[0]?.name ?? "";
+      vscode10.workspace.onDidChangeWorkspaceFolders(() => {
+        const folder = vscode10.workspace.workspaceFolders?.[0]?.name ?? "";
         for (const panel of this._panels.values()) {
           panel.webview.postMessage({ type: "WORKSPACE_UPDATED", workspaceFolder: folder });
         }
@@ -4857,7 +4946,7 @@ var WorkspacePanelManager = class {
   openSession(session) {
     const existing = this._panels.get(session.id);
     if (existing) {
-      existing.reveal(vscode9.ViewColumn.One);
+      existing.reveal(vscode10.ViewColumn.One);
       return;
     }
     this._createPanel(session);
@@ -4890,20 +4979,20 @@ var WorkspacePanelManager = class {
   }
   _createPanel(session) {
     const tabTitle = session.title.trim() || "AILIENANT";
-    const panel = vscode9.window.createWebviewPanel(
+    const panel = vscode10.window.createWebviewPanel(
       "ailienant.workspace",
       tabTitle,
-      vscode9.ViewColumn.One,
+      vscode10.ViewColumn.One,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [
-          vscode9.Uri.joinPath(this._extensionUri, "dist"),
-          vscode9.Uri.joinPath(this._extensionUri, "media")
+          vscode10.Uri.joinPath(this._extensionUri, "dist"),
+          vscode10.Uri.joinPath(this._extensionUri, "media")
         ]
       }
     );
-    panel.iconPath = vscode9.Uri.joinPath(this._extensionUri, "media", "icon-color.svg");
+    panel.iconPath = vscode10.Uri.joinPath(this._extensionUri, "media", "icon-color.svg");
     panel.webview.html = this._renderHtml(panel.webview, session);
     const wsStatusHandler = (status) => {
       panel.webview.postMessage({ type: "WS_STATUS", payload: status });
@@ -4916,6 +5005,12 @@ var WorkspacePanelManager = class {
       }
       const data = msg.data;
       if (data?.session_id && data.session_id !== session.id) {
+        return;
+      }
+      if (msg.event_type === "server_apply_workspace_edit") {
+        void PatchActuator.apply(msg.data).then((result) => {
+          WSClient.getInstance().send({ event_type: "client_patch_applied", data: result });
+        });
         return;
       }
       panel.webview.postMessage({ type: msg.event_type, payload: msg.data });
@@ -4938,7 +5033,7 @@ var WorkspacePanelManager = class {
             });
           }
           this._runningTasks.add(session.id);
-          const activeDoc = vscode9.window.activeTextEditor?.document;
+          const activeDoc = vscode10.window.activeTextEditor?.document;
           const intercepted = await IntentRouter.intercept(data.value, activeDoc);
           if (!intercepted) {
             await SessionManager.getInstance().startAITask(data.value);
@@ -5013,42 +5108,42 @@ var WorkspacePanelManager = class {
           break;
         }
         case "OPEN_DASHBOARD": {
-          const cfg = vscode9.workspace.getConfiguration("ailienant");
+          const cfg = vscode10.workspace.getConfiguration("ailienant");
           const base = this._coreManager?.port ? `http://127.0.0.1:${this._coreManager.port}` : cfg.get("backendUrl", "http://localhost:8000").replace(/\/$/, "");
           const tab = typeof data.tab === "string" ? data.tab : "";
           const url = tab ? `${base}/dashboard/?tab=${encodeURIComponent(tab)}` : `${base}/dashboard/`;
-          void vscode9.env.openExternal(vscode9.Uri.parse(url));
+          void vscode10.env.openExternal(vscode10.Uri.parse(url));
           break;
         }
         case "OPEN_SETTINGS": {
-          void vscode9.commands.executeCommand("workbench.action.openSettings", "ailienant");
+          void vscode10.commands.executeCommand("workbench.action.openSettings", "ailienant");
           break;
         }
         case "OPEN_DOCS": {
-          const cfg = vscode9.workspace.getConfiguration("ailienant");
+          const cfg = vscode10.workspace.getConfiguration("ailienant");
           const docsUrl = cfg.get("docsUrl", "").trim();
           if (docsUrl) {
-            void vscode9.env.openExternal(vscode9.Uri.parse(docsUrl));
+            void vscode10.env.openExternal(vscode10.Uri.parse(docsUrl));
           } else {
-            void vscode9.window.showInformationMessage(
+            void vscode10.window.showInformationMessage(
               'AILIENANT documentation link is not configured. Set "ailienant.docsUrl" in VS Code Settings.',
               "Open Settings"
             ).then((choice) => {
               if (choice === "Open Settings") {
-                void vscode9.commands.executeCommand("workbench.action.openSettings", "ailienant.docsUrl");
+                void vscode10.commands.executeCommand("workbench.action.openSettings", "ailienant.docsUrl");
               }
             });
           }
           break;
         }
         case "MENTION_FILE": {
-          const found = await vscode9.workspace.findFiles("**/*", "**/{node_modules,.git,dist,.venv}/**", 500);
+          const found = await vscode10.workspace.findFiles("**/*", "**/{node_modules,.git,dist,.venv}/**", 500);
           if (found.length === 0) {
-            void vscode9.window.showInformationMessage("AILIENANT: no workspace files found to mention.");
+            void vscode10.window.showInformationMessage("AILIENANT: no workspace files found to mention.");
             break;
           }
-          const items = found.map((u) => vscode9.workspace.asRelativePath(u));
-          const picked = await vscode9.window.showQuickPick(items.sort(), {
+          const items = found.map((u) => vscode10.workspace.asRelativePath(u));
+          const picked = await vscode10.window.showQuickPick(items.sort(), {
             title: "Mention a project file",
             placeHolder: "Type to filter workspace files",
             matchOnDetail: true
@@ -5092,11 +5187,11 @@ var WorkspacePanelManager = class {
           break;
         }
         case "OPEN_WORKSPACE": {
-          void vscode9.commands.executeCommand("vscode.openFolder");
+          void vscode10.commands.executeCommand("vscode.openFolder");
           break;
         }
         case "PICK_FILES": {
-          const uris = await vscode9.window.showOpenDialog({
+          const uris = await vscode10.window.showOpenDialog({
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: true,
@@ -5109,7 +5204,7 @@ var WorkspacePanelManager = class {
           break;
         }
         case "PICK_FOLDER": {
-          const uris = await vscode9.window.showOpenDialog({
+          const uris = await vscode10.window.showOpenDialog({
             canSelectFiles: false,
             canSelectFolders: true,
             canSelectMany: false,
@@ -5122,7 +5217,7 @@ var WorkspacePanelManager = class {
           break;
         }
         case "PICK_NATT_FILES": {
-          const uris = await vscode9.window.showOpenDialog({
+          const uris = await vscode10.window.showOpenDialog({
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: true,
@@ -5135,7 +5230,7 @@ var WorkspacePanelManager = class {
           break;
         }
         case "PICK_NATT_FOLDER": {
-          const uris = await vscode9.window.showOpenDialog({
+          const uris = await vscode10.window.showOpenDialog({
             canSelectFiles: false,
             canSelectFolders: true,
             canSelectMany: false,
@@ -5250,7 +5345,7 @@ var WorkspacePanelManager = class {
     if (!updater) {
       return;
     }
-    const cfg = vscode9.workspace.getConfiguration("ailienant");
+    const cfg = vscode10.workspace.getConfiguration("ailienant");
     const base = this._coreManager?.port ? `http://127.0.0.1:${this._coreManager.port}` : cfg.get("backendUrl", "http://localhost:8000").replace(/\/$/, "");
     const token = this._coreManager?.token ?? "";
     void this._fetchTitle(base, prompt, token).then((title) => {
@@ -5299,25 +5394,25 @@ var WorkspacePanelManager = class {
     const name = this._nattName();
     const preview = typeof data.preview === "string" ? data.preview : isHitl ? "authorization required" : "has a critical update";
     const button = `Open ${name}`;
-    void vscode9.window.showInformationMessage(
+    void vscode10.window.showInformationMessage(
       `${name}: ${preview}`,
       button
     ).then((choice) => {
       if (choice === button) {
-        panel.reveal(vscode9.ViewColumn.One);
+        panel.reveal(vscode10.ViewColumn.One);
         panel.webview.postMessage({ type: "OPEN_NATT" });
       }
     });
   }
   _renderHtml(webview, session) {
     const scriptUri = webview.asWebviewUri(
-      vscode9.Uri.joinPath(this._extensionUri, "dist", "workspace.js")
+      vscode10.Uri.joinPath(this._extensionUri, "dist", "workspace.js")
     );
     const styleUri = webview.asWebviewUri(
-      vscode9.Uri.joinPath(this._extensionUri, "dist", "workspace.css")
+      vscode10.Uri.joinPath(this._extensionUri, "dist", "workspace.css")
     );
     const logoUri = webview.asWebviewUri(
-      vscode9.Uri.joinPath(this._extensionUri, "media", "icon-color.svg")
+      vscode10.Uri.joinPath(this._extensionUri, "media", "icon-color.svg")
     );
     const initial = {
       sessionId: session.id,
@@ -5329,7 +5424,7 @@ var WorkspacePanelManager = class {
       budgetMonthlyUsd: this._workspaceState.get(WORKSPACE_STATE_KEYS.budgetMonthlyUsd, 50),
       activeModelId: this._workspaceState.get(WORKSPACE_STATE_KEYS.activeModelId, ""),
       orchestrationMode: this._workspaceState.get(WORKSPACE_STATE_KEYS.orchestrationMode, "auto"),
-      workspaceFolder: vscode9.workspace.workspaceFolders?.[0]?.name ?? ""
+      workspaceFolder: vscode10.workspace.workspaceFolders?.[0]?.name ?? ""
     };
     const initialAttr = JSON.stringify(initial).replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/</g, "&lt;");
     return `<!DOCTYPE html>
@@ -5350,10 +5445,10 @@ var WorkspacePanelManager = class {
 };
 
 // src/providers/mirror.ts
-var vscode11 = __toESM(require("vscode"));
+var vscode12 = __toESM(require("vscode"));
 
 // src/providers/telemetry.ts
-var vscode10 = __toESM(require("vscode"));
+var vscode11 = __toESM(require("vscode"));
 var REJECTION_RATIO = 0.7;
 var REJECTION_WINDOW_MS = 3 * 60 * 1e3;
 var BoundingBoxRegistry = class {
@@ -5395,7 +5490,7 @@ var BoundingBoxRegistry = class {
   }
 };
 function installDecayListener(context, registry) {
-  const subscription = vscode10.workspace.onDidChangeTextDocument(async (event) => {
+  const subscription = vscode11.workspace.onDidChangeTextDocument(async (event) => {
     const fired = registry.processChange(event);
     if (!fired) {
       return;
@@ -5417,7 +5512,7 @@ var boundingBoxRegistry = new BoundingBoxRegistry();
 // src/providers/mirror.ts
 var MIRROR_SCHEME = "ailienant-vision";
 var MirrorContentProvider = class {
-  _onDidChange = new vscode11.EventEmitter();
+  _onDidChange = new vscode12.EventEmitter();
   onDidChange = this._onDidChange.event;
   async provideTextDocumentContent(uri) {
     const nodeId = uri.authority;
@@ -5439,30 +5534,30 @@ var MirrorContentProvider = class {
   }
 };
 function buildMirrorUri(nodeId, relPath) {
-  return vscode11.Uri.from({
+  return vscode12.Uri.from({
     scheme: MIRROR_SCHEME,
     authority: nodeId,
     path: "/" + relPath.replace(/^\/+/, "")
   });
 }
 async function showMctsDiff(nodeId, relPath) {
-  const ws = vscode11.workspace.workspaceFolders?.[0];
+  const ws = vscode12.workspace.workspaceFolders?.[0];
   if (!ws) {
-    vscode11.window.showErrorMessage("AILIENANT: no workspace folder open");
+    vscode12.window.showErrorMessage("AILIENANT: no workspace folder open");
     return;
   }
-  const local = vscode11.Uri.joinPath(ws.uri, relPath);
+  const local = vscode12.Uri.joinPath(ws.uri, relPath);
   const virtual = buildMirrorUri(nodeId, relPath);
   const title = `${relPath} \u2194 Dream ${nodeId.slice(0, 8)}`;
-  await vscode11.commands.executeCommand("vscode.diff", local, virtual, title);
+  await vscode12.commands.executeCommand("vscode.diff", local, virtual, title);
 }
 async function applyMergeCommand(nodeId) {
-  const ws = vscode11.workspace.workspaceFolders?.[0];
+  const ws = vscode12.workspace.workspaceFolders?.[0];
   if (!ws) {
-    vscode11.window.showErrorMessage("AILIENANT: no workspace folder open");
+    vscode12.window.showErrorMessage("AILIENANT: no workspace folder open");
     return;
   }
-  const confirm = await vscode11.window.showWarningMessage(
+  const confirm = await vscode12.window.showWarningMessage(
     `Apply MCTS dream ${nodeId.slice(0, 8)} to disk? Files will be overwritten.`,
     { modal: true },
     "Apply"
@@ -5475,8 +5570,8 @@ async function applyMergeCommand(nodeId) {
     if (report.success) {
       for (const relPath of report.merged_paths) {
         try {
-          const localUri = vscode11.Uri.joinPath(ws.uri, relPath);
-          const doc = await vscode11.workspace.openTextDocument(localUri);
+          const localUri = vscode12.Uri.joinPath(ws.uri, relPath);
+          const doc = await vscode12.workspace.openTextDocument(localUri);
           const text = doc.getText();
           boundingBoxRegistry.register({
             uri: localUri.fsPath,
@@ -5489,16 +5584,16 @@ async function applyMergeCommand(nodeId) {
           console.warn(`[ailienant] failed to register bounding box for ${relPath}:`, boxErr);
         }
       }
-      vscode11.window.showInformationMessage(
+      vscode12.window.showInformationMessage(
         `AILIENANT: merged ${report.merged_files} file(s); pruned ${report.prune_count} node(s).`
       );
     } else {
-      vscode11.window.showErrorMessage(
+      vscode12.window.showErrorMessage(
         `AILIENANT merge failed: ${report.errors.join("; ")}`
       );
     }
   } catch (e) {
-    vscode11.window.showErrorMessage(`AILIENANT applyMerge call failed: ${e?.message ?? e}`);
+    vscode12.window.showErrorMessage(`AILIENANT applyMerge call failed: ${e?.message ?? e}`);
   }
 }
 
@@ -5518,7 +5613,7 @@ async function activate(context) {
   const coreManager = new CoreProcessManager(port, token, context.extensionUri.fsPath);
   const workspaceManager = new WorkspacePanelManager(context.extensionUri, context.workspaceState);
   workspaceManager.setCoreManager(coreManager);
-  if (vscode12.workspace.getConfiguration("ailienant").get("autoStartCore", true)) {
+  if (vscode13.workspace.getConfiguration("ailienant").get("autoStartCore", true)) {
     void coreManager.start();
   }
   const onOpenSession = (s) => workspaceManager.openSession(s);
@@ -5544,12 +5639,12 @@ async function activate(context) {
   workspaceManager.setTitleUpdater((sessionId, title) => {
     sessionBrowser.updateSessionTitle(sessionId, title);
   });
-  const sidebarRegistration = vscode12.window.registerWebviewViewProvider(
+  const sidebarRegistration = vscode13.window.registerWebviewViewProvider(
     SessionBrowserProvider.viewType,
     sessionBrowser,
     { webviewOptions: { retainContextWhenHidden: true } }
   );
-  const openWorkspaceCmd = vscode12.commands.registerCommand(
+  const openWorkspaceCmd = vscode13.commands.registerCommand(
     "ailienant.openWorkspace",
     async () => {
       const sessions = sessionBrowser.getSessions();
@@ -5559,7 +5654,7 @@ async function activate(context) {
       workspaceManager.openSession(target);
     }
   );
-  const newSessionCmd = vscode12.commands.registerCommand(
+  const newSessionCmd = vscode13.commands.registerCommand(
     "ailienant.newSession",
     async () => {
       const s = await onNewSession();
@@ -5567,17 +5662,17 @@ async function activate(context) {
       workspaceManager.openSession(s);
     }
   );
-  const runTaskCmd = vscode12.commands.registerCommand(
+  const runTaskCmd = vscode13.commands.registerCommand(
     "ailienant-extension.runTask",
     async () => {
-      const prompt = await vscode12.window.showInputBox({
+      const prompt = await vscode13.window.showInputBox({
         prompt: "Enter your directive for AILIENANT",
         placeHolder: 'e.g. "format", "constify", or describe a complex task'
       });
       if (!prompt) {
         return;
       }
-      const doc = vscode12.window.activeTextEditor?.document;
+      const doc = vscode13.window.activeTextEditor?.document;
       const intercepted = await IntentRouter.intercept(prompt, doc);
       if (!intercepted) {
         await SessionManager.getInstance().startAITask(prompt);
@@ -5585,15 +5680,15 @@ async function activate(context) {
     }
   );
   const mirrorProvider = new MirrorContentProvider();
-  const mirrorRegistration = vscode12.workspace.registerTextDocumentContentProvider(
+  const mirrorRegistration = vscode13.workspace.registerTextDocumentContentProvider(
     MIRROR_SCHEME,
     mirrorProvider
   );
-  const showDiffCmd = vscode12.commands.registerCommand(
+  const showDiffCmd = vscode13.commands.registerCommand(
     "ailienant.showMctsDiff",
     (nodeId, filePath) => showMctsDiff(nodeId, filePath)
   );
-  const applyMergeCmd = vscode12.commands.registerCommand(
+  const applyMergeCmd = vscode13.commands.registerCommand(
     "ailienant.applyMerge",
     (nodeId) => applyMergeCommand(nodeId)
   );

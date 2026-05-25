@@ -2,6 +2,7 @@
 
 import asyncio
 import difflib
+import hashlib
 import json
 import logging
 import uuid
@@ -14,6 +15,17 @@ logger = logging.getLogger("CODER_NODE")
 
 # Strong reference set: prevents GC from destroying broadcast tasks mid-flight.
 _background_tasks: set = set()
+
+
+def content_hash(s: str) -> str:
+    """SHA-256 over newline-normalized text (Phase 7.9.B.18 stale-file guard).
+
+    Python text-mode reads collapse CRLF→LF, while VS Code's doc.getText() keeps
+    the editor EOL. Normalizing both sides before hashing prevents every Windows
+    (CRLF) file from falsely reading as stale at apply time.
+    """
+    normalized = s.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _make_vfs_reader(project_id: str, workspace_root: str, session_id: str):
@@ -218,16 +230,21 @@ async def run_coder_node(state: dict) -> dict:
             errors.append(f"CoderAgent: edit to {fp} failed: {exc}")
 
     patches: dict[str, str] = {}
+    contents: dict[str, str] = {}
+    base_hash: dict[str, str] = {}
     for p, final in local.items():
+        orig = originals.get(p, "")
         diff = "".join(
             difflib.unified_diff(
-                originals.get(p, "").splitlines(keepends=True),
+                orig.splitlines(keepends=True),
                 final.splitlines(keepends=True),
                 fromfile=f"a/{p}", tofile=f"b/{p}",
             )
         )
         if diff:
             patches[p] = diff
+            contents[p] = final           # full new content for the write pipeline
+            base_hash[p] = content_hash(orig)  # pre-edit anchor for the stale guard
 
     # 4. Mark step complete + notify the IDE (non-blocking).
     target_step.status = "completed"
@@ -244,6 +261,8 @@ async def run_coder_node(state: dict) -> dict:
 
     result: dict = {
         "pending_patches": patches,
+        "pending_contents": contents,
+        "pending_base_hash": base_hash,
         "current_step_id": target_step.step_number,
         "target_role": target_step.target_role,
         "current_cost_usd": 0.0,

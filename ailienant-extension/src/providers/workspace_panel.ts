@@ -6,6 +6,7 @@ import * as net from 'net';
 import * as crypto from 'crypto';
 import { SessionManager } from '../brain/session';
 import { IntentRouter } from '../core/IntentRouter';
+import { PatchActuator, type ApplyWorkspaceEditPayload } from '../core/PatchActuator';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
 import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS } from '../shared/config';
 import { APIClient } from '../api/api_client';
@@ -309,6 +310,16 @@ export class WorkspacePanelManager {
             if (!msg.event_type) { return; }
             const data = msg.data as Record<string, unknown> | undefined;
             if (data?.session_id && data.session_id !== session.id) { return; }
+
+            // Phase 7.9.B.18 — Enterprise Write Pipeline: the host (not the webview)
+            // actuates approved patches via vscode.workspace.applyEdit, then acks.
+            if (msg.event_type === 'server_apply_workspace_edit') {
+                void PatchActuator.apply(msg.data as ApplyWorkspaceEditPayload).then((result) => {
+                    WSClient.getInstance().send({ event_type: 'client_patch_applied', data: result });
+                });
+                return;
+            }
+
             panel.webview.postMessage({ type: msg.event_type, payload: msg.data });
             this._maybeFireCriticalNotif(msg, session.id, panel);
             // Clear running-task marker on stream/task completion

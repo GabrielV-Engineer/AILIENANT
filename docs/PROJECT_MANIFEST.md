@@ -1414,6 +1414,26 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
     - **Tests:** 575/575 (new `test_model_resolver` + `test_indexer_preflight`;
       isolated `test_ainvoke_tier_overrides_explicit_model`) · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.18 — The Enterprise Write Pipeline (VS Code applyEdit bridge)**
+    - **Problem:** the propose-&-review MVP never wrote anything — the coder discarded
+      its new content (diff strings only) and the RAM-VFS had no write method.
+    - **Scope (strict):** actuation is 100% VS Code `applyEdit` + `save()` in the
+      extension host; undo = native Ctrl+Z / VS Code Local History. **No** custom
+      history/backup, **no** `.bak`/manifest, **no** headless disk writes (no client ⇒
+      apply refused). Python never touches the filesystem.
+    - **Resolution:**
+      - **Coder emits content:** `pending_contents` (full new content) + `pending_base_hash`
+        (EOL-normalized sha256) alongside `pending_patches`; new `state` channels.
+      - **Approval gate:** `_run_coding_task` streams the diffs, then one HITL
+        authorization for the whole set; on approve → `write_pipeline.apply_patch_set`.
+      - **Lean orchestrator (`core/write_pipeline.py`):** gate on `has_client` (else
+        actionable error), emit `server_apply_workspace_edit`, await `client_patch_applied`.
+      - **Host actuator (`PatchActuator.ts`):** hash-based **stale guard** (block & warn,
+        whole-set atomic), one `WorkspaceEdit` (create/replace) → `applyEdit` → `save()`.
+      - Decisions: apply + save · one authorization per set · stale ⇒ block & warn.
+    - **Tests:** 581/581 (new `test_write_pipeline` + `test_task_service_apply`; updated
+      `test_coder_agent`) · `npm run compile` → 0 errors.
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante

@@ -211,6 +211,8 @@ class TaskService:
             return
 
         patches: Dict[str, str] = {}
+        contents: Dict[str, str] = {}
+        base_hashes: Dict[str, str] = {}
         errors: List[str] = []
         for step in list(mission.tasks)[:_MAX_CODER_STEPS]:
             await vfs_manager.broadcast_pipeline_step(
@@ -224,22 +226,62 @@ class TaskService:
                 errors.append(f"step #{step.step_number}: {exc}")
                 continue
             patches.update(cres.get("pending_patches") or {})
+            contents.update(cres.get("pending_contents") or {})
+            base_hashes.update(cres.get("pending_base_hash") or {})
             errors.extend(cres.get("errors") or [])
 
+        # 1) Stream the plan + proposed diffs as a reviewable message.
         summary = self._format_coding_summary(mission, patches, errors)
         await vfs_manager.broadcast_token(session_id, summary)
         await vfs_manager.broadcast_stream_end(session_id)
-
-        # Surface diffs to the dashboard staging area (best-effort).
-        for fp, diff in patches.items():
-            try:
-                await vfs_manager.emit_vfs_patch_approved(session_id, fp, diff, "supervision")
-            except Exception:  # noqa: BLE001
-                pass
-
-        # Remember the proposal so follow-ups have context.
         self._append_history(session_id, "user", payload.task_prompt)
         self._append_history(session_id, "assistant", summary)
+
+        # 2) No concrete edits → nothing to apply.
+        if not contents:
+            return
+
+        # 3) One authorization for the whole change set (HITL card).
+        combined_diff = "\n".join(patches[p] for p in patches)
+        decision = await vfs_manager.request_human_approval(
+            session_id=session_id,
+            action_description=(
+                f"Apply {len(contents)} file change(s): " + ", ".join(contents)
+            ),
+            proposed_content=combined_diff,
+        )
+        if not decision or not decision.get("approved"):
+            await vfs_manager.broadcast_token(
+                session_id, "Changes discarded — no files were modified."
+            )
+            await vfs_manager.broadcast_stream_end(session_id)
+            return
+
+        # 4) Single-file edit-before-apply: honor the card's edited payload.
+        modified = decision.get("modified_content")
+        if modified and len(contents) == 1:
+            only_path = next(iter(contents))
+            contents[only_path] = modified
+
+        # 5) Actuate via the VS Code applyEdit bridge (Python never writes to disk).
+        from core.write_pipeline import apply_patch_set
+        res = await apply_patch_set(session_id, contents, base_hashes)
+        if res.get("ok"):
+            applied = res.get("applied_files") or list(contents)
+            result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
+        elif res.get("stale_files"):
+            result_msg = (
+                "⚠️ Not applied — these files changed since the proposal: "
+                + ", ".join(res["stale_files"])
+                + ". Re-run the request to regenerate against the current code."
+            )
+        else:
+            result_msg = "⚠️ Could not apply the changes: " + str(
+                res.get("error") or "unknown error"
+            )
+        await vfs_manager.broadcast_token(session_id, result_msg)
+        await vfs_manager.broadcast_stream_end(session_id)
+        self._append_history(session_id, "assistant", result_msg)
 
     @staticmethod
     def _format_coding_summary(
