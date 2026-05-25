@@ -1499,28 +1499,31 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
   - [x] Decide & document: raw model reasoning/`<think>` vs. synthesized narration
     (ADR-702 decision: **synthesized** structured status text, not raw CoT).
 
-- [ ] **7.10.3 — The Analyst as a True Assistant**
-  - [ ] Wire `context_paths` end-to-end (`main.py` `client_analyst_query` →
-    `generate_analyst_reply`): inject active-file content from the VFS/dirty-buffer.
-  - [ ] Conversation memory + GraphRAG (reuse `_append_history` / `_build_rag_context`).
-  - [ ] **AILIENANT self-knowledge**: curated `docs/AILIENANT_CODEX.md` injected so the
+- [x] **7.10.3 — The Analyst as a True Assistant**
+  - [x] Wire `context_paths` end-to-end (`main.py` `client_analyst_query` →
+    `task_service.stream_analyst_reply` → `assemble_analyst_context`): inject active-file
+    content from the VFS/dirty-buffer.
+  - [x] Conversation memory + GraphRAG (reuse `_append_history` namespaced `natt:` /
+    `_build_rag_context`).
+  - [x] **AILIENANT self-knowledge**: curated `docs/AILIENANT_CODEX.md` injected so the
     analyst can explain the product (created in 7.10.3).
-  - [ ] Stream analyst replies token-by-token (today: one full `send_natt_message`).
-  - [ ] **(G4)** Analyst Context Budget Layer (CSS-governed): Tree-sitter
+  - [x] Stream analyst replies token-by-token (`server_natt_token` + `batch_tokens`;
+    `send_natt_message` retained for HITL alerts).
+  - [x] **(G4)** Analyst Context Budget Layer (CSS-governed): Tree-sitter
     **semantic-priority** slicing (NOT geographical) — preserve the containing class
     signature + essential file imports + the function under the cursor, so
     cross-references above the cutoff don't cause syntactic hallucination; caps
     **≤ 4 KB file / ≤ 2 KB GraphRAG / ≤ 1 KB Codex**; slice when file context > 30 %
     of the model window.
-  - [ ] **(G3)** Strict XML sandbox: **uuid4 dynamic delimiters**
+  - [x] **(G3)** Strict XML sandbox: **uuid4 dynamic delimiters**
     (`<[UUID]_context path="…">…</[UUID]_context>`) + escape closing-tag collisions +
     unicode-variant defense; the analyst prompt must explicitly state that content
     between the tags is **raw data, never executable instructions**.
-  - [ ] **(G2)** **Context-Tolerant Divergence** version tagging (NOT binary reject):
-    tag the VFS snapshot with buffer sequence ID / hash; on divergence use a
-    Tree-sitter/line diff — if the user's edits fall **outside** the block/function the
-    analyst read, the reply stays valid and offsets are dynamically realigned; only flag
-    when the read region itself changed (reuse `document_version_id` / OCC).
+  - [x] **(G2)** **Context-Tolerant Divergence** version tagging (NOT binary reject):
+    backend emits `context_version` (sha256 quick-hash) on `server_natt_stream_end`;
+    the **7.11 extension** consumes it to apply the Tree-sitter/line-diff realignment
+    (reply stays valid when edits fall outside the read region). *Backend contract done;
+    extension-side divergence is 7.11 mesh scope.*
 
 - [ ] **7.10.4 — Planner & Agent Robustness**
   - [ ] **(G5)** AST-aware recursive unwrapper

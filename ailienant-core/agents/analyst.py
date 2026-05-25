@@ -14,7 +14,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -178,44 +178,61 @@ async def _generate_question_llm(messages: List[Dict], user_input: str) -> str:
     )
 
 
-async def generate_analyst_reply(text: str, session_id: str = "") -> str:
-    """Phase 7.9.B.13 — live analyst reply for the Natt pane.
+_ANALYST_BYOM_DOWN: str = (
+    "I can't reach the configured model right now. Activate a BYOM preset "
+    "(Dashboard → BYOM) and make sure its engine is running, then ask me again."
+)
 
-    Calls the active BYOM chat model directly (no proxy) with the SOUL persona as
-    the system prompt. Graph-free entry point used by the WebSocket dispatch loop.
-    Degrades to an actionable message if no preset is active or the engine is down.
+
+async def generate_analyst_reply_stream(
+    text: str,
+    context_block: str = "",
+    history: Optional[List[Dict[str, str]]] = None,
+    session_id: str = "",
+) -> AsyncIterator[str]:
+    """Phase 7.10.3 — streaming analyst reply for the Natt pane (ADR-703 + ADR-702).
+
+    System prompt = SOUL persona (already identity-clad per ADR-701) + the assembled,
+    budgeted, sandboxed analyst context block. Conversation memory (history) is replayed
+    so the analyst keeps continuity. Outbound tokens are coalesced into chunk_ms=40 frames
+    via the shared batcher. Degrades to one actionable message if the BYOM engine is down —
+    the analyst must never crash the WS loop. Read-only: nothing here mutates files.
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
-    from core.config.model_resolver import get_chat_target
+    from transport.token_batcher import batch_tokens
+
     system_prompt = soul_manager.get_prompt()
-    _target = get_chat_target("medium")
-    logger.debug(
-        "Analyst resolving model=%s base=%s",
-        getattr(_target, "model", None), getattr(_target, "api_base", None),
-    )
+    if context_block:
+        system_prompt = f"{system_prompt}\n\n{context_block}"
+
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": text})
+
     try:
-        reply = await LLMGateway.acomplete_byom(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
-            ],
-            tier="medium",
-            temperature=0.5,
-            max_tokens=512,
-            timeout=45.0,
-            session_id=session_id,
-        )
-        return reply.strip() or "(no response)"
+        raw = LLMGateway.astream_byom(messages, tier="medium", session_id=session_id)
+        produced = False
+        async for chunk in batch_tokens(raw, chunk_ms=40):
+            produced = True
+            yield chunk
+        if not produced:
+            yield "(no response)"
     except Exception as exc:  # noqa: BLE001 — analyst must never crash the WS loop
-        logger.warning(
-            "Analyst live reply failed [%s: %s] (model=%s base=%s)",
-            type(exc).__name__, exc,
-            getattr(_target, "model", None), getattr(_target, "api_base", None),
-        )
-        return (
-            "I can't reach the configured model right now. Activate a BYOM preset "
-            "(Dashboard → BYOM) and make sure its engine is running, then ask me again."
-        )
+        logger.warning("Analyst live reply failed [%s: %s]", type(exc).__name__, exc)
+        yield _ANALYST_BYOM_DOWN
+
+
+async def generate_analyst_reply(text: str, session_id: str = "") -> str:
+    """Phase 7.9.B.13 — full (non-streaming) analyst reply for the Natt pane.
+
+    Backward-compatible single-string entry point, now backed by the 7.10.3 streaming
+    generator (no context wiring; callers wanting context use stream_analyst_reply).
+    """
+    parts: List[str] = []
+    async for chunk in generate_analyst_reply_stream(text, session_id=session_id):
+        parts.append(chunk)
+    return "".join(parts).strip() or "(no response)"
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -432,3 +433,51 @@ class TaskService:
             )
         finally:
             await vfs_manager.broadcast_stream_end(session_id)
+
+    async def stream_analyst_reply(
+        self,
+        session_id: str,
+        text: str,
+        paths: List[str],
+        cursor: Optional[int] = None,
+        project_id: Optional[str] = None,
+        project_root: str = "",
+    ) -> None:
+        """Phase 7.10.3 — context-aware, streamed analyst reply (ADR-703).
+
+        Orchestration only (the analyst stays read-only — Voice, not the Hand): assembles
+        the budgeted + sandboxed context (active file via VFS + Codex + GraphRAG, reusing
+        _build_rag_context), replays the namespaced analyst memory, streams chunk_ms=40
+        batches to the Natt pane, emits the G2 context-version on stream end, then persists
+        the turn. Analyst memory is namespaced (``natt:``) so it never mixes with main chat.
+        """
+        from agents.analyst import generate_analyst_reply_stream  # deferred — cycle guard
+        from agents.analyst_context import assemble_analyst_context
+
+        rag = await self._build_rag_context(text, project_id)
+        try:
+            context_block = await assemble_analyst_context(
+                paths, project_id, session_id, cursor,
+                rag_block=rag, project_root=project_root, vfs=self.vfs,
+            )
+        except Exception as exc:  # noqa: BLE001 — assembly must never crash the analyst
+            logger.warning("Analyst context assembly failed (degrading to RAG only): %s", exc)
+            context_block = rag
+
+        mem_key = f"natt:{session_id}"
+        history = list(_conversations.get(mem_key, []))
+
+        parts: List[str] = []
+        async for chunk in generate_analyst_reply_stream(
+            text, context_block, history, session_id
+        ):
+            parts.append(chunk)
+            await vfs_manager.broadcast_natt_token(session_id, chunk)
+
+        context_version = hashlib.sha256(context_block.encode("utf-8")).hexdigest()[:12]
+        await vfs_manager.broadcast_natt_stream_end(session_id, context_version=context_version)
+
+        reply = "".join(parts).strip()
+        if reply:
+            self._append_history(mem_key, "user", text)
+            self._append_history(mem_key, "assistant", reply)

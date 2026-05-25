@@ -351,6 +351,9 @@ class AnalystQueryPayload(BaseModel):
     text: str
     session_id: Optional[str] = None
     context_paths: list[str] = Field(default_factory=list)
+    # Phase 7.10.3 (ADR-703 G4) — caret offset for cursor-targeted semantic slicing.
+    # Additive + optional: pre-7.11 clients omit it and the slice degrades gracefully.
+    cursor: Optional[int] = None
 
 
 class ClientAnalystQueryEvent(BaseModel):
@@ -367,6 +370,31 @@ class NattMessagePayload(BaseModel):
 class ServerNattMessageEvent(BaseModel):
     event_type: Literal["server_natt_message"] = "server_natt_message"
     data: NattMessagePayload
+
+
+# Phase 7.10.3 (ADR-703 + ADR-702) — token-by-token analyst streaming to the Natt pane.
+class NattTokenChunkPayload(BaseModel):
+    """Server → client: a single batched analyst token chunk for the Natt canvas."""
+    token: str
+
+
+class ServerNattTokenChunkEvent(BaseModel):
+    event_type: Literal["server_natt_token"] = "server_natt_token"
+    data: NattTokenChunkPayload
+
+
+class NattStreamEndPayload(BaseModel):
+    """Server → client: finalizes the streamed analyst bubble.
+
+    Carries the G2 context version tag (a quick hash of the assembled context) so the
+    7.11 extension can apply context-tolerant divergence if the buffer changed mid-stream.
+    """
+    context_version: Optional[str] = None
+
+
+class ServerNattStreamEndEvent(BaseModel):
+    event_type: Literal["server_natt_stream_end"] = "server_natt_stream_end"
+    data: NattStreamEndPayload = Field(default_factory=NattStreamEndPayload)
 
 
 class PipelineStepPayload(BaseModel):
@@ -442,6 +470,8 @@ WebSocketMessage = Union[
     AuthEvent,                       # Phase 7.9.A.5.1 — ephemeral auth handshake
     ClientAnalystQueryEvent,         # Phase 7.9.B.12 — Natt analyst pane query
     ServerNattMessageEvent,          # Phase 7.9.B.12 — analyst reply
+    ServerNattTokenChunkEvent,       # Phase 7.10.3 — streamed analyst token chunk
+    ServerNattStreamEndEvent,        # Phase 7.10.3 — analyst stream finalized (+ context_version)
     ServerPipelineStepEvent,         # Phase 7.9.B.12 — pipeline node progress
     ServerStreamEndEvent,            # Phase 7.9.B.12 — assistant stream finalized
     ClientClearConversationEvent,    # Phase 7.9.B.15 — clear short-term chat memory
