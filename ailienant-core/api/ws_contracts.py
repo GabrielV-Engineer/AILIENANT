@@ -393,6 +393,23 @@ class ClientClearConversationEvent(BaseModel):
     data: dict = Field(default_factory=dict)
 
 
+class ChatTurn(BaseModel):
+    """One persisted chat turn (role + content) used to rehydrate session memory."""
+    role: str
+    content: str
+
+
+class RestoreHistoryPayload(BaseModel):
+    """Client → server: re-seed short-term chat memory from a persisted transcript."""
+    messages: list[ChatTurn] = Field(default_factory=list)
+
+
+class ClientRestoreHistoryEvent(BaseModel):
+    """Client → server: rehydrate a reopened session's memory for continuity (Phase 7.9.B.20)."""
+    event_type: Literal["client_restore_history"] = "client_restore_history"
+    data: RestoreHistoryPayload
+
+
 # =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
@@ -428,4 +445,5 @@ WebSocketMessage = Union[
     ServerPipelineStepEvent,         # Phase 7.9.B.12 — pipeline node progress
     ServerStreamEndEvent,            # Phase 7.9.B.12 — assistant stream finalized
     ClientClearConversationEvent,    # Phase 7.9.B.15 — clear short-term chat memory
+    ClientRestoreHistoryEvent,       # Phase 7.9.B.20 — rehydrate session memory on reopen
 ]

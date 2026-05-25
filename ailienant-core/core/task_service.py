@@ -317,6 +317,27 @@ class TaskService:
         """Drop the session's short-term memory (wired to /context clear)."""
         _conversations.pop(session_id, None)
 
+    def restore_conversation(self, session_id: str, messages: List[Dict[str, str]]) -> None:
+        """Re-seed short-term chat memory from a persisted transcript (Phase 7.9.B.20).
+
+        Called when a saved session is reopened so the model regains continuity.
+        Seed-if-absent: only populates when the session has no live memory, so an
+        in-flight conversation is never clobbered. Bounded to _MAX_HISTORY_MESSAGES.
+        """
+        if not messages or _conversations.get(session_id):
+            return
+        cleaned = [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+        if cleaned:
+            _conversations[session_id] = cleaned[-_MAX_HISTORY_MESSAGES:]
+            logger.info(
+                "[Session: %s] Conversation memory restored (%d turns).",
+                session_id, len(_conversations[session_id]),
+            )
+
     async def _build_rag_context(self, task_prompt: str, project_id: Optional[str]) -> str:
         """Fetch top-k LanceDB snippets for the prompt and format them for the system prompt.
 

@@ -2,7 +2,9 @@ import * as vscode from 'vscode';
 import { IntentRouter } from './core/IntentRouter';
 import { SessionManager } from './brain/session';
 import { SessionBrowserProvider } from './providers/session_browser_provider';
-import { WorkspacePanelManager } from './providers/workspace_panel';
+import { WorkspacePanelManager, CoreProcessManager, findFreePort, generateAuthToken } from './providers/workspace_panel';
+import { APIClient } from './api/api_client';
+import { WSClient } from './api/ws_client';
 import type { Session } from './shared/types';
 import {
     MIRROR_SCHEME,
@@ -19,11 +21,26 @@ function makeSessionId(): string {
     return 'ses-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
     console.log('AILIENANT extension activated.');
+
+    // Phase 7.9.A.5.1 — dynamic port selection + ephemeral auth token.
+    // findFreePort() is OS-assigned (listen(0)) — no TOCTOU race.
+    const port  = await findFreePort();
+    const token = generateAuthToken();
+    APIClient.getInstance().configure(`http://127.0.0.1:${port}/api/v1`, token);
+    WSClient.getInstance().configure(`ws://127.0.0.1:${port}/api/v1/ws`, token);
+
+    const coreManager = new CoreProcessManager(port, token, context.extensionUri.fsPath);
 
     // ── Workspace panel manager (single-instance editor tab) ─────────
     const workspaceManager = new WorkspacePanelManager(context.extensionUri, context.workspaceState);
+    workspaceManager.setCoreManager(coreManager);
+
+    // Auto-start the Core backend when enabled (default: true).
+    if (vscode.workspace.getConfiguration('ailienant').get<boolean>('autoStartCore', true)) {
+        void coreManager.start();
+    }
 
     // ── Session browser sidebar provider ─────────────────────────────
     const onOpenSession = (s: Session): void => workspaceManager.openSession(s);
@@ -40,7 +57,10 @@ export function activate(context: vscode.ExtensionContext): void {
         };
     };
 
-    const onDeleteSession = (id: string): void => workspaceManager.closeSession(id);
+    const onDeleteSession = (id: string): void => {
+        workspaceManager.closeSession(id);
+        workspaceManager.clearTranscript(id);  // Phase 7.9.B.20 — drop persisted transcript
+    };
 
     const sessionBrowser = new SessionBrowserProvider(
         context.extensionUri,
