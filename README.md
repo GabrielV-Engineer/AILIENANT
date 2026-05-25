@@ -199,6 +199,7 @@ Proyect_Ailienant/
 ├── docs/
 │   ├── PROJECT_MANIFEST.md     # Phase-by-phase roadmap (load-bearing)
 │   ├── PHASE_4_BLUEPRINT.md    # Master architectural contract for Phase 4 (mandatory read while Phase 4 is active)
+│   ├── PHASE_7_BLUEPRINT.md    # Master architectural contract for Phase 7.10/7.11 (mandatory read while active)
 │   ├── SCHEMA_EVOLUTION.MD     # State + agent contracts
 │   ├── SYSTEM_PROMPTS.md       # Agent system prompts
 │   ├── DEV_JOURNAL.md          # Per-phase engineering log
