@@ -1434,6 +1434,15 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
     - **Tests:** 581/581 (new `test_write_pipeline` + `test_task_service_apply`; updated
       `test_coder_agent`) · `npm run compile` → 0 errors.
 
+  - [x] **7.9.B.19 — Local LLM Timeout Increase**
+    - **Problem:** complex Planner tasks (e.g., CRM project) hit `litellm.Timeout` at
+      60 s when running against a local Ollama model generating structured JSON.
+    - **Scope:** single-file change in `tools/llm_gateway.py` — add constant
+      `_LOCAL_LLM_TIMEOUT_S = 300.0` and apply it in `ainvoke` (BYOM branch),
+      `acomplete_byom`, and `astream_byom` when `target.is_local is True`.
+      Cloud proxy path (non-BYOM) is unchanged.
+    - **Tests:** 584/584 (new `test_llm_gateway_timeout.py`, 3 tests).
+
 ---
 
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
