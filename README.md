@@ -128,7 +128,7 @@ Proyect_Ailienant/
 ├── ailienant-core/             # Python orchestration engine
 │   ├── Dockerfile              #   Sandbox image definition (python:3.13-slim + sandbox user; source of truth for CI/CD; Phase 7.9.B.9)
 │   ├── main.py                 # FastAPI app + WebSocket gateway
-│   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator)
+│   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator) + analyst_context.py (Phase 7.10.3 — ADR-703 budgeted/sliced/sandboxed analyst context assembler)
 │   ├── brain/                  # State machine + MCTS + checkpointing
 │   │   ├── engine.py           #   legacy `alienant_app` graph + re-export of process_user_intent
 │   │   ├── intent_router.py    #   process_user_intent() — dispatches SEQUENTIAL / MICRO_SWARM / FULL_SWARM
@@ -163,7 +163,7 @@ Proyect_Ailienant/
 │   ├── transport/              # Outbound WS stream layer: throttler.py (Phase 2.2.A — backpressure guard) + token_batcher.py (Phase 7.10.2 — chunk_ms=40 coalescer + NarrationGate 15% bandwidth cap, ADR-702)
 │   ├── shared/                 # Config, RBAC, contracts, hardware probe, persona.py (Phase 7.10.1 — ADR-701 identity clause + compose()), logging_filters.py (Phase 6.7 — SecretsScrubber DLP filter)
 │   ├── validators/             #   syntax/style gates (ast.parse + ruff --stdin), env probe
-│   └── tests/                  # conftest.py (Phase 7.9.B.9 — _DirectAdapter autouse fixture; 38/38 execution + runtime tests pass without FastAPI lifespan); test_execution_tools.py + test_runtime_status.py; test_phase6_checkpoint_gate.py — Phase 6.10 adversarial E2E gate; test_permissions.py, test_tool_rag_selection.py, test_mcp_handshake.py, test_perception_tools.py, test_mutation_tools.py, test_control_tools.py, test_phase5_7_checkpoint_gate.py, test_audit_chain.py, test_logging_filters.py, test_oom_cascade.py, test_dead_letter.py + test_token_batcher.py (Phase 7.10.2 — batcher window/size-cap + 15% narration cap + granular narration order) + tests/chaos/ crucible
+│   └── tests/                  # conftest.py (Phase 7.9.B.9 — _DirectAdapter autouse fixture; 38/38 execution + runtime tests pass without FastAPI lifespan); test_execution_tools.py + test_runtime_status.py; test_phase6_checkpoint_gate.py — Phase 6.10 adversarial E2E gate; test_permissions.py, test_tool_rag_selection.py, test_mcp_handshake.py, test_perception_tools.py, test_mutation_tools.py, test_control_tools.py, test_phase5_7_checkpoint_gate.py, test_audit_chain.py, test_logging_filters.py, test_oom_cascade.py, test_dead_letter.py + test_token_batcher.py (Phase 7.10.2 — batcher window/size-cap + 15% narration cap + granular narration order) + test_analyst_context.py (Phase 7.10.3 — budget/slice/sandbox/codex-cache) + tests/chaos/ crucible
 ├── ailienant-extension/        # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts        #   activation entry
@@ -201,6 +201,7 @@ Proyect_Ailienant/
 │   ├── PROJECT_MANIFEST.md     # Phase-by-phase roadmap (load-bearing)
 │   ├── PHASE_4_BLUEPRINT.md    # Master architectural contract for Phase 4 (mandatory read while Phase 4 is active)
 │   ├── PHASE_7_BLUEPRINT.md    # Master architectural contract for Phase 7.10/7.11 (mandatory read while active)
+│   ├── AILIENANT_CODEX.md      # Analyst self-knowledge source (Phase 7.10.3 — ADR-703; cached, budget-sliced into analyst context)
 │   ├── SCHEMA_EVOLUTION.MD     # State + agent contracts
 │   ├── SYSTEM_PROMPTS.md       # Agent system prompts
 │   ├── DEV_JOURNAL.md          # Per-phase engineering log

@@ -23,6 +23,8 @@ from api.ws_contracts import (
     ServerApplyWorkspaceEditEvent, ApplyWorkspaceEditPayload,
     ServerByomConfigAppliedEvent, ByomConfigAppliedPayload,
     ServerNattMessageEvent, NattMessagePayload,
+    ServerNattTokenChunkEvent, NattTokenChunkPayload,
+    ServerNattStreamEndEvent, NattStreamEndPayload,
     ServerPipelineStepEvent, PipelineStepPayload,
     ServerStreamEndEvent,
 )
@@ -268,6 +270,24 @@ class ConnectionManager:
         await self.send_personal_message(
             session_id,
             ServerPipelineStepEvent(data=PipelineStepPayload(node_name=node_name, step_id=step_id)),
+        )
+
+    async def broadcast_natt_token(self, session_id: str, token: str) -> None:
+        """Stream a batched analyst token chunk to the Natt canvas (Phase 7.10.3)."""
+        await self.send_personal_message(
+            session_id,
+            ServerNattTokenChunkEvent(data=NattTokenChunkPayload(token=token)),
+        )
+
+    async def broadcast_natt_stream_end(
+        self, session_id: str, context_version: str = ""
+    ) -> None:
+        """Finalize the streamed analyst bubble + emit the G2 context version (Phase 7.10.3)."""
+        await self.send_personal_message(
+            session_id,
+            ServerNattStreamEndEvent(
+                data=NattStreamEndPayload(context_version=context_version or None)
+            ),
         )
 
     async def broadcast_stream_end(self, session_id: str) -> None:

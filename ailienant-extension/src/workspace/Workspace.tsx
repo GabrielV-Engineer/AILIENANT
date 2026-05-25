@@ -31,7 +31,7 @@ export interface Message {
     steps?: string[];      // pipeline node trace for this assistant turn (Phase 7.9.B.14)
     stepsDone?: boolean;   // true after server_stream_end → ✓ + auto-collapse
 }
-export interface NattMessage { role: 'natt' | 'user'; content: string; }
+export interface NattMessage { role: 'natt' | 'user'; content: string; streaming?: boolean; }
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
 interface InitialState {
@@ -201,6 +201,23 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     setNattMessages(prev => [...prev, { role: 'natt', content: d.content }]);
                     break;
                 }
+                case 'server_natt_token': {
+                    // Phase 7.10.3 — accumulate batched analyst tokens into the active natt bubble.
+                    const d = msg.payload as { token: string };
+                    setNattMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (last?.role === 'natt' && last.streaming) {
+                            return [...prev.slice(0, -1), { ...last, content: last.content + d.token }];
+                        }
+                        return [...prev, { role: 'natt', content: d.token, streaming: true }];
+                    });
+                    break;
+                }
+                case 'server_natt_stream_end':
+                    // Phase 7.10.3 — finalize the streamed analyst bubble (context_version carried for 7.11 divergence).
+                    setNattMessages(prev => prev.map((m, i) =>
+                        i === prev.length - 1 ? { ...m, streaming: false } : m));
+                    break;
                 case 'server_indexing_started': {
                     const d = msg.payload as { total_files?: number };
                     setIndexing({ state: 'indexing', pct: 0, total_files: d?.total_files, files_indexed: 0 });

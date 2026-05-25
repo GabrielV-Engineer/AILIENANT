@@ -45,7 +45,7 @@ from langchain_core.runnables import RunnableConfig
 from api.mcts_mirror import MergeReport, apply_merge, get_virtual_file
 
 # --- IMPORTACIONES FASE 3.4.7 (Silent Telemetry + Rule Distillation) ---
-from agents.analyst import distill_rejection_to_rule, generate_analyst_reply
+from agents.analyst import distill_rejection_to_rule
 from core.rules import rule_manager
 
 # --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
@@ -782,13 +782,30 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 # Phase 7.9.B.13 — Natt analyst pane bridge (live BYOM completion).
                 # Phase 7.9.B.17 — run it off the WS receive loop so a slow model
                 # never stalls inbound message processing for this session.
-                _query_text = valid_event.data.text
+                # Phase 7.10.3 (ADR-703) — forward context_paths + cursor + project so the
+                # analyst answers with active-file + Codex + RAG context, streamed in batches.
+                _q = valid_event.data
+                _aq_root = _session_workspace_root.get(client_id, "")
+                _aq_proj = next(
+                    (pid for pid, root in _workspace_registry.items()
+                     if _aq_root and root == _aq_root),
+                    None,
+                )
 
-                async def _analyst_runner(text: str = _query_text, sid: str = client_id) -> None:
-                    reply = await generate_analyst_reply(text, session_id=sid)
-                    await vfs_manager.send_natt_message(sid, reply)
+                async def _analyst_runner(
+                    text: str = _q.text,
+                    sid: str = client_id,
+                    paths: List[str] = list(_q.context_paths),
+                    cursor: Optional[int] = _q.cursor,
+                    project_id: Optional[str] = _aq_proj,
+                    project_root: str = _aq_root,
+                ) -> None:
+                    await task_service.stream_analyst_reply(
+                        sid, text, paths, cursor, project_id, project_root
+                    )
                     logger.info(
-                        "[Session: %s] Analyst query handled (%d chars in)", sid, len(text)
+                        "[Session: %s] Analyst query handled (%d chars in, %d path(s))",
+                        sid, len(text), len(paths),
                     )
 
                 _at = asyncio.create_task(_analyst_runner(), name=f"analyst:{client_id}")
