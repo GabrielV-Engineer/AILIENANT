@@ -1569,9 +1569,24 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
   PatchActuator-backed atomic commit reusing the 7.9.B.18 SHA-256 stale-guard). Tests:
   `tests/test_inline_mutations.py` (10/10 green; full suite **631 passed**, 0 regressions).
   Blueprint lock-in NOT yet expired — 8 of 9 Phase 7.11 features remain.
-- [ ] **(10/10) WebView state rehydration (tab-switch survival)** —
+- [x] **(10/10) WebView state rehydration (tab-switch survival)** —
   `acquireVsCodeApi().setState()/getState()` + immutable global store (Zustand/Redux);
-  destroy IPC listeners on unmount.
+  destroy IPC listeners on unmount. **Phase 7.11.2 (2026-05-26)** — shipped: new typed
+  singleton `src/shared/vscodeApi.ts` (lazy-init, one `acquireVsCodeApi()` per IIFE bundle,
+  test seam via `_setVsCodeApiForTesting`); new `src/shared/persistedStore.ts` middleware
+  (Zustand 4.5 + rAF-coalesced writes, schema-versioned envelope with safe-upgrade
+  discard); new `src/workspace/workspaceStore.ts` (persistable slice: inputDraft, menu
+  toggles, mode/preset/tier, scroll) and `src/sidebar/sidebarStore.ts` (query + activeId);
+  `Workspace.tsx`/`PromptBar.tsx`/`SessionBrowser.tsx` migrated to read/write through the
+  stores while host-fed live state stays as `useState`. Sidebar's local `acquireVsCodeApi`
+  redeclaration consolidated to the shared singleton. `retainContextWhenHidden` flipped
+  `true → false` in both [`extension.ts:83`](ailienant-extension/src/extension.ts) and
+  [`workspace_panel.ts:318`](ailienant-extension/src/providers/workspace_panel.ts) so the
+  rehydration path actually runs on tab-switch. Test:
+  `tests/persistedStore.test.ts` (3 tests: rAF coalescing, rehydrate round-trip, version
+  mismatch → safe discard) — `vscode-test` suite **4/4 green**. Host-side
+  `workspaceState` persistence (budget/models/dreaming/transcript via 7.9.B.20) untouched.
+  Blueprint lock-in NOT yet expired — 7 of 9 Phase 7.11 features remain.
 - [ ] **(9.5/10) Execution interruption — Abort Controller Mesh** — Stop → priority WS event
   → `asyncio.CancelledError`; closes Docker/Wasm tool, records cost to FinOps; idempotent
   rollback (ADR-706: prefer inter-node interception; mid-stream → cold-serializable emergency

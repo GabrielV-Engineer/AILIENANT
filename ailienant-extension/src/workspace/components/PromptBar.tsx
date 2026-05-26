@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { CommandPalette, useSlashDetect } from './CommandPalette';
@@ -7,6 +7,7 @@ import { DreamingMode } from './DreamingMode';
 import { ModeMenu } from './ModeMenu';
 import type { AilienantConfig, ExecutionMode } from '../../shared/types';
 import type { ReasoningPreset, InferenceTier, DreamingProfile, OrchestrationMode } from '../../shared/config';
+import { useWorkspaceStore } from '../workspaceStore';
 
 interface Props {
     disabled: boolean;
@@ -41,32 +42,40 @@ export function PromptBar({
     activeModelId, orchestrationMode, onModelPrefChange,
     onSubmit, onAbort,
 }: Props): JSX.Element {
-    const [value, setValue] = useState('');
-    const [contextOpen, setContextOpen] = useState(false);
-    const [paletteOpen, setPaletteOpen] = useState(false);
+    // Phase 7.11.2 — rehydrated panel-lifetime state via workspaceStore.
+    const value          = useWorkspaceStore((s) => s.inputDraft);
+    const setValue       = useWorkspaceStore((s) => s.setInputDraft);
+    const contextOpen    = useWorkspaceStore((s) => s.contextOpen);
+    const setContextOpen = useWorkspaceStore((s) => s.setContextOpen);
+    const paletteOpen    = useWorkspaceStore((s) => s.paletteOpen);
+    const setPaletteOpen = useWorkspaceStore((s) => s.setPaletteOpen);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const { slashActive, slashQuery } = useSlashDetect(value);
     const paletteVisible = paletteOpen || slashActive;
 
     // Insert an @-mention path returned by the host's workspace file quick-pick.
+    // The store's getState() always returns the current draft, so the listener
+    // does NOT need to re-bind on every keystroke (mount-once / unmount-once).
     useEffect(() => {
         const handler = (e: MessageEvent): void => {
             const msg = e.data as { type: string; path?: string; text?: string };
             if (msg.type === 'INSERT_MENTION' && msg.path) {
-                setValue(v => `${v}${v && !v.endsWith(' ') ? ' ' : ''}@${msg.path} `);
+                const v = useWorkspaceStore.getState().inputDraft;
+                setValue(`${v}${v && !v.endsWith(' ') ? ' ' : ''}@${msg.path} `);
                 setPaletteOpen(false);
                 textareaRef.current?.focus();
             }
             // Phase 7.9.A.7.f — insert a saved skill template into the prompt.
             if (msg.type === 'INSERT_PROMPT' && msg.text) {
-                setValue(v => (v.trim() ? `${v.replace(/\s*$/, '')}\n${msg.text}` : msg.text!));
+                const v = useWorkspaceStore.getState().inputDraft;
+                setValue(v.trim() ? `${v.replace(/\s*$/, '')}\n${msg.text}` : msg.text!);
                 setPaletteOpen(false);
                 textareaRef.current?.focus();
             }
         };
         window.addEventListener('message', handler);
         return () => window.removeEventListener('message', handler);
-    }, []);
+    }, [setValue, setPaletteOpen]);
 
     const submit = useCallback(() => {
         const text = value.trim();
@@ -121,7 +130,7 @@ export function PromptBar({
                     <Tooltip content="Attach files, terminal output, or directories to the prompt context">
                         <button
                             className="ws-prompt-icon-btn"
-                            onClick={() => { setContextOpen(v => !v); setPaletteOpen(false); }}
+                            onClick={() => { setContextOpen(!contextOpen); setPaletteOpen(false); }}
                             aria-label="Add context"
                             disabled={disabled}
                         >
@@ -131,7 +140,7 @@ export function PromptBar({
                     <Tooltip content="Open the command menu (type / in the input for quick access)">
                         <button
                             className="ws-prompt-icon-btn"
-                            onClick={() => { setPaletteOpen(v => !v); setContextOpen(false); }}
+                            onClick={() => { setPaletteOpen(!paletteOpen); setContextOpen(false); }}
                             aria-label="Commands"
                             disabled={disabled}
                         >

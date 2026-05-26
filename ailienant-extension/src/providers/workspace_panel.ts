@@ -315,7 +315,10 @@ export class WorkspacePanelManager {
             vscode.ViewColumn.One,
             {
                 enableScripts: true,
-                retainContextWhenHidden: true,
+                // Phase 7.11.2 (ADR-706 §4.5c) — webview state survives tab-switch via
+                // acquireVsCodeApi().setState/getState (see workspaceStore), so the DOM
+                // itself no longer needs to be kept in memory between hides.
+                retainContextWhenHidden: false,
                 localResourceRoots: [
                     vscode.Uri.joinPath(this._extensionUri, 'dist'),
                     vscode.Uri.joinPath(this._extensionUri, 'media'),
