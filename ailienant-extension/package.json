@@ -53,6 +53,21 @@
         "command": "ailienant.applyMerge",
         "title": "Apply MCTS Merge",
         "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.inlineEdit",
+        "title": "Edit with AILIENANT (Cmd+K)",
+        "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.acceptInlineEdit",
+        "title": "Accept Inline Edit",
+        "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.rejectInlineEdit",
+        "title": "Reject Inline Edit",
+        "category": "AILIENANT"
       }
     ],
     "menus": {
@@ -69,6 +84,22 @@
         "command": "ailienant.openWorkspace",
         "key": "ctrl+alt+a",
         "mac": "cmd+alt+a"
+      },
+      {
+        "command": "ailienant.inlineEdit",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "ailienant.acceptInlineEdit",
+        "key": "tab",
+        "when": "editorTextFocus && ailienant.inlineEditActive"
+      },
+      {
+        "command": "ailienant.rejectInlineEdit",
+        "key": "escape",
+        "when": "editorTextFocus && ailienant.inlineEditActive"
       }
     ],
     "configuration": {

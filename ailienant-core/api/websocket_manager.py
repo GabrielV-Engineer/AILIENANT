@@ -27,6 +27,9 @@ from api.ws_contracts import (
     ServerNattStreamEndEvent, NattStreamEndPayload,
     ServerPipelineStepEvent, PipelineStepPayload,
     ServerStreamEndEvent,
+    ServerInlineEditStartEvent, InlineEditStartPayload,
+    ServerInlineEditDeltaEvent, InlineEditDeltaPayload,
+    ServerInlineEditEndEvent, InlineEditEndPayload,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -293,6 +296,78 @@ class ConnectionManager:
     async def broadcast_stream_end(self, session_id: str) -> None:
         """Finalize the streaming assistant message bubble on the client."""
         await self.send_personal_message(session_id, ServerStreamEndEvent())
+
+    # ------------------------------------------------------------------
+    # Phase 7.11.1 — Inline editor mutations (Cmd+K, ADR-706 §4.5a)
+    # ------------------------------------------------------------------
+
+    async def broadcast_inline_edit_start(
+        self,
+        session_id: str,
+        edit_id: str,
+        file_path: str,
+        range_start: int,
+        range_end: int,
+    ) -> None:
+        """Signal the host that an inline-edit stream is about to begin."""
+        await self.send_personal_message(
+            session_id,
+            ServerInlineEditStartEvent(
+                data=InlineEditStartPayload(
+                    edit_id=edit_id,
+                    session_id=session_id,
+                    file_path=file_path,
+                    range_start=range_start,
+                    range_end=range_end,
+                )
+            ),
+        )
+
+    async def broadcast_inline_edit_delta(
+        self,
+        session_id: str,
+        edit_id: str,
+        kind: str,
+        offset: int,
+        length: int = 0,
+        text: str = "",
+    ) -> None:
+        """Stream one typed mutation delta for the InlineMutationManager."""
+        await self.send_personal_message(
+            session_id,
+            ServerInlineEditDeltaEvent(
+                data=InlineEditDeltaPayload(
+                    edit_id=edit_id,
+                    session_id=session_id,
+                    kind=kind,  # type: ignore[arg-type]
+                    offset=offset,
+                    length=length,
+                    text=text,
+                )
+            ),
+        )
+
+    async def broadcast_inline_edit_end(
+        self,
+        session_id: str,
+        edit_id: str,
+        success: bool,
+        final_content: str = "",
+        error: Optional[str] = None,
+    ) -> None:
+        """Finalize the inline-edit stream (success or abort)."""
+        await self.send_personal_message(
+            session_id,
+            ServerInlineEditEndEvent(
+                data=InlineEditEndPayload(
+                    edit_id=edit_id,
+                    session_id=session_id,
+                    success=success,
+                    final_content=final_content,
+                    error=error,
+                )
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Phase 2.22.4 — VFS Patch Approved (IPC Bridge)

@@ -7,6 +7,7 @@ import * as crypto from 'crypto';
 import { SessionManager } from '../brain/session';
 import { IntentRouter } from '../core/IntentRouter';
 import { PatchActuator, type ApplyWorkspaceEditPayload } from '../core/PatchActuator';
+import { InlineMutationManager } from '../core/InlineMutationManager';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
 import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS } from '../shared/config';
 import { APIClient } from '../api/api_client';
@@ -360,6 +361,17 @@ export class WorkspacePanelManager {
                 void PatchActuator.apply(msg.data as ApplyWorkspaceEditPayload).then((result) => {
                     WSClient.getInstance().send({ event_type: 'client_patch_applied', data: result });
                 });
+                return;
+            }
+
+            // Phase 7.11.1 (ADR-706 §4.5a) — Cmd+K inline edits: the host renders
+            // typed deltas directly into the active editor; the webview never sees them.
+            if (
+                msg.event_type === 'server_inline_edit_start' ||
+                msg.event_type === 'server_inline_edit_delta' ||
+                msg.event_type === 'server_inline_edit_end'
+            ) {
+                InlineMutationManager.instance.handle(msg.event_type, msg.data);
                 return;
             }
 
