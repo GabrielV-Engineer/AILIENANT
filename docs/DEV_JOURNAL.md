@@ -1670,6 +1670,25 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - CI/CD NUEVO: `.github/workflows/docker-publish.yml`.
   - Docs EDIT: `PROJECT_MANIFEST.md` (+`[x] 7.9.B.9`), `README.md` (layout tree + API table), `DEV_JOURNAL.md` (este hito).
 
+## Hito 7.10.1: Identity Sovereignty — Persona Injection (ADR-701) — 2026-05-25  *(backfill)*
+
+- **Status:** OK *(commit `7bdd508` ya en `main`; este es el backfill documental tras el cierre del gate 7.10.5)*. `pytest tests/test_persona.py` 7/7; suite completa **595 passed** en su momento (baseline previo a 7.10.2). `ruff` limpio en los archivos nuevos. `mypy --strict shared/persona.py` limpio; en `core/task_service.py` + `brain/personality.py` el conteo de errores fue idéntico al baseline de HEAD (0 nuevos) — verificado vía el fallback `--explicit-package-bases --follow-imports=skip` documentado.
+- **Motivacion:** con un modelo local activo (p.ej. Qwen), preguntar "¿quién eres?" devolvía "soy Qwen". `_CHAT_SYSTEM_PROMPT` (chat principal) y `_DEFAULT_SOUL_PROMPT` (analista) carecían de cláusula que prohibiera revelar el modelo base. ADR-701 establece **enforcement prompt-only** (sin regex scrubbing del output): una única fuente de verdad anteponida a cada superficie de prompt.
+- **Decisión de path (CLAUDE.md §1):** la task-spec sugería `brain/persona.py`; el blueprint vinculante (`PHASE_7_BLUEPRINT.md` §4.1 / §5.1) mandataba `shared/persona.py` para que tanto `core/task_service` (chat) como `brain/personality` (analyst) puedan importarlo sin tocar la fence de aislamiento cognitivo. Se siguió el blueprint, confirmado con el usuario.
+- **Módulo nuevo (`shared/persona.py`):** `AILIENANT_IDENTITY` (cláusula que prohíbe nombrar Qwen/Llama/GPT/Claude/"a large language model" + obliga a afirmarse como AILIENANT sin desviación) + `compose(persona_body) -> str` que la antepone al body.
+- **Idempotencia (fix de feedback del usuario):** la primera versión de `compose()` era una concatenación ciega — vulnerable a doble-inyección si un ciclo de LangGraph la invocaba dos veces sobre el mismo prompt (context-window bloat + attention decay). Se endureció con un guard `if persona_body.lstrip().startswith(AILIENANT_IDENTITY): return persona_body` — O(L) por `startswith`. Test P4 garantiza `compose(compose(x)) == compose(x)` y `count("You are AILIENANT") == 1`.
+- **Wiring de las tres superficies:**
+  - `core/task_service.py::_CHAT_SYSTEM_PROMPT`: ahora `compose("An expert AI coding assistant…")` (la oración "You are AILIENANT" la posee la cláusula, no el body).
+  - `brain/personality.py::_DEFAULT_SOUL_PROMPT`: body limpiado (mantiene 🐜 + Socrático para preservar tests previos) — la cláusula la prepende `compose()`.
+  - `brain/personality.py::SoulManager.get_prompt()`: **las 4 rutas de retorno** envueltas en `compose()` (not-a-file / stat-fail / read-fail / cached-or-default) — el bug inicial fue parchar sólo la última y P6 lo cazó.
+- **Custom SOUL.md:** los bodies de usuario se **anteponen tras** la cláusula vía `compose()`, así una SOUL personalizada nunca puede debilitar la soberanía de identidad (P7 lo guardia).
+- **Fence de aislamiento cognitivo:** intacto — `shared.persona` no importa nada del proyecto (cero ciclos), `brain.personality` sigue siendo importada exclusivamente por `agents/analyst.py` (auditoría de `test_analyst_agent::test_soul_manager_not_imported_by_logic_agents` verde).
+- **Tests (`tests/test_persona.py`, NUEVO, 7 casos):** P1 cláusula contiene los hardenings requeridos; P2 `compose()` antepone; P3 body vacío sin crash; **P4 idempotencia (LangGraph cycle safety)**; P5 `_CHAT_SYSTEM_PROMPT` arranca con la cláusula; P6 SoulManager fallback la incluye; P7 SOUL.md custom también recibe la cláusula (con body preservado y count == 1).
+- **Files changed:**
+  - Backend NUEVO: `shared/persona.py`, `tests/test_persona.py`.
+  - Backend EDIT: `core/task_service.py` (import compose + `_CHAT_SYSTEM_PROMPT` vía `compose()`), `brain/personality.py` (import compose + `_DEFAULT_SOUL_PROMPT` limpiado + las 4 rutas de `get_prompt()` envueltas).
+  - Docs EDIT *(este backfill)*: `README.md` (entrada `test_persona.py` en la línea de tests), `DEV_JOURNAL.md` (este hito).
+
 ## Hito 7.10.2: Cognitive Transparency & Token Batching (ADR-702) — 2026-05-25
 
 - **Status:** OK. `pytest tests/test_token_batcher.py` 7/7 passed; suite completa **602 passed** (595 previos + 7 nuevos, 0 regresiones). `ruff check` limpio en los 4 archivos. `mypy --strict transport/token_batcher.py` limpio; en `core/task_service.py` + `agents/planner.py` el conteo de errores es idéntico al baseline de HEAD (8 = 8) — deuda pre-existente documentada en `mypy.ini` (`agents.planner` generic-type + `from prompts import`); los cambios de este hito añaden **0** errores nuevos.
