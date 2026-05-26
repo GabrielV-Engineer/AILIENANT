@@ -81,6 +81,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // Chat — Phase 7.9.B.20: restored from the persisted per-session transcript.
     const [messages, setMessages] = useState<Message[]>(initial.initialMessages ?? []);
     const [isStreaming, setIsStreaming] = useState(false);
+    // Phase 7.11.3 — Stop-button optimistic flag (Zustand, transient).
+    const isAborting    = useWorkspaceStore((s) => s.isAborting);
+    const setIsAborting = useWorkspaceStore((s) => s.setIsAborting);
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -186,6 +189,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_stream_end':
                     setIsStreaming(false);
+                    // Phase 7.11.3 — back to idle whether the stream ended
+                    // naturally or because we aborted it.
+                    setIsAborting(false);
                     setMessages(prev => prev.map((m, i) =>
                         i === prev.length - 1 ? { ...m, streaming: false, stepsDone: true } : m));
                     break;
@@ -366,9 +372,17 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         });
     }, [preset, tier, mode, initial.sessionId]);
 
+    // Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh.
+    // ABORT_TASK keeps the client-side HTTP AbortController (legacy, harmless).
+    // ABORT_MESH is the new path: workspace_panel.ts turns it into a
+    // `client_abort_mesh` WS frame the backend resolves to Task.cancel().
+    // The `isAborting` guard makes the second click idempotent.
     const handleAbort = useCallback(() => {
+        if (isAborting) { return; }
+        setIsAborting(true);
         vscode.postMessage({ type: 'ABORT_TASK' });
-    }, []);
+        vscode.postMessage({ type: 'ABORT_MESH' });
+    }, [isAborting, setIsAborting]);
 
     const handleDreamingToggle = useCallback((next: boolean, p: DreamingProfile) => {
         setDreamingActive(next);
@@ -578,6 +592,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 placeholder={hitlPending ? `${nattName} is waiting for your decision` : undefined}
                                 activeTaskId={activeTaskId}
                                 isStreaming={isStreaming}
+                                isAborting={isAborting}
                                 config={config}
                                 mode={mode}
                                 preset={preset}

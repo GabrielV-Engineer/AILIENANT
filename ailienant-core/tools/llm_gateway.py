@@ -541,6 +541,16 @@ class LLMGateway:
 
         Yields non-empty token-delta strings for WebSocket broadcast. Raises
         NoAvailableProviderError when no BYOM preset is active.
+
+        Phase 7.11.3 (ADR-706 §4.5b FinOps integrity) — opt into LiteLLM's
+        ``stream_options={"include_usage": True}`` so the final chunk carries
+        a ``usage`` object with prompt/completion token counts. The accounting
+        block lives in a ``finally`` so it ALWAYS runs — completion path AND
+        abort path (CancelledError propagates through the ``async for``, but
+        the finally still flushes whatever tokens were observed). Providers
+        that don't emit usage (some local model builds) record zeros, which is
+        a no-op by the ledger contract; the abort path is unaffected either
+        way (token accounting NEVER blocks cancel propagation).
         """
         from core.config.model_resolver import get_chat_target  # deferred — load order
         target = get_chat_target(tier)
@@ -552,12 +562,40 @@ class LLMGateway:
             target, messages, temperature=temperature, max_tokens=max_tokens,
             timeout=_effective_timeout, stream=True, max_retries=2,
         )
+        kwargs.setdefault("stream_options", {"include_usage": True})
         logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
-        response = await litellm.acompletion(**kwargs)
-        async for chunk in response:
-            delta = chunk.choices[0].delta.content or ""
-            if delta:
-                yield delta
+        prompt_tokens: int = 0
+        completion_tokens: int = 0
+        try:
+            response = await litellm.acompletion(**kwargs)
+            async for chunk in response:
+                # Final-chunk shape (include_usage): `usage` populated, `choices`
+                # may be empty. Pre-final chunks: `usage=None`, content in choices[0].delta.
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    prompt_tokens = int(
+                        getattr(usage, "prompt_tokens", prompt_tokens) or prompt_tokens
+                    )
+                    completion_tokens = int(
+                        getattr(usage, "completion_tokens", completion_tokens) or completion_tokens
+                    )
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = (getattr(choices[0], "delta", None) and choices[0].delta.content) or ""
+                    if delta:
+                        yield delta
+        finally:
+            # ALWAYS record — completion OR abort path. Zero-token cases are
+            # no-ops in the ledger contract (verified in core/token_ledger.py).
+            try:
+                from core.token_ledger import token_ledger
+                resolved_tier = _classify_model_as_tier(target.model)
+                if resolved_tier == TaskPriority.CLOUD:
+                    token_ledger.record_cloud(prompt_tokens, completion_tokens)
+                else:
+                    token_ledger.record_local(prompt_tokens, completion_tokens)
+            except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
+                logger.debug("Stream token accounting failed (non-fatal): %s", exc)
 
     @staticmethod
     async def heartbeat(url: str) -> bool:

@@ -532,6 +532,29 @@ class ServerInlineEditEndEvent(BaseModel):
 
 
 # =====================================================================
+# 14. PHASE 7.11.3 — ABORT CONTROLLER MESH (ADR-706 §4.5b, Stop button)
+# =====================================================================
+#
+# Priority WS signal: the frontend asks the backend to cancel the in-flight
+# generation task for `session_id`. The server resolves session_id → asyncio.Task
+# via TaskService._active_tasks and calls task.cancel(); cooperative teardown
+# (try/except CancelledError inside the runner) records partial FinOps, sets
+# state["termination_reason"] = "user_abort", broadcasts a "Stopped by user"
+# chat turn, and finalizes the stream via server_stream_end.
+
+
+class ClientAbortMeshPayload(BaseModel):
+    """Client → server: priority abort signal for an in-flight session task."""
+
+    session_id: str
+
+
+class ClientAbortMeshEvent(BaseModel):
+    event_type: Literal["client_abort_mesh"] = "client_abort_mesh"
+    data: ClientAbortMeshPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -574,4 +597,5 @@ WebSocketMessage = Union[
     ServerInlineEditStartEvent,      # Phase 7.11.1 — stream start (open decorations)
     ServerInlineEditDeltaEvent,      # Phase 7.11.1 — typed mutation delta
     ServerInlineEditEndEvent,        # Phase 7.11.1 — stream finalized
+    ClientAbortMeshEvent,            # Phase 7.11.3 — abort controller mesh (Stop button)
 ]

@@ -481,3 +481,14 @@ class AIlienantGraphState(TypedDict):
     sandbox_tier_active: Literal["DOCKER", "WASM", "NATIVE_HITL"]
     hitl_audit_chain_head: Optional[str]
     dead_letter_episode_id: Optional[str]
+
+    # --- Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh savepoint marker ---
+    # Populated by the orchestrator (core/task_service.py) inside the
+    # `except asyncio.CancelledError` block when the user clicks Stop. The value
+    # is "user_abort" per the blueprint; future fault classes can extend the
+    # taxonomy (e.g., "budget_kill" / "timeout"). Cold-serializable string — the
+    # next HybridCheckpointer.promote() carries it into SQLite/LanceDB without
+    # any schema migration. UI consumers read it on rehydrate to render a
+    # "Stopped by user" indicator without breaking graph topology. None on
+    # normal completion. Scalar overwrite, no reducer.
+    termination_reason: Optional[str]

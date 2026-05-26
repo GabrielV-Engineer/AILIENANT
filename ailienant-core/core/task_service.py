@@ -76,6 +76,13 @@ class TaskService:
         # W2) and the asyncio.Task running the orchestrator (cancel() is the
         # hard escape if the cooperative event misses a window).
         self._inline_edits: Dict[str, Tuple[asyncio.Event, "asyncio.Task[None]"]] = {}
+        # Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh registry.
+        # Maps session_id → the runner asyncio.Task that owns one in-flight
+        # generation cycle (process_task or stream_analyst_reply). ONE active
+        # task per session matches the UI's single-stream contract. The runner
+        # MUST register its OWN current_task() (NEVER the WS receive loop's
+        # task — that would kill the socket on cancel; see plan W1).
+        self._active_tasks: Dict[str, "asyncio.Task[Any]"] = {}
 
     async def process_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str = "SEQUENTIAL"
@@ -149,6 +156,8 @@ class TaskService:
             "pending_patches": {},
             "current_cost_usd": 0.0,
             "max_budget_usd": float(os.getenv("AILIENANT_MAX_BUDGET_USD", "inf")),
+            # Phase 7.11.3 — populated by the abort handler on CancelledError.
+            "termination_reason": None,
         }
         try:
             from api.system_settings import _read_settings as _read_sys_settings
@@ -188,6 +197,33 @@ class TaskService:
             logger.debug("Intent classification failed (defaulting to question): %s", exc)
             return "question"
 
+    # Phase 7.11.3 — shared abort response. Broadcasts the "Stopped by user"
+    # turn + closes the stream + persists the marker into history. Best-effort:
+    # individual broadcasts are guarded so a half-dead WS connection cannot
+    # block the cancel path.
+    _ABORT_MARKER: str = "\n\n_⏹ Stopped by user._"
+
+    async def _emit_abort_response(
+        self,
+        session_id: str,
+        *,
+        history_key: Optional[str] = None,
+    ) -> None:
+        """Finalize an aborted stream: broadcast the marker + stream_end + persist."""
+        try:
+            await vfs_manager.broadcast_token(session_id, self._ABORT_MARKER)
+        except Exception:  # noqa: BLE001 — never block cancel on broadcast failure
+            pass
+        try:
+            await vfs_manager.broadcast_stream_end(session_id)
+        except Exception:  # noqa: BLE001
+            pass
+        if history_key:
+            try:
+                self._append_history(history_key, "assistant", self._ABORT_MARKER.strip())
+            except Exception:  # noqa: BLE001 — history persistence is best-effort here
+                pass
+
     async def _run_coding_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str
     ) -> None:
@@ -210,103 +246,125 @@ class TaskService:
 
         state["narrate"] = _narrate
 
-        await _narrate("context_gather")
+        # Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh. CancelledError
+        # may surface from ANY await in this coroutine (planner, coder steps,
+        # HITL approval, write pipeline). The single outer except catches it,
+        # tags the state with the savepoint marker so a future checkpointer
+        # promote() carries it through cold-serializable, and emits the
+        # standard abort response (broadcast marker + stream_end + persist).
         try:
-            plan = await run_planner_node(state)
-        except Exception as exc:  # noqa: BLE001 — planner failure must not crash the task
-            logger.warning("Planner failed: %s", exc)
-            await vfs_manager.broadcast_token(
-                session_id,
-                "I couldn't draft a plan — make sure a BYOM preset is active and its "
-                f"engine is running. ({exc})",
-            )
-            await vfs_manager.broadcast_stream_end(session_id)
-            return
-
-        mission = plan.get("mission_spec")
-        if mission is None:
-            errs = plan.get("errors") or ["the planner did not return a plan"]
-            await vfs_manager.broadcast_token(
-                session_id, "I couldn't draft a plan: " + "; ".join(errs)
-            )
-            await vfs_manager.broadcast_stream_end(session_id)
-            return
-
-        patches: Dict[str, str] = {}
-        contents: Dict[str, str] = {}
-        base_hashes: Dict[str, str] = {}
-        errors: List[str] = []
-        coder_steps = list(mission.tasks)[:_MAX_CODER_STEPS]
-        total_steps = len(coder_steps)
-        for idx, step in enumerate(coder_steps, start=1):
-            # "coding step N/M" rides in node_name — PipelineStepPayload schema unchanged.
-            await _narrate(f"coder_agent ({idx}/{total_steps})", step_id=step.step_number)
+            await _narrate("context_gather")
             try:
-                cres = await run_coder_node(
-                    {**state, "mission_spec": mission, "current_step_id": step.step_number}
+                plan = await run_planner_node(state)
+            except asyncio.CancelledError:
+                raise  # propagate to the outer handler — don't swallow here
+            except Exception as exc:  # noqa: BLE001 — planner failure must not crash the task
+                logger.warning("Planner failed: %s", exc)
+                await vfs_manager.broadcast_token(
+                    session_id,
+                    "I couldn't draft a plan — make sure a BYOM preset is active and its "
+                    f"engine is running. ({exc})",
                 )
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"step #{step.step_number}: {exc}")
-                continue
-            patches.update(cres.get("pending_patches") or {})
-            contents.update(cres.get("pending_contents") or {})
-            base_hashes.update(cres.get("pending_base_hash") or {})
-            errors.extend(cres.get("errors") or [])
+                await vfs_manager.broadcast_stream_end(session_id)
+                return
 
-        # 1) Stream the plan + proposed diffs as a reviewable message.
-        summary = self._format_coding_summary(mission, patches, errors)
-        gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
-        await vfs_manager.broadcast_token(session_id, summary)
-        await vfs_manager.broadcast_stream_end(session_id)
-        self._append_history(session_id, "user", payload.task_prompt)
-        self._append_history(session_id, "assistant", summary)
+            mission = plan.get("mission_spec")
+            if mission is None:
+                errs = plan.get("errors") or ["the planner did not return a plan"]
+                await vfs_manager.broadcast_token(
+                    session_id, "I couldn't draft a plan: " + "; ".join(errs)
+                )
+                await vfs_manager.broadcast_stream_end(session_id)
+                return
 
-        # 2) No concrete edits → nothing to apply.
-        if not contents:
-            return
+            patches: Dict[str, str] = {}
+            contents: Dict[str, str] = {}
+            base_hashes: Dict[str, str] = {}
+            errors: List[str] = []
+            coder_steps = list(mission.tasks)[:_MAX_CODER_STEPS]
+            total_steps = len(coder_steps)
+            for idx, step in enumerate(coder_steps, start=1):
+                # "coding step N/M" rides in node_name — PipelineStepPayload schema unchanged.
+                await _narrate(f"coder_agent ({idx}/{total_steps})", step_id=step.step_number)
+                try:
+                    cres = await run_coder_node(
+                        {**state, "mission_spec": mission, "current_step_id": step.step_number}
+                    )
+                except asyncio.CancelledError:
+                    raise  # propagate up to the outer abort handler
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"step #{step.step_number}: {exc}")
+                    continue
+                patches.update(cres.get("pending_patches") or {})
+                contents.update(cres.get("pending_contents") or {})
+                base_hashes.update(cres.get("pending_base_hash") or {})
+                errors.extend(cres.get("errors") or [])
 
-        # 3) One authorization for the whole change set (HITL card).
-        combined_diff = "\n".join(patches[p] for p in patches)
-        decision = await vfs_manager.request_human_approval(
-            session_id=session_id,
-            action_description=(
-                f"Apply {len(contents)} file change(s): " + ", ".join(contents)
-            ),
-            proposed_content=combined_diff,
-        )
-        if not decision or not decision.get("approved"):
-            discarded = "Changes discarded — no files were modified."
-            gate.record_answer(len(discarded.encode()))
-            await vfs_manager.broadcast_token(session_id, discarded)
+            # 1) Stream the plan + proposed diffs as a reviewable message.
+            summary = self._format_coding_summary(mission, patches, errors)
+            gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
+            await vfs_manager.broadcast_token(session_id, summary)
             await vfs_manager.broadcast_stream_end(session_id)
+            self._append_history(session_id, "user", payload.task_prompt)
+            self._append_history(session_id, "assistant", summary)
+
+            # 2) No concrete edits → nothing to apply.
+            if not contents:
+                return
+
+            # 3) One authorization for the whole change set (HITL card).
+            combined_diff = "\n".join(patches[p] for p in patches)
+            decision = await vfs_manager.request_human_approval(
+                session_id=session_id,
+                action_description=(
+                    f"Apply {len(contents)} file change(s): " + ", ".join(contents)
+                ),
+                proposed_content=combined_diff,
+            )
+            if not decision or not decision.get("approved"):
+                discarded = "Changes discarded — no files were modified."
+                gate.record_answer(len(discarded.encode()))
+                await vfs_manager.broadcast_token(session_id, discarded)
+                await vfs_manager.broadcast_stream_end(session_id)
+                return
+
+            # 4) Single-file edit-before-apply: honor the card's edited payload.
+            modified = decision.get("modified_content")
+            if modified and len(contents) == 1:
+                only_path = next(iter(contents))
+                contents[only_path] = modified
+
+            # 5) Actuate via the VS Code applyEdit bridge (Python never writes to disk).
+            from core.write_pipeline import apply_patch_set
+            res = await apply_patch_set(session_id, contents, base_hashes)
+            if res.get("ok"):
+                applied = res.get("applied_files") or list(contents)
+                result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
+            elif res.get("stale_files"):
+                result_msg = (
+                    "⚠️ Not applied — these files changed since the proposal: "
+                    + ", ".join(res["stale_files"])
+                    + ". Re-run the request to regenerate against the current code."
+                )
+            else:
+                result_msg = "⚠️ Could not apply the changes: " + str(
+                    res.get("error") or "unknown error"
+                )
+            gate.record_answer(len(result_msg.encode()))
+            await vfs_manager.broadcast_token(session_id, result_msg)
+            await vfs_manager.broadcast_stream_end(session_id)
+            self._append_history(session_id, "assistant", result_msg)
+        except asyncio.CancelledError:
+            # Phase 7.11.3 — emergency savepoint. Cold-serializable marker
+            # written into state for the next checkpointer promote(); see
+            # plan W1/W4 and ADR-706 §4.5(b).
+            state["termination_reason"] = "user_abort"
+            logger.info("[Session: %s] _run_coding_task aborted by user", session_id)
+            await self._emit_abort_response(session_id, history_key=session_id)
+            # Swallow — the orchestrator owns the lifecycle. Re-raising would
+            # mark the runner task as cancelled, but the user-visible flow is
+            # already complete (broadcast_stream_end fired).
             return
-
-        # 4) Single-file edit-before-apply: honor the card's edited payload.
-        modified = decision.get("modified_content")
-        if modified and len(contents) == 1:
-            only_path = next(iter(contents))
-            contents[only_path] = modified
-
-        # 5) Actuate via the VS Code applyEdit bridge (Python never writes to disk).
-        from core.write_pipeline import apply_patch_set
-        res = await apply_patch_set(session_id, contents, base_hashes)
-        if res.get("ok"):
-            applied = res.get("applied_files") or list(contents)
-            result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
-        elif res.get("stale_files"):
-            result_msg = (
-                "⚠️ Not applied — these files changed since the proposal: "
-                + ", ".join(res["stale_files"])
-                + ". Re-run the request to regenerate against the current code."
-            )
-        else:
-            result_msg = "⚠️ Could not apply the changes: " + str(
-                res.get("error") or "unknown error"
-            )
-        gate.record_answer(len(result_msg.encode()))
-        await vfs_manager.broadcast_token(session_id, result_msg)
-        await vfs_manager.broadcast_stream_end(session_id)
-        self._append_history(session_id, "assistant", result_msg)
 
     @staticmethod
     def _format_coding_summary(
@@ -409,6 +467,7 @@ class TaskService:
             {"role": "user", "content": task_prompt},
         ]
         reply_parts: List[str] = []
+        aborted = False
         try:
             # Phase 7.10.2 (ADR-702/G1): coalesce deltas into chunk_ms=40 frames so
             # the Webview never receives one WS frame per token. Concatenation is
@@ -430,6 +489,19 @@ class TaskService:
                     "No response was produced. Check that a BYOM preset is active and "
                     "its model is reachable (Dashboard → BYOM).",
                 )
+        except asyncio.CancelledError:
+            # Phase 7.11.3 — user clicked Stop. Persist the partial answer (if
+            # any) so the transcript reflects what arrived before the abort.
+            aborted = True
+            logger.info("[Session: %s] _stream_chat_answer aborted by user", session_id)
+            partial = "".join(reply_parts).rstrip()
+            if partial:
+                self._append_history(session_id, "user", task_prompt)
+                self._append_history(session_id, "assistant", partial + self._ABORT_MARKER.strip())
+            try:
+                await vfs_manager.broadcast_token(session_id, self._ABORT_MARKER)
+            except Exception:  # noqa: BLE001 — best-effort during cancel
+                pass
         except Exception as exc:  # noqa: BLE001 — a chat failure must never crash the task
             logger.warning("Live chat completion failed: %s", exc)
             await vfs_manager.broadcast_token(
@@ -438,7 +510,14 @@ class TaskService:
                 "(Dashboard → BYOM) and make sure its engine is running, then try again.",
             )
         finally:
-            await vfs_manager.broadcast_stream_end(session_id)
+            try:
+                await vfs_manager.broadcast_stream_end(session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            if aborted:
+                # Don't re-raise — abort path is user-visible-complete; the
+                # runner returns normally so the registry cleanup callback fires.
+                return
 
     async def stream_analyst_reply(
         self,
@@ -474,19 +553,35 @@ class TaskService:
         history = list(_conversations.get(mem_key, []))
 
         parts: List[str] = []
-        async for chunk in generate_analyst_reply_stream(
-            text, context_block, history, session_id
-        ):
-            parts.append(chunk)
-            await vfs_manager.broadcast_natt_token(session_id, chunk)
+        aborted = False
+        try:
+            async for chunk in generate_analyst_reply_stream(
+                text, context_block, history, session_id
+            ):
+                parts.append(chunk)
+                await vfs_manager.broadcast_natt_token(session_id, chunk)
+        except asyncio.CancelledError:
+            # Phase 7.11.3 — Stop button mid-analyst-stream.
+            aborted = True
+            logger.info("[Session: %s] stream_analyst_reply aborted by user", session_id)
+            try:
+                await vfs_manager.broadcast_natt_token(session_id, self._ABORT_MARKER)
+            except Exception:  # noqa: BLE001
+                pass
 
         context_version = hashlib.sha256(context_block.encode("utf-8")).hexdigest()[:12]
-        await vfs_manager.broadcast_natt_stream_end(session_id, context_version=context_version)
+        try:
+            await vfs_manager.broadcast_natt_stream_end(session_id, context_version=context_version)
+        except Exception:  # noqa: BLE001 — best-effort during cancel
+            pass
 
         reply = "".join(parts).strip()
         if reply:
             self._append_history(mem_key, "user", text)
-            self._append_history(mem_key, "assistant", reply)
+            self._append_history(
+                mem_key, "assistant",
+                reply + (self._ABORT_MARKER.strip() if aborted else ""),
+            )
 
     # ------------------------------------------------------------------
     # Phase 7.11.1 — Inline editor mutations (Cmd+K, ADR-706 §4.5a)
@@ -607,4 +702,39 @@ class TaskService:
         cancel_event.set()
         if not task.done():
             task.cancel()
+        return True
+
+    # ------------------------------------------------------------------
+    # Phase 7.11.3 — Abort Controller Mesh (ADR-706 §4.5b)
+    # ------------------------------------------------------------------
+
+    def register_active_task(self, session_id: str, task: "asyncio.Task[Any]") -> None:
+        """Track an in-flight session task so the abort mesh can cancel it.
+
+        The caller MUST pass its OWN ``asyncio.current_task()`` from inside the
+        runner closure (the `_runner` inside `submit_task`, the
+        `_analyst_runner` inside the `client_analyst_query` handler) — NEVER
+        the WS receive loop's task. The runner is a child task spawned via
+        `asyncio.create_task(...)`; cancelling it propagates `CancelledError`
+        into the generation coroutine without disturbing the WS connection.
+        See plan W1 for the full invariant.
+
+        Idempotent: a second call for the same session_id replaces the
+        previous entry (only one in-flight generation per UI session). On
+        task completion, the done-callback auto-removes the entry.
+        """
+        self._active_tasks[session_id] = task
+        task.add_done_callback(lambda _t: self._active_tasks.pop(session_id, None))
+
+    def abort_session(self, session_id: str) -> bool:
+        """Cancel the in-flight task for ``session_id`` cooperatively.
+
+        Returns True if a live task was signalled, False if the session has
+        no registered task (already completed, never started, or never
+        registered). Idempotent: calling on a done/cancelled task is a no-op.
+        """
+        task = self._active_tasks.get(session_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
         return True

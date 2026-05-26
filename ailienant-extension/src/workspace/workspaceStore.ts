@@ -35,6 +35,14 @@ export interface WorkspaceState {
     preset: ReasoningPreset;
     tier: InferenceTier;
     lastScrollY: number;
+    /**
+     * Phase 7.11.3 (ADR-706 §4.5b) — optimistic-feedback flag while a Stop is
+     * in flight. Set true the instant the user clicks Stop; cleared by the
+     * `server_stream_end` handler in Workspace.tsx. Transient — explicitly
+     * EXCLUDED from `pick` so it never persists (a stale `true` after panel
+     * reload would visually freeze the button).
+     */
+    isAborting: boolean;
 
     // Setters (Zustand pattern — flat actions colocated with state).
     setInputDraft: (v: string) => void;
@@ -46,6 +54,7 @@ export interface WorkspaceState {
     setPreset: (v: ReasoningPreset) => void;
     setTier: (v: InferenceTier) => void;
     setLastScrollY: (v: number) => void;
+    setIsAborting: (v: boolean) => void;
 }
 
 export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
@@ -59,6 +68,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         preset: 'architect',
         tier: 'HYBRID',
         lastScrollY: 0,
+        isAborting: false,
 
         setInputDraft:   (v) => set({ inputDraft: v }),
         setPaletteOpen:  (v) => set({ paletteOpen: v }),
@@ -69,6 +79,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         setPreset:       (v) => set({ preset: v }),
         setTier:         (v) => set({ tier: v }),
         setLastScrollY:  (v) => set({ lastScrollY: v }),
+        setIsAborting:   (v) => set({ isAborting: v }),
     }),
     {
         key: 'workspace.v1',

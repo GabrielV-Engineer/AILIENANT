@@ -1587,11 +1587,35 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
   mismatch → safe discard) — `vscode-test` suite **4/4 green**. Host-side
   `workspaceState` persistence (budget/models/dreaming/transcript via 7.9.B.20) untouched.
   Blueprint lock-in NOT yet expired — 7 of 9 Phase 7.11 features remain.
-- [ ] **(9.5/10) Execution interruption — Abort Controller Mesh** — Stop → priority WS event
+- [x] **(9.5/10) Execution interruption — Abort Controller Mesh** — Stop → priority WS event
   → `asyncio.CancelledError`; closes Docker/Wasm tool, records cost to FinOps; idempotent
   rollback (ADR-706: prefer inter-node interception; mid-stream → cold-serializable emergency
   savepoint `metadata={"termination_reason":"user_abort"}` that rehydrates as a truncated node
-  without breaking topology).
+  without breaking topology). **Phase 7.11.3 (2026-05-26)** — shipped: new
+  `ClientAbortMesh{Payload,Event}` WS contract + `TaskService._active_tasks` session-keyed
+  registry with `register_active_task` (W1 invariant: runner-task only, never the WS
+  receive loop) + `abort_session` cooperative cancel. `_run_coding_task`,
+  `_stream_chat_answer`, and `stream_analyst_reply` each get a `try/except
+  CancelledError` block that emits the `_⏹ Stopped by user._` marker, calls
+  `broadcast_stream_end`/`broadcast_natt_stream_end`, persists the partial transcript,
+  and (for the coding path) sets `state["termination_reason"] = "user_abort"` —
+  cold-serializable via the new `Optional[str]` field on `AIlienantGraphState` carrying
+  through `HybridCheckpointer.promote()` without a schema migration. `tools/llm_gateway.py::astream_byom`
+  fixed: now opts into LiteLLM's `stream_options={"include_usage": True}` and records the
+  final-chunk token usage to the global `token_ledger` in a `try/finally` — closes a
+  pre-existing FinOps leak (streamed completions never recorded any tokens before).
+  Frontend: new transient `isAborting` field on the Zustand `workspaceStore` (no version
+  bump — defensively excluded from `pick`), new `ABORT_MESH` `WebviewToHostMessage`
+  variant that `workspace_panel.ts` turns into a `client_abort_mesh` WS frame, PromptBar
+  Stop button shows pulse + "Aborting…" tooltip + `disabled` while in flight.
+  HITL pending requests cleaned up automatically via the existing
+  `request_human_approval` `finally` (no changes needed; verified). Docker/Wasm
+  best-effort: `asyncio.to_thread` releases the coroutine on cancel; per-session
+  container kill remains future work. Tests: `tests/test_abort_mesh.py` (5 tests:
+  registry round-trip, `_run_coding_task` cancel + stream-end + marker, analyst cancel
+  + natt-stream-end, `astream_byom` records 30 tokens from a 4-chunk stub, payload
+  round-trip) — full backend **636 passed**, 0 regressions; frontend `vscode-test` 4/4.
+  Blueprint lock-in NOT yet expired — 6 of 9 Phase 7.11 features remain.
 - [ ] **(9/10) `@mentions` selector** (`@file:`, `@folder:`, `@terminal`) as **hard-context**
   (bypasses RAG); debounced workspace-tree indexing.
 - [ ] **(9/10) Double-buffer Markdown streaming (anti-flicker)** — **Stateful Streaming Parser,

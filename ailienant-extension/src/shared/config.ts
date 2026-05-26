@@ -57,6 +57,7 @@ export interface TokenSnapshot {
 export type WebviewToHostMessage =
     | { type: "SUBMIT_TASK";        value: string; preset?: ReasoningPreset; tier?: InferenceTier }
     | { type: "ABORT_TASK" }
+    | { type: "ABORT_MESH" }  // Phase 7.11.3 — Abort Controller Mesh (backend Task.cancel)
     | { type: "togglePlannerMode";  value: boolean }
     | { type: "master_toggle";      value: boolean }
     | { type: "profile_change";     value: IntelligenceProfile }
