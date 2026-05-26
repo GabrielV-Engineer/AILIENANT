@@ -1557,9 +1557,18 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
 > (so the 7.10 transport layer is dimensioned for the inline diff-stream canvas), but
 > implemented only after 7.10 closes. Importance ratings preserved.
 
-- [ ] **(10/10) Inline editor mutations (Cmd+K / Cursor-style)** — `activeTextEditor.edit()`
+- [x] **(10/10) Inline editor mutations (Cmd+K / Cursor-style)** — `activeTextEditor.edit()`
   + `TextEditorDecorationType` diff stream on the canvas; strict offset/concurrency control
-  (backend: VFS + `apply_patch` AST validation).
+  (backend: VFS + `apply_patch` AST validation). **Phase 7.11.1 (2026-05-25)** — shipped:
+  backend `tools/inline_patch_validator.py` (tolerant AST gate, 20+ tree-sitter languages),
+  `agents/inline_edit.py` (LLM-stream → typed deltas with cooperative cancel, plan W2),
+  `core/task_service.start_inline_edit` + cancel registry, `client_inline_edit_request` /
+  `client_inline_edit_cancel` handlers in `main.py`. Frontend: `src/core/InlineMutationManager.ts`
+  (FIFO promise-chain edit queue, two `TextEditorDecorationType`s, LF↔CRLF coord conversion
+  for Windows safety per plan W1, single-Undo session via `undoStopBefore/After:false`,
+  PatchActuator-backed atomic commit reusing the 7.9.B.18 SHA-256 stale-guard). Tests:
+  `tests/test_inline_mutations.py` (10/10 green; full suite **631 passed**, 0 regressions).
+  Blueprint lock-in NOT yet expired — 8 of 9 Phase 7.11 features remain.
 - [ ] **(10/10) WebView state rehydration (tab-switch survival)** —
   `acquireVsCodeApi().setState()/getState()` + immutable global store (Zustand/Redux);
   destroy IPC listeners on unmount.

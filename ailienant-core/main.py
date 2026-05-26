@@ -812,6 +812,51 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 _task_submit_tasks.add(_at)
                 _at.add_done_callback(_task_submit_tasks.discard)
 
+            elif valid_event.event_type == "client_inline_edit_request":
+                # Phase 7.11.1 (ADR-706 §4.5a) — Cmd+K inline edit stream.
+                # Backend reads its baseline content from the live RAM-VFS (the
+                # extension's last client_file_update); the frontend stays the
+                # source of truth for selection ranges, which are LF-space
+                # offsets per plan W1.
+                _ier = valid_event.data
+                _baseline = task_service.vfs.read(_ier.file_path) or _ier.selected_text
+                _norm_baseline = _baseline.replace("\r\n", "\n")
+
+                async def _inline_runner(
+                    sid: str = client_id,
+                    edit_id: str = _ier.edit_id,
+                    file_path: str = _ier.file_path,
+                    file_content: str = _norm_baseline,
+                    range_start: int = _ier.range_start,
+                    range_end: int = _ier.range_end,
+                    prompt: str = _ier.prompt,
+                    language_id: Optional[str] = _ier.language_id,
+                ) -> None:
+                    await task_service.start_inline_edit(
+                        session_id=sid,
+                        edit_id=edit_id,
+                        file_path=file_path,
+                        file_content=file_content,
+                        range_start=range_start,
+                        range_end=range_end,
+                        prompt=prompt,
+                        language_id=language_id,
+                    )
+
+                _iet = asyncio.create_task(
+                    _inline_runner(), name=f"inline_edit:{_ier.edit_id}"
+                )
+                _task_submit_tasks.add(_iet)
+                _iet.add_done_callback(_task_submit_tasks.discard)
+
+            elif valid_event.event_type == "client_inline_edit_cancel":
+                # Phase 7.11.1 — cooperative cancel. Sets cancel_event + Task.cancel().
+                _did_cancel = task_service.cancel_inline_edit(valid_event.data.edit_id)
+                logger.info(
+                    "[Session: %s] Inline edit cancel: edit_id=%s found=%s",
+                    client_id, valid_event.data.edit_id, _did_cancel,
+                )
+
             elif valid_event.event_type == "client_file_delete":
                 io_coalescer.submit_unlink(
                     valid_event.data.filepath, valid_event.data.project_id

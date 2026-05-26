@@ -439,6 +439,99 @@ class ClientRestoreHistoryEvent(BaseModel):
 
 
 # =====================================================================
+# 13. PHASE 7.11.1 — INLINE EDITOR MUTATIONS (ADR-706 §4.5a, Cmd+K)
+# =====================================================================
+#
+# Two-layer transport (plan):
+#   • Streaming intermediate deltas use the lightweight typed shape below
+#     (the InlineMutationManager replays them into the active editor).
+#   • The FINAL commit on user-accept reuses ApplyWorkspaceEditPayload (§9b)
+#     so the SHA-256 stale-guard / OCC contract from 7.9.B.18 is preserved.
+#
+# All `offset` / `length` values are absolute character offsets into the
+# LF-normalized file content (the frontend normalizes CRLF→LF before
+# computing offsets, then converts each LF offset back to native editor
+# coordinates before applying — see plan §W1).
+
+
+class ClientInlineEditRequestPayload(BaseModel):
+    """Client → server: a Cmd+K inline-edit request for a selected region."""
+
+    edit_id: str                         # uuid4 hex — unique per request
+    session_id: str
+    file_path: str
+    range_start: int                     # absolute LF-space offset of the selection start
+    range_end: int                       # absolute LF-space offset of the selection end
+    prompt: str                          # user's instruction (from showInputBox)
+    base_hash: str                       # sha256(pre-edit, LF-normalized) for the final commit stale-guard
+    selected_text: str                   # LF-normalized selection text (analyst-context provenance)
+    language_id: Optional[str] = None    # VS Code languageId (None = unknown → validator passes through)
+
+
+class ClientInlineEditRequestEvent(BaseModel):
+    event_type: Literal["client_inline_edit_request"] = "client_inline_edit_request"
+    data: ClientInlineEditRequestPayload
+
+
+class ClientInlineEditCancelPayload(BaseModel):
+    """Client → server: cancel an in-flight inline edit (user pressed Esc)."""
+
+    edit_id: str
+    session_id: str
+
+
+class ClientInlineEditCancelEvent(BaseModel):
+    event_type: Literal["client_inline_edit_cancel"] = "client_inline_edit_cancel"
+    data: ClientInlineEditCancelPayload
+
+
+class InlineEditStartPayload(BaseModel):
+    """Server → client: stream is about to begin for edit_id (decorations now)."""
+
+    edit_id: str
+    session_id: str
+    file_path: str
+    range_start: int
+    range_end: int
+
+
+class ServerInlineEditStartEvent(BaseModel):
+    event_type: Literal["server_inline_edit_start"] = "server_inline_edit_start"
+    data: InlineEditStartPayload
+
+
+class InlineEditDeltaPayload(BaseModel):
+    """Server → client: one typed mutation delta to replay into the editor."""
+
+    edit_id: str
+    session_id: str
+    kind: Literal["INSERT", "DELETE", "ABORT"]
+    offset: int                          # absolute LF-space offset in the file
+    length: int = 0                      # DELETE only — chars to remove from `offset`
+    text: str = ""                       # INSERT body, or ABORT reason
+
+
+class ServerInlineEditDeltaEvent(BaseModel):
+    event_type: Literal["server_inline_edit_delta"] = "server_inline_edit_delta"
+    data: InlineEditDeltaPayload
+
+
+class InlineEditEndPayload(BaseModel):
+    """Server → client: stream finalized (success or abort)."""
+
+    edit_id: str
+    session_id: str
+    success: bool
+    final_content: str = ""              # full post-edit LF-normalized content (used to recompute commit base_hash)
+    error: Optional[str] = None
+
+
+class ServerInlineEditEndEvent(BaseModel):
+    event_type: Literal["server_inline_edit_end"] = "server_inline_edit_end"
+    data: InlineEditEndPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -476,4 +569,9 @@ WebSocketMessage = Union[
     ServerStreamEndEvent,            # Phase 7.9.B.12 — assistant stream finalized
     ClientClearConversationEvent,    # Phase 7.9.B.15 — clear short-term chat memory
     ClientRestoreHistoryEvent,       # Phase 7.9.B.20 — rehydrate session memory on reopen
+    ClientInlineEditRequestEvent,    # Phase 7.11.1 — Cmd+K inline edit request
+    ClientInlineEditCancelEvent,     # Phase 7.11.1 — inline edit cancel
+    ServerInlineEditStartEvent,      # Phase 7.11.1 — stream start (open decorations)
+    ServerInlineEditDeltaEvent,      # Phase 7.11.1 — typed mutation delta
+    ServerInlineEditEndEvent,        # Phase 7.11.1 — stream finalized
 ]

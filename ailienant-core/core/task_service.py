@@ -1,9 +1,10 @@
+import asyncio
 import hashlib
 import json
 import os
 import re
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager
@@ -70,6 +71,11 @@ class TaskService:
     def __init__(self):
         # Inyección de dependencias (Singleton)
         self.vfs = VFSMiddleware()
+        # Phase 7.11.1 — in-flight inline edits, keyed by edit_id. Each entry
+        # owns one cancel_event (the agent loop polls it between yields, plan
+        # W2) and the asyncio.Task running the orchestrator (cancel() is the
+        # hard escape if the cooperative event misses a window).
+        self._inline_edits: Dict[str, Tuple[asyncio.Event, "asyncio.Task[None]"]] = {}
 
     async def process_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str = "SEQUENTIAL"
@@ -481,3 +487,124 @@ class TaskService:
         if reply:
             self._append_history(mem_key, "user", text)
             self._append_history(mem_key, "assistant", reply)
+
+    # ------------------------------------------------------------------
+    # Phase 7.11.1 — Inline editor mutations (Cmd+K, ADR-706 §4.5a)
+    # ------------------------------------------------------------------
+
+    async def start_inline_edit(
+        self,
+        *,
+        session_id: str,
+        edit_id: str,
+        file_path: str,
+        file_content: str,
+        range_start: int,
+        range_end: int,
+        prompt: str,
+        language_id: Optional[str] = None,
+    ) -> None:
+        """Orchestrate one streaming inline-edit session.
+
+        Emits server_inline_edit_start, then each typed delta from
+        agents.inline_edit.stream_inline_edit, then a single
+        server_inline_edit_end with the speculative final_content the host
+        will hash to derive the commit base_hash. Honors cooperative
+        cancellation via a per-edit asyncio.Event registered in
+        self._inline_edits; cancel_inline_edit() sets the event AND
+        Task.cancel() — belt-and-suspenders so a slow LLM yield can't
+        outlive the user's Esc.
+        """
+        from agents.inline_edit import stream_inline_edit  # deferred — cycle guard
+
+        cancel_event = asyncio.Event()
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._inline_edits[edit_id] = (cancel_event, current_task)
+
+        await vfs_manager.broadcast_inline_edit_start(
+            session_id, edit_id, file_path, range_start, range_end,
+        )
+
+        final_buf = file_content
+        sel_start = max(0, min(range_start, len(file_content)))
+        sel_end = max(sel_start, min(range_end, len(file_content)))
+        insert_cursor = sel_start
+        # The buffer evolves with each broadcast delta — kept in sync so the
+        # final_content sent to the host matches what the editor will display.
+        final_buf = file_content[:sel_start] + file_content[sel_end:]
+
+        success = True
+        error: Optional[str] = None
+        try:
+            async for delta in stream_inline_edit(
+                prompt,
+                file_path,
+                file_content,
+                (sel_start, sel_end),
+                language_id,
+                session_id=session_id,
+                cancel_event=cancel_event,
+            ):
+                kind = delta["kind"]
+                offset = int(delta.get("offset", 0))
+                length = int(delta.get("length", 0))
+                text = str(delta.get("text", ""))
+                if kind == "INSERT":
+                    final_buf = final_buf[:insert_cursor] + text + final_buf[insert_cursor:]
+                    insert_cursor += len(text)
+                # The initial DELETE was already applied to final_buf above;
+                # treat any further DELETE as additive (length chars at offset).
+                elif kind == "DELETE" and offset != sel_start:
+                    end = min(offset + length, len(final_buf))
+                    final_buf = final_buf[:offset] + final_buf[end:]
+                elif kind == "ABORT":
+                    success = False
+                    error = text or "aborted"
+                await vfs_manager.broadcast_inline_edit_delta(
+                    session_id, edit_id, kind, offset, length, text,
+                )
+                if kind == "ABORT":
+                    break
+        except asyncio.CancelledError:
+            success = False
+            error = "cancelled"
+            # Surface the cancellation as an ABORT so the manager can clean
+            # up its decorations even if the task was killed mid-yield.
+            try:
+                await vfs_manager.broadcast_inline_edit_delta(
+                    session_id, edit_id, "ABORT", 0, 0, "user_cancel",
+                )
+            except Exception:  # noqa: BLE001 — best-effort during cancel
+                pass
+            # Don't re-raise: this orchestrator owns the lifecycle and emits
+            # the END event below. The cancel_event already broke the loop.
+        except Exception as exc:  # noqa: BLE001 — orchestrator must never crash WS loop
+            logger.warning("INLINE_EDIT orchestrator failed (edit_id=%s): %s", edit_id, exc)
+            success = False
+            error = str(exc)
+        finally:
+            self._inline_edits.pop(edit_id, None)
+            try:
+                await vfs_manager.broadcast_inline_edit_end(
+                    session_id, edit_id, success,
+                    final_content=final_buf if success else "",
+                    error=error,
+                )
+            except Exception:  # noqa: BLE001 — END is best-effort on a dead socket
+                pass
+
+    def cancel_inline_edit(self, edit_id: str) -> bool:
+        """Cooperative cancel — sets the agent's event AND cancels its Task.
+
+        Returns True if a live edit was found and signaled; False if the
+        edit_id was unknown (already completed or never started).
+        """
+        entry = self._inline_edits.get(edit_id)
+        if entry is None:
+            return False
+        cancel_event, task = entry
+        cancel_event.set()
+        if not task.done():
+            task.cancel()
+        return True

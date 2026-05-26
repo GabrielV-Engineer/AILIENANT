@@ -13,6 +13,7 @@ import {
     showMctsDiff,
 } from './providers/mirror';
 import { boundingBoxRegistry, installDecayListener } from './providers/telemetry';
+import { InlineMutationManager } from './core/InlineMutationManager';
 
 function makeSessionId(): string {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -123,6 +124,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
     );
 
+    // ── Phase 7.11.1 (ADR-706 §4.5a) — Cmd+K inline editor mutations ──
+    const inlineEditCmd = vscode.commands.registerCommand(
+        'ailienant.inlineEdit',
+        async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.selection.isEmpty) {
+                void vscode.window.showInformationMessage(
+                    'AILIENANT: select code first, then press Cmd+K.',
+                );
+                return;
+            }
+            const prompt = await vscode.window.showInputBox({
+                prompt: 'Instruction for AILIENANT',
+                placeHolder: 'e.g. "type-annotate", "extract helper", "explain inline"',
+            });
+            if (!prompt) { return; }
+            await InlineMutationManager.instance.startSession(editor, editor.selection, prompt);
+        },
+    );
+    const acceptInlineEditCmd = vscode.commands.registerCommand(
+        'ailienant.acceptInlineEdit',
+        () => InlineMutationManager.instance.accept(),
+    );
+    const rejectInlineEditCmd = vscode.commands.registerCommand(
+        'ailienant.rejectInlineEdit',
+        () => InlineMutationManager.instance.cancel(),
+    );
+
     // ── MCTS Mirror (Phase 3.4.5) ─────────────────────────────────────
     const mirrorProvider = new MirrorContentProvider();
     const mirrorRegistration = vscode.workspace.registerTextDocumentContentProvider(
@@ -145,6 +174,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         mirrorRegistration,
         showDiffCmd,
         applyMergeCmd,
+        inlineEditCmd,
+        acceptInlineEditCmd,
+        rejectInlineEditCmd,
+        { dispose: () => InlineMutationManager.instance.dispose() },
         { dispose: () => workspaceManager.dispose() },
     );
 
