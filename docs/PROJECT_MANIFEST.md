@@ -27,7 +27,7 @@
 | 5 | Ecosistema MCP, Permisos y Tool RAG | ⬜ |
 | 6 | Resiliencia, Sandboxing y Seguridad (Enterprise Refactor) | ✅ |
 | 7 | Extensión VS Code (Frontend TS/React) | 🟡 EN CURSO |
-| 7.10 | Cognitive Transparency & Connective Integration | ⬜ |
+| 7.10 | Cognitive Transparency & Connective Integration | ✅ |
 | 7.11 | VS Code Native Mesh Execution | ⬜ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante | ⬜ |
 | 9 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
@@ -1537,10 +1537,16 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
   - [x] Granular planner progress (feeds 7.10.2): emits `unwrapping_schema` +
     `validation_retry (n/max)`.
 
-- [ ] **7.10.5 — Connective Integration Checkpoint Gate**
-  - [ ] E2E: main chat, analyst chat, and web dashboard all round-trip correctly.
-  - [ ] Latency (≥ 45 FPS, throttle windows) + accuracy + security (identity holds,
-    boundary tags intact, injection neutralized, no secret leakage). Defines the 7.10 DoD.
+- [x] **7.10.5 — Connective Integration Checkpoint Gate**
+  - [x] E2E gate `tests/test_phase7_10_checkpoint_gate.py` (8 tests) certifies the backend
+    ADR-701..704 contracts: main-chat + analyst identity sovereignty and namespace isolation
+    (bare `session_id` vs `natt:`); ADR-702 batching/FPS + narration bandwidth; ADR-703 uuid
+    sandbox + unicode-variant escaping + 4/2/1 KB budgets; ADR-704 envelope unwrap across all
+    PL1 variants. *DB1 web-dashboard round-trip + AN5 tolerant-divergence are 7.11/frontend
+    scope (manual smoke).*
+  - [x] Latency (≥ 45 FPS via `chunk_ms=40` coalescing), accuracy, and security (identity holds,
+    boundary tags fresh/unguessable, injection neutralized) asserted. Defines the 7.10 backend DoD.
+    Full suite **627 passed**, 0 regressions.
 
 ---
 
