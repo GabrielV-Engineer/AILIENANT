@@ -54,7 +54,11 @@ async function main() {
 		plugins: [esbuildProblemMatcherPlugin],
 	});
 
-	// Workspace — full editor-tab chat UI (replaces old webview.js)
+	// Workspace — full editor-tab chat UI (replaces old webview.js).
+	// Phase 7.11.6 — `jsdom` is a test-only fallback used by sanitizer.ts when
+	// `window` is absent (extension-host Node rig). The WebView always has
+	// `window`, so we externalise jsdom here to keep the production bundle
+	// lean. esbuild emits a runtime `require()` call that never fires.
 	const workspaceCtx = await esbuild.context({
 		entryPoints: ['src/workspace/main.tsx'],
 		bundle: true,
@@ -64,6 +68,7 @@ async function main() {
 		sourcesContent: false,
 		platform: 'browser',
 		outfile: 'dist/workspace.js',
+		external: ['jsdom'],
 		logLevel: 'silent',
 		plugins: [esbuildProblemMatcherPlugin],
 	});

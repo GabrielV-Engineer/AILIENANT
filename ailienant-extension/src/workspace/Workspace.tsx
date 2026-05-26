@@ -6,6 +6,7 @@ import { useWorkspaceStore } from './workspaceStore';
 import {
     BudgetLimitMode, ReasoningPreset, InferenceTier, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
+    ToolCallShape,
 } from '../shared/config';
 import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
@@ -17,6 +18,7 @@ import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
+import { ToolChip } from './components/ToolChip';
 import {
     INITIAL_STATE as MD_INITIAL_STATE,
     pushToken as mdPushToken,
@@ -42,6 +44,10 @@ export interface Message {
     // stable fast path takes over. Transient — explicitly stripped before
     // PERSIST_TRANSCRIPT (see destructure below).
     parserState?: MdParserState;
+    // Phase 7.11.6 (ADR-706 §4.5f) — tool-chip artifacts attached to this turn.
+    // Each entry is built incrementally from server_tool_start, _stream_chunk
+    // and _result events keyed by tool_call_id.
+    toolCalls?: ToolCallShape[];
 }
 export interface NattMessage {
     role: 'natt' | 'user';
@@ -49,6 +55,39 @@ export interface NattMessage {
     streaming?: boolean;
     // Same parser state, applied to analyst-canvas turns.
     parserState?: MdParserState;
+}
+
+/**
+ * Phase 7.11.6 — Update the tool-chip artifact for `tool_call_id` on the LAST
+ * assistant message (creating a placeholder turn if none exists yet). The
+ * updater receives the prior chip (or `undefined` if this is the chip's first
+ * event) and returns the next chip shape. Pure on the previous `messages`
+ * array — no mutations.
+ */
+function attachOrUpdateToolCall(
+    prev: Message[],
+    toolCallId: string,
+    update: (prior: ToolCallShape | undefined) => ToolCallShape,
+): Message[] {
+    const lastIdx = prev.length - 1;
+    const last = lastIdx >= 0 ? prev[lastIdx] : undefined;
+    // Always attach to the last assistant turn — even if its streaming flag
+    // has been cleared. The /dev/run-bash smoke command also lands here on a
+    // fresh placeholder when no assistant turn is active yet.
+    if (last?.role === 'assistant') {
+        const calls = last.toolCalls ?? [];
+        const idx = calls.findIndex(c => c.tool_call_id === toolCallId);
+        const nextCall = update(idx >= 0 ? calls[idx] : undefined);
+        const nextCalls = idx >= 0
+            ? [...calls.slice(0, idx), nextCall, ...calls.slice(idx + 1)]
+            : [...calls, nextCall];
+        return [...prev.slice(0, lastIdx), { ...last, toolCalls: nextCalls }];
+    }
+    return [...prev, {
+        role: 'assistant',
+        content: '',
+        toolCalls: [update(undefined)],
+    }];
 }
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
@@ -154,8 +193,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         const handle = setTimeout(() => {
             vscode.postMessage({
                 type: 'PERSIST_TRANSCRIPT',
-                messages: messages.map(({ role, content, steps, stepsDone }) => ({
-                    role, content, steps, stepsDone,
+                messages: messages.map(({ role, content, steps, stepsDone, toolCalls }) => ({
+                    role, content, steps, stepsDone, toolCalls,
                 })),
                 nattMessages: nattMessages.map(({ role, content }) => ({ role, content })),
             });
@@ -233,6 +272,87 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             ? { ...m, streaming: false, stepsDone: true, parserState: undefined }
                             : m));
                     break;
+                // ── Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips ──────
+                // Each tool call broadcasts (start → stream_chunk*, → result)
+                // and optionally a dep_graph attachment. We build the chip
+                // up on the LAST assistant message (the same target the token
+                // stream is appending to) so the artifact lives alongside the
+                // narrative that introduced it.
+                case 'server_tool_start': {
+                    const d = msg.payload as {
+                        tool_call_id: string;
+                        tool_name: string;
+                        args: Record<string, unknown>;
+                        side_effect_free?: boolean;
+                    };
+                    setMessages(prev => attachOrUpdateToolCall(prev, d.tool_call_id, tc => ({
+                        ...(tc ?? {
+                            tool_call_id: d.tool_call_id,
+                            tool_name: d.tool_name,
+                            args: d.args,
+                            output_lines: [],
+                            side_effect_free: d.side_effect_free,
+                        }),
+                        tool_name: d.tool_name,
+                        args: d.args,
+                        side_effect_free: d.side_effect_free,
+                        status: 'pending',
+                    })));
+                    break;
+                }
+                case 'server_tool_stream_chunk': {
+                    const d = msg.payload as { tool_call_id: string; chunk: string };
+                    setMessages(prev => attachOrUpdateToolCall(prev, d.tool_call_id, tc => ({
+                        ...(tc ?? {
+                            tool_call_id: d.tool_call_id,
+                            tool_name: '(unknown)',
+                            args: {},
+                            output_lines: [],
+                            status: 'pending' as const,
+                        }),
+                        output_lines: [...(tc?.output_lines ?? []), d.chunk],
+                    })));
+                    break;
+                }
+                case 'server_tool_result': {
+                    const d = msg.payload as {
+                        tool_call_id: string;
+                        status: 'success' | 'error';
+                        exit_code?: number;
+                        duration_ms?: number;
+                    };
+                    setMessages(prev => attachOrUpdateToolCall(prev, d.tool_call_id, tc => ({
+                        ...(tc ?? {
+                            tool_call_id: d.tool_call_id,
+                            tool_name: '(unknown)',
+                            args: {},
+                            output_lines: [],
+                            status: 'pending' as const,
+                        }),
+                        status: d.status,
+                        exit_code: d.exit_code,
+                        duration_ms: d.duration_ms,
+                    })));
+                    break;
+                }
+                case 'server_tool_dep_graph': {
+                    const d = msg.payload as {
+                        tool_call_id: string;
+                        nodes: { id: string; label: string }[];
+                        edges: { from: string; to: string }[];
+                    };
+                    setMessages(prev => attachOrUpdateToolCall(prev, d.tool_call_id, tc => ({
+                        ...(tc ?? {
+                            tool_call_id: d.tool_call_id,
+                            tool_name: '(unknown)',
+                            args: {},
+                            output_lines: [],
+                            status: 'pending' as const,
+                        }),
+                        dep_graph: { nodes: d.nodes, edges: d.edges },
+                    })));
+                    break;
+                }
                 case 'server_telemetry': {
                     const frame = msg.payload as TelemetryFrame;
                     setTelemetry(frame);
@@ -439,6 +559,13 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         vscode.postMessage({ type: 'ABORT_MESH' });
     }, [isAborting, setIsAborting]);
 
+    // Phase 7.11.6 — Retry button on a Rich Tool Chip. The backend looks up
+    // the historical ToolCallSpec and re-invokes verbatim; a new chip lands
+    // alongside the old one (the original stays as record).
+    const handleRetryTool = useCallback((toolCallId: string) => {
+        vscode.postMessage({ type: 'RETRY_TOOL', tool_call_id: toolCallId });
+    }, []);
+
     const handleDreamingToggle = useCallback((next: boolean, p: DreamingProfile) => {
         setDreamingActive(next);
         setDreamingProfile(p);
@@ -620,6 +747,18 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             ) : (
                                                 m.content
                                             )}
+                                        </div>
+                                    )}
+                                    {/* Phase 7.11.6 — Rich Tool Chips attached to this turn. */}
+                                    {m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && (
+                                        <div className="ws-tool-chip-stack">
+                                            {m.toolCalls.map(tc => (
+                                                <ToolChip
+                                                    key={tc.tool_call_id}
+                                                    tc={tc}
+                                                    onRetry={handleRetryTool}
+                                                />
+                                            ))}
                                         </div>
                                     )}
                                 </Fragment>

@@ -1,7 +1,7 @@
 # alienant-core/core/ws_contracts.py
 
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 # =====================================================================
 # 1. PAYLOADS DE LOS EVENTOS
@@ -555,6 +555,138 @@ class ClientAbortMeshEvent(BaseModel):
 
 
 # =====================================================================
+# 15. Phase 7.11.6 — Rich Tool Chips (ADR-706 §4.5f)
+# =====================================================================
+# Stateful tool-execution artifacts: every tracked tool invocation broadcasts
+# a (server_tool_start, server_tool_stream_chunk*, server_tool_result) sequence
+# so the frontend renders a chip with ANSI-decoded output, status badge, and
+# Retry button. An optional server_tool_dep_graph follows when the tool's
+# context includes dependency-graph data (sourced from
+# core.memory.graphrag_extractor's dependency_graph SQLite table).
+#
+# Retry is "exact replay" — TaskService keeps the original ToolCallSpec in a
+# session-keyed in-memory registry; client_retry_tool resolves
+# (session_id, tool_call_id) → spec and re-invokes verbatim. Tools with
+# `side_effect_free=False` (default) require a confirmation toast on the
+# frontend BEFORE the Retry click fires the event.
+#
+# client_invoke_tracked_bash is a developer smoke command (palette-only): runs
+# a one-shot sandbox_bash through the tracked path so the wire can be proven
+# end-to-end without an agent-loop rewrite. Production tool flows will plug in
+# the same `execute_tracked_tool` API from a future MCP/agent integration.
+
+
+class ToolStartPayload(BaseModel):
+    """Server → IDE: a tool execution just started; render a pending chip."""
+
+    session_id: str
+    tool_call_id: str
+    tool_name: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+    side_effect_free: bool = False
+    invoked_at: float  # unix timestamp, used by the frontend for relative-time display
+
+
+class ServerToolStartEvent(BaseModel):
+    event_type: Literal["server_tool_start"] = "server_tool_start"
+    data: ToolStartPayload
+
+
+class ToolStreamChunkPayload(BaseModel):
+    """Server → IDE: incremental stdout/stderr chunk from a tracked tool.
+
+    For Phase 7.11.6 the sandbox adapter is one-shot (`adapter.execute`
+    returns a complete SandboxResult), so the backend emits exactly one chunk
+    with the truncated body. Future streaming adapters can emit many.
+    """
+
+    session_id: str
+    tool_call_id: str
+    chunk: str
+    is_stderr: bool = False
+
+
+class ServerToolStreamChunkEvent(BaseModel):
+    event_type: Literal["server_tool_stream_chunk"] = "server_tool_stream_chunk"
+    data: ToolStreamChunkPayload
+
+
+class ToolResultPayload(BaseModel):
+    """Server → IDE: a tracked tool finished (success or error).
+
+    `status="error"` covers both non-zero exit codes and exceptions inside
+    the runner; `exit_code` is None when the failure was a Python exception
+    rather than a process exit.
+    """
+
+    session_id: str
+    tool_call_id: str
+    status: Literal["success", "error"]
+    exit_code: Optional[int] = None
+    duration_ms: Optional[int] = None
+
+
+class ServerToolResultEvent(BaseModel):
+    event_type: Literal["server_tool_result"] = "server_tool_result"
+    data: ToolResultPayload
+
+
+class ToolDepGraphPayload(BaseModel):
+    """Server → IDE: optional dependency-graph attachment for a tool result.
+
+    Nodes carry `{id, label}`; edges carry `{from, to}`. Sourced from the
+    GraphRAG `dependency_graph` SQLite table when a tool's context includes
+    the file's k-hop neighborhood. The frontend renders this as a CSS/SVG
+    disclosure tree (no d3 / no canvas).
+    """
+
+    session_id: str
+    tool_call_id: str
+    nodes: List[Dict[str, str]] = Field(default_factory=list)
+    edges: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class ServerToolDepGraphEvent(BaseModel):
+    event_type: Literal["server_tool_dep_graph"] = "server_tool_dep_graph"
+    data: ToolDepGraphPayload
+
+
+class ClientRetryToolPayload(BaseModel):
+    """IDE → server: exact-replay request for a previously tracked tool call.
+
+    The backend looks up `(session_id, tool_call_id)` in TaskService's
+    `_tool_call_registry`; an unknown id is a no-op (logged at INFO).
+    """
+
+    session_id: str
+    tool_call_id: str
+
+
+class ClientRetryToolEvent(BaseModel):
+    event_type: Literal["client_retry_tool"] = "client_retry_tool"
+    data: ClientRetryToolPayload
+
+
+class ClientInvokeTrackedBashPayload(BaseModel):
+    """IDE → server: developer smoke command (palette `/dev/run-bash <cmd>`).
+
+    Routes through the same `execute_tracked_tool("sandbox_bash", ...)` path
+    that future MCP/agent flows will use, so the chip pipeline is provably
+    live end-to-end without depending on agent refactors.
+    """
+
+    session_id: str
+    command: str
+    timeout_sec: float = 30.0
+    working_dir: Optional[str] = None
+
+
+class ClientInvokeTrackedBashEvent(BaseModel):
+    event_type: Literal["client_invoke_tracked_bash"] = "client_invoke_tracked_bash"
+    data: ClientInvokeTrackedBashPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -598,4 +730,10 @@ WebSocketMessage = Union[
     ServerInlineEditDeltaEvent,      # Phase 7.11.1 — typed mutation delta
     ServerInlineEditEndEvent,        # Phase 7.11.1 — stream finalized
     ClientAbortMeshEvent,            # Phase 7.11.3 — abort controller mesh (Stop button)
+    ServerToolStartEvent,            # Phase 7.11.6 — Rich Tool Chips: tool started
+    ServerToolStreamChunkEvent,      # Phase 7.11.6 — Rich Tool Chips: incremental output
+    ServerToolResultEvent,           # Phase 7.11.6 — Rich Tool Chips: tool finished
+    ServerToolDepGraphEvent,         # Phase 7.11.6 — Rich Tool Chips: optional dep-graph attachment
+    ClientRetryToolEvent,            # Phase 7.11.6 — Rich Tool Chips: exact-replay retry
+    ClientInvokeTrackedBashEvent,    # Phase 7.11.6 — Rich Tool Chips: dev smoke command
 ]

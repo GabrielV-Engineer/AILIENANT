@@ -14,7 +14,10 @@ _API_PORT: int = int(os.environ.get("AILIENANT_API_PORT", "8000"))
 
 # --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
 from api.api_contracts import ModelInfo, ModelsAvailableResponse
-from api.websocket_manager import vfs_manager
+from api.websocket_manager import (
+    vfs_manager,
+    register_session_cleanup_hook as _register_session_cleanup_hook,
+)
 from core.lifecycle_manager import lifecycle_manager
 
 # --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
@@ -257,6 +260,12 @@ app.include_router(skills_router)
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
+
+# Phase 7.11.6 — wire TaskService.cleanup_session into the WS disconnect path
+# so the Rich Tool Chips registry is purged when a client drops. The hook bus
+# lives in api.websocket_manager to avoid the circular import that bites if
+# the manager imports core.task_service eagerly.
+_register_session_cleanup_hook(task_service.cleanup_session)
 
 # Session-scoped planner mode registry — read by TaskService when LangGraph is wired (Phase 2)
 planner_mode_registry: Dict[str, bool] = {}
@@ -886,6 +895,58 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 logger.info(
                     "[Session: %s] Abort mesh: signalled=%s", client_id, _did_abort,
                 )
+
+            elif valid_event.event_type == "client_retry_tool":
+                # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: exact-replay
+                # retry. The runner is a CHILD task (asyncio.create_task) so
+                # that this branch returns immediately and the WS receive loop
+                # stays responsive. We deliberately do NOT register the runner
+                # into _active_tasks (the abort mesh) — clicking Stop should
+                # not cancel a deliberate Retry mid-flight (plan W1 carried).
+                _rt = valid_event.data
+                async def _retry_runner(
+                    sid: str = client_id,
+                    tcid: str = _rt.tool_call_id,
+                ) -> None:
+                    ok = await task_service.retry_tool_call(sid, tcid)
+                    logger.info(
+                        "[Session: %s] retry_tool_call: ok=%s id=%s",
+                        sid, ok, tcid,
+                    )
+                _retry_task = asyncio.create_task(
+                    _retry_runner(), name=f"tool_retry:{_rt.tool_call_id}"
+                )
+                _task_submit_tasks.add(_retry_task)
+                _retry_task.add_done_callback(_task_submit_tasks.discard)
+
+            elif valid_event.event_type == "client_invoke_tracked_bash":
+                # Phase 7.11.6 — dev smoke command (palette `/dev/run-bash`).
+                # Routes through execute_tracked_tool so the chip pipeline is
+                # provably alive end-to-end without needing an agent refactor.
+                _ib = valid_event.data
+                async def _bash_runner(
+                    sid: str = client_id,
+                    cmd: str = _ib.command,
+                    tmo: float = _ib.timeout_sec,
+                    wd: Optional[str] = _ib.working_dir,
+                ) -> None:
+                    await task_service.execute_tracked_tool(
+                        session_id=sid,
+                        tool_name="sandbox_bash",
+                        args={
+                            "command": cmd,
+                            "timeout_sec": tmo,
+                            "working_dir": wd,
+                        },
+                        # sandbox_bash mutates state by default — Retry
+                        # confirmation toast must fire on the frontend.
+                        side_effect_free=False,
+                    )
+                _bash_task = asyncio.create_task(
+                    _bash_runner(), name=f"tracked_bash:{client_id}"
+                )
+                _task_submit_tasks.add(_bash_task)
+                _bash_task.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_file_delete":
                 io_coalescer.submit_unlink(

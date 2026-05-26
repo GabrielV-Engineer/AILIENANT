@@ -1322,3 +1322,217 @@ html, body, #root { height: 100%; }
   color: var(--text-disabled);
   font-style: italic;
 }
+
+/* ── Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips ────────────────────── */
+.ws-tool-chip {
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  margin: 6px 0;
+  font-size: 11.5px;
+  overflow: hidden;
+}
+.ws-tool-chip[data-status="error"] {
+  border-color: color-mix(in srgb, var(--accent-alert) 65%, var(--border-subtle));
+}
+.ws-tool-chip[data-status="success"] {
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, var(--border-subtle));
+}
+.ws-tool-chip[data-status="pending"] .ws-tool-chip-status {
+  animation: ws-tool-chip-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ws-tool-chip-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1.00; }
+}
+.ws-tool-chip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  user-select: none;
+}
+.ws-tool-chip-name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ws-tool-chip-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.ws-tool-chip-status[data-status="success"] {
+  background: color-mix(in srgb, var(--accent-primary) 22%, transparent);
+  color: var(--accent-primary);
+}
+.ws-tool-chip-status[data-status="error"] {
+  background: color-mix(in srgb, var(--accent-alert) 22%, transparent);
+  color: var(--accent-alert);
+}
+.ws-tool-chip-exit, .ws-tool-chip-dur {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.ws-tool-chip-spacer { flex: 1; }
+.ws-tool-chip-retry,
+.ws-tool-chip-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ws-tool-chip-retry:hover,
+.ws-tool-chip-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.ws-tool-chip-retry[data-confirming="true"] {
+  background: color-mix(in srgb, var(--accent-warn) 28%, transparent);
+  color: var(--accent-warn);
+  border-color: var(--accent-warn);
+}
+.ws-tool-chip-body {
+  border-top: 1px solid var(--border-subtle);
+}
+.ws-tool-chip-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ws-tool-chip-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ws-tool-chip-tab[data-active="true"] {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+.ws-tool-chip-args {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--vscode-editor-background, var(--bg-main));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+}
+
+/* Mini-terminal — the headline UX. Renders ANSI-decoded tool output. */
+.ws-mini-terminal {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--vscode-editor-background, var(--bg-main));
+  color: var(--vscode-editor-foreground, var(--text-primary));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.ws-mini-terminal-placeholder {
+  color: var(--text-disabled);
+  font-style: italic;
+}
+
+/* ANSI palette — bridges the standard 16 SGR colors to VS Code's terminal
+   tokens, with AILIENANT brand colors as a fallback for themes that don't
+   ship terminal-ansi-* variables. */
+.ansi-bold      { font-weight: 700; }
+.ansi-dim       { opacity: 0.65; }
+.ansi-italic    { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+
+.ansi-black   { color: var(--vscode-terminal-ansiBlack,        #3b4252); }
+.ansi-red     { color: var(--vscode-terminal-ansiRed,          var(--accent-alert)); }
+.ansi-green   { color: var(--vscode-terminal-ansiGreen,        var(--accent-primary)); }
+.ansi-yellow  { color: var(--vscode-terminal-ansiYellow,       var(--accent-warn)); }
+.ansi-blue    { color: var(--vscode-terminal-ansiBlue,         #5e9fff); }
+.ansi-magenta { color: var(--vscode-terminal-ansiMagenta,      #c678dd); }
+.ansi-cyan    { color: var(--vscode-terminal-ansiCyan,         #56b6c2); }
+.ansi-white   { color: var(--vscode-terminal-ansiWhite,        var(--text-primary)); }
+
+.ansi-bright-black   { color: var(--vscode-terminal-ansiBrightBlack,   #4c566a); }
+.ansi-bright-red     { color: var(--vscode-terminal-ansiBrightRed,     #ff7b72); }
+.ansi-bright-green   { color: var(--vscode-terminal-ansiBrightGreen,   #7ee787); }
+.ansi-bright-yellow  { color: var(--vscode-terminal-ansiBrightYellow,  #f2cc60); }
+.ansi-bright-blue    { color: var(--vscode-terminal-ansiBrightBlue,    #79c0ff); }
+.ansi-bright-magenta { color: var(--vscode-terminal-ansiBrightMagenta, #d2a8ff); }
+.ansi-bright-cyan    { color: var(--vscode-terminal-ansiBrightCyan,    #a5d6ff); }
+.ansi-bright-white   { color: var(--vscode-terminal-ansiBrightWhite,   #ffffff); }
+
+.ansi-bg-black   { background-color: var(--vscode-terminal-ansiBlack,   #3b4252); }
+.ansi-bg-red     { background-color: var(--vscode-terminal-ansiRed,     var(--accent-alert)); }
+.ansi-bg-green   { background-color: var(--vscode-terminal-ansiGreen,   var(--accent-primary)); }
+.ansi-bg-yellow  { background-color: var(--vscode-terminal-ansiYellow,  var(--accent-warn)); }
+.ansi-bg-blue    { background-color: var(--vscode-terminal-ansiBlue,    #5e9fff); }
+.ansi-bg-magenta { background-color: var(--vscode-terminal-ansiMagenta, #c678dd); }
+.ansi-bg-cyan    { background-color: var(--vscode-terminal-ansiCyan,    #56b6c2); }
+.ansi-bg-white   { background-color: var(--vscode-terminal-ansiWhite,   var(--text-primary)); }
+.ansi-bg-bright-black   { background-color: var(--vscode-terminal-ansiBrightBlack,   #4c566a); }
+.ansi-bg-bright-red     { background-color: var(--vscode-terminal-ansiBrightRed,     #ff7b72); }
+.ansi-bg-bright-green   { background-color: var(--vscode-terminal-ansiBrightGreen,   #7ee787); }
+.ansi-bg-bright-yellow  { background-color: var(--vscode-terminal-ansiBrightYellow,  #f2cc60); }
+.ansi-bg-bright-blue    { background-color: var(--vscode-terminal-ansiBrightBlue,    #79c0ff); }
+.ansi-bg-bright-magenta { background-color: var(--vscode-terminal-ansiBrightMagenta, #d2a8ff); }
+.ansi-bg-bright-cyan    { background-color: var(--vscode-terminal-ansiBrightCyan,    #a5d6ff); }
+.ansi-bg-bright-white   { background-color: var(--vscode-terminal-ansiBrightWhite,   #ffffff); }
+
+/* Dep-graph view — CSS-only disclosure tree. */
+.ws-dep-graph {
+  list-style: none;
+  margin: 0;
+  padding: 6px 10px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+}
+.ws-dep-graph ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 14px;
+}
+.ws-dep-graph details > summary {
+  cursor: pointer;
+  display: inline;
+  list-style: none;
+}
+.ws-dep-graph details > summary::-webkit-details-marker { display: none; }
+.ws-dep-graph-connector {
+  color: var(--text-disabled);
+  margin-right: 4px;
+}
+.ws-dep-graph-label {
+  color: var(--text-primary);
+}
+.ws-dep-graph-count {
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+.ws-dep-graph-cycle {
+  color: var(--accent-warn);
+  margin-left: 4px;
+}
+.ws-dep-graph-empty {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-disabled);
+  font-style: italic;
+}

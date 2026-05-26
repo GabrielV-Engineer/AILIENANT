@@ -1665,12 +1665,79 @@ unchanged (35 errors, none from touched files); `ruff` clean on touched files; f
 `check-types` + `lint` 0 errors; `vscode-test` 19/19 (5 path-index + 10 parser + 3 store
 + 1 sample). Blueprint lock-in NOT yet expired — **4 of 9** Phase 7.11 features remain
 (Rich Tool Chips, Native HITL push, Topological tree, Time-travel debugging).
-- [ ] **(8.5/10) Interactive artifact rendering (Rich Tool Chips)** — ANSI mini-terminal, Retry,
+- [x] **(8.5/10) Interactive artifact rendering (Rich Tool Chips)** — ANSI mini-terminal, Retry,
   dep graph. All sandbox output untrusted → strict sanitization (XSS guard).
+  **Phase 7.11.6 (2026-05-26)** — shipped: frontend-complete + backend
+  protocol-only + one working emitter through the existing `SandboxBashTool`
+  path. Six new WS event classes in
+  [`ws_contracts.py`](ailienant-core/api/ws_contracts.py)
+  (`ServerToolStart`/`ServerToolStreamChunk`/`ServerToolResult`/`ServerToolDepGraph`
+  + `ClientRetryTool` + `ClientInvokeTrackedBash`); four `broadcast_tool_*`
+  helpers in [`websocket_manager.py`](ailienant-core/api/websocket_manager.py)
+  plus a session-cleanup hook bus (`register_session_cleanup_hook`) that
+  decouples `TaskService.cleanup_session` from the manager without
+  circular imports. `TaskService` gains
+  `_tool_call_registry: Dict[(session_id, tool_call_id), ToolCallSpec]`
+  plus `execute_tracked_tool()` (UUID4 mint → register → broadcast start →
+  adapter.execute → stream-chunk → result, always finalising in `finally`),
+  `retry_tool_call()` (exact-replay semantics), and `cleanup_session()`
+  (purges registry on WS disconnect). `main.py` routes the two new client
+  events through named `asyncio.create_task` runners — the retry runner is
+  **NOT** registered in `_active_tasks` (W1 carry-over — Stop should not
+  cancel a deliberate Retry mid-flight). Frontend: zero-dep
+  [`ansiParser.ts`](ailienant-extension/src/workspace/utils/ansiParser.ts)
+  (~330 LOC SGR state machine — 16-color FG/BG + bold/italic/underline/dim
+  + 24-bit truecolor + W3 partial-escape carry-over across chunk boundaries);
+  DOMPurify-backed [`sanitizer.ts`](ailienant-extension/src/workspace/utils/sanitizer.ts)
+  chokepoint with `sanitizeHtml` (strips `<script>`, `<img>`, `<iframe>`,
+  `<a>`, `<style>`, all `on*` handlers, and the entire `style` attribute —
+  DOMPurify v3 doesn't sanitize CSS values, so we forbid the attribute
+  outright; 24-bit truecolor flows through React JSX `style={{...}}` which
+  never touches the sanitizer) + lazy `jsdom` fallback for the vscode-test
+  extension-host rig (externalised in production esbuild bundling so it
+  never ships to users); stateful
+  [`ToolChip.tsx`](ailienant-extension/src/workspace/components/ToolChip.tsx)
+  (~200 LOC — status pill, duration, two-step "Confirm?" retry button for
+  non-side-effect-free tools, output/args/graph tabs); pure-DOM
+  [`DepGraphView.tsx`](ailienant-extension/src/workspace/components/DepGraphView.tsx)
+  (native `<details>`/`<summary>` disclosure tree, cycle-detection, no
+  d3/cytoscape/reactflow on this surface). New CSS palette
+  (`.ws-tool-chip-*`, `.ws-mini-terminal`,
+  `.ansi-*`/`.ansi-bg-*`/`.ansi-bright-*`/`.ansi-bg-bright-*`,
+  `.ws-dep-graph-*`) cascades through `var(--vscode-terminal-ansi*)` tokens
+  with AILIENANT brand-color fallbacks for themes that don't ship terminal
+  colors. `Message.toolCalls?: ToolCallShape[]` extends the chat-turn shape;
+  four new `server_tool_*` handlers in
+  [`Workspace.tsx`](ailienant-extension/src/workspace/Workspace.tsx) build
+  chips up incrementally on the last assistant turn via a pure
+  `attachOrUpdateToolCall(messages, tool_call_id, updater)` helper.
+  `PERSIST_TRANSCRIPT` carries `toolCalls` through to the host store so
+  chips survive a panel close. Palette entry `/dev run-bash` triggers a
+  native `showInputBox` and dispatches `INVOKE_TRACKED_BASH` — provable
+  smoke for the wire end-to-end without an agent rewrite. **No agent file
+  touched** (cognitive-isolation fence preserved — verify via
+  `git diff --stat agents/` after this milestone). New tests: 6 in
+  [`tests/test_tool_chip_protocol.py`](ailienant-core/tests/test_tool_chip_protocol.py)
+  (registry + broadcast order, retry replays args, unknown-id no-op,
+  cleanup-session scoping, pydantic round-trip, side-effect-free flag);
+  7 in [`tests/sanitizer.test.ts`](ailienant-extension/src/test/sanitizer.test.ts)
+  (script/img/anchor/style stripping + class-allowed survival + sanitizeText
+  fallback + empty-string no-op); 7 in
+  [`tests/ansiParser.test.ts`](ailienant-extension/src/test/ansiParser.test.ts)
+  (8-color FG + bright variant + bold/italic/underline combo + reset clears
+  + W3 partial-escape carry-over + 24-bit truecolor inline style + non-SGR
+  CSI dropped).
+
+**Verification summary (7.11.6):** backend **650 passed** (was 644 + 6 new
+= 650), 0 regressions; `mypy --explicit-package-bases .` shows zero new
+errors on touched files; `ruff` clean on touched files (main.py's 45
+pre-existing E402 unchanged). Frontend `check-types` + `lint` 0 errors;
+`vscode-test` **33/33** (7 sanitizer + 7 ansiParser + 10 markdown + 5
+path-index + 3 store + 1 sample). Blueprint lock-in NOT yet expired —
+**3 of 9** Phase 7.11 features remain (Native HITL push notifications,
+Topological execution tree, Time-travel debugging).
 - [ ] **(8/10) Native HITL push notifications** — `vscode.window.showInformationMessage`
   [Approve]/[Reject] when the chat is closed (backend: `request_human_approval`).
-- [ ] **(8/10) Topological execution tree (LangGraph visualizer)** — mini-map illuminating the
-  current node from `server_pipeline_step`; throttled render.
 - [ ] **(7.5/10) Time-travel debugging (thread branching)** — fork via `thread_id` +
   `checkpoint_id` (backend: `HybridCheckpointer`).
 

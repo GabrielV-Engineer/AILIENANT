@@ -3,6 +3,9 @@ import hashlib
 import json
 import os
 import re
+import time
+import uuid
+from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Tuple
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
@@ -14,6 +17,46 @@ from shared.persona import compose
 from transport.token_batcher import batch_tokens, NarrationGate
 
 logger = logging.getLogger(__name__)
+
+
+# Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: in-memory tool-call registry.
+@dataclass
+class ToolCallSpec:
+    """A single tracked tool invocation.
+
+    Lives in ``TaskService._tool_call_registry`` keyed by
+    ``(session_id, tool_call_id)``. Holds enough metadata that
+    ``retry_tool_call`` can reconstruct the exact invocation verbatim (same
+    tool, same args). The buffered output is for diagnostics/audit only — the
+    frontend chip is fed via ``broadcast_tool_stream_chunk`` as it streams.
+    """
+
+    tool_call_id: str
+    tool_name: str
+    args: Dict[str, Any]
+    side_effect_free: bool
+    invoked_at: float
+    status: str = "pending"  # "pending" | "success" | "error"
+    output_buffer: str = ""
+    exit_code: Optional[int] = None
+    duration_ms: Optional[int] = None
+    # Optional graph attachment (Phase 7.11.6 dep-graph view); populated by
+    # the caller when the tool's context includes a k-hop neighborhood.
+    dep_graph_nodes: List[Dict[str, str]] = field(default_factory=list)
+    dep_graph_edges: List[Dict[str, str]] = field(default_factory=list)
+
+
+# Approximate output cap for tool chunks (mirrors execution_tools._truncate).
+# Keeps WS frames < ~3 KB and avoids DOM bloat on the frontend.
+_TOOL_OUTPUT_TRUNC: int = 2000
+
+
+def _truncate_tool_output(text: str, cap: int = _TOOL_OUTPUT_TRUNC) -> str:
+    """Middle-truncate any tool output to ``cap`` chars with a marker."""
+    if len(text) <= cap:
+        return text
+    half = (cap - 32) // 2
+    return f"{text[:half]}\n…[TRUNCATED {len(text) - cap} CHARS]…\n{text[-half:]}"
 
 
 # Phase 7.10.1 — identity sovereignty: ADR-701 clause prepended via shared.persona.compose().
@@ -83,6 +126,15 @@ class TaskService:
         # MUST register its OWN current_task() (NEVER the WS receive loop's
         # task — that would kill the socket on cancel; see plan W1).
         self._active_tasks: Dict[str, "asyncio.Task[Any]"] = {}
+        # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: tracked tool-call
+        # registry keyed by (session_id, tool_call_id). Side-bag (NOT in
+        # AIlienantGraphState) so agents stay isolated from this transport-tier
+        # concern. ``retry_tool_call`` resolves the key and re-invokes
+        # ``execute_tracked_tool`` verbatim ("exact replay" semantics). The
+        # ``cleanup_session`` callback registered with
+        # ``api.websocket_manager.register_session_cleanup_hook`` purges
+        # entries on disconnect so a crashed session never leaks specs.
+        self._tool_call_registry: Dict[Tuple[str, str], ToolCallSpec] = {}
 
     async def process_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str = "SEQUENTIAL"
@@ -738,3 +790,167 @@ class TaskService:
             return False
         task.cancel()
         return True
+
+    # ------------------------------------------------------------------
+    # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips registry + retry
+    # ------------------------------------------------------------------
+
+    async def execute_tracked_tool(
+        self,
+        session_id: str,
+        tool_name: str,
+        args: Dict[str, Any],
+        side_effect_free: bool = False,
+    ) -> ToolCallSpec:
+        """Run a tool through the *tracked* path so the IDE renders a chip.
+
+        The shape is identical regardless of underlying executor:
+
+        1. mint a UUID4 ``tool_call_id``;
+        2. register a fresh :class:`ToolCallSpec` so a later
+           ``retry_tool_call`` can replay verbatim;
+        3. broadcast ``server_tool_start`` (pending status, args header);
+        4. dispatch to the tool implementation (today only ``sandbox_bash`` is
+           wired — future MCP / agent flows plug in via the same shape);
+        5. stream output via ``server_tool_stream_chunk`` (one chunk for the
+           one-shot sandbox adapter; many for future PTY-style streamers);
+        6. always finalize with ``server_tool_result`` in a ``finally`` so a
+           cancelled or exception-raising runner still closes the chip.
+
+        Returns the populated :class:`ToolCallSpec` so callers (e.g., the
+        ``client_invoke_tracked_bash`` smoke handler) can await it without
+        re-reading the registry.
+        """
+        tool_call_id = uuid.uuid4().hex
+        invoked_at = time.time()
+        spec = ToolCallSpec(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            args=dict(args),  # defensive copy — agents won't mutate later
+            side_effect_free=side_effect_free,
+            invoked_at=invoked_at,
+        )
+        self._tool_call_registry[(session_id, tool_call_id)] = spec
+
+        await vfs_manager.broadcast_tool_start(
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            args=spec.args,
+            side_effect_free=side_effect_free,
+            invoked_at=invoked_at,
+        )
+
+        try:
+            if tool_name == "sandbox_bash":
+                from core.sandbox import get_active_adapter  # type: ignore[import-not-found]
+
+                adapter = get_active_adapter()
+                if adapter is None:
+                    raise RuntimeError(
+                        "Sandbox adapter not initialized — lifespan startup did "
+                        "not resolve a core.sandbox.ACTIVE_ADAPTER."
+                    )
+
+                result = await adapter.execute(
+                    args.get("command", ""),
+                    timeout_s=float(args.get("timeout_sec", 30.0)),
+                    cwd=str(args.get("working_dir") or ""),
+                    env_whitelist=None,  # adapter's default whitelist
+                )
+                body = _truncate_tool_output(
+                    (result.stdout or "") + (result.stderr or "")
+                )
+                if body:
+                    await vfs_manager.broadcast_tool_stream_chunk(
+                        session_id=session_id,
+                        tool_call_id=tool_call_id,
+                        chunk=body,
+                        is_stderr=False,
+                    )
+                spec.output_buffer = body
+                spec.exit_code = int(result.exit_code)
+                spec.status = "success" if result.exit_code == 0 else "error"
+            else:
+                # Future tool integrations land here. Until then we surface a
+                # clear error chip rather than silently swallowing the call.
+                raise NotImplementedError(
+                    f"Tracked execution of tool {tool_name!r} not wired yet "
+                    "(Phase 7.11.6 only ships sandbox_bash; future tools will "
+                    "register through this same method)."
+                )
+        except asyncio.CancelledError:
+            spec.status = "error"
+            spec.output_buffer = "[cancelled by user]"
+            raise
+        except Exception as exc:  # noqa: BLE001 — chip surfaces the error to UI
+            logger.warning(
+                "[Session: %s] execute_tracked_tool(%s) failed: %s",
+                session_id, tool_name, exc,
+            )
+            spec.status = "error"
+            err_text = f"[error] {exc}"
+            spec.output_buffer = err_text
+            # Best-effort: broadcast the error text as a stream chunk so the
+            # chip body shows what went wrong even when no real output ran.
+            try:
+                await vfs_manager.broadcast_tool_stream_chunk(
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    chunk=err_text,
+                    is_stderr=True,
+                )
+            except Exception:  # noqa: BLE001 — never raise from the error path
+                pass
+        finally:
+            spec.duration_ms = int((time.time() - invoked_at) * 1000)
+            try:
+                await vfs_manager.broadcast_tool_result(
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    status=spec.status if spec.status in ("success", "error") else "error",
+                    exit_code=spec.exit_code,
+                    duration_ms=spec.duration_ms,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "broadcast_tool_result swallowed for %s: %s",
+                    tool_call_id, exc,
+                )
+
+        return spec
+
+    async def retry_tool_call(
+        self, session_id: str, tool_call_id: str
+    ) -> bool:
+        """Exact-replay retry: re-invoke a previously tracked tool verbatim.
+
+        Returns True if the spec was found and re-execution was started;
+        False if the ``(session_id, tool_call_id)`` pair is unknown (e.g., the
+        session was cleaned up or the id was forged). The replay produces a
+        NEW chip with a fresh ``tool_call_id`` — the historical chip stays
+        intact as a record of the previous attempt.
+        """
+        spec = self._tool_call_registry.get((session_id, tool_call_id))
+        if spec is None:
+            return False
+        await self.execute_tracked_tool(
+            session_id=session_id,
+            tool_name=spec.tool_name,
+            args=spec.args,
+            side_effect_free=spec.side_effect_free,
+        )
+        return True
+
+    def cleanup_session(self, session_id: str) -> int:
+        """Purge every tool-call registry entry whose key starts with
+        ``session_id``. Returns the count of entries removed.
+
+        Called from ``api.websocket_manager.disconnect`` via the cleanup-hook
+        bus so a crashed/disconnected session never leaks specs in the
+        registry. Safe to call multiple times.
+        """
+        keys = [k for k in self._tool_call_registry if k[0] == session_id]
+        for k in keys:
+            del self._tool_call_registry[k]
+        return len(keys)

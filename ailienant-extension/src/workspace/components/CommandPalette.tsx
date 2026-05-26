@@ -120,6 +120,23 @@ export function CommandPalette({
                 { key: 'sup-docs', cmd: '/support help', label: 'Help documents', desc: 'Open the technical documentation', icon: 'external-link', run: () => post({ type: 'OPEN_DOCS' }) },
             ],
         },
+        {
+            // Phase 7.11.6 — developer-only smoke command to exercise the
+            // Rich Tool Chips pipeline end-to-end without an agent rewrite.
+            // Future tools follow the same `INVOKE_TRACKED_BASH` shape.
+            id: 'dev',
+            title: '/dev — Developer',
+            items: [
+                {
+                    key: 'dev-run-bash',
+                    cmd: '/dev run-bash',
+                    label: 'Run tracked bash (smoke)',
+                    desc: 'Run a one-shot sandbox_bash and render it as a Rich Tool Chip',
+                    icon: 'terminal',
+                    run: () => post({ type: 'PROMPT_FOR_BASH' }),
+                },
+            ],
+        },
     ], [activeTaskId, onOpenContext, post]);
 
     const q = query.toLowerCase();
