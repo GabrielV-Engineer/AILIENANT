@@ -2,6 +2,7 @@ import { Fragment, useState, useCallback, useEffect, useRef } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
+import { useWorkspaceStore } from './workspaceStore';
 import {
     BudgetLimitMode, ReasoningPreset, InferenceTier, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
@@ -53,10 +54,14 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [config, setConfig] = useState<AilienantConfig | null>(initial.config);
     const nattName = config?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
 
-    // Mode / preset / tier (all live inside ModeMenu)
-    const [mode, setMode] = useState<ExecutionMode>('automatic');
-    const [preset, setPreset] = useState<ReasoningPreset>('architect');
-    const [tier, setTier] = useState<InferenceTier>('HYBRID');
+    // Mode / preset / tier (all live inside ModeMenu) — Phase 7.11.2: persisted
+    // panel-lifetime via workspaceStore (rehydrates on tab-switch).
+    const mode    = useWorkspaceStore((s) => s.mode);
+    const setMode = useWorkspaceStore((s) => s.setMode);
+    const preset    = useWorkspaceStore((s) => s.preset);
+    const setPreset = useWorkspaceStore((s) => s.setPreset);
+    const tier    = useWorkspaceStore((s) => s.tier);
+    const setTier = useWorkspaceStore((s) => s.setTier);
 
     // Dreaming
     const [dreamingActive, setDreamingActive] = useState(false);
@@ -79,8 +84,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    // Natt
-    const [nattOpen, setNattOpen] = useState(false);
+    // Natt — Phase 7.11.2: open/closed flag rehydrates from workspaceStore.
+    // nattMessages stays sourced from the host transcript (7.9.B.20).
+    const nattOpen    = useWorkspaceStore((s) => s.nattOpen);
+    const setNattOpen = useWorkspaceStore((s) => s.setNattOpen);
     const [nattMessages, setNattMessages] = useState<NattMessage[]>(initial.initialNattMessages ?? []);
     const [hitlPending, setHitlPending] = useState<HITLIntervention | undefined>();
 
@@ -92,8 +99,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [snapshot, setSnapshot] = useState<TokenSnapshot | undefined>();
     const [indexing, setIndexing] = useState<IndexingState>({ state: 'idle' });
 
-    // Core start menu
-    const [coreMenuOpen, setCoreMenuOpen] = useState(false);
+    // Core start menu — Phase 7.11.2: open/closed rehydrates from workspaceStore.
+    const coreMenuOpen    = useWorkspaceStore((s) => s.coreMenuOpen);
+    const setCoreMenuOpen = useWorkspaceStore((s) => s.setCoreMenuOpen);
 
     // Workspace folder (live-updated when VS Code opens/closes a folder)
     const [workspaceFolder, setWorkspaceFolder] = useState<string>(initial.workspaceFolder ?? '');
@@ -422,7 +430,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     sessionTitle={initial.sessionTitle}
                     nattName={nattName}
                     nattOpen={nattOpen}
-                    onToggleNatt={() => setNattOpen(o => !o)}
+                    onToggleNatt={() => setNattOpen(!nattOpen)}
                     logoUri={initial.logoUri}
                 />
 

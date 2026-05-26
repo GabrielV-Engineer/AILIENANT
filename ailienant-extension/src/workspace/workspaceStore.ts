@@ -1,0 +1,89 @@
+/**
+ * Phase 7.11.2 (ADR-706 §4.5c) — Workspace WebView store.
+ *
+ * Source of truth for the *tab-switch-survivable* UI slice of `Workspace.tsx`
+ * and `PromptBar.tsx`. Backed by `acquireVsCodeApi().setState/getState` via the
+ * `createPersistedStore` middleware — survives backgrounding the panel but NOT
+ * a full VS Code restart (durable, cross-restart state lives in the host's
+ * `workspaceState` per 7.9.B.20 and friends, untouched).
+ *
+ * Persistable slice (whitelisted in `pick`):
+ *   - `inputDraft`            — in-progress prompt text
+ *   - `paletteOpen`/`contextOpen` — PromptBar overlay state
+ *   - `nattOpen`              — analyst pane open/closed
+ *   - `coreMenuOpen`          — header core-status popover
+ *   - `mode`/`preset`/`tier`  — ModeMenu local toggles (NOT host-persisted)
+ *   - `lastScrollY`           — chat scroll position
+ *
+ * Excluded (host-fed, live, or transient — leave as `useState`):
+ *   - wsStatus, occStatus, telemetry, snapshot, indexing, lockedFiles, config,
+ *     workspaceFolder, activeModelId, orchestrationMode, budget*, dreaming*,
+ *     messages, nattMessages, hitlPending, isStreaming, activeTaskId,
+ *     attachedItems, nattAttachedItems, toasts.
+ */
+import type { ExecutionMode } from '../shared/types';
+import type { ReasoningPreset, InferenceTier } from '../shared/config';
+import { createPersistedStore } from '../shared/persistedStore';
+
+export interface WorkspaceState {
+    inputDraft: string;
+    paletteOpen: boolean;
+    contextOpen: boolean;
+    nattOpen: boolean;
+    coreMenuOpen: boolean;
+    mode: ExecutionMode;
+    preset: ReasoningPreset;
+    tier: InferenceTier;
+    lastScrollY: number;
+
+    // Setters (Zustand pattern — flat actions colocated with state).
+    setInputDraft: (v: string) => void;
+    setPaletteOpen: (v: boolean) => void;
+    setContextOpen: (v: boolean) => void;
+    setNattOpen: (v: boolean) => void;
+    setCoreMenuOpen: (v: boolean) => void;
+    setMode: (v: ExecutionMode) => void;
+    setPreset: (v: ReasoningPreset) => void;
+    setTier: (v: InferenceTier) => void;
+    setLastScrollY: (v: number) => void;
+}
+
+export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
+    (set) => ({
+        inputDraft: '',
+        paletteOpen: false,
+        contextOpen: false,
+        nattOpen: false,
+        coreMenuOpen: false,
+        mode: 'automatic',
+        preset: 'architect',
+        tier: 'HYBRID',
+        lastScrollY: 0,
+
+        setInputDraft:   (v) => set({ inputDraft: v }),
+        setPaletteOpen:  (v) => set({ paletteOpen: v }),
+        setContextOpen:  (v) => set({ contextOpen: v }),
+        setNattOpen:     (v) => set({ nattOpen: v }),
+        setCoreMenuOpen: (v) => set({ coreMenuOpen: v }),
+        setMode:         (v) => set({ mode: v }),
+        setPreset:       (v) => set({ preset: v }),
+        setTier:         (v) => set({ tier: v }),
+        setLastScrollY:  (v) => set({ lastScrollY: v }),
+    }),
+    {
+        key: 'workspace.v1',
+        version: 1,
+        // Defensive whitelist — never persist anything not listed (plan W4).
+        pick: (s) => ({
+            inputDraft: s.inputDraft,
+            paletteOpen: s.paletteOpen,
+            contextOpen: s.contextOpen,
+            nattOpen: s.nattOpen,
+            coreMenuOpen: s.coreMenuOpen,
+            mode: s.mode,
+            preset: s.preset,
+            tier: s.tier,
+            lastScrollY: s.lastScrollY,
+        }),
+    },
+);

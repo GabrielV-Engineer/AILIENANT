@@ -76,3 +76,5 @@ config.yaml
 .claude/
 # Reporte de checkpoint autogenerado (se regenera en cada gate)
 CHECKPOINT_REPORT.md
+# vscode-test download cache (Phase 7.11.2 — npm test downloads VS Code ~225 MB on demand)
+ailienant-extension/.vscode-test/

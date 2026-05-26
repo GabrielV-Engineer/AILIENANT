@@ -169,7 +169,7 @@ Proyect_Ailienant/
 │   │   ├── extension.ts        #   activation entry
 │   │   ├── ide_sync.ts         #   Context Capture Engine — 150 ms debounce, .ailienantignore privacy gate (Phase 7.1)
 │   │   ├── providers/          #   chat sidebar (Phase 7 HITL/dreaming/WS forwarding), MCTS mirror, telemetry
-│   │   ├── shared/             #   config.ts — ReasoningPreset, InferenceTier, DreamingProfile, AgentRole, TelemetryFrame (Phase 7 types)
+│   │   ├── shared/             #   config.ts — ReasoningPreset, InferenceTier, DreamingProfile, AgentRole, TelemetryFrame (Phase 7 types); vscodeApi.ts (Phase 7.11.2 — ADR-706 §4.5c typed singleton wrapper for acquireVsCodeApi() + getState/setState; lazy-init, test seam); persistedStore.ts (Phase 7.11.2 — Zustand persist middleware backed by setState/getState, rAF-coalesced writes, schema-versioned envelope with safe upgrade discard)
 │   │   ├── webview/            #   React sidebar UI (IIFE bundle, ~200 KB budget)
 │   │   │   ├── App.tsx         #     full state: wsStatus, occ, telemetry, hitlQueue, toasts, fileBlocked
 │   │   │   ├── index.css       #     --vscode-* base + --ai-accent/warn/error/cloud mode accents (no custom backgrounds)
@@ -194,7 +194,10 @@ Proyect_Ailienant/
 │   │   ├── api/                #   WSClient (BroadcastChannel delta sync, exponential reconnect), HTTP clients
 │   │   ├── editor/             #   vfs_reader (dirty buffer capture)
 │   │   └── core/               #   IntentRouter, PathResolver, PatchActuator (Phase 7.9.B.18 — VS Code applyEdit actuator + hash stale-guard + save()), InlineMutationManager (Phase 7.11.1 — ADR-706 §4.5a Cmd+K manager: FIFO promise-chain edit queue, two TextEditorDecorationTypes, LF↔CRLF offset conversion for Windows safety, single-Undo session, PatchActuator-backed accept)
-│   ├── package.json            #   + @radix-ui/react-popover, @radix-ui/react-toggle-group, reactflow, @monaco-editor/react, regl-scatterplot
+│   │   ├── workspace/          #   Phase 7.11.2 — workspaceStore.ts (Zustand store for tab-switch survival: inputDraft, menu toggles, mode/preset/tier, scroll); vscode_bridge.ts is now a 1-line re-export of ../shared/vscodeApi
+│   │   ├── sidebar/            #   Phase 7.11.2 — sidebarStore.ts (Zustand store: query + activeId); SessionBrowser.tsx consolidated onto the shared singleton
+│   │   └── test/               #   vscode-test mocha suite — persistedStore.test.ts (Phase 7.11.2 — rAF-coalesce + rehydrate round-trip + version-mismatch safe discard, 3 tests)
+│   ├── package.json            #   + @radix-ui/react-popover, @radix-ui/react-toggle-group, reactflow, @monaco-editor/react, regl-scatterplot, zustand (Phase 7.11.2)
 │   ├── tsconfig.json           #   + skipLibCheck (monaco type declarations)
 │   └── esbuild.js              #   3 build contexts: extension (CJS), webview (IIFE), dashboard (ESM+splitting)
 ├── docs/

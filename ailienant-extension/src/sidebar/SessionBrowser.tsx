@@ -3,22 +3,26 @@ import { Icon } from '../shared/Icon';
 import { Tooltip } from '../shared/Tooltip';
 import { SessionList } from './SessionList';
 import type { Session, ExtToSidebarMessage, SidebarToExtMessage } from '../shared/types';
+import { vscodeApi } from '../shared/vscodeApi';
+import { useSidebarStore } from './sidebarStore';
 
-interface VsCodeApi {
-    postMessage(msg: SidebarToExtMessage): void;
-}
-declare function acquireVsCodeApi(): VsCodeApi;
-
-const vscode = acquireVsCodeApi();
+// Phase 7.11.2 — consolidated to the shared singleton (was a local
+// `acquireVsCodeApi()` redeclaration; see plan W5). The cast narrows the
+// generic postMessage signature to the sidebar's specific message shape.
+const vscode = vscodeApi() as { postMessage(msg: SidebarToExtMessage): void };
 
 interface BootAttrs {
     logoUri: string;
 }
 
 export function SessionBrowser({ boot }: { boot: BootAttrs }): JSX.Element {
+    // `sessions` is host-fed (SESSIONS_UPDATED broadcast); stays as useState.
     const [sessions, setSessions] = useState<Session[]>([]);
-    const [query, setQuery] = useState('');
-    const [activeId, setActiveId] = useState<string | null>(null);
+    // Phase 7.11.2 — `query` + `activeId` rehydrate from sidebarStore.
+    const query       = useSidebarStore((s) => s.query);
+    const setQuery    = useSidebarStore((s) => s.setQuery);
+    const activeId    = useSidebarStore((s) => s.activeId);
+    const setActiveId = useSidebarStore((s) => s.setActiveId);
 
     useEffect(() => {
         const onMessage = (e: MessageEvent<ExtToSidebarMessage>): void => {

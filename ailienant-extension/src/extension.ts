@@ -80,7 +80,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const sidebarRegistration = vscode.window.registerWebviewViewProvider(
         SessionBrowserProvider.viewType,
         sessionBrowser,
-        { webviewOptions: { retainContextWhenHidden: true } },
+        // Phase 7.11.2 (ADR-706 §4.5c) — rehydration via acquireVsCodeApi().setState
+        // means the DOM no longer needs to be kept in memory; flipped to false so
+        // the rehydration code path is what truly carries the sidebar across show/hide.
+        { webviewOptions: { retainContextWhenHidden: false } },
     );
 
     // ── Commands ──────────────────────────────────────────────────────
