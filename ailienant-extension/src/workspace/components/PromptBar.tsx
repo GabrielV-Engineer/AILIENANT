@@ -14,6 +14,8 @@ interface Props {
     placeholder?: string;
     activeTaskId?: string;
     isStreaming: boolean;
+    /** Phase 7.11.3 — true while a Stop click is in flight (optimistic UI). */
+    isAborting: boolean;
     config: AilienantConfig | null;
     // Mode menu state
     mode: ExecutionMode;
@@ -36,7 +38,7 @@ interface Props {
 }
 
 export function PromptBar({
-    disabled, placeholder, activeTaskId, isStreaming, config,
+    disabled, placeholder, activeTaskId, isStreaming, isAborting, config,
     mode, preset, tier, onModeChange, onPresetChange, onTierChange,
     dreamingActive, dreamingProfile, onDreamingToggle,
     activeModelId, orchestrationMode, onModelPrefChange,
@@ -166,11 +168,13 @@ export function PromptBar({
                         onTierChange={onTierChange}
                     />
                     {isStreaming ? (
-                        <Tooltip content="Abort current task" side="top">
+                        <Tooltip content={isAborting ? 'Aborting…' : 'Abort current task'} side="top">
                             <button
                                 className="ai-btn ws-send-btn"
                                 data-variant="danger"
+                                data-state={isAborting ? 'aborting' : undefined}
                                 onClick={onAbort}
+                                disabled={isAborting}
                                 aria-label="Abort task"
                             >
                                 <Icon name="x" size={12} />

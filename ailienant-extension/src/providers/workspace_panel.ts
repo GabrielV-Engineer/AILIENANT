@@ -418,6 +418,17 @@ export class WorkspacePanelManager {
                     this._runningTasks.delete(session.id);
                     SessionManager.getInstance().abortCurrentTask();
                     break;
+                case 'ABORT_MESH':
+                    // Phase 7.11.3 (ADR-706 §4.5b) — priority WS event that the
+                    // backend resolves to asyncio.Task.cancel() on the running
+                    // generation runner. Lives alongside ABORT_TASK (which only
+                    // cancels the client-side HTTP fetch — useful for any other
+                    // in-flight HTTP, harmless here).
+                    WSClient.getInstance().send({
+                        event_type: 'client_abort_mesh',
+                        data: { session_id: session.id },
+                    });
+                    break;
                 case 'HITL_RESPONSE':
                     WSClient.getInstance().send({
                         event_type: 'client_hitl_response',

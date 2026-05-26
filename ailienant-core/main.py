@@ -346,6 +346,15 @@ async def submit_task(
     """
 
     async def _runner() -> None:
+        # Phase 7.11.3 (ADR-706 §4.5b) — register THIS runner task with the
+        # abort mesh BEFORE the first await. asyncio.current_task() here
+        # returns the runner Task (NOT the WS receive loop's task — that's
+        # the disaster case the W1 invariant in the plan guards against).
+        # cancel() will propagate CancelledError into the generation coroutine
+        # below, where task_service catches it and emits the savepoint marker.
+        _runner_task = asyncio.current_task()
+        if _runner_task is not None:
+            task_service.register_active_task(x_task_id, _runner_task)
         try:
             # Resolve execution mode — Zero-Trust hardware gate (Phase 7.9.B.3)
             hw = await _get_hw_profile()
@@ -800,6 +809,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     project_id: Optional[str] = _aq_proj,
                     project_root: str = _aq_root,
                 ) -> None:
+                    # Phase 7.11.3 — register THIS runner with the abort mesh
+                    # (plan W1 invariant: current_task() is the spawned runner,
+                    # NEVER the WS receive loop). A Stop click for the same
+                    # session_id will Task.cancel() us; stream_analyst_reply
+                    # catches CancelledError and emits the abort marker.
+                    _ar_task = asyncio.current_task()
+                    if _ar_task is not None:
+                        task_service.register_active_task(sid, _ar_task)
                     await task_service.stream_analyst_reply(
                         sid, text, paths, cursor, project_id, project_root
                     )
@@ -855,6 +872,19 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 logger.info(
                     "[Session: %s] Inline edit cancel: edit_id=%s found=%s",
                     client_id, valid_event.data.edit_id, _did_cancel,
+                )
+
+            elif valid_event.event_type == "client_abort_mesh":
+                # Phase 7.11.3 (ADR-706 §4.5b) — priority abort. We resolve
+                # session_id → the registered runner asyncio.Task via the
+                # TaskService registry and call task.cancel() — NEVER the WS
+                # receive task itself (that would terminate the connection;
+                # see plan W1). The runner's CancelledError handler in
+                # task_service writes the savepoint marker + emits the
+                # "Stopped by user" turn + closes the stream.
+                _did_abort = task_service.abort_session(client_id)
+                logger.info(
+                    "[Session: %s] Abort mesh: signalled=%s", client_id, _did_abort,
                 )
 
             elif valid_event.event_type == "client_file_delete":
