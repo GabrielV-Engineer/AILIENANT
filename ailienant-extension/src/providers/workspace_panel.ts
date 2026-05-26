@@ -189,7 +189,16 @@ interface TitleUpdater {
 const TRANSCRIPT_KEY_PREFIX = 'ailienant.transcript.';
 const MAX_PERSISTED_MESSAGES = 200;  // bound storage growth per session
 
-interface StoredMessage { role: 'user' | 'assistant'; content: string; steps?: string[]; stepsDone?: boolean; }
+// Phase 7.11.6 — Rich Tool Chips: persisted alongside the transcript so chips
+// (including their final status, output, and dep_graph) survive a panel close.
+import type { ToolCallShape } from '../shared/config';
+interface StoredMessage {
+    role: 'user' | 'assistant';
+    content: string;
+    steps?: string[];
+    stepsDone?: boolean;
+    toolCalls?: ToolCallShape[];
+}
 interface StoredNattMessage { role: 'natt' | 'user'; content: string; }
 interface StoredTranscript { messages: StoredMessage[]; nattMessages: StoredNattMessage[]; }
 
@@ -493,6 +502,56 @@ export class WorkspacePanelManager {
                         data: { session_id: session.id },
                     });
                     break;
+                case 'RETRY_TOOL':
+                    // Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: exact-replay
+                    // retry. The backend looks up the stored ToolCallSpec keyed
+                    // by (session_id, tool_call_id) and re-invokes the original
+                    // tool verbatim. A NEW chip is rendered for the replay — the
+                    // historical chip stays as a record of the previous attempt.
+                    WSClient.getInstance().send({
+                        event_type: 'client_retry_tool',
+                        data: {
+                            session_id: session.id,
+                            tool_call_id: data.tool_call_id as string,
+                        },
+                    });
+                    break;
+                case 'INVOKE_TRACKED_BASH':
+                    // Phase 7.11.6 — dev smoke command driven by the palette
+                    // (`/dev/run-bash <cmd>`). Routes through the tracked tool
+                    // path so the chip pipeline is provably alive end-to-end.
+                    WSClient.getInstance().send({
+                        event_type: 'client_invoke_tracked_bash',
+                        data: {
+                            session_id: session.id,
+                            command: data.command as string,
+                            timeout_sec: 30.0,
+                            working_dir: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null,
+                        },
+                    });
+                    break;
+                case 'PROMPT_FOR_BASH': {
+                    // Phase 7.11.6 — palette companion: open a native VS Code
+                    // input box for the command, then dispatch the smoke event.
+                    const cmd = await vscode.window.showInputBox({
+                        title: 'AILIENANT: run tracked bash',
+                        prompt: 'Command to execute through the sandbox adapter',
+                        placeHolder: 'e.g. ls -la',
+                        ignoreFocusOut: false,
+                    });
+                    if (cmd && cmd.trim().length > 0) {
+                        WSClient.getInstance().send({
+                            event_type: 'client_invoke_tracked_bash',
+                            data: {
+                                session_id: session.id,
+                                command: cmd,
+                                timeout_sec: 30.0,
+                                working_dir: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null,
+                            },
+                        });
+                    }
+                    break;
+                }
                 case 'HITL_RESPONSE':
                     WSClient.getInstance().send({
                         event_type: 'client_hitl_response',

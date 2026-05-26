@@ -5,7 +5,7 @@ import json
 import logging
 import secrets
 import uuid
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import WebSocket
 from pydantic import ValidationError, TypeAdapter
@@ -30,10 +30,35 @@ from api.ws_contracts import (
     ServerInlineEditStartEvent, InlineEditStartPayload,
     ServerInlineEditDeltaEvent, InlineEditDeltaPayload,
     ServerInlineEditEndEvent, InlineEditEndPayload,
+    # Phase 7.11.6 — Rich Tool Chips (ADR-706 §4.5f)
+    ServerToolStartEvent, ToolStartPayload,
+    ServerToolStreamChunkEvent, ToolStreamChunkPayload,
+    ServerToolResultEvent, ToolResultPayload,
+    ServerToolDepGraphEvent, ToolDepGraphPayload,
 )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("VFS_Manager")
+
+
+# Phase 7.11.6 (ADR-706 §4.5f) — session-disconnect hooks. Other modules
+# (notably ``core.task_service`` for the tool-call registry) register a
+# cleanup callback that runs whenever a WS session disconnects. This avoids
+# coupling the manager to those modules directly and sidesteps the
+# circular-import that bites if ``core.task_service`` is imported eagerly.
+SessionCleanupHook = "Any"  # pyflakes — actual type is Callable[[str], object]
+_SESSION_CLEANUP_HOOKS: List[Any] = []
+
+
+def register_session_cleanup_hook(hook: Any) -> None:
+    """Register a callable invoked on every WS disconnect with the client_id.
+
+    Idempotent: the same hook is registered at most once. The callback may
+    raise — the manager swallows exceptions so a buggy hook never blocks a
+    disconnect from cleaning up the active-connections map.
+    """
+    if hook not in _SESSION_CLEANUP_HOOKS:
+        _SESSION_CLEANUP_HOOKS.append(hook)
 
 # =====================================================================
 # TYPED ADAPTER (Pydantic V2)
@@ -118,6 +143,15 @@ class ConnectionManager:
         if client_id in self.active_connections:
             del self.active_connections[client_id]
             logger.info("🔴 IDE Desconectado: %s", client_id)
+        # Phase 7.11.6 — fire every registered session-cleanup hook (e.g.,
+        # TaskService.cleanup_session purges the tool-call registry). Hooks
+        # are registered from main.py during startup; we never let a hook
+        # exception derail the disconnect path.
+        for hook in list(_SESSION_CLEANUP_HOOKS):
+            try:
+                hook(client_id)
+            except Exception as exc:  # noqa: BLE001 — defensive
+                logger.debug("session-cleanup hook swallowed: %s", exc)
 
     # ------------------------------------------------------------------
     # Low-level send
@@ -365,6 +399,113 @@ class ConnectionManager:
                     success=success,
                     final_content=final_content,
                     error=error,
+                )
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 7.11.6 — Rich Tool Chips (ADR-706 §4.5f)
+    # ------------------------------------------------------------------
+
+    async def broadcast_tool_start(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        args: Dict[str, Any],
+        side_effect_free: bool,
+        invoked_at: float,
+    ) -> None:
+        """Open a ToolChip on the IDE: pending status + the args header.
+
+        Emits ``server_tool_start``. The frontend creates a placeholder chip
+        keyed by ``tool_call_id``; subsequent chunk/result events update it.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerToolStartEvent(
+                data=ToolStartPayload(
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    args=args,
+                    side_effect_free=side_effect_free,
+                    invoked_at=invoked_at,
+                )
+            ),
+        )
+
+    async def broadcast_tool_stream_chunk(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        chunk: str,
+        is_stderr: bool = False,
+    ) -> None:
+        """Append a chunk of stdout/stderr to the ToolChip mini-terminal.
+
+        For the sandbox-adapter path this fires exactly once with the full
+        truncated body. A future streaming adapter (e.g., live PTY) can emit
+        many; the frontend appends them to ``output_lines`` in order.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerToolStreamChunkEvent(
+                data=ToolStreamChunkPayload(
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    chunk=chunk,
+                    is_stderr=is_stderr,
+                )
+            ),
+        )
+
+    async def broadcast_tool_result(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        status: str,
+        exit_code: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+    ) -> None:
+        """Finalize the ToolChip: status badge flips, retry button enables.
+
+        ``status`` is the literal ``"success"`` or ``"error"``. ``exit_code``
+        is None when the failure was a Python exception (no process exited).
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerToolResultEvent(
+                data=ToolResultPayload(
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    status=status,  # type: ignore[arg-type]
+                    exit_code=exit_code,
+                    duration_ms=duration_ms,
+                )
+            ),
+        )
+
+    async def broadcast_tool_dep_graph(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        nodes: List[Dict[str, str]],
+        edges: List[Dict[str, str]],
+    ) -> None:
+        """Attach an optional dependency-graph blob to an existing ToolChip.
+
+        The frontend renders it in the chip's "graph" tab as a CSS/SVG
+        disclosure tree. Nodes are ``{id, label}``; edges are ``{from, to}``.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerToolDepGraphEvent(
+                data=ToolDepGraphPayload(
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    nodes=nodes,
+                    edges=edges,
                 )
             ),
         )

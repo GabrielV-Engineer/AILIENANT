@@ -58,6 +58,24 @@ export interface MentionItem {
     path: string;
 }
 
+// Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chip shape kept in `Message.toolCalls`.
+// The frontend builds it up incrementally from the three `server_tool_*`
+// events; the optional `dep_graph` arrives via `server_tool_dep_graph`.
+export interface ToolCallShape {
+    tool_call_id: string;
+    tool_name: string;
+    args: Record<string, unknown>;
+    status: 'pending' | 'success' | 'error';
+    output_lines: string[];           // appended in arrival order
+    exit_code?: number;
+    duration_ms?: number;
+    side_effect_free?: boolean;
+    dep_graph?: {
+        nodes: { id: string; label: string }[];
+        edges: { from: string; to: string }[];
+    };
+}
+
 // Discriminated union of every message the webview can post.
 // Mirrors the cases in src/providers/chat_sidebar.ts onDidReceiveMessage.
 export type WebviewToHostMessage =
@@ -74,7 +92,14 @@ export type WebviewToHostMessage =
     // Phase 7.11.4 — @mention autocomplete: query the host-side workspace trie.
     | { type: "WORKSPACE_PATHS_QUERY"; prefix: string }
     // Phase 7.11.4 — @terminal stub: open the existing ContextOverlay terminal tab.
-    | { type: "OPEN_CONTEXT_TERMINAL" };
+    | { type: "OPEN_CONTEXT_TERMINAL" }
+    // Phase 7.11.6 — Rich Tool Chips: Retry button on a chip.
+    | { type: "RETRY_TOOL";          tool_call_id: string }
+    // Phase 7.11.6 — Dev smoke command (palette `/dev/run-bash <cmd>`).
+    | { type: "INVOKE_TRACKED_BASH"; command: string }
+    // Phase 7.11.6 — Palette → host: prompt for the bash command via
+    // VS Code's native showInputBox, then dispatch INVOKE_TRACKED_BASH.
+    | { type: "PROMPT_FOR_BASH" };
 
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",
