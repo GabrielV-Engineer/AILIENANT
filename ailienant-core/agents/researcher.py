@@ -91,7 +91,14 @@ async def run_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as err:  # noqa: BLE001 — fail-soft on any I/O issue
                 logger.warning("Researcher: VFS read failed for '%s': %s", path, err)
                 continue
-            forced_blocks.append(f"### {path}\n```\n{content}\n```")
+            # Phase 7.11.4 (ADR-706 §4.5d) — hard-context envelope. The
+            # `[HARD CONTEXT: SOURCE FILE …]` prefix signals to the LLM that
+            # this material is authoritative user-supplied content and must
+            # NOT be filtered/summarised; the surrounding RAG bypass at the
+            # caller already guarantees that GraphRAG is skipped on this turn.
+            forced_blocks.append(
+                f"[HARD CONTEXT: SOURCE FILE {path}]\n```\n{content}\n```"
+            )
 
     # ── Path B: GraphRAG retrieval — only when no @-mentions were supplied ──
     deep_block: str = ""

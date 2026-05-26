@@ -3,10 +3,16 @@ import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { HITLInterventionCard, type HITLIntervention } from './HITLInterventionCard';
 import { NattPromptBar } from './NattPromptBar';
+import { MarkdownRenderer } from './MarkdownRenderer';
+import type { ParserState as MdParserState } from '../utils/StreamingMarkdownParser';
 
 interface NattMessage {
     role: 'natt' | 'user';
     content: string;
+    streaming?: boolean;
+    // Phase 7.11.5 — incremental markdown parser state. Live only while
+    // streaming; cleared on `server_natt_stream_end`.
+    parserState?: MdParserState;
 }
 
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
@@ -76,7 +82,18 @@ export function NattCanvas({
                 {messages.map((m, i) => (
                     <div key={i} className="ws-natt-msg" data-role={m.role}>
                         {m.role === 'natt' && <Icon name="bot" size={14} color="var(--accent-primary)" />}
-                        <div className="ws-natt-msg-content">{m.content}</div>
+                        <div className="ws-natt-msg-content">
+                            {m.role === 'natt' ? (
+                                // Phase 7.11.5 — anti-flicker markdown rendering.
+                                <MarkdownRenderer
+                                    content={m.content}
+                                    parserState={m.parserState}
+                                    streaming={!!m.streaming}
+                                />
+                            ) : (
+                                m.content
+                            )}
+                        </div>
                     </div>
                 ))}
             </div>

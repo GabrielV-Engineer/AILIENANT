@@ -52,6 +52,12 @@ export interface TokenSnapshot {
     total_cost_usd: number;
 }
 
+// Phase 7.11.4 — @mention dropdown autocomplete result row.
+export interface MentionItem {
+    kind: 'file' | 'folder' | 'terminal';
+    path: string;
+}
+
 // Discriminated union of every message the webview can post.
 // Mirrors the cases in src/providers/chat_sidebar.ts onDidReceiveMessage.
 export type WebviewToHostMessage =
@@ -64,7 +70,11 @@ export type WebviewToHostMessage =
     | { type: "dreaming_toggle";    value: boolean; profile: DreamingProfile }
     | { type: "FORCE_AGENT";        role: AgentRole }
     | { type: "FILE_BLOCKED_ACK" }
-    | { type: "SET_BUDGET_LIMIT"; mode: BudgetLimitMode; weeklyUsd: number; monthlyUsd: number };
+    | { type: "SET_BUDGET_LIMIT"; mode: BudgetLimitMode; weeklyUsd: number; monthlyUsd: number }
+    // Phase 7.11.4 — @mention autocomplete: query the host-side workspace trie.
+    | { type: "WORKSPACE_PATHS_QUERY"; prefix: string }
+    // Phase 7.11.4 — @terminal stub: open the existing ContextOverlay terminal tab.
+    | { type: "OPEN_CONTEXT_TERMINAL" };
 
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",

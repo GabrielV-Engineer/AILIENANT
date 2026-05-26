@@ -1226,3 +1226,99 @@ html, body, #root { height: 100%; }
 }
 .ws-input:focus { border-color: var(--accent-primary); }
 .ws-input::placeholder { color: var(--text-disabled); }
+
+/* ── Phase 7.11.5 (ADR-706 §4.5e) — streaming markdown renderer ─────────── */
+.ws-md-p {
+  margin: 0 0 6px;
+}
+.ws-md-p:last-child {
+  margin-bottom: 0;
+}
+.ws-md-pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: var(--bg-input, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow-x: auto;
+  white-space: pre;
+}
+.ws-md-pre code {
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--text-primary);
+}
+.ws-md-code {
+  background: var(--bg-input, rgba(127, 127, 127, 0.12));
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+}
+.ws-md-link {
+  color: var(--accent-primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: help;        /* never clickable — see MarkdownRenderer comment */
+}
+/* The renderer emits real <strong>/<em>/<del>; let the host theme decide
+   the type weight to avoid clashing with VS Code's UI font. */
+
+/* ── Phase 7.11.4 (ADR-706 §4.5d) — @mention autocomplete dropdown ─────── */
+.ws-mention-dropdown {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 4px);
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  z-index: 20;
+  padding: 4px 0;
+}
+.ws-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+.ws-mention-item:hover,
+.ws-mention-item[data-active="true"] {
+  background: var(--accent-primary);
+  color: #0D1117;
+}
+.ws-mention-item-kind {
+  font-size: 10px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  min-width: 50px;
+}
+.ws-mention-item[data-active="true"] .ws-mention-item-kind {
+  color: #0D1117;
+  opacity: 0.7;
+}
+.ws-mention-item-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-mention-empty {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-disabled);
+  font-style: italic;
+}

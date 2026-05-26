@@ -16,6 +16,12 @@ import { TelemetryHUD, useTpsCalculator } from './components/TelemetryHUD';
 import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
+import { MarkdownRenderer } from './components/MarkdownRenderer';
+import {
+    INITIAL_STATE as MD_INITIAL_STATE,
+    pushToken as mdPushToken,
+    type ParserState as MdParserState,
+} from './utils/StreamingMarkdownParser';
 import { IndexingStatus } from './components/IndexingStatus';
 import { PipelineProgress } from './components/PipelineProgress';
 import type { HITLIntervention } from './components/HITLInterventionCard';
@@ -31,8 +37,19 @@ export interface Message {
     streaming?: boolean;
     steps?: string[];      // pipeline node trace for this assistant turn (Phase 7.9.B.14)
     stepsDone?: boolean;   // true after server_stream_end → ✓ + auto-collapse
+    // Phase 7.11.5 (ADR-706 §4.5e) — incremental markdown parser state. Live
+    // only while streaming; cleared on `server_stream_end` so the renderer's
+    // stable fast path takes over. Transient — explicitly stripped before
+    // PERSIST_TRANSCRIPT (see destructure below).
+    parserState?: MdParserState;
 }
-export interface NattMessage { role: 'natt' | 'user'; content: string; streaming?: boolean; }
+export interface NattMessage {
+    role: 'natt' | 'user';
+    content: string;
+    streaming?: boolean;
+    // Same parser state, applied to analyst-canvas turns.
+    parserState?: MdParserState;
+}
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
 interface InitialState {
@@ -131,6 +148,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     // Phase 7.9.B.20 — persist the per-session transcript so closing VS Code no
     // longer empties the session. Debounced; transient stream flags are stripped.
+    // Phase 7.11.5 — explicitly drop `parserState` (large per-message object) so
+    // it never reaches the host's workspaceState.
     useEffect(() => {
         const handle = setTimeout(() => {
             vscode.postMessage({
@@ -138,7 +157,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 messages: messages.map(({ role, content, steps, stepsDone }) => ({
                     role, content, steps, stepsDone,
                 })),
-                nattMessages,
+                nattMessages: nattMessages.map(({ role, content }) => ({ role, content })),
             });
         }, 400);
         return () => clearTimeout(handle);
@@ -166,9 +185,24 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     setMessages(prev => {
                         const last = prev[prev.length - 1];
                         if (last?.role === 'assistant' && last.streaming) {
-                            return [...prev.slice(0, -1), { ...last, content: last.content + d.token }];
+                            // Phase 7.11.5 — advance the markdown parser state
+                            // ONCE per arriving token. O(1) per call.
+                            const nextState = mdPushToken(
+                                last.parserState ?? MD_INITIAL_STATE,
+                                d.token,
+                            );
+                            return [...prev.slice(0, -1), {
+                                ...last,
+                                content: last.content + d.token,
+                                parserState: nextState,
+                            }];
                         }
-                        return [...prev, { role: 'assistant', content: d.token, streaming: true }];
+                        return [...prev, {
+                            role: 'assistant',
+                            content: d.token,
+                            streaming: true,
+                            parserState: mdPushToken(MD_INITIAL_STATE, d.token),
+                        }];
                     });
                     break;
                 }
@@ -193,7 +227,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     // naturally or because we aborted it.
                     setIsAborting(false);
                     setMessages(prev => prev.map((m, i) =>
-                        i === prev.length - 1 ? { ...m, streaming: false, stepsDone: true } : m));
+                        i === prev.length - 1
+                            // Phase 7.11.5 — drop parserState so MarkdownRenderer
+                            // takes its stable single-pass render path.
+                            ? { ...m, streaming: false, stepsDone: true, parserState: undefined }
+                            : m));
                     break;
                 case 'server_telemetry': {
                     const frame = msg.payload as TelemetryFrame;
@@ -217,20 +255,37 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_natt_token': {
                     // Phase 7.10.3 — accumulate batched analyst tokens into the active natt bubble.
+                    // Phase 7.11.5 — also advance the markdown parser per token.
                     const d = msg.payload as { token: string };
                     setNattMessages(prev => {
                         const last = prev[prev.length - 1];
                         if (last?.role === 'natt' && last.streaming) {
-                            return [...prev.slice(0, -1), { ...last, content: last.content + d.token }];
+                            const nextState = mdPushToken(
+                                last.parserState ?? MD_INITIAL_STATE,
+                                d.token,
+                            );
+                            return [...prev.slice(0, -1), {
+                                ...last,
+                                content: last.content + d.token,
+                                parserState: nextState,
+                            }];
                         }
-                        return [...prev, { role: 'natt', content: d.token, streaming: true }];
+                        return [...prev, {
+                            role: 'natt',
+                            content: d.token,
+                            streaming: true,
+                            parserState: mdPushToken(MD_INITIAL_STATE, d.token),
+                        }];
                     });
                     break;
                 }
                 case 'server_natt_stream_end':
                     // Phase 7.10.3 — finalize the streamed analyst bubble (context_version carried for 7.11 divergence).
+                    // Phase 7.11.5 — drop parserState → stable renderer path.
                     setNattMessages(prev => prev.map((m, i) =>
-                        i === prev.length - 1 ? { ...m, streaming: false } : m));
+                        i === prev.length - 1
+                            ? { ...m, streaming: false, parserState: undefined }
+                            : m));
                     break;
                 case 'server_indexing_started': {
                     const d = msg.payload as { total_files?: number };
@@ -555,7 +610,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             data-role={m.role}
                                             data-streaming={m.streaming ? 'true' : 'false'}
                                         >
-                                            {m.content}
+                                            {m.role === 'assistant' ? (
+                                                // Phase 7.11.5 — anti-flicker streaming markdown.
+                                                <MarkdownRenderer
+                                                    content={m.content}
+                                                    parserState={m.parserState}
+                                                    streaming={!!m.streaming}
+                                                />
+                                            ) : (
+                                                m.content
+                                            )}
                                         </div>
                                     )}
                                 </Fragment>
