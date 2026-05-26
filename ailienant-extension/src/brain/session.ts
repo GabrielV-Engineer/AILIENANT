@@ -55,8 +55,18 @@ export class SessionManager {
     /**
      * Inicia una misión cognitiva.
      * Orquesta la recolección de entropía, abre el túnel cuántico y despacha el WBS.
+     *
+     * @param taskPrompt The user prompt text.
+     * @param opts Optional UI-layer injections.
+     *   - `explicit_mentions` (Phase 7.11.4 — ADR-706 §4.5d) hard-context file
+     *     paths extracted from `@file:` / `@folder:` tokens. The backend
+     *     researcher reads these verbatim via VFSMiddleware and skips the
+     *     GraphRAG retrieval entirely for this turn.
      */
-    public async startAITask(taskPrompt: string): Promise<void> {
+    public async startAITask(
+        taskPrompt: string,
+        opts?: { explicit_mentions?: string[] },
+    ): Promise<void> {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
             // Si lo hacemos al revés, podríamos perder los primeros tokens de LangGraph.
@@ -79,7 +89,12 @@ export class SessionManager {
                 dirty_buffers: dirtyBuffers,
                 project_id: PathResolver.resolveProjectId(),
                 document_version_id: activeDoc ? String(activeDoc.version) : undefined,
-                // attachments and explicit_mentions are injected by the UI layer (Phase 1.1.0.4)
+                // Phase 7.11.4 — wires the host-extracted @mentions through to the
+                // researcher's existing RAG-bypass path (agents/researcher.py:78).
+                explicit_mentions:
+                    opts?.explicit_mentions && opts.explicit_mentions.length > 0
+                        ? opts.explicit_mentions
+                        : undefined,
             };
 
             // 5. Emitir la Misión (Boca) al API Gateway

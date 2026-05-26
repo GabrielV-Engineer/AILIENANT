@@ -14,6 +14,7 @@ import { APIClient } from '../api/api_client';
 import type { AilienantConfig, Session } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { ConfigLoader } from '../shared/config_loader';
+import { WorkspacePathIndex, extractMentions, FOLDER_EXPANSION_CAP } from './workspacePathIndex';
 
 function findBackendPath(extensionFsPath: string): string | null {
     const candidates = [
@@ -205,6 +206,11 @@ export class WorkspacePanelManager {
     private _onTitleUpdate: TitleUpdater | undefined;
     // Phase 7.9.A.5.1 — managed child process; set from activate() via setCoreManager().
     private _coreManager: CoreProcessManager | null = null;
+    // Phase 7.11.4 — host-side workspace path trie for @mention autocomplete.
+    // Lazily bootstrapped on first WORKSPACE_PATHS_QUERY / SUBMIT_TASK to
+    // avoid a startup-time `findFiles` on workspaces the user never queries.
+    private _pathIndex: WorkspacePathIndex | null = null;
+    private _pathIndexBootstrap: Promise<void> | null = null;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -239,8 +245,26 @@ export class WorkspacePanelManager {
         this._coreManager = manager;
     }
 
+    /**
+     * Phase 7.11.4 — lazily bootstrap the workspace path index. Returns the
+     * trie once the initial `findFiles` scan has resolved; subsequent calls
+     * return the same instance immediately.
+     */
+    private async _getPathIndex(): Promise<WorkspacePathIndex> {
+        if (this._pathIndex === null) {
+            this._pathIndex = new WorkspacePathIndex();
+            this._pathIndexBootstrap = this._pathIndex.bootstrap();
+        }
+        if (this._pathIndexBootstrap !== null) {
+            await this._pathIndexBootstrap;
+        }
+        return this._pathIndex;
+    }
+
     public dispose(): void {
         this._coreManager?.dispose();
+        this._pathIndex?.dispose();
+        this._pathIndex = null;
         for (const d of this._disposables) { d.dispose(); }
         for (const panel of this._panels.values()) { panel.dispose(); }
     }
@@ -397,7 +421,8 @@ export class WorkspacePanelManager {
         panel.webview.onDidReceiveMessage(async (data) => {
             switch (data.type) {
                 case 'SUBMIT_TASK': {
-                    this._maybeAutoTitle(session, data.value as string, panel);
+                    const taskText = data.value as string;
+                    this._maybeAutoTitle(session, taskText, panel);
                     // Inform this session if others are running (educational, non-blocking)
                     const parallelCount = [...this._runningTasks].filter(id => id !== session.id).length;
                     if (parallelCount > 0) {
@@ -408,10 +433,49 @@ export class WorkspacePanelManager {
                     }
                     this._runningTasks.add(session.id);
                     const activeDoc = vscode.window.activeTextEditor?.document;
-                    const intercepted = await IntentRouter.intercept(data.value as string, activeDoc);
+                    const intercepted = await IntentRouter.intercept(taskText, activeDoc);
                     if (!intercepted) {
-                        await SessionManager.getInstance().startAITask(data.value as string);
+                        // Phase 7.11.4 — extract @file: / @folder: tokens and feed
+                        // them through TaskPayload.explicit_mentions so the backend
+                        // researcher's RAG-bypass path fires (agents/researcher.py:78).
+                        let explicit_mentions: string[] | undefined;
+                        if (/@(file|folder):/.test(taskText)) {
+                            const idx = await this._getPathIndex();
+                            const mentions = extractMentions(taskText, idx, (folder) => {
+                                void vscode.window.showWarningMessage(
+                                    `AILIENANT: @folder:${folder} is too large to inject as hard context (skipped). ` +
+                                    `Use @file: for specific paths or narrow the folder.`,
+                                );
+                            });
+                            if (mentions.length > 0) {
+                                explicit_mentions = mentions;
+                                const fileCount = mentions.length;
+                                const cap = FOLDER_EXPANSION_CAP;
+                                if (fileCount >= cap) {
+                                    void vscode.window.showInformationMessage(
+                                        `AILIENANT: capped @folder expansion at ${cap} files.`,
+                                    );
+                                }
+                            }
+                        }
+                        await SessionManager.getInstance().startAITask(taskText, {
+                            explicit_mentions,
+                        });
                     }
+                    break;
+                }
+                case 'WORKSPACE_PATHS_QUERY': {
+                    // Phase 7.11.4 — fast autocomplete from the host-side trie.
+                    const prefix = String(data.prefix ?? '');
+                    const idx = await this._getPathIndex();
+                    const results = idx.query(prefix, 12);
+                    panel.webview.postMessage({ type: 'WORKSPACE_PATHS_RESULT', results });
+                    break;
+                }
+                case 'OPEN_CONTEXT_TERMINAL': {
+                    // Phase 7.11.4 — @terminal stub: open the existing ContextOverlay
+                    // terminal tab (no VS Code API exposes terminal output, see plan W…).
+                    panel.webview.postMessage({ type: 'OPEN_CONTEXT', tab: 'terminal' });
                     break;
                 }
                 case 'ABORT_TASK':

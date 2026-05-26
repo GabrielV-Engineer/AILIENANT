@@ -1616,11 +1616,55 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
   + natt-stream-end, `astream_byom` records 30 tokens from a 4-chunk stub, payload
   round-trip) — full backend **636 passed**, 0 regressions; frontend `vscode-test` 4/4.
   Blueprint lock-in NOT yet expired — 6 of 9 Phase 7.11 features remain.
-- [ ] **(9/10) `@mentions` selector** (`@file:`, `@folder:`, `@terminal`) as **hard-context**
-  (bypasses RAG); debounced workspace-tree indexing.
-- [ ] **(9/10) Double-buffer Markdown streaming (anti-flicker)** — **Stateful Streaming Parser,
+- [x] **(9/10) `@mentions` selector** (`@file:`, `@folder:`, `@terminal`) as **hard-context**
+  (bypasses RAG); debounced workspace-tree indexing. **Phase 7.11.4 (2026-05-26)** — shipped:
+  caret-anchored `useAtMentionDetect` hook in `PromptBar.tsx`; new `MentionDropdown.tsx` (↑↓
+  Enter Esc, palette wins on conflict); host-side `WorkspacePathIndex` trie in
+  `src/providers/workspacePathIndex.ts` (one-shot bootstrap via `findFiles`, 500 ms-debounced
+  watcher on `**/*` using `vscode.workspace.createFileSystemWatcher`, `.gitignore` /
+  `.ailienantignore` inherited from `findFiles`'s default exclude); `extractMentions()`
+  expands `@folder:` paths (capped 50 files; > 200 entries → warning toast, no expansion);
+  `workspace_panel.ts` populates `TaskPayload.explicit_mentions` before delegating to
+  `SessionManager.startAITask`; new `WORKSPACE_PATHS_QUERY` + `OPEN_CONTEXT_TERMINAL`
+  webview→host messages; **`@terminal` is an honest stub** that opens the existing
+  `ContextOverlay` terminal tab (no public VS Code terminal-output-buffer API). Backend:
+  one-line envelope change in [`agents/researcher.py:78`](ailienant-core/agents/researcher.py#L78)
+  — forced blocks now wrap each mention in `[HARD CONTEXT: SOURCE FILE {path}]` per ADR-706
+  §4.5d; the existing RAG-bypass binary at `:98` is unchanged. New tests: 5 in
+  [`tests/workspacePathIndex.test.ts`](ailienant-extension/src/test/workspacePathIndex.test.ts)
+  (trie round-trip, intermediate prune, 500 ms debounce, folder-cap + bail-out,
+  `extractMentions` dedup) + 2 in
+  [`tests/test_explicit_mentions_envelope.py`](ailienant-core/tests/test_explicit_mentions_envelope.py)
+  (envelope shape, fail-soft on missing path).
+- [x] **(9/10) Double-buffer Markdown streaming (anti-flicker)** — **Stateful Streaming Parser,
   O(1) amortized** (ADR-706: binary open/closed flag counter, virtual closure injected at the
-  DOM leaf, no historical re-scan).
+  DOM leaf, no historical re-scan). **Phase 7.11.5 (2026-05-26)** — shipped: zero-dep
+  [`StreamingMarkdownParser.ts`](ailienant-extension/src/workspace/utils/StreamingMarkdownParser.ts)
+  (~360 LOC) with `pushToken(state, token) → state`, `closuresFor(state) → VirtualClosure[]`,
+  `finalize(state)` end-of-stream safety net, and `flagDelta()` audit helper; tracks
+  in_code_fence / in_inline_code / in_bold / in_italic / in_strike / in_blockquote /
+  in_link_text / in_link_href / list_depth via a 1-char `prev_char` window (W7 — bold split
+  across token boundary). **CommonMark §4.5 fence open/close symmetry (W9)** — captures
+  `fence_char` + `fence_len` at the opener; a closer is recognized ONLY when a start-of-line
+  run of the SAME char has length ≥ `fence_len` (lets the LLM write markdown-about-markdown
+  with a ` ```` ` outer fence around a ` ``` ` inner fence). Renderer:
+  [`MarkdownRenderer.tsx`](ailienant-extension/src/workspace/components/MarkdownRenderer.tsx)
+  is a pure `memo`-ised component — virtual closures live in the JSX tree (always balanced
+  by construction); `Message.content` is byte-identical to the concatenation of all tokens.
+  Wired into `Workspace.tsx` (assistant turn) + `NattCanvas.tsx` (analyst canvas); both
+  stream-end handlers clear `parserState` to drop into the renderer's stable single-pass
+  path. `PERSIST_TRANSCRIPT` strips `parserState` so the large per-message object never
+  reaches `workspaceState`. 10 tests in
+  [`tests/streamingMarkdownParser.test.ts`](ailienant-extension/src/test/streamingMarkdownParser.test.ts)
+  including the W1 flag-delta ≤ 3 audit, the W9 nested-fence scenario, and the
+  source-buffer-immutability invariant.
+
+**Verification summary (7.11.4 + 7.11.5):** backend **644 passed** (was 636 + 6 new tests
+upstream + 2 envelope = 644), 0 regressions; `mypy --explicit-package-bases .` baseline
+unchanged (35 errors, none from touched files); `ruff` clean on touched files; frontend
+`check-types` + `lint` 0 errors; `vscode-test` 19/19 (5 path-index + 10 parser + 3 store
++ 1 sample). Blueprint lock-in NOT yet expired — **4 of 9** Phase 7.11 features remain
+(Rich Tool Chips, Native HITL push, Topological tree, Time-travel debugging).
 - [ ] **(8.5/10) Interactive artifact rendering (Rich Tool Chips)** — ANSI mini-terminal, Retry,
   dep graph. All sandbox output untrusted → strict sanitization (XSS guard).
 - [ ] **(8/10) Native HITL push notifications** — `vscode.window.showInformationMessage`

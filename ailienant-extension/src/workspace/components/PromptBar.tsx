@@ -1,12 +1,16 @@
-import { useCallback, useRef, useEffect } from 'react';
+import { useCallback, useRef, useEffect, useState } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { CommandPalette, useSlashDetect } from './CommandPalette';
 import { ContextOverlay } from './ContextOverlay';
 import { DreamingMode } from './DreamingMode';
 import { ModeMenu } from './ModeMenu';
+import { MentionDropdown } from './MentionDropdown';
+import { vscode } from '../vscode_bridge';
 import type { AilienantConfig, ExecutionMode } from '../../shared/types';
-import type { ReasoningPreset, InferenceTier, DreamingProfile, OrchestrationMode } from '../../shared/config';
+import type {
+    ReasoningPreset, InferenceTier, DreamingProfile, OrchestrationMode, MentionItem,
+} from '../../shared/config';
 import { useWorkspaceStore } from '../workspaceStore';
 
 interface Props {
@@ -55,12 +59,42 @@ export function PromptBar({
     const { slashActive, slashQuery } = useSlashDetect(value);
     const paletteVisible = paletteOpen || slashActive;
 
+    // ── Phase 7.11.4 — @mention autocomplete ─────────────────────────────
+    // The caret-anchored regex makes the trigger fire only when the cursor
+    // sits at the end of an @token, so clicking back into an existing @foo
+    // mid-prompt does NOT re-pop the dropdown.
+    const [caretPos, setCaretPos] = useState<number>(0);
+    const [mentionResults, setMentionResults] = useState<MentionItem[]>([]);
+    const [mentionActiveIdx, setMentionActiveIdx] = useState<number>(0);
+    const { atActive, atQuery, atRange } = useAtMentionDetect(value, caretPos);
+    // Palette wins when both could fire (plan W5).
+    const mentionVisible = atActive && !paletteVisible;
+
+    // Debounced query → host trie. UI debounce = 80 ms (the trie itself is
+    // debounced 500 ms on the FS side; this 80 ms keeps the autocomplete
+    // snappy for typing while still coalescing keystrokes).
+    useEffect(() => {
+        if (!mentionVisible) { return; }
+        const h = setTimeout(() => {
+            vscode.postMessage({ type: 'WORKSPACE_PATHS_QUERY', prefix: atQuery });
+        }, 80);
+        return () => clearTimeout(h);
+    }, [mentionVisible, atQuery]);
+
+    // Reset highlight when the result set changes.
+    useEffect(() => { setMentionActiveIdx(0); }, [mentionResults]);
+
     // Insert an @-mention path returned by the host's workspace file quick-pick.
     // The store's getState() always returns the current draft, so the listener
     // does NOT need to re-bind on every keystroke (mount-once / unmount-once).
     useEffect(() => {
         const handler = (e: MessageEvent): void => {
-            const msg = e.data as { type: string; path?: string; text?: string };
+            const msg = e.data as {
+                type: string;
+                path?: string;
+                text?: string;
+                results?: MentionItem[];
+            };
             if (msg.type === 'INSERT_MENTION' && msg.path) {
                 const v = useWorkspaceStore.getState().inputDraft;
                 setValue(`${v}${v && !v.endsWith(' ') ? ' ' : ''}@${msg.path} `);
@@ -74,10 +108,48 @@ export function PromptBar({
                 setPaletteOpen(false);
                 textareaRef.current?.focus();
             }
+            // Phase 7.11.4 — autocomplete results from the host-side path index.
+            if (msg.type === 'WORKSPACE_PATHS_RESULT' && Array.isArray(msg.results)) {
+                // Always append a constant @terminal entry so it's reachable
+                // from any query (the stub opens the existing ContextOverlay
+                // terminal tab via OPEN_CONTEXT_TERMINAL).
+                const TERMINAL_ROW: MentionItem = { kind: 'terminal', path: '@terminal' };
+                setMentionResults([...msg.results, TERMINAL_ROW]);
+            }
         };
         window.addEventListener('message', handler);
         return () => window.removeEventListener('message', handler);
     }, [setValue, setPaletteOpen]);
+
+    /** Phase 7.11.4 — apply a selected mention into the textarea: splice it
+     *  over the active `@…` range so the partial query is replaced atomically. */
+    const insertMention = useCallback((item: MentionItem) => {
+        if (item.kind === 'terminal') {
+            // Stub: drop the @terminal token, open the ContextOverlay terminal
+            // tab. Honest about the lack of a public VS Code terminal-output API.
+            const before = value.slice(0, atRange.start);
+            const after  = value.slice(atRange.end);
+            setValue(`${before}${after}`);
+            vscode.postMessage({ type: 'OPEN_CONTEXT_TERMINAL' });
+            textareaRef.current?.focus();
+            return;
+        }
+        const tokenPrefix = item.kind === 'folder' ? '@folder:' : '@file:';
+        const before = value.slice(0, atRange.start);
+        const after  = value.slice(atRange.end);
+        const replacement = `${tokenPrefix}${item.path} `;
+        const next = `${before}${replacement}${after}`;
+        setValue(next);
+        // Park the caret right after the inserted token.
+        const newCaret = atRange.start + replacement.length;
+        requestAnimationFrame(() => {
+            const ta = textareaRef.current;
+            if (ta) {
+                ta.focus();
+                ta.setSelectionRange(newCaret, newCaret);
+            }
+        });
+    }, [value, atRange.start, atRange.end, setValue]);
 
     const submit = useCallback(() => {
         const text = value.trim();
@@ -88,11 +160,44 @@ export function PromptBar({
     }, [value, disabled, onSubmit]);
 
     const onKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Enter' && !e.shiftKey && !paletteVisible) {
+        // Phase 7.11.4 — mention-dropdown keyboard navigation. Palette wins
+        // when both could fire (the palette has its own handlers).
+        if (mentionVisible && !paletteVisible && mentionResults.length > 0) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setMentionActiveIdx(i => Math.min(i + 1, mentionResults.length - 1));
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setMentionActiveIdx(i => Math.max(i - 1, 0));
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const pick = mentionResults[mentionActiveIdx];
+                if (pick) { insertMention(pick); }
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                // Closing the dropdown without selecting — drop the @-token so
+                // a stale @prefix doesn't keep re-opening the menu.
+                setMentionResults([]);
+                return;
+            }
+        }
+        if (e.key === 'Enter' && !e.shiftKey && !paletteVisible && !mentionVisible) {
             e.preventDefault();
             submit();
         }
-    }, [submit, paletteVisible]);
+    }, [submit, paletteVisible, mentionVisible, mentionResults, mentionActiveIdx, insertMention]);
+
+    /** Track the textarea caret so `useAtMentionDetect` can anchor on it. */
+    const updateCaret = useCallback(() => {
+        const ta = textareaRef.current;
+        if (ta) { setCaretPos(ta.selectionStart ?? 0); }
+    }, []);
 
     return (
         <div className="ws-prompt">
@@ -111,6 +216,16 @@ export function PromptBar({
                     onClose={() => { setPaletteOpen(false); if (slashActive) { setValue(''); } }}
                 />
             )}
+            {/* Phase 7.11.4 — @mention autocomplete (palette has priority). */}
+            {mentionVisible && (
+                <MentionDropdown
+                    query={atQuery}
+                    results={mentionResults}
+                    activeIdx={mentionActiveIdx}
+                    onSelect={insertMention}
+                    onHoverIdx={setMentionActiveIdx}
+                />
+            )}
             {/* Top row: textarea */}
             <div className="ws-prompt-input-row">
                 <textarea
@@ -118,8 +233,11 @@ export function PromptBar({
                     className="ws-prompt-input"
                     rows={1}
                     value={value}
-                    onChange={(e) => setValue(e.target.value)}
+                    onChange={(e) => { setValue(e.target.value); updateCaret(); }}
                     onKeyDown={onKey}
+                    onKeyUp={updateCaret}
+                    onClick={updateCaret}
+                    onSelect={updateCaret}
                     placeholder={placeholder ?? 'Submit your request…'}
                     disabled={disabled}
                     aria-label="Prompt input"
@@ -197,4 +315,47 @@ export function PromptBar({
             </div>
         </div>
     );
+}
+
+/**
+ * Phase 7.11.4 — caret-anchored @mention trigger detection.
+ *
+ * Mirrors `useSlashDetect`'s shape but matches an `@token` anywhere in the
+ * prompt, not just at start-of-line. The regex is run against
+ * `value.slice(0, caretPos)` so the dropdown only opens when the caret sits
+ * at the END of an active @token — clicking back into an existing `@foo`
+ * mid-prompt does NOT re-pop the menu (plan W2).
+ *
+ * Returns:
+ *   - `atActive` — true while the caret sits at the end of an @-token.
+ *   - `atQuery`  — the path fragment after the `@…:` prefix (or after the
+ *     bare `@`, which acts as a "show everything" query).
+ *   - `atRange`  — `{start, end}` over the source `value`; the caller uses
+ *     this to splice in the selected mention atomically.
+ */
+export function useAtMentionDetect(
+    value: string,
+    caretPos: number,
+): { atActive: boolean; atQuery: string; atRange: { start: number; end: number } } {
+    const head = value.slice(0, caretPos);
+    // @file:foo  /  @folder:bar  /  @terminal  /  bare @  with optional path chars.
+    const m = /@(file:|folder:|terminal\b)?([\w./\-]*)$/.exec(head);
+    if (!m) {
+        return { atActive: false, atQuery: '', atRange: { start: caretPos, end: caretPos } };
+    }
+    // Require that the @ is at start-of-string or preceded by whitespace —
+    // avoids matching emails ("user@host") and inline mentions inside text.
+    const atIdx = head.length - m[0].length;
+    if (atIdx > 0) {
+        const prev = head[atIdx - 1];
+        if (prev !== ' ' && prev !== '\t' && prev !== '\n') {
+            return { atActive: false, atQuery: '', atRange: { start: caretPos, end: caretPos } };
+        }
+    }
+    const query = m[2] ?? '';
+    return {
+        atActive: true,
+        atQuery: query,
+        atRange: { start: atIdx, end: caretPos },
+    };
 }
