@@ -200,6 +200,7 @@ async def _emit_contention_and_await_resolution(
         action_description="RESOURCE_CONTENTION",
         proposed_content=json.dumps(payload),
         timeout_s=_DEFAULT_HITL_TIMEOUT_S,
+        request_kind="RESOURCE_CONTENTION",
     )
     if response is None:
         logger.warning(

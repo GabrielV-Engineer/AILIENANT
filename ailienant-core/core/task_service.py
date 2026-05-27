@@ -372,6 +372,7 @@ class TaskService:
                     f"Apply {len(contents)} file change(s): " + ", ".join(contents)
                 ),
                 proposed_content=combined_diff,
+                request_kind="FILE_WRITE",
             )
             if not decision or not decision.get("approved"):
                 discarded = "Changes discarded — no files were modified."

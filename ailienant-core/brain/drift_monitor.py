@@ -113,6 +113,7 @@ async def run_drift_monitor_node(state: dict) -> dict:
         ),
         proposed_content=f"Revised outcome: {current_spec.outcome}",
         timeout_s=_DRIFT_TIMEOUT_S,
+        request_kind="DRIFT_DETECTED",
     )
 
     if response is None:

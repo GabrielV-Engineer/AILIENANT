@@ -437,6 +437,7 @@ class NativeHITLSandboxAdapter(SandboxAdapter):
             action_description=self._HITL_ACTION,
             proposed_content=f"CWD: {cwd}\nCommand: {command}",
             timeout_s=self._HITL_TIMEOUT_S,
+            request_kind=self._HITL_ACTION,
         )
         if approval is None or not approval.get("approved", False):
             # None ⇒ HITL timeout; approved=False ⇒ explicit rejection.

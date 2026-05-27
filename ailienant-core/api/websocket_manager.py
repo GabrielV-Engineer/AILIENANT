@@ -578,6 +578,7 @@ class ConnectionManager:
         action_description: str,
         proposed_content: Optional[str] = None,
         timeout_s: float = 300.0,
+        request_kind: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Suspend the calling coroutine until the human responds or the timeout fires.
@@ -586,6 +587,11 @@ class ConnectionManager:
         client inside the request event and must be echoed back in the response,
         preventing cross-talk when multiple approval requests are in-flight on
         the same session.
+
+        ``request_kind`` (Phase 7.11.7) — optional classifier string (e.g.
+        ``"BUDGET_OVERFLOW"``, ``"FILE_WRITE"``) that the native-HITL toast bridge
+        uses to choose severity and title. Default None preserves the pre-7.11.7
+        wire shape; unknown kinds fall back to info-level on the frontend.
 
         Returns {"approved": bool, "comment": str|None} or None on timeout.
         """
@@ -602,6 +608,7 @@ class ConnectionManager:
                         approval_id=approval_id,
                         action_description=action_description,
                         proposed_content=proposed_content,
+                        request_kind=request_kind,
                     )
                 ),
             )
