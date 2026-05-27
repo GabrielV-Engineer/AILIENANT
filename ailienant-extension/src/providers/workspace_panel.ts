@@ -199,6 +199,11 @@ interface StoredMessage {
     steps?: string[];
     stepsDone?: boolean;
     toolCalls?: ToolCallShape[];
+    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel checkpoint metadata. Survives
+    // PERSIST_TRANSCRIPT so the per-message ↪ Branch button still works on
+    // sessions reopened after a VS Code restart.
+    checkpoint_id?: string;
+    is_abort_savepoint?: boolean;
 }
 interface StoredNattMessage { role: 'natt' | 'user'; content: string; }
 interface StoredTranscript { messages: StoredMessage[]; nattMessages: StoredNattMessage[]; }
@@ -214,6 +219,10 @@ export class WorkspacePanelManager {
     private readonly _configLoader: ConfigLoader;
     private readonly _disposables: vscode.Disposable[] = [];
     private _onTitleUpdate: TitleUpdater | undefined;
+    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: invoked when the backend
+    // broadcasts `server_session_branched`. Implementation lives in
+    // extension.ts so workspace_panel.ts stays decoupled from the sidebar.
+    private _onSessionBranched: ((session: Session) => void) | undefined;
     // Phase 7.9.A.5.1 — managed child process; set from activate() via setCoreManager().
     private _coreManager: CoreProcessManager | null = null;
     // Phase 7.11.4 — host-side workspace path trie for @mention autocomplete.
@@ -249,6 +258,13 @@ export class WorkspacePanelManager {
 
     public setTitleUpdater(updater: TitleUpdater): void {
         this._onTitleUpdate = updater;
+    }
+
+    /** Phase 7.11.8 — extension.ts injects a callback that persists the new
+     *  branched session in the sidebar and opens it. Decouples this manager
+     *  from the SessionBrowser. */
+    public setSessionBranchedHandler(handler: (session: Session) => void): void {
+        this._onSessionBranched = handler;
     }
 
     public setCoreManager(manager: CoreProcessManager): void {
@@ -303,6 +319,53 @@ export class WorkspacePanelManager {
     /** Drop a deleted session's persisted transcript. */
     public clearTranscript(sessionId: string): void {
         void this._workspaceState.update(TRANSCRIPT_KEY_PREFIX + sessionId, undefined);
+    }
+
+    /**
+     * Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: mint + open a new branched
+     * session after the backend broadcasts `server_session_branched`.
+     *
+     * 1. Read the parent's persisted transcript.
+     * 2. Slice it at the message whose checkpoint_id matches the fork target
+     *    (purely cosmetic: the backend's L2 row is the canonical state).
+     * 3. Build a Session linked to the parent via parent_thread_id +
+     *    parent_checkpoint_id (provenance — never carries any graph state).
+     * 4. Save the new transcript + notify the sidebar callback so the new
+     *    Session lands in the SessionBrowser and gets opened.
+     */
+    private _handleSessionBranched(
+        parent: Session,
+        newSessionId: string,
+        fromCheckpointId: string,
+    ): void {
+        const parentTx = this._getTranscript(parent.id);
+        const cutIdx = parentTx.messages.findIndex(m => m.checkpoint_id === fromCheckpointId);
+        const seed: StoredMessage[] = cutIdx >= 0
+            ? parentTx.messages.slice(0, cutIdx + 1)
+            : parentTx.messages.slice();
+
+        const now = new Date().toISOString();
+        const newSession: Session = {
+            id: newSessionId,
+            title: `↪ Branch of ${parent.title || 'session'}`,
+            created_at: now,
+            last_modified: now,
+            message_count: seed.length,
+            model_tier: parent.model_tier,
+            thread_id: newSessionId,
+            parent_thread_id: parent.id,
+            parent_checkpoint_id: fromCheckpointId,
+        };
+
+        this._saveTranscript(newSessionId, {
+            messages: seed,
+            nattMessages: parentTx.nattMessages.slice(),
+        });
+
+        const handler = this._onSessionBranched;
+        if (handler) {
+            handler(newSession);
+        }
     }
 
     /** Reveal existing panel or open a new one for the given session. */
@@ -444,6 +507,20 @@ export class WorkspacePanelManager {
             if (msg.event_type === 'server_hitl_approval_request') {
                 hitlNotifier.onApprovalRequest(msg.data as HITLApprovalRequestPayload);
             }
+            // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: a new session was
+            // minted from a branch op. The backend broadcasts to BOTH the
+            // parent thread AND the new thread; we process only when this
+            // panel IS the parent so we don't double-create.
+            if (msg.event_type === 'server_session_branched') {
+                const d = msg.data as {
+                    parent_session_id: string;
+                    new_session_id: string;
+                    from_checkpoint_id: string;
+                };
+                if (d.parent_session_id === session.id) {
+                    this._handleSessionBranched(session, d.new_session_id, d.from_checkpoint_id);
+                }
+            }
             // Clear running-task marker on stream/task completion
             if (
                 msg.event_type === 'server_stream_end' ||
@@ -580,6 +657,39 @@ export class WorkspacePanelManager {
                                 working_dir: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null,
                             },
                         });
+                    }
+                    break;
+                }
+                case 'BRANCH_FROM_CHECKPOINT':
+                    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: relay the
+                    // user's branch request to the backend. The backend mints
+                    // the new session_id and broadcasts `server_session_branched`,
+                    // which the WS handler below picks up to mint the host-side
+                    // Session and open it.
+                    WSClient.getInstance().send({
+                        event_type: 'client_branch_from_checkpoint',
+                        data: {
+                            parent_session_id: data.session_id as string,
+                            from_checkpoint_id: data.checkpoint_id as string,
+                        },
+                    });
+                    break;
+                case 'LIST_CHECKPOINTS': {
+                    // Phase 7.11.8 — fetch the checkpoint chain via REST. The
+                    // backend's `/api/v1/sessions/{id}/checkpoints` endpoint
+                    // returns chronological [{checkpoint_id, parent_id,
+                    // promoted_at, termination_reason, turn_index}].
+                    const targetSid = (data.session_id as string) || session.id;
+                    try {
+                        const base = WSClient.getInstance().getHttpBaseUrl();
+                        const url = `${base}/api/v1/sessions/${encodeURIComponent(targetSid)}/checkpoints`;
+                        const resp = await fetch(url);
+                        const entries = resp.ok ? await resp.json() : [];
+                        panel.webview.postMessage({ type: 'CHECKPOINTS_LIST', payload: entries });
+                    } catch {
+                        // Network error → empty list; the picker shows an
+                        // "no checkpoints yet" empty state with no false alarm.
+                        panel.webview.postMessage({ type: 'CHECKPOINTS_LIST', payload: [] });
                     }
                     break;
                 }

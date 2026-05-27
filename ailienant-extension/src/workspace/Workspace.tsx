@@ -19,6 +19,8 @@ import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ToolChip } from './components/ToolChip';
+import { MessageActions } from './components/MessageActions';
+import { CheckpointPicker, type CheckpointEntry } from './components/CheckpointPicker';
 import {
     INITIAL_STATE as MD_INITIAL_STATE,
     pushToken as mdPushToken,
@@ -48,6 +50,15 @@ export interface Message {
     // Each entry is built incrementally from server_tool_start, _stream_chunk
     // and _result events keyed by tool_call_id.
     toolCalls?: ToolCallShape[];
+    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: the L2-promoted checkpoint
+    // that wraps this completed assistant turn. Populated from
+    // `server_stream_end`. Only assistant messages carry one; absent on user
+    // messages and on streaming-in-flight turns. Survives PERSIST_TRANSCRIPT
+    // so the branch button still works on rehydrated sessions.
+    checkpoint_id?: string;
+    // Phase 7.11.8 — flips the branch button's icon to ⏹ when this turn
+    // ended in a user_abort emergency savepoint (Phase 7.11.3).
+    is_abort_savepoint?: boolean;
 }
 export interface NattMessage {
     role: 'natt' | 'user';
@@ -129,6 +140,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     // Budget — global persistent setting, not per-session
     const [budgetLimitMode,  setBudgetLimitMode]  = useState<BudgetLimitMode>(initial.budgetLimitMode);
+
+    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: transient overlay state.
+    // When non-null, renders the CheckpointPicker on top of the chat. Reset
+    // to null on Esc / pick / SESSION_BRANCHED. Never persisted.
+    const [checkpointPicker, setCheckpointPicker] = useState<CheckpointEntry[] | null>(null);
     const [budgetWeeklyUsd,  setBudgetWeeklyUsd]  = useState<number>(initial.budgetWeeklyUsd);
     const [budgetMonthlyUsd, setBudgetMonthlyUsd] = useState<number>(initial.budgetMonthlyUsd);
     const budgetUsd = budgetLimitMode === 'weekly'  ? budgetWeeklyUsd
@@ -193,8 +209,14 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         const handle = setTimeout(() => {
             vscode.postMessage({
                 type: 'PERSIST_TRANSCRIPT',
-                messages: messages.map(({ role, content, steps, stepsDone, toolCalls }) => ({
+                // Phase 7.11.8 — carry checkpoint_id + is_abort_savepoint so
+                // the rehydrated transcript still shows the ↪ Branch button.
+                messages: messages.map(({
                     role, content, steps, stepsDone, toolCalls,
+                    checkpoint_id, is_abort_savepoint,
+                }) => ({
+                    role, content, steps, stepsDone, toolCalls,
+                    checkpoint_id, is_abort_savepoint,
                 })),
                 nattMessages: nattMessages.map(({ role, content }) => ({ role, content })),
             });
@@ -260,18 +282,33 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     });
                     break;
                 }
-                case 'server_stream_end':
+                case 'server_stream_end': {
                     setIsStreaming(false);
                     // Phase 7.11.3 — back to idle whether the stream ended
                     // naturally or because we aborted it.
                     setIsAborting(false);
+                    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: capture the
+                    // L2-promoted checkpoint_id (when present) and attach it
+                    // to the last assistant turn so the per-message ↪ Branch
+                    // button can target it. The payload field is optional
+                    // (pre-7.11.8 servers don't emit it); absent → no button
+                    // renders on that turn, no degradation elsewhere.
+                    const _se = (msg.payload ?? {}) as { checkpoint_id?: string };
+                    const _cid = typeof _se.checkpoint_id === 'string' ? _se.checkpoint_id : undefined;
                     setMessages(prev => prev.map((m, i) =>
                         i === prev.length - 1
                             // Phase 7.11.5 — drop parserState so MarkdownRenderer
                             // takes its stable single-pass render path.
-                            ? { ...m, streaming: false, stepsDone: true, parserState: undefined }
+                            ? {
+                                ...m,
+                                streaming: false,
+                                stepsDone: true,
+                                parserState: undefined,
+                                checkpoint_id: _cid ?? m.checkpoint_id,
+                            }
                             : m));
                     break;
+                }
                 // ── Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips ──────
                 // Each tool call broadcasts (start → stream_chunk*, → result)
                 // and optionally a dep_graph attachment. We build the chip
@@ -486,6 +523,23 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     addToast('info', `${count} parallel ${label} running — AILIENANT isolates each independently.`);
                     break;
                 }
+                // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel.
+                case 'CHECKPOINTS_LIST': {
+                    // Host fetched GET /api/v1/sessions/{id}/checkpoints and is
+                    // handing us the chain. Open the picker overlay.
+                    const entries = (msg.payload ?? []) as CheckpointEntry[];
+                    setCheckpointPicker(Array.isArray(entries) ? entries : []);
+                    break;
+                }
+                case 'SESSION_BRANCHED': {
+                    // The host minted a new session and opened it in the
+                    // sidebar; here we just dismiss any open picker and emit
+                    // a confirmation toast. The webview's transcript was
+                    // already replaced by the host's openSession() flow.
+                    setCheckpointPicker(null);
+                    addToast('info', '↪ Branched into a new session — original conversation preserved.');
+                    break;
+                }
                 case 'BUDGET_UPDATED': {
                     const d = msg as unknown as { mode: BudgetLimitMode; weeklyUsd: number; monthlyUsd: number };
                     setBudgetLimitMode(d.mode);
@@ -630,6 +684,32 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     logoUri={initial.logoUri}
                 />
 
+                {/* Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel picker overlay.
+                    Mounted only when the host hands us a checkpoint list
+                    (CHECKPOINTS_LIST); the host fires the REST fetch when
+                    the user picks `/context rewind` in the CommandPalette. */}
+                {checkpointPicker !== null && (
+                    <div className="ws-checkpoint-picker-overlay"
+                         onClick={(e) => {
+                             if (e.target === e.currentTarget) {
+                                 setCheckpointPicker(null);
+                             }
+                         }}>
+                        <CheckpointPicker
+                            entries={checkpointPicker}
+                            onCancel={() => setCheckpointPicker(null)}
+                            onPick={(entry) => {
+                                vscode.postMessage({
+                                    type: 'BRANCH_FROM_CHECKPOINT',
+                                    session_id: initial.sessionId,
+                                    checkpoint_id: entry.checkpoint_id,
+                                });
+                                setCheckpointPicker(null);
+                            }}
+                        />
+                    </div>
+                )}
+
                 {/* Status strip */}
                 <div className="ws-status">
                     <Popover.Root open={coreMenuOpen} onOpenChange={setCoreMenuOpen} modal={false}>
@@ -760,6 +840,19 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                                 />
                                             ))}
                                         </div>
+                                    )}
+                                    {/* Phase 7.11.8 (ADR-706 §4.5g) — per-message
+                                        Time-Travel branch button. Only rendered
+                                        on completed assistant turns that carry
+                                        an L2-promoted checkpoint_id. */}
+                                    {m.role === 'assistant' && !m.streaming && m.checkpoint_id && (
+                                        <MessageActions
+                                            checkpoint_id={m.checkpoint_id}
+                                            session_id={initial.sessionId}
+                                            message_index={i}
+                                            is_abort_savepoint={m.is_abort_savepoint}
+                                            post={vscode.postMessage.bind(vscode)}
+                                        />
                                     )}
                                 </Fragment>
                             ))}

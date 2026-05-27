@@ -100,8 +100,18 @@ async def test_run_coding_task_aborts_cleanly_on_cancel() -> None:
         # The orchestrator swallows CancelledError and returns normally.
         await asyncio.wait_for(task, timeout=2.0)
 
-    # Stream-end was emitted (UI's isStreaming flips back to false).
-    broadcast_stream_end.assert_any_call("sess-B")
+    # Stream-end was emitted (UI's isStreaming flips back to false). Phase
+    # 7.11.8 added an optional `checkpoint_id` kwarg to `broadcast_stream_end`
+    # so we accept either the bare positional call or the new kwarg-bearing
+    # form (the abort path passes `checkpoint_id=None` since the L1 state
+    # may carry the user_abort marker but no graph node ran to completion).
+    se_calls = broadcast_stream_end.call_args_list
+    assert any(
+        c.args == ("sess-B",) or
+        (c.args == ("sess-B",) and "checkpoint_id" in c.kwargs) or
+        c == (("sess-B",), {"checkpoint_id": None})
+        for c in se_calls
+    ), f"broadcast_stream_end('sess-B', ...) not found in {se_calls}"
     # The "Stopped by user" marker was streamed.
     marker_calls = [
         c for c in broadcast_token.call_args_list

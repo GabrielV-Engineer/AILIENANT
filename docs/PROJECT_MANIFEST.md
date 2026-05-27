@@ -1791,8 +1791,97 @@ unchanged on touched files; `ruff` clean on touched files. Frontend
 unrelated); `vscode-test` **39/39** (33 baseline + 6 new hitlNotifier).
 Blueprint lock-in NOT yet expired — **2 of 9** Phase 7.11 features remain
 (Topological execution tree, Time-travel debugging).
-- [ ] **(7.5/10) Time-travel debugging (thread branching)** — fork via `thread_id` +
+- [x] **(7.5/10) Time-travel debugging (thread branching)** — fork via `thread_id` +
   `checkpoint_id` (backend: `HybridCheckpointer`).
+  **Phase 7.11.8 (2026-05-27)** — shipped: full fork-to-new-session UX
+  riding on the existing `HybridCheckpointer` L2 SQLite store. Backend
+  storage gains three additive methods in
+  [`brain/checkpoint.py`](ailienant-core/brain/checkpoint.py):
+  `list_checkpoints(thread_id)` returns the chronological chain (with
+  `termination_reason` deserialised from the metadata blob so the picker UI
+  can flag `user_abort` savepoints from Phase 7.11.3), `get_checkpoint`
+  looks up a specific `(thread_id, checkpoint_id)` row, and `branch_from`
+  copies the row into a new thread with `parent_id` set to the source's
+  own `checkpoint_id` (the branch-boundary marker for future lineage
+  walks); also seeds L1 (MemorySaver) so the next `ainvoke(config={...})`
+  resumes in-process without an extra L2 round-trip. The L2 schema's
+  pre-existing `parent_id` column carries the lineage at zero migration
+  cost. New transport surfaces (additive, backward-compatible):
+  `ClientBranchFromCheckpointEvent` + `ServerSessionBranchedEvent` in
+  [`api/ws_contracts.py`](ailienant-core/api/ws_contracts.py),
+  `broadcast_session_branched` helper in
+  [`api/websocket_manager.py`](ailienant-core/api/websocket_manager.py),
+  optional `checkpoint_id` kwarg on `broadcast_stream_end` so every
+  completed turn's checkpoint surfaces to the frontend without a new event
+  type, and optional `TaskPayload.from_checkpoint_id`. New REST router
+  [`api/sessions.py`](ailienant-core/api/sessions.py) exposes
+  `GET /api/v1/sessions/{thread_id}/checkpoints` — opaque IDs + timestamps
+  + `termination_reason` only, no serialized state, no `proposed_content`.
+  Orchestration: new `TaskService._finalize_stream(session_id)` helper
+  reads the just-promoted checkpoint_id from L1, persists it to L2 via
+  `promote()`, and threads it into `broadcast_stream_end` — replaces every
+  bare `broadcast_stream_end(session_id)` call in `_run_coding_task` and
+  `_stream_chat_answer` so chat-only sessions degrade gracefully (no L1
+  state → `checkpoint_id=None` → no per-message button rendered). New
+  `TaskService.branch_session` invokes `checkpoint_manager.branch_from`
+  and broadcasts to both parent + new threads. Frontend: new
+  [`MessageActions.tsx`](ailienant-extension/src/workspace/components/MessageActions.tsx)
+  inline-action bar under every completed assistant turn that carries a
+  `checkpoint_id` (two-step "↪ → Confirm?" pulse mirroring the 7.11.6
+  ToolChip retry UX; ⏹ icon variant + warn-accent border when
+  `is_abort_savepoint` flags a Phase 7.11.3 user_abort source); new
+  [`CheckpointPicker.tsx`](ailienant-extension/src/workspace/components/CheckpointPicker.tsx)
+  keyboard-navigable overlay (↑↓ Enter Esc) bound to the rewired
+  `/context rewind` palette item which now posts `LIST_CHECKPOINTS`
+  instead of submitting literal command text. `Workspace.tsx` extends
+  `Message` with `checkpoint_id` + `is_abort_savepoint` (carried through
+  `PERSIST_TRANSCRIPT` so rehydrated sessions keep their branch buttons),
+  captures the id on `server_stream_end`, handles `CHECKPOINTS_LIST` +
+  `SESSION_BRANCHED` host-broadcast messages, and renders the picker as
+  a fixed-position scrim. `workspace_panel.ts` adds the
+  `BRANCH_FROM_CHECKPOINT` (→ `client_branch_from_checkpoint`),
+  `LIST_CHECKPOINTS` (REST fetch via new
+  `WSClient.getHttpBaseUrl()`), and `server_session_branched` →
+  `_handleSessionBranched` flows (slice parent transcript at the matching
+  `checkpoint_id`, mint a Session linked via `parent_thread_id` +
+  `parent_checkpoint_id`, seed transcript, hand to the new
+  `setSessionBranchedHandler` callback that `extension.ts` resolves to
+  `sessionBrowser.persistSession` + `workspaceManager.openSession`).
+  `Session` (in [`shared/types.ts`](ailienant-extension/src/shared/types.ts))
+  gains `parent_thread_id?` + `parent_checkpoint_id?` (additive). CSS
+  block adds `.ws-msg-action*` + `.ws-checkpoint-picker*` (pulse
+  animation, abort-variant warn-accent, native `<kbd>` styling).
+  **Cybersecurity (ADR-705):** REST endpoint surfaces only opaque IDs +
+  timestamps + `termination_reason` — no serialized state, no
+  `proposed_content`. The picker UI shows only the user's own prior
+  prompts (already in their persisted transcript). Branching is a
+  graph-state operation entirely within the local trust boundary; the
+  audit ledger is untouched (branching is not an HITL event). **Cognitive
+  isolation:** `git diff --stat agents/` is empty — no logic agent
+  touched. New tests:
+  [`tests/test_time_travel_branch.py`](ailienant-core/tests/test_time_travel_branch.py)
+  (5 backend: `list_checkpoints` chronological round-trip with
+  `termination_reason` extraction, `branch_from` row + blob + parent_id
+  preservation, `branch_from` returns False on missing source,
+  `task_service.branch_session` broadcasts only on success, pydantic
+  round-trip for all three new event shapes including backward-compat
+  empty `StreamEndPayload`) +
+  [`src/test/messageActions.test.ts`](ailienant-extension/src/test/messageActions.test.ts)
+  (4 frontend: idle ↪ icon, two-step confirm posts BRANCH_FROM_CHECKPOINT,
+  abort-savepoint ⏹ variant + aria-label, exact `message_index`
+  regression guard — uses JSDOM seam since vscode-test runs in a Node
+  extension host, jsdom externalised in production esbuild).
+
+**Verification summary (7.11.8):** backend **658 passed** (was 653 + 5
+new = 658), 0 regressions; `mypy --explicit-package-bases .` baseline 37
+errors restored after fixing one new `BaseModel` attribute drift in the
+new test; `ruff` clean on every touched file (the historical 45 E402 in
+`main.py` is untouched). Frontend `check-types` + `lint` 0 errors (2
+pre-existing semicolon warnings unrelated); `vscode-test` **43/43** (39
+baseline + 4 new messageActions). **Phase 7.11 feature set complete
+(9/9).** Blueprint lock-in in CLAUDE.md §1 NOT yet auto-expired —
+**Phase 7.10.5 checkpoint gate** still pending; once both gates close
+the blueprint freeze lifts.
 
 ---
 

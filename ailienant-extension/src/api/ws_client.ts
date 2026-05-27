@@ -61,6 +61,23 @@ export class WSClient {
     }
 
     /**
+     * Phase 7.11.8 — derive the HTTP API base URL from the configured WS URL,
+     * so callers can hit REST endpoints (e.g. `/api/v1/sessions/{id}/checkpoints`)
+     * on the same backend without duplicating port discovery. Accepts
+     * `ws://host:port/...`, returns `http://host:port`.
+     */
+    public getHttpBaseUrl(): string {
+        try {
+            const u = new URL(this._wsUrl);
+            const proto = u.protocol === 'wss:' ? 'https:' : 'http:';
+            return `${proto}//${u.host}`;
+        } catch {
+            // Defensive: configure() may not have been called; fall back to default.
+            return 'http://127.0.0.1:8000';
+        }
+    }
+
+    /**
      * Inicia el túnel de red.
      * Protegido contra llamadas concurrentes.
      */
