@@ -71,6 +71,7 @@ async def run_finops_node(state: dict) -> dict:
         ),
         proposed_content=f"Current spend: ${current_cost:.4f} | Budget: ${max_budget:.4f}",
         timeout_s=int(_FINOPS_HITL_TIMEOUT_S),
+        request_kind="BUDGET_CEILING",
     )
 
     if response is None:

@@ -99,6 +99,15 @@ class HITLApprovalRequestPayload(BaseModel):
     approval_id: str                    # UUID4 — unique per request; client must echo this back
     action_description: str
     proposed_content: Optional[str] = None
+    # Phase 7.11.7 (ADR-706 §4.5f) — additive classifier so the native-toast
+    # surface can choose severity (info vs warning) and emit a short title.
+    # Backward-compatible: pre-7.11.7 payloads omit this field and pydantic
+    # treats it as None. Known kinds today: BUDGET_OVERFLOW, TOKEN_SPIKE,
+    # SANDBOX_DEGRADED_EXEC, DRIFT_DETECTED, BUDGET_CEILING, RESOURCE_CONTENTION,
+    # FILE_WRITE. Kept as a plain string (not a Literal[...]) so future emitters
+    # can add new kinds without a schema bump; unknown kinds fall back to
+    # info-level on the frontend.
+    request_kind: Optional[str] = None
 
 
 class HITLResponsePayload(BaseModel):

@@ -119,6 +119,17 @@
           "type": "string",
           "default": "",
           "description": "URL opened by the command menu's Support → Help documents action. Leave empty to be prompted to configure it."
+        },
+        "ailienant.notifications.hitlNativeMode": {
+          "type": "string",
+          "enum": ["auto", "always", "never"],
+          "enumDescriptions": [
+            "Show the OS toast only when the chat panel is hidden (recommended).",
+            "Always show the OS toast, even when the chat panel is visible.",
+            "Never show OS toasts; HITL approvals are only surfaced inside the chat panel."
+          ],
+          "default": "auto",
+          "description": "How AILIENANT surfaces Human-In-The-Loop approval requests via native VS Code notifications (Phase 7.11.7)."
         }
       }
     }

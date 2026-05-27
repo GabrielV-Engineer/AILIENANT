@@ -1736,8 +1736,61 @@ pre-existing E402 unchanged). Frontend `check-types` + `lint` 0 errors;
 path-index + 3 store + 1 sample). Blueprint lock-in NOT yet expired —
 **3 of 9** Phase 7.11 features remain (Native HITL push notifications,
 Topological execution tree, Time-travel debugging).
-- [ ] **(8/10) Native HITL push notifications** — `vscode.window.showInformationMessage`
+- [x] **(8/10) Native HITL push notifications** — `vscode.window.showInformationMessage`
   [Approve]/[Reject] when the chat is closed (backend: `request_human_approval`).
+  **Phase 7.11.7 (2026-05-26)** — shipped: zero-new-transport bridge that
+  mirrors any pending HITL approval onto a VS Code OS-level toast when the
+  workspace chat panel is hidden. New
+  [`src/providers/hitlNotifier.ts`](ailienant-extension/src/providers/hitlNotifier.ts)
+  owns the host-side decision (mode + visibility + dedupe); buttons map
+  Approve / Reject directly to the existing `client_hitl_response` WS event
+  via `WSClient.getInstance().send(...)`, while a third **[Open Chat]**
+  button reveals the panel so the user can inspect the diff (or use
+  edit-before-apply on the rich in-chat card) before deciding. Visibility
+  is tracked in [`workspace_panel.ts`](ailienant-extension/src/providers/workspace_panel.ts)
+  via `panel.visible` seeded at construction + `onDidChangeViewState` +
+  `onDidDispose`; the in-chat `HITL_RESPONSE` case now also calls
+  `hitlNotifier.markResolved(approval_id)` so a stale toast click after the
+  user resolves in-chat is a no-op (defense-in-depth — the backend's
+  `_hitl_responses.pop()` is already idempotent). Backend is **schema-additive
+  only**: one new `request_kind: Optional[str] = None` field on
+  [`HITLApprovalRequestPayload`](ailienant-core/api/ws_contracts.py) +
+  one new kwarg on `request_human_approval(...)` in
+  [`websocket_manager.py`](ailienant-core/api/websocket_manager.py); the
+  seven existing emitters (supervisor BUDGET_OVERFLOW + TOKEN_SPIKE, sandbox
+  SANDBOX_DEGRADED_EXEC, drift_monitor DRIFT_DETECTED, finops BUDGET_CEILING,
+  resource_manager RESOURCE_CONTENTION, task_service FILE_WRITE) thread
+  their classifier through. Severity mapping: `BUDGET_OVERFLOW` /
+  `TOKEN_SPIKE` / `SANDBOX_DEGRADED_EXEC` / `BUDGET_CEILING` fire
+  `showWarningMessage`; everything else (and unknown future kinds) falls
+  back to `showInformationMessage`. New config setting
+  `ailienant.notifications.hitlNativeMode` (enum `"auto"` / `"always"` /
+  `"never"`, default `"auto"`) honors the ADR-706f literal reading and
+  exposes both power-user modes. **Cybersecurity (ADR-705):** the toast
+  surfaces `action_description` + `request_kind` only — never
+  `proposed_content` (which may carry secrets despite the scrubber); the
+  full diff stays behind the trusted Webview boundary. **Audit continuity:**
+  toast Approve writes the exact same `approved` row in the blake2b chain
+  that an in-chat Approve writes — the backend never learns which surface
+  resolved it. **Cognitive isolation:** `git diff --stat agents/` is empty;
+  no logic agent (planner / coder / orchestrator / researcher / analyst /
+  inline_edit) was touched. New tests:
+  [`tests/test_hitl_request_kind.py`](ailienant-core/tests/test_hitl_request_kind.py)
+  (3: backward-compat pydantic round-trip with `None`, forward round-trip
+  with `BUDGET_OVERFLOW`, end-to-end emit threads kind into the broadcast)
+  +
+  [`src/test/hitlNotifier.test.ts`](ailienant-extension/src/test/hitlNotifier.test.ts)
+  (6: auto+visible→silent, auto+hidden info-level + button order,
+  high-risk→warning, Approve→send(true)+dedupe, Reject→send(false),
+  Open-Chat→reveal+stays-open).
+
+**Verification summary (7.11.7):** backend **653 passed** (was 650 + 3 new
+= 653), 0 regressions; `mypy --explicit-package-bases .` baseline 37 errors
+unchanged on touched files; `ruff` clean on touched files. Frontend
+`check-types` + `lint` 0 errors (2 pre-existing semicolon warnings
+unrelated); `vscode-test` **39/39** (33 baseline + 6 new hitlNotifier).
+Blueprint lock-in NOT yet expired — **2 of 9** Phase 7.11 features remain
+(Topological execution tree, Time-travel debugging).
 - [ ] **(7.5/10) Time-travel debugging (thread branching)** — fork via `thread_id` +
   `checkpoint_id` (backend: `HybridCheckpointer`).
 

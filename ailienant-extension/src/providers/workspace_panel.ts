@@ -15,6 +15,7 @@ import type { AilienantConfig, Session } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { ConfigLoader } from '../shared/config_loader';
 import { WorkspacePathIndex, extractMentions, FOLDER_EXPANSION_CAP } from './workspacePathIndex';
+import { HitlNotifier, type HITLApprovalRequestPayload, type HitlMode } from './hitlNotifier';
 
 function findBackendPath(extensionFsPath: string): string | null {
     const candidates = [
@@ -360,6 +361,29 @@ export class WorkspacePanelManager {
         );
         panel.iconPath = vscode.Uri.joinPath(this._extensionUri, 'media', 'icon-color.svg');
 
+        // Phase 7.11.7 (ADR-706 §4.5f) — native HITL push-notification bridge.
+        // Fires a VS Code OS toast when an approval lands while this panel is
+        // hidden; Approve/Reject post back through the existing client_hitl_response
+        // event. The in-chat rich card remains the primary surface when visible.
+        const hitlNotifier = new HitlNotifier({
+            windowApi: vscode.window,
+            getMode: () => (vscode.workspace.getConfiguration('ailienant.notifications')
+                .get<string>('hitlNativeMode') ?? 'auto') as HitlMode,
+            send: (approvalId, approved) => {
+                WSClient.getInstance().send({
+                    event_type: 'client_hitl_response',
+                    data: { approval_id: approvalId, approved },
+                });
+            },
+            revealPanel: () => {
+                panel.reveal(vscode.ViewColumn.One);
+                panel.webview.postMessage({ type: 'FOCUS_HITL_CARD' });
+            },
+        });
+        hitlNotifier.setVisibility(panel.visible);
+        panel.onDidChangeViewState(e => hitlNotifier.setVisibility(e.webviewPanel.visible));
+        panel.onDidDispose(() => hitlNotifier.setVisibility(false));
+
         panel.webview.html = this._renderHtml(panel.webview, session);
 
         // ── WS status → forward to this panel ──────────────────────────────
@@ -413,6 +437,13 @@ export class WorkspacePanelManager {
 
             panel.webview.postMessage({ type: msg.event_type, payload: msg.data });
             this._maybeFireCriticalNotif(msg, session.id, panel);
+            // Phase 7.11.7 — surface HITL approvals as a native OS toast when
+            // the chat panel is hidden. Runs alongside the in-chat card; the
+            // notifier internally dedupes via approval_id so the user can't
+            // double-resolve from two surfaces.
+            if (msg.event_type === 'server_hitl_approval_request') {
+                hitlNotifier.onApprovalRequest(msg.data as HITLApprovalRequestPayload);
+            }
             // Clear running-task marker on stream/task completion
             if (
                 msg.event_type === 'server_stream_end' ||
@@ -562,6 +593,12 @@ export class WorkspacePanelManager {
                             modified_content: data.modified_content,
                         },
                     });
+                    // Phase 7.11.7 — in-chat resolution wins the race: a later
+                    // click on the still-visible native toast for this same
+                    // approval_id becomes a no-op (idempotent guard).
+                    if (typeof data.approval_id === 'string') {
+                        hitlNotifier.markResolved(data.approval_id);
+                    }
                     break;
                 case 'NATT_MESSAGE':
                     WSClient.getInstance().send({

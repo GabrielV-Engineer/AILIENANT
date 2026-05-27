@@ -150,6 +150,7 @@ async def run_supervisor_node(state: AIlienantGraphState) -> Dict[str, Any]:
             action_description="BUDGET_OVERFLOW",
             proposed_content=_format_budget_breach(session_cost, budget, snap),
             timeout_s=300.0,
+            request_kind="BUDGET_OVERFLOW",
         )
         if result is not None and result.get("approved"):
             new_ceiling: float = budget * 2.0
@@ -193,6 +194,7 @@ async def run_supervisor_node(state: AIlienantGraphState) -> Dict[str, Any]:
                 f"per-turn limit of {max_per_turn}. Approve to continue?"
             ),
             timeout_s=300.0,
+            request_kind="TOKEN_SPIKE",
         )
         # Advisory only: a spike is not a budget breach. Denial is logged and
         # execution continues — the hard ceiling (Trigger 3) remains the
