@@ -77,6 +77,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         sessionBrowser.updateSessionTitle(sessionId, title);
     });
 
+    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: when the backend broadcasts
+    // `server_session_branched`, workspace_panel.ts mints the new Session and
+    // hands it here; we persist it to the sidebar and open the new panel so
+    // the user lands on the branched conversation immediately.
+    workspaceManager.setSessionBranchedHandler((branched) => {
+        sessionBrowser.persistSession(branched);
+        workspaceManager.openSession(branched);
+    });
+
     const sidebarRegistration = vscode.window.registerWebviewViewProvider(
         SessionBrowserProvider.viewType,
         sessionBrowser,

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import secrets
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, List, Optional, cast
 
@@ -86,6 +87,9 @@ from api.audit import router as audit_router
 from api.agent_roles import router as agents_router
 from api.mcp_servers import router as mcp_router
 from api.skills import router as skills_router
+
+# Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging REST surface
+from api.sessions import router as sessions_router
 
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
 from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
@@ -257,6 +261,9 @@ app.include_router(audit_router)
 app.include_router(agents_router)
 app.include_router(mcp_router)
 app.include_router(skills_router)
+
+# Phase 7.11.8 — Time-travel: GET /api/v1/sessions/{thread_id}/checkpoints
+app.include_router(sessions_router)
 
 # Instanciamos nuestra capa de servicio (Inyección de Dependencias)
 task_service = TaskService()
@@ -947,6 +954,35 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 )
                 _task_submit_tasks.add(_bash_task)
                 _bash_task.add_done_callback(_task_submit_tasks.discard)
+
+            elif valid_event.event_type == "client_branch_from_checkpoint":
+                # Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging.
+                # Fork a session from a historical checkpoint. The runner is a
+                # child task (same shape as retry_tool / tracked_bash above):
+                # NOT registered into _active_tasks (the abort mesh) because a
+                # branch op is a deliberate user action and clicking Stop on the
+                # parent session should not cancel it (plan W1 carried).
+                _bc = valid_event.data
+                _new_session_id = uuid.uuid4().hex
+                async def _branch_runner(
+                    parent_sid: str = _bc.parent_session_id,
+                    from_cid: str = _bc.from_checkpoint_id,
+                    new_sid: str = _new_session_id,
+                ) -> None:
+                    ok = await task_service.branch_session(
+                        parent_session_id=parent_sid,
+                        from_checkpoint_id=from_cid,
+                        new_session_id=new_sid,
+                    )
+                    logger.info(
+                        "[Session: %s] branch_session: ok=%s from=%s -> new=%s",
+                        parent_sid, ok, from_cid, new_sid,
+                    )
+                _branch_task = asyncio.create_task(
+                    _branch_runner(), name=f"branch_session:{_new_session_id}"
+                )
+                _task_submit_tasks.add(_branch_task)
+                _branch_task.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_file_delete":
                 io_coalescer.submit_unlink(

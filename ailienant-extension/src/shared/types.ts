@@ -52,6 +52,12 @@ export interface Session {
     message_count: number;
     model_tier: ModelTier;
     thread_id?: string;
+    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: when this session was minted
+    // by a branch op, these point to the parent thread and the source
+    // checkpoint inside it (UUID4 hex strings). Used by the sidebar to render
+    // a "↪ Branch of <parent>" subtitle and by future lineage walks.
+    parent_thread_id?: string;
+    parent_checkpoint_id?: string;
 }
 
 // ── Sidebar ↔ Extension IPC ────────────────────────────────

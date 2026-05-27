@@ -99,7 +99,15 @@ export type WebviewToHostMessage =
     | { type: "INVOKE_TRACKED_BASH"; command: string }
     // Phase 7.11.6 — Palette → host: prompt for the bash command via
     // VS Code's native showInputBox, then dispatch INVOKE_TRACKED_BASH.
-    | { type: "PROMPT_FOR_BASH" };
+    | { type: "PROMPT_FOR_BASH" }
+    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: fork a session from a
+    // specific historical checkpoint. The host relays this verbatim onto the
+    // WS as `client_branch_from_checkpoint`; the backend mints the new
+    // session_id and broadcasts `server_session_branched`.
+    | { type: "BRANCH_FROM_CHECKPOINT"; session_id: string; checkpoint_id: string; message_index?: number }
+    // Phase 7.11.8 — Palette → host: fetch the checkpoint chain for the
+    // active session (REST GET) and open the CheckpointPicker overlay.
+    | { type: "LIST_CHECKPOINTS"; session_id: string };
 
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",

@@ -696,6 +696,53 @@ class ClientInvokeTrackedBashEvent(BaseModel):
 
 
 # =====================================================================
+# 16. Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging (Thread Branching)
+# =====================================================================
+# Three events + one additive field on TaskPayload (in core/task_service.py).
+# Schema-additive only: pre-7.11.8 clients/servers that don't know these
+# events keep working.
+
+class ClientBranchFromCheckpointPayload(BaseModel):
+    """IDE → server: fork a session from a specific historical checkpoint.
+
+    The backend mints a fresh ``new_session_id`` (UUID4 hex), copies the
+    ``(parent_session_id, from_checkpoint_id)`` row in ``hybrid_checkpoints``
+    into the new thread (parent_id linkage preserved for lineage walks), and
+    responds with ``server_session_branched``. The frontend then opens the
+    new session in the sidebar, seeded with the parent's transcript up to
+    that point.
+    """
+
+    parent_session_id: str
+    from_checkpoint_id: str
+
+
+class ClientBranchFromCheckpointEvent(BaseModel):
+    event_type: Literal["client_branch_from_checkpoint"] = "client_branch_from_checkpoint"
+    data: ClientBranchFromCheckpointPayload
+
+
+class ServerSessionBranchedPayload(BaseModel):
+    """Server → client: a new session has been minted from a branch operation.
+
+    The frontend uses ``parent_session_id`` + ``from_checkpoint_id`` to slice
+    the parent's persisted transcript (purely cosmetic; the backend's L2 row
+    is the canonical graph-state source) and seeds the new session's UI
+    history. ``new_session_id`` is the UUID4 the host should use for
+    ``SessionManager.createSession``.
+    """
+
+    parent_session_id: str
+    new_session_id: str
+    from_checkpoint_id: str
+
+
+class ServerSessionBranchedEvent(BaseModel):
+    event_type: Literal["server_session_branched"] = "server_session_branched"
+    data: ServerSessionBranchedPayload
+
+
+# =====================================================================
 # 4. EL CONTRATO MAESTRO O(1)
 # =====================================================================
 
@@ -745,4 +792,6 @@ WebSocketMessage = Union[
     ServerToolDepGraphEvent,         # Phase 7.11.6 — Rich Tool Chips: optional dep-graph attachment
     ClientRetryToolEvent,            # Phase 7.11.6 — Rich Tool Chips: exact-replay retry
     ClientInvokeTrackedBashEvent,    # Phase 7.11.6 — Rich Tool Chips: dev smoke command
+    ClientBranchFromCheckpointEvent, # Phase 7.11.8 — time-travel: fork from a checkpoint
+    ServerSessionBranchedEvent,      # Phase 7.11.8 — time-travel: new session minted from fork
 ]

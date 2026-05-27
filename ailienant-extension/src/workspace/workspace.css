@@ -1536,3 +1536,190 @@ html, body, #root { height: 100%; }
   color: var(--text-disabled);
   font-style: italic;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging
+ *
+ * Per-message action bar (Branch from here) + the CheckpointPicker overlay.
+ * Visual language mirrors the 7.11.6 ToolChip retry button for consistency:
+ *   - idle: subtle outline, themed text
+ *   - confirming: pulse animation + warn-accent border
+ *   - abort-savepoint variant: warn-accent fill to flag the aborted source
+ * ────────────────────────────────────────────────────────────────────── */
+
+.ws-msg-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 2px 0 6px 0;
+  /* Reuse the same horizontal padding as the message bubble so the action
+     button visually attaches to the assistant turn. */
+  padding: 0 8px;
+}
+
+.ws-msg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 25%, transparent);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.ws-msg-action:hover {
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent-primary) 50%, transparent);
+  color: var(--text-primary);
+}
+.ws-msg-action[data-confirming="true"] {
+  border-color: var(--accent-warn);
+  color: var(--accent-warn);
+  animation: ws-msg-action-pulse 1.2s ease-in-out infinite;
+}
+.ws-msg-actions[data-abort-savepoint="true"] .ws-msg-action {
+  border-color: color-mix(in srgb, var(--accent-warn) 35%, transparent);
+  color: var(--accent-warn);
+}
+.ws-msg-actions[data-abort-savepoint="true"] .ws-msg-action:hover {
+  background: color-mix(in srgb, var(--accent-warn) 8%, transparent);
+}
+
+@keyframes ws-msg-action-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+.ws-msg-action-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+.ws-msg-action-label {
+  font-weight: 500;
+}
+
+/* ── CheckpointPicker overlay ───────────────────────────────────────────
+ *  Mounted as a fixed-position scrim so the user can dismiss by clicking
+ *  outside the dialog. Inner card uses the same border + bg tokens as the
+ *  CommandPalette for visual consistency.
+ */
+.ws-checkpoint-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--bg-base) 65%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ws-checkpoint-picker {
+  width: min(540px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  outline: none;
+}
+.ws-checkpoint-picker-header {
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ws-checkpoint-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.ws-checkpoint-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+.ws-checkpoint-picker-row[data-active="true"] {
+  background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+}
+.ws-checkpoint-picker-row[data-abort="true"] .ws-checkpoint-picker-icon {
+  color: var(--accent-warn);
+}
+.ws-checkpoint-picker-icon {
+  width: 16px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--accent-primary);
+}
+.ws-checkpoint-picker-turn {
+  flex: 0 0 auto;
+  min-width: 70px;
+}
+.ws-checkpoint-picker-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent-warn) 18%, transparent);
+  color: var(--accent-warn);
+  text-transform: uppercase;
+}
+.ws-checkpoint-picker-ts {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ws-checkpoint-picker-id {
+  flex: 1 1 auto;
+  text-align: right;
+  font-family: var(--vscode-editor-font-family), monospace;
+  font-size: 10px;
+  color: var(--text-disabled);
+}
+.ws-checkpoint-picker-footer {
+  padding: 8px 14px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ws-checkpoint-picker-footer kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  margin: 0 2px;
+  font-family: var(--vscode-editor-font-family), monospace;
+  font-size: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: var(--bg-base);
+}
+.ws-checkpoint-picker-empty {
+  padding: 24px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  font-style: italic;
+}
+.ws-checkpoint-picker-cancel {
+  align-self: center;
+  margin: 12px 0 16px 0;
+  padding: 4px 12px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ws-checkpoint-picker-cancel:hover {
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+  color: var(--text-primary);
+}

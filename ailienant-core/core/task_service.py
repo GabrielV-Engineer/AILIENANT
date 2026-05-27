@@ -103,6 +103,12 @@ class TaskPayload(BaseModel):
     document_version_id: Optional[str] = None  # OCC: version at submission (Phase 1.5)
     planner_mode_active: bool = False  # Phase 2.19: Planner-Mode toggle forwarded from WS registry
     workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
+    # Phase 7.11.8 (ADR-706 §4.5g) — when the session was created via a
+    # ``BRANCH_FROM_CHECKPOINT`` flow, this field carries the source
+    # checkpoint_id so future graph runs can pin LangGraph's RunnableConfig
+    # to the exact rewound state. Optional/default-None preserves the
+    # pre-7.11.8 wire shape.
+    from_checkpoint_id: Optional[str] = None
 
 
 class TaskService:
@@ -146,6 +152,17 @@ class TaskService:
             session_id, payload.project_id, len(payload.dirty_buffers),
             len(payload.explicit_mentions), payload.planner_mode_active,
         )
+        # Phase 7.11.8 (ADR-706 §4.5g) — when the session was minted by a
+        # branch op, the L1 (MemorySaver) state has already been seeded by
+        # `HybridCheckpointer.branch_from`. LangGraph's RunnableConfig binds
+        # to the thread_id (== session_id), so the next graph node picks up
+        # exactly where the source checkpoint left off. We just log the
+        # provenance for diagnosability; no special routing needed today.
+        if payload.from_checkpoint_id:
+            logger.info(
+                "[Session: %s] Resuming from branched checkpoint %s",
+                session_id, payload.from_checkpoint_id,
+            )
 
         # 1. Asimilación de Entropía O(1)
         self.vfs.ingest_dirty_buffers(payload.dirty_buffers)
@@ -261,20 +278,101 @@ class TaskService:
         *,
         history_key: Optional[str] = None,
     ) -> None:
-        """Finalize an aborted stream: broadcast the marker + stream_end + persist."""
+        """Finalize an aborted stream: broadcast the marker + stream_end + persist.
+
+        Phase 7.11.8 — when the abort lands AFTER LangGraph has already run at
+        least one node, an L1 checkpoint exists carrying the
+        ``termination_reason="user_abort"`` marker. We pass that checkpoint_id
+        through to the frontend so the resulting message renders the ⏹
+        abort-savepoint icon variant of the branch button.
+        """
         try:
             await vfs_manager.broadcast_token(session_id, self._ABORT_MARKER)
         except Exception:  # noqa: BLE001 — never block cancel on broadcast failure
             pass
-        try:
-            await vfs_manager.broadcast_stream_end(session_id)
-        except Exception:  # noqa: BLE001
-            pass
+        await self._finalize_stream(session_id)
         if history_key:
             try:
                 self._append_history(history_key, "assistant", self._ABORT_MARKER.strip())
             except Exception:  # noqa: BLE001 — history persistence is best-effort here
                 pass
+
+    # ------------------------------------------------------------------
+    # Phase 7.11.8 (ADR-706 §4.5g) — stream finalization + time-travel API
+    # ------------------------------------------------------------------
+
+    async def _finalize_stream(self, session_id: str) -> None:
+        """Promote the current L1 checkpoint to L2 (so it becomes branchable),
+        capture its ``checkpoint_id``, and emit ``server_stream_end`` carrying
+        the id. Best-effort throughout: a missing L1 row (pure chat with no
+        graph run), a closed DB connection, or a half-dead WS connection all
+        degrade gracefully — the frontend simply gets ``checkpoint_id=None``
+        and suppresses the per-message branch button on that turn.
+        """
+        cid: Optional[str] = None
+        try:
+            from brain.checkpoint import checkpoint_manager
+            from langchain_core.runnables import RunnableConfig
+            cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
+            ct = checkpoint_manager.get_tuple(cfg)
+            if ct is not None:
+                cid = ct.config["configurable"].get("checkpoint_id")
+                # Persist L1 → L2 so the branch_from() flow can find this
+                # snapshot after a backend restart.
+                try:
+                    checkpoint_manager.promote(session_id)
+                except Exception as exc:  # noqa: BLE001 — promote is best-effort
+                    logger.debug(
+                        "_finalize_stream: promote failed for %s: %s",
+                        session_id, exc,
+                    )
+        except Exception as exc:  # noqa: BLE001 — fall through to broadcast w/o id
+            logger.debug("_finalize_stream: get_tuple failed for %s: %s",
+                         session_id, exc)
+        try:
+            await vfs_manager.broadcast_stream_end(session_id, checkpoint_id=cid)
+        except Exception:  # noqa: BLE001 — never block on broadcast failure
+            pass
+
+    async def branch_session(
+        self,
+        parent_session_id: str,
+        from_checkpoint_id: str,
+        new_session_id: str,
+    ) -> bool:
+        """Fork: copy a parent session's checkpoint into a brand-new session_id.
+
+        Calls ``HybridCheckpointer.branch_from`` to write the new L2 row +
+        seed L1 for the new thread, then broadcasts
+        ``server_session_branched`` so the IDE host can mint a new
+        ``Session`` in the sidebar and open it. Returns ``False`` (without
+        broadcasting) if the source checkpoint cannot be found — the WS
+        handler in main.py logs that and the client toast surfaces it.
+        """
+        from brain.checkpoint import checkpoint_manager
+        ok = checkpoint_manager.branch_from(
+            from_thread_id=parent_session_id,
+            from_checkpoint_id=from_checkpoint_id,
+            new_thread_id=new_session_id,
+        )
+        if not ok:
+            logger.warning(
+                "branch_session: checkpoint %s not found for thread %s",
+                from_checkpoint_id, parent_session_id,
+            )
+            return False
+        try:
+            await vfs_manager.broadcast_session_branched(
+                parent_session_id=parent_session_id,
+                new_session_id=new_session_id,
+                from_checkpoint_id=from_checkpoint_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — never block on broadcast failure
+            logger.warning(
+                "branch_session: broadcast failed for %s (L2 row written OK): %s",
+                new_session_id, exc,
+            )
+        return True
 
     async def _run_coding_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str
@@ -317,7 +415,7 @@ class TaskService:
                     "I couldn't draft a plan — make sure a BYOM preset is active and its "
                     f"engine is running. ({exc})",
                 )
-                await vfs_manager.broadcast_stream_end(session_id)
+                await self._finalize_stream(session_id)
                 return
 
             mission = plan.get("mission_spec")
@@ -326,7 +424,7 @@ class TaskService:
                 await vfs_manager.broadcast_token(
                     session_id, "I couldn't draft a plan: " + "; ".join(errs)
                 )
-                await vfs_manager.broadcast_stream_end(session_id)
+                await self._finalize_stream(session_id)
                 return
 
             patches: Dict[str, str] = {}
@@ -356,7 +454,7 @@ class TaskService:
             summary = self._format_coding_summary(mission, patches, errors)
             gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
             await vfs_manager.broadcast_token(session_id, summary)
-            await vfs_manager.broadcast_stream_end(session_id)
+            await self._finalize_stream(session_id)
             self._append_history(session_id, "user", payload.task_prompt)
             self._append_history(session_id, "assistant", summary)
 
@@ -378,7 +476,7 @@ class TaskService:
                 discarded = "Changes discarded — no files were modified."
                 gate.record_answer(len(discarded.encode()))
                 await vfs_manager.broadcast_token(session_id, discarded)
-                await vfs_manager.broadcast_stream_end(session_id)
+                await self._finalize_stream(session_id)
                 return
 
             # 4) Single-file edit-before-apply: honor the card's edited payload.
@@ -405,7 +503,7 @@ class TaskService:
                 )
             gate.record_answer(len(result_msg.encode()))
             await vfs_manager.broadcast_token(session_id, result_msg)
-            await vfs_manager.broadcast_stream_end(session_id)
+            await self._finalize_stream(session_id)
             self._append_history(session_id, "assistant", result_msg)
         except asyncio.CancelledError:
             # Phase 7.11.3 — emergency savepoint. Cold-serializable marker
@@ -564,7 +662,7 @@ class TaskService:
             )
         finally:
             try:
-                await vfs_manager.broadcast_stream_end(session_id)
+                await self._finalize_stream(session_id)
             except Exception:  # noqa: BLE001
                 pass
             if aborted:

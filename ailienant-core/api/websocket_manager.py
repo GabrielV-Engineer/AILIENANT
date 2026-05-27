@@ -327,9 +327,22 @@ class ConnectionManager:
             ),
         )
 
-    async def broadcast_stream_end(self, session_id: str) -> None:
-        """Finalize the streaming assistant message bubble on the client."""
-        await self.send_personal_message(session_id, ServerStreamEndEvent())
+    async def broadcast_stream_end(
+        self, session_id: str, checkpoint_id: Optional[str] = None,
+    ) -> None:
+        """Finalize the streaming assistant message bubble on the client.
+
+        Phase 7.11.8 (ADR-706 §4.5g) — the optional ``checkpoint_id`` carries
+        the L2-promoted snapshot id for the turn that just ended. The
+        frontend attaches this to the last assistant ``Message`` so the
+        per-message "↪ Branch from here" button can target it. Default
+        ``None`` preserves the pre-7.11.8 wire shape; all existing callers
+        keep compiling unchanged.
+        """
+        data: dict = {}
+        if checkpoint_id:
+            data["checkpoint_id"] = checkpoint_id
+        await self.send_personal_message(session_id, ServerStreamEndEvent(data=data))
 
     # ------------------------------------------------------------------
     # Phase 7.11.1 — Inline editor mutations (Cmd+K, ADR-706 §4.5a)
@@ -509,6 +522,42 @@ class ConnectionManager:
                 )
             ),
         )
+
+    # ------------------------------------------------------------------
+    # Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging (Thread Branching)
+    # ------------------------------------------------------------------
+
+    async def broadcast_session_branched(
+        self,
+        parent_session_id: str,
+        new_session_id: str,
+        from_checkpoint_id: str,
+    ) -> None:
+        """Notify the frontend that a new session was minted from a fork.
+
+        Dispatched to BOTH the parent session (so the open chat can refresh
+        its sidebar and dismiss any pending picker overlay) AND the new
+        session (so a re-attached client sees the branch immediately). The
+        envelope is identical; the frontend de-dupes by ``new_session_id``.
+        """
+        from api.ws_contracts import (
+            ServerSessionBranchedEvent,
+            ServerSessionBranchedPayload,
+        )
+        envelope = ServerSessionBranchedEvent(
+            data=ServerSessionBranchedPayload(
+                parent_session_id=parent_session_id,
+                new_session_id=new_session_id,
+                from_checkpoint_id=from_checkpoint_id,
+            )
+        )
+        await self.send_personal_message(parent_session_id, envelope)
+        # New-session broadcast is best-effort: a brand-new sessionId likely
+        # has no active connection yet (the host attaches AFTER opening it).
+        try:
+            await self.send_personal_message(new_session_id, envelope)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------
     # Phase 2.22.4 — VFS Patch Approved (IPC Bridge)

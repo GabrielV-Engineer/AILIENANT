@@ -71,7 +71,8 @@ export function CommandPalette({
                 { key: 'ctx-attach',  cmd: '/context attach',  label: 'Attach file',        desc: 'Add files, folders, or terminal output to context', icon: 'plus',     run: onOpenContext },
                 { key: 'ctx-mention', cmd: '/context mention', label: 'Mention file',       desc: 'Reference a project file inline (@path)',           icon: 'search',   run: () => post({ type: 'MENTION_FILE' }) },
                 { key: 'ctx-clear',   cmd: '/context clear',   label: 'Clear conversation', desc: 'Clear the chat window and short-term memory',       icon: 'trash',    run: () => post({ type: 'CLEAR_CONVERSATION' }) },
-                { key: 'ctx-rewind',  cmd: '/context rewind',  label: 'Rewind',             desc: 'Roll back the agent graph to its last checkpoint',  icon: 'clock',    run: () => post({ type: 'SUBMIT_TASK', value: `/context rewind ${activeTaskId ?? ''}` }) },
+                { key: 'ctx-rewind',  cmd: '/context rewind',  label: 'Time-travel',        desc: 'Branch this session from any historical checkpoint (Phase 7.11.8)', icon: 'clock',
+                  run: () => post({ type: 'LIST_CHECKPOINTS', session_id: activeTaskId ?? '' }) },
             ],
         },
         {
