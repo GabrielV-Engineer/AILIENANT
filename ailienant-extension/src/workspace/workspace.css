@@ -1723,3 +1723,74 @@ html, body, #root { height: 100%; }
   background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
   color: var(--text-primary);
 }
+
+/* ── Phase 9 (ADR-707) — Native Thinking ──────────────────────────── */
+/* Toggle pill inside ModelsMenu → Native Thinking view. */
+.ws-toggle {
+  margin-left: auto;
+  align-self: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  background: var(--bg-main);
+}
+.ws-toggle[data-on="true"] {
+  color: #fff;
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+/* Collapsible Thought Box rendered inside an assistant bubble. */
+.ws-thought-box {
+  margin: 2px 0 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+  overflow: hidden;
+}
+.ws-thought-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  appearance: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+}
+.ws-thought-header:hover { background: var(--bg-hover); }
+.ws-thought-caret {
+  transition: transform 0.12s ease;
+  flex-shrink: 0;
+}
+.ws-thought-box[data-open="true"] .ws-thought-caret { transform: rotate(90deg); }
+.ws-thought-icon { flex-shrink: 0; opacity: 0.8; }
+.ws-thought-label {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Subtle pulse while reasoning is actively streaming. */
+.ws-thought-box[data-active="true"] .ws-thought-label {
+  color: var(--accent-primary);
+  animation: ws-thought-pulse 1.4s ease-in-out infinite;
+}
+@keyframes ws-thought-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.ws-thought-body {
+  padding: 4px 10px 8px 24px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Icon } from '../../shared/Icon';
 import { vscode } from '../vscode_bridge';
+import { useWorkspaceStore } from '../workspaceStore';
 import type { AilienantConfig, ModelTier } from '../../shared/types';
 import type { OrchestrationMode } from '../../shared/config';
 
-export type ModelsView = 'switch' | 'orchestration' | 'usage' | 'preset';
+export type ModelsView = 'switch' | 'orchestration' | 'usage' | 'preset' | 'thinking';
 
 interface ModelInfo {
     id: string;
@@ -49,6 +50,10 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
     const [usage, setUsage] = useState<TokenUsage | null | 'loading'>('loading');
     const [byomConfig, setByomConfig] = useState<BYOMConfigMsg | null>(null);
     const [activating, setActivating] = useState<string | null>(null);
+    // Phase 9 (ADR-707) — Native Thinking toggle is sourced from the persisted
+    // workspace store (survives panel reload) and injected into SUBMIT_TASK.
+    const nativeThinking = useWorkspaceStore(s => s.nativeThinking);
+    const setNativeThinking = useWorkspaceStore(s => s.setNativeThinking);
 
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
@@ -192,6 +197,36 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
                 <p className="ws-models-note">
                     Activating a preset rewrites the LiteLLM config and signals a proxy reload.
                     Manage presets in the <button className="ws-core-menu-btn" style={{ display: 'inline', padding: 0, background: 'none', border: 'none', color: 'var(--accent-primary, #63a583)', cursor: 'pointer', fontSize: 'inherit' }} onClick={() => { vscode.postMessage({ type: 'OPEN_DASHBOARD', tab: 'byom' }); onClose(); }}>BYOM panel</button>.
+                </p>
+            </div>
+        );
+    }
+
+    if (view === 'thinking') {
+        return (
+            <div className="ws-models-body">
+                <button
+                    className="ws-mode-row"
+                    role="switch"
+                    aria-checked={nativeThinking}
+                    data-active={nativeThinking ? 'true' : 'false'}
+                    onClick={() => setNativeThinking(!nativeThinking)}
+                >
+                    <div className="ws-mode-row-text">
+                        <span className="ws-mode-row-title">Native Thinking</span>
+                        <span className="ws-mode-row-desc">
+                            Stream the model's reasoning into a collapsible Thought Box
+                            (Claude Extended Thinking / reasoning models). Falls back to
+                            plain streaming on models that don't support it.
+                        </span>
+                    </div>
+                    <span className="ws-toggle" data-on={nativeThinking ? 'true' : 'false'} aria-hidden="true">
+                        {nativeThinking ? 'ON' : 'OFF'}
+                    </span>
+                </button>
+                <p className="ws-models-note">
+                    On by default for maximum reasoning. Turn off for lower-latency,
+                    lower-cost replies — your choice is remembered across reloads.
                 </p>
             </div>
         );

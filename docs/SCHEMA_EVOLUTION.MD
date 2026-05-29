@@ -475,3 +475,13 @@ CREATE TABLE IF NOT EXISTS oom_fallback_events (
 ```
 
 Idempotent `CREATE TABLE IF NOT EXISTS` appended to `core/telemetry.py::_DDL`; written by the new `log_oom_event(...)` from `tools/llm_gateway.py::_oom_cascade`. Phase 6.9 adds **no schema** — the `dead_letter_tasks` table (catalog DB) shipped in Phase 6.4 is unchanged; 6.9 only adds the read-only `GET /api/v1/dlq/pending` endpoint over `get_pending_dlqs`. The OOM (`oom_fallback_active`) and DLQ (`dead_letter_episode_id`) graph-state channels already existed (Phase 6 §1); Phase 6 checkpoints deserialise unchanged.
+
+---
+
+## Phase 9 (ADR-707) — Native Thinking: additive WS event + TaskPayload fields — 2026-05-29
+
+**Additive only. No `AIlienantGraphState` channel changes, no renames, no Literal narrowing. Pre-Phase-9 wire shapes validate unchanged.**
+
+- **New WS event** `ServerThinkingChunkEvent` (`api/ws_contracts.py`), discriminator `event_type="server_thinking_chunk"`, payload `ThinkingChunkPayload{ session_id: str, delta: str, token_count: int = 0 }`. Registered in the `WebSocketMessage` union. Coexists with `server_token_chunk` (answer) and `server_pipeline_step` (narration) — does not modify either.
+- **`TaskPayload` growth** (`core/task_service.py`): `enable_native_thinking: bool = True`, `thinking_budget_tokens: int = 4096`. Optional/defaulted → an omitted field from a pre-Phase-9 client keeps prior behaviour for non-thinking models while enabling thinking for capable ones.
+- **No persisted/graph schema:** reasoning text is transport-only — it is NOT a graph-state channel, NOT written to the checkpointer, and is excluded from the frontend `PERSIST_TRANSCRIPT` whitelist. The gateway-internal `StreamDelta{kind,text}` (`tools/stream_delta.py`) is an in-process value, never serialised.

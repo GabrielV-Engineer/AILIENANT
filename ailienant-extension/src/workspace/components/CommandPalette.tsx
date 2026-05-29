@@ -8,7 +8,7 @@ import type { AilienantConfig } from '../../shared/types';
 import type { OrchestrationMode } from '../../shared/config';
 
 type SubView = ModelsView | CustomizeView | SkillsView;
-const MODELS_VIEWS: ModelsView[] = ['switch', 'orchestration', 'usage', 'preset'];
+const MODELS_VIEWS: ModelsView[] = ['switch', 'orchestration', 'usage', 'preset', 'thinking'];
 const SKILLS_VIEWS: SkillsView[] = ['skills-insert', 'skills-create'];
 
 interface MenuItem {
@@ -44,6 +44,7 @@ const VIEW_TITLES: Record<SubView, string> = {
     orchestration:   'Orchestration mode',
     usage:           'Account & Usage',
     preset:          'Switch model preset',
+    thinking:        'Native Thinking',
     permissions:     'Permissions',
     'output-styles': 'Output styles',
     agents:          'Agents',
@@ -83,6 +84,7 @@ export function CommandPalette({
                 { key: 'mdl-orch',   cmd: '/models orchestration', label: 'Orchestration mode',  desc: 'Manual single-model vs. auto tier routing',    icon: 'network', opensView: true, run: () => setView('orchestration') },
                 { key: 'mdl-usage',  cmd: '/models usage',         label: 'Account & Usage',     desc: 'Token counts and estimated cost this session',  icon: 'wallet',  opensView: true, run: () => setView('usage') },
                 { key: 'mdl-preset', cmd: '/models preset',        label: 'Switch model preset', desc: 'Apply a saved model configuration preset',     icon: 'sparkles',  opensView: true, run: () => setView('preset') },
+                { key: 'mdl-think',  cmd: '/models thinking',      label: 'Native Thinking',     desc: 'Toggle real-time reasoning stream (on by default)', icon: 'brain', opensView: true, run: () => setView('thinking') },
                 { key: 'mdl-cfg',    cmd: '/models configure',     label: 'Configure models…',   desc: 'Open the dashboard BYOM panel',                icon: 'plug',    run: () => post({ type: 'OPEN_DASHBOARD', tab: 'byom' }) },
             ],
         },

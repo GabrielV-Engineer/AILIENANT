@@ -13,6 +13,7 @@ from pydantic import ValidationError, TypeAdapter
 from api.ws_contracts import (
     WebSocketMessage,
     ServerTokenChunkEvent, TokenChunkPayload,
+    ServerThinkingChunkEvent, ThinkingChunkPayload,   # Phase 9 — Native Thinking
     ServerTelemetryEvent, TelemetryPayload,
     ServerGraphMutationEvent, GraphMutationPayload,
     ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
@@ -186,6 +187,24 @@ class ConnectionManager:
         await self.send_personal_message(
             session_id,
             ServerTokenChunkEvent(data=TokenChunkPayload(token=token, step_id=step_id)),
+        )
+
+    async def broadcast_thinking_chunk(
+        self, session_id: str, delta: str, token_count: int = 0
+    ) -> None:
+        """Phase 9 (ADR-707) — stream a native-reasoning delta to the Thought Box.
+
+        A separate channel from ``broadcast_token`` (the answer stream) and
+        ``broadcast_pipeline_step`` (node narration). Reuses the same
+        ``send_personal_message`` plumbing.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerThinkingChunkEvent(
+                data=ThinkingChunkPayload(
+                    session_id=session_id, delta=delta, token_count=token_count
+                )
+            ),
         )
 
     async def send_telemetry(

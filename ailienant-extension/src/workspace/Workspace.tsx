@@ -18,6 +18,8 @@ import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
+import { ThoughtBox } from './components/ThoughtBox';
+import { accumulateThinking, newThinkingTurn, freezeThinkingOnText } from './utils/thinkingReducer';
 import { ToolChip } from './components/ToolChip';
 import { MessageActions } from './components/MessageActions';
 import { CheckpointPicker, type CheckpointEntry } from './components/CheckpointPicker';
@@ -59,6 +61,17 @@ export interface Message {
     // Phase 7.11.8 — flips the branch button's icon to ⏹ when this turn
     // ended in a user_abort emergency savepoint (Phase 7.11.3).
     is_abort_savepoint?: boolean;
+    // Phase 9 (ADR-707) — Native Thinking. Raw reasoning accumulated for this
+    // turn (display-only — NEVER persisted to the transcript or fed back to the
+    // agent). `thinkingStartedAt`/`thinkingElapsedMs` drive the chronometrics:
+    // start is stamped on the first reasoning delta; elapsed is frozen when the
+    // first answer (text) delta arrives. `thinkingOpen` controls the accordion
+    // (auto-expands while reasoning, auto-collapses when the answer begins).
+    thinking?: string;
+    thinkingTokens?: number;
+    thinkingStartedAt?: number;
+    thinkingElapsedMs?: number;
+    thinkingOpen?: boolean;
 }
 export interface NattMessage {
     role: 'natt' | 'user';
@@ -252,10 +265,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 last.parserState ?? MD_INITIAL_STATE,
                                 d.token,
                             );
+                            // Phase 9 (ADR-707) — first answer token after a
+                            // reasoning phase freezes the elapsed clock and
+                            // auto-collapses the Thought Box.
+                            const thinkingFreeze = freezeThinkingOnText(last, performance.now());
                             return [...prev.slice(0, -1), {
                                 ...last,
                                 content: last.content + d.token,
                                 parserState: nextState,
+                                ...(thinkingFreeze ?? {}),
                             }];
                         }
                         return [...prev, {
@@ -264,6 +282,24 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             streaming: true,
                             parserState: mdPushToken(MD_INITIAL_STATE, d.token),
                         }];
+                    });
+                    break;
+                }
+                case 'server_thinking_chunk': {
+                    // Phase 9 (ADR-707) — accumulate raw reasoning into the
+                    // streaming assistant turn's Thought Box. Display-only: this
+                    // never touches `content` and is stripped before persist.
+                    const d = msg.payload as { delta: string; token_count?: number };
+                    recordChunk();
+                    setIsStreaming(true);
+                    setMessages(prev => {
+                        const now = performance.now();
+                        const last = prev[prev.length - 1];
+                        if (last?.role === 'assistant' && last.streaming) {
+                            return [...prev.slice(0, -1),
+                                accumulateThinking(last, d.delta, d.token_count, now)];
+                        }
+                        return [...prev, newThinkingTurn(d.delta, d.token_count, now)];
                     });
                     break;
                 }
@@ -598,6 +634,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             execution_mode: mode,
             ...presetConfig,
             session_id: initial.sessionId,
+            // Phase 9 (ADR-707) — persisted Native Thinking toggle, read at
+            // submit time so the latest value (survives reload) is injected.
+            enable_native_thinking: useWorkspaceStore.getState().nativeThinking,
         });
     }, [preset, tier, mode, initial.sessionId]);
 
@@ -810,6 +849,19 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 <Fragment key={i}>
                                     {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
                                         <PipelineProgress steps={m.steps} done={!!m.stepsDone} />
+                                    )}
+                                    {/* Phase 9 (ADR-707) — Native Thinking Thought Box. */}
+                                    {m.role === 'assistant' && m.thinking && (
+                                        <ThoughtBox
+                                            thinking={m.thinking}
+                                            tokens={m.thinkingTokens ?? 0}
+                                            startedAt={m.thinkingStartedAt}
+                                            elapsedMs={m.thinkingElapsedMs}
+                                            open={m.thinkingOpen ?? false}
+                                            streaming={!!m.streaming}
+                                            onToggle={() => setMessages(prev => prev.map((mm, j) =>
+                                                j === i ? { ...mm, thinkingOpen: !mm.thinkingOpen } : mm))}
+                                        />
                                     )}
                                     {(m.role === 'user' || m.content) && (
                                         <div

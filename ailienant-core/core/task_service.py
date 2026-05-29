@@ -109,6 +109,15 @@ class TaskPayload(BaseModel):
     # to the exact rewound state. Optional/default-None preserves the
     # pre-7.11.8 wire shape.
     from_checkpoint_id: Optional[str] = None
+    # Phase 9 (ADR-707) — Native Thinking. When true (default), the live-chat
+    # streamer uses the thinking-aware gateway path and emits reasoning deltas
+    # to the Thought Box for capable models; incapable models silently fall back
+    # to flat text. ``thinking_budget_tokens`` is the API-level circuit breaker
+    # (Anthropic stops reasoning at the cap). Both default so an omitted field
+    # from a pre-Phase-9 client keeps the prior behaviour for non-thinking
+    # models while enabling thinking for capable ones.
+    enable_native_thinking: bool = True
+    thinking_budget_tokens: int = 4096
 
 
 class TaskService:
@@ -177,7 +186,11 @@ class TaskService:
             await self._run_coding_task(session_id, payload, execution_mode)
         else:
             await self._stream_chat_answer(
-                session_id, payload.task_prompt, payload.project_id
+                session_id,
+                payload.task_prompt,
+                payload.project_id,
+                enable_native_thinking=payload.enable_native_thinking,
+                thinking_budget_tokens=payload.thinking_budget_tokens,
             )
 
         return {"status": "success", "message": "Task completed.", "session_id": session_id}
@@ -599,14 +612,115 @@ class TaskService:
             "Use them when helpful; ignore them otherwise.\n\n" + blocks
         )
 
+    async def _stream_with_thinking(
+        self,
+        session_id: str,
+        messages: List[Dict[str, str]],
+        reply_parts: List[str],
+        thinking_budget_tokens: int,
+    ) -> str:
+        """Phase 9 (ADR-707) — demux the thinking-aware gateway stream.
+
+        Routes reasoning deltas → the Thought Box (``broadcast_thinking_chunk``,
+        coalesced in a 60 ms window) and answer deltas → the chat bubble
+        (``broadcast_token``, 40 ms window). Single-pass, inline time-window
+        coalescing using the same monotonic-clock shape as
+        ``transport.token_batcher.batch_tokens`` so a stalled upstream never
+        blocks the loop and the two channels keep independent windows.
+
+        Reasoning tokens are display-only: appended to neither ``reply_parts``
+        nor history (cognitive-isolation invariant). Answer chunks ARE appended
+        to ``reply_parts`` (shared with the caller's abort handler, so a partial
+        answer is still persisted on Stop). Returns the joined answer text.
+        """
+        loop = asyncio.get_running_loop()
+        _THINK_WINDOW_S = 0.060
+        _TEXT_WINDOW_S = 0.040
+        _MAX_BUF = 4096
+
+        think_buf: List[str] = []
+        text_buf: List[str] = []
+        think_chars_total = 0
+        think_buf_chars = 0
+        text_buf_chars = 0
+        think_window_start = loop.time()
+        text_window_start = loop.time()
+
+        async def _flush_think() -> None:
+            nonlocal think_buf, think_buf_chars
+            if think_buf:
+                # ~4 chars/token heuristic for the live "N tokens" telemetry;
+                # the authoritative billed count flows through the gateway's
+                # usage accounting, this is display-only.
+                await vfs_manager.broadcast_thinking_chunk(
+                    session_id, "".join(think_buf), max(1, think_chars_total // 4)
+                )
+                think_buf = []
+                think_buf_chars = 0
+
+        async def _flush_text() -> None:
+            nonlocal text_buf, text_buf_chars
+            if text_buf:
+                chunk = "".join(text_buf)
+                reply_parts.append(chunk)
+                await vfs_manager.broadcast_token(session_id, chunk)
+                text_buf = []
+                text_buf_chars = 0
+
+        raw = LLMGateway.astream_byom_thinking(
+            messages,
+            tier="medium",
+            session_id=session_id,
+            enable_thinking=True,
+            thinking_budget_tokens=thinking_budget_tokens,
+        )
+        async for d in raw:
+            if d.kind == "thinking":
+                think_buf.append(d.text)
+                think_buf_chars += len(d.text)
+                think_chars_total += len(d.text)
+                if (loop.time() - think_window_start) >= _THINK_WINDOW_S or think_buf_chars >= _MAX_BUF:
+                    await _flush_think()
+                    think_window_start = loop.time()
+            else:  # "text" — the answer channel
+                # First answer delta after reasoning: flush the remaining
+                # thinking so the box is complete before the answer renders.
+                if think_buf:
+                    await _flush_think()
+                text_buf.append(d.text)
+                text_buf_chars += len(d.text)
+                if (loop.time() - text_window_start) >= _TEXT_WINDOW_S or text_buf_chars >= _MAX_BUF:
+                    await _flush_text()
+                    text_window_start = loop.time()
+
+        # Drain trailing buffers (completion path; on abort the CancelledError
+        # propagates out of the async-for and these never run — partial deltas
+        # already went out, which is the desired behaviour).
+        await _flush_think()
+        await _flush_text()
+        return "".join(reply_parts)
+
     async def _stream_chat_answer(
-        self, session_id: str, task_prompt: str, project_id: Optional[str] = None
+        self,
+        session_id: str,
+        task_prompt: str,
+        project_id: Optional[str] = None,
+        *,
+        enable_native_thinking: bool = True,
+        thinking_budget_tokens: int = 4096,
     ) -> None:
         """Stream a live completion from the active BYOM chat model to the IDE.
 
         Injects short-term session memory + GraphRAG snippets. Persists the turn
         only on a successful, non-empty reply. Always finalizes with
         broadcast_stream_end; on failure it broadcasts an actionable message.
+
+        Phase 9 (ADR-707) — when ``enable_native_thinking`` is true the
+        thinking-aware gateway path is used: reasoning deltas are coalesced in a
+        wider chunk_ms=60 window and routed to ``broadcast_thinking_chunk`` (the
+        Thought Box), while answer deltas keep the chunk_ms=40 path. Incapable
+        models simply never emit thinking deltas. When false, the legacy
+        flat-text ``astream_byom`` path runs unchanged (true zero-regression).
         """
         system_content = _CHAT_SYSTEM_PROMPT + await self._build_rag_context(
             task_prompt, project_id
@@ -620,16 +734,22 @@ class TaskService:
         reply_parts: List[str] = []
         aborted = False
         try:
-            # Phase 7.10.2 (ADR-702/G1): coalesce deltas into chunk_ms=40 frames so
-            # the Webview never receives one WS frame per token. Concatenation is
-            # preserved, so reply_parts still reconstructs the full answer.
-            raw_stream = LLMGateway.astream_byom(
-                messages, tier="medium", session_id=session_id
-            )
-            async for chunk in batch_tokens(raw_stream, chunk_ms=40):
-                reply_parts.append(chunk)
-                await vfs_manager.broadcast_token(session_id, chunk)
-            reply = "".join(reply_parts)
+            if enable_native_thinking:
+                reply = await self._stream_with_thinking(
+                    session_id, messages, reply_parts, thinking_budget_tokens
+                )
+            else:
+                # Legacy flat-text path — Phase 7.10.2 (ADR-702/G1): coalesce
+                # deltas into chunk_ms=40 frames so the Webview never receives
+                # one WS frame per token. Concatenation is preserved, so
+                # reply_parts still reconstructs the full answer.
+                raw_stream = LLMGateway.astream_byom(
+                    messages, tier="medium", session_id=session_id
+                )
+                async for chunk in batch_tokens(raw_stream, chunk_ms=40):
+                    reply_parts.append(chunk)
+                    await vfs_manager.broadcast_token(session_id, chunk)
+                reply = "".join(reply_parts)
             if reply:
                 # Persist only completed turns so a failure never poisons memory.
                 self._append_history(session_id, "user", task_prompt)

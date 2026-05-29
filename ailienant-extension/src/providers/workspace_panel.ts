@@ -577,6 +577,9 @@ export class WorkspacePanelManager {
                         }
                         await SessionManager.getInstance().startAITask(taskText, {
                             explicit_mentions,
+                            // Phase 9 (ADR-707) — forwarded from the Webview's
+                            // persisted Native Thinking toggle (default true).
+                            enable_native_thinking: data.enable_native_thinking as boolean | undefined,
                         });
                     }
                     break;

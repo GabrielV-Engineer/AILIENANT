@@ -65,7 +65,7 @@ export class SessionManager {
      */
     public async startAITask(
         taskPrompt: string,
-        opts?: { explicit_mentions?: string[] },
+        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean },
     ): Promise<void> {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
@@ -95,6 +95,9 @@ export class SessionManager {
                     opts?.explicit_mentions && opts.explicit_mentions.length > 0
                         ? opts.explicit_mentions
                         : undefined,
+                // Phase 9 (ADR-707) — forward the persisted Native Thinking
+                // toggle so the backend gateway appends/omits the thinking config.
+                enable_native_thinking: opts?.enable_native_thinking,
             };
 
             // 5. Emitir la Misión (Boca) al API Gateway
