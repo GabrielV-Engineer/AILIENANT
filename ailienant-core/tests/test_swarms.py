@@ -22,8 +22,10 @@ from unittest.mock import patch
 import pytest
 from langgraph.constants import Send
 
+from typing import cast
+
 from brain.engine import route_to_coders, route_after_summarize
-from brain.state import WBSStep
+from brain.state import AIlienantGraphState, WBSStep
 from agents.planner import run_planner_node
 
 
@@ -69,7 +71,7 @@ def test_route_to_coders_emits_multiple_sends_in_swarm_mode() -> None:
         ),
     ]
     state = {"provider": "CLOUD", "parallel_tasks": tasks, "mission_spec": None}
-    sends = route_to_coders(state)
+    sends = route_to_coders(cast(AIlienantGraphState, state))
     assert len(sends) >= 2, f"Expected ≥2 Sends for SWARM mode, got {len(sends)}"
     assert all(isinstance(s, Send) for s in sends), "All entries must be Send objects"
 
@@ -101,7 +103,7 @@ async def test_planner_plus_router_swarm_chain_emits_sends() -> None:
         "parallel_tasks": planner_result["parallel_tasks"],
         "mission_spec": planner_result["mission_spec"],
     }
-    sends = route_to_coders(router_state)
+    sends = route_to_coders(cast(AIlienantGraphState, router_state))
     assert len(sends) >= 2, (
         f"MANUAL_PLANNING=False chain must yield ≥2 Sends; got {len(sends)}"
     )

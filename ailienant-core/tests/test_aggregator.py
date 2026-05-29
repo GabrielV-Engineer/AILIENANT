@@ -3,6 +3,8 @@
 DoD: proves that session_delta is correctly populated in the state after
 a simulated failed compilation.
 """
+from typing import Any
+
 import pytest
 
 from brain.nodes.aggregator_node import (
@@ -145,14 +147,14 @@ def test_extract_context_state_empty_buffer() -> None:
 
 
 def test_extract_context_state_lists_paths() -> None:
-    buf = {"src/a.py": {}, "src/b.py": {}}
+    buf: dict[str, Any] = {"src/a.py": {}, "src/b.py": {}}
     result = _extract_context_state(buf)
     assert "src/a.py" in result
     assert "src/b.py" in result
 
 
 def test_extract_context_state_caps_at_ten() -> None:
-    buf = {f"file_{i}.py": {} for i in range(15)}
+    buf: dict[str, Any] = {f"file_{i}.py": {} for i in range(15)}
     result = _extract_context_state(buf)
     assert "+5 more" in result
 

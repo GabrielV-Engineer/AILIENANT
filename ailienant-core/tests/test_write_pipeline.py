@@ -46,6 +46,7 @@ async def test_dispatch_and_ack_ok() -> None:
         res = await write_pipeline.apply_patch_set("s1", _CONTENTS, _HASHES)
     assert res == ack
     emit.assert_awaited_once()
+    assert emit.await_args is not None
     payload = emit.await_args.args[1]
     assert payload.edits[0].file_path == "calc.py"
     assert payload.edits[0].base_hash == "abc123"

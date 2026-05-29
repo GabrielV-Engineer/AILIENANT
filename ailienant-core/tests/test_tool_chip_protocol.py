@@ -198,7 +198,7 @@ def test_tool_event_payloads_round_trip() -> None:
     """Every new event in ws_contracts.py must round-trip cleanly through
     Pydantic's validate ↔ dump cycle so the discriminated union resolves on
     both sides of the WS."""
-    events = [
+    events: list[Any] = [
         ServerToolStartEvent(data=ToolStartPayload(
             session_id="s", tool_call_id="t", tool_name="sandbox_bash",
             args={"command": "echo hi"}, side_effect_free=False,

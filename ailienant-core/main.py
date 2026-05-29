@@ -8,11 +8,6 @@ from typing import AsyncIterator, Dict, List, Optional, cast
 
 import httpx
 
-# Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
-# When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
-_AUTH_TOKEN: Optional[str] = os.environ.get("AILIENANT_AUTH_TOKEN") or None
-_API_PORT: int = int(os.environ.get("AILIENANT_API_PORT", "8000"))
-
 # --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
 from api.api_contracts import ModelInfo, ModelsAvailableResponse
 from api.websocket_manager import (
@@ -27,9 +22,9 @@ from core.config_generator import discover_models
 from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
 from core.task_service import TaskPayload, TaskService
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse as _JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
@@ -98,6 +93,12 @@ from shared.contracts import (
     PPRRequest, PPRResult,
 )
 from api.api_contracts import DirtyBuffer
+
+# Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
+# When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
+# Defined after the import block so module-level imports stay at the top (ruff E402).
+_AUTH_TOKEN: Optional[str] = os.environ.get("AILIENANT_AUTH_TOKEN") or None
+_API_PORT: int = int(os.environ.get("AILIENANT_API_PORT", "8000"))
 
 # Configuración centralizada de observabilidad
 logging.basicConfig(level=logging.INFO)
@@ -191,9 +192,6 @@ app.add_middleware(
 # Validates X-AILIENANT-TOKEN (or Authorization: Bearer) on every non-health request
 # when AILIENANT_AUTH_TOKEN env var is set. Dev-mode bypass: if the var is absent,
 # all requests pass. Dashboard SPA (same-origin) is exempt: S7-D CSRF already guards it.
-from fastapi import Request
-from fastapi.responses import JSONResponse as _JSONResponse
-
 @app.middleware("http")
 async def _require_token(request: Request, call_next):  # type: ignore[no-untyped-def]
     if not _AUTH_TOKEN:

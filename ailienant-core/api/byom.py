@@ -21,7 +21,6 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from core.config.byom_config import (
-    BYOM_CONFIG_PATH,
     BYOMConfig,
     EmbeddingTarget,
     EndpointConfig,
@@ -282,7 +281,9 @@ def _build_embedding_target(
         )
     if provider == "lmstudio":
         ep = _endpoint_for("lmstudio", endpoints)
-        base = _ensure_v1(ep.url if ep else LM_STUDIO_API_BASE)
+        # `base` is reused by the vllm/custom branch below where it may be
+        # None (no default endpoint); EmbeddingTarget.api_base is Optional.
+        base: str | None = _ensure_v1(ep.url if ep else LM_STUDIO_API_BASE)
         return EmbeddingTarget(
             model=f"openai/{_LMSTUDIO_EMBED_MODEL}", provider="lmstudio",
             api_base=base, api_key=(ep.api_key if ep and ep.api_key else "sk-noauth"),

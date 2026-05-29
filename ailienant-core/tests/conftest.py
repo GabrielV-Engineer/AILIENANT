@@ -79,7 +79,7 @@ def pytest_sessionfinish(session, exitstatus):
     all_passed = exitstatus == 0
     swarm_success = "100%" if all_passed else "DEGRADED (see test output)"
     recovery_status = (
-        f"PASS — graph exits cleanly after MAX_RETRIES=2"
+        "PASS — graph exits cleanly after MAX_RETRIES=2"
         if all_passed
         else "FAIL"
     )

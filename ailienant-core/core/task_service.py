@@ -951,11 +951,13 @@ class TaskService:
                         "not resolve a core.sandbox.ACTIVE_ADAPTER."
                     )
 
+                from tools.execution_tools import _sandbox_env
+
                 result = await adapter.execute(
                     args.get("command", ""),
                     timeout_s=float(args.get("timeout_sec", 30.0)),
                     cwd=str(args.get("working_dir") or ""),
-                    env_whitelist=None,  # adapter's default whitelist
+                    env_whitelist=_sandbox_env(),  # whitelisted host env only
                 )
                 body = _truncate_tool_output(
                     (result.stdout or "") + (result.stderr or "")

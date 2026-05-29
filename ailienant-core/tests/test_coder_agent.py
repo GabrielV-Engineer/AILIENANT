@@ -100,7 +100,7 @@ def _mock_coder_io() -> Any:
 
 def test_coder_agent_resolves_doc_manager_tool_whitelist() -> None:
     """doc_manager must NOT have BashTool; must have WriteFileTool + apply_patch."""
-    from roles import ROLE_REGISTRY
+    from agents.roles import ROLE_REGISTRY
 
     whitelist = ROLE_REGISTRY["doc_manager"]["allowed_tools"]
     assert "BashTool" not in whitelist
@@ -142,7 +142,7 @@ async def test_coder_agent_ephemeral_system_prompt_does_not_leak_to_messages_or_
     state = _make_state(_make_mission([step]))
 
     from agents.coder import run_coder_node
-    from roles import build_coder_system_prompt
+    from agents.roles import build_coder_system_prompt
 
     result = await run_coder_node(state)
 

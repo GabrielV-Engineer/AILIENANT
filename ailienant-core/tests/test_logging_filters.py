@@ -1,6 +1,7 @@
 """Phase 6.7 — SecretsScrubber engine + SecretsScrubberFilter unit tests."""
 import hashlib
 import logging
+from typing import cast
 
 from shared.logging_filters import SecretsScrubber, SecretsScrubberFilter
 
@@ -58,7 +59,7 @@ def test_filter_mutates_logrecord_msg_and_tuple_args() -> None:
     assert "sk-ant-AAAAAAAAAAAAAAAAAAAA" not in record.msg
     assert "REDACTED:" in record.msg
     assert record.args is not None
-    assert "sk-BBBBBBBBBBBBBBBBBBBBBB" not in record.args[0]
+    assert "sk-BBBBBBBBBBBBBBBBBBBBBB" not in cast("tuple[str, ...]", record.args)[0]
 
 
 def test_filter_scrubs_dict_args() -> None:
@@ -70,4 +71,4 @@ def test_filter_scrubs_dict_args() -> None:
     )
     assert f.filter(record) is True
     assert record.args is not None
-    assert "abcdefghijklmnopqrstuvwxyz0123" not in record.args["user"]
+    assert "abcdefghijklmnopqrstuvwxyz0123" not in cast("dict[str, str]", record.args)["user"]

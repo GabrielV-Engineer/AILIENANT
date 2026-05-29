@@ -1,0 +1,38 @@
+# Ruff configuration for ailienant-core.
+#
+# Establishes a committed, reproducible lint baseline (previously ruff ran on
+# bare defaults with no config, so "ruff clean" was implicit and unenforceable).
+#
+# Policy: keep the base rule set active and STRICT. No blanket `ignore`, no
+# per-file escape hatches — issues like E402 are fixed in the source, not
+# suppressed. This makes the linter stricter and CI-enforceable from now on.
+#
+# Rule selection note: we pin ruff's strict default error set — E4 (import
+# placement, incl. E402), E7 (statement/comparison), E9 (syntax/runtime), and
+# F (pyflakes: unused imports, undefined names, etc.). We deliberately do NOT
+# enable the full `E` group: that pulls in E501 (line-too-long), which flags
+# ~107 pre-existing long lines across the codebase — 19 of them inside the
+# locked `agents/` package. Reformatting those would breach the Phase 4.1.5
+# cognitive-isolation fence (agents/ must stay byte-identical) and is a
+# formatter concern out of scope for this lint/type cleanup. A dedicated
+# line-length sweep can enable E501 later if desired.
+
+target-version = "py311"
+line-length = 100
+
+# Directories never linted (virtualenv, caches, build artifacts). These mirror
+# ruff's defaults but are listed explicitly so the intent is documented.
+exclude = [
+    "venv",
+    ".venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".ruff_cache",
+    "build",
+    "dist",
+]
+
+[lint]
+# Ruff's strict default error set + pyflakes. Do NOT add a top-level `ignore`
+# here; fix violations at the source.
+select = ["E4", "E7", "E9", "F"]
