@@ -2,6 +2,40 @@
 
 ---
 
+## Hito 9: Native Thinking — real-time LLM reasoning stream — 2026-05-29
+
+**Status:** COMPLETED | **Phase:** 9 (ADR-707) · *manifest placement pending user numbering decision — see note*
+
+**Problem:** the chat surface streamed a flat text stream (`server_token_chunk`) plus synthesized node-narration (`server_pipeline_step`). ADR-702 explicitly *stripped* raw chain-of-thought. The product could not show the model's native reasoning (Claude Extended Thinking / DeepSeek-R1-class `reasoning_content`) as it happens, à la Claude Code.
+
+**Approach:** an approved evolution of ADR-702 recorded as **ADR-707**. Raw reasoning streams on a NEW dedicated `server_thinking_chunk` event (coexisting with — not replacing — `pipeline_step`), bifurcated at the gateway via a tagged `StreamDelta`, rendered in a collapsible "Thought Box" with live token/elapsed telemetry. A persisted **Native Thinking** toggle (Command Palette → `/models`, ON by default) gates the `thinking` config per-model with a silent flat-text fallback. Strictly transport/orchestration/UI — `agents/` untouched.
+
+**Files changed:**
+- `ailienant-core/tools/stream_delta.py` — new frozen `StreamDelta{kind,text}` tag.
+- `ailienant-core/tools/llm_gateway.py` — `astream_byom_thinking` (additive; legacy `astream_byom` unchanged) + `_supports_native_thinking` capability gate; thinking tokens still recorded via the existing `finally` usage block.
+- `ailienant-core/api/ws_contracts.py` — `ThinkingChunkPayload` + `ServerThinkingChunkEvent` + union registration; `TaskPayload.enable_native_thinking` (default True) + `thinking_budget_tokens` (4096).
+- `ailienant-core/api/websocket_manager.py` — `broadcast_thinking_chunk`.
+- `ailienant-core/core/task_service.py` — `_stream_with_thinking` demux (reasoning→Thought Box @ 60 ms, answer→bubble @ 40 ms); branch in `_stream_chat_answer` (flag false → unchanged flat path).
+- `ailienant-extension/src/workspace/workspaceStore.ts` — persisted `nativeThinking` (in `pick` whitelist).
+- `ailienant-extension/src/workspace/components/ModelsMenu.tsx` + `CommandPalette.tsx` — `/models` → Native Thinking toggle view.
+- `ailienant-extension/src/workspace/components/ThoughtBox.tsx` — new collapsible accordion + chronometrics.
+- `ailienant-extension/src/workspace/utils/thinkingReducer.ts` — pure immutable reducers (accumulate / new-turn / freeze-on-text).
+- `ailienant-extension/src/workspace/Workspace.tsx` — `Message` thinking fields, `server_thinking_chunk` handler, first-text freeze, ThoughtBox render, payload flag.
+- `ailienant-extension/src/api/api_client.ts` + `brain/session.ts` + `providers/workspace_panel.ts` — payload plumbing.
+- `ailienant-extension/src/workspace/workspace.css` — Thought Box + toggle styles.
+- Tests: `ailienant-core/tests/test_native_thinking.py` (7) + `ailienant-extension/src/test/nativeThinking.test.ts` (7).
+
+**Architectural outcomes:**
+- **Dedicated transport channel** keeps the ADR-702 narration contract intact; raw reasoning is a strictly additive event.
+- **Cognitive isolation enforced:** reasoning is display-only — excluded from `PERSIST_TRANSCRIPT`, never re-enters the agent loop; `agents/` has no diff.
+- **Zero regression:** incapable models / toggle-off → flat streaming via the original `astream_byom`.
+- **Cost/HITL via reuse:** API `budget_tokens` cap + existing `supervisor.py` TOKEN_SPIKE/budget gates + Abort Mesh (partial reasoning tokens still billed on cancel).
+- **Roadmap note:** the manifest already defines FASE 8/9/10 — so the approved "Phase 9" label collides with the existing "FASE 9 — Onboarding". Manifest WBS placement/renumber is deferred to a user decision; ADR-707 is the stable identifier regardless.
+
+**Verification:** backend `pytest` 665 passed; `mypy .` (namespace packages) clean across 202 files; `ruff` clean. Frontend `npm run compile` 0 errors; full Mocha suite **50 passing**.
+
+---
+
 ## Hito 7.9.B.20: Session History Persistence — chat survives VS Code close — 2026-05-25
 
 **Status:** COMPLETED | **Phase:** 7.9.B.20

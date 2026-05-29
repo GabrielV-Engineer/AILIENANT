@@ -112,6 +112,18 @@ Identity sovereignty (ADR-701) is an anti-impersonation / brand-integrity contro
 
 (g) **Time-travel** branches a conversation by re-sending the original `thread_id` + the exact `checkpoint_id`; the backend already supports rewind via `HybridCheckpointer` — the work is React state management.
 
+### [ADR-707] Native Thinking — raw reasoning stream (amends ADR-702)
+
+**Amendment to ADR-702.** ADR-702 decided that raw chain-of-thought is *stripped* and only synthesized node-narration streams over `server_pipeline_step`. Native Thinking (Phase 9) **supersedes that single point**: when the active model exposes native reasoning tokens (Anthropic Extended Thinking; open reasoning models — DeepSeek-R1, QwQ — via LiteLLM's normalized `delta.reasoning_content`), those raw deltas MAY be streamed to the user. Everything else in ADR-702 stands: `server_pipeline_step` narration is unchanged and continues to coexist.
+
+**Dedicated channel (no overloading).** Raw reasoning streams on a NEW event — `server_thinking_chunk` (`ThinkingChunkPayload{session_id, delta, token_count}`) — never on `server_pipeline_step`. The gateway bifurcates via a tagged `StreamDelta{kind: "thinking"|"text", text}` (`tools/stream_delta.py`); `astream_byom_thinking` is additive and leaves the flat-text `astream_byom` untouched as the fallback path.
+
+**Capability gate + opt-out.** A persisted **Native Thinking** toggle (Command Palette → `/models`, **ON by default**) flows through `TaskPayload.enable_native_thinking` (+ `thinking_budget_tokens`, default 4096). The gateway appends `thinking={"type":"enabled","budget_tokens":N}` **only** when the toggle is on AND `_supports_native_thinking(model)` matches; otherwise it is omitted and the model streams flat text. Incapable models therefore never emit a `server_thinking_chunk` — zero regression.
+
+**Throttling.** Reasoning deltas are coalesced in a wider `chunk_ms=60` window (vs 40 ms for the answer) and remain subject to `throttled_stream` backpressure, but are **exempt from the NarrationGate 15 % budget** — thinking is user-requested payload, not background narration.
+
+**Security & cognitive isolation (invariants).** Raw reasoning is **display-only**: routed to a dedicated `Message.thinking` field, rendered through the existing sanitizer (React nodes, never `dangerouslySetInnerHTML`), **excluded from `PERSIST_TRANSCRIPT`**, and **never** appended to agent history, parsed as a tool call, or fed back into the orchestrator. No edits to `agents/`. Budget overrun and abort reuse the existing `supervisor.py` `TOKEN_SPIKE`/budget HITL gates and the Abort Mesh; the gateway's `finally` block still records partial reasoning tokens on cancel.
+
 ---
 
 ## 3. The three surfaces — current vs target

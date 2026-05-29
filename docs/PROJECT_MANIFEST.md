@@ -30,8 +30,9 @@
 | 7.10 | Cognitive Transparency & Connective Integration | ✅ |
 | 7.11 | VS Code Native Mesh Execution | ⬜ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante | ⬜ |
-| 9 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
-| 10 | Nivel Portafolio (Standout Release) | ⬜ |
+| 9 | Native Thinking (Real-Time Reasoning Stream · ADR-707) | ✅ |
+| 10 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
+| 11 | Nivel Portafolio (Standout Release) | ⬜ |
 
 **Leyenda:** ✅ Completado · 🟡 En curso · ⬜ Pendiente
 
@@ -609,7 +610,7 @@
 
 ### 🧭 Decisiones Arquitectónicas Vinculantes
 
-- **[ADR-001] Sandbox Pluggable con Degradación Elegante.** Se rechaza el camino "Strict Docker obligatorio" — viola el contrato Phase 10.2 (Zero-Friction Install, single-binary). Se adopta un patrón Adapter resuelto **una sola vez al startup**: tier por defecto `DOCKER` (probe 2s); si el daemon no responde, fallback a `NATIVE_HITL` (cada ejecución pasa por `request_human_approval` antes del spawn); tier opt-in `WASM` exclusivo para Pure-Compute. El tier activo es proceso-global, inmutable durante la sesión, y se proyecta a la extensión como un badge de color (`green=DOCKER`, `amber=WASM`, `red=NATIVE_HITL`).
+- **[ADR-001] Sandbox Pluggable con Degradación Elegante.** Se rechaza el camino "Strict Docker obligatorio" — viola el contrato Phase 11.2 (Zero-Friction Install, single-binary). Se adopta un patrón Adapter resuelto **una sola vez al startup**: tier por defecto `DOCKER` (probe 2s); si el daemon no responde, fallback a `NATIVE_HITL` (cada ejecución pasa por `request_human_approval` antes del spawn); tier opt-in `WASM` exclusivo para Pure-Compute. El tier activo es proceso-global, inmutable durante la sesión, y se proyecta a la extensión como un badge de color (`green=DOCKER`, `amber=WASM`, `red=NATIVE_HITL`).
 - **[ADR-002] Wasm Scope Guard.** `wasmtime` se restringe a payloads stateless puros (algoritmos, parsers, tests con stdlib + allow-list `math|re|json|dataclasses|typing`). Cualquier intento de importar `os`/`subprocess`/`socket` lanza `WasmScopeError`. `npm install`, `pytest` con FS y `tsc` quedan fuera de Wasm — bajan a Docker o, si está degradado, a Native-HITL.
 - **[ADR-003] Reutilización del Canal HITL Canónico.** No se crea un nuevo transporte de aprobación. Toda fricción (sandbox degradado, comando peligroso, overflow de budget, drift, contención de recurso) reusa `vfs_manager.request_human_approval(...)` de **Fase 1.4 / 2.27**. Distinción semántica vía sentinel `action_description` (`SANDBOX_DEGRADED_EXEC` · `DANGEROUS_COMMAND_INTERCEPT` · `BUDGET_OVERFLOW` · `RESOURCE_CONTENTION`).
 - **[ADR-004] Crecimiento Estrictamente Aditivo del Estado.** Los 6 canales nuevos (`accumulated_session_cost`, `session_max_budget_usd`, `oom_fallback_active`, `sandbox_tier_active`, `hitl_audit_chain_head`, `dead_letter_episode_id`) son scalar overwrite con defaults seguros — checkpoints Phase 5.7 deserializan sin cambios.
@@ -988,7 +989,7 @@ Cada sub-fase cierra con `pytest` + `mypy --strict` + `ruff check` verdes + una 
       - [x] **7.9.A.7.c — Output styles:** `output_style` (default/concise/explanatory/code_only) en `settings.json`. Inyección al system prompt = follow-up.
       - [x] **7.9.A.7.d — Hooks:** `GET/POST/DELETE /api/v1/system/hooks` → tabla `hooks` (`pre_patch`/`post_patch`). Ejecución en el pipeline de parches = follow-up.
       - [x] **7.9.A.7.e — MCP Servers:** registro CRUD (`/api/v1/mcp/servers`, tabla `mcp_servers`) + probe `/api/v1/mcp/test` **zombie-safe**: handshake bajo `asyncio.wait_for(MCP_HANDSHAKE_TIMEOUT_SEC)` dentro de `async with AsyncExitStack`; el cleanup de `stdio_client` reapa el árbol de procesos (SIGTERM→SIGKILL) en el frame de la corutina. Auto-connect al iniciar tarea = follow-up.
-      - [x] **7.9.A.7.f — Skills (prompt templates):** `GET/POST/DELETE /api/v1/skills` → tabla `skills`. Secciones nuevas *Insert skill* (inyecta plantilla en la prompt bar vía `INSERT_PROMPT`, espejo de `INSERT_MENTION`) y *Create skill* (form name+body). **Manifest Update (CLAUDE.md §3, Opción B):** versión ligera de plantillas adelantada a Fase 7; **Fase 9.4** (Marketplace de Skills-as-Tools con decoradores Pydantic) es un superconjunto futuro que coexiste/supersede — no se duplica.
+      - [x] **7.9.A.7.f — Skills (prompt templates):** `GET/POST/DELETE /api/v1/skills` → tabla `skills`. Secciones nuevas *Insert skill* (inyecta plantilla en la prompt bar vía `INSERT_PROMPT`, espejo de `INSERT_MENTION`) y *Create skill* (form name+body). **Manifest Update (CLAUDE.md §3, Opción B):** versión ligera de plantillas adelantada a Fase 7; **Fase 10.4** (Marketplace de Skills-as-Tools con decoradores Pydantic) es un superconjunto futuro que coexiste/supersede — no se duplica.
 
   - [x] **7.9.A.8 — Logo vs. theme brightness mismatch**
     - ya esta creado el logo icon-color.svg. cambiar el anterior logo y usar ese (icon-color.svg) en todos los rincones donde se utiliza ya sea dentro del chat como en el webdashboard
@@ -1909,52 +1910,73 @@ the blueprint freeze lifts.
 
 ---
 
-## 🎮 FASE 9 — Onboarding Interactivo, Gamificación y Ecosistema Abierto (MCP)
+## 🧠 FASE 9 — Native Thinking (Real-Time Reasoning Stream) — ✅ COMPLETADA (2026-05-29)
+
+> Exposición en tiempo real del razonamiento nativo del modelo (Claude Extended Thinking / modelos de razonamiento abiertos vía `reasoning_content`) en un "Thought Box" colapsable estilo Claude Code. Evolución aprobada de ADR-702 registrada como **ADR-707** ([`docs/PHASE_7_BLUEPRINT.md`](PHASE_7_BLUEPRINT.md)). Estrictamente capas de transporte / orquestación / UI — `agents/` intacto.
+
+- [x] **9.1. Bifurcación del gateway (transporte)**
+  - `tools/stream_delta.py` (`StreamDelta{kind,text}`) + `tools/llm_gateway.py::astream_byom_thinking` (aditivo; `astream_byom` legacy intacto como fallback flat-text) + `_supports_native_thinking` (gate de capacidad: Anthropic / DeepSeek-R1 / QwQ). Acumulación de tokens de razonamiento billada vía el bloque `finally` existente.
+
+- [x] **9.2. Contrato WS dedicado + payload**
+  - `api/ws_contracts.py`: `ThinkingChunkPayload` + `ServerThinkingChunkEvent` (registrado en la unión `WebSocketMessage`); `TaskPayload.enable_native_thinking` (default True) + `thinking_budget_tokens` (4096). `api/websocket_manager.py::broadcast_thinking_chunk`. Coexiste con `server_pipeline_step` (narración ADR-702) — no lo modifica.
+
+- [x] **9.3. Demux de orquestación**
+  - `core/task_service.py::_stream_with_thinking` enruta razonamiento → Thought Box (`chunk_ms=60`) y respuesta → burbuja (`chunk_ms=40`); rama en `_stream_chat_answer` (flag false → ruta flat-text sin cambios). Razonamiento exento del NarrationGate 15 %, sujeto a `throttled_stream`.
+
+- [x] **9.4. UI + estado (React/Zustand)**
+  - Toggle **Native Thinking** persistido (Command Palette → `/models`, ON por defecto, en el whitelist `pick` de `workspaceStore.ts`); `components/ThoughtBox.tsx` (acordeón colapsable + cronometría live); `utils/thinkingReducer.ts` (reducers puros inmutables); `Workspace.tsx` (campos `thinking` en `Message`, handler `server_thinking_chunk`, freeze al primer token de respuesta). Razonamiento excluido de `PERSIST_TRANSCRIPT` — display-only, nunca re-entra al loop de agentes.
+
+- [x] **9.5. Checkpoint Gate Fase 9 (Native Thinking)**
+  - `tests/test_native_thinking.py` (7) + `src/test/nativeThinking.test.ts` (7). DoD verificado: backend `pytest` 665 passed, `mypy .` limpio (202 archivos, namespace packages), `ruff` limpio; frontend `npm run compile` 0 errores, suite Mocha **50 passing**. Gate rows: NT1 bifurcación ordenada · NT2 fallback sin razonamiento · NT3 persistencia del toggle · NT4 cronometría/auto-collapse · NT5 budget+abort · ISO1 `agents/` sin diff · REG regresión verde.
+
+---
+
+## 🎮 FASE 10 — Onboarding Interactivo, Gamificación y Ecosistema Abierto (MCP)
 
 > Transformación del desarrollador a "Tech Lead Supervisor". Rampa de aprendizaje en forma de Sandbox que enseña la arquitectura bicefálica, gestión de hardware y extensibilidad antes de tocar código de producción.
 
-- [ ] **9.1. Sandbox de Inducción (Nivel 1 Jugable)**
+- [ ] **10.1. Sandbox de Inducción (Nivel 1 Jugable)**
   - **Micro-Repo Dinámico:** descarga automática de `alienant-practice-repo` al aceptar el tutorial.
   - **Simulaciones de Arquitectura** (saltables solo por avanzados):
     - *Estratégica:* generar y aprobar un WBS con el PlannerAgent.
     - *Resiliencia:* forzar choque de concurrencia editando mientras el LogicAgent escribe (demo de OCC + VFS Proxy).
 
-- [ ] **9.2. "La Antena" (Panel de Supervisión y Mentoring)**
+- [ ] **10.2. "La Antena" (Panel de Supervisión y Mentoring)**
   - Visualizador del Motor Bicefálico — pestaña VS Code con estado en vivo del grafo (ej. `Orchestrator → Evaluando Complejidad`).
   - Tips Contextuales Anti-Fricción: ante comandos destructivos, no solo bloquea sino explica el porqué + cómo reformular el prompt como Arquitecto.
 
-- [ ] **9.3. Hub de Configuración Híbrida (LLMs & Hardware)**
+- [ ] **10.3. Hub de Configuración Híbrida (LLMs & Hardware)**
   - **Gestor JIT VRAM Fallback:** UI para umbrales (ej. `Activar Cloud Fallback si VRAM < 1GB`).
   - **Selector de Motor:** Ollama, LM Studio + API Keys encriptadas (Anthropic, OpenAI). Explicación de impacto en latencia GraphRAG.
 
-- [ ] **9.4. Ecosistema de Extensibilidad (Skills & MCP)**
+- [ ] **10.4. Ecosistema de Extensibilidad (Skills & MCP)**
   - **Gestor MCP:** interfaz para conectar servidores MCP locales/remotos. Tutorial enseña cómo Alienant "aprende" DBs externas / APIs de empresa via config MCP.
   - **Marketplace de Skills Comunidad:** directorio en la extensión. Ejemplos: Análisis Seguridad Rust, Deploy AWS.
   - **Tutorial de Creación de Skills:** flujo guiado — escribir tool Python/TS + decoradores Pydantic + exposición al Orchestrator.
 
-- [ ] **9.5. Checkpoint Gate Fase 9**
+- [ ] **10.5. Checkpoint Gate Fase 10**
   - Validar completion rate del tutorial + reducción de tickets de soporte tipo "no entiendo qué hace la IA".
 
 ---
 
-## 🚀 FASE 10 — Nivel Portafolio (Standout Release)
+## 🚀 FASE 11 — Nivel Portafolio (Standout Release)
 
 > Preparación final para exhibir la herramienta.
 
-- [ ] **10.1. Dockerización Completa**
+- [ ] **11.1. Dockerización Completa**
   - `Dockerfile` + `docker-compose.yml` para levantar la arquitectura (LanceDB + Backend) con un solo comando.
 
-- [ ] **10.2. Empaquetado Binario (Zero-Friction Install)**
+- [ ] **11.2. Empaquetado Binario (Zero-Friction Install)**
   - **PyInstaller / Nuitka:** compilar `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) en un binario por OS (`.exe` / macOS / Linux).
   - **VS Code Extension Bundling:** la extensión TS desempaqueta y ejecuta el binario local en background al instalarse. El usuario no necesita Python, Docker ni Node instalados.
 
-- [ ] **10.3. Documentación Visual**
+- [ ] **11.3. Documentación Visual**
   - `README.md` final con diagramas reales de arquitectura.
 
-- [ ] **10.4. Demo Autónoma**
+- [ ] **11.4. Demo Autónoma**
   - Grabación del script donde TestAgent + LogicAgent + AnalystAgent resuelven un bug cíclico desatendidos.
 
-- [ ] **10.5. Checkpoint Gate Final**
+- [ ] **11.5. Checkpoint Gate Final**
   - Validación E2E del "Zero-Friction Install" + cierre del proyecto.
 
 ---

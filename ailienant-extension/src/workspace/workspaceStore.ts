@@ -43,6 +43,15 @@ export interface WorkspaceState {
      * reload would visually freeze the button).
      */
     isAborting: boolean;
+    /**
+     * Phase 9 (ADR-707) — Native Thinking master switch. ON by default to
+     * prioritise high-reasoning capabilities natively; the user can opt out in
+     * Command Palette → /models. Persisted (whitelisted in `pick`) so it
+     * survives a panel reload, and injected into the SUBMIT_TASK payload so the
+     * backend LLM gateway either appends `thinking:{type:"enabled",…}` (capable
+     * models) or omits it for low-latency flat streaming.
+     */
+    nativeThinking: boolean;
 
     // Setters (Zustand pattern — flat actions colocated with state).
     setInputDraft: (v: string) => void;
@@ -55,6 +64,7 @@ export interface WorkspaceState {
     setTier: (v: InferenceTier) => void;
     setLastScrollY: (v: number) => void;
     setIsAborting: (v: boolean) => void;
+    setNativeThinking: (v: boolean) => void;
 }
 
 export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
@@ -69,6 +79,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         tier: 'HYBRID',
         lastScrollY: 0,
         isAborting: false,
+        nativeThinking: true,
 
         setInputDraft:   (v) => set({ inputDraft: v }),
         setPaletteOpen:  (v) => set({ paletteOpen: v }),
@@ -80,6 +91,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         setTier:         (v) => set({ tier: v }),
         setLastScrollY:  (v) => set({ lastScrollY: v }),
         setIsAborting:   (v) => set({ isAborting: v }),
+        setNativeThinking: (v) => set({ nativeThinking: v }),
     }),
     {
         key: 'workspace.v1',
@@ -95,6 +107,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
             preset: s.preset,
             tier: s.tier,
             lastScrollY: s.lastScrollY,
+            nativeThinking: s.nativeThinking,
         }),
     },
 );

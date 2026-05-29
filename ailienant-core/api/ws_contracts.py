@@ -68,6 +68,23 @@ class TokenChunkPayload(BaseModel):
     step_id: Optional[int] = None   # WBS step currently executing, if known
 
 
+class ThinkingChunkPayload(BaseModel):
+    """Phase 9 (ADR-707) — a native-reasoning ("thinking") delta streamed to the
+    IDE's collapsible Thought Box.
+
+    Distinct from ``TokenChunkPayload`` (the answer stream) and from
+    ``PipelineStepPayload`` (synthesized node narration, ADR-702). ``delta`` is
+    a raw reasoning-token fragment; ``token_count`` is the cumulative thinking
+    token count for the current turn (drives the live "N tokens" telemetry).
+    Display-only: the frontend renders it sanitized and NEVER feeds it back into
+    the agent loop.
+    """
+
+    session_id: str
+    delta: str
+    token_count: int = 0
+
+
 class TelemetryPayload(BaseModel):
     """Routing telemetry snapshot for the IDE status bar."""
 
@@ -126,6 +143,12 @@ class HITLResponsePayload(BaseModel):
 class ServerTokenChunkEvent(BaseModel):
     event_type: Literal["server_token_chunk"] = "server_token_chunk"
     data: TokenChunkPayload
+
+
+class ServerThinkingChunkEvent(BaseModel):
+    # Phase 9 (ADR-707) — Native Thinking reasoning delta.
+    event_type: Literal["server_thinking_chunk"] = "server_thinking_chunk"
+    data: ThinkingChunkPayload
 
 
 class ServerTelemetryEvent(BaseModel):
@@ -754,6 +777,7 @@ WebSocketMessage = Union[
     ServerCodeProposalEvent,
     ServerStatusEvent,
     ServerTokenChunkEvent,
+    ServerThinkingChunkEvent,         # Phase 9 — Native Thinking reasoning delta
     ServerTelemetryEvent,
     ServerGraphMutationEvent,
     ServerHITLApprovalRequestEvent,

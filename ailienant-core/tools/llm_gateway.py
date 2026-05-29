@@ -7,7 +7,10 @@ import re
 import time
 import uuid
 from enum import Enum
-from typing import Any, AsyncIterator, Dict, List, Optional, Type
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Type
+
+if TYPE_CHECKING:
+    from tools.stream_delta import StreamDelta
 
 import httpx
 import litellm
@@ -217,6 +220,38 @@ def _classify_model_as_tier(model_name: str) -> TaskPriority:
     if model_name == MODEL_BIG:
         return TaskPriority.CLOUD
     return TaskPriority.LOCAL
+
+
+# Phase 9 (ADR-707) — Native Thinking capability gate.
+# Substrings (lower-cased) that identify a model exposing native reasoning
+# tokens. Anthropic Extended Thinking surfaces them via LiteLLM's normalized
+# ``delta.reasoning_content``; open reasoning models (DeepSeek-R1, QwQ) do the
+# same. Kept as a substring allowlist (not a Literal) so new reasoning models
+# can be added without a schema bump; anything not matched falls back to flat
+# text streaming with zero regression.
+_NATIVE_THINKING_MODEL_HINTS: tuple[str, ...] = (
+    "claude-3-7",
+    "claude-sonnet-4",
+    "claude-opus-4",
+    "deepseek-r1",
+    "deepseek-reasoner",
+    "qwq",
+    "o1",
+    "o3",
+)
+
+
+def _supports_native_thinking(model_name: str) -> bool:
+    """True when the model id looks like it emits native reasoning tokens.
+
+    Best-effort, substring-based (see ``_NATIVE_THINKING_MODEL_HINTS``). A false
+    negative is harmless — the stream simply never emits thinking deltas and the
+    frontend shows no Thought Box. A false positive is also harmless: providers
+    that reject the ``thinking`` param raise, and the orchestration layer falls
+    back to the flat-text path.
+    """
+    lowered = (model_name or "").lower()
+    return any(hint in lowered for hint in _NATIVE_THINKING_MODEL_HINTS)
 
 # -------------------------------------------------------------------------
 # Heartbeat cache: {url: (is_alive, expiry_monotonic_time)}
@@ -587,6 +622,101 @@ class LLMGateway:
         finally:
             # ALWAYS record — completion OR abort path. Zero-token cases are
             # no-ops in the ledger contract (verified in core/token_ledger.py).
+            try:
+                from core.token_ledger import token_ledger
+                resolved_tier = _classify_model_as_tier(target.model)
+                if resolved_tier == TaskPriority.CLOUD:
+                    token_ledger.record_cloud(prompt_tokens, completion_tokens)
+                else:
+                    token_ledger.record_local(prompt_tokens, completion_tokens)
+            except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
+                logger.debug("Stream token accounting failed (non-fatal): %s", exc)
+
+    # -------------------------------------------------------------------------
+    # Phase 9 (ADR-707) — Native Thinking streaming (proxy-free BYOM)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    async def astream_byom_thinking(
+        messages: list[dict[str, Any]],
+        tier: str = "medium",
+        temperature: float = 0.4,
+        max_tokens: int = 1024,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+        *,
+        enable_thinking: bool = True,
+        thinking_budget_tokens: int = 4096,
+    ) -> AsyncIterator["StreamDelta"]:
+        """Thinking-aware streaming completion against the active BYOM chat model.
+
+        Bifurcates each upstream chunk into ``StreamDelta`` values tagged
+        ``"thinking"`` (native reasoning tokens) or ``"text"`` (answer tokens).
+        The legacy ``astream_byom`` is deliberately left untouched and remains
+        the flat-text fallback path; callers select this method only when the
+        user has Native Thinking enabled (Phase 9 plan §1C).
+
+        ``thinking`` config is appended ONLY when ``enable_thinking`` is true AND
+        ``_supports_native_thinking`` recognises the active model. Otherwise the
+        param is omitted entirely → the provider streams plain text and this
+        generator simply never yields a ``"thinking"`` delta (zero regression).
+
+        The ``finally`` token-accounting block mirrors ``astream_byom`` verbatim:
+        thinking tokens are billed inside ``usage.completion_tokens`` on the
+        final chunk, so the ledger stays correct with no special handling, and
+        accounting still flushes on the abort (CancelledError) path.
+        """
+        from tools.stream_delta import StreamDelta  # local — keep module a leaf
+        from core.config.model_resolver import get_chat_target  # deferred — load order
+
+        target = get_chat_target(tier)
+        if target is None:
+            raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
+        trace_id = session_id or str(uuid.uuid4())
+        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+        kwargs = LLMGateway._byom_kwargs(
+            target, messages, temperature=temperature, max_tokens=max_tokens,
+            timeout=_effective_timeout, stream=True, max_retries=2,
+        )
+        kwargs.setdefault("stream_options", {"include_usage": True})
+        thinking_on = bool(enable_thinking) and _supports_native_thinking(target.model)
+        if thinking_on:
+            # LiteLLM normalises Anthropic's ``thinking`` blocks (and open
+            # reasoning models' equivalents) into ``delta.reasoning_content``.
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget_tokens}
+        logger.debug(
+            "BYOM astream(thinking=%s) — model=%s base=%s trace=%s",
+            thinking_on, target.model, target.api_base, trace_id,
+        )
+        prompt_tokens: int = 0
+        completion_tokens: int = 0
+        try:
+            response = await litellm.acompletion(**kwargs)
+            async for chunk in response:
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    prompt_tokens = int(
+                        getattr(usage, "prompt_tokens", prompt_tokens) or prompt_tokens
+                    )
+                    completion_tokens = int(
+                        getattr(usage, "completion_tokens", completion_tokens) or completion_tokens
+                    )
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta_obj = getattr(choices[0], "delta", None)
+                if delta_obj is None:
+                    continue
+                # Reasoning channel first (it precedes the answer in practice).
+                reasoning = getattr(delta_obj, "reasoning_content", None) or ""
+                if reasoning:
+                    yield StreamDelta("thinking", reasoning)
+                content = getattr(delta_obj, "content", None) or ""
+                if content:
+                    yield StreamDelta("text", content)
+        finally:
+            # ALWAYS record — completion OR abort path. Identical contract to
+            # astream_byom; thinking tokens are inside completion_tokens.
             try:
                 from core.token_ledger import token_ledger
                 resolved_tier = _classify_model_as_tier(target.model)
