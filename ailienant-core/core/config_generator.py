@@ -213,7 +213,6 @@ def write_config_with_overrides(
     loss.  config.yaml contains no secrets so 0600 is not required here, but
     the atomic guarantee still applies.
     """
-    import stat as _stat
     import tempfile as _tempfile
 
     # Read the current config.yaml as the base (best-effort; fall back to empty list).

@@ -33,6 +33,7 @@ async def test_ainvoke_local_byom_uses_extended_timeout() -> None:
             messages=[{"role": "user", "content": "hi"}],
             model="ailienant/medium",
         )
+    assert mock_litellm.await_args is not None
     assert mock_litellm.await_args.kwargs.get("timeout") == _LOCAL_LLM_TIMEOUT_S
 
 
@@ -45,6 +46,7 @@ async def test_ainvoke_cloud_byom_keeps_caller_timeout() -> None:
             model="ailienant/medium",
             timeout=60.0,
         )
+    assert mock_litellm.await_args is not None
     assert mock_litellm.await_args.kwargs.get("timeout") == 60.0
 
 
@@ -55,4 +57,5 @@ async def test_acomplete_byom_local_uses_extended_timeout() -> None:
         await LLMGateway.acomplete_byom(
             messages=[{"role": "user", "content": "hi"}],
         )
+    assert mock_litellm.await_args is not None
     assert mock_litellm.await_args.kwargs.get("timeout") == _LOCAL_LLM_TIMEOUT_S

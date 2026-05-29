@@ -4,7 +4,6 @@
 
 import asyncio
 from typing import List, Tuple
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -172,7 +171,6 @@ async def test_guardrail_stops_at_max_retries() -> None:
 
 def test_route_after_validation_routes_to_coder_on_failure() -> None:
     """route_after_validation returns 'coder_agent' when guardrail_failed=True."""
-    from langgraph.graph import END
     state = {"guardrail_failed": True}
     assert route_after_validation(state) == "coder_agent"
 

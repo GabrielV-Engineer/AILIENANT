@@ -145,7 +145,6 @@ async def test_planner_freezes_immutable_wbs_on_first_turn() -> None:
 async def test_planner_does_not_overwrite_immutable_wbs_on_retry() -> None:
     """run_planner_node must NOT update immutable_wbs when it is already set."""
     from agents.planner import run_planner_node
-    from brain.state import MissionSpecification
 
     existing_wbs = _make_spec("Original plan", ["Step one"])
 

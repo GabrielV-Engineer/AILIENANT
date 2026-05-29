@@ -3,14 +3,13 @@
 # DoD: pytest tests/test_infrastructure.py -v must pass with 0 failures.
 
 import asyncio
-import math
-from typing import Dict, List
+from typing import Dict, List, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from brain.state import _merge_messages
-from brain.summarizer import KEEP_LAST_N, THRESHOLD_RATIO, run_summarize_node
+from brain.summarizer import KEEP_LAST_N, run_summarize_node
 from core.io_coalescer import IOCoalescer, is_critical_file
 from shared.config import MODEL_SMALL
 
@@ -28,7 +27,7 @@ def test_merge_messages_normal_append() -> None:
 def test_merge_messages_sentinel_replaces() -> None:
     old = [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
     replacement = [{"role": "system", "content": "summary"}]
-    result = _merge_messages(old, [{"__replace__": True}, *replacement])
+    result = _merge_messages(old, cast("list[dict[str, str]]", [{"__replace__": True}, *replacement]))
     assert result == replacement
 
 
@@ -39,7 +38,7 @@ def test_merge_messages_empty_update_is_append() -> None:
 
 def test_merge_messages_sentinel_only_produces_empty_list() -> None:
     old = [{"role": "user", "content": "a"}]
-    result = _merge_messages(old, [{"__replace__": True}])
+    result = _merge_messages(old, cast("list[dict[str, str]]", [{"__replace__": True}]))
     assert result == []
 
 

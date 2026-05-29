@@ -44,7 +44,8 @@ async def get_audit_log(offset: int = 0, limit: int = 20) -> list[dict]:
 async def get_audit_stats() -> dict:
     async with aiosqlite.connect(f"file:{DB_CATALOG_PATH}?mode=ro", uri=True) as db:
         async with db.execute("SELECT COUNT(*) FROM hitl_audit_log") as cur:
-            total = (await cur.fetchone())[0]
+            row = await cur.fetchone()
+            total = row[0] if row else 0
         async with db.execute(
             "SELECT resolution, COUNT(*) FROM hitl_audit_log GROUP BY resolution"
         ) as cur:

@@ -75,6 +75,7 @@ async def test_approved_invokes_write_pipeline() -> None:
             c.stop()
 
     apply_mock.assert_awaited_once()
+    assert apply_mock.await_args is not None
     session_id, contents, base_hashes = apply_mock.await_args.args[:3]
     assert session_id == "s1"
     assert contents == _CODER_RES["pending_contents"]

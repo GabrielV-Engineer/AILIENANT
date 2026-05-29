@@ -127,6 +127,8 @@ Proyect_Ailienant/
 │       └── docker-publish.yml  #   CI/CD: builds + pushes ailienant-sandbox to GHCR on main push (Phase 7.9.B.9)
 ├── ailienant-core/             # Python orchestration engine
 │   ├── Dockerfile              #   Sandbox image definition (python:3.13-slim + sandbox user; source of truth for CI/CD; Phase 7.9.B.9)
+│   ├── ruff.toml               #   Committed lint baseline (strict E4/E7/E9/F, no escape hatches; 2026-05-29 mypy/ruff cleanup → 0/0)
+│   ├── mypy.ini                #   Type-check config (excludes venv; ignore_missing_imports for stubless deps)
 │   ├── main.py                 # FastAPI app + WebSocket gateway
 │   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator) + analyst_context.py (Phase 7.10.3 — ADR-703 budgeted/sliced/sandboxed analyst context assembler) + inline_edit.py (Phase 7.11.1 — ADR-706 §4.5a Cmd+K streaming inline-edit agent: LLM→typed deltas with cooperative cancel + validator gate)
 │   ├── brain/                  # State machine + MCTS + checkpointing

@@ -17,7 +17,7 @@ import hashlib
 import logging
 import os
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import litellm
@@ -25,6 +25,8 @@ import pytest
 from fastapi.testclient import TestClient
 from litellm import ModelResponse
 from litellm.exceptions import ContextWindowExceededError
+
+from brain.state import AIlienantGraphState
 
 from core.audit import (
     AuditChainBrokenError,
@@ -212,7 +214,7 @@ def test_C1_budget_hard_kill(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(supervisor, "get_chain_head", AsyncMock(return_value=None))
     monkeypatch.setattr(supervisor, "_force_dlq", AsyncMock())
 
-    state: Dict[str, Any] = {"task_id": "c1", "session_max_budget_usd": 10.0}
+    state = cast(AIlienantGraphState, {"task_id": "c1", "session_max_budget_usd": 10.0})
     patch_out = asyncio.run(run_supervisor_node(state))
 
     assert patch_out["security_flags"] == ["SESSION_BUDGET_HARD_KILL"]
@@ -242,7 +244,7 @@ def test_C2_token_spike_hitl(monkeypatch: pytest.MonkeyPatch) -> None:
     approval = AsyncMock(return_value={"approved": True})
     monkeypatch.setattr(wsm.vfs_manager, "request_human_approval", approval)
 
-    state: Dict[str, Any] = {"task_id": "c2", "session_max_budget_usd": 10.0}
+    state = cast(AIlienantGraphState, {"task_id": "c2", "session_max_budget_usd": 10.0})
     asyncio.run(run_supervisor_node(state))
 
     approval.assert_awaited_once()

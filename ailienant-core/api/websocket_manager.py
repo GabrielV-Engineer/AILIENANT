@@ -5,7 +5,7 @@ import json
 import logging
 import secrets
 import uuid
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set, cast
 
 from fastapi import WebSocket
 from pydantic import ValidationError, TypeAdapter
@@ -64,7 +64,7 @@ def register_session_cleanup_hook(hook: Any) -> None:
 # TYPED ADAPTER (Pydantic V2)
 # =====================================================================
 # Compiled once at import time — reduces per-message validation latency.
-ws_adapter = TypeAdapter(WebSocketMessage)
+ws_adapter: TypeAdapter[WebSocketMessage] = TypeAdapter(WebSocketMessage)
 
 
 class ConnectionManager:
@@ -223,7 +223,14 @@ class ConnectionManager:
             ServerGraphMutationEvent(
                 data=GraphMutationPayload(
                     step_number=step_number,
-                    new_status=new_status,
+                    # Callers (e.g. agents/coder.py) pass a plain str; the
+                    # payload field is a closed Literal. Cast here rather than
+                    # tightening the param type, which would cascade to the
+                    # locked agent call sites.
+                    new_status=cast(
+                        Literal["pending", "in_progress", "completed", "failed"],
+                        new_status,
+                    ),
                     agent_name=agent_name,
                 )
             ),

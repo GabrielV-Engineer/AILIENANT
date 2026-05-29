@@ -17,7 +17,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import lancedb  # type: ignore[import-untyped]
 import numpy as np
