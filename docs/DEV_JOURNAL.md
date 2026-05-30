@@ -4,26 +4,36 @@
 
 ## Hito 7.13.0: The Enterprise Spinal Cord — blueprint & WBS lock-in (planning artifact) — 2026-05-30
 
-**Status:** PLANNED (WBS + blueprint sellados; implementación pendiente) | **Phase:** 7.13 (ADR-708..713)
+**Status:** PLANNED — **v2 reorder sellado** (WBS + blueprint reescritos a orden de construcción 7.13.0–7.13.12; implementación arranca por 7.13.1) | **Phase:** 7.13 (ADR-708..718, **ADR-710 reescrito**)
 
 **Problem:** tras 7.10–7.12 + Phase 9 el sistema *funciona* pero sigue siendo un modelo **Pull** (chat walkie-talkie). La realidad del IDE (saves/renames/deletes/idle) no llega al cerebro por sí sola; la memoria GraphRAG es un snapshot stale por sesión; features backend caras quedaron huérfanas por falta de UI/trigger (Planner Manual Mode, `OvernightDaemon`); los errores de tool/schema/API pueden llegar crudos al usuario; y no existe un canal de observabilidad en archivo para ver el sistema respirar durante el desarrollo.
 
-**Approach:** se diseñó la **Fase 7.13 — The Enterprise Spinal Cord** como el pivote a una **arquitectura event-driven (Push)**. Decisión de numeración del usuario: continuar la convención 7.x (no un top-level nuevo). El framing refleja una **auditoría del código** (extender/cablear lo existente y borrar duplicados, no greenfield): los watchers, el indexer, el daemon, el Manual Mode y los paneles de dashboard ya existen parcialmente — 7.13 construye sólo los deltas. Seis puntos de feedback del usuario quedaron endurecidos como cláusulas vinculantes (no sugerencias sueltas): absorción de la observabilidad de la Fase 8, backpressure/priority-class del canal silencioso, disciplina de race indexing↔Dreaming, aislamiento cognitivo del `ErrorCorrectionAgent`, seguridad del log (`.gitignore` + UTF-8), e inventario de dashboard aprobado por el usuario antes de borrar nada.
+**Approach:** se diseñó la **Fase 7.13 — The Enterprise Spinal Cord** como el pivote a una **arquitectura event-driven (Push)**. Decisión de numeración del usuario: continuar la convención 7.x (no un top-level nuevo). El framing refleja una **auditoría del código** (extender/cablear lo existente y borrar duplicados, no greenfield): los watchers, el indexer, el daemon, el Manual Mode y los paneles de dashboard ya existen parcialmente — 7.13 construye sólo los deltas. Seis puntos de feedback del usuario quedaron endurecidos como cláusulas vinculantes: absorción de la observabilidad de la Fase 8, backpressure/priority-class del canal silencioso, disciplina de race indexing↔Dreaming, aislamiento cognitivo del `ErrorCorrectionAgent`, seguridad del log (`.gitignore` + UTF-8), e inventario de dashboard aprobado por el usuario antes de borrar nada.
 
-**Files changed:**
-- `docs/PROJECT_MANIFEST.md` — nueva sección `## 🦴 FASE 7.13` (7.13.0–7.13.9) entre 7.12 y Fase 10; fila en el Quick Reference; `Estado Actual` apunta a 7.13; nota de **Absorción 7.13 → Fase 8** en Convenciones; anotación de observabilidad en la fila de la Fase 8.
-- `docs/PHASE_7_13_BLUEPRINT.md` (NUEVO) — contrato maestro con ADR-708..713, tabla de auditoría, scope boundary, diseño por pilar, inventario de archivos (nuevos/modificados/reusados), plan de verificación (gate 7.13.9), roadmap impact, anti-patterns y glosario.
-- `README.md` — Repository Layout lista el nuevo blueprint.
+**v2 reorder (esta sesión):** una segunda auditoría más profunda (3 agentes Explore) destapó gaps de wiring backend↔frontend, acciones backend huérfanas sin trigger de UI, puntos reales de interrupción del cliente, y los **safeguards mecánicos** que un sistema Push necesita. Se reorganizó toda la fase **en orden de construcción** a **7.13.0–7.13.12** y se añadieron tres cambios de diseño vinculantes del usuario:
+1. **Dreaming 100% MANUAL** — se mata el idle-trap de 5 min; la consolidación dispara sólo desde una acción explícita (botón WebDashboard + comando VS Code → `client_dreaming_run`). Un timer despertando GraphRAG+LLM durante un build/local-model sobrecarga el hardware, compite con typistas y gasta tokens sin supervisión → **ADR-710 reescrito**.
+2. **Sin nuevos archivos de ignore** — la exclusión de telemetría reutiliza el **Dual-Rules Resolver §3.4.6** (`core/rules.py::RuleManager` + el Privacy Gate §7.1.2 en `ide_sync.ts`) → **ADR-718**.
+3. **Incognito Mode** — toggle en la status-bar de VS Code que pausa el bus al instante → **ADR-718**.
+Se verificó *ground truth* vía ripgrep (los reads de la sesión previa eran inestables): **GAP1** (sin `asyncio.Lock` en `upsert_dependencies`/`purge_file_nodes`) y **GAP3** (sin rate-limit inbound) **confirmados reales**; **GAP4** (tareas huérfanas) **parcialmente mitigado** ya (`active_tasks` drain + `cleanup_session` hook existen — 7.13.1 los EXTIENDE); `agents/mcts_coder.py` **no** toca `core/db.py` (el lock lo toma el graph-reader path: daemon + GraphRAG extractor). Corrección a v1: los paneles Hardware/Runtime/Rules/Audit **sí** fetchean endpoints reales — 7.13.10 verifica, no borra a ciegas. Se añadió la **Backend Integration Matrix** (retrofits de las fases `[x]` 0–6 acopladas por el modelo Push) con back-pointers `**Ref:** 7.13.x`.
+
+**Files changed (v2):**
+- `docs/PROJECT_MANIFEST.md` — sección `## 🦴 FASE 7.13` **reescrita** a 7.13.0–7.13.12 en orden de construcción; nota de orden + Backend Retrofit en el header; fix de la referencia de absorción Fase 8 (7.13.7→7.13.3); back-pointer `**Ref:** 7.13.7` en la tarea `[x]` 6.3 (OOM/llm_gateway).
+- `docs/PHASE_7_13_BLUEPRINT.md` — **reescrito a v2**: ADRs contiguos 708→718 (ADR-710 reescrito = manual; ADR-714/715/716/718 nuevos), tabla de auditoría actualizada (corrección dashboard-wired + huérfanos genuinos), scope boundary, diseño por pilar en orden de construcción, inventario de archivos, plan de verificación (gate 7.13.12 con PR1/PR2/CC1/RL1/SF1/CN1/DR1/FR1-3/OR1-3), roadmap impact, anti-patterns, glosario y nueva **§9 Backend Integration Matrix**.
+- `docs/DEV_JOURNAL.md` — esta entrada (v2 reorder).
 
 **Architectural outcomes:**
-- **ADR-708** canal de telemetría IDE silencioso sobre el WS existente (sin segundo socket) con priority-class anti Head-of-Line-Blocking.
-- **ADR-709** indexación incremental reactiva por `file_saved` (single-file `semantic_upsert`, sin re-crawl).
-- **ADR-710** Dreaming disparado por idle con disciplina de race basada en `document_version_id`.
-- **ADR-711** `ErrorCorrectionAgent` self-healing (traceback→fix→retry ≤3), aislamiento cognitivo estricto + parches vía `apply_patch`/HITL.
-- **ADR-712** sink `.ailienant_telemetry.log` (scrubbed, bounded/rotado, UTF-8, `.gitignore`) que **absorbe la observabilidad de la Fase 8**.
-- **ADR-713** máquina de estados multi-turno en `Workspace.tsx` + superficie de Planner Manual Mode.
+- **ADR-708** canal de telemetría IDE silencioso sobre el WS existente (sin segundo socket) con priority-class anti Head-of-Line-Blocking + cap de `_pendingSends`; cablea el sender huérfano `client_file_delete`.
+- **ADR-709** indexación incremental reactiva por `file_saved` bajo lock + single-flight, entrada unificada idempotente por content-hash (agente + humano), circuit breaker.
+- **ADR-710 (REESCRITO)** Dreaming **manual** vía `client_dreaming_run` (botón + comando), bajo lock compartido + cancellation token, race-guard por `document_version_id`, DLQ-wrap; **sin timer de idle**.
+- **ADR-711** `ErrorCorrectionAgent` self-healing (traceback→fix→retry ≤3 → DLQ), aislamiento cognitivo estricto + parches vía `apply_patch`/HITL, failure-signature cache.
+- **ADR-712** sink `.ailienant_telemetry.log` (scrubbed, `RotatingFileHandler`, UTF-8, `.gitignore`) que **absorbe la observabilidad de la Fase 8**; construido temprano como instrumento de verificación.
+- **ADR-713** máquina de estados multi-turno en `Workspace.tsx` + superficie de Planner Manual Mode; cablea el toggle huérfano `client_planner_mode_toggle`.
+- **ADR-714 (NUEVO)** concurrencia & seguridad de recursos: `asyncio.Lock` por proyecto (graph/LanceDB), single-flight, registry de tareas por sesión con cancel en disconnect, rate-limit inbound WS, log rotado.
+- **ADR-715 (NUEVO)** resiliencia de stream frontend: correlation/request IDs, stream watchdog, send queue + re-attach, ACK de ABORT/HITL, limpiar `isAborting` en rehydrate, sembrar `document_version_id` al arranque, buffers acotados.
+- **ADR-716 (NUEVO)** recuperación de huérfanos & superficies Push-fed: inventario aprobado (verificar, no borrar a ciegas), paneles mount-poll → suscripción al bus, superficie de resume DLQ (`/task/resume` + `/dlq/pending`), wiring de eventos WS huérfanos.
+- **ADR-718 (NUEVO)** privacidad & filtrado de telemetría: Dual-Rules Resolver §3.4.6 (sin nuevos ignore-files) + toggle Incognito en status-bar.
 
-**Verification:** artefacto de documentación — verificación estructural: la sección 7.13 renderiza entre 7.12 y Fase 10; numeración ADR contigua (708→713); cada sub-tarea 7.13.1–7.13.8 mapea ≥1 ADR; rutas del inventario existen en el repo. Sin cambios de código fuente en este hito.
+**Verification:** artefacto de documentación — verificación estructural: la sección 7.13 renderiza entre 7.12 y Fase 10 con 13 sub-fases (0–12); numeración ADR contigua (708→718, 717 sin usar); cada sub-tarea 7.13.1–7.13.11 mapea ≥1 ADR; cada GAP1–9 + cada gap de interrupción frontend + los controles privacy/Incognito + cada retrofit backend aparecen en exactamente una sub-fase; rutas referenciadas existen en el repo (`core/db.py::upsert_dependencies`/`purge_file_nodes` verificadas vía ripgrep esta sesión). Sin cambios de código fuente en este hito.
 
 ---
 
