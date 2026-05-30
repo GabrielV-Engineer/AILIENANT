@@ -103,7 +103,9 @@ export class SessionManager {
             // 5. Emitir la Misión (Boca) al API Gateway
             const apiClient = APIClient.getInstance();
 
-            vscode.window.showInformationMessage(`AILIENANT: Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
+            // Phase 7.12 — analysis start is already signalled by the streaming UI;
+            // a host toast on every directive spams the VS Code event loop.
+            console.debug(`[SessionManager] Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
 
             // Disparamos la petición. Si falla, el catch local lo maneja.
             await apiClient.submitTask(this.sessionId, payload);

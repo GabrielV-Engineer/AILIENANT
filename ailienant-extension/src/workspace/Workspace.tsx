@@ -37,7 +37,38 @@ type ToastLevel = 'info' | 'warn' | 'error';
 interface ToastItem { id: number; level: ToastLevel; message: string; }
 let _toastId = 0;
 
+// Phase 7.12 — client-minted stable turn id. `crypto.randomUUID` is available in
+// the webview runtime; the fallback keeps types honest on exotic hosts.
+function mkId(): string {
+    try { return crypto.randomUUID(); }
+    catch { return `m_${Date.now()}_${Math.random().toString(36).slice(2)}`; }
+}
+
+/**
+ * Phase 7.12 — id-keyed transcript merge for REHYDRATE_TRANSCRIPT. The host
+ * transcript is the authoritative COMPLETED history; `local` may hold an
+ * in-flight turn the host hasn't persisted yet. Merge by stable `id` — never a
+ * length heuristic (fragile under mid-stream tab-switches → state tearing):
+ *   • host order is preserved as the spine;
+ *   • a still-`streaming` local copy wins for a matching id (live content is
+ *     fresher than the debounced host snapshot);
+ *   • local turns with an id absent from host are appended (brand-new in-flight).
+ */
+function mergeById<T extends { id?: string; streaming?: boolean }>(host: T[], local: T[]): T[] {
+    const hostIds = new Set(host.map(m => m.id).filter(Boolean));
+    const spine = host.map(m => {
+        const liveLocal = m.id ? local.find(l => l.id === m.id && l.streaming) : undefined;
+        return liveLocal ?? m;
+    });
+    const tail = local.filter(m => m.id && m.streaming && !hostIds.has(m.id));
+    return [...spine, ...tail];
+}
+
 export interface Message {
+    // Phase 7.12 — stable per-turn id (client-minted via crypto.randomUUID at
+    // creation). Display-layer only: it keys the REHYDRATE_TRANSCRIPT merge so a
+    // tab re-reveal never clobbers a live in-flight turn. Never sent to the core.
+    id?: string;
     role: 'user' | 'assistant';
     content: string;
     streaming?: boolean;
@@ -74,6 +105,7 @@ export interface Message {
     thinkingOpen?: boolean;
 }
 export interface NattMessage {
+    id?: string;   // Phase 7.12 — see Message.id (REHYDRATE_TRANSCRIPT merge key).
     role: 'natt' | 'user';
     content: string;
     streaming?: boolean;
@@ -108,6 +140,7 @@ function attachOrUpdateToolCall(
         return [...prev.slice(0, lastIdx), { ...last, toolCalls: nextCalls }];
     }
     return [...prev, {
+        id: mkId(),
         role: 'assistant',
         content: '',
         toolCalls: [update(undefined)],
@@ -169,6 +202,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // Phase 7.11.3 — Stop-button optimistic flag (Zustand, transient).
     const isAborting    = useWorkspaceStore((s) => s.isAborting);
     const setIsAborting = useWorkspaceStore((s) => s.setIsAborting);
+    // Phase 7.12 — in-flight Thought-Box resilience snapshot setter.
+    const setInflightTurn = useWorkspaceStore((s) => s.setInflightTurn);
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -225,17 +260,56 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 // Phase 7.11.8 — carry checkpoint_id + is_abort_savepoint so
                 // the rehydrated transcript still shows the ↪ Branch button.
                 messages: messages.map(({
-                    role, content, steps, stepsDone, toolCalls,
+                    id, role, content, steps, stepsDone, toolCalls,
                     checkpoint_id, is_abort_savepoint,
                 }) => ({
-                    role, content, steps, stepsDone, toolCalls,
+                    id, role, content, steps, stepsDone, toolCalls,
                     checkpoint_id, is_abort_savepoint,
                 })),
-                nattMessages: nattMessages.map(({ role, content }) => ({ role, content })),
+                nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
             });
         }, 400);
         return () => clearTimeout(handle);
     }, [messages, nattMessages]);
+
+    // Phase 7.12 — in-flight Thought-Box resilience. Snapshot the active streaming
+    // turn (id + content + thinking slice, NO parserState/toolCalls) into the
+    // panel-survivable store, throttled. ADR-707 keeps reasoning display-only and
+    // out of the host transcript, so this webview-local copy is the only way a
+    // partial trace survives a teardown/reconnect. Cleared on server_stream_end.
+    useEffect(() => {
+        const inflight = messages.find(m => m.streaming && m.role === 'assistant');
+        const handle = setTimeout(() => {
+            setInflightTurn(inflight
+                ? {
+                    id: inflight.id,
+                    role: inflight.role,
+                    content: inflight.content,
+                    streaming: true,
+                    thinking: inflight.thinking,
+                    thinkingTokens: inflight.thinkingTokens,
+                    thinkingStartedAt: inflight.thinkingStartedAt,
+                    thinkingElapsedMs: inflight.thinkingElapsedMs,
+                    thinkingOpen: inflight.thinkingOpen,
+                    steps: inflight.steps,
+                    stepsDone: inflight.stepsDone,
+                }
+                : null);
+        }, 200);
+        return () => clearTimeout(handle);
+    }, [messages, setInflightTurn]);
+
+    // Phase 7.12 — on mount, rehydrate a persisted in-flight turn (survives a
+    // panel teardown/reload). Merge by id so it never duplicates a turn already
+    // present in the restored transcript. Runs once.
+    useEffect(() => {
+        const saved = useWorkspaceStore.getState().inflightTurn;
+        if (saved?.id && saved.streaming) {
+            setMessages(prev =>
+                prev.some(m => m.id === saved.id) ? prev : [...prev, saved as Message]);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // ── WS / extension message handler ─────────────────────────
     useEffect(() => {
@@ -246,6 +320,23 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 case 'WS_STATUS':
                     setWsStatus(msg.payload as WsConnectionStatus);
                     break;
+                case 'REHYDRATE_TRANSCRIPT': {
+                    // Phase 7.12 — host re-posts the authoritative per-session
+                    // transcript when this hidden panel becomes visible again
+                    // (retainContextWhenHidden:false destroys the webview, so the
+                    // creation-time data-initial snapshot is stale). Merge by id —
+                    // an in-flight streaming turn is preserved, never clobbered.
+                    const rh = msg as unknown as {
+                        messages?: Message[]; nattMessages?: NattMessage[];
+                    };
+                    if (Array.isArray(rh.messages)) {
+                        setMessages(prev => mergeById(rh.messages as Message[], prev));
+                    }
+                    if (Array.isArray(rh.nattMessages)) {
+                        setNattMessages(prev => mergeById(rh.nattMessages as NattMessage[], prev));
+                    }
+                    break;
+                }
                 case 'CONFIG_UPDATED':
                     setConfig((msg.config ?? null) as AilienantConfig | null);
                     break;
@@ -277,6 +368,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             }];
                         }
                         return [...prev, {
+                            id: mkId(),
                             role: 'assistant',
                             content: d.token,
                             streaming: true,
@@ -299,7 +391,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             return [...prev.slice(0, -1),
                                 accumulateThinking(last, d.delta, d.token_count, now)];
                         }
-                        return [...prev, newThinkingTurn(d.delta, d.token_count, now)];
+                        return [...prev, { id: mkId(), ...newThinkingTurn(d.delta, d.token_count, now) }];
                     });
                     break;
                 }
@@ -314,7 +406,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         if (last?.role === 'assistant' && last.streaming) {
                             return [...prev.slice(0, -1), { ...last, steps: [...(last.steps ?? []), node] }];
                         }
-                        return [...prev, { role: 'assistant', content: '', streaming: true, steps: [node] }];
+                        return [...prev, { id: mkId(), role: 'assistant', content: '', streaming: true, steps: [node] }];
                     });
                     break;
                 }
@@ -323,6 +415,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     // Phase 7.11.3 — back to idle whether the stream ended
                     // naturally or because we aborted it.
                     setIsAborting(false);
+                    // Phase 7.12 — the turn is complete and now lives in the host
+                    // transcript; drop the in-flight resilience snapshot so a stale
+                    // Thought Box can't resurrect on the next reload.
+                    setInflightTurn(null);
                     // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: capture the
                     // L2-promoted checkpoint_id (when present) and attach it
                     // to the last assistant turn so the per-message ↪ Branch
@@ -443,7 +539,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_natt_message': {
                     const d = msg.payload as { content: string; is_alert?: boolean };
-                    setNattMessages(prev => [...prev, { role: 'natt', content: d.content }]);
+                    setNattMessages(prev => [...prev, { id: mkId(), role: 'natt', content: d.content }]);
                     break;
                 }
                 case 'server_natt_token': {
@@ -464,6 +560,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             }];
                         }
                         return [...prev, {
+                            id: mkId(),
                             role: 'natt',
                             content: d.token,
                             streaming: true,
@@ -625,7 +722,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     const handleSubmit = useCallback((text: string) => {
         const presetConfig = getPresetConfig(preset);
-        setMessages(prev => [...prev, { role: 'user', content: text }]);
+        setMessages(prev => [...prev, { id: mkId(), role: 'user', content: text }]);
         vscode.postMessage({
             type: 'SUBMIT_TASK',
             value: text,
@@ -671,7 +768,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     }, []);
 
     const handleNattSubmit = useCallback((text: string) => {
-        setNattMessages(prev => [...prev, { role: 'user', content: text }]);
+        setNattMessages(prev => [...prev, { id: mkId(), role: 'user', content: text }]);
         const contextPaths = nattAttachedItems.map(i => i.path);
         vscode.postMessage({
             type: 'NATT_MESSAGE',

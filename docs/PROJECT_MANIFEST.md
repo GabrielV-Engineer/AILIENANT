@@ -29,6 +29,7 @@
 | 7 | Extensión VS Code (Frontend TS/React) | 🟡 EN CURSO |
 | 7.10 | Cognitive Transparency & Connective Integration | ✅ |
 | 7.11 | VS Code Native Mesh Execution | ⬜ |
+| 7.12 | UX/State Stabilization & Context Injection Pathing | ✅ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream · ADR-707) | ✅ |
 | 10 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
@@ -1928,6 +1929,33 @@ the blueprint freeze lifts.
 
 - [x] **9.5. Checkpoint Gate Fase 9 (Native Thinking)**
   - `tests/test_native_thinking.py` (7) + `src/test/nativeThinking.test.ts` (7). DoD verificado: backend `pytest` 665 passed, `mypy .` limpio (202 archivos, namespace packages), `ruff` limpio; frontend `npm run compile` 0 errores, suite Mocha **50 passing**. Gate rows: NT1 bifurcación ordenada · NT2 fallback sin razonamiento · NT3 persistencia del toggle · NT4 cronometría/auto-collapse · NT5 budget+abort · ISO1 `agents/` sin diff · REG regresión verde.
+
+---
+
+## 🩹 FASE 7.12 — UX/State Stabilization & Context Injection Pathing — ✅ COMPLETADA (2026-05-29)
+
+> Patch de estabilización de regresiones post-7.11/Phase 9. Cuatro causas raíz: spam de pop-ups host-side, alucinación de esquema del Planner, volatilidad de estado del WebView, y starvation de contexto (los agentes no veían la *forma* del workspace). Sin alterar `AIlienantGraphState`, `ContextMeter`, ni el set de campos de `MissionSpecification` (contratos inmutables) — solo coercers `mode="before"` aditivos y texto de prompt.
+
+- [x] **7.12.1. UX — silenciar pop-up spam**
+  - `api/ws_client.ts::_emitStatus` ya no dispara toasts en connect/reconnect normales (el WebView muestra el indicador `WS_STATUS`); `brain/session.ts` baja el toast "Analyzing directive…" a `console.debug`. Se preservan: auth-rejection, abort, conflicto OCC, `@folder` too-large, y las notificaciones HITL nativas (ADR-706 §4.5f).
+
+- [x] **7.12.2. Schema — coerción de alucinaciones del Planner (Issues 2 & 5)**
+  - `brain/state.py`: `MissionSpecification._coerce_hallucinated_str_lists` (`mode="before"`) aplana dicts/escalares en `scope`/`constraints`/`decisions`/`checks`/`tdd_criteria` → `List[str]`; `WBSStep` coacciona `target_role` fuera de vocabulario → `core_dev`. `agents/planner.py`: prompt endurecido (reglas de tipo explícitas + vocabulario canónico de 8 roles). Reutiliza `_extract_nested_schema_target` (ADR-704) sin tocarlo. Tests: `tests/test_mission_spec_coercion.py` (5).
+
+- [x] **7.12.3. State — rehidratación de transcript en re-reveal (Issue 3)**
+  - `Message`/`NattMessage` ganan `id` (cliente, `crypto.randomUUID`); `workspace_panel.ts` re-postea el transcript autoritativo host-side vía `REHYDRATE_TRANSCRIPT` en `onDidChangeViewState(visible)`; `Workspace.tsx` hace **merge por id** (un turno `streaming` local nunca es sobrescrito) — sin heurística de longitud. `ChatTurn` backend permanece `{role, content}`.
+
+- [x] **7.12.4. Thinking — resiliencia del Thought-Box in-flight (Issue 7)**
+  - `workspaceStore.ts` gana `inflightTurn` (snapshot display-only persistido vía getState/setState, ADR-706 §4.5c); `Workspace.tsx` snapshotea el turno streaming throttled y lo rehidrata al montar; limpiado en `server_stream_end`. El razonamiento sigue fuera del transcript host (ADR-707).
+
+- [x] **7.12.5. Dead UI — badge de tier en la lista de sesiones (Issue 6)**
+  - `SessionCard.tsx`: removido el nodo `<span class="sb-card-tier">` (más su separador) — `model_tier` estaba hardcoded a `'medium'` en creación. Sin tocar el campo `Session.model_tier`, configs, ni literales `IntelligenceProfile`/`DreamingProfile`.
+
+- [x] **7.12.6. Context — inyección de la forma del workspace (Issues 4 & 8)**
+  - `agents/workspace_context.py` (NUEVO): `build_workspace_overview` produce un árbol de carpetas con límites DUROS (`max_depth=3`, `max_files=100`, budget ≤2KB, poda de `node_modules`/`.git`/`venv`/etc.) + manifests raíz (`README.md`, `pyproject.toml`, `package.json`). Inyectado en el Planner (`agents/planner.py`, dentro del boundary uuid) y en el Analista (`agents/analyst_context.py`, sandbox G3 + budget G4 sobrante). Tests: `tests/test_workspace_context.py` (5).
+
+- [x] **7.12.7. Checkpoint Gate Fase 7.12**
+  - DoD verificado: backend `pytest` **675 passed**, `mypy --explicit-package-bases .` limpio (**205 archivos**), `ruff check` limpio; frontend `npm run compile` 0 errores de tipo + 0 errores de lint (2 warnings ajenos pre-existentes). Valla de aislamiento cognitivo respetada: la lógica de `agents/` nueva es solo inyección de contexto read-only (sin mutación de estado del grafo).
 
 ---
 

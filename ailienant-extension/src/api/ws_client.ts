@@ -166,10 +166,11 @@ export class WSClient {
     private _emitStatus(status: WsConnectionStatus): void {
         this._status = status;
         this.onStatusHandlers.forEach(h => h(status));
-        if (status === 'connected') {
-            vscode.window.showInformationMessage('AILIENANT: Quantum tunnel connected');
-        } else if (status === 'disconnected') {
-            vscode.window.showErrorMessage('AILIENANT: Connection lost');
+        // Phase 7.12 — connection status is surfaced asynchronously in the webview
+        // via the WS_STATUS indicator (workspace_panel.ts:459). No host toasts on
+        // normal connect/reconnect cycles (they spam the VS Code UI event loop).
+        if (status === 'disconnected') {
+            console.error('[WSClient] Connection lost (status=disconnected)');
         }
     }
 

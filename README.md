@@ -130,7 +130,7 @@ Proyect_Ailienant/
 │   ├── ruff.toml               #   Committed lint baseline (strict E4/E7/E9/F, no escape hatches; 2026-05-29 mypy/ruff cleanup → 0/0)
 │   ├── mypy.ini                #   Type-check config (excludes venv; ignore_missing_imports for stubless deps)
 │   ├── main.py                 # FastAPI app + WebSocket gateway
-│   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator) + analyst_context.py (Phase 7.10.3 — ADR-703 budgeted/sliced/sandboxed analyst context assembler) + inline_edit.py (Phase 7.11.1 — ADR-706 §4.5a Cmd+K streaming inline-edit agent: LLM→typed deltas with cooperative cancel + validator gate)
+│   ├── agents/                 # LangGraph nodes (planner, coder, analyst, logic, mcts_coder, contract_guard, researcher, orchestrator) + analyst_context.py (Phase 7.10.3 — ADR-703 budgeted/sliced/sandboxed analyst context assembler) + inline_edit.py (Phase 7.11.1 — ADR-706 §4.5a Cmd+K streaming inline-edit agent: LLM→typed deltas with cooperative cancel + validator gate) + workspace_context.py (Phase 7.12 — hard-bounded workspace-shape overview: depth/file-capped tree + root manifests, injected into planner & analyst)
 │   ├── brain/                  # State machine + MCTS + checkpointing
 │   │   ├── engine.py           #   legacy `alienant_app` graph + re-export of process_user_intent
 │   │   ├── intent_router.py    #   process_user_intent() — dispatches SEQUENTIAL / MICRO_SWARM / FULL_SWARM

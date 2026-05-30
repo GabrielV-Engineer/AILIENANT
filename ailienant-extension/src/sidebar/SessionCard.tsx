@@ -135,8 +135,8 @@ export function SessionCard({
                         <span>{session.message_count} msg</span>
                     </>
                 )}
-                <span className="sb-card-sep">·</span>
-                <span className="sb-card-tier" data-tier={session.model_tier}>{session.model_tier}</span>
+                {/* Phase 7.12 — removed dead `model_tier` badge (hardcoded 'medium'
+                    at session creation; a meaningless static artifact). */}
             </div>
             <Tooltip content="Delete session" side="left">
                 <button

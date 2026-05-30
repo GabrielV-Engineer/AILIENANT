@@ -194,6 +194,7 @@ const MAX_PERSISTED_MESSAGES = 200;  // bound storage growth per session
 // (including their final status, output, and dep_graph) survive a panel close.
 import type { ToolCallShape } from '../shared/config';
 interface StoredMessage {
+    id?: string;   // Phase 7.12 — stable turn id; keys the REHYDRATE_TRANSCRIPT merge.
     role: 'user' | 'assistant';
     content: string;
     steps?: string[];
@@ -205,7 +206,7 @@ interface StoredMessage {
     checkpoint_id?: string;
     is_abort_savepoint?: boolean;
 }
-interface StoredNattMessage { role: 'natt' | 'user'; content: string; }
+interface StoredNattMessage { id?: string; role: 'natt' | 'user'; content: string; }
 interface StoredTranscript { messages: StoredMessage[]; nattMessages: StoredNattMessage[]; }
 
 export class WorkspacePanelManager {
@@ -444,7 +445,21 @@ export class WorkspacePanelManager {
             },
         });
         hitlNotifier.setVisibility(panel.visible);
-        panel.onDidChangeViewState(e => hitlNotifier.setVisibility(e.webviewPanel.visible));
+        panel.onDidChangeViewState(e => {
+            hitlNotifier.setVisibility(e.webviewPanel.visible);
+            // Phase 7.12 — when a hidden panel becomes visible again, the webview
+            // may have been torn down (retainContextWhenHidden:false) and reloaded
+            // from a stale creation-time data-initial snapshot. Re-post the
+            // authoritative host transcript; the webview merges it by message id.
+            if (e.webviewPanel.visible) {
+                const t = this._getTranscript(session.id);
+                e.webviewPanel.webview.postMessage({
+                    type: 'REHYDRATE_TRANSCRIPT',
+                    messages: t.messages,
+                    nattMessages: t.nattMessages,
+                });
+            }
+        });
         panel.onDidDispose(() => hitlNotifier.setVisibility(false));
 
         panel.webview.html = this._renderHtml(panel.webview, session);

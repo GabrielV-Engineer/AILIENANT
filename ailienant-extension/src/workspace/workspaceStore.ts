@@ -14,6 +14,8 @@
  *   - `coreMenuOpen`          — header core-status popover
  *   - `mode`/`preset`/`tier`  — ModeMenu local toggles (NOT host-persisted)
  *   - `lastScrollY`           — chat scroll position
+ *   - `inflightTurn`          — Phase 7.12: in-flight streaming turn snapshot
+ *                               (display-only thinking resilience across reloads)
  *
  * Excluded (host-fed, live, or transient — leave as `useState`):
  *   - wsStatus, occStatus, telemetry, snapshot, indexing, lockedFiles, config,
@@ -24,6 +26,28 @@
 import type { ExecutionMode } from '../shared/types';
 import type { ReasoningPreset, InferenceTier } from '../shared/config';
 import { createPersistedStore } from '../shared/persistedStore';
+
+/**
+ * Phase 7.12 — minimal snapshot of the active streaming assistant turn, kept so
+ * an in-flight Native-Thinking trace (display-only, ADR-707) survives a panel
+ * teardown/reconnect (retainContextWhenHidden:false). Defined structurally (not
+ * imported from Workspace.tsx) to avoid a circular type import; a `Message` is
+ * assignable to it. `parserState`/`toolCalls` are intentionally omitted to keep
+ * the persisted blob small.
+ */
+export interface InflightSnapshot {
+    id?: string;
+    role: 'user' | 'assistant';
+    content: string;
+    streaming?: boolean;
+    thinking?: string;
+    thinkingTokens?: number;
+    thinkingStartedAt?: number;
+    thinkingElapsedMs?: number;
+    thinkingOpen?: boolean;
+    steps?: string[];
+    stepsDone?: boolean;
+}
 
 export interface WorkspaceState {
     inputDraft: string;
@@ -52,6 +76,12 @@ export interface WorkspaceState {
      * models) or omits it for low-latency flat streaming.
      */
     nativeThinking: boolean;
+    /**
+     * Phase 7.12 — last snapshot of the in-flight streaming turn. Persisted so a
+     * reconnect / tab re-reveal can rehydrate a partial Thought Box instead of
+     * dropping it. Cleared (`null`) on `server_stream_end`. Display-only.
+     */
+    inflightTurn: InflightSnapshot | null;
 
     // Setters (Zustand pattern — flat actions colocated with state).
     setInputDraft: (v: string) => void;
@@ -65,6 +95,7 @@ export interface WorkspaceState {
     setLastScrollY: (v: number) => void;
     setIsAborting: (v: boolean) => void;
     setNativeThinking: (v: boolean) => void;
+    setInflightTurn: (v: InflightSnapshot | null) => void;
 }
 
 export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
@@ -80,6 +111,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         lastScrollY: 0,
         isAborting: false,
         nativeThinking: true,
+        inflightTurn: null,
 
         setInputDraft:   (v) => set({ inputDraft: v }),
         setPaletteOpen:  (v) => set({ paletteOpen: v }),
@@ -92,6 +124,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         setLastScrollY:  (v) => set({ lastScrollY: v }),
         setIsAborting:   (v) => set({ isAborting: v }),
         setNativeThinking: (v) => set({ nativeThinking: v }),
+        setInflightTurn: (v) => set({ inflightTurn: v }),
     }),
     {
         key: 'workspace.v1',
@@ -108,6 +141,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
             tier: s.tier,
             lastScrollY: s.lastScrollY,
             nativeThinking: s.nativeThinking,
+            inflightTurn: s.inflightTurn,
         }),
     },
 );

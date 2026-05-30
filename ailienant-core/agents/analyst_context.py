@@ -24,6 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agents.workspace_context import build_workspace_overview  # Phase 7.12 (Issues 4 & 8)
 from core.ast_engine import ASTEngine
 from core.vfs_middleware import VFSMiddleware
 
@@ -204,6 +205,20 @@ async def assemble_analyst_context(
             f'<{boundary}_context path="{path}">\n{safe}\n</{boundary}_context>'
         )
         remaining -= len(safe)
+
+    # 2b. Workspace shape (Phase 7.12, Issues 4 & 8) — depth-limited tree + root
+    # manifests, so the analyst is aware of project structure. Uses only leftover
+    # file budget (never starves actual file content), sandbox-wrapped (G3) and
+    # covered by the same raw-data clause below.
+    if project_root and remaining > 0:
+        ws_overview = build_workspace_overview(project_root, budget=min(remaining, FILE_CAP))
+        if ws_overview:
+            ws_safe = _sandbox_escape(ws_overview, boundary)[:remaining]
+            file_blocks.append(
+                f'<{boundary}_context kind="workspace_overview">\n{ws_safe}\n</{boundary}_context>'
+            )
+            remaining -= len(ws_safe)
+
     if file_blocks:
         sections.append("# Active file context\n" + "\n\n".join(file_blocks))
 
