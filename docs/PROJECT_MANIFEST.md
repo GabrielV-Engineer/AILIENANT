@@ -7,8 +7,8 @@
 ## 📍 Estado Actual
 
 - **Fase Activa:** Fase 7 — Extensión VS Code (Frontend TS/React)
-- **Hito Reciente:** Fase 6.10 — Checkpoint Gate Fase 6 (Adversarial E2E, 12/12 tests verdes); Fase 6 cerrada
-- **Próximo Objetivo:** Fase 7.1 — Base Client & IDE Sync (`src/ide_sync.ts`)
+- **Hito Reciente:** Fase 7.12 — UX/State Stabilization & Context Injection Pathing (675 tests verdes); Fase 9 Native Thinking cerrada
+- **Próximo Objetivo:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
 
 ---
 
@@ -30,7 +30,8 @@
 | 7.10 | Cognitive Transparency & Connective Integration | ✅ |
 | 7.11 | VS Code Native Mesh Execution | ⬜ |
 | 7.12 | UX/State Stabilization & Context Injection Pathing | ✅ |
-| 8 | Pruebas, Refinamiento y Degradación Elegante | ⬜ |
+| 7.13 | The Enterprise Spinal Cord (Event-Driven Telemetry, Reactive Memory & Self-Healing) | ⬜ |
+| 8 | Pruebas, Refinamiento y Degradación Elegante (observabilidad absorbida por 7.13) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream · ADR-707) | ✅ |
 | 10 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
 | 11 | Nivel Portafolio (Standout Release) | ⬜ |
@@ -45,6 +46,7 @@
 - Cuando una capacidad se extiende en una fase posterior, se usa **Ref:** `<fase>` en lugar de duplicar la especificación.
 - Decisiones arquitectónicas históricas (`[ARCH-PIVOT v3]`, `[ARCH-FINAL]`, etc.) **no aparecen en el body**; viven en `SCHEMA_EVOLUTION.MD`.
 - Cada fase termina con un **Checkpoint Gate** de validación (criterios DoD).
+- **Absorción 7.13 → Fase 8:** la Fase 7.13 absorbe los requisitos de **telemetría y observabilidad** originalmente planeados para la Fase 8 (`.ailienant_telemetry.log`, transiciones de nodo, eventos de indexación). La Fase 8 **no** debe re-crear sinks de log ni archivos de auditoría separados — sólo construye sobre el canal de 7.13.7.
 
 ---
 
@@ -1967,6 +1969,72 @@ the blueprint freeze lifts.
   - **Fix 4 (UTF-8 Windows):** `sys.stdout/stderr.reconfigure("utf-8")` al tope de `main.py` + `print()` con emoji del planner → `logger.info` (no más crash `charmap`).
   - **Fix 5 (drafts):** `inputDraft:string` → `draftMessages:Record<sessionId,string>` (store v2); el borrador sobrevive el cambio de sesión.
   - Saldada de paso la deuda strict pre-existente en `core/task_service.py` (5) y `main.py` (6). DoD: frontend `npm run compile`/`lint` 0 errores; `mypy --strict --follow-imports=silent` (planner, analyst_context, task_service, main) **0 errores**; `pytest` **675 passed**; `mypy .` whole-tree **210 archivos sin crash**; `ruff` limpio.
+
+---
+
+## 🦴 FASE 7.13 — The Enterprise Spinal Cord (Event-Driven Telemetry, Reactive Memory & Self-Healing) — ⬜ PENDIENTE
+
+> Paradigm shift de **Pull → Push**. El MVP queda atrás: AILIENANT deja de ser un chat
+> walkie-talkie y pasa a una **arquitectura event-driven**. Conecta la realidad del IDE al
+> cerebro en tiempo real (telemetría silenciosa sobre WS), vuelve la memoria GraphRAG
+> reactiva e incremental, resucita features backend huérfanas por falta de UI, implementa
+> un loop de auto-sanación agéntico, y abre un canal de telemetría permanente para
+> observabilidad en vivo. **Zero placeholders, zero duplicación.**
+> **🔒 Binding contract:** [`docs/PHASE_7_13_BLUEPRINT.md`](PHASE_7_13_BLUEPRINT.md) (ADR-708..713) —
+> lectura obligatoria antes de cada tarea 7.13.
+
+- [ ] **7.13.0 — Phase 7.13 Blueprint Lock-In** *(meta)*
+  - Sella [`docs/PHASE_7_13_BLUEPRINT.md`](PHASE_7_13_BLUEPRINT.md): canal de telemetría IDE (ADR-708), indexación reactiva incremental (ADR-709), Dreaming por idle (ADR-710), self-healing `ErrorCorrectionAgent` (ADR-711), `.ailienant_telemetry.log` (ADR-712), máquina de estados multi-turno + Planner UI (ADR-713). Toda desviación exige enmienda al blueprint en el mismo PR.
+
+- [ ] **7.13.1 — Spinal Cord: Bus de Telemetría IDE (Push)**
+  - **Problem:** los watchers actuales (`onDidChangeActiveTextEditor`/`onDidChangeTextDocument` en `src/ide_sync.ts`) cubren foco y edición pero no el ciclo de vida de archivos; todo viaja por el WS principal mezclado con el stream de chat.
+  - **Frontend:** extender `src/ide_sync.ts` con `onDidSaveTextDocument`, `onDidRenameFiles`, `onDidDeleteFiles` (reutilizando el debounce 150ms existente; **no** crear un segundo watcher de cambios).
+  - **Transport:** canal de telemetría **silencioso** sobre el WS existente — eventos `client_ide_telemetry` (kind: `file_saved`/`file_renamed`/`file_deleted`/`active_changed`) que **no** disparan toasts ni interrumpen el chat (ADR-708). Reutiliza `WSClient` (`src/api/ws_client.ts`); **prohibido** abrir un segundo socket.
+  - **Backpressure / Head-of-Line Blocking:** clase de prioridad en `src/api/ws_client.ts` — los frames `chat_token`/`agent_status` tienen **prioridad absoluta**; los eventos de telemetría son **droppable/diferibles** si el canal está congestionado (un save de archivo grande o ráfaga de edits no debe retrasar los tokens del agente). Compone con `transport/throttler.py` (ADR-708).
+  - **Backend:** handler en `main.py` que despacha telemetría fuera del receive-loop (patrón off-loop 7.9.B.17) hacia el indexer reactivo y el daemon de Dreaming.
+  - **Files:** `src/ide_sync.ts`, `src/api/ws_client.ts`, `api/ws_contracts.py` (eventos aditivos), `main.py`.
+
+- [ ] **7.13.2 — Reactive GraphRAG (Indexación Incremental por Save)**
+  - **Problem:** `core/indexer.py` sólo indexa en bloque una vez por sesión (`ClientWorkspaceInitEvent`); la memoria es un snapshot stale.
+  - **Resolution:** al recibir `file_saved`, re-indexar **sólo ese archivo** en background reutilizando `SemanticMemoryManager.semantic_upsert` (borra+reinserta por `(workspace_hash, file_path)`) y refrescando el `dependency_graph` del nodo. Debounce por archivo (ventana ~500ms, reutilizar la forma de `core/io_coalescer.py`) para evitar tormenta de saves. Idempotente; prioridad de scheduler baja (reutilizar el nice/BELOW_NORMAL del indexer). En `file_deleted`/`file_renamed`: purgar/migrar la fila del vector store y del grafo (ADR-709).
+  - **Files:** `core/indexer.py`, `core/memory/semantic_memory.py`, `core/memory/graphrag_extractor.py`, `core/io_coalescer.py`.
+
+- [ ] **7.13.3 — Dreaming Trigger (Consolidación en Idle)**
+  - **Problem:** `OvernightDaemon` (`brain/daemon.py`) es un heartbeat stub jamás arrancado por `main.py`.
+  - **Resolution:** timer de inactividad — N minutos (default 5) tras el último `file_saved`/interacción dispara una pasada de consolidación de contexto del workspace (sin que el usuario lo pida). Arrancar el daemon en el lifespan de `main.py`; cancelar/reset en nueva actividad (reutilizar señales del bus 7.13.1). Bounds duros de tokens/tiempo (reutilizar `finops_gate`/token ledger); jamás muta archivos sin HITL (ADR-710).
+  - **Race condition vs. Reactive Indexing:** si llega un `file_saved` mientras el `OvernightDaemon` consolida, el daemon **aborta su transacción de escritura, invalida el snapshot actual y resetea el timer de 5min** — disciplina de divergencia contextual basada en `document_version_id` (mismo patrón que ADR-703). Nunca consolidar sobre un grafo que el save acaba de mutar (ADR-710).
+  - **Files:** `brain/daemon.py`, `main.py`, `agents/workspace_context.py`.
+
+- [ ] **7.13.4 — Orphanage Recovery: Máquina de Estados Multi-Turno & Planner UI**
+  - **Problem:** el Manual Mode del Planner (Socratic `ideation_loop`) existe en backend y se togglea por WS, pero el frontend no tiene UI — `plan_mode` cae en el chat estándar; no hay formulario interactivo ni prompt multi-turno bloqueado.
+  - **Resolution:** refactor de `src/workspace/Workspace.tsx` a una máquina de estados con modos distintos (Chat / Planner / Dreaming Dashboard, ADR-713). Cuando el Planner pida Q&A manual, renderizar un formulario interactivo / prompt multi-turno bloqueado (no volcar el contexto al chat estándar). Reutilizar los eventos WS de ideación y `workspaceStore.ts` (slice persistido). Sin tocar el contrato `MissionSpecification` ni `AIlienantGraphState`.
+  - **Files:** `src/workspace/Workspace.tsx`, `src/workspace/workspaceStore.ts`, nuevo `src/workspace/components/PlannerSession.tsx`, `src/workspace/components/ModeMenu.tsx`.
+
+- [ ] **7.13.5 — WebDashboard Synchronization (Wire-or-Delete)**
+  - **Problem:** paneles Hardware/Runtime/Rules/Audit muestran UI sin fetch; stub muerto de Terminal-context (`ContextOverlay.tsx`).
+  - **Step 1 — Inventario aprobado por el usuario (gating):** ANTES de tocar frontend, generar una **tabla Markdown** con el inventario completo: `control/botón/métrica → endpoint esperado → estado (live/stub/dead)`. El usuario **aprueba explícitamente** qué se cablea y qué se borra. Ningún borrado procede sin esa aprobación (evita eliminar interfaces útiles que sólo necesitaban un endpoint). La tabla se persiste en el blueprint para que las decisiones "redundante → borrar" sean auditables.
+  - **Step 2 — Resolution:** según la tabla aprobada, cablear los que tengan backend (p.ej. Audit → `/api/v1/audit/*`, Hardware → endpoint de RAM/VRAM, Rules → reglas de directorio) y **deprecar y borrar** lo aprobado como redundante/irreparable (regla zero-dedup). Sin "No data" silenciosos al cerrar.
+  - **Files:** `src/dashboard/panels/{HardwarePanel,RuntimePanel,RulesPanel,AuditPanel}.tsx`, `src/workspace/components/ContextOverlay.tsx`, endpoints REST en `api/` según corresponda.
+
+- [ ] **7.13.6 — The Agentic Loop: `ErrorCorrectionAgent` (Reflexion & Fallback)**
+  - **Problem:** existe el retry de validación (`brain/guardrails.py`, `MAX_RETRIES=2`) y el DLQ, pero ningún agente que **lea un stack trace, lea el archivo ofensor, proponga un fix y reintente**. Errores de tool/schema/API pueden llegar crudos al usuario.
+  - **Resolution:** nodo de auto-corrección en LangGraph (`brain/engine.py`) — ante fallo de tool, alucinación de schema, o crash de API, enrutar a un `ErrorCorrectionAgent` interno (`agents/error_correction.py`) que lea el traceback, use tools de lectura sobre el archivo, proponga el fix y reintente la ejecución **hasta 3 veces** antes de conceder (ADR-711). Reutilizar el `LLMGateway`; componer con — no duplicar — el guardrail y el DLQ existentes. Unificar los presupuestos de retry dispersos en una abstracción común.
+  - **Aislamiento cognitivo estricto:** herramienta de ingeniería fría y quirúrgica — **jamás** importa `brain.personality` (sin empatía ni disculpas que malgasten tokens y suban latencia en el loop). Sus parches pasan **obligatoriamente** por el flujo `apply_patch` + validación HITL existente antes de tocar disco; **nunca** se le concede escritura directa sin supervisión (ADR-711, respeta la valla 4.1.5).
+  - **Files:** nuevo `agents/error_correction.py`, `brain/engine.py`, `brain/guardrails.py`, `core/dead_letter.py`.
+
+- [ ] **7.13.7 — Claude's Eyes: Live Telemetry Log**
+  - **Problem:** la telemetría vive sólo en SQLite (`core/telemetry.py`); no hay un sink de archivo "tail-eable" durante el desarrollo.
+  - **Resolution:** logger dedicado que escribe payloads WS, eventos de indexación GraphRAG y transiciones de nodo LangGraph a `.ailienant_telemetry.log` en la raíz del workspace (ADR-712). Reutilizar `SecretsScrubberFilter` (Phase 6.7) en el path — jamás filtrar secretos. Bounded/rotado (tamaño máximo) para no agotar disco. Sirve como loop de verificación humano/agente durante 7.13.
+  - **Seguridad del sink:** el archivo es superficie de auditoría (loguea snippets de código y prompts). (1) Añadir `.ailienant_telemetry.log` a `.gitignore` **de inmediato** para que ni el usuario ni un agente lo suban a GitHub por accidente. (2) Forzar encoding **UTF-8** explícito al escribir desde Python (reutilizar la lección del fix Windows 7.12.9 Fix 4) para no crashear con emojis/caracteres raros en rutas (ADR-712).
+  - **Files:** nuevo `core/telemetry_log.py`, `core/telemetry.py`, `api/websocket_manager.py`, `brain/engine.py`, `.gitignore`.
+
+- [ ] **7.13.8 — Zero-Deduplication Sweep**
+  - **Problem:** lecturas de archivo duplicadas (`_make_vfs_reader` en `agents/coder.py` vs `VFSMiddleware.read_safe`); presupuestos de retry dispersos (guardrail=2, planner=2, MCTS=3, orchestrator).
+  - **Resolution:** consolidar el lector VFS en una factory reutilizable dentro de `VFSMiddleware`; unificar la lógica de retry/backoff bajo una abstracción común (consumida por 7.13.6). Barrido de conceptos solapados (dos formas de leer/escribir, stores de memoria en conflicto): elegir el path más robusto y borrar el otro.
+  - **Files:** `core/vfs_middleware.py`, `agents/coder.py`, módulos de retry afectados.
+
+- [ ] **7.13.9 — Checkpoint Gate Fase 7.13**
+  - DoD: `npm run compile` 0 errores; `mypy --strict` 0 errores sobre los archivos nuevos/modificados; `pytest` verde (≥ baseline 675). Gate rows: **SC1** save/rename/delete emiten telemetría silenciosa sin toast · **SC2** un `file_saved` re-indexa sólo ese archivo (verificable en `.ailienant_telemetry.log`) · **DR1** idle de 5min dispara Dreaming y se cancela con nueva actividad · **OR1** Planner Manual Mode renderiza formulario interactivo (no chat) · **DB1** ningún panel del dashboard muestra "No data"; los huérfanos están cableados o borrados · **AL1** un error mock se auto-recupera vía `ErrorCorrectionAgent` en ≤3 intentos sin error crudo al usuario · **TL1** `.ailienant_telemetry.log` registra payloads WS + transiciones de nodo, scrubbed · **DD1** sin lectores VFS / presupuestos de retry duplicados · **REG** regresión verde.
 
 ---
 

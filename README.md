@@ -207,6 +207,7 @@ Proyect_Ailienant/
 │   ├── PROJECT_MANIFEST.md     # Phase-by-phase roadmap (load-bearing)
 │   ├── PHASE_4_BLUEPRINT.md    # Master architectural contract for Phase 4 (mandatory read while Phase 4 is active)
 │   ├── PHASE_7_BLUEPRINT.md    # Master architectural contract for Phase 7.10/7.11 (mandatory read while active)
+│   ├── PHASE_7_13_BLUEPRINT.md # Master architectural contract for Phase 7.13 — Spinal Cord (ADR-708..713)
 │   ├── AILIENANT_CODEX.md      # Analyst self-knowledge source (Phase 7.10.3 — ADR-703; cached, budget-sliced into analyst context)
 │   ├── SCHEMA_EVOLUTION.MD     # State + agent contracts
 │   ├── SYSTEM_PROMPTS.md       # Agent system prompts

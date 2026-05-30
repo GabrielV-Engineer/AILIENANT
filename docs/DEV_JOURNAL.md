@@ -2,6 +2,31 @@
 
 ---
 
+## Hito 7.13.0: The Enterprise Spinal Cord — blueprint & WBS lock-in (planning artifact) — 2026-05-30
+
+**Status:** PLANNED (WBS + blueprint sellados; implementación pendiente) | **Phase:** 7.13 (ADR-708..713)
+
+**Problem:** tras 7.10–7.12 + Phase 9 el sistema *funciona* pero sigue siendo un modelo **Pull** (chat walkie-talkie). La realidad del IDE (saves/renames/deletes/idle) no llega al cerebro por sí sola; la memoria GraphRAG es un snapshot stale por sesión; features backend caras quedaron huérfanas por falta de UI/trigger (Planner Manual Mode, `OvernightDaemon`); los errores de tool/schema/API pueden llegar crudos al usuario; y no existe un canal de observabilidad en archivo para ver el sistema respirar durante el desarrollo.
+
+**Approach:** se diseñó la **Fase 7.13 — The Enterprise Spinal Cord** como el pivote a una **arquitectura event-driven (Push)**. Decisión de numeración del usuario: continuar la convención 7.x (no un top-level nuevo). El framing refleja una **auditoría del código** (extender/cablear lo existente y borrar duplicados, no greenfield): los watchers, el indexer, el daemon, el Manual Mode y los paneles de dashboard ya existen parcialmente — 7.13 construye sólo los deltas. Seis puntos de feedback del usuario quedaron endurecidos como cláusulas vinculantes (no sugerencias sueltas): absorción de la observabilidad de la Fase 8, backpressure/priority-class del canal silencioso, disciplina de race indexing↔Dreaming, aislamiento cognitivo del `ErrorCorrectionAgent`, seguridad del log (`.gitignore` + UTF-8), e inventario de dashboard aprobado por el usuario antes de borrar nada.
+
+**Files changed:**
+- `docs/PROJECT_MANIFEST.md` — nueva sección `## 🦴 FASE 7.13` (7.13.0–7.13.9) entre 7.12 y Fase 10; fila en el Quick Reference; `Estado Actual` apunta a 7.13; nota de **Absorción 7.13 → Fase 8** en Convenciones; anotación de observabilidad en la fila de la Fase 8.
+- `docs/PHASE_7_13_BLUEPRINT.md` (NUEVO) — contrato maestro con ADR-708..713, tabla de auditoría, scope boundary, diseño por pilar, inventario de archivos (nuevos/modificados/reusados), plan de verificación (gate 7.13.9), roadmap impact, anti-patterns y glosario.
+- `README.md` — Repository Layout lista el nuevo blueprint.
+
+**Architectural outcomes:**
+- **ADR-708** canal de telemetría IDE silencioso sobre el WS existente (sin segundo socket) con priority-class anti Head-of-Line-Blocking.
+- **ADR-709** indexación incremental reactiva por `file_saved` (single-file `semantic_upsert`, sin re-crawl).
+- **ADR-710** Dreaming disparado por idle con disciplina de race basada en `document_version_id`.
+- **ADR-711** `ErrorCorrectionAgent` self-healing (traceback→fix→retry ≤3), aislamiento cognitivo estricto + parches vía `apply_patch`/HITL.
+- **ADR-712** sink `.ailienant_telemetry.log` (scrubbed, bounded/rotado, UTF-8, `.gitignore`) que **absorbe la observabilidad de la Fase 8**.
+- **ADR-713** máquina de estados multi-turno en `Workspace.tsx` + superficie de Planner Manual Mode.
+
+**Verification:** artefacto de documentación — verificación estructural: la sección 7.13 renderiza entre 7.12 y Fase 10; numeración ADR contigua (708→713); cada sub-tarea 7.13.1–7.13.8 mapea ≥1 ADR; rutas del inventario existen en el repo. Sin cambios de código fuente en este hito.
+
+---
+
 ## Hito 9: Native Thinking — real-time LLM reasoning stream — 2026-05-29
 
 **Status:** COMPLETED | **Phase:** 9 (ADR-707) · *manifest placement pending user numbering decision — see note*
