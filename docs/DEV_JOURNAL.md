@@ -2144,3 +2144,22 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Backend EDIT: `brain/state.py`, `agents/planner.py`, `agents/analyst_context.py`.
   - Frontend EDIT: `src/workspace/Workspace.tsx`, `src/workspace/workspaceStore.ts`, `src/providers/workspace_panel.ts`, `src/api/ws_client.ts`, `src/brain/session.ts`, `src/sidebar/SessionCard.tsx`.
   - Docs EDIT: `PROJECT_MANIFEST.md` (Fase 7.12 + fila en tabla), `README.md` (`agents/workspace_context.py` en Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
+## Hito 7.12.8: CI/CD Tech-Debt — Colisión de Namespace mypy + Valla Strict — 2026-05-30
+
+- **Status:** OK — baseline mypy whole-tree saneado sin bajar el estándar. DoD verde: `mypy --strict --follow-imports=silent` sobre los 4 archivos modificados en 7.12 → **Success: no issues found in 4 source files**; `mypy .` whole-tree → **Success: no issues found in 210 source files** (sin crash de colisión); `pytest` **675 passed**; `ruff check` **All checks passed!**.
+
+- **Motivación:** Tras 7.12, un `mypy .` whole-tree crasheaba con **"Duplicate module named …"** antes de type-checkear. Causa raíz: 5 paquetes top-level (`agents/`, `api/`, `brain/`, `shared/`, `tools/`) sin `__init__.py` → mypy aplanaba cada archivo a un nombre de módulo top-level y colisionaba en basenames repetidos (`agents/orchestrator.py` ↔ `brain/orchestrator.py`, `api/audit.py` ↔ `core/audit.py`, `api/hardware.py` ↔ `shared/hardware.py`, `shared/token_counter.py` ↔ `tools/token_counter.py`). La directiva del gatekeeper prohibió degradar a non-strict: los módulos *modificados/autorados* deben pasar `mypy --strict` con exit 0, aislando la deuda legacy con `--follow-imports=silent`.
+
+- **Fix estructural (Directiva 1):** `__init__.py` (vacío, solo marcador) añadido a los 5 paquetes; `[mypy]` extendido con `mypy_path = .`, `explicit_package_bases = True`, `namespace_packages = True` y `exclude` ampliado (`.venv`, `node_modules`). Seguro: el código ya usa **587 imports cualificados** (`from agents.prompts import …`) y **0** imports flat reales (el único hit era un comentario stale en `conftest.py`); el runtime ya trataba estos dirs como namespace packages implícitos.
+
+- **Fix de deuda strict (Directiva 2):** `agents/planner.py` saldó 3 sitios de tipos genéricos desnudos (`_inject_polyglot_constraints(tasks: list)→list[WBSStep]`, `run_planner_node(state: dict)→dict[str, Any]`, `result: dict→dict[str, Any]`) + import de `Any`. `run_planner_node` mantiene firma laxa `dict[str, Any]` a propósito: devuelve un *partial state* que LangGraph mergea, así que anotar el TypedDict total `AIlienantGraphState` rompería strict — no se altera el contrato inmutable. Eliminado el bloque obsoleto `[mypy-agents.planner] follow_imports = silent` (su propia nota lo marcaba como deuda diferida "a un PR dedicado" — este es ese PR).
+
+- **Out of scope (intacto):** errores de tipos legacy en `prompts.py`/`ws_contracts.py`/`semantic_memory.py`/`trajectory_memory.py` (archivos no modificados) quedan suprimidos por `--follow-imports=silent` en la valla strict; el `conftest.py` con su `sys.path.insert` redundante no se tocó.
+
+- **Files changed:**
+  - Backend NUEVO: `agents/__init__.py`, `api/__init__.py`, `brain/__init__.py`, `shared/__init__.py`, `tools/__init__.py`.
+  - Backend EDIT: `mypy.ini` (config estructural + bloque planner removido), `agents/planner.py` (3 genéricos + import `Any`).
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.12.8), `DEV_JOURNAL.md` (este hito).

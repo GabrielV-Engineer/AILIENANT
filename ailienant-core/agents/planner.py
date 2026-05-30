@@ -3,7 +3,7 @@
 import logging
 import os as _os
 import uuid
-from typing import Optional
+from typing import Optional, Any
 
 # Importamos nuestra puerta de enlace y los contratos estrictos
 from tools.llm_gateway import LLMGateway
@@ -43,7 +43,7 @@ _POLYGLOT_WARNING = (
 )
 
 
-def _inject_polyglot_constraints(tasks: list) -> list:
+def _inject_polyglot_constraints(tasks: list[WBSStep]) -> list[WBSStep]:
     """Return a new task list with polyglot-file constraints appended to step descriptions."""
     result = []
     for step in tasks:
@@ -56,7 +56,7 @@ def _inject_polyglot_constraints(tasks: list) -> list:
     return result
 
 
-async def run_planner_node(state: dict) -> dict:
+async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     Nodo de LangGraph: El Estratega (The Architect & SDD Enforcer).
 
@@ -158,7 +158,7 @@ async def run_planner_node(state: dict) -> dict:
 
         # Extraemos parallel_tasks para High-TCI: todos los pasos son candidatos al fan-out.
         parallel_tasks = mock_mission.tasks if tci > 80.0 else []
-        result: dict = {
+        result: dict[str, Any] = {
             "mission_spec": mock_mission,
             "parallel_tasks": parallel_tasks,
             "tci": tci,
