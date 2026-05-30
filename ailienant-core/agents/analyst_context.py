@@ -34,6 +34,9 @@ logger = logging.getLogger("ANALYST_CONTEXT")
 CODEX_CAP: int = 1024
 FILE_CAP: int = 4096
 RAG_CAP: int = 2048
+# Phase 7.12.9 (Fix 2) — workspace-structure overview gets its OWN dedicated budget,
+# independent of FILE_CAP, so it is never starved when open files fill the file budget.
+WS_CAP: int = 1024
 
 # docs/AILIENANT_CODEX.md sits at the repo root: agents/ -> ailienant-core/ -> repo root.
 _CODEX_PATH: Path = Path(__file__).resolve().parents[2] / "docs" / "AILIENANT_CODEX.md"
@@ -177,6 +180,17 @@ async def assemble_analyst_context(
     if codex:
         sections.append("# AILIENANT self-knowledge (Codex)\n" + codex[:CODEX_CAP])
 
+    # 1b. Workspace structure (Phase 7.12.9, Fix 2) — PROMINENT, early, and on its
+    # OWN budget (WS_CAP), with a plaintext header instead of a deep uuid4 XML tag
+    # so small-attention models do not drop it. Without this, Natt reports it cannot
+    # see the file structure. Unicode angle-bracket neutralization is still applied
+    # (cheap, no readability cost); the tree is path/name data, not file content.
+    if project_root:
+        ws_overview = build_workspace_overview(project_root, budget=WS_CAP)
+        if ws_overview:
+            ws_safe = _sandbox_escape(ws_overview, boundary)[:WS_CAP]
+            sections.append("=== CURRENT WORKSPACE STRUCTURE ===\n" + ws_safe)
+
     # 2. Active file fragment(s) — semantically sliced, sandbox-wrapped, <=4KB total.
     # core.vfs_middleware is follow_imports=silent in mypy.ini (pre-existing debt), so a
     # strict invocation reports the constructor as untyped — scoped ignore, not a mask.
@@ -205,19 +219,6 @@ async def assemble_analyst_context(
             f'<{boundary}_context path="{path}">\n{safe}\n</{boundary}_context>'
         )
         remaining -= len(safe)
-
-    # 2b. Workspace shape (Phase 7.12, Issues 4 & 8) — depth-limited tree + root
-    # manifests, so the analyst is aware of project structure. Uses only leftover
-    # file budget (never starves actual file content), sandbox-wrapped (G3) and
-    # covered by the same raw-data clause below.
-    if project_root and remaining > 0:
-        ws_overview = build_workspace_overview(project_root, budget=min(remaining, FILE_CAP))
-        if ws_overview:
-            ws_safe = _sandbox_escape(ws_overview, boundary)[:remaining]
-            file_blocks.append(
-                f'<{boundary}_context kind="workspace_overview">\n{ws_safe}\n</{boundary}_context>'
-            )
-            remaining -= len(ws_safe)
 
     if file_blocks:
         sections.append("# Active file context\n" + "\n\n".join(file_blocks))

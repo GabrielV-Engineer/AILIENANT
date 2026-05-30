@@ -1960,6 +1960,14 @@ the blueprint freeze lifts.
 - [x] **7.12.8. CI/CD — baseline mypy (colisión de namespace + valla strict)**
   - Resuelta la colisión "Duplicate module" que impedía un `mypy .` whole-tree: añadidos `__init__.py` a los 5 paquetes top-level sin marcador (`agents/`, `api/`, `brain/`, `shared/`, `tools/`) y `[mypy]` extendido con `explicit_package_bases`/`namespace_packages`/`mypy_path = .`. Saldada la deuda de tipos genéricos en `agents/planner.py` (3 sitios `list`/`dict` → tipados) y eliminado el bloque obsoleto `[mypy-agents.planner] follow_imports = silent`. DoD: `mypy --strict --follow-imports=silent` sobre los 4 archivos de 7.12 → **0 errores**; `mypy .` whole-tree corre de principio a fin (**210 archivos, sin crash**); `pytest` **675 passed** (sin roturas de import); `ruff` limpio.
 
+- [x] **7.12.9. E2E Lifecycle Hardening (V2 — 5 fixes quirúrgicos)**
+  - **Fix 1 (WS reconnect):** `WSClient.ensureConnected()` (resetea backoff + reconecta si el socket no está OPEN); el handler `onDidChangeViewState(visible)` re-afirma el túnel y re-postea `WS_STATUS` real al webview remontado (ya no queda "Disconnected" fantasma).
+  - **Fix 2 (Natt context):** el overview del workspace se eleva a sección prominente y temprana con header plano `=== CURRENT WORKSPACE STRUCTURE ===` y budget propio (`WS_CAP=1024`), fuera del XML uuid profundo que los modelos pequeños ignoraban.
+  - **Fix 3 (RAG/IDE desync, CRÍTICO):** el frontend envía `workspace_root` + `active_file_path/content` (cap duro **10 000 chars**); el backend hace fallback de `workspace_root` al registro vivo y el Planner inyecta el ACTIVE FILE primero y etiquetado, anclando en la pestaña abierta en vez del índice stale.
+  - **Fix 4 (UTF-8 Windows):** `sys.stdout/stderr.reconfigure("utf-8")` al tope de `main.py` + `print()` con emoji del planner → `logger.info` (no más crash `charmap`).
+  - **Fix 5 (drafts):** `inputDraft:string` → `draftMessages:Record<sessionId,string>` (store v2); el borrador sobrevive el cambio de sesión.
+  - Saldada de paso la deuda strict pre-existente en `core/task_service.py` (5) y `main.py` (6). DoD: frontend `npm run compile`/`lint` 0 errores; `mypy --strict --follow-imports=silent` (planner, analyst_context, task_service, main) **0 errores**; `pytest` **675 passed**; `mypy .` whole-tree **210 archivos sin crash**; `ruff` limpio.
+
 ---
 
 ## 🎮 FASE 10 — Onboarding Interactivo, Gamificación y Ecosistema Abierto (MCP)

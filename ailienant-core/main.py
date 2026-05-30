@@ -1,10 +1,22 @@
 import asyncio
+import io
 import logging
 import os
 import secrets
+import sys
 import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List, Optional, cast
+from typing import Any, AsyncIterator, Dict, List, Optional, cast
+
+# Phase 7.12.9 (Fix 4) — force UTF-8 on stdout/stderr BEFORE anything logs or prints.
+# On Windows the default cp1252 console raises 'charmap' codec errors on emoji (📋,
+# ⚠️, 🔀, …) used across agent traces, which crashes the node mid-run and mimics a
+# Pydantic timeout/retry. Reconfiguring both streams fixes print() and the logging
+# StreamHandler (which targets stderr) in one shot.
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding="utf-8")
+if isinstance(sys.stderr, io.TextIOWrapper):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 import httpx
 
@@ -281,7 +293,7 @@ _PPR_DEBOUNCE_S: float = 2.0
 
 # Fire-and-forget task runners (Phase 7.9.B.17). Strong refs prevent the event
 # loop from GC-ing an in-flight submit before the agent pipeline finishes.
-_task_submit_tasks: set = set()
+_task_submit_tasks: set[asyncio.Task[Any]] = set()
 
 # Workspace registry — populated on client_workspace_init; used by mass change handler
 _workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
@@ -294,7 +306,7 @@ _session_workspace_pid: Dict[str, int] = {}  # client_id → workspace_pid (Phas
 # =====================================================================
 
 @app.get("/")
-async def health_check():
+async def health_check() -> dict[str, str]:
     """Endpoint HTTP tradicional para verificar que el servidor está vivo."""
     return {"status": "online", "phase": "2.4", "system": "Tiered Checkpoint + PPR Active"}
 
@@ -349,7 +361,7 @@ async def submit_task(
     x_task_id: str = Header(
         ..., alias="X-Task-ID"
     ),  # Trazabilidad desde el frontend TS
-):
+) -> dict[str, str]:
     """Dispatch a cognitive mission and return immediately (202 Accepted).
 
     The agent pipeline (planner + coder, or the streaming chat completion) can run
@@ -358,6 +370,15 @@ async def submit_task(
     WebSocket; the HTTP response only acknowledges receipt. Errors inside the runner
     are surfaced over the WS (actionable token + stream_end) so the UI never hangs.
     """
+
+    # Phase 7.12.9 (Fix 3) — the frontend now sends workspace_root, but if an
+    # older client omits it, fall back to the live root captured at
+    # client_workspace_init (keyed by client_id == x_task_id). This guarantees
+    # the Planner/GraphRAG use the dynamic root, never an empty/stale value.
+    if not payload.workspace_root:
+        _fallback_root = _session_workspace_root.get(x_task_id, "")
+        if _fallback_root:
+            payload.workspace_root = _fallback_root
 
     async def _runner() -> None:
         # Phase 7.11.3 (ADR-706 §4.5b) — register THIS runner task with the
@@ -683,7 +704,7 @@ async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: st
 
 
 @app.websocket("/api/v1/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
+async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
     """
     La Puerta Principal de Streaming (WebSockets).
     Ruta estandarizada para coincidir con ws_client.ts.
@@ -714,7 +735,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             if valid_event.event_type == "client_file_update":
                 # 1. RAM-VFS ingestion — synchronous O(1), does not block the event loop
                 task_service.vfs.ingest_dirty_buffers(
-                    [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)]
+                    # api_contracts.DirtyBuffer and vfs_middleware.DirtyBuffer are
+                    # structurally-identical DTOs duplicated across the transport/core
+                    # boundary (pre-existing); ingestion is duck-typed at runtime.
+                    [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)]  # type: ignore[list-item]
                 )
                 # 2. Critical files bypass debounce; normal files coalesced in 500ms window
                 if is_critical_file(valid_event.data.filepath):

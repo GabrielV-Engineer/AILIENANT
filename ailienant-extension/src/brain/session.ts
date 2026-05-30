@@ -4,6 +4,11 @@ import { APIClient, TaskPayload } from '../api/api_client';
 import { PathResolver } from '../core/PathResolver';
 import { WSClient } from '../api/ws_client';
 
+// Phase 7.12.9 (Fix 3) — hard cap on active-file content forwarded to the Planner.
+// ~10k chars ≈ ~2.5k tokens: stays within ADR-703's context budget and prevents an
+// OOM token-bomb that would crash local 8k–128k context windows.
+const ACTIVE_FILE_CHAR_CAP = 10_000;
+
 export class SessionManager {
     private static instance: SessionManager;
     private readonly sessionId: string;
@@ -83,11 +88,30 @@ export class SessionManager {
                 this.versionSnapshot.set(activeDoc.uri.fsPath, activeDoc.version);
             }
 
+            // 3b. Phase 7.12.9 (Fix 3) — dynamic IDE context. The active tab may be
+            // SAVED (so it never appears in dirty_buffers), yet it is exactly what
+            // the user is looking at. Forward the real workspace root + the focused
+            // file (truncated to the hard char cap) so the Planner anchors on it
+            // instead of hallucinating from the stale RAG index.
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            let activeFilePath: string | undefined;
+            let activeFileContent: string | undefined;
+            if (activeDoc && activeDoc.uri.scheme === 'file') {
+                activeFilePath = activeDoc.uri.fsPath;
+                const fullText = activeDoc.getText();
+                activeFileContent = fullText.length > ACTIVE_FILE_CHAR_CAP
+                    ? fullText.substring(0, ACTIVE_FILE_CHAR_CAP) + '\n...[CONTENT TRUNCATED DUE TO CONTEXT LIMITS]...'
+                    : fullText;
+            }
+
             // 4. Preparar el Contrato (Payload)
             const payload: TaskPayload = {
                 task_prompt: taskPrompt,
                 dirty_buffers: dirtyBuffers,
                 project_id: PathResolver.resolveProjectId(),
+                workspace_root: workspaceRoot,
+                active_file_path: activeFilePath,
+                active_file_content: activeFileContent,
                 document_version_id: activeDoc ? String(activeDoc.version) : undefined,
                 // Phase 7.11.4 — wires the host-extracted @mentions through to the
                 // researcher's existing RAG-bypass path (agents/researcher.py:78).

@@ -193,9 +193,23 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     boundary = uuid.uuid4().hex
 
     context_str = ""
-    if not dirty_buffers:
+
+    # Phase 7.12.9 (Fix 3) — the ACTIVE FILE the user is looking at, injected FIRST
+    # and prominently labeled so the Planner anchors on the open tab instead of
+    # hallucinating from the stale LanceDB/GraphRAG index. The active tab may be
+    # SAVED (so absent from dirty_buffers); content is hard-capped client-side.
+    _active_path = state.get("active_file_path", "")
+    _active_content = state.get("active_file_content", "")
+    if _active_content:
+        context_str += (
+            f'<{boundary} kind="active_file" path="{_active_path}">\n'
+            f"=== ACTIVE FILE (user is viewing this now): {_active_path} ===\n"
+            f"{_active_content}\n</{boundary}>\n\n"
+        )
+
+    if not dirty_buffers and not _active_content:
         context_str = f"<{boundary}>No se detectaron archivos sucios ni contexto activo en el IDE.</{boundary}>"
-    else:
+    elif dirty_buffers:
         for buf in dirty_buffers:
             # Compatibilidad dict vs Pydantic object
             filepath = buf.get("path") if isinstance(buf, dict) else buf.path
@@ -520,12 +534,17 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     # =====================================================================
     logger.info("✅ Especificación Técnica generada y validada estrictamente.")
 
-    print("\n--- 📋 MISSION SPECIFICATION (SDD) ---")
-    print(f"🎯 Outcome: {mission_plan.outcome}")
-    print(f"🔒 Constraints: {len(mission_plan.constraints)} reglas definidas.")
-    print(f"🛠️ Pasos (Tasks): {len(mission_plan.tasks)} tareas programadas.")
-    print(f"🧪 Checks (QA): {len(mission_plan.checks)} pruebas de validación.")
-    print("--------------------------------------\n")
+    # Phase 7.12.9 (Fix 4) — structured logging instead of raw print() to stdout.
+    # The previous emoji print() block crashed the node on Windows cp1252 consoles
+    # ('charmap' codec can't encode '\U0001f4cb'); the logger honours the UTF-8
+    # stream reconfigured at startup and keeps the trace out of stdout.
+    logger.info(
+        "📋 MISSION SPECIFICATION (SDD) — outcome=%s | constraints=%d | tasks=%d | checks=%d",
+        mission_plan.outcome,
+        len(mission_plan.constraints),
+        len(mission_plan.tasks),
+        len(mission_plan.checks),
+    )
 
     # Para High-TCI, todos los WBSSteps son candidatos al fan-out MapReduce.
     parallel_tasks = mission_plan.tasks if tci > 80.0 else []
