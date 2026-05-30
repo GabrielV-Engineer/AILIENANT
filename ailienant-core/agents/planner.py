@@ -11,6 +11,7 @@ from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retai
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
 from agents.prompts import build_safe_prompt
+from agents.workspace_context import build_workspace_overview  # Phase 7.12 (Issues 4 & 8)
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
@@ -203,6 +204,15 @@ async def run_planner_node(state: dict) -> dict:
             context_str += (
                 f'<{boundary} filepath="{filepath}">\n{content}\n</{boundary}>\n\n'
             )
+
+    # Phase 7.12 (Issues 4 & 8) — inject workspace SHAPE (depth-limited tree +
+    # root manifests) so the Planner is no longer blind to project structure.
+    # Wrapped in the same ephemeral boundary as raw data (never instructions).
+    _ws_overview = build_workspace_overview(state.get("workspace_root", ""))
+    if _ws_overview:
+        context_str += (
+            f'<{boundary} kind="workspace_overview">\n{_ws_overview}\n</{boundary}>\n\n'
+        )
 
     # =====================================================================
     # 3. CONSTRUCCIÓN DEL PROMPT (RBAC y Spec-Driven Development)
@@ -397,15 +407,24 @@ async def run_planner_node(state: dict) -> dict:
         "Eres el Arquitecto (The Planner). Tienes PROHIBIDO escribir código de implementación.\n"
         "Tu única tarea es generar una especificación técnica completa y lógica (MissionSpecification). "
         "Define de forma estricta el Outcome, Scope, Constraints, Decisions, las Tasks secuenciales (WBS) "
-        "asignando un target_role válido ('Refactor', 'Infra', 'Doc', 'SecOps', 'Test') a cada tarea, "
-        "y los Checks de validación QA.\n\n"
+        "asignando un target_role válido a cada tarea, y los Checks de validación QA.\n\n"
+        # Phase 7.12 — explicit type discipline. The LLM intermittently emits objects
+        # where strings belong, and arbitrary role strings; spell out the contract.
+        "STRICT TYPE RULES:\n"
+        "- Every element of 'scope', 'constraints', 'decisions' and 'checks' MUST be a "
+        "plain string. NEVER an object/dict — write a sentence, not '{\"file\": \"x\"}'.\n"
+        "- Each task's 'target_role' MUST be exactly ONE of: core_dev, architect_refactor, "
+        "devops_infra, secops, qa_tester, doc_manager, vcs_manager, data_ml_engineer.\n"
+        "- Each task's 'action' MUST be one of: read_file, write_file, edit_file, run_command.\n\n"
         # Phase 7.10.4 (ADR-704) — flat-JSON contract to stop envelope wrapping.
         "CRITICAL FORMATTING RULE: Return ONLY the raw JSON object. DO NOT wrap it in any "
         "top-level key such as 'response', 'mission', 'result', or 'MissionSpecification'. "
         "No prose, no markdown fences. Emit exactly these top-level fields: "
         "outcome, scope, constraints, decisions, tasks, checks. "
-        'Example shape: {"outcome": "...", "scope": [...], "constraints": [...], '
-        '"decisions": [...], "tasks": [...], "checks": [...]}.'
+        'Example shape: {"outcome": "...", "scope": ["..."], "constraints": ["..."], '
+        '"decisions": ["..."], "tasks": [{"step_number": 1, "target_role": "core_dev", '
+        '"action": "edit_file", "target_file": "src/x.py", "description": "..."}], '
+        '"checks": ["..."]}.'
     )
 
     messages = [

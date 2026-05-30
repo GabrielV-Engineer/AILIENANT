@@ -28,6 +28,44 @@ _LEGACY_TO_NEW_ROLE: Dict[str, str] = {
     "Test": "qa_tester",
 }
 
+# Phase 7.12 — canonical post-migration role vocabulary. An out-of-vocabulary
+# target_role string hallucinated by the Planner is coerced to this default rather
+# than raising a ValidationError (which would burn a planner retry).
+_CANONICAL_ROLES: frozenset[str] = frozenset({
+    "core_dev", "architect_refactor", "devops_infra", "secops",
+    "qa_tester", "doc_manager", "vcs_manager", "data_ml_engineer",
+})
+_DEFAULT_ROLE = "core_dev"
+
+
+def _coerce_to_str(item: Any) -> str:
+    """Phase 7.12 — flatten a hallucinated list element into a plain string.
+
+    The Planner LLM intermittently emits objects (``{"file": "x", "reason": "y"}``)
+    where the MissionSpecification contract requires a ``str``. Rather than fail
+    validation, flatten: dicts become ``"key: value"`` pairs; everything else is
+    stringified. Already-strings pass through untouched.
+    """
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        return "; ".join(f"{k}: {v}" for k, v in item.items())
+    return str(item)
+
+
+def _coerce_str_list(value: Any) -> Any:
+    """Phase 7.12 — normalise a value destined for a ``List[str]`` field.
+
+    Maps each element through :func:`_coerce_to_str`. A bare scalar/dict (LLM
+    emitted a single value instead of a list) is wrapped into a one-element list.
+    Non-coercible input is returned unchanged so Pydantic still fails loudly.
+    """
+    if isinstance(value, list):
+        return [_coerce_to_str(el) for el in value]
+    if isinstance(value, (str, dict)):
+        return [_coerce_to_str(value)]
+    return value
+
 
 class WBSStep(BaseModel):
     """
@@ -79,6 +117,11 @@ class WBSStep(BaseModel):
             legacy = data.get("target_role")
             if isinstance(legacy, str) and legacy in _LEGACY_TO_NEW_ROLE:
                 data["target_role"] = _LEGACY_TO_NEW_ROLE[legacy]
+            # Phase 7.12 — coerce a hallucinated, out-of-vocabulary role to the
+            # safe default instead of raising a Literal ValidationError.
+            role = data.get("target_role")
+            if isinstance(role, str) and role not in _CANONICAL_ROLES:
+                data["target_role"] = _DEFAULT_ROLE
         return data
 
 
@@ -119,6 +162,23 @@ class MissionSpecification(BaseModel):
         default_factory=list,
         description="TDD acceptance criteria generated from the Socratic Q&A session.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_hallucinated_str_lists(cls, data: Any) -> Any:
+        """Phase 7.12 — coerce dict/scalar hallucinations in the ``List[str]`` fields.
+
+        The contract (immutable per SCHEMA_EVOLUTION.MD) is unchanged: these fields
+        remain ``List[str]``. This before-validator only normalises malformed LLM
+        output (objects where strings belong) so a structurally-valid plan no longer
+        burns a retry. Mirrors WBSStep._migrate_legacy_target_role. Idempotent and
+        tolerant of non-dict input (Pydantic internal construction).
+        """
+        if isinstance(data, dict):
+            for _field in ("scope", "constraints", "decisions", "checks", "tdd_criteria"):
+                if _field in data and data[_field] is not None:
+                    data[_field] = _coerce_str_list(data[_field])
+        return data
 
 
 class ContextMeter(BaseModel):

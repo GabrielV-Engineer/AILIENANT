@@ -2108,3 +2108,39 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Guards verificados:** mypy `Success: no issues found in 200 source files` (37→0); ruff `All checks passed!` (55→0); `pytest -q` → **658 passed** (parity exacta, sin skips/xfails/borrados); `git diff --stat agents/` **vacío**; `ruff.toml` mantiene E4/E7/E9/F activos sin loopholes. Cero cambios en frontend.
 
 - **Files changed:** `mypy.ini`, `ruff.toml` (NUEVO), `api/audit.py`, `api/byom.py`, `api/websocket_manager.py`, `core/config_generator.py`, `core/memory/semantic_memory.py`, `core/task_service.py`, `main.py`, y tests: `conftest.py`, `test_aggregator.py`, `test_coder_agent.py`, `test_drift_monitor.py`, `test_guardrails.py`, `test_infrastructure.py`, `test_llm_gateway_timeout.py`, `test_logging_filters.py`, `test_phase6_checkpoint_gate.py`, `test_swarms.py`, `test_task_service_apply.py`, `test_tool_chip_protocol.py`, `test_write_pipeline.py`.
+
+## Hito 7.12: UX/State Stabilization & Context Injection Pathing — 2026-05-29
+
+- **Status:** OK — patch de estabilización de 6 vectores de regresión cruzando extensión (TS/React) y core (Python/Pydantic). DoD verde: backend `pytest` **675 passed** (de 665 baseline + 10 nuevos: 5 coerción + 5 workspace_context), `mypy --explicit-package-bases .` **Success: no issues found in 205 source files**, `ruff check` **All checks passed!**; frontend `npm run check-types` 0 errores + `npm run lint` 0 errores (2 warnings ajenos pre-existentes en `api_client.ts`/`vfs_reader.ts`).
+
+- **Motivación:** Auditoría de anomalías arquitectónicas reportó 4 causas raíz: (1) spam de pop-ups host-side bloqueando el event loop de VS Code; (2) el Planner LLM inyecta dicts donde `MissionSpecification` exige `List[str]` y strings arbitrarios donde `WBSStep` exige `Literal` → `ValidationError` quemando reintentos; (3) `retainContextWhenHidden:false` destruye el WebView en tab-switch y el snapshot `data-initial` queda obsoleto → mensajes perdidos al re-revelar; (4) ni el Planner ni el Analista (Natt) veían la *forma* del workspace (árbol + manifests), solo dirty buffers + RAG. El Issue 7 (stream de Thinking) ya estaba cableado end-to-end por Phase 9/ADR-707 (commit 377b025) — el scope aquí fue **solo resiliencia de reconexión**, no rebuild.
+
+- **Decisiones de scope (validadas con usuario antes de ejecutar):**
+  - **Issue 6 (re-targeted por el usuario):** el artefacto "Medium" NO era un tier de Dreaming/BYOM sino el **badge de tier debajo del nombre de cada sesión** en la Session List (`SessionCard.tsx`), hardcoded a `'medium'`. Removido solo el nodo JSX (+ su separador); `Session.model_tier` y los literales de config quedan intactos.
+  - **Issue 3 (merge por id, no por longitud):** el usuario marcó la heurística de longitud como frágil (state tearing en tab-switch mid-stream). Se mintea un `id` estable por turno y el merge preserva cualquier turno `streaming` local. El `ChatTurn` backend permanece `{role, content}` — los ids son display-layer.
+  - **Issue 4 & 8 (límites duros):** `max_depth=3`, `max_files=100` con truncación absoluta, budget ≤2KB — guarda contra explosión de tokens en monorepos.
+  - **Schema (Issue 2 & 5):** before-validators que COERCIONAN sin cambiar el contrato (mismo patrón sancionado que `WBSStep._migrate_legacy_target_role`) — la garantía de inmutabilidad de `SCHEMA_EVOLUTION.MD` se mantiene.
+
+- **Backend — `brain/state.py`:** helpers `_coerce_to_str`/`_coerce_str_list` + `MissionSpecification._coerce_hallucinated_str_lists` (`mode="before"`, aplana dicts/escalares en `scope`/`constraints`/`decisions`/`checks`/`tdd_criteria`). `WBSStep._migrate_legacy_target_role` extendido: `target_role` fuera del vocabulario canónico de 8 → `core_dev`. Constantes `_CANONICAL_ROLES`/`_DEFAULT_ROLE` añadidas.
+
+- **Backend — `agents/planner.py`:** prompt endurecido con STRICT TYPE RULES (cada item de las listas DEBE ser string plano; `target_role`/`action` con sus literales exactos) + ejemplo de shape completo con un task. Inyección del overview del workspace dentro del boundary uuid efímero (raw data, nunca instrucciones).
+
+- **Backend — `agents/workspace_context.py` (NUEVO, ~140 LOC):** `build_workspace_overview(workspace_root, *, max_depth, max_files, budget)` — árbol podado (skip de ~25 dirs de ruido) con short-circuit en `max_files`, + lectura de manifests raíz (cap 600 chars c/u), truncado a budget. Nunca lanza. mypy `--strict` limpio standalone.
+
+- **Backend — `agents/analyst_context.py`:** inyección del overview tras el loop de archivos usando budget sobrante (no starva contenido real), wrapped en el sandbox G3 (`<{boundary}_context kind="workspace_overview">`) y cubierto por la cláusula raw-data existente.
+
+- **Frontend — `Workspace.tsx`:** `Message`/`NattMessage` ganan `id?`; helper `mkId()` + `mergeById()` (spine host + preservación de turno streaming local + tail de turnos in-flight nuevos); id minteado en los 8 sitios de creación de turnos (chat + Natt); `id` propagado en `PERSIST_TRANSCRIPT`; nuevo case `REHYDRATE_TRANSCRIPT`. Resiliencia de Thinking: 2 effects (snapshot throttled del turno streaming → store; rehidratación al montar) + limpieza en `server_stream_end`.
+
+- **Frontend — `workspaceStore.ts`:** `InflightSnapshot` (shape estructural, sin import cíclico) + campo `inflightTurn` + setter + whitelisteado en `pick`.
+
+- **Frontend — `providers/workspace_panel.ts`:** `StoredMessage`/`StoredNattMessage` ganan `id?`; `onDidChangeViewState(visible)` re-postea `REHYDRATE_TRANSCRIPT` con el transcript host autoritativo.
+
+- **Frontend — `api/ws_client.ts`, `brain/session.ts`, `sidebar/SessionCard.tsx`:** pop-ups silenciados; badge de tier muerto removido.
+
+- **Tests añadidos:** `tests/test_mission_spec_coercion.py` (5: dict-in-scope flatten, scalar→list wrap, unknown role→core_dev, legacy role migration regression, valid-spec idempotency) + `tests/test_workspace_context.py` (5: empty-on-missing, manifests injected, noise dirs pruned, max_files truncation, budget hard cap).
+
+- **Files changed:**
+  - Backend NUEVO: `agents/workspace_context.py`, `tests/test_mission_spec_coercion.py`, `tests/test_workspace_context.py`.
+  - Backend EDIT: `brain/state.py`, `agents/planner.py`, `agents/analyst_context.py`.
+  - Frontend EDIT: `src/workspace/Workspace.tsx`, `src/workspace/workspaceStore.ts`, `src/providers/workspace_panel.ts`, `src/api/ws_client.ts`, `src/brain/session.ts`, `src/sidebar/SessionCard.tsx`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (Fase 7.12 + fila en tabla), `README.md` (`agents/workspace_context.py` en Repository Layout), `DEV_JOURNAL.md` (este hito).
