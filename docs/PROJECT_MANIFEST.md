@@ -1957,6 +1957,9 @@ the blueprint freeze lifts.
 - [x] **7.12.7. Checkpoint Gate Fase 7.12**
   - DoD verificado: backend `pytest` **675 passed**, `mypy --explicit-package-bases .` limpio (**205 archivos**), `ruff check` limpio; frontend `npm run compile` 0 errores de tipo + 0 errores de lint (2 warnings ajenos pre-existentes). Valla de aislamiento cognitivo respetada: la lógica de `agents/` nueva es solo inyección de contexto read-only (sin mutación de estado del grafo).
 
+- [x] **7.12.8. CI/CD — baseline mypy (colisión de namespace + valla strict)**
+  - Resuelta la colisión "Duplicate module" que impedía un `mypy .` whole-tree: añadidos `__init__.py` a los 5 paquetes top-level sin marcador (`agents/`, `api/`, `brain/`, `shared/`, `tools/`) y `[mypy]` extendido con `explicit_package_bases`/`namespace_packages`/`mypy_path = .`. Saldada la deuda de tipos genéricos en `agents/planner.py` (3 sitios `list`/`dict` → tipados) y eliminado el bloque obsoleto `[mypy-agents.planner] follow_imports = silent`. DoD: `mypy --strict --follow-imports=silent` sobre los 4 archivos de 7.12 → **0 errores**; `mypy .` whole-tree corre de principio a fin (**210 archivos, sin crash**); `pytest` **675 passed** (sin roturas de import); `ruff` limpio.
+
 ---
 
 ## 🎮 FASE 10 — Onboarding Interactivo, Gamificación y Ecosistema Abierto (MCP)
