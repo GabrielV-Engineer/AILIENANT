@@ -458,6 +458,15 @@ export class WorkspacePanelManager {
                     messages: t.messages,
                     nattMessages: t.nattMessages,
                 });
+                // Phase 7.12.9 (Fix 1) — the singleton WS survives the webview
+                // teardown, but a remounted webview boots with a stale status and
+                // the socket may have dropped while hidden. Re-assert the tunnel
+                // and mirror the *actual* socket state back to the indicator.
+                SessionManager.getInstance().ensureConnected();
+                e.webviewPanel.webview.postMessage({
+                    type: 'WS_STATUS',
+                    payload: WSClient.getInstance().getStatus(),
+                });
             }
         });
         panel.onDidDispose(() => hitlNotifier.setVisibility(false));

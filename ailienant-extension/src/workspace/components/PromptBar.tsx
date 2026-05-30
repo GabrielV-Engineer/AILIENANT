@@ -36,6 +36,8 @@ interface Props {
     activeModelId: string;
     orchestrationMode: OrchestrationMode;
     onModelPrefChange: (activeModelId: string, orchestrationMode: OrchestrationMode) => void;
+    /** Phase 7.12.9 (Fix 5) — scopes the prompt draft to this session. */
+    sessionId: string;
     // Submit
     onSubmit: (text: string) => void;
     onAbort: () => void;
@@ -46,11 +48,14 @@ export function PromptBar({
     mode, preset, tier, onModeChange, onPresetChange, onTierChange,
     dreamingActive, dreamingProfile, onDreamingToggle,
     activeModelId, orchestrationMode, onModelPrefChange,
-    onSubmit, onAbort,
+    sessionId, onSubmit, onAbort,
 }: Props): JSX.Element {
     // Phase 7.11.2 — rehydrated panel-lifetime state via workspaceStore.
-    const value          = useWorkspaceStore((s) => s.inputDraft);
-    const setValue       = useWorkspaceStore((s) => s.setInputDraft);
+    // Phase 7.12.9 (Fix 5) — draft is keyed by sessionId so switching sessions
+    // preserves each session's half-typed message instead of wiping it.
+    const value          = useWorkspaceStore((s) => s.draftMessages[sessionId] ?? '');
+    const setDraft       = useWorkspaceStore((s) => s.setDraft);
+    const setValue       = useCallback((v: string) => setDraft(sessionId, v), [setDraft, sessionId]);
     const contextOpen    = useWorkspaceStore((s) => s.contextOpen);
     const setContextOpen = useWorkspaceStore((s) => s.setContextOpen);
     const paletteOpen    = useWorkspaceStore((s) => s.paletteOpen);
@@ -96,14 +101,14 @@ export function PromptBar({
                 results?: MentionItem[];
             };
             if (msg.type === 'INSERT_MENTION' && msg.path) {
-                const v = useWorkspaceStore.getState().inputDraft;
+                const v = useWorkspaceStore.getState().draftMessages[sessionId] ?? '';
                 setValue(`${v}${v && !v.endsWith(' ') ? ' ' : ''}@${msg.path} `);
                 setPaletteOpen(false);
                 textareaRef.current?.focus();
             }
             // Phase 7.9.A.7.f — insert a saved skill template into the prompt.
             if (msg.type === 'INSERT_PROMPT' && msg.text) {
-                const v = useWorkspaceStore.getState().inputDraft;
+                const v = useWorkspaceStore.getState().draftMessages[sessionId] ?? '';
                 setValue(v.trim() ? `${v.replace(/\s*$/, '')}\n${msg.text}` : msg.text!);
                 setPaletteOpen(false);
                 textareaRef.current?.focus();
@@ -119,7 +124,7 @@ export function PromptBar({
         };
         window.addEventListener('message', handler);
         return () => window.removeEventListener('message', handler);
-    }, [setValue, setPaletteOpen]);
+    }, [setValue, setPaletteOpen, sessionId]);
 
     /** Phase 7.11.4 — apply a selected mention into the textarea: splice it
      *  over the active `@…` range so the partial query is replaced atomically. */

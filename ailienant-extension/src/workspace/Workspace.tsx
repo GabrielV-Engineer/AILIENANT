@@ -1051,6 +1051,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 activeModelId={activeModelId}
                                 orchestrationMode={orchestrationMode}
                                 onModelPrefChange={handleModelPrefChange}
+                                sessionId={initial.sessionId}
                                 onSubmit={handleSubmit}
                                 onAbort={handleAbort}
                             />

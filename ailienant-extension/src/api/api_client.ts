@@ -18,6 +18,11 @@ export interface TaskPayload {
     task_prompt: string;
     dirty_buffers: DirtyBuffer[];
     project_id?: string;               // SHA-256 of the VS Code workspace root path
+    // Phase 7.12.9 (Fix 3) — dynamic IDE context so the Planner anchors on what the
+    // user is actually looking at instead of a stale LanceDB/GraphRAG index.
+    workspace_root?: string;           // absolute workspaceFolders[0] path (dynamic, authoritative)
+    active_file_path?: string;         // absolute path of the focused editor tab
+    active_file_content?: string;      // its text, hard-capped to ACTIVE_FILE_CHAR_CAP (OOM guard)
     attachments?: ManualAttachment[];  // user-attached multimodal context
     explicit_mentions?: string[];      // @-referenced file paths — triggers full-file injection
     document_version_id?: string;      // OCC: active document version at submission (Phase 1.5)

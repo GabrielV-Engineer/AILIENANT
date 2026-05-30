@@ -103,6 +103,10 @@ class TaskPayload(BaseModel):
     document_version_id: Optional[str] = None  # OCC: version at submission (Phase 1.5)
     planner_mode_active: bool = False  # Phase 2.19: Planner-Mode toggle forwarded from WS registry
     workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
+    # Phase 7.12.9 (Fix 3) — the focused editor tab (may be SAVED, so absent from
+    # dirty_buffers). Content is hard-capped client-side (ACTIVE_FILE_CHAR_CAP).
+    active_file_path: Optional[str] = None
+    active_file_content: Optional[str] = None
     # Phase 7.11.8 (ADR-706 §4.5g) — when the session was created via a
     # ``BRANCH_FROM_CHECKPOINT`` flow, this field carries the source
     # checkpoint_id so future graph runs can pin LangGraph's RunnableConfig
@@ -126,9 +130,11 @@ class TaskService:
     Aísla la lógica de LangGraph y VFS de la capa de transporte HTTP.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Inyección de dependencias (Singleton)
-        self.vfs = VFSMiddleware()
+        # core.vfs_middleware is follow_imports=silent (pre-existing debt), so a
+        # strict invocation sees its constructor as untyped — scoped ignore.
+        self.vfs = VFSMiddleware()  # type: ignore[no-untyped-call]
         # Phase 7.11.1 — in-flight inline edits, keyed by edit_id. Each entry
         # owns one cancel_event (the agent loop polls it between yields, plan
         # W2) and the asyncio.Task running the orchestrator (cancel() is the
@@ -197,9 +203,9 @@ class TaskService:
 
     def _build_initial_state(
         self, session_id: str, payload: TaskPayload, execution_mode: str
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Construct the AIlienantGraphState seed consumed by run_planner_node."""
-        initial_state: dict = {
+        initial_state: dict[str, Any] = {
             "task_id": session_id,
             "user_input": payload.task_prompt,
             "project_id": payload.project_id,
@@ -211,6 +217,12 @@ class TaskService:
             "is_manual_override": False,
             "planner_mode_active": payload.planner_mode_active,
             "workspace_root": payload.workspace_root or "",
+            # Phase 7.12.9 (Fix 3) — transient planner inputs threaded via the
+            # initial-state dict (NOT declared on AIlienantGraphState; the TypedDict
+            # contract is unchanged). run_planner_node reads these to inject the
+            # active tab prominently; downstream nodes ignore the unknown keys.
+            "active_file_path": payload.active_file_path or "",
+            "active_file_content": payload.active_file_content or "",
             "hitl_pending": False,
             "hitl_response": None,
             "shared_understanding_reached": False,
@@ -1062,7 +1074,7 @@ class TaskService:
 
         try:
             if tool_name == "sandbox_bash":
-                from core.sandbox import get_active_adapter  # type: ignore[import-not-found]
+                from core.sandbox import get_active_adapter
 
                 adapter = get_active_adapter()
                 if adapter is None:

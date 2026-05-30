@@ -2163,3 +2163,26 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Backend NUEVO: `agents/__init__.py`, `api/__init__.py`, `brain/__init__.py`, `shared/__init__.py`, `tools/__init__.py`.
   - Backend EDIT: `mypy.ini` (config estructural + bloque planner removido), `agents/planner.py` (3 genéricos + import `Any`).
   - Docs EDIT: `PROJECT_MANIFEST.md` (7.12.8), `DEV_JOURNAL.md` (este hito).
+
+---
+
+## Hito 7.12.9: E2E Lifecycle Hardening (V2 — 5 Fixes Quirúrgicos) — 2026-05-30
+
+- **Status:** OK — el patch 7.12 pasaba unit tests pero fallaba los E2E de ciclo de vida de VS Code + un desync de contexto de workspace. DoD verde: frontend `npm run compile` 0 errores TS + `npm run lint` 0 errores (2 warnings ajenos pre-existentes); `mypy --strict --follow-imports=silent` sobre los 4 archivos backend modificados **Success: no issues found in 4 source files**; `pytest` **675 passed**; `mypy .` whole-tree **210 archivos sin crash de colisión**; `ruff check` **All checks passed!**.
+
+- **Fix 1 — WS reconnect cascade (frontend):** el `WSClient` singleton sobrevive el teardown del webview, pero `onDidChangeViewState(visible)` solo re-posteaba `REHYDRATE_TRANSCRIPT` — nunca re-afirmaba la conexión ni el estado. Añadido `WSClient.ensureConnected()` (resetea `reconnectAttempts` y reconecta si el socket no está OPEN, reviviendo un singleton que agotó su backoff); el handler ahora llama `SessionManager.ensureConnected()` + re-postea `WS_STATUS` con `getStatus()` real al webview remontado.
+
+- **Fix 2 — Natt context blindness (backend):** el overview del workspace estaba enterrado *al final* dentro de un tag XML uuid4 (`<{boundary}_context kind="workspace_overview">`) y solo `if remaining > 0` — los modelos pequeños lo ignoraban y se descartaba al agotarse el budget de archivos. Reubicado a sección temprana y prominente con header plano `=== CURRENT WORKSPACE STRUCTURE ===` y budget dedicado `WS_CAP=1024` (independiente de `FILE_CAP`), tras el Codex y antes de los file blocks.
+
+- **Fix 3 — Stale RAG / IDE desync (full-stack, CRÍTICO):** el `TaskPayload` no enviaba `workspace_root` ni el archivo activo, y `dirty_buffers` solo lleva archivos SUCIOS → una pestaña guardada era invisible y el Planner alucinaba desde el índice LanceDB/GraphRAG stale. Frontend (`session.ts`): envía `workspace_root` dinámico + `active_file_path/content` con **cap duro de 10 000 chars** (guard anti-OOM token-bomb, ADR-703). Backend: `main.py submit_task` hace fallback de `workspace_root` al registro vivo (`_session_workspace_root`); `_build_initial_state` propaga el archivo activo como **claves transitorias del dict** (TypedDict `AIlienantGraphState` intacto); el Planner inyecta el bloque `=== ACTIVE FILE (user is viewing this now) ===` PRIMERO y etiquetado.
+
+- **Fix 4 — Windows UTF-8 crash (backend):** `print()` con emoji (`📋…`) en `planner.py` crasheaba el nodo en consolas cp1252 (`'charmap' codec can't encode '\U0001f4cb'`), simulando timeout/retry de Pydantic. `main.py` fuerza `sys.stdout/stderr.reconfigure("utf-8")` antes de cualquier log/print; el bloque `print()` del planner migrado a `logger.info` estructurado.
+
+- **Fix 5 — Draft input loss (frontend):** el borrador era un único `inputDraft` global, no por sesión → se perdía al cambiar de sesión. Refactor a `draftMessages: Record<sessionId, string>` + `setDraft(sessionId, text)` en `workspaceStore` (persist v2; un mismatch de versión descarta el blob v1 con seguridad). `PromptBar` recibe `sessionId` y lee/escribe su borrador; `Workspace.tsx` pasa `initial.sessionId`.
+
+- **Deuda strict saldada de paso:** al traer `core/task_service.py` y `main.py` a la valla `mypy --strict`, se saldaron 11 errores legacy pre-existentes (anotaciones de retorno, genéricos `dict`/`set` desnudos, `# type: ignore[no-untyped-call]` con precedente para constructores legacy, ignore obsoleto removido). La lógica id-merge de `REHYDRATE_TRANSCRIPT` (7.12) quedó intacta.
+
+- **Files changed:**
+  - Frontend EDIT: `src/api/ws_client.ts`, `src/providers/workspace_panel.ts`, `src/api/api_client.ts`, `src/brain/session.ts`, `src/workspace/workspaceStore.ts`, `src/workspace/components/PromptBar.tsx`, `src/workspace/Workspace.tsx`.
+  - Backend EDIT: `agents/analyst_context.py`, `agents/planner.py`, `core/task_service.py`, `main.py`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.12.9), `DEV_JOURNAL.md` (este hito).

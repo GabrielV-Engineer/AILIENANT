@@ -8,7 +8,8 @@
  * `workspaceState` per 7.9.B.20 and friends, untouched).
  *
  * Persistable slice (whitelisted in `pick`):
- *   - `inputDraft`            — in-progress prompt text
+ *   - `draftMessages`         — in-progress prompt text, keyed by sessionId (Phase
+ *                               7.12.9 Fix 5: drafts survive session switches)
  *   - `paletteOpen`/`contextOpen` — PromptBar overlay state
  *   - `nattOpen`              — analyst pane open/closed
  *   - `coreMenuOpen`          — header core-status popover
@@ -50,7 +51,12 @@ export interface InflightSnapshot {
 }
 
 export interface WorkspaceState {
-    inputDraft: string;
+    /**
+     * Phase 7.12.9 (Fix 5) — prompt drafts keyed by sessionId. Previously a single
+     * global `inputDraft`, which leaked/wiped across session switches. Persisted so
+     * a half-typed message survives a tab change and panel reload.
+     */
+    draftMessages: Record<string, string>;
     paletteOpen: boolean;
     contextOpen: boolean;
     nattOpen: boolean;
@@ -84,7 +90,7 @@ export interface WorkspaceState {
     inflightTurn: InflightSnapshot | null;
 
     // Setters (Zustand pattern — flat actions colocated with state).
-    setInputDraft: (v: string) => void;
+    setDraft: (sessionId: string, text: string) => void;
     setPaletteOpen: (v: boolean) => void;
     setContextOpen: (v: boolean) => void;
     setNattOpen: (v: boolean) => void;
@@ -100,7 +106,7 @@ export interface WorkspaceState {
 
 export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
     (set) => ({
-        inputDraft: '',
+        draftMessages: {},
         paletteOpen: false,
         contextOpen: false,
         nattOpen: false,
@@ -113,7 +119,8 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         nativeThinking: true,
         inflightTurn: null,
 
-        setInputDraft:   (v) => set({ inputDraft: v }),
+        setDraft:        (sessionId, text) =>
+            set((s) => ({ draftMessages: { ...s.draftMessages, [sessionId]: text } })),
         setPaletteOpen:  (v) => set({ paletteOpen: v }),
         setContextOpen:  (v) => set({ contextOpen: v }),
         setNattOpen:     (v) => set({ nattOpen: v }),
@@ -128,10 +135,13 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
     }),
     {
         key: 'workspace.v1',
-        version: 1,
+        // Phase 7.12.9 (Fix 5) — bumped to v2: the persisted shape changed
+        // (inputDraft:string → draftMessages:Record). A version mismatch safely
+        // discards the old v1 payload on hydrate (persistedStore.ts:70).
+        version: 2,
         // Defensive whitelist — never persist anything not listed (plan W4).
         pick: (s) => ({
-            inputDraft: s.inputDraft,
+            draftMessages: s.draftMessages,
             paletteOpen: s.paletteOpen,
             contextOpen: s.contextOpen,
             nattOpen: s.nattOpen,

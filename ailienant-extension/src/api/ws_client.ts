@@ -185,6 +185,22 @@ export class WSClient {
         }
     }
 
+    /**
+     * Phase 7.12.9 (Fix 1) — idempotent re-assert of the tunnel, called when a
+     * webview panel becomes visible again. The singleton survives the webview
+     * teardown, but if the socket was closed (or exhausted its backoff budget)
+     * while the panel was hidden, the remounted UI would stay "disconnected"
+     * forever. Reset the backoff counter and reconnect when not OPEN; the
+     * existing connect() guards make an already-open socket a no-op.
+     */
+    public ensureConnected(clientId?: string): void {
+        const id = clientId || this._clientId;
+        if (!id) { return; }
+        if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) { return; }
+        this.reconnectAttempts = 0;
+        this.connect(id);
+    }
+
     private _handleReconnection(clientId: string): void {
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
             this._emitStatus('disconnected');
