@@ -277,7 +277,7 @@ async def upsert_ppr_scores(
     project_id: str = "",
     communities: Optional[Dict[str, int]] = None,
 ) -> None:
-    """Persist PageRank scores (and optional Louvain community ids) for the project.
+    """Persist node centrality scores (and optional Louvain community ids) for the project.
 
     ``communities`` maps node → community id; when omitted, leiden_community_id is
     written NULL. Named columns so the additive column never shifts positionally.

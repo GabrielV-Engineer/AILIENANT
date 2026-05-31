@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import pathspec  # type: ignore[import-untyped]
+import pathspec
 
 logger = logging.getLogger("RULE_MANAGER")
 
@@ -40,7 +40,7 @@ class RuleManager:
     _instance: Optional["RuleManager"] = None
     _cache_key: Optional[CacheKey]
     _cached_formatted: str
-    _cached_exclude_spec: Optional["pathspec.PathSpec"]
+    _cached_exclude_spec: Optional["pathspec.PathSpec[Any]"]
 
     def __new__(cls) -> "RuleManager":
         if cls._instance is None:

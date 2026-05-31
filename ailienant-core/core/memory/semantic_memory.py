@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import lancedb  # type: ignore[import-untyped]
 import numpy as np
-import pyarrow as pa  # type: ignore[import-untyped]
-import pyarrow.compute as pc  # type: ignore[import-untyped]
+import pyarrow as pa
+import pyarrow.compute as pc
 import tiktoken
 
 import litellm
@@ -175,7 +175,7 @@ class SemanticMemoryManager:
     def _table_vector_dim(tbl: Any) -> Optional[int]:
         """Return the fixed vector dimension of an existing table, or None."""
         try:
-            return tbl.schema.field("vector").type.list_size
+            return int(tbl.schema.field("vector").type.list_size)
         except Exception:
             return None
 

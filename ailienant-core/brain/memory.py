@@ -97,10 +97,12 @@ def index_file_sync(req: IndexingRequest) -> IndexingResult:
 
 
 def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
-    """Compute standard PageRank over the project dependency graph.
+    """Compute node centrality over the project dependency graph.
 
-    CPU-bound — runs in ProcessPoolExecutor. Returns scores for all nodes
-    in the graph. Phase 3.3 uses this as the Graph_Centrality term in CSS.
+    CPU-bound — runs in ProcessPoolExecutor. Returns a centrality score for every
+    node. Phase 3.3 uses this as the Graph_Centrality term in CSS. Uses pure-Python
+    degree centrality (no scipy) so the runtime stays free of native C/Fortran
+    extensions for lightweight bundling.
     """
     try:
         import networkx as nx  # type: ignore[import]
@@ -108,7 +110,7 @@ def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
         G.add_edges_from(req.edges)
         if len(G) == 0:
             return PPRResult(scores={}, success=True)
-        scores: dict[str, float] = nx.pagerank(G, alpha=0.85, max_iter=100, tol=1e-6)
+        scores: dict[str, float] = nx.degree_centrality(G)
         return PPRResult(scores=scores, success=True)
     except Exception as exc:
         return PPRResult(scores={}, success=False, error=str(exc))
@@ -147,10 +149,10 @@ def _resolve_edge_confidence(
 def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
     """Unified graph analytics over the project dependency graph (one DiGraph build).
 
-    CPU-bound — runs in ProcessPoolExecutor. Computes PageRank centrality, Louvain
-    community detection (on the undirected projection, fixed seed for stable colors),
-    and per-edge confidence. Supersedes calculate_ppr_sync on the batch path; the
-    latter is retained for callers that only need scores.
+    CPU-bound — runs in ProcessPoolExecutor. Computes degree centrality (pure-Python,
+    no scipy), Louvain community detection (on the undirected projection, fixed seed
+    for stable colors), and per-edge confidence. Supersedes calculate_ppr_sync on the
+    batch path; the latter is retained for callers that only need scores.
     """
     try:
         import networkx as nx  # type: ignore[import]
@@ -159,14 +161,14 @@ def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
         if len(G) == 0:
             return PPRResult(scores={}, success=True)
 
-        # PageRank is best-effort: networkx delegates it to scipy, which may be
-        # absent. A missing/failing PPR must NOT sink community detection or
-        # confidence (both pure-python) — degrade scores to empty and continue.
+        # Pure-Python degree centrality (no scipy) — keeps the runtime free of
+        # native C/Fortran extensions for lightweight bundling. Best-effort so a
+        # centrality hiccup never sinks community detection or confidence.
         scores: dict[str, float] = {}
         try:
-            scores = nx.pagerank(G, alpha=0.85, max_iter=100, tol=1e-6)
-        except Exception as exc:  # noqa: BLE001 — PPR (scipy) is best-effort
-            logger.warning("PageRank unavailable (non-fatal): %s", exc)
+            scores = nx.degree_centrality(G)
+        except Exception as exc:  # noqa: BLE001 — centrality is best-effort
+            logger.warning("Degree centrality unavailable (non-fatal): %s", exc)
 
         communities: Dict[str, int] = {}
         try:

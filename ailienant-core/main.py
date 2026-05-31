@@ -651,7 +651,7 @@ async def http_janitor(payload: JanitorRequest) -> JanitorReport:
 
 async def _run_ppr_for_project(project_id: str) -> None:
     """Debounced graph-analytics worker: waits 2s after the last save, then dispatches
-    PageRank + Louvain communities + edge confidence to the process pool in one build."""
+    degree centrality + Louvain communities + edge confidence to the pool in one build."""
     await asyncio.sleep(_PPR_DEBOUNCE_S)
     try:
         edges_raw = await catalog_db.get_all_edges(project_id)
