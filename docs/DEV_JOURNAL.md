@@ -2,6 +2,32 @@
 
 ---
 
+## Hito 7.13.1: Concurrency & Resource Safety Spine — 2026-05-30
+
+**Status:** CERRADO (foundational; GAP5 + cancel scoped-por-proyecto diferidos a 7.13.6) | **Phase:** 7.13.1 (ADR-714)
+
+**Problem:** el modelo Push expone al grafo a escritores concurrentes (re-index reactivo del save, consolidación, `apply_patch` del agente), cada uno con un DELETE→INSERT no atómico a través de awaits → bordes fantasma / PPR corrupto (GAP1, confirmado vía ripgrep: `core/db.py::upsert_dependencies`/`purge_file_nodes` sin `asyncio.Lock`). Además: sin single-flight, saves rápidos disparan re-index solapado donde un write stale aterriza tras uno fresco (GAP2); sin rate-limit inbound, una tormenta de saves puede saturar el event loop (GAP3, grep limpio en `websocket_manager.py`); y un cliente que cae mid-stream deja vivo el runner de generación emitiendo a un socket muerto (GAP4).
+
+**Approach:** se construyó la columna de seguridad como fundación de la fase (todo feature Push posterior la estresa). GAP1: `graph_write_lock(project_id)` — un `asyncio.Lock` por `(loop, project)` (cacheado por id de loop para sobrevivir al patrón un-`asyncio.run`-por-test), envolviendo `upsert_dependencies`, `purge_file_nodes` y `upsert_ppr_scores`; getter público expuesto para que el graph-reader path (daemon + GraphRAG extractor) lo tome en 7.13.6 (no reentrante — contrato documentado). GAP2: `SingleFlightCoordinator` con re-run de trailing-edge (a lo sumo un pase en vuelo por clave; el más nuevo gana, sin lost-update), ruteando `_dispatch_indexing_and_ppr` por `(project, file)`. GAP3: `ConnectionManager.allow_inbound` — token-bucket por cliente (capacity 100 / refill 50/s, espejo del `_MASS_THRESHOLD` de io_coalescer), que descarta sólo `client_file_update` en flood (eventos interactivos jamás se limitan), purgado en disconnect. GAP4: registrado `abort_session` como segundo hook de disconnect para cancelar el runner huérfano.
+
+**Files changed:**
+- `core/db.py` — `graph_write_lock` + serialización de las tres escrituras de grafo/PPR.
+- `core/indexer.py` — `SingleFlightCoordinator` (primitiva reusable; 7.13.5 la consumirá para `reindex_one`).
+- `main.py` — ruteo single-flight (`_reindex_one` extraído de `_dispatch_indexing_and_ppr`), hook `abort_session`, shed de flood en el receive-loop.
+- `api/websocket_manager.py` — token-bucket inbound + purga en disconnect.
+- `tests/` — `test_graph_write_lock.py`, `test_single_flight.py`, `test_inbound_rate_limit.py` (9 tests nuevos).
+
+**Architectural outcomes:**
+- **CC1** el lock por proyecto sostiene un DELETE+INSERT coherente bajo re-index + consolidación concurrentes (sin deps fantasma).
+- **SF1** saves rápidos del mismo archivo coalescen a un pase; el contenido más fresco gana.
+- **RL1** un flood inbound se descarta sin starvear chat/HITL.
+- **CN1 (parcial)** el runner de generación huérfano se cancela en disconnect.
+- El lock es no reentrante: el holder del read-side debe soltar antes de llamar a las escrituras self-locking (riesgo de deadlock documentado).
+
+**Verification:** `mypy .` → Success, 0 errores en 213 archivos (baseline intacto; `core.db`/`websocket_manager` siguen en `follow_imports=silent` legacy, pero las adiciones están tipadas; `core/indexer.py` y `main.py` pasan strict directo). `pytest` → 684 passed (baseline 675 + 9 nuevos). **Diferido a 7.13.6 (Ref):** GAP5 (lock compartido daemon↔indexer) y el cancel cascada de tareas scoped-por-proyecto — ambos requieren el daemon de Manual Dreaming, aún inexistente.
+
+---
+
 ## Hito 7.13.0: The Enterprise Spinal Cord — blueprint & WBS lock-in (planning artifact) — 2026-05-30
 
 **Status:** PLANNED — **v2 reorder sellado** (WBS + blueprint reescritos a orden de construcción 7.13.0–7.13.12; implementación arranca por 7.13.1) | **Phase:** 7.13 (ADR-708..718, **ADR-710 reescrito**)
