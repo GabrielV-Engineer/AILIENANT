@@ -115,6 +115,11 @@ def log_routing_decision(
     hw: Optional[str] = None,
 ) -> None:
     """Insert one routing audit record. Silently no-ops if DB not initialized."""
+    # Forensic file log FIRST — independent of the SQLite connection, so a
+    # "database is locked" error (or an uninitialised DB) never costs us the
+    # trace. The sink enqueues in O(1) and writes off-loop; it never raises.
+    from core.telemetry_log import log_node_transition
+    log_node_transition(session_id=session_id, source=source, target=target, reason=reason)
     if _conn is None:
         return
     with _lock:
@@ -146,9 +151,17 @@ async def log_oom_event(
     write under the shared thread-lock, mirroring ``log_routing_decision``.
     Silently no-ops if the telemetry DB has not been initialised.
     """
+    session_id = str(state.get("task_id", "")) if state else ""
+    # Forensic file log FIRST — see log_routing_decision for the rationale.
+    from core.telemetry_log import log_node_transition
+    log_node_transition(
+        session_id=session_id,
+        source=original_model,
+        target=fallback_model,
+        reason=f"oom_fallback: {reason}",
+    )
     if _conn is None:
         return
-    session_id = str(state.get("task_id", "")) if state else ""
     with _lock:
         try:
             _conn.execute(

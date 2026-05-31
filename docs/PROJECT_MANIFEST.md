@@ -7,8 +7,8 @@
 ## 📍 Estado Actual
 
 - **Fase Activa:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
-- **Hito Reciente:** 7.13.2 — Privacy & Telemetry Filtering cerrado (Dual-Rules exclude + Incognito toggle; 689 tests verdes)
-- **Próximo Objetivo:** 7.13.3 — Claude's Eyes: Live Telemetry Log (ADR-712)
+- **Hito Reciente:** 7.13.3 — Claude's Eyes: Live Telemetry Log cerrado (sink async-safe `QueueHandler`/`QueueListener`, scrubbed/rotado/UTF-8; 694 tests verdes)
+- **Próximo Objetivo:** 7.13.4 — Spinal Cord: Bus de Telemetría IDE (Push) (ADR-708)
 
 ---
 
@@ -2002,10 +2002,11 @@ the blueprint freeze lifts.
   - **Files:** `core/rules.py`, `src/ide_sync.ts`, nuevo status-bar item en `extension.ts`, `core/vfs_middleware.py` (consumo del resolver compartido).
   - **Cerrado:** `is_excluded()` + `_merge_exclude_patterns` + `_cached_exclude_spec` (PathSpec `gitignore`, compilado una vez) en `core/rules.py`; Layer 0 dual-rules en `core/vfs_middleware.py`; `loadRulesExcludePatterns` + watcher + `setIncognito` en `src/ide_sync.ts`; `IdeSync` + status-bar `$(shield) Incógnito` + comando `ailienant.toggleIncognito` en `extension.ts`; 5 tests nuevos (689 verdes).
 
-- [ ] **7.13.3 — Claude's Eyes: Live Telemetry Log** *(instrumento de verificación, construido temprano · ADR-712)*
+- [x] **7.13.3 — Claude's Eyes: Live Telemetry Log** *(instrumento de verificación, construido temprano · ADR-712)*
   - **Problem:** la telemetría vive sólo en SQLite (`core/telemetry.py`); no hay un sink de archivo "tail-eable" durante el desarrollo.
   - **Resolution:** sink `core/telemetry_log.py` que escribe payloads WS, transiciones de nodo y eventos de indexación a `.ailienant_telemetry.log` en la raíz del workspace (ADR-712). **RotatingFileHandler** size-bounded (GAP7), `SecretsScrubberFilter` (Phase 6.7) obligatorio, UTF-8 explícito (lección 7.12.9 Fix 4), `.gitignore` de inmediato. Cableado desde `api/websocket_manager.py` + `brain/engine.py`. Se construye temprano porque es el **instrumento de verificación** del resto de 7.13.
   - **Files:** nuevo `core/telemetry_log.py`, `core/telemetry.py`, `api/websocket_manager.py`, `brain/engine.py`, `.gitignore`.
+  - **Cerrado:** sink async-safe con `QueueHandler` + `QueueListener` (encolado O(1) en el event-loop, escritura a disco off-loop — no estanca el WS server ni sabotea el token bucket de 7.13.1); `SecretsScrubberFilter` montado en el `QueueHandler` (scrub pre-encolado, el plaintext nunca entra a la cola); cola acotada (`_QUEUE_MAX`) + `RotatingFileHandler` UTF-8 size-bounded + truncado por línea; mirror **forense-primero** en `core/telemetry.py` (`log_routing_decision`/`log_oom_event` escriben al archivo *antes* del `execute` SQLite, fuera del lock); instrumentación de entrada de nodos en `brain/engine.py`; `configure_telemetry_log` en `client_workspace_init` + `shutdown_telemetry_log` en lifespan de `main.py` (desviación del file-list registrada como enmienda al blueprint §4.2); 5 tests nuevos (694 verdes, mypy 216 limpio).
 
 - [ ] **7.13.4 — Spinal Cord: Bus de Telemetría IDE (Push)** *(ADR-708)*
   - **Problem:** los watchers actuales (`onDidChangeActiveTextEditor`/`onDidChangeTextDocument` en `src/ide_sync.ts`) cubren foco y edición pero no el ciclo de vida de archivos; todo viaja por el WS principal mezclado con el stream de chat.

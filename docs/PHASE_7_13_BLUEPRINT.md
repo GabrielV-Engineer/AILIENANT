@@ -187,6 +187,7 @@ Consolidate the VFS readers in **both** `agents/coder.py` **and** `agents/analys
 | [core/io_coalescer.py](../ailienant-core/core/io_coalescer.py) | reuse mass-threshold for inbound rate limit / single-flight | 7.13.1 |
 | [core/task_service.py](../ailienant-core/core/task_service.py) · [main.py](../ailienant-core/main.py) | extend `cleanup_session` + `active_tasks` to cascade-cancel indexer/daemon; lifespan start daemon; off-loop telemetry dispatch; `client_dreaming_run` route | 7.13.1 / 7.13.4 / 7.13.6 |
 | [api/websocket_manager.py](../ailienant-core/api/websocket_manager.py) | inbound per-client token-bucket; telemetry-log wiring | 7.13.1 / 7.13.3 |
+| [core/telemetry.py](../ailienant-core/core/telemetry.py) · [brain/engine.py](../ailienant-core/brain/engine.py) · [main.py](../ailienant-core/main.py) | telemetry-log mirror (forensic-first); node-entry instrumentation; `configure_telemetry_log` at `client_workspace_init` + `shutdown_telemetry_log` in lifespan (ADR-712 amendment — `main.py`/`brain/engine.py` added to the 7.13.3 file set) | 7.13.3 |
 | [core/rules.py](../ailienant-core/core/rules.py) · [core/vfs_middleware.py](../ailienant-core/core/vfs_middleware.py) | Dual-Rules exclusion resolver consumption | 7.13.2 / 7.13.11 |
 | [src/ide_sync.ts](../ailienant-extension/src/ide_sync.ts) | save/rename/delete listeners; wire `client_file_delete`; extend Privacy Gate with resolved exclusions | 7.13.2 / 7.13.4 |
 | `ailienant-extension/src/extension.ts` | Incognito status-bar toggle; "Trigger Dreaming" command | 7.13.2 / 7.13.6 |

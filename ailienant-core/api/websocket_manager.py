@@ -39,8 +39,14 @@ from api.ws_contracts import (
     ServerToolDepGraphEvent, ToolDepGraphPayload,
 )
 
+from core.telemetry_log import log_ws_payload
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("VFS_Manager")
+
+# Cap the WS payload slice mirrored to the telemetry sink so a large diff-stream
+# chunk never bloats a single log line (the sink also truncates defensively).
+_TELEMETRY_LINE_CAP: int = 1_000
 
 
 # Phase 7.11.6 (ADR-706 §4.5f) — session-disconnect hooks. Other modules
@@ -200,6 +206,8 @@ class ConnectionManager:
         if client_id not in self.active_connections:
             return
         payload = ws_adapter.dump_json(event).decode("utf-8")
+        # Mirror to the live telemetry sink (O(1) enqueue, off-loop disk write).
+        log_ws_payload("out", getattr(event, "event_type", "?"), client_id, payload[:_TELEMETRY_LINE_CAP])
         await self.active_connections[client_id].send_text(payload)
 
     # ------------------------------------------------------------------
@@ -209,10 +217,15 @@ class ConnectionManager:
     async def validate_incoming(self, raw_json_string: str) -> Optional[WebSocketMessage]:
         """O(1) discriminated-union validation on every inbound message."""
         try:
-            return ws_adapter.validate_json(raw_json_string)
+            result = ws_adapter.validate_json(raw_json_string)
         except ValidationError as e:
             logger.error("⚠️ Inyección rechazada en la frontera: Payload malformado. Detalles: %s", e)
             return None
+        # Mirror the accepted inbound event to the live telemetry sink.
+        log_ws_payload(
+            "in", getattr(result, "event_type", "?"), "?", raw_json_string[:_TELEMETRY_LINE_CAP]
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Outbound emit helpers (server → client)
