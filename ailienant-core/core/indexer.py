@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import sys
-from typing import List
+from typing import Awaitable, Callable, Dict, List, Set
 
 import psutil
 
@@ -95,6 +95,44 @@ def _get_pool_pids() -> List[int]:
     except Exception:
         logger.debug("Could not resolve worker PIDs for priority adjustment — skipping.")
         return []
+
+
+class SingleFlightCoordinator:
+    """Per-key single-flight with trailing re-run.
+
+    Under the Push model a single file can be re-indexed by overlapping requests:
+    a slow ``compute_pool`` run for one file may still be in flight when the next
+    debounce window dispatches the same file, wasting work and risking a stale
+    write landing after a fresh one. This coordinator guarantees at most one
+    in-flight coroutine per key. A request arriving while its key is running does
+    NOT overlap; it records the latest coroutine factory as ``pending`` so exactly
+    one more run fires after the current finishes (trailing edge → the freshest
+    content always wins, never a lost update). Distinct keys run concurrently.
+    """
+
+    def __init__(self) -> None:
+        self._running: Set[str] = set()
+        self._pending: Dict[str, Callable[[], Awaitable[None]]] = {}
+
+    async def run(self, key: str, factory: Callable[[], Awaitable[None]]) -> None:
+        """Run ``factory()`` for ``key`` unless one is in flight; then coalesce.
+
+        ``factory`` is a zero-arg callable that builds the coroutine fresh on
+        each invocation (so a trailing re-run captures the latest content the
+        caller closed over), not an already-awaited coroutine.
+        """
+        if key in self._running:
+            self._pending[key] = factory  # coalesce — newest factory wins
+            return
+        self._running.add(key)
+        try:
+            await factory()
+            # Trailing edge: drain re-runs queued while this key was in flight.
+            # Each await may enqueue a newer pending entry; loop until quiescent.
+            while key in self._pending:
+                await self._pending.pop(key)()
+        finally:
+            self._running.discard(key)
 
 
 class LazyIndexer:
