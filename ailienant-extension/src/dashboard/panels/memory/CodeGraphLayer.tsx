@@ -7,13 +7,30 @@ import 'reactflow/dist/style.css';
 import type { GraphResponse, GraphNode } from './api';
 
 const EXTERNAL_COLOR = '#6E7681';
+const GOD_NODE_SCALE = 1.5;
 
-// Green ramp from muted to bright by normalized PPR (0..1).
+// Green ramp from muted to bright by normalized PPR (0..1). Fallback coloring
+// when a node has no community id yet (analytics pass not run).
 function pprColor(norm: number): string {
     const lo = [40, 70, 55];   // dim green
     const hi = [99, 165, 131]; // --accent-primary
     const mix = lo.map((c, i) => Math.round(c + (hi[i] - c) * norm));
     return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
+}
+
+// Stable categorical palette indexed by Louvain community id. Golden-angle hue
+// rotation gives well-separated, deterministic colors for any community count.
+function communityColor(id: number): string {
+    const hue = (id * 137.508) % 360;
+    return `hsl(${hue.toFixed(1)}, 60%, 62%)`;
+}
+
+// Confidence → edge stroke style (the approved visual audit):
+// EXTRACTED solid, INFERRED dashed, AMBIGUOUS red. Null/unknown → solid.
+function edgeStyle(confidence?: string | null): React.CSSProperties {
+    if (confidence === 'AMBIGUOUS') { return { stroke: '#F85149' }; }
+    if (confidence === 'INFERRED') { return { stroke: '#30363D', strokeDasharray: '6 4' }; }
+    return { stroke: '#30363D' };  // EXTRACTED or unknown
 }
 
 interface NodeData {
@@ -25,13 +42,19 @@ interface NodeData {
     ppr_score: number;
     in_degree: number;
     out_degree: number;
+    is_god_node: boolean;
 }
 
 function FullNode({ data }: NodeProps<NodeData>): JSX.Element {
+    const scale = data.is_god_node ? GOD_NODE_SCALE : 1;
     return (
         <div
             className="mm-node mm-node--full"
-            style={{ borderColor: data.color, minWidth: 100 + data.size * 60 }}
+            style={{
+                borderColor: data.color,
+                minWidth: (100 + data.size * 60) * scale,
+                borderWidth: data.is_god_node ? 2 : undefined,
+            }}
         >
             <div className="mm-node-title" style={{ color: data.color }}>{data.label}</div>
             <div className="mm-node-role">
@@ -50,7 +73,7 @@ function MediumNode({ data }: NodeProps<NodeData>): JSX.Element {
 }
 
 function DotNode({ data }: NodeProps<NodeData>): JSX.Element {
-    const d = 8 + data.size * 14;
+    const d = (8 + data.size * 14) * (data.is_god_node ? GOD_NODE_SCALE : 1);
     return (
         <div
             className="mm-node-dot"
@@ -88,19 +111,26 @@ function toFlow(graph: GraphResponse): { nodes: Node<NodeData>[]; edges: Edge[] 
     const pos = layout(graph.nodes);
     const nodes: Node<NodeData>[] = graph.nodes.map(n => {
         const norm = Math.min(1, n.ppr_score / maxPpr);
+        const hasCommunity = n.leiden_community_id !== null && n.leiden_community_id !== undefined;
+        const color = n.is_external
+            ? EXTERNAL_COLOR
+            : hasCommunity
+                ? communityColor(n.leiden_community_id as number)
+                : pprColor(norm);   // fallback until the analytics pass assigns a community
         return {
             id: n.id,
             type: 'lodNode',
             position: pos.get(n.id) ?? { x: 0, y: 0 },
             data: {
                 label: n.label,
-                color: n.is_external ? EXTERNAL_COLOR : pprColor(norm),
+                color,
                 size: norm,
                 is_external: n.is_external,
                 full_path: n.full_path,
                 ppr_score: n.ppr_score,
                 in_degree: n.in_degree,
                 out_degree: n.out_degree,
+                is_god_node: n.is_god_node ?? false,
             },
         };
     });
@@ -108,7 +138,7 @@ function toFlow(graph: GraphResponse): { nodes: Node<NodeData>[]; edges: Edge[] 
         id: `e${i}`,
         source: e.source,
         target: e.target,
-        style: { stroke: '#30363D' },
+        style: edgeStyle(e.confidence),
     }));
     return { nodes, edges };
 }

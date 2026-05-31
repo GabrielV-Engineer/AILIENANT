@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import re
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -58,11 +58,15 @@ class GraphNode(BaseModel):
     out_degree: int
     is_external: bool   # True when the node is an unresolved module name, not a source file
     full_path: str
+    leiden_community_id: Optional[int] = None   # Louvain community for coloring; None until computed
+    is_god_node: bool = False                   # top-3 by degree centrality — rendered larger
 
 
 class GraphEdge(BaseModel):
     source: str
     target: str
+    confidence: Optional[str] = None            # EXTRACTED | INFERRED | AMBIGUOUS (None → treat solid)
+    confidence_score: Optional[float] = None
 
 
 class GraphResponse(BaseModel):
@@ -100,6 +104,26 @@ class VectorMapResponse(BaseModel):
 def _norm(path: str) -> str:
     """Normalize separators to forward slashes for cross-platform prefix matching."""
     return path.replace("\\", "/")
+
+
+def _rank_god_nodes(
+    candidates: List[str],
+    in_deg: Dict[str, int],
+    out_deg: Dict[str, int],
+    ppr: Dict[str, float],
+    top_n: int = 3,
+) -> set[str]:
+    """Top-N nodes by degree centrality (in+out), deterministic tiebreak by PPR then id.
+
+    "God Nodes" are the structural hubs of the dependency graph; rendered larger
+    in the viewer. Degree is the centrality of record here (cheap, already on hand);
+    PPR breaks ties so the ranking is stable across renders.
+    """
+    ranked = sorted(
+        candidates,
+        key=lambda n: (-(in_deg.get(n, 0) + out_deg.get(n, 0)), -ppr.get(n, 0.0), n),
+    )
+    return set(ranked[:top_n])
 
 
 def _common_root(paths: List[str]) -> str:
@@ -183,31 +207,36 @@ async def get_graph(
     if not _SAFE_ID_RE.match(project_id):
         raise HTTPException(status_code=400, detail="invalid project_id")
 
-    edges_raw = await catalog_db.get_all_edges(project_id)
+    edges_raw = await catalog_db.get_graph_edges_enriched(project_id)
     folder_prefix = _norm(folder)
 
-    kept: List[Tuple[str, str]] = []
-    for source, target in edges_raw:
+    kept: List[Tuple[str, str, Optional[str], Optional[float]]] = []
+    for source, target, conf, conf_score in edges_raw:
         if not folder_prefix or _norm(source).startswith(folder_prefix):
-            kept.append((source, target))
+            kept.append((source, target, conf, conf_score))
 
-    source_set = {s for s, _ in kept}
+    source_set = {s for s, _, _, _ in kept}
     in_deg: Dict[str, int] = defaultdict(int)
     out_deg: Dict[str, int] = defaultdict(int)
     node_ids = set()
-    for source, target in kept:
+    for source, target, _, _ in kept:
         out_deg[source] += 1
         in_deg[target] += 1
         node_ids.add(source)
         node_ids.add(target)
 
     ppr = await catalog_db.get_ppr_scores_bulk(list(node_ids), project_id)
+    communities = await catalog_db.get_community_ids_bulk(list(node_ids), project_id)
 
     total_nodes = len(node_ids)
     # Cap: keep the top max_nodes by PPR (deterministic tiebreak by id).
     ordered = sorted(node_ids, key=lambda n: (-ppr.get(n, 0.0), n))
     capped = total_nodes > max_nodes
     keep_ids = set(ordered[:max_nodes]) if capped else node_ids
+
+    # God Nodes: top-3 internal nodes by degree centrality (in+out), tiebreak PPR.
+    internal_kept = [n for n in keep_ids if n in source_set]
+    god_nodes = _rank_god_nodes(internal_kept, in_deg, out_deg, ppr)
 
     nodes: List[GraphNode] = []
     for nid in sorted(keep_ids):
@@ -220,11 +249,13 @@ async def get_graph(
             out_degree=out_deg.get(nid, 0),
             is_external=is_external,
             full_path=nid,
+            leiden_community_id=communities.get(nid),
+            is_god_node=nid in god_nodes,
         ))
 
     edges = [
-        GraphEdge(source=s, target=t)
-        for s, t in kept
+        GraphEdge(source=s, target=t, confidence=conf, confidence_score=conf_score)
+        for s, t, conf, conf_score in kept
         if s in keep_ids and t in keep_ids
     ]
 

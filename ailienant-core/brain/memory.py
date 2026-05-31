@@ -7,7 +7,9 @@ Phase 3 extends this module with LanceDB vector indexing and GraphRAG topology e
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+import os
+from collections import Counter
+from typing import Any, Dict, List, Optional, Tuple
 
 from shared.contracts import IndexingRequest, IndexingResult, PPRRequest, PPRResult
 
@@ -108,5 +110,79 @@ def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
             return PPRResult(scores={}, success=True)
         scores: dict[str, float] = nx.pagerank(G, alpha=0.85, max_iter=100, tol=1e-6)
         return PPRResult(scores=scores, success=True)
+    except Exception as exc:
+        return PPRResult(scores={}, success=False, error=str(exc))
+
+
+def _resolve_edge_confidence(
+    edges: Tuple[Tuple[str, str], ...], indexed_files: Tuple[str, ...]
+) -> Tuple[Tuple[str, str, str, float], ...]:
+    """Derive a confidence label/score per edge from whole-graph resolution.
+
+    EXTRACTED (1.0): the target is itself an indexed source file — a concrete,
+    parsed internal dependency. AMBIGUOUS (0.25): the target's module stem matches
+    ≥2 indexed files, so which file it refers to cannot be disambiguated. INFERRED
+    (0.5): everything else — an external/unindexed module the import implies.
+    """
+    indexed = set(indexed_files)
+    stems: Counter[str] = Counter()
+    for f in indexed_files:
+        stem = os.path.splitext(os.path.basename(f.replace("\\", "/")))[0]
+        if stem:
+            stems[stem] += 1
+
+    out: List[Tuple[str, str, str, float]] = []
+    for source, target in edges:
+        if target in indexed:
+            out.append((source, target, "EXTRACTED", 1.0))
+            continue
+        module_stem = target.replace("\\", "/").rsplit("/", 1)[-1].split(".")[-1]
+        if stems.get(module_stem, 0) >= 2:
+            out.append((source, target, "AMBIGUOUS", 0.25))
+        else:
+            out.append((source, target, "INFERRED", 0.5))
+    return tuple(out)
+
+
+def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
+    """Unified graph analytics over the project dependency graph (one DiGraph build).
+
+    CPU-bound — runs in ProcessPoolExecutor. Computes PageRank centrality, Louvain
+    community detection (on the undirected projection, fixed seed for stable colors),
+    and per-edge confidence. Supersedes calculate_ppr_sync on the batch path; the
+    latter is retained for callers that only need scores.
+    """
+    try:
+        import networkx as nx  # type: ignore[import]
+        G: Any = nx.DiGraph()
+        G.add_edges_from(req.edges)
+        if len(G) == 0:
+            return PPRResult(scores={}, success=True)
+
+        # PageRank is best-effort: networkx delegates it to scipy, which may be
+        # absent. A missing/failing PPR must NOT sink community detection or
+        # confidence (both pure-python) — degrade scores to empty and continue.
+        scores: dict[str, float] = {}
+        try:
+            scores = nx.pagerank(G, alpha=0.85, max_iter=100, tol=1e-6)
+        except Exception as exc:  # noqa: BLE001 — PPR (scipy) is best-effort
+            logger.warning("PageRank unavailable (non-fatal): %s", exc)
+
+        communities: Dict[str, int] = {}
+        try:
+            partition = nx.community.louvain_communities(G.to_undirected(), seed=42)
+            for idx, members in enumerate(partition):
+                for node in members:
+                    communities[node] = idx
+        except Exception as exc:  # noqa: BLE001 — community detection is best-effort
+            logger.warning("Louvain community detection failed (non-fatal): %s", exc)
+
+        edge_confidence = _resolve_edge_confidence(req.edges, req.indexed_files)
+        return PPRResult(
+            scores=scores,
+            success=True,
+            communities=communities,
+            edge_confidence=edge_confidence,
+        )
     except Exception as exc:
         return PPRResult(scores={}, success=False, error=str(exc))
