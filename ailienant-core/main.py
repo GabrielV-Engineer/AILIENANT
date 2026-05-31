@@ -71,7 +71,7 @@ from core.compute_pool import compute_pool
 from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
 
 # --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
-from core.indexer import lazy_indexer
+from core.indexer import lazy_indexer, SingleFlightCoordinator
 
 # --- IMPORTACIONES FASE 7.9.B.1 (Memory Dashboard REST surface) ---
 from api.memory_dashboard import router as memory_router
@@ -297,6 +297,11 @@ planner_mode_registry: Dict[str, bool] = {}
 # PPR debounce registry — one asyncio.Task per project_id, cancelled and replaced on each file save
 _ppr_tasks: Dict[str, asyncio.Task[None]] = {}
 _PPR_DEBOUNCE_S: float = 2.0
+
+# Reactive re-index single-flight: at most one in-flight pass per (project, file),
+# with a trailing re-run so the freshest save always wins. Collapses overlapping
+# re-index when a compute-pool run outlives the next debounce window.
+_reindex_singleflight = SingleFlightCoordinator()
 
 # Fire-and-forget task runners (Phase 7.9.B.17). Strong refs prevent the event
 # loop from GC-ing an in-flight submit before the agent pipeline finishes.
@@ -687,8 +692,8 @@ async def _handle_mass_change(project_id: str) -> None:
     logger.info("Mass change: re-triggered lazy indexer for project %s", project_id)
 
 
-async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: str) -> None:
-    """Index a file in the process pool, persist its import edges, then debounce PPR."""
+async def _reindex_one(filepath: str, content: str, project_id: str) -> None:
+    """Index a single file in the process pool, persist its edges, debounce PPR."""
     if content == _UNLINK_SENTINEL:
         await catalog_db.purge_file_nodes(filepath, project_id)
         logger.info("Ghost purge: removed DB records for deleted file %s", filepath)
@@ -708,6 +713,19 @@ async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: st
             logger.warning("Indexing failed for %s: %s", result.file_path, result.error)
     except Exception as exc:
         logger.error("Compute pool dispatch error for %s: %s", filepath, exc)
+
+
+async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: str) -> None:
+    """Reactive re-index entry: single-flight per (project, file).
+
+    A NUL-joined key cannot collide on real paths/project ids. The factory rebinds
+    the latest ``content`` on each call so a trailing re-run indexes the freshest
+    save, never a superseded one.
+    """
+    key = f"{project_id}\x00{filepath}"
+    await _reindex_singleflight.run(
+        key, lambda: _reindex_one(filepath, content, project_id)
+    )
 
 
 @app.websocket("/api/v1/ws/{client_id}")
