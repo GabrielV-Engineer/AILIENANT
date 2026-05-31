@@ -69,7 +69,7 @@ from core.janitor import JanitorReport, run_janitor
 
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
-from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync
+from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync, calculate_graph_analytics_sync
 
 # --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
 from core.indexer import lazy_indexer, SingleFlightCoordinator
@@ -650,21 +650,32 @@ async def http_janitor(payload: JanitorRequest) -> JanitorReport:
 
 
 async def _run_ppr_for_project(project_id: str) -> None:
-    """Debounced PPR worker: waits 2s after last file save, then dispatches to process pool."""
+    """Debounced graph-analytics worker: waits 2s after the last save, then dispatches
+    PageRank + Louvain communities + edge confidence to the process pool in one build."""
     await asyncio.sleep(_PPR_DEBOUNCE_S)
     try:
         edges_raw = await catalog_db.get_all_edges(project_id)
         if not edges_raw:
             return
-        req = PPRRequest(edges=tuple((s, t) for s, t in edges_raw))
-        result: PPRResult = await compute_pool.run(calculate_ppr_sync, req)
+        indexed = await catalog_db.get_all_indexed_files()
+        indexed_files = tuple(fp for fp, pid in indexed if pid == project_id)
+        req = PPRRequest(
+            edges=tuple((s, t) for s, t in edges_raw),
+            indexed_files=indexed_files,
+        )
+        result: PPRResult = await compute_pool.run(calculate_graph_analytics_sync, req)
         if result.success and result.scores:
-            await catalog_db.upsert_ppr_scores(result.scores, project_id)
+            await catalog_db.upsert_ppr_scores(result.scores, project_id, result.communities)
+            if result.edge_confidence:
+                await catalog_db.upsert_edge_confidence(
+                    list(result.edge_confidence), project_id
+                )
             logger.info(
-                "PPR computed for project '%s': %d files scored", project_id, len(result.scores)
+                "Graph analytics for project '%s': %d files scored, %d communities",
+                project_id, len(result.scores), len(set(result.communities.values())),
             )
         elif not result.success:
-            logger.warning("PPR failed for project '%s': %s", project_id, result.error)
+            logger.warning("Graph analytics failed for project '%s': %s", project_id, result.error)
     except asyncio.CancelledError:
         pass  # debounced away — a newer file save superseded this run
 

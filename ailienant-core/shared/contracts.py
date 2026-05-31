@@ -61,14 +61,24 @@ class PPRRequest:
     """Dependency graph edges for one project. Sent to ProcessPoolExecutor for PageRank.
 
     Using a tuple of tuples (not list of lists) ensures the contract is immutable
-    and unambiguously picklable across all Python versions.
+    and unambiguously picklable across all Python versions. ``indexed_files`` is the
+    set of source files known to the project, used by the analytics worker to resolve
+    edge confidence (a target that is an indexed file is EXTRACTED, else INFERRED).
     """
     edges: tuple[tuple[str, str], ...]  # (source_file, target_dependency)
+    indexed_files: tuple[str, ...] = ()  # project node universe for confidence resolution
 
 
 @dataclass
 class PPRResult:
-    """PageRank scores returned by the worker process. Keys are file paths."""
+    """PageRank scores returned by the worker process. Keys are file paths.
+
+    ``communities`` maps node → Louvain community id; ``edge_confidence`` carries
+    (source, target, confidence_label, confidence_score) per edge. Both default empty
+    so the legacy PageRank-only path (calculate_ppr_sync) stays valid unchanged.
+    """
     scores: dict[str, float]
     success: bool
     error: Optional[str] = None
+    communities: dict[str, int] = field(default_factory=dict)
+    edge_confidence: tuple[tuple[str, str, str, float], ...] = ()

@@ -110,10 +110,30 @@ def log_file_read_sync(session_id: str, file_path: str, version_id: Optional[str
 
 # ── Async API (for FastAPI endpoints) ───────────────────────────────────────
 
+# Additive graph-analytics columns. SQLite has no ``ADD COLUMN IF NOT EXISTS``,
+# so each is applied only when absent (checked via PRAGMA table_info). All default
+# to NULL, so pre-migration rows and readers that ignore the column keep working.
+_COLUMN_MIGRATIONS: List[Tuple[str, str, str]] = [
+    ("dependency_graph", "confidence", "TEXT"),
+    ("dependency_graph", "confidence_score", "REAL"),
+    ("ppr_scores", "leiden_community_id", "INTEGER"),
+]
+
+
+async def _apply_column_migrations(db: aiosqlite.Connection) -> None:
+    """Add missing analytics columns to existing tables (idempotent)."""
+    for table, column, decl in _COLUMN_MIGRATIONS:
+        async with db.execute(f"PRAGMA table_info({table})") as cur:
+            existing = {row[1] for row in await cur.fetchall()}
+        if column not in existing:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 async def init_db() -> None:
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:
         for stmt in _DDL:
             await db.execute(stmt)
+        await _apply_column_migrations(db)
         await db.commit()
     _get_sync_conn()  # warm up sync connection too
 
@@ -230,14 +250,18 @@ async def upsert_dependencies(
                 (source_file, project_id),
             )
             if imports:
+                # Named columns: confidence/confidence_score are left NULL here and
+                # refined by the batch analytics pass (a freshly parsed edge has no
+                # global resolution context yet).
                 await db.executemany(
-                    "INSERT OR IGNORE INTO dependency_graph VALUES (?,?,?)",
+                    "INSERT OR IGNORE INTO dependency_graph "
+                    "(source_file, target_dependency, project_id) VALUES (?,?,?)",
                     [(source_file, imp, project_id) for imp in imports],
                 )
             await db.commit()
 
 
-async def get_all_edges(project_id: str = "") -> List[tuple]:
+async def get_all_edges(project_id: str = "") -> List[Tuple[str, str]]:
     """Return all (source_file, target_dependency) edges for a project."""
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:
         async with db.execute(
@@ -248,14 +272,48 @@ async def get_all_edges(project_id: str = "") -> List[tuple]:
             return [(r[0], r[1]) for r in await cur.fetchall()]
 
 
-async def upsert_ppr_scores(scores: Dict[str, float], project_id: str = "") -> None:
-    """Persist PageRank scores returned by the process pool worker."""
+async def upsert_ppr_scores(
+    scores: Dict[str, float],
+    project_id: str = "",
+    communities: Optional[Dict[str, int]] = None,
+) -> None:
+    """Persist PageRank scores (and optional Louvain community ids) for the project.
+
+    ``communities`` maps node → community id; when omitted, leiden_community_id is
+    written NULL. Named columns so the additive column never shifts positionally.
+    """
     now = time.time()
+    comm = communities or {}
     async with graph_write_lock(project_id):
         async with aiosqlite.connect(DB_CATALOG_PATH) as db:
             await db.executemany(
-                "INSERT OR REPLACE INTO ppr_scores VALUES (?,?,?,?)",
-                [(path, project_id, score, now) for path, score in scores.items()],
+                "INSERT OR REPLACE INTO ppr_scores "
+                "(file_path, project_id, ppr_score, computed_at, leiden_community_id) "
+                "VALUES (?,?,?,?,?)",
+                [
+                    (path, project_id, score, now, comm.get(path))
+                    for path, score in scores.items()
+                ],
+            )
+            await db.commit()
+
+
+async def upsert_edge_confidence(
+    rows: List[Tuple[str, str, str, float]], project_id: str = ""
+) -> None:
+    """Refine confidence on existing edges (source, target, confidence, score).
+
+    Computed by the batch analytics pass once the whole-graph resolution context
+    is known. Runs under the graph write lock so it never races a restructure.
+    """
+    if not rows:
+        return
+    async with graph_write_lock(project_id):
+        async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+            await db.executemany(
+                "UPDATE dependency_graph SET confidence=?, confidence_score=? "
+                "WHERE source_file=? AND target_dependency=? AND project_id=?",
+                [(conf, score, src, tgt, project_id) for src, tgt, conf, score in rows],
             )
             await db.commit()
 
@@ -341,6 +399,53 @@ async def get_ppr_scores_bulk(
                 for r in await cur.fetchall():
                     scores[r[0]] = float(r[1])
     return scores
+
+
+async def get_community_ids_bulk(
+    node_ids: List[str], project_id: str = ""
+) -> Dict[str, int]:
+    """Batch-fetch Louvain community ids for many nodes. Missing/NULL omitted.
+
+    Chunked like get_ppr_scores_bulk to stay under SQLite's variable limit. Feeds
+    the Memory dashboard /graph endpoint so nodes can be colored by community.
+    """
+    if not node_ids:
+        return {}
+    communities: Dict[str, int] = {}
+    chunk_size = 900
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        for start in range(0, len(node_ids), chunk_size):
+            chunk = node_ids[start:start + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            async with db.execute(
+                f"SELECT file_path, leiden_community_id FROM ppr_scores "
+                f"WHERE project_id=? AND leiden_community_id IS NOT NULL "
+                f"AND file_path IN ({placeholders})",
+                (project_id, *chunk),
+            ) as cur:
+                for r in await cur.fetchall():
+                    communities[r[0]] = int(r[1])
+    return communities
+
+
+async def get_graph_edges_enriched(
+    project_id: str = "",
+) -> List[Tuple[str, str, Optional[str], Optional[float]]]:
+    """Return all edges with their confidence label/score for one project.
+
+    Parallel to get_all_edges (which stays 2-tuple for BFS/PPR consumers); this
+    4-tuple form feeds the dashboard so edges can be styled by confidence.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT source_file, target_dependency, confidence, confidence_score "
+            "FROM dependency_graph WHERE project_id=?",
+            (project_id,),
+        ) as cur:
+            return [
+                (r[0], r[1], r[2], float(r[3]) if r[3] is not None else None)
+                for r in await cur.fetchall()
+            ]
 
 
 # ── Phase 2.1.13: Ghost Pruning (BranchSwitchHandler) ─────────────────────────

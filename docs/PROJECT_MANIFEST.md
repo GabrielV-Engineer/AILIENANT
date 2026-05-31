@@ -7,8 +7,8 @@
 ## 📍 Estado Actual
 
 - **Fase Activa:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
-- **Hito Reciente:** 7.13.4 — Spinal Cord: Bus de Telemetría IDE (Push) cerrado (canal silencioso `client_ide_telemetry` + sender huérfano `client_file_delete` cableado, priority-class droppable, dispatch off-loop gated por el token bucket de 7.13.1; 702 tests verdes)
-- **Próximo Objetivo:** 7.13.5 — Reactive GraphRAG (Indexación Incremental por Save) (ADR-709)
+- **Hito Reciente:** 7.13.5 (enrichment track) — GraphRAG semantics & memory telemetry: confidence edges (EXTRACTED/INFERRED/AMBIGUOUS), Louvain communities, God Nodes por degree centrality, viz del dashboard. "Phase 7.15.0" reconciliada dentro de 7.13.5 (resolución de conflicto §3). 710 tests verdes.
+- **Próximo Objetivo:** 7.13.5 (resto) — GAP9: entrada unificada idempotente por content-hash (`apply_patch` + saves humanos) + circuit breaker del index reactivo; luego 7.13.6 (Manual Dreaming)
 
 ---
 
@@ -2018,6 +2018,9 @@ the blueprint freeze lifts.
   - **Problem:** `core/indexer.py` sólo indexa en bloque una vez por sesión (`ClientWorkspaceInitEvent`); la memoria es un snapshot stale.
   - **Resolution:** `semantic_upsert` single-file + refresh del nodo de grafo bajo el **lock + single-flight** de 7.13.1; delete/rename **purgan/migran** (consume `client_file_delete`); **circuit breaker** del index reactivo (GAP6); **entrada unificada** para que `apply_patch` (agente) y los saves humanos compartan un path **idempotente por content-hash** (GAP9 — el modelo Push da dos escritores reales). Opcionalmente cablear el **Memory Janitor** huérfano como contraparte de GC.
   - **Files:** `core/indexer.py`, `core/memory/semantic_memory.py`, `core/memory/graphrag_extractor.py`, `core/db.py`.
+  - **Reconciliación §3 (2026-05-31):** la solicitud "Phase 7.15.0 — GraphRAG Engine Overhaul & Memory Telemetry" se plegó aquí (era el mismo overhaul de GraphRAG sobre los mismos archivos, con el lock-in de 7.13 activo). Auditoría: el *GIL bypass* (ProcessPoolExecutor) ya existía (`core/compute_pool.py` + `core/indexer.py`), `core/db.py` es SQLite crudo (sin modelos Pydantic de grafo), Leiden real exigiría deps nativas (`igraph`+`leidenalg`) → se usó **networkx Louvain** (ya instalado), y la centralidad de grado ya fluía al frontend.
+  - **Cerrado (enrichment + telemetry track):** columnas aditivas `dependency_graph.confidence`/`confidence_score` + `ppr_scores.leiden_community_id` (migración idempotente `PRAGMA`-guarded en `init_db`, NULL-default, inserts pasados a columnas nombradas); worker unificado `brain/memory.py::calculate_graph_analytics_sync` (un solo build de `DiGraph` → PageRank + Louvain `seed=42` + confianza derivada por resolución, **PageRank best-effort** porque networkx lo delega a scipy y no rompe communities/confianza); `_run_ppr_for_project` persiste los tres; DTOs `/graph` enriquecidos (`leiden_community_id`, `is_god_node`, `confidence`, `confidence_score`) + God Nodes top-3 por degree en el API; `CodeGraphLayer.tsx` colorea por comunidad, escala God Nodes ×1.5, estiliza aristas por confianza (sólida/discontinua/roja); `SCHEMA_EVOLUTION.MD` documentado; 8 tests nuevos (710 verdes, mypy baseline 218 limpio, tsc/eslint limpios). Sin deps nuevas; sin tocar canales WS/VFS.
+  - **Pendiente (resto 7.13.5):** GAP9 entrada unificada idempotente por content-hash (`apply_patch` + saves) y circuit breaker (GAP6). **Nota scipy:** `nx.pagerank` requiere `scipy` (no está en `requirements.txt`); los PPR scores quedan vacíos hasta que se apruebe esa dep — communities/confianza/God-nodes funcionan sin ella.
 
 - [ ] **7.13.6 — Manual Dreaming: acción "Consolidate Memory"** *(ADR-710, REESCRITO — sólo manual)*
   - **Problem:** el `OvernightDaemon` (`brain/daemon.py`) es un stub huérfano; un timer de idle que despierte GraphRAG+LLM durante un build/local-model pesado **sobrecarga el hardware, compite con typistas que reanudan y gasta tokens sin supervisión**.

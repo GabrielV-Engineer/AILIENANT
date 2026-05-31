@@ -2,6 +2,34 @@
 
 ---
 
+## Hito 7.13.5 (enrichment track): GraphRAG Semantics & Memory Telemetry — 2026-05-31
+
+**Status:** CERRADO (enrichment + telemetry); GAP9/circuit-breaker del resto de 7.13.5 quedan pendientes | **Phase:** 7.13.5 (ADR-709) — reconcilia la solicitud "Phase 7.15.0"
+
+**Problem:** se pidió un "GraphRAG Engine Overhaul & Memory Telemetry" como fase aislada 7.15.0. La auditoría arquitectónica (CLAUDE.md §3) reveló: (a) overlap directo con 7.13.5 (Reactive GraphRAG, pendiente) sobre los mismos archivos, con el lock-in de 7.13 activo; (b) el *GIL bypass* pedido ya existía (`compute_pool` es un `ProcessPoolExecutor` y `indexer.py` ya delega el AST off-loop); (c) `core/db.py` es SQLite crudo, no tiene modelos Pydantic de grafo (viven en `api/memory_dashboard.py`); (d) Leiden real exige deps nativas; (e) la centralidad de grado ya fluía al frontend. Decisión del usuario: **plegar en 7.13.5**, **networkx Louvain** (sin deps nuevas), **confianza derivada por resolución** (sin placeholder).
+
+**Approach:** las analíticas montan sobre el pase batch de PPR ya existente (`_run_ppr_for_project`, debounced, en el pool). Un solo build de `DiGraph` produce PageRank + comunidades Louvain (`seed=42`, colores estables) + confianza por arista. PageRank es **best-effort**: networkx lo delega a `scipy` (ausente en `requirements.txt`), y un fallo de PPR no debe hundir communities/confianza (ambas pure-python) — degrada `scores` a vacío y continúa. Confianza derivada de la resolución global: `EXTRACTED` (1.0) si el target es un archivo fuente indexado; `AMBIGUOUS` (0.25) si el stem del módulo colisiona con ≥2 archivos indexados; `INFERRED` (0.5) en otro caso. God Nodes = top-3 por degree centrality, calculados en el API (el grado ya estaba disponible). Esquema **estrictamente aditivo**: tres columnas NULL-default, migración idempotente `PRAGMA`-guarded; inserts posicionales convertidos a columnas nombradas para que la columna nueva no desplace nada.
+
+**Files changed:**
+- `core/db.py` — migración `_apply_column_migrations` (dependency_graph.confidence/+score, ppr_scores.leiden_community_id); `upsert_ppr_scores(..., communities)`; `upsert_edge_confidence`; getters `get_community_ids_bulk`/`get_graph_edges_enriched`; `get_all_edges` tipado a `Tuple[str,str]` (nit de baseline).
+- `brain/memory.py` — `calculate_graph_analytics_sync` (PPR best-effort + Louvain + confianza) y helper `_resolve_edge_confidence`; `calculate_ppr_sync` intacto.
+- `shared/contracts.py` — `PPRRequest.indexed_files` + `PPRResult.communities`/`edge_confidence` (defaulted, backward-compatible).
+- `main.py` — `_run_ppr_for_project` corre el worker unificado y persiste PPR + comunidades + confianza.
+- `api/memory_dashboard.py` — `GraphNode`/`GraphEdge` enriquecidos; helper `_rank_god_nodes`; `/graph` lee columnas nuevas y marca God Nodes.
+- `src/dashboard/panels/memory/{api.ts,CodeGraphLayer.tsx}` — tipos + color por comunidad (golden-angle), God Nodes ×1.5, aristas sólida/discontinua/roja por confianza.
+- `docs/SCHEMA_EVOLUTION.MD` — columnas + taxonomía documentadas.
+- `tests/test_graph_analytics.py` *(nuevo)* — 8 tests.
+
+**Architectural outcomes:**
+- **GA1** un solo build de grafo por pase batch produce las tres analíticas (sin recorrer el grafo tres veces).
+- **GA2** resiliencia: PPR ausente (sin scipy) degrada con gracia; communities/confianza/God-nodes siguen funcionando.
+- **GA3** aditivo y backward-compatible: columnas NULL-default, contratos con defaults; el baseline `mypy .` (218 archivos) y la suite completa quedan verdes.
+- **Reuse:** ProcessPoolExecutor, pase PPR debounced, `graph_write_lock` (7.13.1), in/out-degree y el viewer reactflow ya existían — cero reconstrucción. Sin tocar canales WS/VFS (inmutabilidad respetada).
+
+**Verification:** `mypy .` → Success, 218 archivos. `pytest` → 710 passed (702 + 8). `tsc --noEmit` → 0; `eslint` → 0 errores. **DoD pendiente parcial:** `mypy --strict core/indexer.py core/db.py` reporta 0 errores propios de esos dos archivos pero sale 1 por 7 violaciones strict **pre-existentes** en módulos importados transitivamente y fuera de alcance (`api/ws_contracts.py`, `core/rules.py`, `core/memory/semantic_memory.py`) — no introducidas por 7.13.5 y no tocadas por disciplina de alcance + inmutabilidad WS. **Nota scipy:** `nx.pagerank` requiere `scipy` (no declarado); dep nueva gateada — pendiente de aprobación.
+
+---
+
 ## Hito 7.13.4: Spinal Cord — Bus de Telemetría IDE (Push) — 2026-05-31
 
 **Status:** CERRADO | **Phase:** 7.13.4 (ADR-708)

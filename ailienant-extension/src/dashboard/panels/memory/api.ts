@@ -23,11 +23,17 @@ export interface GraphNode {
     out_degree: number;
     is_external: boolean;
     full_path: string;
+    leiden_community_id?: number | null;   // Louvain community for coloring; null until computed
+    is_god_node?: boolean;                 // top-3 by degree centrality — rendered larger
 }
+
+export type EdgeConfidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
 
 export interface GraphEdge {
     source: string;
     target: string;
+    confidence?: EdgeConfidence | null;    // null → render as solid (safe default)
+    confidence_score?: number | null;
 }
 
 export interface GraphResponse {
