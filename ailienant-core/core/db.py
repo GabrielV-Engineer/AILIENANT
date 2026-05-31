@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 import threading
 import time
@@ -182,23 +183,58 @@ async def get_dependents(target: str, project_id: str = "") -> List[str]:
             return [row[0] for row in rows]
 
 
+# ── Per-project graph-write serialization ────────────────────────────────────
+# The dependency graph and its PageRank scores have several concurrent writers:
+# the human's reactive save re-index, manual memory consolidation, and the
+# agent's apply_patch. Each runs a DELETE-then-INSERT that is not atomic across
+# its awaits, so without serialization they interleave into phantom edges or
+# corrupt PPR rankings. A per-project asyncio.Lock makes every graph/PPR write
+# critical section mutually exclusive within one event loop.
+#
+# Keyed by (event-loop id, project_id): a lock must be bound to the loop that
+# awaits it, so caching across loops (e.g. one asyncio.run per test) would bind
+# a stale lock to a dead loop. Distinct projects never contend with each other.
+_graph_write_locks: Dict[Tuple[int, str], "asyncio.Lock"] = {}
+_graph_locks_guard = threading.Lock()
+
+
+def graph_write_lock(project_id: str = "") -> "asyncio.Lock":
+    """Return the per-project lock serializing dependency_graph + ppr_scores writes.
+
+    The write helpers below acquire it internally. Read-side consumers (memory
+    consolidation, the GraphRAG extractor) acquire it to snapshot the graph
+    without a concurrent restructure tearing the read. The lock is NOT reentrant
+    (``asyncio.Lock``): a holder must never call the self-locking write helpers
+    while holding it — release first, then write.
+    """
+    loop = asyncio.get_running_loop()
+    key = (id(loop), project_id)
+    with _graph_locks_guard:
+        lock = _graph_write_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _graph_write_locks[key] = lock
+        return lock
+
+
 # ── Phase 2.4: PPR GraphRAG ────────────────────────────────────────────────────
 
 async def upsert_dependencies(
     source_file: str, imports: List[str], project_id: str = ""
 ) -> None:
     """Replace all outgoing dependency edges for source_file, then insert new ones."""
-    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
-        await db.execute(
-            "DELETE FROM dependency_graph WHERE source_file=? AND project_id=?",
-            (source_file, project_id),
-        )
-        if imports:
-            await db.executemany(
-                "INSERT OR IGNORE INTO dependency_graph VALUES (?,?,?)",
-                [(source_file, imp, project_id) for imp in imports],
+    async with graph_write_lock(project_id):
+        async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+            await db.execute(
+                "DELETE FROM dependency_graph WHERE source_file=? AND project_id=?",
+                (source_file, project_id),
             )
-        await db.commit()
+            if imports:
+                await db.executemany(
+                    "INSERT OR IGNORE INTO dependency_graph VALUES (?,?,?)",
+                    [(source_file, imp, project_id) for imp in imports],
+                )
+            await db.commit()
 
 
 async def get_all_edges(project_id: str = "") -> List[tuple]:
@@ -215,12 +251,13 @@ async def get_all_edges(project_id: str = "") -> List[tuple]:
 async def upsert_ppr_scores(scores: Dict[str, float], project_id: str = "") -> None:
     """Persist PageRank scores returned by the process pool worker."""
     now = time.time()
-    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
-        await db.executemany(
-            "INSERT OR REPLACE INTO ppr_scores VALUES (?,?,?,?)",
-            [(path, project_id, score, now) for path, score in scores.items()],
-        )
-        await db.commit()
+    async with graph_write_lock(project_id):
+        async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+            await db.executemany(
+                "INSERT OR REPLACE INTO ppr_scores VALUES (?,?,?,?)",
+                [(path, project_id, score, now) for path, score in scores.items()],
+            )
+            await db.commit()
 
 
 async def get_ppr_score(file_path: str, project_id: str = "") -> float:
@@ -315,20 +352,21 @@ async def purge_file_nodes(filepath: str, project_id: str = "") -> None:
     edges for the deleted file so they cannot pollute GraphRAG rankings or cause
     agent hallucinations after a branch switch.
     """
-    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
-        await db.execute(
-            "DELETE FROM ppr_scores WHERE file_path = ? AND project_id = ?",
-            (filepath, project_id),
-        )
-        await db.execute(
-            "DELETE FROM indexed_files WHERE file_path = ? AND project_id = ?",
-            (filepath, project_id),
-        )
-        await db.execute(
-            "DELETE FROM dependency_graph WHERE source_file = ? AND project_id = ?",
-            (filepath, project_id),
-        )
-        await db.commit()
+    async with graph_write_lock(project_id):
+        async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+            await db.execute(
+                "DELETE FROM ppr_scores WHERE file_path = ? AND project_id = ?",
+                (filepath, project_id),
+            )
+            await db.execute(
+                "DELETE FROM indexed_files WHERE file_path = ? AND project_id = ?",
+                (filepath, project_id),
+            )
+            await db.execute(
+                "DELETE FROM dependency_graph WHERE source_file = ? AND project_id = ?",
+                (filepath, project_id),
+            )
+            await db.commit()
 
 
 # ── Phase 2.2.B: WAL Safety ───────────────────────────────────────────────────

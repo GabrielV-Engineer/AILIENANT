@@ -284,6 +284,13 @@ task_service = TaskService()
 # the manager imports core.task_service eagerly.
 _register_session_cleanup_hook(task_service.cleanup_session)
 
+# Cancel a session's in-flight generation runner when its socket drops. Without
+# this a client that closes mid-stream leaves the runner alive, broadcasting
+# tokens into a dead connection until it finishes — a zombie task that the
+# event-driven Push model makes routine (tab switches, reloads). abort_session
+# is idempotent and a no-op once the turn has completed and auto-deregistered.
+_register_session_cleanup_hook(task_service.abort_session)
+
 # Session-scoped planner mode registry — read by TaskService when LangGraph is wired (Phase 2)
 planner_mode_registry: Dict[str, bool] = {}
 
