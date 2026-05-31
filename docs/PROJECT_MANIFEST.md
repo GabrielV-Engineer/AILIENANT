@@ -7,8 +7,8 @@
 ## 📍 Estado Actual
 
 - **Fase Activa:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
-- **Hito Reciente:** 7.13.3 — Claude's Eyes: Live Telemetry Log cerrado (sink async-safe `QueueHandler`/`QueueListener`, scrubbed/rotado/UTF-8; 694 tests verdes)
-- **Próximo Objetivo:** 7.13.4 — Spinal Cord: Bus de Telemetría IDE (Push) (ADR-708)
+- **Hito Reciente:** 7.13.4 — Spinal Cord: Bus de Telemetría IDE (Push) cerrado (canal silencioso `client_ide_telemetry` + sender huérfano `client_file_delete` cableado, priority-class droppable, dispatch off-loop gated por el token bucket de 7.13.1; 702 tests verdes)
+- **Próximo Objetivo:** 7.13.5 — Reactive GraphRAG (Indexación Incremental por Save) (ADR-709)
 
 ---
 
@@ -2008,10 +2008,11 @@ the blueprint freeze lifts.
   - **Files:** nuevo `core/telemetry_log.py`, `core/telemetry.py`, `api/websocket_manager.py`, `brain/engine.py`, `.gitignore`.
   - **Cerrado:** sink async-safe con `QueueHandler` + `QueueListener` (encolado O(1) en el event-loop, escritura a disco off-loop — no estanca el WS server ni sabotea el token bucket de 7.13.1); `SecretsScrubberFilter` montado en el `QueueHandler` (scrub pre-encolado, el plaintext nunca entra a la cola); cola acotada (`_QUEUE_MAX`) + `RotatingFileHandler` UTF-8 size-bounded + truncado por línea; mirror **forense-primero** en `core/telemetry.py` (`log_routing_decision`/`log_oom_event` escriben al archivo *antes* del `execute` SQLite, fuera del lock); instrumentación de entrada de nodos en `brain/engine.py`; `configure_telemetry_log` en `client_workspace_init` + `shutdown_telemetry_log` en lifespan de `main.py` (desviación del file-list registrada como enmienda al blueprint §4.2); 5 tests nuevos (694 verdes, mypy 216 limpio).
 
-- [ ] **7.13.4 — Spinal Cord: Bus de Telemetría IDE (Push)** *(ADR-708)*
+- [x] **7.13.4 — Spinal Cord: Bus de Telemetría IDE (Push)** *(ADR-708)*
   - **Problem:** los watchers actuales (`onDidChangeActiveTextEditor`/`onDidChangeTextDocument` en `src/ide_sync.ts`) cubren foco y edición pero no el ciclo de vida de archivos; todo viaja por el WS principal mezclado con el stream de chat.
   - **Resolution:** extender `src/ide_sync.ts` (`onDidSave/Rename/Delete`) sobre el debounce 150ms existente; **cablear el sender huérfano `client_file_delete`**; cada push pasa **primero** por el gate de exclusión 7.13.2. Canal silencioso `client_ide_telemetry` sobre el socket existente (**prohibido** un segundo socket); **clase de prioridad** en `src/api/ws_client.ts` (chat/answer con prioridad absoluta, telemetría droppable) + **cap** de `_pendingSends`; dispatch off-loop en backend honrando el rate-limit de 7.13.1. El bus alimenta el index reactivo (7.13.5) y los paneles Push (7.13.10) — **no arma ningún timer** (Dreaming es manual). Compone con `transport/throttler.py`.
   - **Files:** `src/ide_sync.ts`, `src/api/ws_client.ts`, `api/ws_contracts.py` (eventos aditivos), `main.py`.
+  - **Cerrado:** contrato aditivo `IdeTelemetryPayload`/`ClientIdeTelemetryEvent` (metadata-only: `action` ∈ {file_saved, file_created, file_renamed}, `filepath`, `old_path`, `document_version_id`) en la unión `WebSocketMessage`; listeners `onDidSaveTextDocument`/`onDidCreateFiles`/`onDidRenameFiles`/`onDidDeleteFiles` en `IdeSync` coalescidos por un timer de 150ms aparte, cada push pasa por `_isPathAllowed` (Privacy Gate dual-rules) + pausa Incognito antes de salir — el rename descarta el evento completo si **cualquiera** de las rutas (vieja/nueva) está excluida; sender huérfano `client_file_delete` cableado en `onDidDeleteFiles`; priority-class en `WSClient` (`sendTelemetry()` droppable que descarta si el socket no está OPEN; `send()` interactivo intacto con prioridad absoluta) + `_pendingSends` con cap FIFO (`MAX_PENDING=256`); handler backend `client_ide_telemetry` gated por `allow_inbound` (mismo token bucket de 7.13.1) → `_dispatch_ide_telemetry` enruta off-loop al seam existente `io_coalescer.submit`/`submit_unlink` (rename = unlink viejo + submit nuevo), sin código de índice nuevo (7.13.5 lo refina a `reindex_one`); 8 tests nuevos (702 verdes, mypy 217 limpio, tsc/eslint limpios). Sin desviación del file-list → sin enmienda al blueprint.
 
 - [ ] **7.13.5 — Reactive GraphRAG (Indexación Incremental por Save)** *(ADR-709)* - opus
   - **Problem:** `core/indexer.py` sólo indexa en bloque una vez por sesión (`ClientWorkspaceInitEvent`); la memoria es un snapshot stale.

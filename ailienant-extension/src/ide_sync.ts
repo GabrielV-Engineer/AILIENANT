@@ -15,6 +15,13 @@ export interface IdeSyncPayload {
     document_version_id: string;
 }
 
+type LifecycleAction = 'file_saved' | 'file_created' | 'file_renamed';
+
+/** A queued file-lifecycle push awaiting the debounced, privacy-gated flush. */
+type PendingPush =
+    | { kind: 'telemetry'; action: LifecycleAction; filepath: string; oldPath?: string; documentVersionId?: string }
+    | { kind: 'delete'; filepath: string };
+
 /**
  * Parses .ailienantignore lines into an array of path patterns.
  * Supports simple glob prefixes: a plain "path" is treated as a prefix match.
@@ -60,6 +67,8 @@ function loadRulesExcludePatterns(workspaceRoot: string): string[] {
 export class IdeSync implements vscode.Disposable {
     private readonly _disposables: vscode.Disposable[] = [];
     private _debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    private _lifecycleTimer: ReturnType<typeof setTimeout> | undefined;
+    private _pendingLifecycle: PendingPush[] = [];
     private static readonly DEBOUNCE_MS = 150;
 
     private _workspaceRoot: string | undefined;
@@ -86,6 +95,41 @@ export class IdeSync implements vscode.Disposable {
             vscode.window.onDidChangeTextEditorSelection(() => this._scheduleSync()),
             vscode.window.onDidChangeTextEditorVisibleRanges(() => this._scheduleSync()),
             vscode.workspace.onDidChangeTextDocument(() => this._scheduleSync()),
+        );
+
+        // File-lifecycle bus: save / create / rename emit the silent
+        // client_ide_telemetry channel; delete wires the client_file_delete purge.
+        // All four coalesce through the debounced, privacy-gated flush below.
+        this._disposables.push(
+            vscode.workspace.onDidSaveTextDocument(doc => {
+                if (doc.uri.scheme !== 'file') { return; }  // skip untitled/output buffers
+                this._enqueueLifecycle({
+                    kind: 'telemetry',
+                    action: 'file_saved',
+                    filepath: doc.uri.fsPath,
+                    documentVersionId: String(doc.version),
+                });
+            }),
+            vscode.workspace.onDidCreateFiles(e => {
+                for (const f of e.files) {
+                    this._enqueueLifecycle({ kind: 'telemetry', action: 'file_created', filepath: f.fsPath });
+                }
+            }),
+            vscode.workspace.onDidRenameFiles(e => {
+                for (const { oldUri, newUri } of e.files) {
+                    this._enqueueLifecycle({
+                        kind: 'telemetry',
+                        action: 'file_renamed',
+                        filepath: newUri.fsPath,
+                        oldPath: oldUri.fsPath,
+                    });
+                }
+            }),
+            vscode.workspace.onDidDeleteFiles(e => {
+                for (const f of e.files) {
+                    this._enqueueLifecycle({ kind: 'delete', filepath: f.fsPath });
+                }
+            }),
         );
     }
 
@@ -130,6 +174,70 @@ export class IdeSync implements vscode.Disposable {
             clearTimeout(this._debounceTimer);
         }
         this._debounceTimer = setTimeout(() => this._doSync(), IdeSync.DEBOUNCE_MS);
+    }
+
+    /**
+     * Privacy Gate (shared with _doSync): a path is allowed only if it matches
+     * neither the .ailienantignore patterns nor the resolved .ailienant.json
+     * exclusion patterns. The single source of truth for "may this leave the IDE".
+     */
+    private _isPathAllowed(filePath: string): boolean {
+        if (this._ignorePatterns.length > 0 && isFileBlocked(filePath, this._ignorePatterns)) {
+            return false;
+        }
+        if (this._rulesExcludePatterns.length > 0 && isFileBlocked(filePath, this._rulesExcludePatterns)) {
+            return false;
+        }
+        return true;
+    }
+
+    private _enqueueLifecycle(ev: PendingPush): void {
+        this._pendingLifecycle.push(ev);
+        if (this._lifecycleTimer !== undefined) {
+            clearTimeout(this._lifecycleTimer);
+        }
+        this._lifecycleTimer = setTimeout(() => this._flushLifecycle(), IdeSync.DEBOUNCE_MS);
+    }
+
+    /**
+     * Flush coalesced lifecycle events onto the silent bus. Each push is gated
+     * by the Privacy Gate before leaving the extension; Incognito pauses the
+     * whole bus. No toast, no chat side-effect — telemetry is invisible.
+     */
+    private _flushLifecycle(): void {
+        const pending = this._pendingLifecycle;
+        this._pendingLifecycle = [];
+        if (this._incognito) { return; }  // bus paused — drop silently
+
+        const client = WSClient.getInstance();
+        for (const ev of pending) {
+            if (ev.kind === 'delete') {
+                // A deleted excluded file was never indexed and announcing it
+                // would leak that the path existed — gate it like any push.
+                if (!this._isPathAllowed(ev.filepath)) { continue; }
+                client.sendTelemetry({
+                    event_type: 'client_file_delete',
+                    data: { filepath: ev.filepath, project_id: '' },
+                });
+                continue;
+            }
+            // Telemetry: gate the (new) path; a rename must also clear the OLD
+            // path — if EITHER side is excluded, discard the whole event so a
+            // rename across the privacy boundary never leaks the excluded path.
+            if (!this._isPathAllowed(ev.filepath)) { continue; }
+            if (ev.action === 'file_renamed' && (!ev.oldPath || !this._isPathAllowed(ev.oldPath))) {
+                continue;
+            }
+            client.sendTelemetry({
+                event_type: 'client_ide_telemetry',
+                data: {
+                    action: ev.action,
+                    filepath: ev.filepath,
+                    old_path: ev.oldPath ?? null,
+                    document_version_id: ev.documentVersionId ?? '',
+                },
+            });
+        }
     }
 
     private _doSync(): void {
@@ -188,6 +296,9 @@ export class IdeSync implements vscode.Disposable {
     public dispose(): void {
         if (this._debounceTimer !== undefined) {
             clearTimeout(this._debounceTimer);
+        }
+        if (this._lifecycleTimer !== undefined) {
+            clearTimeout(this._lifecycleTimer);
         }
         this._ignoreWatcher?.dispose();
         this._rulesConfigWatcher?.dispose();

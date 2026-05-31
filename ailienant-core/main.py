@@ -106,6 +106,7 @@ from shared.contracts import (
     PPRRequest, PPRResult,
 )
 from api.api_contracts import DirtyBuffer
+from api.ws_contracts import IdeTelemetryPayload
 
 # Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
 # When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
@@ -730,6 +731,22 @@ async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: st
     )
 
 
+def _dispatch_ide_telemetry(payload: IdeTelemetryPayload) -> None:
+    """Route a silent IDE lifecycle signal into the existing reactive-index seam.
+
+    Pure non-blocking enqueue: io_coalescer hands the work to the off-loop
+    indexing worker, so the event loop never indexes inline. ``content=""``
+    mirrors the file-update path — the indexer reads the freshest bytes from the
+    RAM-VFS buffer or disk. A rename purges the old node and re-submits the new
+    path so the graph migrates instead of orphaning a stale entry.
+    """
+    if payload.action == "file_renamed" and payload.old_path:
+        io_coalescer.submit_unlink(payload.old_path, project_id="")
+        io_coalescer.submit(payload.filepath, "", project_id="")
+    else:  # file_saved / file_created
+        io_coalescer.submit(payload.filepath, "", project_id="")
+
+
 @app.websocket("/api/v1/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
     """
@@ -789,6 +806,17 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     io_coalescer.submit(
                         valid_event.data.filepath, valid_event.data.content, project_id=""
                     )
+
+            elif valid_event.event_type == "client_ide_telemetry":
+                # Silent file-lifecycle push. Telemetry-class: shed past the same
+                # per-client token bucket as client_file_update so a save storm
+                # cannot starve the loop; interactive events below are never gated.
+                # The accepted frame was already mirrored to the telemetry log by
+                # validate_incoming. Dispatch is a non-blocking coalescer enqueue.
+                if not vfs_manager.allow_inbound(client_id):
+                    logger.debug("Inbound rate limit: shed client_ide_telemetry from %s", client_id)
+                    continue
+                _dispatch_ide_telemetry(cast(IdeTelemetryPayload, valid_event.data))
 
             elif valid_event.event_type == "client_planner_mode_toggle":
                 planner_mode_registry[client_id] = valid_event.data.active
