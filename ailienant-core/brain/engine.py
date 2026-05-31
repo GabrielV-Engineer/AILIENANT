@@ -1,7 +1,7 @@
 # ailienant-core/brain/engine.py
 
 import logging
-from typing import Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, TypeVar, cast
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
@@ -9,6 +9,7 @@ from langgraph.constants import Send
 from brain.state import AIlienantGraphState
 from brain.checkpoint import checkpoint_manager
 from core.dead_letter import dead_letter_decorator  # Phase 6.4 — DLQ node wrap
+from core.telemetry_log import log_node_transition
 
 logger = logging.getLogger("AILIENANT_ENGINE")
 
@@ -68,28 +69,52 @@ def route_after_summarize(state: dict) -> str:
     return target
 
 
-workflow.add_node("summarize_history", run_summarize_node)  # type: ignore[type-var]
+_NodeFn = TypeVar("_NodeFn", bound=Callable[..., Awaitable[Any]])
+
+
+def _instrument_node(name: str, fn: _NodeFn) -> _NodeFn:
+    """Mirror every graph node entry to the live telemetry sink.
+
+    The deterministic edges and the externally-defined conditional routers do not
+    pass through ``log_routing_decision``; wrapping the node entrypoints here makes
+    each transition visible in ``.ailienant_telemetry.log`` without coupling the
+    routers to the sink. Best-effort and off-loop — a sink failure never blocks the
+    node, and the enqueue is O(1). The original callable type is preserved so the
+    ``add_node`` overloads still resolve.
+    """
+    async def _wrapped(state: Any) -> Any:
+        try:
+            session_id = str(state.get("task_id", "")) if isinstance(state, dict) else ""
+            log_node_transition(session_id=session_id, source="graph", target=name, reason="node_enter")
+        except Exception:  # noqa: BLE001 — telemetry is best-effort
+            pass
+        return await fn(state)
+
+    return cast(_NodeFn, _wrapped)
+
+
+workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))  # type: ignore[type-var]
 # Phase 6.4 — DLQ-wrapped node entrypoints. An unhandled exception promotes
 # L1→L2 and persists a dead_letter_tasks row before re-raising (see
 # core/dead_letter.py). The 4 wrapped nodes are the state-bearing entrypoints;
 # summarize_history / drift_monitor / contract_guard / finops_gate are left bare.
 # The decorator's Callable[...] return satisfies add_node without the type-var
 # suppression the bare node functions still need.
-workflow.add_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node))
-workflow.add_node("drift_monitor", run_drift_monitor_node)
-workflow.add_node("coder_agent", dead_letter_decorator("coder_agent")(run_coder_node))
-workflow.add_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_patch_node))
-workflow.add_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node))
-workflow.add_node("finops_gate", run_finops_node)
+workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))
+workflow.add_node("drift_monitor", _instrument_node("drift_monitor", run_drift_monitor_node))
+workflow.add_node("coder_agent", _instrument_node("coder_agent", dead_letter_decorator("coder_agent")(run_coder_node)))
+workflow.add_node("apply_patch", _instrument_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_patch_node)))
+workflow.add_node("validate_output", _instrument_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node)))
+workflow.add_node("finops_gate", _instrument_node("finops_gate", run_finops_node))
 workflow.add_node("ideation_loop", ideation_graph)
-workflow.add_node("session_delta_aggregator", run_session_delta_aggregator_node)
-workflow.add_node("contract_guard", run_contract_guard_node)  # Phase 2.23
+workflow.add_node("session_delta_aggregator", _instrument_node("session_delta_aggregator", run_session_delta_aggregator_node))
+workflow.add_node("contract_guard", _instrument_node("contract_guard", run_contract_guard_node))  # Phase 2.23
 # Phase 6.5 — deterministic FinOps Supervisor spliced between finops_gate and
 # apply_patch. DLQ-wrapped (Blueprint §5.2): an AuditChainBrokenError becomes a
 # recoverable dead_letter_tasks episode rather than a silent graph death.
 workflow.add_node(
     "supervisor_node",
-    dead_letter_decorator("supervisor_node")(run_supervisor_node),
+    _instrument_node("supervisor_node", dead_letter_decorator("supervisor_node")(run_supervisor_node)),
 )
 
 # =====================================================================

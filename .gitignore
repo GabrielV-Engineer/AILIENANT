@@ -74,6 +74,9 @@ byom_config.json
 config.yaml
 # Tooling local del agente (Claude Code)
 .claude/
+# Live telemetry sink (audit surface con snippets/prompts) — runtime, nunca versionar
+.ailienant_telemetry.log
+**/.ailienant_telemetry.log
 # Reporte de checkpoint autogenerado (se regenera en cada gate)
 CHECKPOINT_REPORT.md
 # vscode-test download cache (Phase 7.11.2 — npm test downloads VS Code ~225 MB on demand)

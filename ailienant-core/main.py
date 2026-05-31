@@ -62,6 +62,7 @@ from core.rules import rule_manager
 # --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
 from core.token_ledger import token_ledger
 from core.telemetry import recent_oom_events, recent_routing_decisions
+from core.telemetry_log import configure_telemetry_log, shutdown_telemetry_log
 
 # --- IMPORTACIONES FASE 3.5 (Memory Janitor) ---
 from core.janitor import JanitorReport, run_janitor
@@ -170,6 +171,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("🧹 SQLite connection closed — WAL/SHM files released.")
     compute_pool.shutdown(wait=True, cancel_futures=True)
     logger.info("🧹 Compute pool shut down — no orphan processes.")
+    shutdown_telemetry_log()  # drain the queue, join the listener thread, close the file
 
 
 # =====================================================================
@@ -833,6 +835,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
             elif valid_event.event_type == "client_workspace_init":
                 _workspace_registry[valid_event.data.project_id] = valid_event.data.workspace_root
                 _session_workspace_root[client_id] = valid_event.data.workspace_root
+                # Point the live telemetry sink at this workspace (idempotent).
+                configure_telemetry_log(valid_event.data.workspace_root)
                 if valid_event.data.workspace_pid is not None:
                     _session_workspace_pid[client_id] = valid_event.data.workspace_pid
                 await lazy_indexer.start(

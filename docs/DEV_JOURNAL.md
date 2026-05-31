@@ -2,6 +2,35 @@
 
 ---
 
+## Hito 7.13.3: Claude's Eyes — Live Telemetry Log — 2026-05-31
+
+**Status:** CERRADO | **Phase:** 7.13.3 (ADR-712)
+
+**Problem:** toda la telemetría vivía sólo en SQLite (`core/telemetry.py`). No existía un sink de archivo plano "tail-eable" para verificar, durante el resto de 7.13, que los pushes, las transiciones de nodo y los eventos de indexación efectivamente disparan. La Fase 8 originalmente iba a re-especificar este sink; ADR-712 lo absorbe y lo construye temprano como **instrumento de verificación**.
+
+**Approach:** un sink dedicado a `<workspace_root>/.ailienant_telemetry.log`. Decisión arquitectónica central (auditoría 🟡 MODIFY): el `RotatingFileHandler` síncrono hace I/O de disco bloqueante; invocarlo desde `send_personal_message`/`validate_incoming` (que corren *sobre* el event-loop asyncio) congelaría el servidor WS y sabotearía el token bucket de 7.13.1. Por eso el logger usa un **`QueueHandler`** (encolado O(1), no bloqueante) y un **`QueueListener`** en un hilo de fondo es dueño del `RotatingFileHandler` y hace la escritura a disco off-loop. El `SecretsScrubberFilter` (Phase 6.7) se monta en el `QueueHandler`, de modo que la redacción corre en el hilo llamante *antes* de encolar — el plaintext jamás entra a la cola en memoria. Cola **acotada** (`_QUEUE_MAX`, descarta bajo flood en vez de OOM), `RotatingFileHandler` UTF-8 size-bounded (GAP7), truncado por línea. Segunda corrección de la auditoría: el mirror en `core/telemetry.py` se escribe **forense-primero** (antes del `execute` SQLite y fuera del lock), para que un "database is locked" nunca cueste la traza.
+
+**Files changed:**
+- `core/telemetry_log.py` *(nuevo)* — logger `AILIENANT_TELEMETRY` (`propagate=False`) con `QueueHandler` + cola acotada + `SecretsScrubberFilter`; `configure_telemetry_log`/`shutdown_telemetry_log` (start/stop del `QueueListener`, drena la cola); `_emit` con truncado; wrappers `log_ws_payload`/`log_node_transition`/`log_indexing_event`.
+- `core/telemetry.py` — mirror forense-primero a `log_node_transition` en `log_routing_decision` y `log_oom_event` (independiente de la conexión SQLite, `try/except` interno).
+- `api/websocket_manager.py` — `log_ws_payload("out", …)` en `send_personal_message`; `log_ws_payload("in", …)` en `validate_incoming`; constante `_TELEMETRY_LINE_CAP`.
+- `main.py` — `configure_telemetry_log` en `client_workspace_init`; `shutdown_telemetry_log` en el teardown del lifespan.
+- `brain/engine.py` — `_instrument_node` (TypeVar-preservante) envuelve cada nodo función para registrar la entrada; `ideation_loop` (subgrafo) queda bare.
+- `.gitignore` — entrada explícita `.ailienant_telemetry.log` (defensa en profundidad; `*.log` ya la cubría).
+- `tests/test_telemetry_log.py` *(nuevo)* — 5 tests.
+- `docs/PHASE_7_13_BLUEPRINT.md` — enmienda §4.2: `main.py` registrado como sitio de cableado de 7.13.3.
+
+**Architectural outcomes:**
+- **EL1** ningún I/O de disco corre sobre el event-loop: el hilo del loop sólo encola O(1); la escritura rotante ocurre en el hilo del `QueueListener` (protege el token bucket de 7.13.1).
+- **SC1** el `SecretsScrubberFilter` corre pre-encolado en el hilo llamante; los secretos nunca entran a la cola ni al archivo (`sk-…`/`Bearer …` → `REDACTED:<hash8>`).
+- **FF1** ordenamiento forense-primero: la línea de archivo se escribe antes que el `execute` SQLite, así un DB-lock no pierde la traza.
+- **RB1** acotado en disco (maxBytes+backupCount) y en memoria (cola acotada + truncado por línea); shut-down limpio drena la cola y hace join del hilo.
+- **Desviación del file-list:** la decisión de configurar en connect añadió `main.py` al set; registrada como enmienda al blueprint §4.2 en el mismo PR (CLAUDE.md §1/§3).
+
+**Verification:** `mypy .` → Success, 0 errores en 216 archivos. `pytest` → 694 passed (baseline 689 + 5 nuevos). El sink escribe off-loop; los tests hacen `shutdown_telemetry_log()` antes de leer para flush+join determinista.
+
+---
+
 ## Hito 7.13.2: Privacy & Telemetry Filtering — 2026-05-30
 
 **Status:** CERRADO | **Phase:** 7.13.2 (ADR-718)
