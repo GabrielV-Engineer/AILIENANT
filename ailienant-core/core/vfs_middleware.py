@@ -6,6 +6,7 @@ import pathspec
 from pydantic import BaseModel
 
 from .ast_engine import ASTEngine as _ASTEngine
+from .rules import rule_manager as _rule_manager
 
 _ast = _ASTEngine()
 
@@ -25,7 +26,7 @@ class DirtyBuffer(BaseModel):
 
 class VFSReadResult(BaseModel):
     content: Optional[str] = None
-    error: Optional[str] = None      # "FILE_IGNORED" | "BINARY_FILE" | "FILE_TOO_LARGE" | "MINIFIED" | "READ_ERROR"
+    error: Optional[str] = None      # "FILE_EXCLUDED" | "FILE_IGNORED" | "BINARY_FILE" | "FILE_TOO_LARGE" | "MINIFIED" | "READ_ERROR"
     metadata: Optional[dict] = None
 
     @property
@@ -150,6 +151,14 @@ class VFSMiddleware:
         normalized = os.path.normpath(filepath)
         ext = os.path.splitext(normalized)[1].lower()
         size_meta: dict = {"path": normalized, "extension": ext}
+
+        # Layer 0 — Dual-rules exclude (exclude_patterns from .ailienant.json)
+        if project_root:
+            if _rule_manager.is_excluded(normalized, project_root):
+                return VFSReadResult(
+                    error="FILE_EXCLUDED",
+                    metadata={**size_meta, "reason": "matched exclude_patterns in .ailienant.json"},
+                )
 
         # Layer 1 — Ignore rules (O(1) after initial PathSpec compilation per project)
         if project_id and project_root:

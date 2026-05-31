@@ -44,6 +44,19 @@ function isFileBlocked(filePath: string, patterns: string[]): boolean {
     return false;
 }
 
+function loadRulesExcludePatterns(workspaceRoot: string): string[] {
+    const cfgPath = path.join(workspaceRoot, '.ailienant', '.ailienant.json');
+    try {
+        if (!fs.existsSync(cfgPath)) { return []; }
+        const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+        const patterns = raw['exclude_patterns'];
+        if (!Array.isArray(patterns)) { return []; }
+        return patterns.filter((p): p is string => typeof p === 'string');
+    } catch {
+        return [];
+    }
+}
+
 export class IdeSync implements vscode.Disposable {
     private readonly _disposables: vscode.Disposable[] = [];
     private _debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -52,6 +65,9 @@ export class IdeSync implements vscode.Disposable {
     private _workspaceRoot: string | undefined;
     private _ignorePatterns: string[] = [];
     private _ignoreWatcher: vscode.FileSystemWatcher | undefined;
+    private _rulesExcludePatterns: string[] = [];
+    private _rulesConfigWatcher: vscode.FileSystemWatcher | undefined;
+    private _incognito: boolean = false;
 
     constructor(
         private readonly _onFileBlocked: (blocked: boolean, filePath?: string) => void,
@@ -61,6 +77,8 @@ export class IdeSync implements vscode.Disposable {
             this._workspaceRoot = folders[0].uri.fsPath;
             this._ignorePatterns = loadIgnorePatterns(this._workspaceRoot);
             this._watchIgnoreFile();
+            this._rulesExcludePatterns = loadRulesExcludePatterns(this._workspaceRoot);
+            this._watchRulesConfig();
         }
 
         this._disposables.push(
@@ -69,6 +87,10 @@ export class IdeSync implements vscode.Disposable {
             vscode.window.onDidChangeTextEditorVisibleRanges(() => this._scheduleSync()),
             vscode.workspace.onDidChangeTextDocument(() => this._scheduleSync()),
         );
+    }
+
+    public setIncognito(value: boolean): void {
+        this._incognito = value;
     }
 
     private _watchIgnoreFile(): void {
@@ -87,6 +109,22 @@ export class IdeSync implements vscode.Disposable {
         }
     }
 
+    private _watchRulesConfig(): void {
+        if (!this._workspaceRoot) { return; }
+        const pattern = new vscode.RelativePattern(this._workspaceRoot, '.ailienant/.ailienant.json');
+        this._rulesConfigWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+        this._rulesConfigWatcher.onDidChange(() => this._reloadRulesConfig());
+        this._rulesConfigWatcher.onDidCreate(() => this._reloadRulesConfig());
+        this._rulesConfigWatcher.onDidDelete(() => { this._rulesExcludePatterns = []; });
+    }
+
+    private _reloadRulesConfig(): void {
+        if (this._workspaceRoot) {
+            this._rulesExcludePatterns = loadRulesExcludePatterns(this._workspaceRoot);
+            this._scheduleSync();
+        }
+    }
+
     private _scheduleSync(): void {
         if (this._debounceTimer !== undefined) {
             clearTimeout(this._debounceTimer);
@@ -95,6 +133,8 @@ export class IdeSync implements vscode.Disposable {
     }
 
     private _doSync(): void {
+        if (this._incognito) { return; }
+
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             this._onFileBlocked(false);
@@ -108,6 +148,13 @@ export class IdeSync implements vscode.Disposable {
             this._onFileBlocked(true, filePath);
             return;
         }
+
+        // Privacy gate: check exclude_patterns from .ailienant/.ailienant.json
+        if (this._rulesExcludePatterns.length > 0 && isFileBlocked(filePath, this._rulesExcludePatterns)) {
+            this._onFileBlocked(true, filePath);
+            return;
+        }
+
         this._onFileBlocked(false);
 
         const selection = editor.selection;
@@ -143,6 +190,7 @@ export class IdeSync implements vscode.Disposable {
             clearTimeout(this._debounceTimer);
         }
         this._ignoreWatcher?.dispose();
+        this._rulesConfigWatcher?.dispose();
         this._disposables.forEach(d => d.dispose());
     }
 }

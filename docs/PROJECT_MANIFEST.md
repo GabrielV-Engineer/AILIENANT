@@ -7,8 +7,8 @@
 ## 📍 Estado Actual
 
 - **Fase Activa:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
-- **Hito Reciente:** 7.13.1 — Concurrency & Resource Safety Spine cerrado (GAP1/2/3 + cancel de runner huérfano; 684 tests verdes). GAP5 + cancel de tareas scoped-por-proyecto diferidos a 7.13.6 (acoplados al daemon)
-- **Próximo Objetivo:** 7.13.2 — Privacy & Telemetry Filtering (Dual-Rules + Incognito, ADR-718)
+- **Hito Reciente:** 7.13.2 — Privacy & Telemetry Filtering cerrado (Dual-Rules exclude + Incognito toggle; 689 tests verdes)
+- **Próximo Objetivo:** 7.13.3 — Claude's Eyes: Live Telemetry Log (ADR-712)
 
 ---
 
@@ -1996,10 +1996,11 @@ the blueprint freeze lifts.
   - **Cerrado:** GAP1 (`graph_write_lock` por proyecto sobre `upsert_dependencies`/`purge_file_nodes`/`upsert_ppr_scores` en `core/db.py`), GAP2 (`SingleFlightCoordinator` en `core/indexer.py`, ruteado por `_dispatch_indexing_and_ppr`), GAP3 (`ConnectionManager.allow_inbound` token-bucket + shed de `client_file_update` en el receive-loop), GAP4 (cancel del runner de generación huérfano vía hook de disconnect `abort_session`). Tests: `test_graph_write_lock.py`, `test_single_flight.py`, `test_inbound_rate_limit.py` (684 verdes).
   - **Diferido a 7.13.6** *(acoplado al daemon, que aún no existe)* — **Ref:** 7.13.6: GAP5 (lock compartido daemon↔indexer — el getter `graph_write_lock` ya está expuesto para que el daemon lo tome) y el resto de GAP4 (cancel cascada de las tareas de indexer/daemon scoped-por-proyecto).
 
-- [ ] **7.13.2 — Privacy & Telemetry Filtering: Dual-Rules + Incognito** *(fundacional, NUEVO · ADR-718)*
+- [x] **7.13.2 — Privacy & Telemetry Filtering: Dual-Rules + Incognito** *(fundacional, NUEVO · ADR-718)*
   - **Problem:** el primer push de telemetría podría exfiltrar archivos confidenciales (`.env`, etc.) hacia el cerebro antes de cualquier gate.
   - **Resolution:** **sin nuevos archivos de ignore** — leer la fuente jerárquica única §3.4.6 `./.ailienant/.ailienant.json` (local) deep-merged sobre `~/.ailienant/.ailienant.json` (global) vía `core/rules.py::RuleManager` (Python: index reactivo, Dreaming, contexto del analyst) y extender el Privacy Gate §7.1.2 existente en `src/ide_sync.ts` (TS) para honrar los patrones de exclusión resueltos (junto al `.ailienantignore`/`.gitignore` `pathspec` ya presente). Añadir un toggle **Incognito Mode** en la **status-bar** de VS Code que pausa instantáneamente el bus de push (sin editar JSON).
   - **Files:** `core/rules.py`, `src/ide_sync.ts`, nuevo status-bar item en `extension.ts`, `core/vfs_middleware.py` (consumo del resolver compartido).
+  - **Cerrado:** `is_excluded()` + `_merge_exclude_patterns` + `_cached_exclude_spec` (PathSpec `gitignore`, compilado una vez) en `core/rules.py`; Layer 0 dual-rules en `core/vfs_middleware.py`; `loadRulesExcludePatterns` + watcher + `setIncognito` en `src/ide_sync.ts`; `IdeSync` + status-bar `$(shield) Incógnito` + comando `ailienant.toggleIncognito` en `extension.ts`; 5 tests nuevos (689 verdes).
 
 - [ ] **7.13.3 — Claude's Eyes: Live Telemetry Log** *(instrumento de verificación, construido temprano · ADR-712)*
   - **Problem:** la telemetría vive sólo en SQLite (`core/telemetry.py`); no hay un sink de archivo "tail-eable" durante el desarrollo.

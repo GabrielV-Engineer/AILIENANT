@@ -14,6 +14,7 @@ import {
 } from './providers/mirror';
 import { boundingBoxRegistry, installDecayListener } from './providers/telemetry';
 import { InlineMutationManager } from './core/InlineMutationManager';
+import { IdeSync } from './ide_sync';
 
 function makeSessionId(): string {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -164,6 +165,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         () => InlineMutationManager.instance.cancel(),
     );
 
+    // ── Incognito status bar + IdeSync ───────────────────────────────
+    const incognitoBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+    incognitoBar.text = '$(shield) Incógnito (Off)';
+    incognitoBar.tooltip = 'Toggle AILIENANT push telemetry (Incognito mode)';
+    incognitoBar.command = 'ailienant.toggleIncognito';
+    incognitoBar.show();
+
+    const ideSync = new IdeSync((_blocked, _path) => { /* reserved for future blocked-file UX */ });
+
+    let incognitoActive = false;
+    const toggleIncognitoCmd = vscode.commands.registerCommand('ailienant.toggleIncognito', () => {
+        incognitoActive = !incognitoActive;
+        ideSync.setIncognito(incognitoActive);
+        incognitoBar.text = incognitoActive ? '$(shield) Incógnito (On)' : '$(shield) Incógnito (Off)';
+    });
+
     // ── MCTS Mirror (Phase 3.4.5) ─────────────────────────────────────
     const mirrorProvider = new MirrorContentProvider();
     const mirrorRegistration = vscode.workspace.registerTextDocumentContentProvider(
@@ -189,6 +206,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         inlineEditCmd,
         acceptInlineEditCmd,
         rejectInlineEditCmd,
+        toggleIncognitoCmd,
+        ideSync,
+        incognitoBar,
         { dispose: () => InlineMutationManager.instance.dispose() },
         { dispose: () => workspaceManager.dispose() },
     );

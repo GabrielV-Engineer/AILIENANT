@@ -19,6 +19,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import pathspec  # type: ignore[import-untyped]
+
 logger = logging.getLogger("RULE_MANAGER")
 
 _RULES_FILENAME: str = ".ailienant.json"
@@ -38,12 +40,14 @@ class RuleManager:
     _instance: Optional["RuleManager"] = None
     _cache_key: Optional[CacheKey]
     _cached_formatted: str
+    _cached_exclude_spec: Optional["pathspec.PathSpec"]
 
     def __new__(cls) -> "RuleManager":
         if cls._instance is None:
             inst = super().__new__(cls)
             inst._cache_key = None
             inst._cached_formatted = ""
+            inst._cached_exclude_spec = None
             cls._instance = inst
         return cls._instance
 
@@ -79,6 +83,16 @@ class RuleManager:
         formatted: str = self._format(merged)
         self._cache_key = new_key
         self._cached_formatted = formatted
+
+        # Compile exclude_patterns into a PathSpec so is_excluded() runs in O(L).
+        raw_patterns: Any = merged.get("exclude_patterns", [])
+        if isinstance(raw_patterns, list) and raw_patterns:
+            self._cached_exclude_spec = pathspec.PathSpec.from_lines(
+                "gitignore",
+                [p for p in raw_patterns if isinstance(p, str)],
+            )
+        else:
+            self._cached_exclude_spec = None
         logger.info(
             "RuleManager: composed rules (local_keys=%d global_keys=%d).",
             len(local_data), len(global_data),
@@ -89,6 +103,18 @@ class RuleManager:
         """Reset cache — call from test teardown to isolate singleton state."""
         self._cache_key = None
         self._cached_formatted = ""
+        self._cached_exclude_spec = None
+
+    def is_excluded(self, filepath: str, project_path: str) -> bool:
+        """True if filepath matches any gitwildmatch pattern in the exclude_patterns config field.
+
+        O(L) per call — PathSpec compiled once on cache miss.
+        Global patterns union-merge with local so no pattern is ever silently dropped.
+        """
+        self.get_combined_rules(project_path)  # O(1) if cache warm; refreshes spec on miss
+        if self._cached_exclude_spec is None:
+            return False
+        return bool(self._cached_exclude_spec.match_file(filepath.replace("\\", "/")))
 
     def append_local_rule(self, workspace_root: str, rule: str) -> bool:
         """Phase 3.4.7 — Atomically add `rule` to <workspace>/.ailienant/.ailienant.json.
@@ -241,9 +267,26 @@ class RuleManager:
             gv: Any = global_.get(k)
             if k == "rules":
                 out[k] = cls._merge_rules_value(lv, gv)
+            elif k == "exclude_patterns":
+                out[k] = cls._merge_exclude_patterns(lv, gv)
             else:
                 out[k] = cls._deep_merge(lv, gv)
         return out
+
+    @classmethod
+    def _merge_exclude_patterns(cls, local_value: Any, global_value: Any) -> Any:
+        """Concatenate+dedupe exclude lists — global patterns are NEVER dropped by local."""
+        if isinstance(local_value, list) and isinstance(global_value, list):
+            return cls._concat_dedupe(local_value, global_value)
+        if local_value is None:
+            return global_value
+        if global_value is None:
+            return local_value
+        logger.warning(
+            "RuleManager: mismatched 'exclude_patterns' types (local=%s, global=%s); local wins.",
+            type(local_value).__name__, type(global_value).__name__,
+        )
+        return local_value
 
     @classmethod
     def _merge_rules_value(cls, local_value: Any, global_value: Any) -> Any:
