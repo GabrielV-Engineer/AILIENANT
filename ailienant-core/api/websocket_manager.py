@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional, Set, cast
 
@@ -61,6 +62,14 @@ def register_session_cleanup_hook(hook: Any) -> None:
     if hook not in _SESSION_CLEANUP_HOOKS:
         _SESSION_CLEANUP_HOOKS.append(hook)
 
+# Inbound flood guard — per-client token bucket. The Push model lets a save
+# storm (or a misbehaving client) fire high-frequency telemetry-class events
+# faster than the loop can absorb. Capacity mirrors the io_coalescer
+# mass-threshold so a legitimate branch-switch burst passes, while a runaway
+# flood is shed. Interactive events (chat/HITL/abort) are NEVER rate-limited.
+_INBOUND_BUCKET_CAPACITY: float = 100.0
+_INBOUND_REFILL_PER_S: float = 50.0
+
 # =====================================================================
 # TYPED ADAPTER (Pydantic V2)
 # =====================================================================
@@ -92,10 +101,35 @@ class ConnectionManager:
         # Phase 7.9.B.18 — write-pipeline acks, keyed by patch_id (UUID4 hex)
         self._patch_acks: Dict[str, asyncio.Event] = {}
         self._patch_ack_results: Dict[str, dict] = {}
+        # Inbound flood guard — per-client token bucket (tokens + last-refill clock)
+        self._inbound_tokens: Dict[str, float] = {}
+        self._inbound_refill_at: Dict[str, float] = {}
 
     def has_client(self, session_id: str) -> bool:
         """True if a live WS client is connected for this session (gates disk writes)."""
         return session_id in self.active_connections
+
+    def allow_inbound(self, client_id: str) -> bool:
+        """Consume one inbound token for a high-frequency event; False if exhausted.
+
+        A monotonic-clock token bucket per client, lazily initialized full so a
+        fresh client never starts throttled. Callers gate ONLY telemetry-class
+        events (file updates, IDE telemetry) on this — interactive events bypass
+        it — so a flood is shed without ever starving chat or HITL.
+        """
+        now = time.monotonic()
+        last = self._inbound_refill_at.get(client_id, now)
+        tokens = min(
+            _INBOUND_BUCKET_CAPACITY,
+            self._inbound_tokens.get(client_id, _INBOUND_BUCKET_CAPACITY)
+            + (now - last) * _INBOUND_REFILL_PER_S,
+        )
+        self._inbound_refill_at[client_id] = now
+        if tokens < 1.0:
+            self._inbound_tokens[client_id] = tokens
+            return False
+        self._inbound_tokens[client_id] = tokens - 1.0
+        return True
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -144,6 +178,10 @@ class ConnectionManager:
         if client_id in self.active_connections:
             del self.active_connections[client_id]
             logger.info("🔴 IDE Desconectado: %s", client_id)
+        # Drop the client's inbound rate-limit state so it cannot leak across
+        # reconnects (a fresh connection re-initializes a full bucket lazily).
+        self._inbound_tokens.pop(client_id, None)
+        self._inbound_refill_at.pop(client_id, None)
         # Phase 7.11.6 — fire every registered session-cleanup hook (e.g.,
         # TaskService.cleanup_session purges the tool-call registry). Hooks
         # are registered from main.py during startup; we never let a hook

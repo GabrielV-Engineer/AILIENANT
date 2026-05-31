@@ -758,6 +758,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
             )
 
             if valid_event.event_type == "client_file_update":
+                # Inbound flood guard: shed save storms past the per-client token
+                # bucket so a runaway watcher cannot starve the loop. Only this
+                # telemetry-class event is gated; interactive events below never
+                # are. The 500ms coalescer + reactive single-flight already absorb
+                # normal editing, so the bucket only trips on pathological rates.
+                if not vfs_manager.allow_inbound(client_id):
+                    logger.debug("Inbound rate limit: shed client_file_update from %s", client_id)
+                    continue
                 # 1. RAM-VFS ingestion — synchronous O(1), does not block the event loop
                 task_service.vfs.ingest_dirty_buffers(
                     # api_contracts.DirtyBuffer and vfs_middleware.DirtyBuffer are
