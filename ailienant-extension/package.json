@@ -68,6 +68,11 @@
         "command": "ailienant.rejectInlineEdit",
         "title": "Reject Inline Edit",
         "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.toggleIncognito",
+        "title": "Toggle Incognito Mode",
+        "category": "AILIENANT"
       }
     ],
     "menus": {

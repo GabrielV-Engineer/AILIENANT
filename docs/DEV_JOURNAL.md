@@ -2,6 +2,34 @@
 
 ---
 
+## Hito 7.13.2: Privacy & Telemetry Filtering — 2026-05-30
+
+**Status:** CERRADO | **Phase:** 7.13.2 (ADR-718)
+
+**Problem:** El bus Push recién construido podía exfiltrar archivos confidenciales (`.env`, claves, etc.) al cerebro LLM antes de ningún gate. Además, no había forma de pausar toda la telemetría de forma instantánea sin tocar el disco.
+
+**Approach:** Dos controles complementarios sobre fuentes de configuración ya existentes:
+1. **Dual-Rules Exclude** — el campo `"exclude_patterns"` (lista de globs) se añade al esquema `.ailienant.json` ya gestionado por `RuleManager`. La clave se trata como special-case en `_compose()` (igual que `"rules"`) garantizando `concat+dedupe` — los patrones globales (p.ej. `"**/.env"`) **nunca** son silenciados por un override local. Los patrones se compilan en un `PathSpec("gitignore")` cacheado (O(L) por llamada). Backend: Layer 0 en `VFSMiddleware.read_safe()` rechaza el archivo con `error="FILE_EXCLUDED"` antes de tocar `.gitignore` o la detección binaria. Frontend: `loadRulesExcludePatterns()` lee `.ailienant/.ailienant.json` en memoria; un `FileSystemWatcher` recarga solo cuando el fichero cambia, nunca en cada keystroke.
+2. **Incognito Toggle** — `IdeSync.setIncognito(true)` inserta un `return` O(1) al tope de `_doSync()`, paralizando todo el bus Push instantáneamente. Un `StatusBarItem` `$(shield) Incógnito (Off/On)` expuesto mediante el comando `ailienant.toggleIncognito` permite activarlo con un clic.
+
+**Files changed:**
+- `core/rules.py` — `import pathspec`; campo `_cached_exclude_spec`; `_merge_exclude_patterns` classmethod (special-case en `_compose`); `is_excluded(filepath, project_path)`; compilación del PathSpec en `get_combined_rules`; `reset()` ampliado.
+- `core/vfs_middleware.py` — import `rule_manager`; Layer 0 dual-rules antes de Layer 1; comentario de `VFSReadResult.error` ampliado.
+- `src/ide_sync.ts` — `loadRulesExcludePatterns`; campos `_rulesExcludePatterns`, `_rulesConfigWatcher`, `_incognito`; `setIncognito()`; `_watchRulesConfig()`/`_reloadRulesConfig()`; segundo gate en `_doSync()`; dispose ampliado.
+- `src/extension.ts` — import `IdeSync`; instancia + status-bar `incognitoBar` + comando `ailienant.toggleIncognito`; todos registrados en `context.subscriptions`.
+- `ailienant-extension/package.json` — comando `ailienant.toggleIncognito` declarado.
+- `tests/test_privacy_filtering.py` — 5 tests nuevos.
+
+**Architectural outcomes:**
+- **EP1** un archivo con `"exclude_patterns": ["**/.env"]` en el config global jamás viaja al LLM aunque el proyecto local no lo liste.
+- **EP2** el check de exclusión es O(L) (PathSpec compilado); no hay loop de fnmatch por keystroke.
+- **IN1** Incognito pausa el bus Push en O(1); no toca el disco ni modifica el JSON.
+- La invariante de seguridad de `_merge_exclude_patterns` está auditada explícitamente (no depende del comportamiento genérico de `_deep_merge`).
+
+**Verification:** `mypy .` → Success, 0 errores en 214 archivos. `pytest` → 689 passed (baseline 684 + 5 nuevos). `npm run compile` → Exit Code 0 (tsc + eslint + esbuild sin errores nuevos).
+
+---
+
 ## Hito 7.13.1: Concurrency & Resource Safety Spine — 2026-05-30
 
 **Status:** CERRADO (foundational; GAP5 + cancel scoped-por-proyecto diferidos a 7.13.6) | **Phase:** 7.13.1 (ADR-714)
