@@ -281,6 +281,36 @@ class ClientFileDeleteEvent(BaseModel):
 
 
 # =====================================================================
+# 8b. IDE TELEMETRY BUS — SILENT FILE-LIFECYCLE CHANNEL
+# =====================================================================
+# Push-model spine: file lifecycle (save / create / rename) travels on a
+# dedicated silent channel over the existing socket — never a toast, never an
+# interruption of the chat/answer stream. Metadata only: the content source is
+# the RAM-VFS buffer (kept hot by ClientFileUpdateEvent) or disk, so the bus
+# stays lightweight and droppable. Deletes are NOT folded here — they keep the
+# purpose-built ClientFileDeleteEvent (graph purge) contract.
+
+
+class IdeTelemetryPayload(BaseModel):
+    """Silent IDE lifecycle signal feeding the reactive index and Push panels.
+
+    ``old_path`` is set only for renames so the consumer can migrate a graph
+    node in place rather than purge-and-reindex. ``document_version_id`` mirrors
+    the OCC token carried by ClientFileUpdateEvent for save coalescing.
+    """
+
+    action: Literal["file_saved", "file_created", "file_renamed"]
+    filepath: str = Field(..., description="Absolute path of the affected file (new path on rename)")
+    old_path: Optional[str] = Field(default=None, description="Previous path; set only on file_renamed")
+    document_version_id: str = ""
+
+
+class ClientIdeTelemetryEvent(BaseModel):
+    event_type: Literal["client_ide_telemetry"] = "client_ide_telemetry"
+    data: IdeTelemetryPayload
+
+
+# =====================================================================
 # 9. PHASE 2.22.4 — VFS PATCH APPROVED (IPC Bridge)
 # =====================================================================
 
@@ -790,6 +820,7 @@ WebSocketMessage = Union[
     ServerIndexingErrorEvent,        # Phase 2.5 — pre-flight error
     ServerByomConfigAppliedEvent,    # Phase 7.9.B.11 — preset applied notification
     ClientFileDeleteEvent,           # Phase 2.1.13
+    ClientIdeTelemetryEvent,         # IDE telemetry bus — silent file-lifecycle channel
     ServerVfsPatchApprovedEvent,     # Phase 2.22.4
     ServerApplyWorkspaceEditEvent,   # Phase 7.9.B.18 — write pipeline dispatch
     ClientPatchAppliedEvent,         # Phase 7.9.B.18 — write pipeline ack

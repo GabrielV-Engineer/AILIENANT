@@ -29,7 +29,9 @@ export class WSClient {
     // after the tunnel is already up still learns it is connected.
     private _status: WsConnectionStatus = 'disconnected';
     // Payloads queued while the socket was not yet OPEN; flushed on 'open'.
+    // Hard-capped to bound memory across a long reconnect outage (see sendWhenReady).
     private _pendingSends: unknown[] = [];
+    private static readonly MAX_PENDING = 256;
 
     // Delta sync: track current document_version_id per file
     // Used to detect stale state before Dashboard approvals
@@ -240,14 +242,39 @@ export class WSClient {
     }
 
     /**
+     * Droppable send for the telemetry bus (silent IDE lifecycle pushes).
+     *
+     * Telemetry has NO absolute priority: if the socket is not OPEN the frame is
+     * dropped rather than queued. A file-save event flushed minutes later on
+     * reconnect is stale noise, and the reactive index re-derives current state
+     * from the next live save — so queueing it would only risk Head-of-Line
+     * blocking the chat/answer stream it shares the socket with. Interactive
+     * traffic keeps using send()/sendWhenReady().
+     */
+    public sendTelemetry(payload: unknown): void {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(payload));
+        }
+        // else: intentionally dropped — see method contract.
+    }
+
+    /**
      * Send once the socket is OPEN. If already open, sends immediately;
      * otherwise queues the payload and flushes it on the next 'open'.
      * Used for client_workspace_init, which must land right after connect.
+     *
+     * The queue is hard-capped: across a long reconnect outage an unbounded
+     * backlog would be a memory leak. Critical-init traffic is the only user
+     * today, so the cap is a defensive bound — when hit, the oldest entry is
+     * evicted (FIFO) before enqueuing the newest.
      */
     public sendWhenReady(payload: unknown): void {
         if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(payload));
         } else {
+            if (this._pendingSends.length >= WSClient.MAX_PENDING) {
+                this._pendingSends.shift();
+            }
             this._pendingSends.push(payload);
         }
     }

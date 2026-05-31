@@ -2,6 +2,33 @@
 
 ---
 
+## Hito 7.13.4: Spinal Cord — Bus de Telemetría IDE (Push) — 2026-05-31
+
+**Status:** CERRADO | **Phase:** 7.13.4 (ADR-708)
+
+**Problem:** los watchers de `src/ide_sync.ts` sólo cubrían foco y edición (`onDidChangeActiveTextEditor`/`onDidChangeTextDocument`), no el ciclo de vida de archivos (save/create/rename/delete). Todo viajaba por el WS principal mezclado con el stream de chat, así que una tormenta de saves podía competir con los tokens de respuesta (Head-of-Line blocking). Además el sender `client_file_delete` existía en el contrato y tenía handler backend (`submit_unlink`) pero ningún `.ts` lo emitía (huérfano confirmado).
+
+**Approach:** se construye la **espina de ingesta** (la reacción es 7.13.5). Canal silencioso aditivo `client_ide_telemetry` (metadata-only) sobre el socket existente — sin segundo socket. Dos decisiones lockeadas con el usuario: (1) el backend enruta los eventos al **seam de coalescer existente** (`io_coalescer.submit`/`submit_unlink`, mismo path que `client_file_update`, `content=""`) — comportamiento reactivo real hoy, sin código de índice nuevo; 7.13.5 lo refina a `reindex_one` + single-flight + idempotencia por content-hash. (2) Payload **metadata-only** (`action`/`filepath`/`old_path`/`document_version_id`) — el contenido vive en el buffer RAM-VFS (caliente vía `client_file_update`) o en disco, manteniendo el bus liviano y verdaderamente droppable (evita la línea de 10k tokens). Observación de auditoría del usuario incorporada: el rename extrae `.fsPath` de ambas `Uri` y descarta el evento completo si **cualquiera** de las rutas (vieja/nueva) está excluida, para que un rename a través de la frontera de privacidad nunca filtre la ruta excluida.
+
+**Files changed:**
+- `api/ws_contracts.py` — `IdeTelemetryPayload` + `ClientIdeTelemetryEvent` aditivos; añadidos a la unión `WebSocketMessage`. Los deletes conservan el contrato `ClientFileDeleteEvent` (purga), no se migran a telemetría.
+- `main.py` — `_dispatch_ide_telemetry(payload)` (helper testeable: rename = `submit_unlink` viejo + `submit` nuevo; save/create = `submit`); branch `client_ide_telemetry` en el receive-loop gated por `allow_inbound` (mismo token bucket de 7.13.1) → dispatch off-loop; import de `IdeTelemetryPayload`.
+- `src/ide_sync.ts` — listeners `onDidSaveTextDocument`/`onDidCreateFiles`/`onDidRenameFiles`/`onDidDeleteFiles`; `_isPathAllowed()` (factoriza el Privacy Gate); cola `_pendingLifecycle` + `_lifecycleTimer` (debounce 150ms aparte); `_flushLifecycle()` (gate + pausa Incognito + invariante de rename de doble-ruta); sender `client_file_delete` cableado; dispose ampliado.
+- `src/api/ws_client.ts` — `sendTelemetry()` droppable (descarta si el socket no está OPEN); `send()` interactivo intacto; `_pendingSends` con cap FIFO (`MAX_PENDING=256`) en `sendWhenReady`.
+- `tests/test_ide_telemetry_bus.py` *(nuevo)* — 8 tests.
+
+**Architectural outcomes:**
+- **SC1** los pushes de ciclo de vida son silenciosos: sin toast, sin callback de UI, sin efecto en el stream de chat/answer.
+- **No-HoL** el `send()` interactivo mantiene prioridad absoluta; la telemetría es droppable; el backend descarta vía `allow_inbound` — el stream de respuesta no se degrada bajo flood de saves.
+- **Privacy-first** cada push pasa por `_isPathAllowed` (dual-rules + `.ailienantignore`) y la pausa Incognito **antes** de salir de la extensión; el rename exige que ambas rutas estén permitidas o descarta el evento.
+- **Off-loop** el dispatch sólo encola en `io_coalescer`; el trabajo de índice queda en el worker de fondo (protege el loop / token bucket de 7.13.1).
+- **Acotado** `_pendingSends` con cap; la telemetría se descarta con socket cerrado; frames metadata-only.
+- Sin desviación del file-list del blueprint §4.2 → sin enmienda.
+
+**Verification:** `mypy .` → Success, 0 errores en 217 archivos. `pytest` → 702 passed (baseline 694 + 8 nuevos). `tsc --noEmit` → Exit 0; `eslint` → 0 errores (2 warnings pre-existentes en archivos no tocados).
+
+---
+
 ## Hito 7.13.3: Claude's Eyes — Live Telemetry Log — 2026-05-31
 
 **Status:** CERRADO | **Phase:** 7.13.3 (ADR-712)
