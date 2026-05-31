@@ -6,9 +6,9 @@
 
 ## 📍 Estado Actual
 
-- **Fase Activa:** Fase 7 — Extensión VS Code (Frontend TS/React)
-- **Hito Reciente:** Fase 7.12 — UX/State Stabilization & Context Injection Pathing (675 tests verdes); Fase 9 Native Thinking cerrada
-- **Próximo Objetivo:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
+- **Fase Activa:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
+- **Hito Reciente:** 7.13.1 — Concurrency & Resource Safety Spine cerrado (GAP1/2/3 + cancel de runner huérfano; 684 tests verdes). GAP5 + cancel de tareas scoped-por-proyecto diferidos a 7.13.6 (acoplados al daemon)
+- **Próximo Objetivo:** 7.13.2 — Privacy & Telemetry Filtering (Dual-Rules + Incognito, ADR-718)
 
 ---
 
@@ -1988,11 +1988,13 @@ the blueprint freeze lifts.
 - [ ] **7.13.0 — Phase 7.13 Blueprint Lock-In** *(meta)*
   - Sella [`docs/PHASE_7_13_BLUEPRINT.md`](PHASE_7_13_BLUEPRINT.md): canal de telemetría IDE (ADR-708), indexación reactiva incremental (ADR-709), **Dreaming manual** (ADR-710, REESCRITO), self-healing `ErrorCorrectionAgent` (ADR-711), `.ailienant_telemetry.log` (ADR-712), máquina de estados multi-turno + Planner UI (ADR-713), **concurrencia & seguridad de recursos** (ADR-714), **resiliencia de stream frontend** (ADR-715), **recuperación de huérfanos & superficies Push** (ADR-716), **privacidad & filtrado de telemetría Dual-Rules + Incognito** (ADR-718). Toda desviación exige enmienda al blueprint en el mismo PR.
 
-- [ ] **7.13.1 — Concurrency & Resource Safety Spine** *(fundacional, NUEVO · ADR-714)*
+- [x] **7.13.1 — Concurrency & Resource Safety Spine** *(fundacional, NUEVO · ADR-714)*
   - **Problem:** el modelo Push introduce escritores concurrentes sobre el grafo (`upsert_dependencies`/`purge_file_nodes` en `core/db.py` hacen DELETE→INSERT sin `asyncio.Lock` — GAP1 confirmado); el `OvernightDaemon` comparte el grafo sin lock (GAP5); no hay rate-limit inbound por cliente WS (GAP3 confirmado, grep limpio en `api/websocket_manager.py`); saves rápidos disparan re-index redundante sin single-flight (GAP2); y tareas de background quedan huérfanas en disconnect (GAP4 — **parcialmente mitigado**: `active_tasks` drena en shutdown + `register_session_cleanup_hook(task_service.cleanup_session)` ya corre en disconnect, `main.py:285/1045`).
   - **Resolution:** serialización de escrituras grafo/LanceDB con un `asyncio.Lock` **por proyecto** alrededor de `upsert_dependencies` **y** `purge_file_nodes` (GAP1, reutilizar el patrón de lock de `core/token_ledger.py`); lock compartido daemon↔indexer (GAP5); **single-flight** por `(filepath, project_id)` en `core/indexer.py` (GAP2); rate-limit/token-bucket inbound por cliente en el WS (GAP3, reutilizar el `_MASS_THRESHOLD=100` de `io_coalescer`); **EXTENDER** (no construir) el hook `cleanup_session` + drain de `active_tasks` existentes para cascade-cancelar las tareas de **indexer de background + daemon** por sesión (GAP4, reutilizar el precedente de cancel `_ppr_tasks` en `main.py:661`).
   - **Ref / Retrofit (Fases 0&1):** este sub-fase **modifica** el lifespan/WS de las fases base — los back-pointers viven en sus tareas. El lock lo adquiere el **graph-reader path (daemon de consolidación + GraphRAG extractor)**, **no** `agents/mcts_coder.py` (que no toca `core/db.py`).
   - **Files:** `core/db.py`, `core/indexer.py`, `core/io_coalescer.py`, `brain/daemon.py`, `core/memory/graphrag_extractor.py`, `api/websocket_manager.py`, `core/task_service.py`, `main.py`.
+  - **Cerrado:** GAP1 (`graph_write_lock` por proyecto sobre `upsert_dependencies`/`purge_file_nodes`/`upsert_ppr_scores` en `core/db.py`), GAP2 (`SingleFlightCoordinator` en `core/indexer.py`, ruteado por `_dispatch_indexing_and_ppr`), GAP3 (`ConnectionManager.allow_inbound` token-bucket + shed de `client_file_update` en el receive-loop), GAP4 (cancel del runner de generación huérfano vía hook de disconnect `abort_session`). Tests: `test_graph_write_lock.py`, `test_single_flight.py`, `test_inbound_rate_limit.py` (684 verdes).
+  - **Diferido a 7.13.6** *(acoplado al daemon, que aún no existe)* — **Ref:** 7.13.6: GAP5 (lock compartido daemon↔indexer — el getter `graph_write_lock` ya está expuesto para que el daemon lo tome) y el resto de GAP4 (cancel cascada de las tareas de indexer/daemon scoped-por-proyecto).
 
 - [ ] **7.13.2 — Privacy & Telemetry Filtering: Dual-Rules + Incognito** *(fundacional, NUEVO · ADR-718)*
   - **Problem:** el primer push de telemetría podría exfiltrar archivos confidenciales (`.env`, etc.) hacia el cerebro antes de cualquier gate.
@@ -2009,7 +2011,7 @@ the blueprint freeze lifts.
   - **Resolution:** extender `src/ide_sync.ts` (`onDidSave/Rename/Delete`) sobre el debounce 150ms existente; **cablear el sender huérfano `client_file_delete`**; cada push pasa **primero** por el gate de exclusión 7.13.2. Canal silencioso `client_ide_telemetry` sobre el socket existente (**prohibido** un segundo socket); **clase de prioridad** en `src/api/ws_client.ts` (chat/answer con prioridad absoluta, telemetría droppable) + **cap** de `_pendingSends`; dispatch off-loop en backend honrando el rate-limit de 7.13.1. El bus alimenta el index reactivo (7.13.5) y los paneles Push (7.13.10) — **no arma ningún timer** (Dreaming es manual). Compone con `transport/throttler.py`.
   - **Files:** `src/ide_sync.ts`, `src/api/ws_client.ts`, `api/ws_contracts.py` (eventos aditivos), `main.py`.
 
-- [ ] **7.13.5 — Reactive GraphRAG (Indexación Incremental por Save)** *(ADR-709)*
+- [ ] **7.13.5 — Reactive GraphRAG (Indexación Incremental por Save)** *(ADR-709)* - opus
   - **Problem:** `core/indexer.py` sólo indexa en bloque una vez por sesión (`ClientWorkspaceInitEvent`); la memoria es un snapshot stale.
   - **Resolution:** `semantic_upsert` single-file + refresh del nodo de grafo bajo el **lock + single-flight** de 7.13.1; delete/rename **purgan/migran** (consume `client_file_delete`); **circuit breaker** del index reactivo (GAP6); **entrada unificada** para que `apply_patch` (agente) y los saves humanos compartan un path **idempotente por content-hash** (GAP9 — el modelo Push da dos escritores reales). Opcionalmente cablear el **Memory Janitor** huérfano como contraparte de GC.
   - **Files:** `core/indexer.py`, `core/memory/semantic_memory.py`, `core/memory/graphrag_extractor.py`, `core/db.py`.
@@ -2019,7 +2021,7 @@ the blueprint freeze lifts.
   - **Resolution:** **sin timer de idle.** La consolidación dispara **sólo** por acción explícita del usuario: **botón en WebDashboard** + **comando de VS Code** ("Trigger Dreaming / Consolidate Memory"), ruteados vía un nuevo evento `client_dreaming_run` al daemon arrancado en el lifespan de `main.py`. Corre bajo el **lock compartido + cancellation token** de 7.13.1; **race guard** — si llega un `file_saved` mid-run, aborta la txn de escritura + invalida el snapshot (`document_version_id`, patrón ADR-703); bounds de FinOps/tokens; envuelto en DLQ; baja prioridad de scheduler. Reemplaza el `dreaming_toggle` huérfano. **El usuario es dueño de cuándo se gastan recursos/tokens.**
   - **Files:** `brain/daemon.py`, `main.py`, `agents/workspace_context.py`, `api/ws_contracts.py`, `src/dashboard` (acción) + `extension.ts` (comando).
 
-- [ ] **7.13.7 — Self-Healing: `ErrorCorrectionAgent` + DLQ Resume Surface** *(ADR-711 + ADR-716)*
+- [ ] **7.13.7 — Self-Healing: `ErrorCorrectionAgent` + DLQ Resume Surface** *(ADR-711 + ADR-716)* - opus
   - **Problem:** existe el retry de validación (`brain/guardrails.py`, `MAX_RETRIES=2`) y el DLQ, pero ningún agente que **lea un stack trace, lea el archivo ofensor, proponga un fix y reintente**; los presupuestos de retry están dispersos (guardrail=2, planner=2, MCTS=3, orchestrator) y bajo un event-loop saturado un fallo de LLM puede corromper el estado del WS.
   - **Resolution:** nodo Reflexion en `brain/engine.py` — traceback → lee archivo → propone fix → reintenta ≤3 antes de conceder (ADR-711); **aislamiento cognitivo estricto** (jamás importa `brain.personality`, valla 4.1.5), parches sólo vía `apply_patch`+HITL; **unifica** los presupuestos de retry dispersos; **failure-signature cache** como breaker cross-turn (GAP8). **Retrofit (Fase 2A–2D):** desacoplar la lógica de retry local en `tools/llm_gateway.py` + agentes base hacia esta abstracción centralizada; tras los retries acotados, redirigir el payload/task a `core/dead_letter.py` — un event-loop saturado **nunca** debe dejar que un fallo de LLM corrompa el estado WS. **Cablear los huérfanos `/task/resume` + `/dlq/pending`** en una UI de resume de dead-letter (complemento cross-session a la sanación in-turn).
   - **Files:** nuevo `agents/error_correction.py`, `brain/engine.py`, `brain/guardrails.py`, `tools/llm_gateway.py`, `core/dead_letter.py`, superficie de resume en dashboard/sidebar.
@@ -2039,7 +2041,7 @@ the blueprint freeze lifts.
   - **Resolution:** **inventario gated PRIMERO** (control → endpoint → live/stub/dead → wire/delete), aprobado por el usuario; resuelve la discrepancia entre las dos auditorías — **verificar, no borrar a ciegas** los paneles ya cableados. Convertir paneles mount-poll (Hardware/Runtime) a **suscripción al bus de telemetría** (mata los leaks de polling-cleanup). Cablear/decidir los huérfanos restantes: `client_master_toggle`/`client_profile_change` (cablear o borrar tipos muertos), vista de OOM-telemetry, stub de terminal en `ContextOverlay`.
   - **Files:** paneles del dashboard, `src/workspace/components/ContextOverlay.tsx`, `src/workspace/workspace_panel.ts`, `api/ws_contracts.py`.
 
-- [ ] **7.13.11 — Zero-Deduplication Sweep**
+- [ ] **7.13.11 — Zero-Deduplication Sweep** opus
   - **Problem:** lecturas de archivo duplicadas — **tanto** `agents/coder.py` (`_make_vfs_reader`) **como** `agents/analyst.py` instancian su propio lector; presupuestos de retry dispersos.
   - **Resolution:** **Retrofit (Fases 5&6):** consolidar los lectores en una única factory `VFSMiddleware`; el lector único honra el resolver de privacidad Dual-Rules (7.13.2) + la versión de buffer actual, para que ningún componente ignore archivos protegidos ni lea un buffer stale. Finalizar la abstracción unificada de retry/backoff (consumida por 7.13.7).
   - **Files:** `core/vfs_middleware.py`, `agents/coder.py`, `agents/analyst.py`, módulos de retry.
