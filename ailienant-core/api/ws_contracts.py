@@ -474,13 +474,13 @@ class ServerPipelineStepEvent(BaseModel):
 class ServerStreamEndEvent(BaseModel):
     """Server → client: the assistant message stream is finalized."""
     event_type: Literal["server_stream_end"] = "server_stream_end"
-    data: dict = Field(default_factory=dict)
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ClientClearConversationEvent(BaseModel):
     """Client → server: drop the session's short-term chat memory (Phase 7.9.B.15)."""
     event_type: Literal["client_clear_conversation"] = "client_clear_conversation"
-    data: dict = Field(default_factory=dict)
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatTurn(BaseModel):
