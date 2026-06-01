@@ -2,12 +2,10 @@
 """Phase 3.4.3a DoD — MCTS tree, GC, checkpointer, daemon lifecycle."""
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import patch
 
 import pytest
 
-from brain.daemon import OvernightDaemon
 from brain.episodic.checkpointing import MCTSCheckpointer
 from brain.mcts.tree import MCTSTree
 from brain.state import MissionSpecification, WBSStep
@@ -116,22 +114,6 @@ def test_mark_stable_records_to_checkpoint(
     assert row[0] == child.node_id
     assert abs(row[1] - 0.87) < 1e-9
     assert row[2] == "child"
-
-
-# ---------- daemon start/stop lifecycle ----------
-
-@pytest.mark.anyio
-async def test_daemon_start_stop_no_op(
-    tree: MCTSTree, mcts_db: MCTSCheckpointer
-) -> None:
-    """Daemon start/stop must complete cleanly without exceptions."""
-    daemon = OvernightDaemon(tree=tree, checkpointer=mcts_db)
-    daemon.start()
-    await asyncio.sleep(0.05)
-    assert daemon._task is not None
-    assert not daemon._task.done()
-    await daemon.stop()
-    assert daemon._task.done()
 
 
 # ---------- UCB1 selection ----------

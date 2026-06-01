@@ -73,6 +73,11 @@
         "command": "ailienant.toggleIncognito",
         "title": "Toggle Incognito Mode",
         "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.triggerDreamingRun",
+        "title": "Trigger Dreaming / Consolidate Memory",
+        "category": "AILIENANT"
       }
     ],
     "menus": {

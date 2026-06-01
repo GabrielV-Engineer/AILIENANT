@@ -73,6 +73,7 @@ from brain.memory import _worker_init, calculate_graph_analytics_sync
 
 # --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
 from core.indexer import lazy_indexer, reactive_indexer, SingleFlightCoordinator
+from brain.daemon import overnight_daemon
 
 # --- IMPORTACIONES FASE 7.9.B.1 (Memory Dashboard REST surface) ---
 from api.memory_dashboard import router as memory_router
@@ -105,7 +106,7 @@ from shared.contracts import (
     PPRRequest, PPRResult,
 )
 from api.api_contracts import DirtyBuffer
-from api.ws_contracts import IdeTelemetryPayload
+from api.ws_contracts import IdeTelemetryPayload, DreamingRunPayload
 
 # Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
 # When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     io_coalescer.register_mass_handler(_handle_mass_change)
     _wal = WALCheckpointer(checkpoint_manager)
     _wal.start()
+    overnight_daemon.start()                 # on-demand memory consolidation (no timer)
     logger.info("🟢 AILIENANT startup complete (WAL mode active).")
 
     yield  # application handles requests
@@ -159,6 +161,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if pending:
         logger.info("Draining %d in-flight task(s) (timeout=10s)...", len(pending))
         await asyncio.wait(pending, timeout=10.0)
+
+    # 2b. Cancel any in-flight consolidation passes before tearing down the daemon.
+    for _dream in list(_dreaming_tasks.values()):
+        if not _dream.done():
+            _dream.cancel()
+    await overnight_daemon.stop()
 
     # 3. Flush all in-memory L1 sessions to L2 before WAL truncate (Phase 2.2.B)
     checkpoint_manager.flush_all_sessions()
@@ -314,6 +322,69 @@ _workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
 _session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root (Phase 3.4.1)
 _session_workspace_pid: Dict[str, int] = {}  # client_id → workspace_pid (Phase 4.4)
 _session_project_id: Dict[str, str] = {}  # client_id → project_id (reactive-index routing)
+
+# Manual Dreaming — at most one consolidation per project (a new run cancels the
+# prior one). The epoch is a monotonic per-project save counter: the OCC anchor a
+# consolidation captures at start and the daemon re-checks before committing, so a
+# save landing mid-run invalidates the snapshot and aborts the write.
+_dreaming_tasks: Dict[str, asyncio.Task[None]] = {}
+_dreaming_epoch: Dict[str, int] = {}
+
+
+def _abort_dreaming(project_id: str) -> None:
+    """Cancel an in-flight consolidation and bump the project's save epoch.
+
+    Called on every save/telemetry frame: the bump invalidates any snapshot a
+    running pass captured, and the cancel stops the LLM call so the daemon never
+    fights a resuming typist.
+    """
+    if not project_id:
+        return
+    _dreaming_epoch[project_id] = _dreaming_epoch.get(project_id, 0) + 1
+    task = _dreaming_tasks.get(project_id)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def _trigger_dreaming(client_id: str, focus_area: Optional[str]) -> None:
+    """Spawn a consolidation pass for the session's project, one at a time."""
+    project_id = _session_project_id.get(client_id, "")
+    workspace_root = _workspace_registry.get(project_id, "")
+
+    prior = _dreaming_tasks.pop(project_id, None)
+    if prior is not None and not prior.done():
+        prior.cancel()
+
+    epoch_at_start = _dreaming_epoch.get(project_id, 0)
+
+    def _is_stale() -> bool:
+        return _dreaming_epoch.get(project_id, 0) != epoch_at_start
+
+    async def _run() -> None:
+        try:
+            await overnight_daemon.run_consolidation(
+                project_id,
+                focus_area,
+                workspace_root=workspace_root,
+                session_id=f"dream:{client_id}",
+                stale_check=_is_stale,
+            )
+        except asyncio.CancelledError:
+            logger.info("[Session: %s] Dreaming cancelled (save mid-run).", client_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 — a failed dream never crashes the loop
+            logger.error("[Session: %s] Dreaming failed: %s", client_id, exc)
+
+    task: asyncio.Task[None] = asyncio.create_task(_run(), name=f"dream:{project_id}")
+    _dreaming_tasks[project_id] = task
+
+    def _evict(done: "asyncio.Task[None]") -> None:
+        # Only drop the slot if it still points at this task — a newer pass may
+        # have already replaced it (one consolidation per project).
+        if _dreaming_tasks.get(project_id) is done:
+            _dreaming_tasks.pop(project_id, None)
+
+    task.add_done_callback(_evict)
 
 
 # =====================================================================
@@ -804,6 +875,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 )
                 # 2. Critical files bypass debounce; normal files coalesced in 500ms window
                 _proj = _session_project_id.get(client_id, "")
+                # A live edit invalidates any in-flight consolidation snapshot.
+                _abort_dreaming(_proj)
                 if is_critical_file(valid_event.data.filepath):
                     asyncio.create_task(
                         _dispatch_indexing_and_ppr(
@@ -827,9 +900,20 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 if not vfs_manager.allow_inbound(client_id):
                     logger.debug("Inbound rate limit: shed client_ide_telemetry from %s", client_id)
                     continue
+                _tel_proj = _session_project_id.get(client_id, "")
+                # A live file lifecycle event invalidates an in-flight snapshot.
+                _abort_dreaming(_tel_proj)
                 _dispatch_ide_telemetry(
                     cast(IdeTelemetryPayload, valid_event.data),
-                    _session_project_id.get(client_id, ""),
+                    _tel_proj,
+                )
+
+            elif valid_event.event_type == "client_dreaming_run":
+                # Manual Dreaming: explicit, user-owned consolidation. Interactive
+                # frame — never rate-limited; runs one pass per project at a time.
+                _trigger_dreaming(
+                    client_id,
+                    cast(DreamingRunPayload, valid_event.data).focus_area,
                 )
 
             elif valid_event.event_type == "client_planner_mode_toggle":
@@ -1131,8 +1215,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
         vfs_manager.disconnect(client_id)
         # Evict per-session maps so a reconnect storm cannot grow them unboundedly
         # (one entry per historical connection would otherwise leak for process life).
-        _session_project_id.pop(client_id, None)
+        _disc_proj = _session_project_id.pop(client_id, None)
         _session_workspace_root.pop(client_id, None)
+        # Cancel + evict any consolidation bound to this session's project so a
+        # reconnect storm cannot leak tasks or epoch counters for process life.
+        if _disc_proj:
+            _disc_task = _dreaming_tasks.pop(_disc_proj, None)
+            if _disc_task is not None and not _disc_task.done():
+                _disc_task.cancel()
+            _dreaming_epoch.pop(_disc_proj, None)
         if client_id in _session_workspace_pid:
             _pid = _session_workspace_pid.pop(client_id)
             asyncio.create_task(lifecycle_manager.shutdown_workspace(_pid))

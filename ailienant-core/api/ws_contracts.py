@@ -311,6 +311,29 @@ class ClientIdeTelemetryEvent(BaseModel):
 
 
 # =====================================================================
+# 8c. MANUAL DREAMING — EXPLICIT "CONSOLIDATE MEMORY" TRIGGER
+# =====================================================================
+# Memory consolidation never wakes on a timer; it fires only on an explicit
+# user action (HUD button / VS Code command). ``focus_area`` lets the operator
+# scope the pass to a theme (saving consolidation tokens); ``None`` consolidates
+# the whole workspace ("Auto").
+
+
+class DreamingRunPayload(BaseModel):
+    """Client → server: run one manual memory-consolidation pass."""
+
+    focus_area: Optional[str] = Field(
+        default=None,
+        description="Theme to prioritize; None = Auto (whole workspace)",
+    )
+
+
+class ClientDreamingRunEvent(BaseModel):
+    event_type: Literal["client_dreaming_run"] = "client_dreaming_run"
+    data: DreamingRunPayload
+
+
+# =====================================================================
 # 9. PHASE 2.22.4 — VFS PATCH APPROVED (IPC Bridge)
 # =====================================================================
 
@@ -821,6 +844,7 @@ WebSocketMessage = Union[
     ServerByomConfigAppliedEvent,    # Phase 7.9.B.11 — preset applied notification
     ClientFileDeleteEvent,           # Phase 2.1.13
     ClientIdeTelemetryEvent,         # IDE telemetry bus — silent file-lifecycle channel
+    ClientDreamingRunEvent,          # Manual Dreaming — explicit consolidate-memory trigger
     ServerVfsPatchApprovedEvent,     # Phase 2.22.4
     ServerApplyWorkspaceEditEvent,   # Phase 7.9.B.18 — write pipeline dispatch
     ClientPatchAppliedEvent,         # Phase 7.9.B.18 — write pipeline ack

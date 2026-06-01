@@ -766,6 +766,15 @@ export class WorkspacePanelManager {
                     });
                     break;
                 }
+                case 'TRIGGER_DREAMING_RUN': {
+                    // Manual memory consolidation. focus_area null = "Auto" (whole workspace).
+                    const focusArea = (data.focus_area as string | null | undefined) ?? null;
+                    WSClient.getInstance().send({
+                        event_type: 'client_dreaming_run',
+                        data: { focus_area: focusArea },
+                    });
+                    break;
+                }
                 case 'ATTACH_CONTEXT':
                     WSClient.getInstance().send({
                         event_type: 'client_attach_context',
