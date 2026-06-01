@@ -2,6 +2,28 @@
 
 ---
 
+## Hito 7.14.1: The Infinite Canvas (Zero-Bubble) — 2026-06-01
+
+- **Status:** OK — `npm run compile` y `npm run lint` exit 0. DoD ZB1 + ZB2 cumplidos.
+
+- **Motivación:** La transcripción anterior estaba cargada de "burbuja" (borde, radio, `max-width:88%`, fondos por rol, `align-self:flex-end`). Para un surface de código el ancho completo es crítico: bloques de código, diffs y output de herramientas no pueden quedar recortados al 88% del panel. ADR-720 dicta documento-canvas: los turnos se separan por un hairline y el rol se comunica **sólo** por la etiqueta — sin colores de fondo ni alineaciones distintas.
+
+- **Decisiones de arquitectura:**
+  - `authorLabel` se congela en el momento de ingestión (`authorLabelFor()` — fábrica de módulo, O(1) por turno). La fila de render es un **pure component**: recibe un string estático, zero subscripción a estado reactivo. El fallback para turnos rehydratados pre-7.14.1 es el literal `'AILIENANT'` — sin `nattName` reactivo (directiva de auditor Zero-Trust).
+  - `attachOrUpdateToolCall` recibe `agentName` como 4.º parámetro para estampar `authorLabel` en el turn-placeholder que crea cuando no hay turno asistente activo.
+  - `PERSIST_TRANSCRIPT` proyecta `authorLabel` → las etiquetas congeladas sobreviven reload/rehydrate.
+  - `gap` eliminado de `.ws-messages` — pacing 100% delegado a `padding` de `.ws-msg` (single source of truth, hairline continuo).
+  - Caret de streaming reubicado en `.ws-msg-content::after` con `display:inline` para que siga al último glifo en lugar de alinearse al borde derecho del panel.
+
+- **Files changed:**
+  - `ailienant-extension/src/workspace/workspace.css` — `.ws-msg` → document row; drop `border`/`border-radius`/`max-width:88%`/role-bg rules; `line-height:1.6`; `padding:12px 0`; hairline `border-bottom`; `.ws-msg-role` (10px uppercase, accent para assistant); `.ws-msg-content::after` caret; `gap:0` en `.ws-messages`.
+  - `ailienant-extension/src/workspace/Workspace.tsx` — `Message.authorLabel?:string`; fábrica `authorLabelFor()`; firma extendida de `attachOrUpdateToolCall`; estampado en los 5 create-branches (token, thinking, pipeline, tool-start, handleSubmit); `authorLabel` en proyección `PERSIST_TRANSCRIPT`; render puro `<div className="ws-msg-role">` + `<div className="ws-msg-content">`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.14.1 → `[x]`), `DEV_JOURNAL.md` (este hito).
+
+- **Próximo:** **7.14.2 (Elite Diff Engine)** — host enriquece el seam `server_apply_workspace_edit` → `RENDER_DIFF`; nuevo `DiffBlock.tsx`; deps `jsdiff`/`react-diff-viewer-continued`/`shiki` (lazy, dentro del presupuesto 500 KB). Precondición: elegir mecanismo A vs B del §3 del Stack Contract.
+
+---
+
 ## Hito 7.14.0: Blueprint + WBS de Fase 7.14 (UI/UX Transformation — Zero-Bubble & Full-Cognition) — 2026-06-01
 
 - **Status:** DOCUMENTADO — diseño de fase, sin código de producción. Track **frontend**, ortogonal al backend 8.0.0 (no colisionan).

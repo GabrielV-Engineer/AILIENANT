@@ -224,7 +224,6 @@ html, body, #root { height: 100%; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
   padding: 4px 0 8px;
 }
 .ws-messages::-webkit-scrollbar { width: 6px; }
@@ -241,23 +240,24 @@ html, body, #root { height: 100%; }
   gap: 8px;
 }
 .ws-msg {
-  padding: 6px 10px;
-  border-radius: 4px;
+  padding: 12px 0;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: pre-wrap;
-  max-width: 88%;
-  border: 1px solid var(--border-subtle);
+  width: 100%;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 60%, transparent);
 }
-.ws-msg[data-role="user"] {
-  align-self: flex-end;
-  background: var(--accent-primary);
-  color: #0D1117;
-  border-color: var(--accent-primary);
+.ws-msg-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
 }
-.ws-msg[data-role="assistant"] { background: var(--bg-surface); }
-.ws-msg[data-streaming="true"]::after {
+.ws-msg[data-role="assistant"] .ws-msg-role { color: var(--accent-primary); }
+.ws-msg[data-streaming="true"] .ws-msg-content::after {
   content: '▍';
+  display: inline;
   margin-left: 2px;
   animation: ws-cursor 1s steps(2, end) infinite;
   color: var(--accent-primary);

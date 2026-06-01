@@ -76,6 +76,13 @@ function mkId(): string {
     catch { return `m_${Date.now()}_${Math.random().toString(36).slice(2)}`; }
 }
 
+// Resolves the display label for a turn at the moment it is first minted.
+// Frozen onto Message.authorLabel so the row component stays pure and a later
+// settings change never retroactively relabels existing history.
+function authorLabelFor(role: 'user' | 'assistant', agentName: string): string {
+    return role === 'user' ? 'You' : agentName;
+}
+
 /**
  * Phase 7.12 — id-keyed transcript merge for REHYDRATE_TRANSCRIPT. The host
  * transcript is the authoritative COMPLETED history; `local` may hold an
@@ -124,6 +131,10 @@ export interface Message {
     // Phase 7.11.8 — flips the branch button's icon to ⏹ when this turn
     // ended in a user_abort emergency savepoint (Phase 7.11.3).
     is_abort_savepoint?: boolean;
+    // Frozen at ingestion by authorLabelFor() — the row component is pure and
+    // never reads reactive config. Legacy turns without this field fall back to
+    // a static literal at render time; never retroactively relabeled.
+    authorLabel?: string;
     // Phase 9 (ADR-707) — Native Thinking. Raw reasoning accumulated for this
     // turn (display-only — NEVER persisted to the transcript or fed back to the
     // agent). `thinkingStartedAt`/`thinkingElapsedMs` drive the chronometrics:
@@ -156,6 +167,7 @@ function attachOrUpdateToolCall(
     prev: Message[],
     toolCallId: string,
     update: (prior: ToolCallShape | undefined) => ToolCallShape,
+    agentName: string,
 ): Message[] {
     const lastIdx = prev.length - 1;
     const last = lastIdx >= 0 ? prev[lastIdx] : undefined;
@@ -176,6 +188,7 @@ function attachOrUpdateToolCall(
         role: 'assistant',
         content: '',
         toolCalls: [update(undefined)],
+        authorLabel: authorLabelFor('assistant', agentName),
     }];
 }
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
@@ -305,10 +318,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 // the rehydrated transcript still shows the ↪ Branch button.
                 messages: messages.map(({
                     id, role, content, steps, stepsDone, toolCalls,
-                    checkpoint_id, is_abort_savepoint,
+                    checkpoint_id, is_abort_savepoint, authorLabel,
                 }) => ({
                     id, role, content, steps, stepsDone, toolCalls,
-                    checkpoint_id, is_abort_savepoint,
+                    checkpoint_id, is_abort_savepoint, authorLabel,
                 })),
                 nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
             });
@@ -447,6 +460,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             content: d.token,
                             streaming: true,
                             parserState: mdPushToken(MD_INITIAL_STATE, d.token),
+                            authorLabel: authorLabelFor('assistant', nattName),
                         }];
                     });
                     break;
@@ -465,7 +479,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             return [...prev.slice(0, -1),
                                 accumulateThinking(last, d.delta, d.token_count, now)];
                         }
-                        return [...prev, { id: mkId(), ...newThinkingTurn(d.delta, d.token_count, now) }];
+                        return [...prev, { id: mkId(), ...newThinkingTurn(d.delta, d.token_count, now), authorLabel: authorLabelFor('assistant', nattName) }];
                     });
                     break;
                 }
@@ -480,7 +494,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         if (last?.role === 'assistant' && last.streaming) {
                             return [...prev.slice(0, -1), { ...last, steps: [...(last.steps ?? []), node] }];
                         }
-                        return [...prev, { id: mkId(), role: 'assistant', content: '', streaming: true, steps: [node] }];
+                        return [...prev, { id: mkId(), role: 'assistant', content: '', streaming: true, steps: [node], authorLabel: authorLabelFor('assistant', nattName) }];
                     });
                     break;
                 }
@@ -542,7 +556,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         args: d.args,
                         side_effect_free: d.side_effect_free,
                         status: 'pending',
-                    })));
+                    }), nattName));
                     break;
                 }
                 case 'server_tool_stream_chunk': {
@@ -558,7 +572,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         // Hard tail-bound the retained output so a runaway tool
                         // cannot OOM the webview.
                         output_lines: [...(tc?.output_lines ?? []), d.chunk].slice(-MAX_TOOL_OUTPUT_LINES),
-                    })));
+                    }), nattName));
                     break;
                 }
                 case 'server_tool_result': {
@@ -579,7 +593,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         status: d.status,
                         exit_code: d.exit_code,
                         duration_ms: d.duration_ms,
-                    })));
+                    }), nattName));
                     break;
                 }
                 case 'server_tool_dep_graph': {
@@ -597,7 +611,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             status: 'pending' as const,
                         }),
                         dep_graph: { nodes: d.nodes, edges: d.edges },
-                    })));
+                    }), nattName));
                     break;
                 }
                 case 'server_telemetry': {
@@ -832,7 +846,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     const handleSubmit = useCallback((text: string) => {
         const presetConfig = getPresetConfig(preset);
-        setMessages(prev => [...prev, { id: mkId(), role: 'user', content: text }]);
+        setMessages(prev => [...prev, { id: mkId(), role: 'user', content: text, authorLabel: authorLabelFor('user', nattName) }]);
         vscode.postMessage({
             type: 'SUBMIT_TASK',
             value: text,
@@ -1078,16 +1092,21 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             data-role={m.role}
                                             data-streaming={m.streaming ? 'true' : 'false'}
                                         >
-                                            {m.role === 'assistant' ? (
-                                                // Phase 7.11.5 — anti-flicker streaming markdown.
-                                                <MarkdownRenderer
-                                                    content={m.content}
-                                                    parserState={m.parserState}
-                                                    streaming={!!m.streaming}
-                                                />
-                                            ) : (
-                                                m.content
-                                            )}
+                                            <div className="ws-msg-role">
+                                                {m.authorLabel ?? (m.role === 'user' ? 'You' : 'AILIENANT')}
+                                            </div>
+                                            <div className="ws-msg-content">
+                                                {m.role === 'assistant' ? (
+                                                    // Anti-flicker streaming markdown — parser state is cleared on stream end.
+                                                    <MarkdownRenderer
+                                                        content={m.content}
+                                                        parserState={m.parserState}
+                                                        streaming={!!m.streaming}
+                                                    />
+                                                ) : (
+                                                    m.content
+                                                )}
+                                            </div>
                                         </div>
                                     )}
                                     {/* Phase 7.11.6 — Rich Tool Chips attached to this turn. */}
