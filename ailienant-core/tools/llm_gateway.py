@@ -18,6 +18,7 @@ from litellm import ModelResponse
 from litellm.exceptions import APIConnectionError, ContextWindowExceededError
 from pydantic import BaseModel
 
+from brain.retry_policy import LLM_MAX_TRANSPORT_RETRIES
 from shared.config import (
     MODEL_SMALL,
     MODEL_MEDIUM,
@@ -365,7 +366,7 @@ class LLMGateway:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
-                max_retries=2,
+                max_retries=LLM_MAX_TRANSPORT_RETRIES,
                 metadata={"session_id": trace_id},
                 extra_headers={"X-Ailienant-Trace-ID": trace_id},
                 **cfg,
@@ -433,7 +434,7 @@ class LLMGateway:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=_effective_timeout,
-                max_retries=2,
+                max_retries=LLM_MAX_TRANSPORT_RETRIES,
                 metadata={"session_id": trace_id},
                 extra_headers={"X-Ailienant-Trace-ID": trace_id},
                 **byom_kwargs,
@@ -450,7 +451,7 @@ class LLMGateway:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
-                max_retries=2,
+                max_retries=LLM_MAX_TRANSPORT_RETRIES,
                 metadata={"session_id": trace_id},
                 extra_headers={"X-Ailienant-Trace-ID": trace_id},
                 **cfg,
@@ -524,7 +525,7 @@ class LLMGateway:
             max_tokens=max_tokens,
             timeout=timeout,
             stream=True,
-            max_retries=2,
+            max_retries=LLM_MAX_TRANSPORT_RETRIES,
             metadata={"session_id": trace_id},
             extra_headers={"X-Ailienant-Trace-ID": trace_id},
             **cfg,
@@ -573,7 +574,7 @@ class LLMGateway:
         _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=_effective_timeout, max_retries=2,
+            timeout=_effective_timeout, max_retries=LLM_MAX_TRANSPORT_RETRIES,
         )
         logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
         resp: ModelResponse = await litellm.acompletion(**kwargs)
@@ -611,7 +612,7 @@ class LLMGateway:
         _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=_effective_timeout, stream=True, max_retries=2,
+            timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
         )
         kwargs.setdefault("stream_options", {"include_usage": True})
         logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
@@ -692,7 +693,7 @@ class LLMGateway:
         _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=_effective_timeout, stream=True, max_retries=2,
+            timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
         )
         kwargs.setdefault("stream_options", {"include_usage": True})
         thinking_on = bool(enable_thinking) and _supports_native_thinking(target.model)

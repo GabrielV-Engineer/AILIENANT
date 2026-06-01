@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from agents.workspace_context import build_workspace_overview  # Phase 7.12 (Issues 4 & 8)
 from core.ast_engine import ASTEngine
-from core.vfs_middleware import VFSMiddleware
+from core.vfs_middleware import VFSMiddleware, make_safe_reader
 
 logger = logging.getLogger("ANALYST_CONTEXT")
 
@@ -194,24 +194,14 @@ async def assemble_analyst_context(
     # 2. Active file fragment(s) — semantically sliced, sandbox-wrapped, <=4KB total.
     # core.vfs_middleware is follow_imports=silent in mypy.ini (pre-existing debt), so a
     # strict invocation reports the constructor as untyped — scoped ignore, not a mask.
-    reader = vfs or VFSMiddleware()  # type: ignore[no-untyped-call]
+    read = make_safe_reader(project_id, project_root or None, session_id, vfs=vfs)
     remaining = FILE_CAP
     file_blocks: List[str] = []
     for path in paths:
         if remaining <= 0:
             break
-        try:
-            res = reader.read_safe(
-                path,
-                project_id=project_id,
-                project_root=project_root or None,
-                session_id=session_id,
-            )
-        except Exception as exc:  # noqa: BLE001 — context assembly never crashes the analyst
-            logger.debug("Analyst context read failed for %s: %s", path, exc)
-            continue
-        content = res.content or ""
-        if not res.ok or not content:
+        content = read(path)
+        if not content:
             continue
         sliced = _semantic_slice(content, path, cursor, remaining)
         safe = _sandbox_escape(sliced, boundary)

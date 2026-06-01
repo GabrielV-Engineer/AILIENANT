@@ -5,6 +5,8 @@ import logging
 import sqlite3
 from typing import TYPE_CHECKING, Optional
 
+from brain.retry_policy import WAL_CHECKPOINT_MAX_RETRIES
+
 if TYPE_CHECKING:
     from brain.checkpoint import HybridCheckpointer
 
@@ -70,7 +72,7 @@ class WALCheckpointer:
                 continue
             await self._checkpoint_with_backoff()
 
-    async def _checkpoint_with_backoff(self, max_retries: int = 3) -> None:
+    async def _checkpoint_with_backoff(self, max_retries: int = WAL_CHECKPOINT_MAX_RETRIES) -> None:
         delay = 30.0
         for attempt in range(1, max_retries + 1):
             conn = self._mgr.conn

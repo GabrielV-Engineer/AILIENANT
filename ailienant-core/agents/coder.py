@@ -30,19 +30,8 @@ def content_hash(s: str) -> str:
 
 def _make_vfs_reader(project_id: str, workspace_root: str, session_id: str):
     """Return a callable(path) -> Optional[str] backed by the VFS firewall."""
-    from core.vfs_middleware import VFSMiddleware
-    vfs = VFSMiddleware()
-
-    def _read(path: str):
-        try:
-            r = vfs.read_safe(
-                path, project_id=project_id, project_root=workspace_root, session_id=session_id
-            )
-            return r.content if (r.ok and r.content is not None) else None
-        except Exception:  # noqa: BLE001 — a read failure must not crash the coder
-            return None
-
-    return _read
+    from core.vfs_middleware import make_safe_reader
+    return make_safe_reader(project_id, workspace_root, session_id)
 
 
 async def _build_rag_block(target_file: str, description: str, project_id: str) -> str:

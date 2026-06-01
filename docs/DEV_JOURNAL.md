@@ -2,6 +2,31 @@
 
 ---
 
+## Hito 7.13.11: Zero-Deduplication Sweep — 2026-06-01
+
+**Status:** CERRADO — 7.13.11 COMPLETA | **Phase:** 7.13.11 (Retrofit Fases 5 & 6)
+
+**Problem:** dos deudas de consolidación. (1) Tres módulos de agente cargaban un lector VFS casi idéntico (`read_safe(path) → Optional[str]`, firewall + swallow + `.content`/None): `coder._make_vfs_reader`, el bucle inline de `analyst_context`, y `error_correction._read_offending_file` — riesgo de divergencia en cómo aplican el resolver Dual-Rules (7.13.2) o leen el buffer RAM actual. (2) `retry_policy.py` ya centralizaba los presupuestos de *conteo* (7.13.7) pero difería explícitamente "the local backoff abstraction inside the LLM gateway": el gateway repetía el literal `max_retries=2` de litellm **7 veces** y `db_maintenance` cargaba un `max_retries=3` suelto.
+
+**Corrección de auditoría (CLAUDE.md §3, aprobada):** el WBS nombraba `analyst.py`, pero su lector vivo está en `analyst_context.py` (las referencias VFS de `analyst.py` son comentarios-stub Phase 4 — intactos). Se sumó un **tercer** lector (`error_correction.py`) al dedup. Además se descubrió que `brain/prompt_builder.py::_read` devolvía **SIEMPRE None** — `read_safe` retorna un `VFSReadResult`, pero el guard `isinstance(result, str)` nunca es cierto — y además no pasaba `project_root` (saltaba Dual-Rules). Es **código muerto** (`build_context` sin callers; sólo `build_system_prompt` está vivo), pero se corrigió adoptando la factory (corrección barata; elimina la trampa si algún día se cablea). La lectura verbatim de @-menciones de `researcher.py` (`vfs.read()` sin firewall) se deja **intacta** (bypass intencional: el usuario nombró el archivo explícitamente).
+
+**Approach:**
+- **Factory única** `core/vfs_middleware.py::make_safe_reader(project_id, project_root, session_id, *, vfs=None) -> Callable[[str], Optional[str]]`: delega a `(vfs or VFSMiddleware()).read_safe(...)`, devuelve `.content` en ok / None, swallow `except Exception` (deja propagar `CancelledError`). El param `vfs` conserva el seam de inyección de `analyst_context` y el patch de `test_coder_agent`.
+- Migrados los 3 lectores de agentes + el `_read` de `prompt_builder` a la factory.
+- **Retry:** `LLM_MAX_TRANSPORT_RETRIES=2` y `WAL_CHECKPOINT_MAX_RETRIES=3` en `retry_policy.py`; referenciados por los 7 sitios del gateway y el default de `db_maintenance._checkpoint_with_backoff`. Sin abstracción async nueva — un solo loop bespoke = over-engineering.
+
+**Files changed:** `core/vfs_middleware.py` (+factory), `agents/coder.py`, `agents/analyst_context.py`, `agents/error_correction.py`, `brain/prompt_builder.py`, `brain/retry_policy.py` (+2 constantes), `tools/llm_gateway.py` (7×), `core/db_maintenance.py`.
+
+**Architectural outcomes:**
+- **Una sola verdad de lectura** todos los lectores de agente convergen en `make_safe_reader`; cualquier ajuste futuro del firewall/Dual-Rules se hace en un punto.
+- **Envelope de resiliencia auditable** el conteo *y* los retries de transporte ahora viven en `retry_policy.py`.
+- **Fence ISO1 intacto** la factory vive en `core/vfs_middleware.py` (sin `brain.personality`) y `retry_policy.py` son constantes puras — `coder.py`/`researcher.py` siguen limpios.
+- **Comportamiento preservado** único cambio de conducta = arreglar el lector siempre-None de `prompt_builder` (código muerto).
+
+**Verification (DoD, todo verde):** `mypy .` → Success (224); `pytest` → **748 passed**; suites dirigidas `test_coder_agent`/`test_privacy_filtering`/`test_error_correction` → 22 passed. `grep` confirma cero `read_safe(` en `agents/` (todo vía factory) y cero literales `max_retries` en gateway/db_maintenance. Sin archivos/dirs nuevos (árbol del README intacto).
+
+---
+
 ## Hito 7.13.10: Orphanage Recovery II — Surface Sync & Push-Fed Panels — 2026-06-01
 
 **Status:** CERRADO — 7.13.10 COMPLETA | **Phase:** 7.13.10 (ADR-716)

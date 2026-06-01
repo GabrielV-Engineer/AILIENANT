@@ -1,6 +1,6 @@
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pathspec
 from pydantic import BaseModel
@@ -245,3 +245,41 @@ class VFSMiddleware:
             spec = pathspec.PathSpec.from_lines("gitwildmatch", lines)
             _ignore_specs[project_id] = spec
             return spec
+
+
+# =====================================================================
+# Shared firewalled-reader factory
+# =====================================================================
+
+
+def make_safe_reader(
+    project_id: Optional[str],
+    project_root: Optional[str],
+    session_id: Optional[str],
+    *,
+    vfs: Optional[VFSMiddleware] = None,
+) -> Callable[[str], Optional[str]]:
+    """Return a ``(path) -> Optional[str]`` reader backed by the read_safe() firewall.
+
+    The single source of truth for "read a file's text for LLM context, or get
+    None". It honors the Dual-Rules privacy resolver and ignore rules when
+    ``project_root`` is supplied, reads the current RAM buffer before disk, logs
+    the read for the RBWE audit when ``session_id`` is set, and swallows any read
+    failure to ``None`` so context assembly never crashes the caller. ``vfs`` may
+    be injected for testing; otherwise the process singleton is used.
+    """
+    reader = vfs or VFSMiddleware()
+
+    def _read(path: str) -> Optional[str]:
+        try:
+            result = reader.read_safe(
+                path,
+                project_id=project_id,
+                project_root=project_root,
+                session_id=session_id,
+            )
+        except Exception:  # noqa: BLE001 — a read failure must never crash the caller
+            return None
+        return result.content if (result.ok and result.content is not None) else None
+
+    return _read
