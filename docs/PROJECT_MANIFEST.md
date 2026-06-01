@@ -8,6 +8,7 @@
 
 - **Fase Activa:** Fase 7.13 — The Enterprise Spinal Cord (Event-Driven Architecture Push Model)
 - **Hito Reciente:** 7.13.6 COMPLETA — Manual Dreaming con Targeted Focus: `OvernightDaemon` repurposed a servicio on-demand (`run_consolidation`, sin heartbeat MCTS), evento `client_dreaming_run` (`focus_area`), HUD `DreamingTrigger` + comando VS Code, lock sólo en el commit, race guard OCC por epoch (save mid-run aborta), FinOps refuse-over-budget. 731 tests verdes, sin migración de esquema.
+- **División 8.0 — Documentada:** auditoría `mypy --strict` completa (`PHASE_8_BLUEPRINT.md` + `TECH_DEBT_BACKLOG.md`). Baseline: 32 errores, 9 módulos silenciados. Primer ítem ejecutable: **8.0.0 Correcciones mecánicas de superficie**.
 - **Próximo Objetivo:** 7.13.7 — Self-Healing: `ErrorCorrectionAgent` + DLQ Resume Surface (ADR-711 + ADR-716)
 
 ---
@@ -1892,6 +1893,27 @@ the blueprint freeze lifts.
 ## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
 
 > Calibración del rendimiento y simulación de fallos para robustez Enterprise.
+
+### ⚙️ División 8.0 — Eradicación de Tipado Estricto (`mypy --strict`) 🟡
+
+> Bloque previo al ciclo de pruebas/refinamiento. Objetivo: `mypy --strict main.py` → **exit 0**, cero entradas `follow_imports = silent` en `mypy.ini`. WBS completo en [`docs/PHASE_8_BLUEPRINT.md`](PHASE_8_BLUEPRINT.md); deuda técnica continua en [`docs/TECH_DEBT_BACKLOG.md`](TECH_DEBT_BACKLOG.md). Baseline: **32 errores** en 12 archivos, **9 módulos silenciados**. El gate `mypy .` (220 archivos) permanece verde durante toda la campaña.
+
+- [x] **8.0.A — Auditoría baseline (docs-only).** `PHASE_8_BLUEPRINT.md` + `TECH_DEBT_BACKLOG.md` creados. 5 entradas DEBT pre-registradas. Mapa topológico Tier 0 → Tier 7 documentado.
+- [ ] **8.0.0 — Correcciones mecánicas de superficie** — 26 × `dict`→`Dict[str,Any]`, 3 × `unused-ignore`, 2 × `no-untyped-def` en 13 archivos. Anotación-only, cero cambios de lógica. **DoD:** `mypy --strict main.py` → exit 0.
+- [ ] **8.0.1 — Liberar hojas de bajo fan-in** — `shared.hardware`, `agents.analyst`, `tools.patch_tool`. Corregir errores strict de cada una, luego eliminar su entrada `follow_imports = silent` de `mypy.ini`. **DoD:** `mypy --strict <file>` → 0 para las tres; DEBT-001 resuelto o confirmado bloqueado externamente.
+- [ ] **8.0.2 — Liberar `tools.llm_gateway`** — desbloquea summarizer, contract_guard, coder, rutas BYOM. Resolver DEBT-002 (`MODEL_MEDIUM` no exportado). **DoD:** `mypy --strict tools/llm_gateway.py` → 0; entrada eliminada.
+- [ ] **8.0.3 — Liberar `core.vfs_middleware` + `core.compute_pool`** — desbloquea `agents/coder.py` y `core/indexer.py`. **DoD:** `mypy --strict <file>` → 0 para cada una; entradas eliminadas.
+- [ ] **8.0.4 — Nodos Tier 2/3 desbloqueados** — summarizer, coder, trajectory_memory, ideation, swarms (resuelve DEBT-003/004), intent_router. Ejecutar en orden topológico. **DoD:** `mypy --strict <file>` → 0 para cada nodo.
+- [ ] **8.0.5 — Liberar `brain.memory` + `core.db`** (muro de infra más denso). Exploración previa con `mypy --strict <file> 2>&1 | head -60` antes de comprometer fixes. **DoD:** `mypy --strict brain/memory.py` → 0; `mypy --strict core/db.py` → 0.
+- [ ] **8.0.6 — Liberar `api.websocket_manager` + infra core** — dead_letter, telemetry_log, supervisor. Último muro de infraestructura. **DoD:** `mypy --strict <file>` → 0 para cada uno; entradas `follow_imports = silent` eliminadas.
+- [ ] **8.0.7 — `brain/engine.py`** (orquestador central — 15 dependencias internas directas). Todos los ítems anteriores deben estar verdes antes de iniciar. **DoD:** `mypy --strict brain/engine.py` → exit 0.
+- [ ] **8.0.8 — `main.py` — Puerta final de la campaña.** Todas las importaciones tipadas; cero `follow_imports = silent` (salvo DEBT-001 si aún bloqueado por stubs externos). **DoD:** `mypy --strict main.py` → **exit 0** ✅; `mypy .` sigue limpio.
+
+> **Ley del Registro Continuo:** todo error strict-mode descubierto fuera del alcance del ítem activo se registra inmediatamente en `TECH_DEBT_BACKLOG.md` y **no** se corrige en sitio. Ver `PHASE_8_BLUEPRINT.md §Continuous Registry Protocol`.
+
+---
+
+### 🔬 Subfase 8.1–8.5 — Pruebas, Refinamiento y Degradación Elegante
 
 - [ ] **8.1. Pruebas End-to-End (`tests/e2e/`)**
   - Validar SSoT completo: Prompt → GraphRAG → LangGraph → MCP → WebSocket Response.
