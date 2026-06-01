@@ -405,6 +405,7 @@ class TaskService:
         """Drive the planner + coder agents to propose patches (review-only, no disk write)."""
         from agents.planner import run_planner_node  # deferred — avoids import cycle
         from agents.coder import run_coder_node
+        from agents.error_correction import attempt_correction
 
         state = self._build_initial_state(session_id, payload, execution_mode)
 
@@ -458,6 +459,12 @@ class TaskService:
             errors: List[str] = []
             coder_steps = list(mission.tasks)[:_MAX_CODER_STEPS]
             total_steps = len(coder_steps)
+            # In-turn self-healing budget, shared across the step loop. A trapped coder
+            # failure is handed to the ErrorCorrectionAgent (traceback → read file →
+            # propose a fix) instead of being silently dropped; its patch rejoins the
+            # same HITL approval set below. After the budget/breaker it falls back to
+            # surfacing the error in the summary (no raw error to the user).
+            correction_attempts = 0
             for idx, step in enumerate(coder_steps, start=1):
                 # "coding step N/M" rides in node_name — PipelineStepPayload schema unchanged.
                 await _narrate(f"coder_agent ({idx}/{total_steps})", step_id=step.step_number)
@@ -468,7 +475,24 @@ class TaskService:
                 except asyncio.CancelledError:
                     raise  # propagate up to the outer abort handler
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"step #{step.step_number}: {exc}")
+                    heal_state = {
+                        **state,
+                        "mission_spec": mission,
+                        "current_step_id": step.step_number,
+                        "correction_attempts": correction_attempts,
+                    }
+                    correction = await attempt_correction(
+                        exc, heal_state, failed_node="coder_agent",
+                        extra_candidates=[step.target_file] if step.target_file else None,
+                    )
+                    if correction is not None and correction.healed:
+                        correction_attempts += 1
+                        await _narrate(f"self_heal ({idx}/{total_steps})", step_id=step.step_number)
+                        patches.update(correction.pending_patches)
+                        contents.update(correction.pending_contents)
+                        base_hashes.update(correction.pending_base_hash)
+                    else:
+                        errors.append(f"step #{step.step_number}: {exc}")
                     continue
                 patches.update(cres.get("pending_patches") or {})
                 contents.update(cres.get("pending_contents") or {})

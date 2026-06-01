@@ -18,9 +18,11 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, ValidationError
 from langgraph.graph import END
 
+from brain.retry_policy import GUARDRAIL_MAX_RETRIES
+
 logger = logging.getLogger("OUTPUT_GUARDRAIL")
 
-MAX_RETRIES: int = 2
+MAX_RETRIES: int = GUARDRAIL_MAX_RETRIES
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 

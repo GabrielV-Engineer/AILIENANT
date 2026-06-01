@@ -552,3 +552,15 @@ class AIlienantGraphState(TypedDict):
     # "Stopped by user" indicator without breaking graph topology. None on
     # normal completion. Scalar overwrite, no reducer.
     termination_reason: Optional[str]
+
+    # --- Self-Healing Reflexion Loop channels ---
+    # All additive, scalar overwrite, safe defaults — older checkpoints rehydrate
+    # unchanged. reflexion_guard sets healing_required + the diagnostic fields when
+    # it traps a node exception; the ErrorCorrectionAgent reads them, proposes a
+    # HITL-gated fix, and clears healing_required. correction_attempts is the in-turn
+    # budget bound; failure_signature is the normalized cross-turn breaker key.
+    healing_required: bool
+    correction_attempts: int
+    last_error_trace: Optional[str]
+    failed_node: Optional[str]
+    failure_signature: Optional[str]

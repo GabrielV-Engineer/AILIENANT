@@ -23,10 +23,12 @@ from core.memory.context_auditor import (
     derive_routing_decision,
     RiskLevel,
 )
+from brain.retry_policy import PLANNER_MAX_RETRIES
 
-# Phase 4.1.2 — bounded planner retry budget on Pydantic ValidationError.
-# Distinct from MICRO_SWARM Coder's MAX_RETRIES (different agent, different gate).
-MAX_PLANNER_RETRIES: int = 2
+# Bounded planner retry budget on Pydantic ValidationError. Distinct from the
+# MICRO_SWARM Coder's MAX_RETRIES (different agent, different gate); both budgets
+# are sourced from the central retry policy.
+MAX_PLANNER_RETRIES: int = PLANNER_MAX_RETRIES
 
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")

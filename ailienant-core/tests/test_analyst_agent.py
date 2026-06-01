@@ -156,6 +156,7 @@ def test_soul_manager_not_imported_by_logic_agents() -> None:
         project_root / "agents" / "coder.py",
         project_root / "agents" / "orchestrator.py",
         project_root / "agents" / "researcher.py",
+        project_root / "agents" / "error_correction.py",
     ]
     forbidden_patterns = ("from brain.personality", "import brain.personality")
 
