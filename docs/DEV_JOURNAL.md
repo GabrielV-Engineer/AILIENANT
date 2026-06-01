@@ -2,6 +2,37 @@
 
 ---
 
+## Hito 7.13.6: Manual Dreaming con Targeted Focus — 2026-05-31
+
+**Status:** CERRADO — 7.13.6 COMPLETA | **Phase:** 7.13.6 (ADR-710 reescrito + amendment Targeted Dreaming)
+
+**Problem:** el `OvernightDaemon` (`brain/daemon.py`) era un stub huérfano de Phase 3.4.3a — un heartbeat MCTS arrancado en ningún lado, sin lógica de consolidación ni trigger de UI. El `dreaming_toggle` que debía reemplazar no tenía hogar en el backend. Un timer de idle que despertara GraphRAG+LLM durante un build pesado o un local-model corriendo **sobrecarga la CPU, compite con un typista que reanuda y gasta tokens sin supervisión**.
+
+**Approach:** **sin timer de idle** — la consolidación dispara **sólo** por acción explícita del usuario. `OvernightDaemon` fue **repurposed** por completo: se eliminó el heartbeat MCTS y los args `tree`/`checkpointer`; ahora es un servicio on-demand sin estado que expone `async run_consolidation(project_id, focus_area=None, *, workspace_root, session_id, stale_check=None)`. Un nuevo evento aditivo `client_dreaming_run` (`focus_area: Optional[str]`) llega desde **dos triggers**: el HUD (`DreamingTrigger.tsx` — popover radix con 3 focos estáticos "Architecture and Patterns" / "Refactoring and Technical Debt" / "Bug Fixes", botón "Auto" → `null`, y "Other" que se transforma en `<input type="text">` free-text) y el comando VS Code `ailienant.triggerDreamingRun` (QuickPick). **Targeted Focus (amendment ADR-710):** el `focus_area` se inyecta en el system prompt para priorizar la reestructuración de memoria hacia ese tema y gastar menos tokens; `None` consolida todo el workspace.
+
+**Disciplina de concurrencia/estado:** el corpus reusa `agents/workspace_context.build_workspace_overview` (acotado ≤2048). La llamada `LLMGateway.ainvoke` corre **fuera** del `graph_write_lock` (nunca se sostiene un lock de DB a través de la red); sólo el commit final (`semantic_upsert` de la nota de memoria) se serializa **bajo** el lock per-proyecto. **Race guard OCC (patrón ADR-703):** un epoch monotónico por proyecto en `main.py` — cada `client_file_update`/`client_ide_telemetry` lo incrementa (invalida el snapshot) **y** cancela la tarea de dreaming en vuelo; el daemon re-chequea `stale_check()` antes del commit → `aborted_stale`, sin escritura parcial. **FinOps:** una sesión ya sobre el techo de presupuesto **rechaza** la corrida (`refused_budget`) antes de cualquier llamada LLM (el usuario es dueño del gasto, pero un presupuesto agotado es una valla). `_dreaming_tasks`/`_dreaming_epoch` se evacúan en `WebSocketDisconnect` (memoria `O(sesiones-vivas)`). `CancelledError` se propaga limpio — un dream abortado nunca deja escritura parcial.
+
+**Files changed:**
+- `api/ws_contracts.py` — aditivo `DreamingRunPayload(focus_area: Optional[str]=None)` + `ClientDreamingRunEvent`; añadido al union `WebSocketMessage`.
+- `brain/daemon.py` — `OvernightDaemon` repurposed (sin heartbeat); `run_consolidation` + `ConsolidationResult`; seams inyectables (`overview_fn`/`budget_fn`/`llm_invoke`/`semantic`) para tests; singleton `overnight_daemon`.
+- `main.py` — `_dreaming_tasks`/`_dreaming_epoch`; `_trigger_dreaming` + `_abort_dreaming`; ruta `client_dreaming_run`; race guard en las ramas de save/telemetry; daemon `start()`/`stop()` en el lifespan; cancel+pop en disconnect.
+- `tests/test_manual_dreaming.py` *(nuevo)* — 12 tests; `tests/test_mcts_daemon.py` recortado (lifecycle del daemon migrado).
+- Frontend — `DreamingTrigger.tsx` *(nuevo)*, `PromptBar.tsx` (montaje), `workspace.css` (estilos `.ws-dream-manual-*`), `providers/workspace_panel.ts` (case `TRIGGER_DREAMING_RUN`), `extension.ts` (comando), `package.json` (`contributes.commands`).
+- `docs/PHASE_7_13_BLUEPRINT.md` — amendment ADR-710 (Targeted Dreaming).
+
+**Architectural outcomes:**
+- **MD1** trigger manual-only: cero timer/idle; el usuario es dueño de cuándo se gastan tokens.
+- **MD2** lock-discipline: red fuera del lock, sólo el commit dentro (ADR-714).
+- **MD3** race-safe: un save mid-run aborta el dream sin escritura (epoch OCC + cancel), no pelea con el typista.
+- **MD4** FinOps refuse-over-budget; memoria acotada; sin migración de esquema (la nota reusa `semantic_upsert`).
+- **MD5** inmutabilidad: sin tocar `ws_client.ts`/`ws_server.py`; el webview emite por `vscode.postMessage` → `workspace_panel.ts` → `WSClient.send` (el wrapper sancionado).
+
+**Verification (DoD, todo verde):** `mypy --strict brain/daemon.py` → **Success, 0 issues** (módulo leaf nuevo, strict-limpio); `api/ws_contracts.py` strict-limpio. `mypy .` → Success, 220 archivos. `pytest` → 731 passed. `npm run check-types` → exit 0; `npm run lint` → 0 errores (2 warnings pre-existentes intactos). Sin deps nuevas, sin migración de esquema.
+
+> *Nota mypy:* `mypy --strict main.py` arrastra el grafo transitivo no-silenciado (deuda pre-existente en `brain/engine.py`, `agents/coder.py`, etc.) y el patrón de `cast` ya existente de 7.13.4; la valla **aplicada** del proyecto es `mypy .` (config per-módulo en `mypy.ini`), que queda limpia. El código nuevo en `main.py` no añade violaciones a esa valla.
+
+---
+
 ## Hito 7.13.5 (reactive track): Entrada Reactiva Idempotente + Circuit Breaker — 2026-05-31
 
 **Status:** CERRADO — 7.13.5 COMPLETA (cierra enrichment + reactive) | **Phase:** 7.13.5 (ADR-709)

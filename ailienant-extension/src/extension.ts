@@ -181,6 +181,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         incognitoBar.text = incognitoActive ? '$(shield) Incógnito (On)' : '$(shield) Incógnito (Off)';
     });
 
+    // ── Manual Dreaming (Consolidate Memory) ─────────────────────────
+    const triggerDreamingCmd = vscode.commands.registerCommand(
+        'ailienant.triggerDreamingRun',
+        async () => {
+            const AUTO = 'Auto (whole workspace)';
+            const CUSTOM = 'Other…';
+            const choice = await vscode.window.showQuickPick(
+                [
+                    'Architecture and Patterns',
+                    'Refactoring and Technical Debt',
+                    'Bug Fixes',
+                    AUTO,
+                    CUSTOM,
+                ],
+                { placeHolder: 'Consolidate memory — pick a focus' },
+            );
+            if (!choice) { return; }
+            let focusArea: string | null;
+            if (choice === AUTO) {
+                focusArea = null;
+            } else if (choice === CUSTOM) {
+                const custom = await vscode.window.showInputBox({
+                    prompt: 'Describe the focus for this consolidation pass',
+                    placeHolder: 'e.g. "WebSocket lifecycle and reconnect"',
+                });
+                if (!custom) { return; }
+                focusArea = custom.trim();
+            } else {
+                focusArea = choice;
+            }
+            WSClient.getInstance().send({
+                event_type: 'client_dreaming_run',
+                data: { focus_area: focusArea },
+            });
+        },
+    );
+
     // ── MCTS Mirror (Phase 3.4.5) ─────────────────────────────────────
     const mirrorProvider = new MirrorContentProvider();
     const mirrorRegistration = vscode.workspace.registerTextDocumentContentProvider(
@@ -207,6 +244,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         acceptInlineEditCmd,
         rejectInlineEditCmd,
         toggleIncognitoCmd,
+        triggerDreamingCmd,
         ideSync,
         incognitoBar,
         { dispose: () => InlineMutationManager.instance.dispose() },

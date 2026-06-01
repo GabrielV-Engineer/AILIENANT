@@ -4,6 +4,7 @@ import { Tooltip } from '../../shared/Tooltip';
 import { CommandPalette, useSlashDetect } from './CommandPalette';
 import { ContextOverlay } from './ContextOverlay';
 import { DreamingMode } from './DreamingMode';
+import { DreamingTrigger } from './DreamingTrigger';
 import { ModeMenu } from './ModeMenu';
 import { MentionDropdown } from './MentionDropdown';
 import { vscode } from '../vscode_bridge';
@@ -278,6 +279,7 @@ export function PromptBar({
                         config={config}
                         onToggle={onDreamingToggle}
                     />
+                    <DreamingTrigger disabled={disabled} />
                 </div>
 
                 <div className="ws-prompt-tools-right">

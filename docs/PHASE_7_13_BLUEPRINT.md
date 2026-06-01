@@ -83,6 +83,21 @@ The 5-min inactivity trigger is **abandoned.** Consolidation runs **only** on an
 
 *Anti-patterns:* any timer-based / idle auto-trigger; consolidating without the shared lock; running while the user is mid-edit on the same files.
 
+> **Amendment — Targeted Dreaming (`focus_area`).** `client_dreaming_run` carries an optional
+> `focus_area: Optional[str]`. When set (HUD presets "Architecture and Patterns" / "Refactoring and
+> Technical Debt" / "Bug Fixes", or free-text "Other"), the daemon injects the theme into the
+> consolidation system prompt so the LLM prioritizes restructuring toward that concern — a scoped pass
+> spends fewer tokens than a whole-workspace sweep. `None` = "Auto" (whole workspace). `OvernightDaemon`
+> is **repurposed**: the Phase 3.4.3a MCTS heartbeat loop is removed; the class is now a stateless
+> on-demand consolidation service exposing `run_consolidation(project_id, focus_area=None, …)`. The pass
+> reuses `agents/workspace_context.build_workspace_overview` for its corpus, calls `LLMGateway.ainvoke`
+> **outside** the per-project `graph_write_lock`, and persists the result as a semantic-memory note via
+> `SemanticMemoryManager.semantic_upsert` **under** the lock (final write only). The OCC race guard is a
+> monotonic per-project save epoch in `main.py`: a `client_file_update`/`client_ide_telemetry` mid-run
+> bumps it (invalidating the snapshot) **and** cancels the in-flight task; the daemon re-checks the
+> snapshot before committing (`aborted_stale`). An already-over-budget session **refuses** the pass
+> (`refused_budget`) before any LLM call.
+
 ### [ADR-711] Self-Healing Loop / `ErrorCorrectionAgent`
 
 A LangGraph reflexion/fallback node (`brain/engine.py`). On a tool-execution failure, a schema hallucination, or an API crash, the graph **must not** return a raw error to the user. It routes to an internal `ErrorCorrectionAgent` (`agents/error_correction.py`) that **reads the traceback → uses read tools on the offending file → proposes a fix → retries the execution, up to 3 times** before conceding gracefully. It reuses `LLMGateway` and **composes with — does not duplicate** — the existing guardrail retry and the DLQ; the scattered retry budgets (guardrail=2, planner=2, MCTS=3, orchestrator) are unified under a common abstraction. A **failure-signature cache** acts as a cross-turn circuit breaker (GAP8). After the bounded retries, the payload/task is redirected to `core/dead_letter.py` — **a saturated event loop must never let an LLM failure corrupt WS state.**
