@@ -9,15 +9,23 @@ over WebSocket after each batch. Sets worker process priority to BELOW_NORMAL/ni
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import sys
-from typing import Awaitable, Callable, Dict, List, Set
+import time
+from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import psutil
 
 from core.compute_pool import compute_pool
-from core.db import get_indexed_count, upsert_indexed_file, upsert_dependencies
+from core.db import (
+    get_indexed_count,
+    get_indexed_hash,
+    purge_file_nodes,
+    upsert_dependencies,
+    upsert_indexed_file,
+)
 from brain.memory import index_file_sync
 from shared.contracts import IndexingRequest, IndexingResult, detect_language
 
@@ -27,6 +35,13 @@ _BATCH_SIZE: int = 8
 _BATCH_SLEEP_S: float = 0.1
 _INDEX_THRESHOLD: float = 0.05  # skip full crawl if >= (1 - 0.05) * total already indexed
 _SKIP_DIRS = frozenset({".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"})
+
+# Reactive-index circuit breaker tuning. A file that fails this many times in a
+# row trips its key OPEN for the cooldown; the first attempt afterwards is a
+# half-open trial. Kept deliberately small — a downed embedding backend should be
+# noticed in a handful of saves, not after hundreds of doomed retries.
+_FAIL_THRESHOLD: int = 5
+_COOLDOWN_S: float = 30.0
 
 
 def _collect_eligible_files(workspace_root: str) -> List[str]:
@@ -359,3 +374,163 @@ class LazyIndexer:
 
 # Global singleton — imported by main.py
 lazy_indexer = LazyIndexer()
+
+
+class _ReactiveBreaker:
+    """Per-(project, file) failure-streak gate for reactive indexing.
+
+    A single malformed file that always fails to parse, or a transient embedding
+    outage, must not turn every save into a doomed retry. After _FAIL_THRESHOLD
+    consecutive failures on a key the breaker OPENs for _COOLDOWN_S; the first
+    attempt after the cooldown is a half-open trial. A success — or an explicit
+    clear when the file is deleted — removes the key entirely, so healthy and
+    deleted files retain no state and the map tracks only currently-failing files
+    (bounded by the number of distinct failing paths, never by history).
+    """
+
+    def __init__(self, time_fn: Callable[[], float] = time.monotonic) -> None:
+        self._state: Dict[str, Tuple[int, float]] = {}  # key -> (failures, opened_at)
+        self._time = time_fn
+
+    def allow(self, key: str) -> bool:
+        entry = self._state.get(key)
+        if entry is None:
+            return True
+        failures, opened_at = entry
+        if failures < _FAIL_THRESHOLD:
+            return True  # still CLOSED
+        # OPEN: shed until the cooldown elapses, then permit one half-open trial.
+        return (self._time() - opened_at) >= _COOLDOWN_S
+
+    def record_success(self, key: str) -> None:
+        self._state.pop(key, None)
+
+    def record_failure(self, key: str) -> None:
+        failures = self._state.get(key, (0, 0.0))[0] + 1
+        # Stamp opened_at whenever the threshold is met so a failed half-open trial
+        # restarts the cooldown window instead of immediately re-permitting.
+        opened_at = self._time() if failures >= _FAIL_THRESHOLD else 0.0
+        self._state[key] = (failures, opened_at)
+
+    def clear(self, key: str) -> None:
+        self._state.pop(key, None)
+
+
+class ReactiveIndexer:
+    """Single idempotent entry for incremental (per-save) indexing.
+
+    Both real writers under the Push model — human saves and the agent's
+    applyEdit, which echoes back through the editor's save event — converge here.
+    A content-hash gate makes a byte-identical re-save a cheap no-op (no duplicate
+    AST extraction, no duplicate embedding cost). On a real change it updates the
+    dependency graph AND the vector store in one pass, under the real project_id
+    so the agent's RAG consumer can actually see the edit. A per-key circuit
+    breaker keeps a poison-pill file or a downed backend from being hammered.
+    """
+
+    def __init__(self, time_fn: Callable[[], float] = time.monotonic) -> None:
+        self._breaker = _ReactiveBreaker(time_fn)
+
+    async def index(
+        self,
+        filepath: str,
+        content: str,
+        project_id: str,
+        workspace_root: str,
+        on_deps_changed: Callable[[], None],
+    ) -> None:
+        """Index one file if its content changed; otherwise skip (idempotent).
+
+        ``content`` may be empty (a telemetry save carries no body) — the freshest
+        bytes are then read from the RAM-VFS buffer or disk. ``on_deps_changed`` is
+        invoked only when dependency edges were written, so the caller can debounce
+        the graph-analytics pass without this module importing the scheduler.
+        """
+        key = f"{project_id}\x00{filepath}"
+        if not self._breaker.allow(key):
+            logger.debug("ReactiveIndexer: breaker OPEN — shedding %s", filepath)
+            return
+
+        lang = detect_language(filepath)
+        if not lang:
+            return  # unsupported file type — no-op
+
+        resolved = content or self._read_vfs(filepath, project_id, workspace_root)
+        if not resolved:
+            return  # nothing to index (empty body and VFS read unavailable)
+
+        digest = hashlib.sha256(resolved.encode("utf-8", errors="replace")).hexdigest()
+        if digest == await get_indexed_hash(filepath, project_id):
+            logger.debug("ReactiveIndexer: unchanged %s — skip (idempotent).", filepath)
+            return
+
+        try:
+            req = IndexingRequest(file_path=filepath, content=resolved, language_id=lang)
+            result: IndexingResult = await compute_pool.run(index_file_sync, req)
+            if not result.success:
+                logger.warning("ReactiveIndexer: index failed for %s: %s", filepath, result.error)
+                self._breaker.record_failure(key)
+                return
+            if result.imports:
+                await upsert_dependencies(result.file_path, result.imports, project_id)
+                on_deps_changed()
+            await upsert_indexed_file(filepath, project_id, content_hash=digest)
+            embedded = await self._semantic_upsert(filepath, resolved, project_id)
+            if embedded:
+                self._breaker.record_success(key)
+            else:
+                self._breaker.record_failure(key)
+        except Exception as exc:
+            logger.error("ReactiveIndexer: dispatch error for %s: %s", filepath, exc)
+            self._breaker.record_failure(key)
+
+    async def purge(self, filepath: str, project_id: str, workspace_root: str) -> None:
+        """Eradicate a deleted file from both the graph and the vector store.
+
+        Migrates the graph (ghost-prune of edges, PPR, indexed_files) and evicts
+        the LanceDB vector so a stale embedding cannot pollute RAG before the next
+        manual janitor run. Clears any breaker state so a path that is recreated
+        later starts from a clean slate.
+        """
+        await purge_file_nodes(filepath, project_id)
+        await self._semantic_delete(filepath, project_id)
+        self._breaker.clear(f"{project_id}\x00{filepath}")
+        logger.info("ReactiveIndexer: purged %s (graph + vector)", filepath)
+
+    # ── Side-effect helpers (deferred imports isolate optional subsystems) ─────
+
+    def _read_vfs(self, filepath: str, project_id: str, workspace_root: str) -> Optional[str]:
+        """Return the freshest bytes from the RAM-VFS buffer or disk; None if absent."""
+        from core.vfs_middleware import VFSMiddleware  # deferred — avoid circular import
+        try:
+            res = VFSMiddleware().read_safe(  # type: ignore[no-untyped-call]
+                filepath, project_id=project_id, project_root=workspace_root
+            )
+        except Exception as exc:
+            logger.debug("ReactiveIndexer: VFS read error for %s: %s", filepath, exc)
+            return None
+        if not res.ok or res.content is None:
+            logger.debug("ReactiveIndexer: VFS skip %s: %s", filepath, res.error)
+            return None
+        return res.content
+
+    async def _semantic_upsert(self, filepath: str, content: str, project_id: str) -> bool:
+        from core.memory.semantic_memory import SemanticMemoryManager  # deferred import
+        try:
+            return await SemanticMemoryManager().semantic_upsert(
+                file_path=filepath, content=content, workspace_hash=project_id
+            )
+        except Exception as exc:
+            logger.debug("ReactiveIndexer: semantic upsert failed (non-fatal): %s", exc)
+            return False
+
+    async def _semantic_delete(self, filepath: str, project_id: str) -> None:
+        from core.memory.semantic_memory import SemanticMemoryManager  # deferred import
+        try:
+            await SemanticMemoryManager().semantic_delete(filepath, workspace_hash=project_id)
+        except Exception as exc:
+            logger.debug("ReactiveIndexer: semantic delete failed (non-fatal): %s", exc)
+
+
+# Global singleton — imported by main.py
+reactive_indexer = ReactiveIndexer()

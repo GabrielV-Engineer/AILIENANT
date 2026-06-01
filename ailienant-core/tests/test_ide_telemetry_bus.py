@@ -71,16 +71,20 @@ def test_malformed_action_rejected() -> None:
 def test_saved_routes_to_coalescer(fake_coalescer: _FakeCoalescer) -> None:
     import main
 
-    main._dispatch_ide_telemetry(IdeTelemetryPayload(action="file_saved", filepath="/w/a.py"))
-    assert fake_coalescer.submits == [("/w/a.py", "", "")]
+    main._dispatch_ide_telemetry(
+        IdeTelemetryPayload(action="file_saved", filepath="/w/a.py"), "proj"
+    )
+    assert fake_coalescer.submits == [("/w/a.py", "", "proj")]
     assert fake_coalescer.unlinks == []
 
 
 def test_created_routes_to_coalescer(fake_coalescer: _FakeCoalescer) -> None:
     import main
 
-    main._dispatch_ide_telemetry(IdeTelemetryPayload(action="file_created", filepath="/w/new.py"))
-    assert fake_coalescer.submits == [("/w/new.py", "", "")]
+    main._dispatch_ide_telemetry(
+        IdeTelemetryPayload(action="file_created", filepath="/w/new.py"), "proj"
+    )
+    assert fake_coalescer.submits == [("/w/new.py", "", "proj")]
     assert fake_coalescer.unlinks == []
 
 
@@ -88,19 +92,23 @@ def test_renamed_purges_old_and_resubmits_new(fake_coalescer: _FakeCoalescer) ->
     import main
 
     main._dispatch_ide_telemetry(
-        IdeTelemetryPayload(action="file_renamed", filepath="/w/new.py", old_path="/w/old.py")
+        IdeTelemetryPayload(action="file_renamed", filepath="/w/new.py", old_path="/w/old.py"),
+        "proj",
     )
-    assert fake_coalescer.unlinks == [("/w/old.py", "")]
-    assert fake_coalescer.submits == [("/w/new.py", "", "")]
+    # Both sides migrate under the session's real project_id.
+    assert fake_coalescer.unlinks == [("/w/old.py", "proj")]
+    assert fake_coalescer.submits == [("/w/new.py", "", "proj")]
 
 
 def test_rename_without_old_path_degrades_to_submit(fake_coalescer: _FakeCoalescer) -> None:
     """A rename frame missing old_path must not crash; it indexes the new path."""
     import main
 
-    main._dispatch_ide_telemetry(IdeTelemetryPayload(action="file_renamed", filepath="/w/new.py"))
+    main._dispatch_ide_telemetry(
+        IdeTelemetryPayload(action="file_renamed", filepath="/w/new.py"), "proj"
+    )
     assert fake_coalescer.unlinks == []
-    assert fake_coalescer.submits == [("/w/new.py", "", "")]
+    assert fake_coalescer.submits == [("/w/new.py", "", "proj")]
 
 
 # --- Safety -------------------------------------------------------------------

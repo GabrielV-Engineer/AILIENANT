@@ -72,12 +72,17 @@ class SemanticMemoryManager:
         file_path: str,
         content: str,
         workspace_hash: str,
-    ) -> None:
+    ) -> bool:
         """Embed a file and upsert into workspace_embeddings.
 
         No-op if content has fewer than _MIN_TOKENS tokens (anti-fragmentation).
         Truncates to _MAX_EMBED_TOKENS tokens via a tiktoken round-trip to avoid
         splitting multibyte characters (never slices raw UTF-8 bytes).
+
+        Returns True on a successful write or an intentional skip (too few tokens),
+        and False when embedding or the LanceDB write fails. The reactive indexer
+        uses this signal to drive its circuit breaker — an intentional skip must
+        not be mistaken for a backend outage.
         """
         tokens_enc = _ENC.encode(content)
         token_count = len(tokens_enc)
@@ -86,7 +91,7 @@ class SemanticMemoryManager:
                 "SemanticMemory: skip %s — only %d tokens (< %d).",
                 file_path, token_count, _MIN_TOKENS,
             )
-            return
+            return True
 
         hash_valid = bool(_SAFE_ID_RE.match(workspace_hash)) if workspace_hash else False
         if workspace_hash and not hash_valid:
@@ -103,7 +108,7 @@ class SemanticMemoryManager:
             vector = await _get_embedding(safe_content)
         except Exception as embed_err:
             logger.warning("SemanticMemory: embedding failed (non-fatal): %s", embed_err)
-            return
+            return False
 
         record: Dict[str, Any] = {
             "file_path":       file_path,
@@ -119,8 +124,39 @@ class SemanticMemoryManager:
                 self._write_record, record, workspace_hash, file_path, hash_valid
             )
             logger.debug("SemanticMemory: upserted %s (workspace=%s)", file_path, workspace_hash)
+            return True
         except Exception as write_err:
             logger.warning("SemanticMemory: write failed (non-fatal): %s", write_err)
+            return False
+
+    async def semantic_delete(self, file_path: str, workspace_hash: str) -> None:
+        """Evict a single file's vector from workspace_embeddings (reactive purge).
+
+        Counterpart to the Memory Janitor's bulk GC: when a file is deleted or
+        renamed the reactive path calls this so the stale vector cannot pollute
+        RAG results before the next manual janitor run. Sanitizes workspace_hash
+        against the allowlist and escapes the path exactly as _write_record does.
+        Non-fatal on any error — a failed eviction must never break the WS loop.
+        """
+        if not workspace_hash or not _SAFE_ID_RE.match(workspace_hash):
+            logger.warning(
+                "SemanticMemory.semantic_delete: workspace_hash %r failed sanitization — skipped.",
+                workspace_hash,
+            )
+            return
+        try:
+            await asyncio.to_thread(self._delete_record, file_path, workspace_hash)
+            logger.debug("SemanticMemory: evicted %s (workspace=%s)", file_path, workspace_hash)
+        except Exception as del_err:
+            logger.warning("SemanticMemory: delete failed (non-fatal): %s", del_err)
+
+    def _delete_record(self, file_path: str, workspace_hash: str) -> None:
+        db = lancedb.connect(self._lancedb_path)
+        if _TABLE_NAME not in db.table_names():
+            return
+        tbl = db.open_table(_TABLE_NAME)
+        safe_path = file_path.replace("'", "''")  # standard SQL single-quote escape
+        tbl.delete(f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'")
 
     async def search(
         self,

@@ -69,10 +69,10 @@ from core.janitor import JanitorReport, run_janitor
 
 # --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
-from brain.memory import _worker_init, index_file_sync, calculate_ppr_sync, calculate_graph_analytics_sync
+from brain.memory import _worker_init, calculate_graph_analytics_sync
 
 # --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
-from core.indexer import lazy_indexer, SingleFlightCoordinator
+from core.indexer import lazy_indexer, reactive_indexer, SingleFlightCoordinator
 
 # --- IMPORTACIONES FASE 7.9.B.1 (Memory Dashboard REST surface) ---
 from api.memory_dashboard import router as memory_router
@@ -102,7 +102,6 @@ from api.sessions import router as sessions_router
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
 from core.io_coalescer import io_coalescer, is_critical_file, _UNLINK_SENTINEL
 from shared.contracts import (
-    IndexingRequest, IndexingResult, detect_language,
     PPRRequest, PPRResult,
 )
 from api.api_contracts import DirtyBuffer
@@ -314,6 +313,7 @@ _task_submit_tasks: set[asyncio.Task[Any]] = set()
 _workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
 _session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root (Phase 3.4.1)
 _session_workspace_pid: Dict[str, int] = {}  # client_id → workspace_pid (Phase 4.4)
+_session_project_id: Dict[str, str] = {}  # client_id → project_id (reactive-index routing)
 
 
 # =====================================================================
@@ -707,26 +707,24 @@ async def _handle_mass_change(project_id: str) -> None:
 
 
 async def _reindex_one(filepath: str, content: str, project_id: str) -> None:
-    """Index a single file in the process pool, persist its edges, debounce PPR."""
+    """Adapter onto the unified reactive entry: resolve workspace_root, delegate.
+
+    Delete (unlink sentinel) purges graph + vector; a write runs the idempotent,
+    content-hash-gated index that updates both the dependency graph and the vector
+    store under the real project_id, debouncing the analytics pass only when edges
+    actually changed.
+    """
+    workspace_root = _workspace_registry.get(project_id, "")
     if content == _UNLINK_SENTINEL:
-        await catalog_db.purge_file_nodes(filepath, project_id)
-        logger.info("Ghost purge: removed DB records for deleted file %s", filepath)
+        await reactive_indexer.purge(filepath, project_id, workspace_root)
         return
-    lang = detect_language(filepath)
-    if not lang:
-        return  # unsupported file type — no-op
-    req = IndexingRequest(file_path=filepath, content=content, language_id=lang)
-    try:
-        result: IndexingResult = await compute_pool.run(index_file_sync, req)
-        if result.success:
-            logger.debug("Indexed %s: %d symbols", result.file_path, result.symbol_count)
-            if result.imports:
-                await catalog_db.upsert_dependencies(result.file_path, result.imports, project_id)
-                _schedule_ppr(project_id)
-        else:
-            logger.warning("Indexing failed for %s: %s", result.file_path, result.error)
-    except Exception as exc:
-        logger.error("Compute pool dispatch error for %s: %s", filepath, exc)
+    await reactive_indexer.index(
+        filepath,
+        content,
+        project_id,
+        workspace_root,
+        on_deps_changed=lambda: _schedule_ppr(project_id),
+    )
 
 
 async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: str) -> None:
@@ -742,20 +740,21 @@ async def _dispatch_indexing_and_ppr(filepath: str, content: str, project_id: st
     )
 
 
-def _dispatch_ide_telemetry(payload: IdeTelemetryPayload) -> None:
+def _dispatch_ide_telemetry(payload: IdeTelemetryPayload, project_id: str) -> None:
     """Route a silent IDE lifecycle signal into the existing reactive-index seam.
 
     Pure non-blocking enqueue: io_coalescer hands the work to the off-loop
     indexing worker, so the event loop never indexes inline. ``content=""``
-    mirrors the file-update path — the indexer reads the freshest bytes from the
-    RAM-VFS buffer or disk. A rename purges the old node and re-submits the new
-    path so the graph migrates instead of orphaning a stale entry.
+    mirrors the file-update path — the reactive indexer reads the freshest bytes
+    from the RAM-VFS buffer or disk. A rename purges the old node and re-submits
+    the new path so the graph migrates instead of orphaning a stale entry. Both
+    sides run under the session's real project_id so the partition matches.
     """
     if payload.action == "file_renamed" and payload.old_path:
-        io_coalescer.submit_unlink(payload.old_path, project_id="")
-        io_coalescer.submit(payload.filepath, "", project_id="")
+        io_coalescer.submit_unlink(payload.old_path, project_id=project_id)
+        io_coalescer.submit(payload.filepath, "", project_id=project_id)
     else:  # file_saved / file_created
-        io_coalescer.submit(payload.filepath, "", project_id="")
+        io_coalescer.submit(payload.filepath, "", project_id=project_id)
 
 
 @app.websocket("/api/v1/ws/{client_id}")
@@ -804,18 +803,19 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)]  # type: ignore[list-item]
                 )
                 # 2. Critical files bypass debounce; normal files coalesced in 500ms window
+                _proj = _session_project_id.get(client_id, "")
                 if is_critical_file(valid_event.data.filepath):
                     asyncio.create_task(
                         _dispatch_indexing_and_ppr(
                             valid_event.data.filepath,
                             valid_event.data.content,
-                            project_id="",
+                            project_id=_proj,
                         ),
                         name=f"index_critical:{valid_event.data.filepath}",
                     )
                 else:
                     io_coalescer.submit(
-                        valid_event.data.filepath, valid_event.data.content, project_id=""
+                        valid_event.data.filepath, valid_event.data.content, project_id=_proj
                     )
 
             elif valid_event.event_type == "client_ide_telemetry":
@@ -827,7 +827,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 if not vfs_manager.allow_inbound(client_id):
                     logger.debug("Inbound rate limit: shed client_ide_telemetry from %s", client_id)
                     continue
-                _dispatch_ide_telemetry(cast(IdeTelemetryPayload, valid_event.data))
+                _dispatch_ide_telemetry(
+                    cast(IdeTelemetryPayload, valid_event.data),
+                    _session_project_id.get(client_id, ""),
+                )
 
             elif valid_event.event_type == "client_planner_mode_toggle":
                 planner_mode_registry[client_id] = valid_event.data.active
@@ -874,6 +877,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
             elif valid_event.event_type == "client_workspace_init":
                 _workspace_registry[valid_event.data.project_id] = valid_event.data.workspace_root
                 _session_workspace_root[client_id] = valid_event.data.workspace_root
+                # Bind this session to its project so reactive saves index into the
+                # same partition the agent's RAG consumer reads (not the "" orphan).
+                _session_project_id[client_id] = valid_event.data.project_id
                 # Point the live telemetry sink at this workspace (idempotent).
                 configure_telemetry_log(valid_event.data.workspace_root)
                 if valid_event.data.workspace_pid is not None:
@@ -1083,8 +1089,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _branch_task.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_file_delete":
+                # Purge the same partition the session's saves wrote into, so a
+                # delete migrates the live graph rather than an orphan keyed on a
+                # client-supplied project_id.
                 io_coalescer.submit_unlink(
-                    valid_event.data.filepath, valid_event.data.project_id
+                    valid_event.data.filepath,
+                    _session_project_id.get(client_id, ""),
                 )
 
             elif valid_event.event_type == "client_master_toggle":
@@ -1119,6 +1129,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
         # 4. Limpieza O(1) para evitar Fugas de Memoria
         logger.warning(f"⚠️ Conexión perdida abruptamente con {client_id}")
         vfs_manager.disconnect(client_id)
+        # Evict per-session maps so a reconnect storm cannot grow them unboundedly
+        # (one entry per historical connection would otherwise leak for process life).
+        _session_project_id.pop(client_id, None)
+        _session_workspace_root.pop(client_id, None)
         if client_id in _session_workspace_pid:
             _pid = _session_workspace_pid.pop(client_id)
             asyncio.create_task(lifecycle_manager.shutdown_workspace(_pid))

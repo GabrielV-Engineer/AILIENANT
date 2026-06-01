@@ -2,6 +2,34 @@
 
 ---
 
+## Hito 7.13.5 (reactive track): Entrada Reactiva Idempotente + Circuit Breaker — 2026-05-31
+
+**Status:** CERRADO — 7.13.5 COMPLETA (cierra enrichment + reactive) | **Phase:** 7.13.5 (ADR-709)
+
+**Problem:** auditando el path reactivo se descubrió que era **invisible** para el agente. El handler WS despachaba cada `client_file_update`/`client_ide_telemetry` al coalescer con `project_id=""` hardcodeado, y `_reindex_one` sólo actualizaba el grafo de dependencias — **nunca** corría el `semantic_upsert` que sí hace el indexador en bloque. Mientras tanto el indexador en bloque y el consumer RAG (`_build_rag_context`) usan el `project_id` real. Neto: las ediciones posteriores al arranque caían en una partición huérfana sin vector → el "snapshot stale" que describe el WBS. Peor: el path de telemetría enviaba `content=""` y `_reindex_one` indexaba ese string vacío tal cual (su comentario prometía una re-lectura VFS inexistente).
+
+**Approach:** una sola **entrada idempotente por content-hash** (`core/indexer.py::ReactiveIndexer`), compartida por los dos escritores reales del modelo Push (saves humanos y el applyEdit del agente, que vuelve como evento de save del editor). Resuelve el contenido más fresco vía VFS cuando el body llega vacío; computa `sha256` y lo compara contra la nueva columna aditiva `indexed_files.content_hash` — si coincide, skip de AST **y** embed (un re-save byte-idéntico no cuesta nada). En el cambio real indexa grafo **y** vector en un paso, bajo el single-flight de 7.13.1, con el **project_id real** cableado (`_session_project_id` poblado en `client_workspace_init` y propagado a save/telemetry/delete). GAP6: `_ReactiveBreaker` per-(project,file) (OPEN tras 5 fallos seguidos, cooldown 30s, half-open de un intento; éxito o purge desalojan la key → la memoria es `O(archivos-fallando)`, nunca `O(histórico)`); se alimenta del nuevo retorno `bool` de `semantic_upsert` (un backend de embeddings caído ahora es señal real, no un fallo silencioso). Delete/rename purgan grafo (`purge_file_nodes`) **y** vector (nuevo `semantic_delete`); el Memory Janitor sigue como GC manual.
+
+**Refinamientos de auditoría del usuario:** (1) fuga `O(C)` — los dicts de sesión deben desalojarse en disconnect: se añadió `_session_project_id.pop(client_id, None)` **y** `_session_workspace_root.pop(...)` (fuga pre-existente del mismo tipo) en el handler `WebSocketDisconnect`. (2) atomicidad del breaker — el estado se borra por key (`.pop`) tanto en éxito como en purge, para no retener estado de un archivo que ya no existe.
+
+**Files changed:**
+- `core/db.py` — columna aditiva `indexed_files.content_hash` (migración idempotente existente); `upsert_indexed_file(..., content_hash=None)` a columnas nombradas; nuevo `get_indexed_hash`.
+- `core/memory/semantic_memory.py` — nuevo `semantic_delete` (purga reactiva del vector, mismo sanitize/escape que `_write_record`); `semantic_upsert` ahora retorna `bool` (True en éxito/skip intencional, False en fallo de embed/write) para alimentar el breaker.
+- `core/indexer.py` — `ReactiveIndexer` (entrada unificada `index`/`purge`) + `_ReactiveBreaker` per-key; reutiliza `SingleFlightCoordinator`, `compute_pool`, `VFSMiddleware`.
+- `main.py` — `_session_project_id` poblado/propagado; `_reindex_one` ahora delega al `reactive_indexer` (deriva `workspace_root` del registry, cablea `_schedule_ppr` como `on_deps_changed`); `_dispatch_ide_telemetry(payload, project_id)`; `client_file_delete` usa el project_id de sesión; limpieza de dicts en disconnect; imports muertos podados.
+- `docs/SCHEMA_EVOLUTION.MD` — columna `content_hash` + idempotencia documentadas.
+- `tests/test_reactive_index.py` *(nuevo)* — 12 tests; `tests/test_ide_telemetry_bus.py` actualizado a la nueva firma.
+
+**Architectural outcomes:**
+- **RX1** idempotencia entre ambos escritores: el echo de `apply_patch` y los Ctrl+S humanos sobre contenido idéntico son no-ops baratos (sin embed duplicado).
+- **RX2** correctitud de partición: el path reactivo escribe donde el consumer RAG lee (project_id real), no en la huérfana `""`.
+- **RX3** memoria acotada: breaker per-key y dicts de sesión desalojados → `O(activos)`, nunca `O(histórico)`.
+- **RX4** sin bloqueo del loop: AST en `compute_pool` (proceso), LanceDB en `asyncio.to_thread`, single-flight evita runs solapados por (project,file). Sin tocar canales WS/VFS (inmutabilidad respetada).
+
+**Verification (DoD, todo verde):** `mypy --strict core/indexer.py core/db.py core/memory/semantic_memory.py` → **Success, 0 issues**. `mypy .` → Success, 219 archivos. `pytest` → 722 passed. `eslint` → 0 errores (2 warnings pre-existentes intactos). Sin deps nuevas.
+
+---
+
 ## Hito 7.13.5 (enrichment track): GraphRAG Semantics & Memory Telemetry — 2026-05-31
 
 **Status:** CERRADO (enrichment + telemetry); GAP9/circuit-breaker del resto de 7.13.5 quedan pendientes | **Phase:** 7.13.5 (ADR-709) — reconcilia la solicitud "Phase 7.15.0"
