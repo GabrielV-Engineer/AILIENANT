@@ -21,10 +21,11 @@ import logging
 from typing import Any, Dict
 
 from brain.state import LLMProfile
+from brain.retry_policy import CIRCUIT_BREAKER_THRESHOLD as _CIRCUIT_BREAKER_THRESHOLD
 
 logger = logging.getLogger("CIRCUIT_BREAKER")
 
-CIRCUIT_BREAKER_THRESHOLD: int = 3
+CIRCUIT_BREAKER_THRESHOLD: int = _CIRCUIT_BREAKER_THRESHOLD
 MAX_CLOUD_SURGEON: int = 1
 
 # Sentinel CLOUD_SURGEON profile — the channel-write payload the LLMGateway

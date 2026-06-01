@@ -2,6 +2,43 @@
 
 ---
 
+## Hito 7.13.7: Self-Healing — `ErrorCorrectionAgent` + DLQ Resume Surface — 2026-05-31
+
+**Status:** CERRADO — 7.13.7 COMPLETA | **Phase:** 7.13.7 (ADR-711 + ADR-716)
+
+**Problem:** existían las piezas de auto-sanación pero no el agente que cerrara el bucle. El guardrail de validación (`brain/guardrails.py`) sólo corrige alucinaciones de esquema; el DLQ (`core/dead_letter.py`) captura una excepción, promueve L1→L2, persiste una fila y **re-lanza** (mata el turno). Faltaba un nodo que **lea un traceback → lea el archivo ofensor → proponga un fix → reintente** antes de conceder. Los presupuestos de retry estaban dispersos (guardrail=2, planner=2, circuit=3, gateway=2) y un fallo de LLM bajo un event-loop saturado podía propagarse crudo. Los endpoints `/task/resume` + `/dlq/pending` eran **huérfanos** sin UI.
+
+**Approach:** `ErrorCorrectionAgent` (`agents/error_correction.py`) — herramienta de ingeniería fría, **sin `brain.personality`** (valla cognitiva 4.1.5, ahora bajo el audit ISO1). Lee el traceback, extrae los frames in-workspace, lee el archivo vía `VFSMiddleware.read_safe` (firewall Dual-Rules), y pide al `LLMGateway` (MODEL_MEDIUM, temp 0) el cambio mínimo. El parche se emite a los canales `pending_patches`/`pending_contents`/`pending_base_hash` para fluir por el camino HITL existente (`request_human_approval` + write pipeline) — **nunca escribe a disco directo**. El agente jamás re-lanza: un fallo de lectura/LLM/parse o un `filepath` foráneo se resuelven como "no fix".
+
+**Auditoría arquitectónica (CLAUDE.md §3 — STOP & notify):** se detectó que `TaskService.execute` (el path vivo del WS) corre un bucle **manual** `run_planner_node → run_coder_node` y se traga las excepciones del coder en `task_service.py:470` (`errors.append + continue`) — **no recorre el grafo compilado**. `alienant_app.ainvoke` sólo se invoca en el endpoint de resume (`main.py:541`). Cablear la sanación sólo en `brain/engine.py` la dejaría inerte en producción. Por decisión del usuario se cableó en **ambos**: el grafo (para resume/futuro hot-path) **y** el bucle manual de coders.
+
+**Disciplina de bucle:** `reflexion_guard` se compone **DENTRO** del `dead_letter_decorator` (`dlq(reflexion(node))`): un fallo fresco y en presupuesto se traga y devuelve `healing_required` (edge condicional → `error_correction`); agotado el presupuesto in-turn (`CORRECTION_MAX_ATTEMPTS=3`) **o** abierto el breaker de firma, se re-lanza → el DLQ externo registra el episodio y el turno concede. `asyncio.CancelledError` **siempre** se propaga (user-abort / cascade-cancel de 7.13.1 nunca se confunde con un fallo sanable). El **failure-signature breaker** (`brain/failure_breaker.py`, GAP8) es un singleton de proceso que normaliza la firma (borra números de línea, direcciones hex, dígitos) para colapsar el mismo defecto cross-turn y dejar de gastar LLM en lo irreparable. Presupuestos centralizados en `brain/retry_policy.py`; `guardrails`/`circuit_breaker`/`planner` re-apuntados (nombres locales estables). El retrofit profundo del backoff de `tools/llm_gateway.py` queda **diferido a 7.13.11** por la división del WBS.
+
+**Resume surface (ADR-716):** panel **Recovery** en el dashboard (`RecoveryPanel.tsx`) — lista episodios no resueltos de `/api/v1/dlq/pending` con un botón Resume por fila (`POST /api/v1/task/resume/{task_id}`), refrescando tras resolver. Sigue el patrón de los paneles hermanos (`fetch` relativo same-origin; el dashboard se sirve desde `/dashboard/` del backend, no como webview-uri).
+
+**Files changed:**
+- `agents/error_correction.py` *(nuevo)* — `ErrorCorrectionAgent` + `run_error_correction_node` (nodo) + `attempt_correction` (helper directo) + `candidate_files_from_traceback`.
+- `brain/failure_breaker.py` *(nuevo)* — `FailureSignatureBreaker` + `normalize_signature` + singleton `failure_breaker`.
+- `brain/retry_policy.py` *(nuevo)* — presupuestos nombrados (incluye `CORRECTION_MAX_ATTEMPTS`, `FAILURE_SIGNATURE_THRESHOLD`).
+- `brain/engine.py` — `reflexion_guard`; nodo `error_correction` (DLQ-wrapped); `route_after_coder` + edge `error_correction→contract_guard`.
+- `brain/state.py` — 5 canales aditivos de sanación (`healing_required`, `correction_attempts`, `last_error_trace`, `failed_node`, `failure_signature`).
+- `core/task_service.py` — el `except` del bucle de coders intenta `attempt_correction` (presupuesto compartido) antes de caer al error.
+- `brain/guardrails.py` · `brain/nodes/circuit_breaker.py` · `agents/planner.py` — constantes re-apuntadas a `retry_policy`.
+- `agents/prompts.py` — `ERROR_CORRECTION_SYSTEM_PROMPT`.
+- `tests/test_analyst_agent.py` — `error_correction.py` añadido a la lista ISO1; `tests/test_error_correction.py` *(nuevo)* — 12 tests.
+- Frontend — `dashboard/panels/RecoveryPanel.tsx` *(nuevo)*; `dashboard/main.tsx` (NAV + render del panel `recovery`).
+
+**Architectural outcomes:**
+- **AL1** un error de tool/esquema/API se sana en ≤3 intentos con parches por HITL; tras el presupuesto redirige al DLQ — sin error crudo al usuario.
+- **ISO1** la valla cognitiva 4.1.5 se reafirma: `error_correction.py` jamás importa `brain.personality` (test estático).
+- **GAP8** breaker de firma cross-turn corta el gasto de LLM en defectos recurrentes irreparables.
+- **Retry unificado** una sola fuente de presupuestos (`retry_policy.py`); el grafo y el bucle vivo comparten el `ErrorCorrectionAgent`.
+- **Limitación documentada:** la sanación in-turn se acota al path secuencial de coder; las ramas del fan-out SWARM siguen protegidas por el DLQ (no por sanación in-turn).
+
+**Verification (DoD, todo verde):** `mypy --strict agents/error_correction.py brain/failure_breaker.py brain/retry_policy.py` → archivos nuevos limpios (sólo arrastra el ítem pre-existente `agents/prompts.py:96`, ya en el baseline de Phase 8). `mypy .` → Success, 224 archivos. `pytest` → 743 passed. `npm run check-types` → exit 0; `npm run lint` → 0 errores (2 warnings pre-existentes intactos). Sin deps nuevas, sin migración de esquema.
+
+---
+
 ## Hito 7.13.6: Manual Dreaming con Targeted Focus — 2026-05-31
 
 **Status:** CERRADO — 7.13.6 COMPLETA | **Phase:** 7.13.6 (ADR-710 reescrito + amendment Targeted Dreaming)

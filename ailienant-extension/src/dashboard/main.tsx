@@ -22,8 +22,9 @@ import { OverviewPanel } from './panels/OverviewPanel';
 import { ExtensionsPanel } from './panels/ExtensionsPanel';
 import { TelemetryPanel } from './panels/TelemetryPanel';
 import { RuntimePanel } from './panels/RuntimePanel';
+import { RecoveryPanel } from './panels/RecoveryPanel';
 
-type PanelId = 'overview' | 'hardware' | 'memory' | 'byom' | 'rules' | 'staging' | 'audit' | 'extensions' | 'telemetry' | 'runtime';
+type PanelId = 'overview' | 'hardware' | 'memory' | 'byom' | 'rules' | 'staging' | 'audit' | 'extensions' | 'telemetry' | 'runtime' | 'recovery';
 
 const NAV: { id: PanelId; icon: IconName; label: string; desc: string }[] = [
     { id: 'overview',   icon: 'gauge',     label: 'Overview',           desc: 'At-a-glance summary of cost, MCP, HITL and activity' },
@@ -36,6 +37,7 @@ const NAV: { id: PanelId; icon: IconName; label: string; desc: string }[] = [
     { id: 'telemetry',  icon: 'telescope', label: 'Telemetry',          desc: 'Token cost snapshot and routing decision log' },
     { id: 'staging',    icon: 'eye',       label: 'Staging Area',       desc: 'HITL review of pending patches' },
     { id: 'audit',      icon: 'shield',    label: 'Audit Ledger',       desc: 'Blake2b-verified HITL audit log' },
+    { id: 'recovery',   icon: 'alert',     label: 'Task Recovery',      desc: 'Resume crashed tasks from the dead-letter queue' },
 ];
 
 function StagingAreaSkeleton(): JSX.Element {
@@ -97,6 +99,7 @@ function Dashboard(): JSX.Element {
                         </Suspense>
                     )}
                     {activePanel === 'audit'      && <AuditPanel />}
+                    {activePanel === 'recovery'   && <RecoveryPanel />}
                 </main>
             </div>
         </Tooltip.Provider>

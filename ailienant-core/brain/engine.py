@@ -1,13 +1,18 @@
 # ailienant-core/brain/engine.py
 
+import asyncio
+import functools
 import logging
-from typing import Any, Awaitable, Callable, Optional, TypeVar, cast
+import traceback as _tb
+from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar, cast
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
 
 from brain.state import AIlienantGraphState
 from brain.checkpoint import checkpoint_manager
+from brain.failure_breaker import failure_breaker, normalize_signature
+from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
 from core.dead_letter import dead_letter_decorator  # Phase 6.4 — DLQ node wrap
 from core.telemetry_log import log_node_transition
 
@@ -31,6 +36,7 @@ from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
 from agents.contract_guard import run_contract_guard_node  # noqa: E402 — Phase 2.23
 from core.supervisor import run_supervisor_node, route_after_supervisor  # noqa: E402 — Phase 6.5
+from agents.error_correction import run_error_correction_node  # noqa: E402 — self-healing reflexion node
 
 
 async def run_apply_patch_node(state: dict) -> dict:
@@ -93,6 +99,72 @@ def _instrument_node(name: str, fn: _NodeFn) -> _NodeFn:
     return cast(_NodeFn, _wrapped)
 
 
+_REFLEXION_TRACE_CAP: int = 4000
+
+
+def reflexion_guard(node_name: str) -> Callable[[_NodeFn], _NodeFn]:
+    """Trap a node exception into a self-healing signal instead of letting it die.
+
+    Composes INSIDE ``dead_letter_decorator``: on a fresh, in-budget failure whose
+    signature the cross-turn breaker still permits, the exception is swallowed and a
+    ``healing_required`` delta is returned so a conditional edge can route to the
+    ErrorCorrectionAgent. Once the in-turn budget is spent OR the signature breaker is
+    OPEN, the exception is re-raised so the outer DLQ decorator records the episode and
+    the turn concedes gracefully (recoverable from the Recovery surface).
+
+    ``asyncio.CancelledError`` is always re-raised — user-abort / cascade-cancel must
+    never be mistaken for a healable fault.
+    """
+
+    def decorator(fn: _NodeFn) -> _NodeFn:
+        @functools.wraps(fn)
+        async def _wrapped(state: Any) -> Any:
+            try:
+                return await fn(state)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — convert to a healing signal or concede
+                attempts = (
+                    int(state.get("correction_attempts", 0)) if isinstance(state, dict) else 0
+                )
+                signature = normalize_signature(node_name, type(exc).__name__, str(exc))
+                if attempts >= CORRECTION_MAX_ATTEMPTS or not failure_breaker.allow(signature):
+                    raise  # concede to the DLQ via the outer dead_letter_decorator
+                tb_text = "".join(
+                    _tb.format_exception(type(exc), exc, exc.__traceback__)
+                )[:_REFLEXION_TRACE_CAP]
+                logger.warning(
+                    "reflexion_guard: trapping %s failure (attempt %d/%d): %s",
+                    node_name, attempts + 1, CORRECTION_MAX_ATTEMPTS, exc,
+                )
+                return {
+                    "healing_required": True,
+                    "correction_attempts": attempts + 1,
+                    "last_error_trace": tb_text,
+                    "failed_node": node_name,
+                    "failure_signature": signature,
+                }
+
+        return cast(_NodeFn, _wrapped)
+
+    return decorator
+
+
+def route_after_coder(state: Dict[str, Any]) -> str:
+    """Conditional edge: divert to self-healing when the reflexion guard tripped,
+    else proceed to the contract guard on the normal path."""
+    from core.telemetry import log_routing_decision
+    healing = bool(state.get("healing_required"))
+    target = "error_correction" if healing else "contract_guard"
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        source="coder_agent",
+        target=target,
+        reason="healing_required" if healing else "coder_ok",
+    )
+    return target
+
+
 workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))  # type: ignore[type-var]
 # Phase 6.4 — DLQ-wrapped node entrypoints. An unhandled exception promotes
 # L1→L2 and persists a dead_letter_tasks row before re-raising (see
@@ -102,7 +174,11 @@ workflow.add_node("summarize_history", _instrument_node("summarize_history", run
 # suppression the bare node functions still need.
 workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))
 workflow.add_node("drift_monitor", _instrument_node("drift_monitor", run_drift_monitor_node))
-workflow.add_node("coder_agent", _instrument_node("coder_agent", dead_letter_decorator("coder_agent")(run_coder_node)))
+# coder_agent is also wrapped by reflexion_guard (INSIDE the DLQ decorator): a fresh,
+# in-budget failure becomes a healing signal routed to error_correction; an exhausted
+# budget re-raises into the DLQ.
+workflow.add_node("coder_agent", _instrument_node("coder_agent", dead_letter_decorator("coder_agent")(reflexion_guard("coder_agent")(run_coder_node))))
+workflow.add_node("error_correction", _instrument_node("error_correction", dead_letter_decorator("error_correction")(run_error_correction_node)))
 workflow.add_node("apply_patch", _instrument_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_patch_node)))
 workflow.add_node("validate_output", _instrument_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node)))
 workflow.add_node("finops_gate", _instrument_node("finops_gate", run_finops_node))
@@ -197,7 +273,13 @@ workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"]
 # owns contract_anchor mutation, which would have to be fragmented across the
 # router otherwise — keeping it as a direct edge preserves a single ownership
 # boundary for both the trigger evaluation and the anchor snapshot.
-workflow.add_edge("coder_agent", "contract_guard")
+# coder_agent → contract_guard, unless the reflexion guard diverted to self-healing.
+# error_correction proposes a HITL-gated fix (or concedes), then rejoins the normal path.
+workflow.add_conditional_edges(
+    "coder_agent", route_after_coder,
+    {"error_correction": "error_correction", "contract_guard": "contract_guard"},
+)
+workflow.add_edge("error_correction", "contract_guard")
 workflow.add_edge("contract_guard", "finops_gate")
 # Phase 6.5 — the finops_gate path-map is remapped from a list to a dict so the
 # router's "apply_patch" verdict is rerouted through supervisor_node. This
