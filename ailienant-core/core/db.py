@@ -117,6 +117,9 @@ _COLUMN_MIGRATIONS: List[Tuple[str, str, str]] = [
     ("dependency_graph", "confidence", "TEXT"),
     ("dependency_graph", "confidence_score", "REAL"),
     ("ppr_scores", "leiden_community_id", "INTEGER"),
+    # Reactive indexing idempotency: the content hash of the last successfully
+    # indexed revision, so a re-save of byte-identical content is a cheap no-op.
+    ("indexed_files", "content_hash", "TEXT"),
 ]
 
 
@@ -331,14 +334,37 @@ async def get_ppr_score(file_path: str, project_id: str = "") -> float:
 
 # ── Phase 2.5: Indexed Files (LazyIndexer resume support) ─────────────────────
 
-async def upsert_indexed_file(file_path: str, project_id: str = "") -> None:
-    """Record that a file has been successfully processed by LazyIndexer."""
+async def upsert_indexed_file(
+    file_path: str, project_id: str = "", content_hash: Optional[str] = None
+) -> None:
+    """Record that a file has been successfully processed by the indexer.
+
+    ``content_hash`` is the digest of the indexed revision; it lets the reactive
+    path skip re-indexing byte-identical re-saves. Columns are named explicitly so
+    the additive ``content_hash`` column never shifts positionally for older rows.
+    """
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO indexed_files VALUES (?,?,?)",
-            (file_path, project_id, time.time()),
+            "INSERT OR REPLACE INTO indexed_files "
+            "(file_path, project_id, indexed_at, content_hash) VALUES (?,?,?,?)",
+            (file_path, project_id, time.time(), content_hash),
         )
         await db.commit()
+
+
+async def get_indexed_hash(file_path: str, project_id: str = "") -> Optional[str]:
+    """Return the stored content hash of a file's last indexed revision, or None.
+
+    Powers the reactive indexer's idempotency gate: a save whose hash matches this
+    value needs neither AST extraction nor re-embedding.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT content_hash FROM indexed_files WHERE file_path=? AND project_id=?",
+            (file_path, project_id),
+        ) as cur:
+            row = await cur.fetchone()
+            return str(row[0]) if row and row[0] is not None else None
 
 
 async def get_indexed_count(project_id: str = "") -> int:
