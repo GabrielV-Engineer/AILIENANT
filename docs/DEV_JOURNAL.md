@@ -2,6 +2,22 @@
 
 ---
 
+## Hito 7.13.12: Checkpoint Gate Fase 7.13 (CIERRE de la Fase) — 2026-06-01
+
+- **Status:** OK — Fase 7.13 (The Enterprise Spinal Cord) **CERRADA**. DoD verde: `pytest` **768 passed** (≥ baseline 675; +20 del gate nuevo), `mypy .` whole-tree **Success: 225 source files**, `mypy --strict --follow-imports=silent tests/test_phase7_13_checkpoint_gate.py` **Success: no issues found in 1 source file**, frontend `npm run compile` **0 errores** (2 warnings ajenos pre-existentes en `vfs_reader.ts`).
+
+- **Entregable:** `tests/test_phase7_13_checkpoint_gate.py` — certificación E2E unificada que importa e invoca los entry points **ya enviados** (test-only; cero cambios en lógica de producción), una aserción por gate row, siguiendo el patrón de los 4 gate files hermanos (`test_phase3/5_7/6/7_10_checkpoint_gate.py`). Gate rows backend-asertables certificados: **SC1/SC2** telemetría silenciosa → seam reactivo (`_dispatch_ide_telemetry` → `io_coalescer`), **PR1** Dual-Rules excluye `.env` (`make_safe_reader`), **CC1** lock de grafo por-proyecto (`core.db.graph_write_lock`), **RL1** flood inbound rate-limited (`allow_inbound`), **SF1** single-flight coalescing (`SingleFlightCoordinator`), **CN1** cancelación limpia de daemon/WAL/tareas registradas (sin huérfanos), **DR1** Dreaming sin idle loop + abort por stale-snapshot, **AL1** auto-sanación dentro del budget → DLQ al agotarlo (`attempt_correction`), **ISO1** valla cognitiva (AST audit: `error_correction.py` sin `import brain.personality`), **FR1** watchdog local/cloud, **FR2** dedup por correlation-id acotado (`_is_duplicate_request`), **FR3** ABORT ACK surfacea fallo (`broadcast_abort_ack`), **OR2** round-trip de resume del dead-letter, **OR3** el toggle del Planner llega a la decisión de routing (`route_after_summarize`), **TL1** scrubbing de secretos en el log, **DD1** una sola factory VFS + budgets de retry nombrados.
+
+- **Corrección de scope (auditoría CLAUDE.md §3):** tres gate rows son **frontend-only y NO unit-testables en pytest** — certificados por `npm run compile` + smoke manual: **PR2 (Incognito)** — el bus se corta *en origen* en [`ide_sync.ts`](../ailienant-extension/src/ide_sync.ts) (`if (this._incognito) { return; }`); **no existe hook backend** (`incognito` no aparece en `ailienant-core`), el backend simplemente deja de recibir frames; **OR1** el form interactivo de Planner Manual Mode (React); **DB1** los paneles del dashboard servidos por HTTP (sus endpoints backend ya los cubren `test_dashboard_segments`/`test_runtime_status`). Mismo precedente que `test_phase7_10_checkpoint_gate.py`, que excluye explícitamente las filas de scope frontend.
+
+- **Nota de tipado:** la valla enforced del proyecto es `mypy .` (config per-módulo, sin `disallow_untyped_calls`/`warn_unused_ignores` globales). El archivo nuevo quedó strict-clean en aislamiento (`--follow-imports=silent`) tras eliminar 5 comentarios `# type: ignore` vestigiales del idiom antiguo (constructores legacy) que `mypy .` ni necesitaba ni marcaba — evitando el falso positivo `unused-ignore` bajo strict sin degradar la valla enforced.
+
+- **Files changed:**
+  - Backend NUEVO: `tests/test_phase7_13_checkpoint_gate.py`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.13.12 `[x]` + cabecera Fase 8), `PHASE_7_13_BLUEPRINT.md` (nota de cierre §5.1 + expiración LOCK-IN), `DEV_JOURNAL.md` (este hito), `README.md` (Repository Layout — gate file añadido a `tests/`).
+
+---
+
 ## Hito 7.13.11: Zero-Deduplication Sweep — 2026-06-01
 
 **Status:** CERRADO — 7.13.11 COMPLETA | **Phase:** 7.13.11 (Retrofit Fases 5 & 6)

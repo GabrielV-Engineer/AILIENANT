@@ -224,6 +224,16 @@ Consolidate the VFS readers in **both** `agents/coder.py` **and** `agents/analys
 ## 5. Verification Plan
 
 ### 5.1 — 7.13.12 Checkpoint Gate
+
+> **✅ GATE CLOSED (7.13.12).** All backend-assertable rows are certified by
+> `ailienant-core/tests/test_phase7_13_checkpoint_gate.py` (20 tests) against the shipped
+> entry points. The frontend-only rows **PR2** (Incognito halts the bus in `ide_sync.ts` — no
+> backend hook exists), **OR1** (the Planner Manual-Mode React form), and **DB1** (the
+> HTTP-served dashboard panels) are out of pytest scope and certified by `npm run compile` +
+> the §5.2 inventory + the manual smoke. DoD green: `pytest` **768 passed**, `mypy .` **225
+> OK**, `mypy --strict --follow-imports=silent` on the new file **0 errors**, `npm run
+> compile` **0 errors**. **Phase 7.13 is closed; the §1 LOCK-IN expires.**
+
 | # | Test | Assertion |
 |---|---|---|
 | SC1 | Silent telemetry | save/rename/delete emit `client_ide_telemetry` with **no** toast and **no** chat interruption |
