@@ -216,6 +216,7 @@ Proyect_Ailienant/
 │   ├── PHASE_4_BLUEPRINT.md    # Master architectural contract for Phase 4 (mandatory read while Phase 4 is active)
 │   ├── PHASE_7_BLUEPRINT.md    # Master architectural contract for Phase 7.10/7.11 (mandatory read while active)
 │   ├── PHASE_7_13_BLUEPRINT.md # Master architectural contract for Phase 7.13 — Spinal Cord (ADR-708..718)
+│   ├── PHASE_7_14_BLUEPRINT.md # Master architectural contract for Phase 7.14 — Zero-Bubble & Diff Engine (ADR-720..726)
 │   ├── AILIENANT_CODEX.md      # Analyst self-knowledge source (Phase 7.10.3 — ADR-703; cached, budget-sliced into analyst context)
 │   ├── SCHEMA_EVOLUTION.MD     # State + agent contracts
 │   ├── SYSTEM_PROMPTS.md       # Agent system prompts

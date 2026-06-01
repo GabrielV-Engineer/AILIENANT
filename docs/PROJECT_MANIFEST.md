@@ -9,7 +9,8 @@
 - **Fase Activa:** Fase 8 — Pruebas y Observabilidad (Fase 7.13 **CERRADA**)
 - **Hito Reciente:** 7.13.12 COMPLETA — **Checkpoint Gate Fase 7.13 (CIERRE)**: nuevo `tests/test_phase7_13_checkpoint_gate.py` (20 tests) re-certifica cada gate row backend-asertable contra los entry points ya enviados (SC/PR1/CC1/RL1/SF1/CN1/DR1/AL1/ISO1/FR1-3/OR2/OR3/TL1/DD1). Las filas frontend-only (PR2 Incognito — el bus se corta en `ide_sync.ts`, sin hook backend; OR1 form del Planner; DB1 paneles del dashboard) son scope `npm run compile` + smoke manual. DoD verde: `pytest` **768 passed**, `mypy .` **225 OK**, `mypy --strict --follow-imports=silent` sobre el archivo nuevo **0 errores**, `npm run compile` 0 errores. La valla LOCK-IN del blueprint 7.13 expira al marcarse el gate.
 - **División 8.0 — Documentada:** auditoría `mypy --strict` completa (`PHASE_8_BLUEPRINT.md` + `TECH_DEBT_BACKLOG.md`). Baseline: 32 errores, 9 módulos silenciados. Primer ítem ejecutable: **8.0.0 Correcciones mecánicas de superficie**.
-- **Próximo Objetivo:** 8.0.0 — Correcciones mecánicas de superficie (primer ítem ejecutable de la División 8.0).
+- **Track 7.14 — Documentado (frontend, ortogonal a 8.0.0):** blueprint `PHASE_7_14_BLUEPRINT.md` + WBS 7.14.0–7.14.7. Transformación UI/UX a "code agent" (Zero-Bubble canvas + Elite Diff Engine inline). Primer slice recomendado: **7.14.1 (Zero-Bubble)**. Cero cambio de contrato Python.
+- **Próximo Objetivo:** 8.0.0 — Correcciones mecánicas de superficie (primer ítem ejecutable de la División 8.0). En paralelo, 7.14.1 puede arrancar el track frontend.
 
 ---
 
@@ -31,7 +32,8 @@
 | 7.10 | Cognitive Transparency & Connective Integration | ✅ |
 | 7.11 | VS Code Native Mesh Execution | ⬜ |
 | 7.12 | UX/State Stabilization & Context Injection Pathing | ✅ |
-| 7.13 | The Enterprise Spinal Cord (Event-Driven Telemetry, Reactive Memory & Self-Healing) | ⬜ |
+| 7.13 | The Enterprise Spinal Cord (Event-Driven Telemetry, Reactive Memory & Self-Healing) | ✅ |
+| 7.14 | UI/UX Transformation to Enterprise Agent (Zero-Bubble & Full-Cognition) | ⬜ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante (observabilidad absorbida por 7.13) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream · ADR-707) | ✅ |
 | 10 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
@@ -2079,6 +2081,36 @@ the blueprint freeze lifts.
 - [x] **7.13.12 — Checkpoint Gate Fase 7.13** — opus
   - DoD: `npm run compile` 0 errores; `mypy --strict` 0 errores sobre los archivos nuevos/modificados; `pytest` verde (≥ baseline 675). Gate rows v1 (SC1/SC2/OR1/DB1/AL1/TL1/DD1/REG) **+**: **PR1** un `.env`/archivo excluido jamás se pushea (gate Dual-Rules) · **PR2** el toggle Incognito detiene el bus al instante · **DR1** Dreaming dispara **sólo** desde la acción explícita (sin idle wake); save mid-run aborta limpio · **CC1** sin phantom deps bajo re-index+Dream concurrente (el lock aguanta) · **RL1** flood inbound rate-limited · **SF1** saves rápidos coalescen a un index por archivo · **CN1** tareas de background canceladas en disconnect/shutdown (sin huérfanos) · **FR1** stream colgado se auto-limpia vía watchdog · **FR2** reconnect mid-`SUBMIT_TASK` → sin generación duplicada (correlation-id) · **FR3** Stop con WS caído surfacea error (ABORT ACK) · **OR2** la UI de resume de dead-letter round-trips · **OR3** el toggle del Planner llega al backend.
   - **CERRADO:** `tests/test_phase7_13_checkpoint_gate.py` (20 tests) certifica los gate rows backend-asertables contra los entry points ya enviados. Corrección de scope (auditoría CLAUDE.md §3): **PR2/OR1/DB1 son frontend-only** — no unit-testables en pytest (el bus Incognito se corta en `ide_sync.ts`, sin hook backend), certificados por `npm run compile` + smoke manual (§5.2). DoD verde: `pytest` **768 passed** (≥675), `mypy .` **225 OK**, `mypy --strict --follow-imports=silent` archivo nuevo **0 errores**, `npm run compile` 0 errores. **Fase 7.13 CERRADA**; la valla LOCK-IN del blueprint expira.
+
+---
+
+## 🎨 FASE 7.14 — UI/UX Transformation to Enterprise Agent (Zero-Bubble & Full-Cognition) — ⬜ PENDIENTE
+
+> **Track frontend, ortogonal al backend 8.0.0.** Lleva el panel de "chatbot" a "code agent integrado" (fidelidad Cursor/Claude-Code). Contrato completo + ADRs en [`PHASE_7_14_BLUEPRINT.md`](PHASE_7_14_BLUEPRINT.md). Auditoría (CLAUDE.md §3): ~20 de 25 técnicas elite ya existen maduras — 7.14 es **2 épicas net-new + 3 mejoras + 1 slice de gaps estratégicos**, no un rebuild. **Cero cambio de contrato Python** (ADR-721). El §1 LOCK-IN del blueprint expira al cerrarse 7.14.7.
+
+- [ ] **7.14.0 — Stack, Theming & Conventions** *(sub-fase contrato, sin UI)* — **[ADR-720..726]**
+  - Fija libs (`diff`/jsdiff, `react-diff-viewer-continued`, `shiki`), el contrato de theming `var(--vscode-*)`, la disciplina shiki lazy-load + fine-grained-core, y la regla "nunca re-highlight por token". DoD: ADRs ratificados, deps con licencia verificada, techo de bundle declarado.
+
+- [ ] **7.14.1 — The Infinite Canvas (Zero-Bubble)** *(NET-NEW · primer slice recomendado)* — **[ADR-720]**
+  - Elimina el chrome de burbuja de `.ws-msg` (borde, radius, `max-width:88%`, bg por rol, `align-self`); ancho 100% que crece al maximizar; separadores hairline; etiqueta de rol sutil; tipografía dual-densidad (prosa airada, código compacto). Files: `workspace.css`, `Workspace.tsx`. Reusa `MarkdownRenderer` intacto. DoD: `npm run compile`/`lint` 0; ancho completo verificado; legible por etiqueta.
+
+- [ ] **7.14.2 — Elite Diff Engine (Split-Diff + Hatching + Contextual Header)** *(NET-NEW · joya de la corona)* — **[ADR-721, ADR-722]**
+  - Host enriquece el seam `server_apply_workspace_edit` → mensaje `RENDER_DIFF {patch_id,file_path,old_content,new_content,status}` al webview (old content ya leído por `PatchActuator`). Nuevo `DiffBlock.tsx`: split via `react-diff-viewer-continued`, math `jsdiff`, tokens `shiki` (lazy, theme-bound), **hatching** en hunks desbalanceados, header rígido (badge `Edit`/`Read` + ruta monospace), inline. Guard de diffs grandes + LF/cp1252. **Sin cambio Python.** DoD: render inline real; theme flip; bundle dentro de presupuesto; 2k-líneas no congela.
+
+- [ ] **7.14.3 — Ghost Telemetry (ENHANCE)** — **[ADR-723]**
+  - Dots de estado en `ToolChip`; action-log en vivo mientras piensa; footer de tokens **en vivo** por mensaje (hoy sólo conteo final). Files: `ToolChip.tsx`, `ThoughtBox.tsx`/`ActionLog.tsx`, `thinkingReducer`, `Workspace.tsx`. DoD: dots siguen `pending→success/error`; token footer tickea en vivo; HUD OCC/TPS/FinOps intacto.
+
+- [ ] **7.14.4 — Inline per-diff HITL + keyboard (ENHANCE)** — **[ADR-724]**
+  - `[✓ Accept] [✗ Reject] [💬 Comment]` bajo cada `DiffBlock`; re-prompt anidado que **preserva el draft**; `Ctrl+Enter`/`Esc` en diff enfocado. Reusa `HITL_RESPONSE` (sin evento nuevo). Nota honesta: aprobación es **per-patch**, no per-hunk; per-hunk `approval_id`s diferidos (backend). DoD: round-trip por canal existente; draft preservado en reject; teclado funciona.
+
+- [ ] **7.14.5 — Procedural Memory surfacing (SURFACE/ENHANCE)** — **[ADR-725]**
+  - Revert circular inline en mensajes con `checkpoint_id` → reusa `BRANCH_FROM_CHECKPOINT` (sin picker); pulido menor de @-menciones (toast de carpeta grande; honestidad `@terminal`). DoD: Revert ramifica desde ese checkpoint; sin regresión del trie.
+
+- [ ] **7.14.6 — Elite Gaps (adiciones del auditor estratégico)** — **[ADR-726]**
+  - **En scope:** medidor de presupuesto de contexto ("N tokens / X% lleno", de `token_usage`+`context_window`); toggle de auto-accept de edits (soft permissions). **Diferido a Fase 11:** multi-thread paralelo, refs cross-session, dual-mode CLI. DoD: medidor refleja uso real; auto-accept respeta el modo.
+
+- [ ] **7.14.7 — Checkpoint Gate Fase 7.14** — **[blueprint §5]**
+  - Matriz DoD por épica (ZB1/ZB2/DF1-4/GT1/HL1/PM1/EG1/REG). Casi todo frontend → `npm run compile` + `npm run lint` + smoke manual (espejo de las filas frontend-only de 7.13). Cierre expira el LOCK-IN del blueprint.
 
 ---
 
