@@ -34,6 +34,10 @@ export interface TaskPayload {
     // text streaming. Optional so pre-Phase-9 payloads keep the backend default.
     enable_native_thinking?: boolean;
     thinking_budget_tokens?: number;   // API-level circuit breaker for the reasoning phase
+    // When true, the backend routes the turn into the Socratic ideation loop
+    // (analyst grills the user one question at a time) instead of autonomous
+    // planning. Optional so non-Planner turns keep the backend default (False).
+    planner_mode_active?: boolean;
 }
 
 // Phase 1.6.3 — Model discovery response schema (mirrors FastAPI ModelInfo).

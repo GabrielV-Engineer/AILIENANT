@@ -29,6 +29,14 @@ import type { ReasoningPreset, InferenceTier } from '../shared/config';
 import { createPersistedStore } from '../shared/persistedStore';
 
 /**
+ * Top-level interaction surface. Orthogonal to the execution `mode` (which only
+ * governs permissions). `planner` swaps the standard composer for the Socratic
+ * ideation form and tags every submit with `planner_mode_active`, routing the
+ * turn into the backend `ideation_loop`.
+ */
+export type WorkspaceSurface = 'chat' | 'planner';
+
+/**
  * Phase 7.12 — minimal snapshot of the active streaming assistant turn, kept so
  * an in-flight Native-Thinking trace (display-only, ADR-707) survives a panel
  * teardown/reconnect (retainContextWhenHidden:false). Defined structurally (not
@@ -64,6 +72,11 @@ export interface WorkspaceState {
     mode: ExecutionMode;
     preset: ReasoningPreset;
     tier: InferenceTier;
+    /**
+     * Active interaction surface (Chat vs Planner). Persisted so the Planner
+     * survives a tab hide/reveal mid-dialogue; defaults to `chat`.
+     */
+    surface: WorkspaceSurface;
     lastScrollY: number;
     /**
      * Phase 7.11.3 (ADR-706 §4.5b) — optimistic-feedback flag while a Stop is
@@ -98,6 +111,7 @@ export interface WorkspaceState {
     setMode: (v: ExecutionMode) => void;
     setPreset: (v: ReasoningPreset) => void;
     setTier: (v: InferenceTier) => void;
+    setSurface: (v: WorkspaceSurface) => void;
     setLastScrollY: (v: number) => void;
     setIsAborting: (v: boolean) => void;
     setNativeThinking: (v: boolean) => void;
@@ -114,6 +128,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         mode: 'automatic',
         preset: 'architect',
         tier: 'HYBRID',
+        surface: 'chat',
         lastScrollY: 0,
         isAborting: false,
         nativeThinking: true,
@@ -128,6 +143,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         setMode:         (v) => set({ mode: v }),
         setPreset:       (v) => set({ preset: v }),
         setTier:         (v) => set({ tier: v }),
+        setSurface:      (v) => set({ surface: v }),
         setLastScrollY:  (v) => set({ lastScrollY: v }),
         setIsAborting:   (v) => set({ isAborting: v }),
         setNativeThinking: (v) => set({ nativeThinking: v }),
@@ -149,6 +165,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
             mode: s.mode,
             preset: s.preset,
             tier: s.tier,
+            surface: s.surface,
             lastScrollY: s.lastScrollY,
             nativeThinking: s.nativeThinking,
             inflightTurn: s.inflightTurn,

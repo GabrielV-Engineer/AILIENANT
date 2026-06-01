@@ -182,6 +182,7 @@ Proyect_Ailienant/
 │   │   │   ├── BentoMenu.tsx   #     3×3 agent launcher grid (FORCE_AGENT postMessage)
 │   │   │   ├── GraphViewer.tsx #     React Flow + 3-tier LOD (zoom>0.8/0.4–0.8/<0.4) + heatmap SVG
 │   │   │   ├── components/     #     TelemetryHUD (OCC ring + speedometer + sparkline + FinOps bar), ModeMenu,
+│   │   │   │                   #     ModeSwitcher (Chat↔Planner surface switcher + Dreaming entry), PlannerSession (blocked multi-turn Socratic ideation form),
 │   │   │   │                   #     IndexingStatus, PipelineProgress (Phase 7.9.B.14 — collapsible per-turn 'Thinking' execution trace, not chat),
 │   │   │   │                   #     DreamingMode (🌙 popover), DreamingTrigger (✨ manual Consolidate-Memory popover w/ focus presets),
 │   │   │   │                   #     CSSAlertBanner, HITLCard, ContextOverlay,

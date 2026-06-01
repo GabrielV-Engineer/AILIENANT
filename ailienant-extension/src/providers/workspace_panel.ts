@@ -604,6 +604,9 @@ export class WorkspacePanelManager {
                             // Phase 9 (ADR-707) — forwarded from the Webview's
                             // persisted Native Thinking toggle (default true).
                             enable_native_thinking: data.enable_native_thinking as boolean | undefined,
+                            // Forwarded from the Planner surface — routes this turn into
+                            // the backend Socratic ideation loop when set.
+                            planner_mode_active: data.planner_mode_active as boolean | undefined,
                         });
                         // Backend-governed stream-stall timeout (longer for slow local
                         // engines). The webview arms its watchdog from this — never a
@@ -774,14 +777,14 @@ export class WorkspacePanelManager {
                     }
                     break;
                 case 'dreaming_toggle': {
+                    // Dreaming enable/disable is a persisted client preference. The
+                    // backend has no dreaming-enabled signal to receive — manual
+                    // consolidation runs go through `client_dreaming_run`
+                    // (TRIGGER_DREAMING_RUN). It must NOT touch the planner registry.
                     const enabled = data.value as boolean;
                     const profile = data.profile as DreamingProfile;
                     await this._workspaceState.update(WORKSPACE_STATE_KEYS.dreamingEnabled, enabled);
                     await this._workspaceState.update(WORKSPACE_STATE_KEYS.dreamingProfile, profile);
-                    WSClient.getInstance().send({
-                        event_type: 'client_planner_mode_toggle',
-                        data: { active: enabled, dreaming_profile: profile },
-                    });
                     break;
                 }
                 case 'TRIGGER_DREAMING_RUN': {
