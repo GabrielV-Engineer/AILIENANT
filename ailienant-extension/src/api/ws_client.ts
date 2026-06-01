@@ -104,6 +104,7 @@ export class WSClient {
                 }
                 this._emitStatus('connected');
                 this._flushPending();
+                this._seedActiveFileVersion();
             });
 
             wsInstance.on('message', (data: WebSocket.RawData) => {
@@ -231,6 +232,20 @@ export class WSClient {
     /** Record a document_version_id for OCC delta sync tracking. */
     public trackFileVersion(filepath: string, versionId: string): void {
         this._fileVersions.set(filepath, versionId);
+    }
+
+    /**
+     * Seed the active editor's version into the OCC/Delta-Sync baseline on
+     * (re)connect. Without this the map starts empty, so the first
+     * `client_file_update` for the focused file has no prior version to compare
+     * against and a genuine edit could be mis-classified. Best-effort: a missing
+     * editor (no folder open / dashboard-only) is simply skipped.
+     */
+    private _seedActiveFileVersion(): void {
+        const ed = vscode.window.activeTextEditor;
+        if (ed && ed.document.uri.scheme === 'file') {
+            this._fileVersions.set(ed.document.uri.fsPath, String(ed.document.version));
+        }
     }
 
     public send(payload: unknown): void {

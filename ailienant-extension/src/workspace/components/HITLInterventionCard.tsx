@@ -26,8 +26,13 @@ export function HITLInterventionCard({ intervention, nattName, onResolved }: Pro
     const [editMode, setEditMode] = useState(false);
     const [editedContent, setEditedContent] = useState(intervention.proposed_content ?? '');
     const cardRef = useRef<HTMLDivElement>(null);
+    // Guard against a double-resolve race (e.g. the in-chat card and the native
+    // OS toast both firing for the same approval_id) — only the first posts.
+    const resolvedRef = useRef(false);
 
     const respond = useCallback((approved: boolean, modified?: string) => {
+        if (resolvedRef.current) { return; }
+        resolvedRef.current = true;
         vscode.postMessage({
             type: 'HITL_RESPONSE',
             approval_id: intervention.approval_id,

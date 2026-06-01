@@ -639,6 +639,40 @@ class ClientAbortMeshEvent(BaseModel):
     data: ClientAbortMeshPayload
 
 
+# --- Delivery acknowledgements (server → client) ---
+# A Stop with the socket down, or a HITL response from a torn-down webview, must
+# never be a silent fire-and-forget. The server echoes a terse ACK the instant it
+# has acted so the UI can confirm (or surface a failure) instead of freezing.
+
+
+class AbortAckPayload(BaseModel):
+    """Server → client: result of resolving a client_abort_mesh request.
+
+    ``signalled`` is True when a live in-flight task was found and cancelled,
+    False when no registered task existed (already finished / never started).
+    """
+
+    session_id: str
+    signalled: bool
+
+
+class ServerAbortAckEvent(BaseModel):
+    event_type: Literal["server_abort_ack"] = "server_abort_ack"
+    data: AbortAckPayload
+
+
+class HitlAckPayload(BaseModel):
+    """Server → client: confirmation that a client_hitl_response was applied."""
+
+    approval_id: str
+    ok: bool
+
+
+class ServerHitlAckEvent(BaseModel):
+    event_type: Literal["server_hitl_ack"] = "server_hitl_ack"
+    data: HitlAckPayload
+
+
 # =====================================================================
 # 15. Phase 7.11.6 — Rich Tool Chips (ADR-706 §4.5f)
 # =====================================================================
@@ -865,6 +899,8 @@ WebSocketMessage = Union[
     ServerInlineEditDeltaEvent,      # Phase 7.11.1 — typed mutation delta
     ServerInlineEditEndEvent,        # Phase 7.11.1 — stream finalized
     ClientAbortMeshEvent,            # Phase 7.11.3 — abort controller mesh (Stop button)
+    ServerAbortAckEvent,             # abort delivery acknowledgement
+    ServerHitlAckEvent,              # HITL response delivery acknowledgement
     ServerToolStartEvent,            # Phase 7.11.6 — Rich Tool Chips: tool started
     ServerToolStreamChunkEvent,      # Phase 7.11.6 — Rich Tool Chips: incremental output
     ServerToolResultEvent,           # Phase 7.11.6 — Rich Tool Chips: tool finished

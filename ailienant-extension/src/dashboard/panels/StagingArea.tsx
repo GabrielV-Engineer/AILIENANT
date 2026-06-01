@@ -128,9 +128,14 @@ export default function StagingArea(): JSX.Element {
                             Reject
                         </button>
                         {p.stale && (
-                            <span className="db-muted" style={{ fontSize: 11 }}>
-                                Approve blocked on stale state
-                            </span>
+                            <button
+                                className="db-btn db-btn-secondary"
+                                style={{ fontSize: 11 }}
+                                onClick={() => respond(p.approval_id, false)}
+                                title="The file changed since this patch was generated. Discard it and re-run the task to regenerate against the current file."
+                            >
+                                Discard stale — regenerate
+                            </button>
                         )}
                     </div>
                 </div>

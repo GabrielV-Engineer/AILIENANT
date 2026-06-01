@@ -26,6 +26,9 @@ export interface TaskPayload {
     attachments?: ManualAttachment[];  // user-attached multimodal context
     explicit_mentions?: string[];      // @-referenced file paths — triggers full-file injection
     document_version_id?: string;      // OCC: active document version at submission (Phase 1.5)
+    // Per-submit idempotency key. Lets the backend dedup a resubmit (e.g. driven
+    // by a WS reconnect) so the same request never spawns two generations.
+    request_id?: string;
     // Phase 9 (ADR-707) — Native Thinking. When true (default) the gateway
     // requests native reasoning tokens for capable models; omitted/false → flat
     // text streaming. Optional so pre-Phase-9 payloads keep the backend default.

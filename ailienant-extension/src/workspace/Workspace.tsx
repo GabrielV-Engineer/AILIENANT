@@ -37,6 +37,36 @@ type ToastLevel = 'info' | 'warn' | 'error';
 interface ToastItem { id: number; level: ToastLevel; message: string; }
 let _toastId = 0;
 
+// Pre-first-submit fallback only — the live timeout arrives from the backend via
+// STREAM_WATCHDOG_MS (governed per active model: longer for slow local engines).
+// It is never a hardcoded product timeout.
+const DEFAULT_STREAM_WATCHDOG_MS = 90_000;
+// How often the watchdog checks for a stalled stream.
+const STREAM_WATCHDOG_TICK_MS = 5_000;
+// Hard bound on a single tool chip's retained output (OOM guard for a runaway tool).
+const MAX_TOOL_OUTPUT_LINES = 500;
+// Server events that count as live stream activity (reset the stall watchdog).
+const STREAM_ACTIVITY_EVENTS = new Set<string>([
+    'server_token_chunk', 'server_thinking_chunk', 'server_pipeline_step',
+    'server_tool_start', 'server_tool_stream_chunk', 'server_tool_result',
+    'server_natt_token',
+]);
+
+/**
+ * Flip any still-`pending` tool chip on a NON-streaming turn to `error`. A chip
+ * left pending at a teardown/stall would otherwise rehydrate spinning forever.
+ */
+function normalizeStuckChips<T extends { streaming?: boolean; toolCalls?: ToolCallShape[] }>(msgs: T[]): T[] {
+    return msgs.map(m => {
+        if (m.streaming || !m.toolCalls || m.toolCalls.length === 0) { return m; }
+        const fixed = m.toolCalls.map(tc =>
+            (tc.status === undefined || tc.status === 'pending')
+                ? { ...tc, status: 'error' as const }
+                : tc);
+        return { ...m, toolCalls: fixed };
+    });
+}
+
 // Phase 7.12 — client-minted stable turn id. `crypto.randomUUID` is available in
 // the webview runtime; the fallback keeps types honest on exotic hosts.
 function mkId(): string {
@@ -207,6 +237,13 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
+    // Stream-stall watchdog. `streamWatchdogMs` is the backend-governed budget
+    // (posted via STREAM_WATCHDOG_MS after each submit); `lastStreamActivityRef`
+    // is bumped on every streaming event so the interval can detect a lost
+    // `server_stream_end` and finalize a hung turn.
+    const [streamWatchdogMs, setStreamWatchdogMs] = useState<number>(DEFAULT_STREAM_WATCHDOG_MS);
+    const lastStreamActivityRef = useRef<number>(0);
+
     // Natt — Phase 7.11.2: open/closed flag rehydrates from workspaceStore.
     // nattMessages stays sourced from the host transcript (7.9.B.20).
     const nattOpen    = useWorkspaceStore((s) => s.nattOpen);
@@ -316,9 +353,34 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         const handler = (event: MessageEvent): void => {
             const msg = event.data as { type: string; payload?: unknown; config?: unknown; open?: boolean };
 
+            // Any live stream event keeps the stall watchdog at bay.
+            if (STREAM_ACTIVITY_EVENTS.has(msg.type)) {
+                lastStreamActivityRef.current = performance.now();
+            }
+
             switch (msg.type) {
                 case 'WS_STATUS':
                     setWsStatus(msg.payload as WsConnectionStatus);
+                    break;
+                case 'STREAM_WATCHDOG_MS':
+                    // Backend-governed stall timeout for the active model (zero-config).
+                    if (typeof msg.payload === 'number' && msg.payload > 0) {
+                        setStreamWatchdogMs(msg.payload);
+                    }
+                    break;
+                case 'server_abort_ack': {
+                    const d = msg.payload as { signalled?: boolean };
+                    if (!d?.signalled) {
+                        // No live task was cancelled (socket down, or it already
+                        // finished). Clear the optimistic flag so Stop doesn't stay
+                        // frozen, and surface the failure.
+                        setIsAborting(false);
+                        addToast('error', 'Stop failed — backend unreachable. The task may still be running.');
+                    }
+                    break;
+                }
+                case 'server_hitl_ack':
+                    addToast('info', 'Decision received.');
                     break;
                 case 'REHYDRATE_TRANSCRIPT': {
                     // Phase 7.12 — host re-posts the authoritative per-session
@@ -330,11 +392,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         messages?: Message[]; nattMessages?: NattMessage[];
                     };
                     if (Array.isArray(rh.messages)) {
-                        setMessages(prev => mergeById(rh.messages as Message[], prev));
+                        // Normalize chips left spinning at the teardown that triggered
+                        // this rehydrate so they don't resurrect as perpetual "pending".
+                        setMessages(prev => normalizeStuckChips(mergeById(rh.messages as Message[], prev)));
                     }
                     if (Array.isArray(rh.nattMessages)) {
                         setNattMessages(prev => mergeById(rh.nattMessages as NattMessage[], prev));
                     }
+                    // A transient Stop flag must never survive a hide→reveal teardown,
+                    // or the button stays frozen on the remounted panel.
+                    setIsAborting(false);
                     break;
                 }
                 case 'CONFIG_UPDATED':
@@ -412,6 +479,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_stream_end': {
                     setIsStreaming(false);
+                    // Disarm the stall watchdog — the stream ended cleanly.
+                    lastStreamActivityRef.current = 0;
                     // Phase 7.11.3 — back to idle whether the stream ended
                     // naturally or because we aborted it.
                     setIsAborting(false);
@@ -479,7 +548,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             output_lines: [],
                             status: 'pending' as const,
                         }),
-                        output_lines: [...(tc?.output_lines ?? []), d.chunk],
+                        // Hard tail-bound the retained output so a runaway tool
+                        // cannot OOM the webview.
+                        output_lines: [...(tc?.output_lines ?? []), d.chunk].slice(-MAX_TOOL_OUTPUT_LINES),
                     })));
                     break;
                 }
@@ -719,6 +790,35 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
+
+    // Stream-stall watchdog (ADR-715). While streaming, if no token / tool / natt
+    // activity arrives within the backend-governed budget, `server_stream_end` was
+    // almost certainly lost — finalize the turn so the UI never hangs on
+    // "Streaming…". The budget is dictated by the backend (longer for slow local
+    // engines), never a hardcoded product constant.
+    useEffect(() => {
+        if (!isStreaming) { return; }
+        if (lastStreamActivityRef.current === 0) {
+            lastStreamActivityRef.current = performance.now();
+        }
+        const interval = setInterval(() => {
+            if (performance.now() - lastStreamActivityRef.current <= streamWatchdogMs) { return; }
+            lastStreamActivityRef.current = 0;
+            setIsStreaming(false);
+            setIsAborting(false);
+            setInflightTurn(null);
+            setMessages(prev => prev.map((m, i) => {
+                if (i !== prev.length - 1 || !m.streaming) { return m; }
+                const calls = m.toolCalls?.map(tc =>
+                    (tc.status === undefined || tc.status === 'pending')
+                        ? { ...tc, status: 'error' as const }
+                        : tc);
+                return { ...m, streaming: false, stepsDone: true, parserState: undefined, toolCalls: calls };
+            }));
+            addToast('warn', 'Stream stalled — no response from the backend. Ending this turn.');
+        }, STREAM_WATCHDOG_TICK_MS);
+        return () => clearInterval(interval);
+    }, [isStreaming, streamWatchdogMs, addToast, setIsAborting, setInflightTurn]);
 
     const handleSubmit = useCallback((text: string) => {
         const presetConfig = getPresetConfig(preset);
