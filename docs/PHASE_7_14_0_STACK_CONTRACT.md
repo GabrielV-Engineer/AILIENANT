@@ -13,11 +13,13 @@
 
 ## 1. Pinned dependency table (to add to `ailienant-extension/package.json` at 7.14.2)
 
-| Package | Version (pin) | License | Role |
+| Package | Version (resolved) | License | Role |
 |---|---|---|---|
-| `diff` (jsdiff) | `^7.0.0` | BSD-3-Clause | Line/word diff math. Already present transitively (via `@vscode/test-cli` → `mocha` → `diff@7.0.0`); 7.14.2 promotes it to an explicit `dependencies` entry so a dev-dep prune cannot break the webview. |
-| `react-diff-viewer-continued` | latest 4.x compatible with React 18.3.1 | MIT *(verify at install)* | Asymmetric split-grid diff view. |
-| `shiki` | latest with fine-grained `shiki/core` (1.x or 3.x) | MIT *(verify at install)* | VS Code-identical syntax tokenization for chat code blocks and diffs. |
+| `diff` (jsdiff) | `7.0.0` (pinned `^7.0.0`) | BSD-3-Clause | Line/word diff math. Already present transitively (via `@vscode/test-cli` → `mocha` → `diff@7.0.0`, deduped); promoted to an explicit `dependencies` entry so a dev-dep prune cannot break the webview. |
+| `react-diff-viewer-continued` | `4.2.2` | MIT | Asymmetric split-grid diff view. (Vendors its own `diff@9.0.0` internally — separate from our explicit `diff@7.0.0`.) |
+| ~~`shiki`~~ | *(not shipped at 7.14.2)* | MIT | **Deferred — DEBT-003.** Syntax tokenization of diffs. Measured inline weight is prohibitive (JS engine ~160 KB + smallest usable grammar ~172 KB), and externalizing assets was rejected as too much CSP/runtime-loader risk. 7.14.2 renders diffs as themed monospace; tokenization is deferred to a future phase (requires runtime asset externalization or a worker). See `docs/TECH_DEBT_BACKLOG.md` (DEBT-003). |
+
+> **Resolved at 7.14.2 install (2026-06-01):** `npm ls` → `diff@7.0.0`, `react-diff-viewer-continued@4.2.2`. Licenses inspected: all permissive (BSD-3-Clause / MIT). No copyleft in the dependency closure. **shiki was trialed, measured, and removed** — see DEBT-003.
 
 **License-check rule (binding, executed at 7.14.2 install):**
 
@@ -35,12 +37,20 @@
 |---|---|
 | **Baseline** — production-minified `dist/workspace.js` | **354,338 B (~346 KB)** — measured 2026-06-01 |
 | Reference — un-minified dev `dist/workspace.js` | 1,587,307 B |
-| **Ceiling (binding)** — production-minified `dist/workspace.js` after 7.14.2 | **500 KB** |
+| ~~Original ceiling~~ | ~~500 KB~~ — superseded, see amendment below |
+| **Ceiling (binding, amended at 7.14.2)** — production-minified `dist/workspace.js` | **550 KB (563,200 B)** |
+| Measured at 7.14.2 close | **549,335 B (~536 KB)** — under ceiling |
 
-The ceiling allows ~150 KB of headroom over baseline for `shiki` (fine-grained core only),
-`jsdiff`, and `react-diff-viewer-continued`. The **7.14.2 DoD measures the delta and FAILS the gate
-if the minified bundle exceeds 500 KB.** A breach is a signal that shiki was not properly
-fine-grained / lazy-loaded (see §3), not a license to raise the ceiling.
+**Ceiling amendment (2026-06-01, 7.14.2).** The original 500 KB ceiling assumed `shiki` could be
+fine-grained-loaded inline within ~150 KB of headroom. Empirical measurement disproved this: the JS
+regex engine alone is ~160 KB minified and the smallest usable grammar (`tsx`, which embeds JS/TS) is
+~172 KB — over 330 KB before any theme, far exceeding the headroom. `react-diff-viewer-continued`
+itself (~183 KB) already pushes the base to ~537 KB. Externalizing assets (Mechanism A) and
+hand-rolling a diff renderer were both rejected (CSP/runtime-loader risk; reinvention risk). The
+ratified pivot: **ship `jsdiff` + `react-diff-viewer-continued` only, defer syntax tokenization
+(DEBT-003), and amend the ceiling to 550 KB** — a deliberate, bounded raise that fits the split-grid
+diff while explicitly omitting the syntax highlighter to protect Time-to-Interactive. The **7.14.2 DoD
+fails the gate above 550 KB (563,200 B).** This remains a hard cap, not an open-ended allowance.
 
 **Measurement command (reproducible):**
 
@@ -55,6 +65,12 @@ node esbuild.js --production
 ---
 
 ## 3. shiki lazy-load + fine-grained-core rule (ADR-722) — IIFE caveat made binding
+
+> **Superseded at 7.14.2 (DEBT-003).** shiki is **not shipped** in 7.14.2 — measured inline weight is
+> incompatible with the bundle ceiling and the externalize alternative was rejected (see §2 amendment
+> and `docs/TECH_DEBT_BACKLOG.md`). The rules below stand as the binding contract for *whenever shiki
+> is reintroduced* (the no-WASM JS engine + fine-grained core + lazy-load constraints remain correct);
+> they are dormant, not deleted.
 
 - Use **`shiki/core`** + `createHighlighterCore` with **explicit** language and theme imports.
   Never import the all-grammar default `shiki` export (it bundles every grammar and blows §2).

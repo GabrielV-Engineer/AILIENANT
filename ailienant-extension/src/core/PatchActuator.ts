@@ -14,12 +14,30 @@ export interface ApplyWorkspaceEditPayload {
     edits: WorkspaceEditItem[];
 }
 
+/**
+ * Per-file diff source surfaced to the webview for inline rendering. Built from
+ * data the actuator already holds — the document's pre-edit text and the
+ * incoming new_content — so no separate backend round-trip is needed. Both
+ * sides are EOL-normalized to '\n' so the client-side diff is stable across
+ * CRLF / cp1252-origin files.
+ */
+export interface PatchedFileDiff {
+    file_path: string;
+    old_content: string;
+    new_content: string;
+    status: 'edit' | 'create';
+}
+
 export interface PatchAppliedResult {
     patch_id: string;
     ok: boolean;
     applied_files: string[];
     stale_files: string[];
     error?: string;
+    // Populated only on the success path. Display-only: the core reads just the
+    // applied/stale fields, so this rides along the existing ack harmlessly and
+    // also seeds the webview's inline diff.
+    diffs?: PatchedFileDiff[];
 }
 
 /**
@@ -33,10 +51,14 @@ export interface PatchAppliedResult {
  * clobber the user's edits.
  */
 export class PatchActuator {
+    /** Collapse CRLF/CR to LF so hashing and client-side diffing are EOL-stable. */
+    private static _normalizeEol(text: string): string {
+        return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    }
+
     /** SHA-256 over EOL-normalized text — must match the Python coder's content_hash. */
     private static _hash(text: string): string {
-        const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
+        return crypto.createHash('sha256').update(PatchActuator._normalizeEol(text), 'utf8').digest('hex');
     }
 
     private static _resolveUri(filePath: string): vscode.Uri {
@@ -89,7 +111,11 @@ export class PatchActuator {
             }
 
             // Pass 2 — build one atomic WorkspaceEdit (create new files, full-range replace existing).
+            // The pre-edit text (doc.getText()) is captured here for the inline diff the
+            // webview renders — the actuator is the only place that holds both sides.
+            const diffs: PatchedFileDiff[] = [];
             for (const { uri, doc, item } of resolved) {
+                const oldContent = doc ? doc.getText() : '';
                 if (!doc) {
                     edit.createFile(uri, { ignoreIfExists: true });
                     edit.insert(uri, new vscode.Position(0, 0), item.new_content);
@@ -100,6 +126,12 @@ export class PatchActuator {
                     );
                     edit.replace(uri, fullRange, item.new_content);
                 }
+                diffs.push({
+                    file_path: item.file_path,
+                    old_content: PatchActuator._normalizeEol(oldContent),
+                    new_content: PatchActuator._normalizeEol(item.new_content),
+                    status: doc ? 'edit' : 'create',
+                });
                 toSave.push(uri);
                 result.applied_files.push(item.file_path);
             }
@@ -120,6 +152,7 @@ export class PatchActuator {
             }
 
             result.ok = true;
+            result.diffs = diffs;
             return result;
         } catch (err: unknown) {
             result.ok = false;

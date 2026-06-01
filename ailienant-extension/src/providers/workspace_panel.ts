@@ -507,6 +507,15 @@ export class WorkspacePanelManager {
             if (msg.event_type === 'server_apply_workspace_edit') {
                 void PatchActuator.apply(msg.data as ApplyWorkspaceEditPayload).then((result) => {
                     WSClient.getInstance().send({ event_type: 'client_patch_applied', data: result });
+                    // Enrich the seam for the inline Elite Diff Engine: the host already
+                    // holds both sides of the edit, so surface them to the webview as a
+                    // pure host→webview message. No backend/contract change involved.
+                    if (result.ok && result.diffs && result.diffs.length > 0) {
+                        panel.webview.postMessage({
+                            type: 'RENDER_DIFF',
+                            payload: { patch_id: result.patch_id, files: result.diffs },
+                        });
+                    }
                 });
                 return;
             }
