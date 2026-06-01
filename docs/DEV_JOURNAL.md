@@ -2,6 +2,29 @@
 
 ---
 
+## Hito 7.14.0: Blueprint + WBS de Fase 7.14 (UI/UX Transformation — Zero-Bubble & Full-Cognition) — 2026-06-01
+
+- **Status:** DOCUMENTADO — diseño de fase, sin código de producción. Track **frontend**, ortogonal al backend 8.0.0 (no colisionan).
+
+- **Entregable:** `docs/PHASE_7_14_BLUEPRINT.md` (contrato completo + ADR-720..726 + WBS 7.14.0–7.14.7 + matriz DoD §5) y la sección `FASE 7.14` en `PROJECT_MANIFEST.md`. Mueve el panel de "chatbot" a "code agent integrado" con fidelidad Cursor/Claude-Code.
+
+- **Auditoría que conformó el scope (CLAUDE.md §3, Strategic Auditor):** una exploración de 3 frentes (pipeline de render · contratos diff/HITL/backend · superficie agentic-UX completa) encontró que el proyecto ya es **mucho más maduro** que la premisa del brief — ~20 de 25 técnicas elite ya existen en producción. Por tanto 7.14 se acota como **2 épicas net-new + 3 mejoras + 1 slice de gaps**, NO un rebuild (rebuildear sistemas maduros = puro riesgo de regresión). Veredicto: **Zero-Bubble canvas** y **Elite Diff Engine** son genuinamente net-new (el chat hoy no tiene diff ni syntax highlighting — sólo `<pre>` plano); Ghost Telemetry / HITL / Procedural Memory (checkpoints/rewind + @-menciones) ya están maduros y sólo se **mejoran/superficie**.
+
+- **Decisiones de arquitectura clave (locked con el usuario):**
+  - **Fuente de datos del diff (ADR-721):** reusar el `ApplyWorkspaceEditPayload` que **ya fluye** (`file_path`+`new_content`+`base_hash`); el host ya lee el texto **viejo** del doc en `PatchActuator` (para el stale-hash), así que enriquece el seam `server_apply_workspace_edit` con un mensaje `RENDER_DIFF` al webview y el diff se computa **client-side con jsdiff**. **Cero cambio de contrato Python** — sin `server_chat_diff`, sin tocar `ws_contracts.py`.
+  - **Stack (ADR-722):** `diff` (jsdiff) + `react-diff-viewer-continued` (split grid; React 18.3.1 compatible) + `shiki` (theming idéntico a VS Code, **lazy-import + fine-grained core** por presupuesto de bundle del webview IIFE) + `var(--vscode-*)` para que rojos/verdes sigan el tema. **hatching** (`repeating-linear-gradient`) en hunks desbalanceados para no perder el ancla espacial. Disciplina: **nunca re-highlight por token**.
+  - **Zero-Bubble (ADR-720):** borderless, 100% ancho, separadores hairline, distinción user/assistant **sólo por etiqueta de rol sutil** (sin fondos por rol).
+
+- **Riesgos codificados en el blueprint §4:** bloat del bundle (shiki), re-highlight en streaming, reactividad de tema, diffs grandes + cp1252/LF, teardown del WebView a mitad de stream, y la prohibición de drift de contrato Python.
+
+- **Files changed:**
+  - Docs NUEVO: `docs/PHASE_7_14_BLUEPRINT.md`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (fila de mapa 7.14 + sección WBS `FASE 7.14` + nota en Estado Actual; 7.13 marcada ✅ en el mapa), `DEV_JOURNAL.md` (este hito), `README.md` (Repository Layout — blueprint añadido a `docs/`).
+
+- **Próximo:** **7.14.1 (Zero-Bubble)** — el slice net-new de menor riesgo, CSS/layout autocontenido.
+
+---
+
 ## Hito 7.13.12: Checkpoint Gate Fase 7.13 (CIERRE de la Fase) — 2026-06-01
 
 - **Status:** OK — Fase 7.13 (The Enterprise Spinal Cord) **CERRADA**. DoD verde: `pytest` **768 passed** (≥ baseline 675; +20 del gate nuevo), `mypy .` whole-tree **Success: 225 source files**, `mypy --strict --follow-imports=silent tests/test_phase7_13_checkpoint_gate.py` **Success: no issues found in 1 source file**, frontend `npm run compile` **0 errores** (2 warnings ajenos pre-existentes en `vfs_reader.ts`).
