@@ -70,7 +70,7 @@ export class SessionManager {
      */
     public async startAITask(
         taskPrompt: string,
-        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean },
+        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean },
     ): Promise<number | undefined> {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
@@ -127,6 +127,9 @@ export class SessionManager {
                 // Phase 9 (ADR-707) — forward the persisted Native Thinking
                 // toggle so the backend gateway appends/omits the thinking config.
                 enable_native_thinking: opts?.enable_native_thinking,
+                // When the Planner surface is active, route this turn into the
+                // backend Socratic ideation loop instead of autonomous planning.
+                planner_mode_active: opts?.planner_mode_active,
             };
 
             // 5. Emitir la Misión (Boca) al API Gateway

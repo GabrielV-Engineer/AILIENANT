@@ -276,6 +276,43 @@ html, body, #root { height: 100%; }
   margin-right: auto;
 }
 
+/* ── Surface switcher (Chat ↔ Planner) ─────────────────────── */
+.ws-surface-bar {
+  display: flex;
+  justify-content: flex-start;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto 6px;
+}
+
+/* ── Planner surface ───────────────────────────────────────── */
+.ws-planner-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ws-planner-banner-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ws-planner-banner-text strong { color: var(--text-primary); }
+
+/* Button styled as a menu row (Dreaming dashboard link in ModeSwitcher). */
+.ws-mode-row-action {
+  width: 100%;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: left;
+}
+
 /* ── PromptBar ─────────────────────────────────────────────── */
 .ws-prompt {
   position: relative;

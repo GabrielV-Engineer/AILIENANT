@@ -16,6 +16,8 @@ import { WorkspaceHeader } from './components/WorkspaceHeader';
 import { TelemetryHUD, useTpsCalculator } from './components/TelemetryHUD';
 import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
+import { ModeSwitcher } from './components/ModeSwitcher';
+import { PlannerSession } from './components/PlannerSession';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ThoughtBox } from './components/ThoughtBox';
@@ -205,6 +207,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const setPreset = useWorkspaceStore((s) => s.setPreset);
     const tier    = useWorkspaceStore((s) => s.tier);
     const setTier = useWorkspaceStore((s) => s.setTier);
+    // Interaction surface (Chat ↔ Planner) — orthogonal to execution `mode`.
+    const surface    = useWorkspaceStore((s) => s.surface);
+    const setSurface = useWorkspaceStore((s) => s.setSurface);
 
     // Dreaming
     const [dreamingActive, setDreamingActive] = useState(false);
@@ -834,8 +839,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             // Phase 9 (ADR-707) — persisted Native Thinking toggle, read at
             // submit time so the latest value (survives reload) is injected.
             enable_native_thinking: useWorkspaceStore.getState().nativeThinking,
+            // Planner surface → route the turn into the backend Socratic loop.
+            planner_mode_active: surface === 'planner',
         });
-    }, [preset, tier, mode, initial.sessionId]);
+    }, [preset, tier, mode, surface, initial.sessionId]);
 
     // Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh.
     // ABORT_TASK keeps the client-side HTTP AbortController (legacy, harmless).
@@ -1130,31 +1137,56 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             </div>
                         )}
 
-                        {/* PromptBar + Telemetry sibling cards (matches manifest §7.2) */}
-                        <div className="ws-bottom">
-                            <PromptBar
-                                disabled={Boolean(hitlPending)}
-                                placeholder={hitlPending ? `${nattName} is waiting for your decision` : undefined}
-                                activeTaskId={activeTaskId}
-                                isStreaming={isStreaming}
-                                isAborting={isAborting}
-                                config={config}
-                                mode={mode}
-                                preset={preset}
-                                tier={tier}
-                                onModeChange={setMode}
-                                onPresetChange={setPreset}
-                                onTierChange={setTier}
+                        {/* Surface switcher — always visible, drives Chat ↔ Planner. */}
+                        <div className="ws-surface-bar">
+                            <ModeSwitcher
+                                surface={surface}
+                                onSurfaceChange={setSurface}
                                 dreamingActive={dreamingActive}
                                 dreamingProfile={dreamingProfile}
                                 onDreamingToggle={handleDreamingToggle}
-                                activeModelId={activeModelId}
-                                orchestrationMode={orchestrationMode}
-                                onModelPrefChange={handleModelPrefChange}
-                                sessionId={initial.sessionId}
-                                onSubmit={handleSubmit}
-                                onAbort={handleAbort}
+                                disabled={isStreaming || Boolean(hitlPending)}
                             />
+                        </div>
+
+                        {/* Composer + Telemetry sibling cards (matches manifest §7.2) */}
+                        <div className="ws-bottom">
+                            {surface === 'planner' ? (
+                                <PlannerSession
+                                    disabled={Boolean(hitlPending)}
+                                    isStreaming={isStreaming}
+                                    isAborting={isAborting}
+                                    canAgree={!isStreaming && messages.some(m => m.role === 'assistant')}
+                                    nattName={nattName}
+                                    onSubmit={handleSubmit}
+                                    onAbort={handleAbort}
+                                    onExit={() => setSurface('chat')}
+                                />
+                            ) : (
+                                <PromptBar
+                                    disabled={Boolean(hitlPending)}
+                                    placeholder={hitlPending ? `${nattName} is waiting for your decision` : undefined}
+                                    activeTaskId={activeTaskId}
+                                    isStreaming={isStreaming}
+                                    isAborting={isAborting}
+                                    config={config}
+                                    mode={mode}
+                                    preset={preset}
+                                    tier={tier}
+                                    onModeChange={setMode}
+                                    onPresetChange={setPreset}
+                                    onTierChange={setTier}
+                                    dreamingActive={dreamingActive}
+                                    dreamingProfile={dreamingProfile}
+                                    onDreamingToggle={handleDreamingToggle}
+                                    activeModelId={activeModelId}
+                                    orchestrationMode={orchestrationMode}
+                                    onModelPrefChange={handleModelPrefChange}
+                                    sessionId={initial.sessionId}
+                                    onSubmit={handleSubmit}
+                                    onAbort={handleAbort}
+                                />
+                            )}
                             <TelemetryHUD
                                 occStatus={occStatus}
                                 lockedFiles={lockedFiles}

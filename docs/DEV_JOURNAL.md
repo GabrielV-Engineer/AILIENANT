@@ -2,6 +2,39 @@
 
 ---
 
+## Hito 7.13.9: Orphanage Recovery I — Máquina de Estados Multi-Turno & Planner UI — 2026-06-01
+
+**Status:** CERRADO — 7.13.9 COMPLETA | **Phase:** 7.13.9 (ADR-713)
+
+**Problem:** el Manual Mode del Planner — el `ideation_loop` Socrático (`brain/ideation.py`, `agents/analyst.py`) — estaba completo en backend (el `analyst_grill` pregunta una a la vez, emite `server_token_chunk`, suspende; en señal de acuerdo `synthesis_node` comprime el diálogo en una `MissionSpecification`), pero **inalcanzable desde la UI**. Tres hallazgos en la auditoría: (1) `task_service` enruta a `ideation_loop` sólo cuando `payload.planner_mode_active` es true, y el frontend **nunca lo seteaba**; (2) el evento WS `client_planner_mode_toggle` escribía `planner_mode_registry` pero `submit_task` **jamás lo leía** (ruta muerta); (3) el handler `dreaming_toggle` emitía `client_planner_mode_toggle` — activar **Dreaming** volcaba al backend al modo Planner Socrático. Además `synthesis_node` no broadcastea la `MissionSpecification` (sólo vive en el state) y la síntesis sigue siendo stub DEBUG.
+
+**Approach — superficie como eje ortogonal:** nuevo `surface: 'chat' | 'planner'` en `workspaceStore` (persistido en el `pick`, sobrevive hide/reveal), deliberadamente **separado** del `mode` de ejecución para no sobrecargar la semántica read-only de `plan_mode`. `Workspace.tsx` renderiza `<PlannerSession>` en lugar del `<PromptBar>` cuando `surface==='planner'`, y cada `SUBMIT_TASK` lleva `planner_mode_active: surface==='planner'`.
+
+**Cableado frontend-only (decisión del usuario):** el flag viaja como campo aditivo `planner_mode_active?` en el `TaskPayload` HTTP (ya consumido por `task_service`) → **cero cambios de lógica de backend**. La ruta muerta registry/`client_planner_mode_toggle` queda sin uso (se anota como limpieza futura; el `ClientPlannerModeToggleEvent` aditivo permanece inocuo) y el tipo huérfano `togglePlannerMode` se elimina de `config.ts`.
+
+**Bug corregido:** `dreaming_toggle` ya **no** emite `client_planner_mode_toggle`; el enable/disable de Dreaming queda como preferencia de cliente persistida en `workspaceState` (las corridas manuales siguen por `client_dreaming_run`/`TRIGGER_DREAMING_RUN`, intactas). Dreaming y Planner dejan de pelear por la misma clave del registry.
+
+**`PlannerSession.tsx` — formulario Socrático bloqueado:** reutiliza el transcript compartido (las preguntas del analista llegan como mensajes de asistente streamed — sin store de mensajes nuevo) y añade banner + composer dedicado (Enter-to-send) + botón **"Agree & synthesize"**. El botón envía la señal literal `"Looks good, proceed."` que `analyst._is_agreement` reconoce por **substring** (matchea `"looks good"` y `"proceed"`), y está **gateado** hasta que llega ≥1 pregunta del analista (`messages.some(role==='assistant')` && `!isStreaming`) — espejo de `_has_prior_socratic_exchange`, porque en el primer turno el input es el brief, nunca acuerdo. Tras acordar, sale optimísticamente a Chat (la síntesis cede a ejecución autónoma). `ModeSwitcher.tsx` (Radix Popover, reutiliza las clases `.ws-mode-*`) conmuta Chat ↔ Planner y enlaza la entrada Dreaming.
+
+**Files changed:**
+- `src/api/api_client.ts` — `TaskPayload.planner_mode_active?` (aditivo).
+- `src/shared/config.ts` — `planner_mode_active?` en `SUBMIT_TASK`; eliminado el tipo muerto `togglePlannerMode`.
+- `src/brain/session.ts` — `startAITask` opts → setea el flag en el payload.
+- `src/providers/workspace_panel.ts` — reenvía el flag a `startAITask`; **fix** del cross-wiring de `dreaming_toggle`.
+- `src/workspace/workspaceStore.ts` — eje `surface` + `setSurface` + persistencia.
+- `src/workspace/Workspace.tsx` — máquina de superficie (swap PromptBar↔PlannerSession), `ModeSwitcher` siempre visible, flag en `handleSubmit`.
+- `src/workspace/components/ModeSwitcher.tsx` (NUEVO) · `src/workspace/components/PlannerSession.tsx` (NUEVO) · `src/workspace/workspace.css` (estilos de superficie/planner).
+
+**Architectural outcomes:**
+- **Loop alcanzable** el `ideation_loop` Socrático por fin se dispara desde la UI; cada turno de Planner reanuda el grafo vía checkpointer con el historial Q&A acumulado.
+- **Aditividad** `planner_mode_active` es opcional en el payload HTTP y en el mensaje `SUBMIT_TASK`; clientes/servidores previos no se ven afectados. `MissionSpecification`/`AIlienantGraphState` sin tocar.
+- **Acoplamiento único** la frase de acuerdo es el único punto de acoplamiento frontend↔backend, documentado y verificado contra `_AGREEMENT_SIGNALS`.
+- **Deferral honesto** la tarjeta estructurada de `MissionSpecification` queda para Fase 4 (síntesis LLM real + evento de broadcast); este hito entrega el flujo Q&A y la salida por acuerdo.
+
+**Verification (DoD, todo verde):** sin Python tocado → `mypy .` → Success (224 archivos) y `pytest` → **748 passed** como guardas de regresión. `npm run check-types` → exit 0; `npm run lint` → 0 errores (2 warnings pre-existentes intactos); `npm run compile` → OK. Sin deps nuevas, sin migración de esquema.
+
+---
+
 ## Hito 7.13.8: Frontend Stream Resilience & Lifecycle Re-attach — 2026-06-01
 
 **Status:** CERRADO — 7.13.8 COMPLETA | **Phase:** 7.13.8 (ADR-715)
