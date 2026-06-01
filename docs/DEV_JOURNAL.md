@@ -2624,3 +2624,25 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Frontend EDIT: `src/api/ws_client.ts`, `src/providers/workspace_panel.ts`, `src/api/api_client.ts`, `src/brain/session.ts`, `src/workspace/workspaceStore.ts`, `src/workspace/components/PromptBar.tsx`, `src/workspace/Workspace.tsx`.
   - Backend EDIT: `agents/analyst_context.py`, `agents/planner.py`, `core/task_service.py`, `main.py`.
   - Docs EDIT: `PROJECT_MANIFEST.md` (7.12.9), `DEV_JOURNAL.md` (este hito).
+
+---
+
+## Hito 7.14.0: Stack, Theming & Bundle Contract (sub-fase contrato, sin UI) — 2026-06-01
+
+- **Status:** OK — contrato ratificado. Sub-fase documental: cero cambio de runtime (sin edición de `package.json` ni de `.ts/.tsx/.css/.py`; las deps entran en 7.14.2). DoD verde: (a) ADRs 720..726 ratificados en un artefacto checkable; (b) deps elegidas con licencia verificada; (c) techo de bundle declarado y anclado a un baseline medido. Verificación: `node esbuild.js --production` reproduce el baseline `dist/workspace.js` = **354 338 B**.
+
+- **Motivación:** 7.14.2 (Elite Diff Engine) añadirá tres deps de webview (`diff`, `react-diff-viewer-continued`, `shiki`) al bundle **IIFE** `dist/workspace.js`, que no tiene code-splitting. Sin un presupuesto pre-declarado y disciplina de lazy-load, las gramáticas de shiki inflan silenciosamente cada apertura del panel. 7.14.0 fija el contrato *antes* de que las deps aterricen (ADR-722 "bundle discipline").
+
+- **Decisiones (confirmadas con el usuario):** artefacto dedicado `docs/PHASE_7_14_0_STACK_CONTRACT.md` (no embebido en el blueprint — separa ADRs narrativos de la pin-table checkable); techo de bundle **500 KB minified** (baseline ~346 KB + ~150 KB de headroom).
+
+- **Deps fijadas + licencias:** `diff@^7.0.0` (BSD-3-Clause; ya presente transitivamente vía `@vscode/test-cli`→`mocha`, se promueve a dependency explícita en 7.14.2), `react-diff-viewer-continued` (MIT, 4.x compatible React 18.3.1), `shiki` (MIT, fine-grained `shiki/core`). Regla de verificación de licencia a ejecutar en el install de 7.14.2 (solo permisivas: MIT/BSD/ISC/Apache-2.0).
+
+- **Dos blind-spots de ingeniería convertidos en directivas vinculantes (raíz: revisión de arquitectura):**
+  - **(1) esbuild `iife` NO code-splittea.** Un bare `await import('shiki')` en el bundle workspace no produce chunk lazy — esbuild lo inlinea (rompe el techo) o falla. El contrato obliga a 7.14.2 a elegir explícitamente: **(A)** externalizar shiki (`external: ['shiki', ...]`) + cargar WASM/gramáticas vía `webview.asWebviewUri`, o **(B)** migrar el bundle workspace a `esm`+`splitting:true` (sólo si el loader del webview soporta `<script type="module">`, a validar). Prohibido asumir que el dynamic import basta en IIFE.
+  - **(2) `react-diff-viewer-continued` reconcilia O(N) filas DOM** → un edit masivo congela el hilo del webview (mata TTI). El guard "collapse oversized hunks" (DoD DF4) se endurece a directiva concreta: `DIFF_RENDER_LINE_CAP` (~400 líneas cambiadas) + collapse-by-default o virtualización obligatoria; render full-file ilimitado prohibido.
+
+- **Sin contrato Python (ADR-721):** la fuente del diff es enriquecimiento host-side del seam `server_apply_workspace_edit` (mensaje webview `RENDER_DIFF`); `ws_contracts.py` y `AIlienantGraphState` intactos. Track 7.14 ortogonal al backend 8.0.0.
+
+- **Files changed:**
+  - Docs NUEVO: `docs/PHASE_7_14_0_STACK_CONTRACT.md`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.14.0 → `[x]`), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).

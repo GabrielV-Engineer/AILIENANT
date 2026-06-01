@@ -2088,8 +2088,9 @@ the blueprint freeze lifts.
 
 > **Track frontend, ortogonal al backend 8.0.0.** Lleva el panel de "chatbot" a "code agent integrado" (fidelidad Cursor/Claude-Code). Contrato completo + ADRs en [`PHASE_7_14_BLUEPRINT.md`](PHASE_7_14_BLUEPRINT.md). Auditoría (CLAUDE.md §3): ~20 de 25 técnicas elite ya existen maduras — 7.14 es **2 épicas net-new + 3 mejoras + 1 slice de gaps estratégicos**, no un rebuild. **Cero cambio de contrato Python** (ADR-721). El §1 LOCK-IN del blueprint expira al cerrarse 7.14.7.
 
-- [ ] **7.14.0 — Stack, Theming & Conventions** *(sub-fase contrato, sin UI)* — **[ADR-720..726]**
+- [x] **7.14.0 — Stack, Theming & Conventions** *(sub-fase contrato, sin UI)* — **[ADR-720..726]**
   - Fija libs (`diff`/jsdiff, `react-diff-viewer-continued`, `shiki`), el contrato de theming `var(--vscode-*)`, la disciplina shiki lazy-load + fine-grained-core, y la regla "nunca re-highlight por token". DoD: ADRs ratificados, deps con licencia verificada, techo de bundle declarado.
+  - **Cerrado:** contrato ratificado en [`PHASE_7_14_0_STACK_CONTRACT.md`](PHASE_7_14_0_STACK_CONTRACT.md). Techo de bundle **500 KB minified** (baseline medido `dist/workspace.js` ~346 KB). Dos blind-spots de ingeniería convertidos en directivas vinculantes para 7.14.2: (1) esbuild `iife` **no** code-splittea → shiki debe externalizarse+URI-load o migrar el bundle a `esm`+splitting (un bare `await import()` no lazy-loadea); (2) guard de diffs grandes (`DIFF_RENDER_LINE_CAP` ~400, collapse/virtualización obligatoria). Sin cambio de runtime (deps entran en 7.14.2).
 
 - [ ] **7.14.1 — The Infinite Canvas (Zero-Bubble)** *(NET-NEW · primer slice recomendado)* — **[ADR-720]**
   - Elimina el chrome de burbuja de `.ws-msg` (borde, radius, `max-width:88%`, bg por rol, `align-self`); ancho 100% que crece al maximizar; separadores hairline; etiqueta de rol sutil; tipografía dual-densidad (prosa airada, código compacto). Files: `workspace.css`, `Workspace.tsx`. Reusa `MarkdownRenderer` intacto. DoD: `npm run compile`/`lint` 0; ancho completo verificado; legible por etiqueta.
