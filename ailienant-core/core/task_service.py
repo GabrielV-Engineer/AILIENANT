@@ -101,6 +101,11 @@ class TaskPayload(BaseModel):
     explicit_mentions: List[str] = Field(default_factory=list)
     attachments: List[ManualAttachment] = Field(default_factory=list)
     document_version_id: Optional[str] = None  # OCC: version at submission (Phase 1.5)
+    # Per-submit idempotency key. Lets the HTTP submit endpoint dedup a resubmit
+    # (e.g. driven by a WS reconnect) so the same request never spawns two
+    # generations. Optional: an omitting client behaves exactly as before (the
+    # server mints/ignores it), so the wire stays backward compatible.
+    request_id: Optional[str] = None
     planner_mode_active: bool = False  # Phase 2.19: Planner-Mode toggle forwarded from WS registry
     workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
     # Phase 7.12.9 (Fix 3) — the focused editor tab (may be SAVED, so absent from

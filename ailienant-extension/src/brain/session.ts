@@ -71,7 +71,7 @@ export class SessionManager {
     public async startAITask(
         taskPrompt: string,
         opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean },
-    ): Promise<void> {
+    ): Promise<number | undefined> {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
             // Si lo hacemos al revés, podríamos perder los primeros tokens de LangGraph.
@@ -113,6 +113,11 @@ export class SessionManager {
                 active_file_path: activeFilePath,
                 active_file_content: activeFileContent,
                 document_version_id: activeDoc ? String(activeDoc.version) : undefined,
+                // Per-submit idempotency key so the backend dedups a reconnect-driven
+                // resubmit (never two generations for one user action).
+                request_id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+                    ? crypto.randomUUID()
+                    : `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
                 // Phase 7.11.4 — wires the host-extracted @mentions through to the
                 // researcher's existing RAG-bypass path (agents/researcher.py:78).
                 explicit_mentions:
@@ -132,7 +137,12 @@ export class SessionManager {
             console.debug(`[SessionManager] Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
 
             // Disparamos la petición. Si falla, el catch local lo maneja.
-            await apiClient.submitTask(this.sessionId, payload);
+            // The 202 carries `stream_watchdog_ms` — the backend-governed timeout the
+            // UI arms its stall watchdog with (longer for slow local engines).
+            const ack = await apiClient.submitTask(this.sessionId, payload) as
+                { stream_watchdog_ms?: number } | undefined;
+            const ms = ack?.stream_watchdog_ms;
+            return typeof ms === 'number' ? ms : undefined;
 
         } catch (error: any) {
             if (error.name !== 'AbortError') {

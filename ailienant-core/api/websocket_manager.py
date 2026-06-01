@@ -637,6 +637,32 @@ class ConnectionManager:
             pass
 
     # ------------------------------------------------------------------
+    # Delivery acknowledgements (Stop / HITL)
+    # ------------------------------------------------------------------
+
+    async def broadcast_abort_ack(self, session_id: str, signalled: bool) -> None:
+        """Confirm a client_abort_mesh was resolved (signalled = a task was cancelled)."""
+        from api.ws_contracts import AbortAckPayload, ServerAbortAckEvent
+
+        await self.send_personal_message(
+            session_id,
+            ServerAbortAckEvent(
+                data=AbortAckPayload(session_id=session_id, signalled=signalled)
+            ),
+        )
+
+    async def broadcast_hitl_ack(
+        self, session_id: str, approval_id: str, ok: bool
+    ) -> None:
+        """Confirm a client_hitl_response was applied (closes the orphan-response gap)."""
+        from api.ws_contracts import HitlAckPayload, ServerHitlAckEvent
+
+        await self.send_personal_message(
+            session_id,
+            ServerHitlAckEvent(data=HitlAckPayload(approval_id=approval_id, ok=ok)),
+        )
+
+    # ------------------------------------------------------------------
     # Phase 2.22.4 — VFS Patch Approved (IPC Bridge)
     # ------------------------------------------------------------------
 

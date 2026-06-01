@@ -113,6 +113,39 @@ def is_masked_key(value: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Stream-watchdog governance — the client's give-up timeout is dictated here,
+# never hardcoded in the IDE. Local engines (Ollama / LM Studio) cold-load
+# weights into VRAM and emit tokens slowly, so they earn a longer leash before
+# the UI declares a stream stalled; fast cloud APIs keep a tighter bound.
+# ---------------------------------------------------------------------------
+_WATCHDOG_LOCAL_MS: int = 180_000
+_WATCHDOG_CLOUD_MS: int = 90_000
+
+
+def stream_watchdog_ms() -> int:
+    """Resolve the client stream-watchdog timeout from the active model routing.
+
+    The heavy generation tier governs time-between-tokens, so a local big/medium
+    tier extends the leash while a cloud tier keeps it tight. Falls back to the
+    cloud bound when a cloud key is configured, else the local bound (an
+    unconfigured box is local-only). A long-running tool keeps the stream "alive"
+    on the client by resetting the timer on each output chunk, so this only has
+    to cover the gap between model tokens — not whole-tool duration.
+    """
+    # Imported lazily to keep this config module import-light and cycle-free.
+    from shared.config import check_cloud_availability
+
+    try:
+        cfg = load_byom_config()
+        target = cfg.chat_models.get("big") or cfg.chat_models.get("medium")
+        if target is not None:
+            return _WATCHDOG_LOCAL_MS if target.is_local else _WATCHDOG_CLOUD_MS
+    except Exception as exc:  # noqa: BLE001 — a config read must never break submit
+        logger.warning("stream_watchdog_ms: config read failed (%s); using fallback", exc)
+    return _WATCHDOG_CLOUD_MS if check_cloud_availability() else _WATCHDOG_LOCAL_MS
+
+
 def load_byom_config() -> BYOMConfig:
     """Read and validate byom_config.json. Returns safe defaults if missing or corrupt."""
     if not BYOM_CONFIG_PATH.exists():

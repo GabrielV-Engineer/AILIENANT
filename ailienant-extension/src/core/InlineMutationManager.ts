@@ -101,6 +101,9 @@ export class InlineMutationManager implements vscode.Disposable {
     private _session: ActiveSession | undefined;
     /** Strict FIFO promise chain — every editor.edit() awaits the previous one. */
     private _editQueue: Promise<void> = Promise.resolve();
+    /** Live depth of the FIFO chain — hard-capped so a runaway stream can't grow it unbounded. */
+    private _pendingEditCount = 0;
+    private static readonly MAX_QUEUED_EDITS = 2000;
     private _docChangeSub: vscode.Disposable | undefined;
 
     private constructor() {
@@ -352,6 +355,16 @@ export class InlineMutationManager implements vscode.Disposable {
     ): void {
         const sess = this._session;
         if (!sess) { return; }
+        // Hard cap: a pathological stream of deltas must not grow the promise
+        // chain without bound. Cancel the session cleanly if it overflows.
+        if (this._pendingEditCount >= InlineMutationManager.MAX_QUEUED_EDITS) {
+            void vscode.window.showWarningMessage(
+                'AILIENANT: inline edit stream too large — cancelled to protect the editor.',
+            );
+            void this._finalizeCancel('stream_too_large');
+            return;
+        }
+        this._pendingEditCount++;
         this._editQueue = this._editQueue.then(async () => {
             try {
                 await sess.editor.edit(body, {
@@ -361,6 +374,8 @@ export class InlineMutationManager implements vscode.Disposable {
                 post?.();
             } catch {
                 // Best-effort during cancel races; downstream cleanup handles the rest.
+            } finally {
+                this._pendingEditCount--;
             }
         });
     }

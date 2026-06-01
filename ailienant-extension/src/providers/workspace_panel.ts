@@ -599,12 +599,18 @@ export class WorkspacePanelManager {
                                 }
                             }
                         }
-                        await SessionManager.getInstance().startAITask(taskText, {
+                        const watchdogMs = await SessionManager.getInstance().startAITask(taskText, {
                             explicit_mentions,
                             // Phase 9 (ADR-707) — forwarded from the Webview's
                             // persisted Native Thinking toggle (default true).
                             enable_native_thinking: data.enable_native_thinking as boolean | undefined,
                         });
+                        // Backend-governed stream-stall timeout (longer for slow local
+                        // engines). The webview arms its watchdog from this — never a
+                        // hardcoded UI constant.
+                        if (typeof watchdogMs === 'number') {
+                            panel.webview.postMessage({ type: 'STREAM_WATCHDOG_MS', payload: watchdogMs });
+                        }
                     }
                     break;
                 }
@@ -626,17 +632,29 @@ export class WorkspacePanelManager {
                     this._runningTasks.delete(session.id);
                     SessionManager.getInstance().abortCurrentTask();
                     break;
-                case 'ABORT_MESH':
+                case 'ABORT_MESH': {
                     // Phase 7.11.3 (ADR-706 §4.5b) — priority WS event that the
                     // backend resolves to asyncio.Task.cancel() on the running
                     // generation runner. Lives alongside ABORT_TASK (which only
                     // cancels the client-side HTTP fetch — useful for any other
                     // in-flight HTTP, harmless here).
-                    WSClient.getInstance().send({
+                    const ws = WSClient.getInstance();
+                    if (ws.getStatus() !== 'connected') {
+                        // Socket is down — the abort can't reach the backend. Synthesize
+                        // a negative ACK so the UI clears its optimistic isAborting flag
+                        // and surfaces the failure, instead of freezing the Stop button.
+                        panel.webview.postMessage({
+                            type: 'server_abort_ack',
+                            payload: { session_id: session.id, signalled: false },
+                        });
+                        break;
+                    }
+                    ws.send({
                         event_type: 'client_abort_mesh',
                         data: { session_id: session.id },
                     });
                     break;
+                }
                 case 'RETRY_TOOL':
                     // Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: exact-replay
                     // retry. The backend looks up the stored ToolCallSpec keyed

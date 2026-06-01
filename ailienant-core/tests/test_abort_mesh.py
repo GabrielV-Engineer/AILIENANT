@@ -238,3 +238,94 @@ def test_client_abort_mesh_payload_contract_round_trip() -> None:
     assert restored == evt
     assert restored.event_type == "client_abort_mesh"
     assert restored.data.session_id == "sess-Z"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. Stream-resilience (ADR-715) — delivery ACKs + idempotent submit
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_abort_and_hitl_ack_contracts_round_trip() -> None:
+    from api.ws_contracts import (
+        AbortAckPayload,
+        HitlAckPayload,
+        ServerAbortAckEvent,
+        ServerHitlAckEvent,
+    )
+
+    abort = ServerAbortAckEvent(data=AbortAckPayload(session_id="s1", signalled=False))
+    assert ServerAbortAckEvent.model_validate(abort.model_dump()) == abort
+    assert abort.event_type == "server_abort_ack"
+
+    hitl = ServerHitlAckEvent(data=HitlAckPayload(approval_id="a1", ok=True))
+    assert ServerHitlAckEvent.model_validate(hitl.model_dump()) == hitl
+    assert hitl.event_type == "server_hitl_ack"
+
+
+async def test_broadcast_abort_ack_sends_signalled_flag() -> None:
+    from unittest.mock import AsyncMock
+
+    from api.websocket_manager import ConnectionManager
+    from api.ws_contracts import ServerAbortAckEvent
+
+    mgr = ConnectionManager()  # type: ignore[no-untyped-call]
+    sent = AsyncMock()
+    with patch.object(mgr, "send_personal_message", sent):
+        await mgr.broadcast_abort_ack("sess-X", signalled=False)
+
+    sent.assert_awaited_once()
+    assert sent.await_args is not None
+    envelope = sent.await_args.args[1]
+    assert isinstance(envelope, ServerAbortAckEvent)
+    assert envelope.data.session_id == "sess-X"
+    assert envelope.data.signalled is False
+
+
+def test_is_duplicate_request_dedups_within_ttl() -> None:
+    import main
+
+    main._recent_request_ids.clear()
+    rid = "req-" + "a" * 8
+    # First sighting records and is NOT a duplicate; the immediate repeat IS.
+    assert main._is_duplicate_request(rid) is False
+    assert main._is_duplicate_request(rid) is True
+    # A distinct id is independent.
+    assert main._is_duplicate_request("req-other") is False
+    main._recent_request_ids.clear()
+
+
+def test_is_duplicate_request_is_size_bounded() -> None:
+    import main
+
+    main._recent_request_ids.clear()
+    for i in range(main._RECENT_REQUEST_CAP + 50):
+        main._is_duplicate_request(f"req-{i}")
+    assert len(main._recent_request_ids) <= main._RECENT_REQUEST_CAP
+    main._recent_request_ids.clear()
+
+
+def test_stream_watchdog_ms_is_local_vs_cloud_aware() -> None:
+    from unittest.mock import patch as _patch
+
+    from core.config.byom_config import (
+        BYOMConfig,
+        ModelTarget,
+        _WATCHDOG_CLOUD_MS,
+        _WATCHDOG_LOCAL_MS,
+        stream_watchdog_ms,
+    )
+
+    local_cfg = BYOMConfig(
+        chat_models={
+            "big": ModelTarget(model="ollama/llama3.1", provider="ollama", is_local=True)
+        }
+    )
+    cloud_cfg = BYOMConfig(
+        chat_models={
+            "big": ModelTarget(model="gpt-4o", provider="openai", is_local=False)
+        }
+    )
+    with _patch("core.config.byom_config.load_byom_config", return_value=local_cfg):
+        assert stream_watchdog_ms() == _WATCHDOG_LOCAL_MS
+    with _patch("core.config.byom_config.load_byom_config", return_value=cloud_cfg):
+        assert stream_watchdog_ms() == _WATCHDOG_CLOUD_MS

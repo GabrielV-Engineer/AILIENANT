@@ -4,7 +4,9 @@ import logging
 import os
 import secrets
 import sys
+import time
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional, cast
 
@@ -34,6 +36,7 @@ from core.config_generator import discover_models
 from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
 from core.task_service import TaskPayload, TaskService
+from core.config.byom_config import stream_watchdog_ms
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _JSONResponse, PlainTextResponse
@@ -323,6 +326,35 @@ _session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root (Ph
 _session_workspace_pid: Dict[str, int] = {}  # client_id → workspace_pid (Phase 4.4)
 _session_project_id: Dict[str, str] = {}  # client_id → project_id (reactive-index routing)
 
+# Per-submit idempotency cache — a bounded TTL map of recently-seen request_ids
+# so a resubmit (e.g. driven by a WS reconnect) never spawns a second
+# generation. Bounded in both time and size; O(1) amortized.
+_RECENT_REQUEST_TTL_S: float = 120.0
+_RECENT_REQUEST_CAP: int = 256
+_recent_request_ids: "OrderedDict[str, float]" = OrderedDict()
+
+
+def _is_duplicate_request(request_id: str) -> bool:
+    """Record ``request_id`` and report whether it was already seen within the TTL.
+
+    First sighting records and returns False; a repeat inside the window returns
+    True. Expired entries (oldest first) are pruned on every call, and the map is
+    hard-capped so a long-lived process can never leak memory here.
+    """
+    now = time.monotonic()
+    while _recent_request_ids:
+        oldest_id, ts = next(iter(_recent_request_ids.items()))
+        if now - ts > _RECENT_REQUEST_TTL_S:
+            _recent_request_ids.pop(oldest_id, None)
+        else:
+            break
+    if request_id in _recent_request_ids:
+        return True
+    _recent_request_ids[request_id] = now
+    while len(_recent_request_ids) > _RECENT_REQUEST_CAP:
+        _recent_request_ids.popitem(last=False)
+    return False
+
 # Manual Dreaming — at most one consolidation per project (a new run cancels the
 # prior one). The epoch is a monotonic per-project save counter: the OCC anchor a
 # consolidation captures at start and the daemon re-checks before committing, so a
@@ -447,7 +479,7 @@ async def submit_task(
     x_task_id: str = Header(
         ..., alias="X-Task-ID"
     ),  # Trazabilidad desde el frontend TS
-) -> dict[str, str]:
+) -> Dict[str, object]:
     """Dispatch a cognitive mission and return immediately (202 Accepted).
 
     The agent pipeline (planner + coder, or the streaming chat completion) can run
@@ -465,6 +497,19 @@ async def submit_task(
         _fallback_root = _session_workspace_root.get(x_task_id, "")
         if _fallback_root:
             payload.workspace_root = _fallback_root
+
+    # Idempotent submit: a duplicate request_id (a reconnect-driven resubmit, or
+    # two windows racing) is acknowledged WITHOUT spawning a second runner.
+    if payload.request_id and _is_duplicate_request(payload.request_id):
+        logger.info(
+            "Duplicate submit ignored [task=%s request_id=%s]",
+            x_task_id, payload.request_id,
+        )
+        return {
+            "status": "duplicate_ignored",
+            "session_id": x_task_id,
+            "stream_watchdog_ms": stream_watchdog_ms(),
+        }
 
     async def _runner() -> None:
         # Phase 7.11.3 (ADR-706 §4.5b) — register THIS runner task with the
@@ -509,7 +554,14 @@ async def submit_task(
     _task_submit_tasks.add(_t)
     _t.add_done_callback(_task_submit_tasks.discard)
 
-    return {"status": "accepted", "session_id": x_task_id}
+    # The client arms its stream watchdog from this backend-governed value (longer
+    # for slow local engines, tighter for fast cloud APIs) — never a hardcoded UI
+    # constant.
+    return {
+        "status": "accepted",
+        "session_id": x_task_id,
+        "stream_watchdog_ms": stream_watchdog_ms(),
+    }
 
 
 # =====================================================================
@@ -931,6 +983,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     comment=valid_event.data.comment,
                     modified_content=valid_event.data.modified_content,
                 )
+                # Confirm receipt so a response from a hidden/torn-down webview is
+                # never silently orphaned.
+                await vfs_manager.broadcast_hitl_ack(
+                    client_id, valid_event.data.approval_id, True
+                )
                 logger.info(
                     "✅ HITL response from %s: approved=%s (approval_id=%s)",
                     client_id,
@@ -1087,6 +1144,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # task_service writes the savepoint marker + emits the
                 # "Stopped by user" turn + closes the stream.
                 _did_abort = task_service.abort_session(client_id)
+                # ACK so the UI never leaves the Stop button frozen: signalled=False
+                # tells the client no live task existed (already done / never ran).
+                await vfs_manager.broadcast_abort_ack(client_id, _did_abort)
                 logger.info(
                     "[Session: %s] Abort mesh: signalled=%s", client_id, _did_abort,
                 )

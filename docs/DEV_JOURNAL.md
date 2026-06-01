@@ -2,6 +2,43 @@
 
 ---
 
+## Hito 7.13.8: Frontend Stream Resilience & Lifecycle Re-attach — 2026-06-01
+
+**Status:** CERRADO — 7.13.8 COMPLETA | **Phase:** 7.13.8 (ADR-715)
+
+**Problem:** el modelo Push agudiza cada gap de interrupción del frontend. El submit (`/task/submit`) sólo se traza por `X-Task-ID` (= sessionId estable por ventana): un resubmit por reconnect o una segunda ventana podían **duplicar la generación**. El Stop (`ABORT_MESH`) era fire-and-forget: con el socket caído fijaba `isAborting` sin señal de fallo → botón congelado. `isStreaming` sólo lo limpiaba `server_stream_end`; si ese evento se perdía, el spinner "Streaming…" colgaba para siempre. El array `output_lines` de los tool-chips y la promise-chain `_editQueue` del inline-edit crecían sin cota. `isAborting` (transitorio) sobrevivía al teardown hide→reveal. `_fileVersions` arrancaba vacío, sin baseline OCC para el archivo activo. Las filas stale de StagingArea quedaban en un callejón sin salida.
+
+**Approach — Watchdog dinámico Zero-Config (enmienda de diseño):** el timeout del watchdog **no se hardcodea en el cliente ni se expone como ajuste manual**. `core/config/byom_config.py::stream_watchdog_ms()` lo deriva del routing del modelo activo (tier `big`/`medium`): motor **local** (Ollama/LM Studio, carga lenta de pesos en VRAM) → 180 s; **nube** (APIs rápidas) → 90 s; fallback a la disponibilidad de claves cloud cuando no hay `chat_models`. El valor se inyecta aditivamente en la respuesta 202 de `/task/submit`; el host lo reenvía como `STREAM_WATCHDOG_MS` y `Workspace.tsx` arma el intervalo. Un tool de larga duración resetea el watchdog en cada chunk de salida, así que el presupuesto sólo cubre el hueco entre tokens, no la duración total de la herramienta.
+
+**Idempotencia server-side:** `TaskPayload.request_id` (aditivo, minteado por `crypto.randomUUID()` en `session.ts`); `submit_task` consulta un caché TTL acotado (`OrderedDict`, cap 256 / 120 s, evicción por edad y tamaño) → un `request_id` repetido devuelve `duplicate_ignored` sin levantar un segundo runner. O(1) amortizado, sin fuga de memoria.
+
+**ACKs de entrega:** eventos aditivos `server_abort_ack` (`{session_id, signalled}`) y `server_hitl_ack` (`{approval_id, ok}`) en `ws_contracts.py`; `broadcast_abort_ack`/`broadcast_hitl_ack` en `websocket_manager.py`; emitidos en `main.py` tras `abort_session` / `resolve_human_approval`. Si el usuario pulsa Stop con el socket caído, `workspace_panel.ts` sintetiza localmente un ACK negativo → `Workspace.tsx` libera `isAborting` + toast de error; un Stop que sí llega pero no halla tarea viva (`signalled=false`) también limpia la UI. El HITL desde un webview oculto/destruido ya no se orfana: el ACK confirma recepción, y una guarda anti doble-resolución en `HITLInterventionCard` evita que la card y el toast nativo posteen dos veces.
+
+**Caps duros + ciclo de vida:** `output_lines` capado por tail-slice a 500 (OOM guard de un tool desbocado); `_editQueue` capado a 2000 ediciones en `InlineMutationManager` (cancela limpio en desborde); `isAborting` limpiado explícitamente en `REHYDRATE_TRANSCRIPT`; chips `pending` de un turno no-activo normalizados a `error` en rehidratación y en el disparo del watchdog (nunca giran eternos); `document_version_id` sembrado para el editor activo en el `open` del WS; superficie de descarte de patch stale en `StagingArea` (rechaza el parche caduco para regenerar contra el archivo actual).
+
+**Files changed:**
+- `core/config/byom_config.py` — `stream_watchdog_ms()` (gobernanza local/nube).
+- `api/ws_contracts.py` — `AbortAckPayload`/`ServerAbortAckEvent` + `HitlAckPayload`/`ServerHitlAckEvent` (aditivos, en la unión).
+- `api/websocket_manager.py` — `broadcast_abort_ack` + `broadcast_hitl_ack`.
+- `core/task_service.py` — `TaskPayload.request_id` (aditivo).
+- `main.py` — caché TTL `_is_duplicate_request` + dedup/`stream_watchdog_ms` en `submit_task`; emit de ambos ACKs.
+- `src/api/api_client.ts` · `src/brain/session.ts` — `request_id` en el contrato + minteo; `startAITask` devuelve el watchdog ms.
+- `src/providers/workspace_panel.ts` — post de `STREAM_WATCHDOG_MS`; corto-circuito de Stop offline.
+- `src/api/ws_client.ts` — `_seedActiveFileVersion()` en el `open`.
+- `src/workspace/Workspace.tsx` — watchdog `useEffect`; handlers `server_abort_ack`/`server_hitl_ack`/`STREAM_WATCHDOG_MS`; limpieza de `isAborting`; `normalizeStuckChips`; cap de `output_lines`.
+- `src/core/InlineMutationManager.ts` — cap `_editQueue`; `src/workspace/components/HITLInterventionCard.tsx` — guarda anti doble-resolución; `src/dashboard/panels/StagingArea.tsx` — descarte de stale.
+- `tests/test_abort_mesh.py` — +5 tests (contratos ACK, `broadcast_abort_ack`, dedup TTL + acotado, watchdog local/nube).
+
+**Architectural outcomes:**
+- **Idempotencia** un resubmit por reconnect nunca duplica la generación (dedup acotado server-side).
+- **Zero-Config** la tolerancia del stream la gobierna el backend según el modelo activo; el frontend obedece de forma transparente — sin constante de producto hardcodeada ni ajuste manual.
+- **No-hang invariants** ningún Stop fire-and-forget, ningún spinner "Streaming…" eterno, ningún chip colgado, ningún buffer cliente sin cota (CLAUDE.md E2E §3).
+- **Aditividad** todo cambio de wire es retro-compatible: un cliente/servidor previo omite `request_id` (el server mintea/ignora) e ignora los ACKs desconocidos.
+
+**Verification (DoD, todo verde):** `mypy .` → Success, 224 archivos; los archivos tocados strict-eligibles (`byom_config.py`, `ws_contracts.py`, `task_service.py`) limpios bajo `--strict` (los 21 errores que arrastra son deuda transitiva pre-existente en `agents/coder.py` etc., el gotcha conocido de `mypy --strict <file>`). `pytest` → **748 passed** (+5). `npm run check-types` → exit 0; `npm run lint` → 0 errores (2 warnings pre-existentes intactos). Sin deps nuevas, sin migración de esquema, sin archivos/directorios nuevos.
+
+---
+
 ## Hito 7.13.7: Self-Healing — `ErrorCorrectionAgent` + DLQ Resume Surface — 2026-05-31
 
 **Status:** CERRADO — 7.13.7 COMPLETA | **Phase:** 7.13.7 (ADR-711 + ADR-716)
