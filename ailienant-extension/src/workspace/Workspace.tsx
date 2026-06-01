@@ -3,8 +3,9 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
 import { useWorkspaceStore } from './workspaceStore';
+import type { WorkspaceSurface } from './workspaceStore';
 import {
-    BudgetLimitMode, ReasoningPreset, InferenceTier, DreamingProfile,
+    BudgetLimitMode, ReasoningPreset, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
     ToolCallShape,
 } from '../shared/config';
@@ -16,7 +17,6 @@ import { WorkspaceHeader } from './components/WorkspaceHeader';
 import { TelemetryHUD, useTpsCalculator } from './components/TelemetryHUD';
 import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
-import { ModeSwitcher } from './components/ModeSwitcher';
 import { PlannerSession } from './components/PlannerSession';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
@@ -199,17 +199,19 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [config, setConfig] = useState<AilienantConfig | null>(initial.config);
     const nattName = config?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
 
-    // Mode / preset / tier (all live inside ModeMenu) — Phase 7.11.2: persisted
+    // Mode / preset (live inside ModeMenu) — Phase 7.11.2: persisted
     // panel-lifetime via workspaceStore (rehydrates on tab-switch).
     const mode    = useWorkspaceStore((s) => s.mode);
     const setMode = useWorkspaceStore((s) => s.setMode);
     const preset    = useWorkspaceStore((s) => s.preset);
     const setPreset = useWorkspaceStore((s) => s.setPreset);
+    // Routing tier is no longer user-selectable (presets drive routing); the
+    // value persists with its default and still rides every SUBMIT_TASK payload.
     const tier    = useWorkspaceStore((s) => s.tier);
-    const setTier = useWorkspaceStore((s) => s.setTier);
-    // Interaction surface (Chat ↔ Planner) — orthogonal to execution `mode`.
-    const surface    = useWorkspaceStore((s) => s.surface);
-    const setSurface = useWorkspaceStore((s) => s.setSurface);
+    // The interaction surface is derived from the execution mode — the HUD is the
+    // single source of truth. Plan mode owns the Socratic Planner; everything else
+    // is the standard chat composer.
+    const surface: WorkspaceSurface = mode === 'plan_mode' ? 'planner' : 'chat';
 
     // Dreaming
     const [dreamingActive, setDreamingActive] = useState(false);
@@ -842,10 +844,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             // Phase 9 (ADR-707) — persisted Native Thinking toggle, read at
             // submit time so the latest value (survives reload) is injected.
             enable_native_thinking: useWorkspaceStore.getState().nativeThinking,
-            // Planner surface → route the turn into the backend Socratic loop.
-            planner_mode_active: surface === 'planner',
+            // Plan mode → route the turn into the backend Socratic loop.
+            planner_mode_active: mode === 'plan_mode',
         });
-    }, [preset, tier, mode, surface, initial.sessionId]);
+    }, [preset, tier, mode, initial.sessionId]);
 
     // Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh.
     // ABORT_TASK keeps the client-side HTTP AbortController (legacy, harmless).
@@ -1140,19 +1142,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             </div>
                         )}
 
-                        {/* Surface switcher — always visible, drives Chat ↔ Planner. */}
-                        <div className="ws-surface-bar">
-                            <ModeSwitcher
-                                surface={surface}
-                                onSurfaceChange={setSurface}
-                                dreamingActive={dreamingActive}
-                                dreamingProfile={dreamingProfile}
-                                onDreamingToggle={handleDreamingToggle}
-                                disabled={isStreaming || Boolean(hitlPending)}
-                            />
-                        </div>
-
-                        {/* Composer + Telemetry sibling cards (matches manifest §7.2) */}
+                        {/* Composer + Telemetry sibling cards (matches manifest §7.2).
+                            The active surface is derived from the HUD execution mode —
+                            Plan mode owns the Planner; there is no separate surface toggle. */}
                         <div className="ws-bottom">
                             {surface === 'planner' ? (
                                 <PlannerSession
@@ -1163,7 +1155,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     nattName={nattName}
                                     onSubmit={handleSubmit}
                                     onAbort={handleAbort}
-                                    onExit={() => setSurface('chat')}
+                                    onExit={() => setMode('automatic')}
                                 />
                             ) : (
                                 <PromptBar
@@ -1175,10 +1167,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     config={config}
                                     mode={mode}
                                     preset={preset}
-                                    tier={tier}
                                     onModeChange={setMode}
                                     onPresetChange={setPreset}
-                                    onTierChange={setTier}
                                     dreamingActive={dreamingActive}
                                     dreamingProfile={dreamingProfile}
                                     onDreamingToggle={handleDreamingToggle}

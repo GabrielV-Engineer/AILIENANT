@@ -276,15 +276,6 @@ html, body, #root { height: 100%; }
   margin-right: auto;
 }
 
-/* ── Surface switcher (Chat ↔ Planner) ─────────────────────── */
-.ws-surface-bar {
-  display: flex;
-  justify-content: flex-start;
-  max-width: 720px;
-  width: 100%;
-  margin: 0 auto 6px;
-}
-
 /* ── Planner surface ───────────────────────────────────────── */
 .ws-planner-banner {
   display: flex;
@@ -301,17 +292,6 @@ html, body, #root { height: 100%; }
   color: var(--text-secondary);
 }
 .ws-planner-banner-text strong { color: var(--text-primary); }
-
-/* Button styled as a menu row (Dreaming dashboard link in ModeSwitcher). */
-.ws-mode-row-action {
-  width: 100%;
-  background: none;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text-primary);
-  text-align: left;
-}
 
 /* ── PromptBar ─────────────────────────────────────────────── */
 .ws-prompt {
@@ -456,37 +436,6 @@ html, body, #root { height: 100%; }
 }
 .ws-mode-row-desc { font-size: 10px; color: var(--text-secondary); }
 .ws-mode-hr { border: none; border-top: 1px solid var(--border-subtle); margin: 8px 0; }
-.ws-mode-tier-group {
-  display: flex;
-  gap: 4px;
-  background: var(--bg-main);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  padding: 3px;
-}
-.ws-mode-tier-btn {
-  flex: 1;
-  appearance: none;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-secondary);
-  padding: 5px 8px;
-  border-radius: 3px;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.ws-mode-tier-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.ws-mode-tier-btn[data-active="true"] {
-  background: var(--bg-surface);
-  color: var(--accent-primary);
-  border-color: var(--accent-primary);
-}
-.ws-mode-tier-btn[data-tier="SOLO_CLOUD"][data-active="true"] {
-  color: #7B9ED9;
-  border-color: #7B9ED9;
-}
 
 /* ── DreamingMode menu ─────────────────────────────────────── */
 .ws-dream-btn[data-active="true"] {
