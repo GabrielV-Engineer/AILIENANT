@@ -11,6 +11,8 @@ interface Props {
     profile: DreamingProfile;
     config: AilienantConfig | null;
     onToggle: (next: boolean, profile: DreamingProfile) => void;
+    /** Locks only the on-demand "Run now" triggers while a turn is streaming. */
+    disabled?: boolean;
 }
 
 interface ProfileMeta {
@@ -26,6 +28,14 @@ const PROFILES: ProfileMeta[] = [
     { value: 'Hybrid', label: 'Hybrid', limits: 'Cloud thinks, local edits · 2 tasks · 6 files' },
 ];
 
+// Static themes the user can scope a manual consolidation pass to. A focused
+// pass restructures memory toward one concern and spends fewer tokens than "Auto".
+const FOCUS_PRESETS: string[] = [
+    'Architecture and Patterns',
+    'Refactoring and Technical Debt',
+    'Bug Fixes',
+];
+
 function modelForProfile(p: DreamingProfile, config: AilienantConfig | null): string {
     if (!config) { return '—'; }
     switch (p) {
@@ -36,9 +46,11 @@ function modelForProfile(p: DreamingProfile, config: AilienantConfig | null): st
     }
 }
 
-export function DreamingMode({ active, profile, config, onToggle }: Props): JSX.Element {
+export function DreamingMode({ active, profile, config, onToggle, disabled }: Props): JSX.Element {
     const [open, setOpen] = useState(false);
     const [currentProfile, setCurrentProfile] = useState<DreamingProfile>(profile);
+    const [otherMode, setOtherMode] = useState(false);
+    const [customText, setCustomText] = useState('');
 
     const handleToggle = (): void => {
         const next = !active;
@@ -54,10 +66,26 @@ export function DreamingMode({ active, profile, config, onToggle }: Props): JSX.
         }
     };
 
+    // On-demand consolidation. focus_area null = "Auto" (whole workspace).
+    const runNow = (focusArea: string | null): void => {
+        vscode.postMessage({ type: 'TRIGGER_DREAMING_RUN', focus_area: focusArea });
+        setOpen(false);
+        setOtherMode(false);
+        setCustomText('');
+    };
+
+    const submitCustom = (): void => {
+        const trimmed = customText.trim();
+        if (trimmed) { runNow(trimmed); }
+    };
+
     const triggerLabel = active ? `Dreaming (${currentProfile}) — click to configure` : 'Start Dreaming mode';
 
     return (
-        <Popover.Root open={open} onOpenChange={setOpen}>
+        <Popover.Root
+            open={open}
+            onOpenChange={(next) => { setOpen(next); if (!next) { setOtherMode(false); } }}
+        >
             <Tooltip content={triggerLabel}>
                 <Popover.Trigger asChild>
                     <button
@@ -121,6 +149,60 @@ export function DreamingMode({ active, profile, config, onToggle }: Props): JSX.
 
                     <div className="ws-muted ws-tiny ws-dream-footer">
                         Runs in the background. Stops if errors compound.
+                    </div>
+
+                    <hr className="ws-mode-hr" />
+
+                    <div className="ws-mode-label">Run now</div>
+                    <div className="ws-dream-list">
+                        {FOCUS_PRESETS.map((focus) => (
+                            <button
+                                key={focus}
+                                className="ws-dream-row ws-dream-manual-row"
+                                onClick={() => runNow(focus)}
+                                disabled={disabled}
+                            >
+                                <span className="ws-dream-row-label">{focus}</span>
+                            </button>
+                        ))}
+
+                        <button
+                            className="ws-dream-row ws-dream-manual-row"
+                            data-variant="auto"
+                            onClick={() => runNow(null)}
+                            disabled={disabled}
+                        >
+                            <span className="ws-dream-row-label">Auto (whole workspace)</span>
+                        </button>
+
+                        {otherMode ? (
+                            <input
+                                type="text"
+                                className="ws-dream-manual-input"
+                                autoFocus
+                                placeholder="Describe a focus, then press Enter…"
+                                value={customText}
+                                onChange={(e) => setCustomText(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') { e.preventDefault(); submitCustom(); }
+                                    if (e.key === 'Escape') { setOtherMode(false); }
+                                }}
+                                disabled={disabled}
+                            />
+                        ) : (
+                            <button
+                                className="ws-dream-row ws-dream-manual-row"
+                                data-variant="other"
+                                onClick={() => setOtherMode(true)}
+                                disabled={disabled}
+                            >
+                                <span className="ws-dream-row-label">Other…</span>
+                            </button>
+                        )}
+                    </div>
+
+                    <div className="ws-muted ws-tiny ws-dream-footer">
+                        Runs once, on demand. A save mid-run aborts it.
                     </div>
                 </Popover.Content>
             </Popover.Portal>

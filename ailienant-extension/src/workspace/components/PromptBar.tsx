@@ -4,13 +4,12 @@ import { Tooltip } from '../../shared/Tooltip';
 import { CommandPalette, useSlashDetect } from './CommandPalette';
 import { ContextOverlay } from './ContextOverlay';
 import { DreamingMode } from './DreamingMode';
-import { DreamingTrigger } from './DreamingTrigger';
 import { ModeMenu } from './ModeMenu';
 import { MentionDropdown } from './MentionDropdown';
 import { vscode } from '../vscode_bridge';
 import type { AilienantConfig, ExecutionMode } from '../../shared/types';
 import type {
-    ReasoningPreset, InferenceTier, DreamingProfile, OrchestrationMode, MentionItem,
+    ReasoningPreset, DreamingProfile, OrchestrationMode, MentionItem,
 } from '../../shared/config';
 import { useWorkspaceStore } from '../workspaceStore';
 
@@ -25,10 +24,8 @@ interface Props {
     // Mode menu state
     mode: ExecutionMode;
     preset: ReasoningPreset;
-    tier: InferenceTier;
     onModeChange:   (m: ExecutionMode) => void;
     onPresetChange: (p: ReasoningPreset) => void;
-    onTierChange:   (t: InferenceTier) => void;
     // Dreaming
     dreamingActive: boolean;
     dreamingProfile: DreamingProfile;
@@ -46,7 +43,7 @@ interface Props {
 
 export function PromptBar({
     disabled, placeholder, activeTaskId, isStreaming, isAborting, config,
-    mode, preset, tier, onModeChange, onPresetChange, onTierChange,
+    mode, preset, onModeChange, onPresetChange,
     dreamingActive, dreamingProfile, onDreamingToggle,
     activeModelId, orchestrationMode, onModelPrefChange,
     sessionId, onSubmit, onAbort,
@@ -278,19 +275,17 @@ export function PromptBar({
                         profile={dreamingProfile}
                         config={config}
                         onToggle={onDreamingToggle}
+                        disabled={disabled}
                     />
-                    <DreamingTrigger disabled={disabled} />
                 </div>
 
                 <div className="ws-prompt-tools-right">
                     <ModeMenu
                         mode={mode}
                         preset={preset}
-                        tier={tier}
                         disabled={disabled}
                         onModeChange={onModeChange}
                         onPresetChange={onPresetChange}
-                        onTierChange={onTierChange}
                     />
                     {isStreaming ? (
                         <Tooltip content={isAborting ? 'Aborting…' : 'Abort current task'} side="top">
