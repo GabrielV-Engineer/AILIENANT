@@ -30,3 +30,12 @@ CORRECTION_MAX_ATTEMPTS: int = 3
 # recur (across graph invocations, in-process) before the reflexion loop stops
 # spending LLM calls on a known-unfixable error and routes straight to the DLQ.
 FAILURE_SIGNATURE_THRESHOLD: int = 3
+
+# Transport-layer retries handed to litellm for a single LLM call (connection
+# blips / transient 5xx). Distinct from the cognitive retry budgets above — this
+# is the network envelope, applied uniformly across every gateway invocation.
+LLM_MAX_TRANSPORT_RETRIES: int = 2
+
+# SQLite WAL checkpoint backoff: attempts before conceding a deferred checkpoint
+# when a concurrent writer keeps the WAL busy.
+WAL_CHECKPOINT_MAX_RETRIES: int = 3

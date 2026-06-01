@@ -130,23 +130,14 @@ class ErrorCorrectionAgent:
     ) -> Optional[str]:
         """Firewalled read of a candidate file via the shared VFS middleware. Returns
         None when the file is excluded/ignored/binary/too-large/unreadable."""
-        from core.vfs_middleware import VFSMiddleware
+        from core.vfs_middleware import make_safe_reader
 
-        try:
-            # VFSMiddleware is an untyped legacy singleton (Phase 8 silenced module);
-            # the firewall contract (VFSReadResult) is honored below regardless.
-            result = VFSMiddleware().read_safe(  # type: ignore[no-untyped-call]
-                path,
-                project_id=state.get("project_id"),
-                project_root=state.get("workspace_root"),
-                session_id=state.get("task_id"),
-            )
-        except Exception as exc:  # noqa: BLE001 — a read failure must not break the loop
-            logger.warning("Correction read_safe failed for %s: %s", path, exc)
-            return None
-        if not result.ok or result.content is None:
-            return None
-        return result.content
+        read = make_safe_reader(
+            state.get("project_id"),
+            state.get("workspace_root"),
+            state.get("task_id"),
+        )
+        return read(path)
 
     async def propose_fix(
         self,

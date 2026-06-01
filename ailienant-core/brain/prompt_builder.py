@@ -179,11 +179,10 @@ class PromptBuilder:
         top_n_skeleton: int = 10,
     ) -> ContextBundle:
         from core.db import get_top_ppr_files
-        from core.vfs_middleware import VFSMiddleware
+        from core.vfs_middleware import make_safe_reader
         from tools.token_counter import PrecisionTokenCounter
         from brain.orchestrator import orchestrator_context
 
-        vfs = VFSMiddleware()
         token_budget = int(context_window * 0.80)
         flesh_blocks: List[ContextBlock] = []
         skeleton_blocks: List[ContextBlock] = []
@@ -194,19 +193,8 @@ class PromptBuilder:
         if prefix:
             tokens_used += PrecisionTokenCounter.estimate_with_buffer(prefix, model_name)
 
-        def _read(path: str) -> Optional[str]:
-            # VFSMiddleware.read_safe() exact signature verified at agent wiring time (Phase 4)
-            try:
-                result = vfs.read_safe(path)
-                return result if isinstance(result, str) else None
-            except FileNotFoundError:
-                return None  # expected for files not yet synced to VFS
-            except Exception as exc:
-                logger.warning(
-                    "PromptBuilder: Failed to read %s via VFS. Skipping block. Cause: %s",
-                    path, exc,
-                )
-                return None
+        # Firewalled reader for context assembly; returns the file text or None.
+        _read = make_safe_reader(project_id, None, None)
 
         # ── Tier 1 Flesh: active file (always injected first) ────────────
         active_content = _read(active_file)
