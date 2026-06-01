@@ -2,6 +2,27 @@
 
 ---
 
+## Hito 7.14.2: Elite Diff Engine (Split-Diff + Hatching) — 2026-06-01
+
+- **Status:** OK — `npm run compile` y `npm run lint` exit 0. Bundle `dist/workspace.js` = **549 335 B ≤ 563 200 B** (techo enmendado). Sin cambios bajo `ailienant-core/`, CSP intacta, formato esbuild sigue `iife`.
+
+- **Motivación:** Hasta ahora una edición del agente fluía `server_apply_workspace_edit` → `PatchActuator.apply()` que escribía a disco y ACKeaba en silencio. El usuario no veía el diff en el chat — el cambio era invisible hasta abrir el archivo. ADR-721/722 piden surfacearlo como un diff inline, themed y de grado Cursor/Claude-Code, **sin tocar Python**: el host ya tiene ambos lados (el `PatchActuator` lee el texto viejo, el payload trae el nuevo).
+
+- **Decisiones de arquitectura:**
+  - **Seam host-side (ADR-721):** `PatchActuator.apply()` ahora retorna `diffs: PatchedFileDiff[]` (capturado en Pass 2, LF-normalizado ambos lados → cp1252/CRLF-safe). `workspace_panel.ts` postea `RENDER_DIFF {patch_id, files}` al webview tras el ACK existente. **Cero cambio de `ws_contracts.py` / payload / evento de servidor.**
+  - **`diffBlocks` como artefacto de turno:** espejo del patrón `toolCalls` — campo aditivo en `Message`, adjuntado al último turno asistente, proyectado en `PERSIST_TRANSCRIPT` (sobrevive teardown/rehydrate gratis).
+  - **Mandatos de rendimiento (vinculantes del IT Director):** M1 — truncación **en memoria** (JS) a `DIFF_RENDER_LINE_CAP=400` antes de entregar las cadenas al viewer (NO ocultar con CSS — montaría miles de nodos y congelaría el hilo); botón "Load full diff" opt-in. M3 — `DiffBlock` envuelto en `React.memo` con comparador por primitivas estables + el reducer construye array/objeto nuevos inmutablemente (tipear en el composer no reconcilia el diff).
+  - **Theming (ADR-722 §6):** colores del diff ligados a `--vscode-diffEditor-insertedTextBackground/-removedTextBackground/--vscode-editor-*` vía el `styles` override de la librería (emotion); hatching diagonal en `emptyLine`/`emptyGutter`. Theme flip sin reload.
+  - **`disableWorker`:** la librería usa un Web Worker (blob URL) para el cómputo del diff — bloqueado por la CSP del panel (`script-src ${cspSource}`). Forzado el fallback síncrono.
+
+- **El Pivote 550KB (decisión ratificada):** `shiki` fue instalado, integrado (engine JS sin WASM + core fine-grained + singleton de promesa M2) y **medido empíricamente**: el engine JS ~160 KB + la gramática mínima usable `tsx` ~172 KB minified, y `react-diff-viewer-continued` solo ya lleva el base a ~537 KB. Inline bajo 500 KB es matemáticamente imposible. Rechazadas externalización de assets (riesgo CSP/plumbing) y diff hand-rolled (riesgo de reinvención). **Resolución:** descartar shiki de 7.14.2 (diffs en monospace themed, sin tokens), enmendar el techo a **550 KB**, y registrar la tokenización diferida como deuda (`DEBT-006`, alias "DEBT-003"). El contrato §3 conserva las reglas dormidas de shiki para cuando se retome.
+
+- **Files changed:** `core/PatchActuator.ts` (retorna diffs), `providers/workspace_panel.ts` (postea `RENDER_DIFF`), `workspace/components/DiffBlock.tsx` (**nuevo**), `workspace/Workspace.tsx` (campo + ingest + persist + render), `shared/config.ts` (`DiffBlockShape`), `workspace/workspace.css` (`.ws-diff-*`), `package.json` (+`diff` +`react-diff-viewer-continued` +`@types/diff`, −`shiki`), `tsconfig.json` (`module: Preserve` para importar ESM-only sin romper el `import = require()` de sanitizer.ts), `docs/PHASE_7_14_0_STACK_CONTRACT.md` (§1/§2/§3), `docs/TECH_DEBT_BACKLOG.md` (DEBT-006).
+
+- **Próximo:** 7.14.3 — Ghost Telemetry (status dots, action-log en vivo, footer de tokens en vivo).
+
+---
+
 ## Hito 7.14.1: The Infinite Canvas (Zero-Bubble) — 2026-06-01
 
 - **Status:** OK — `npm run compile` y `npm run lint` exit 0. DoD ZB1 + ZB2 cumplidos.

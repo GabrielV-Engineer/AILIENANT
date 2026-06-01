@@ -7,7 +7,7 @@ import type { WorkspaceSurface } from './workspaceStore';
 import {
     BudgetLimitMode, ReasoningPreset, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
-    ToolCallShape,
+    ToolCallShape, DiffBlockShape,
 } from '../shared/config';
 import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
@@ -23,6 +23,7 @@ import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ThoughtBox } from './components/ThoughtBox';
 import { accumulateThinking, newThinkingTurn, freezeThinkingOnText } from './utils/thinkingReducer';
 import { ToolChip } from './components/ToolChip';
+import { DiffBlock } from './components/DiffBlock';
 import { MessageActions } from './components/MessageActions';
 import { CheckpointPicker, type CheckpointEntry } from './components/CheckpointPicker';
 import {
@@ -122,6 +123,11 @@ export interface Message {
     // Each entry is built incrementally from server_tool_start, _stream_chunk
     // and _result events keyed by tool_call_id.
     toolCalls?: ToolCallShape[];
+    // Inline diffs for edits applied during this turn — one entry per file,
+    // surfaced by the host (RENDER_DIFF) after PatchActuator applies. Attached to
+    // the turn that explained the edit and persisted so a teardown mid-render
+    // re-hydrates the diff. Display-only; never sent to the core.
+    diffBlocks?: DiffBlockShape[];
     // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: the L2-promoted checkpoint
     // that wraps this completed assistant turn. Populated from
     // `server_stream_end`. Only assistant messages carry one; absent on user
@@ -317,10 +323,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 // Phase 7.11.8 — carry checkpoint_id + is_abort_savepoint so
                 // the rehydrated transcript still shows the ↪ Branch button.
                 messages: messages.map(({
-                    id, role, content, steps, stepsDone, toolCalls,
+                    id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                     checkpoint_id, is_abort_savepoint, authorLabel,
                 }) => ({
-                    id, role, content, steps, stepsDone, toolCalls,
+                    id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                     checkpoint_id, is_abort_savepoint, authorLabel,
                 })),
                 nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
@@ -402,6 +408,35 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 case 'server_hitl_ack':
                     addToast('info', 'Decision received.');
                     break;
+                case 'RENDER_DIFF': {
+                    // Host-enriched inline diff: an approved edit was applied, and
+                    // the host surfaced both sides. Attach to the assistant turn
+                    // that explained the edit (or a fresh placeholder if the stream
+                    // already ended). Built once on edit-arrival — never per token.
+                    const d = msg.payload as { patch_id: string; files: Omit<DiffBlockShape, 'patch_id'>[] };
+                    if (!d?.files?.length) { break; }
+                    const incoming: DiffBlockShape[] = d.files.map(f => ({ ...f, patch_id: d.patch_id }));
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (last?.role === 'assistant') {
+                            // New array + new message object so React.memo on DiffBlock
+                            // only reconciles this turn — composer keystrokes that
+                            // re-render Workspace leave every other turn's refs intact.
+                            return [...prev.slice(0, -1), {
+                                ...last,
+                                diffBlocks: [...(last.diffBlocks ?? []), ...incoming],
+                            }];
+                        }
+                        return [...prev, {
+                            id: mkId(),
+                            role: 'assistant',
+                            content: '',
+                            diffBlocks: incoming,
+                            authorLabel: authorLabelFor('assistant', nattName),
+                        }];
+                    });
+                    break;
+                }
                 case 'REHYDRATE_TRANSCRIPT': {
                     // Phase 7.12 — host re-posts the authoritative per-session
                     // transcript when this hidden panel becomes visible again
@@ -1117,6 +1152,17 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                                     key={tc.tool_call_id}
                                                     tc={tc}
                                                     onRetry={handleRetryTool}
+                                                />
+                                            ))}
+                                        </div>
+                                    )}
+                                    {/* Inline Elite Diff Engine — split diffs for edits applied during this turn. */}
+                                    {m.role === 'assistant' && m.diffBlocks && m.diffBlocks.length > 0 && (
+                                        <div className="ws-diff-stack">
+                                            {m.diffBlocks.map(db => (
+                                                <DiffBlock
+                                                    key={`${db.patch_id}:${db.file_path}`}
+                                                    block={db}
                                                 />
                                             ))}
                                         </div>

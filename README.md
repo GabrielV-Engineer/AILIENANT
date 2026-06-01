@@ -188,6 +188,7 @@ Proyect_Ailienant/
 │   │   │   │                   #     CSSAlertBanner, HITLCard, ContextOverlay,
 │   │   │   │                   #     CommandPalette (sectioned /command + /settings menu, 7.9.A.7) + ModelsMenu
 │   │   │   │                   #     + CustomizeMenu (7.9.A.7 permissions/output-styles/agents/hooks/mcp) + SkillsMenu (7.9.A.7.f insert/create)
+│   │   │   │                   #     + DiffBlock (inline Elite Diff Engine — react-diff-viewer split grid, jsdiff math, vscode-themed, M1 memory-truncation guard)
 │   │   │   └── hooks/          #     useReasoningPreset (surgeon/architect/explorer preset serializer)
 │   │   ├── dashboard/          #   Web Dashboard SPA (ESM + code splitting, custom palette)
 │   │   │   ├── main.tsx        #     SPA entry — default Overview tab, lazy StagingArea (Monaco), eager HW/BYOM/Rules/Audit/Extensions/Telemetry/Recovery panels

@@ -1,6 +1,6 @@
 {
 	"compilerOptions": {
-		"module": "Node16",
+		"module": "Preserve",
 		"target": "ES2022",
 		"lib": [
 			"ES2022",

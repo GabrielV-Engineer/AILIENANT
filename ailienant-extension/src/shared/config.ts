@@ -76,6 +76,17 @@ export interface ToolCallShape {
     };
 }
 
+// One file's worth of inline diff, surfaced by the host once an approved edit is
+// applied (both sides arrive EOL-normalized host-side). Attached to the assistant
+// turn that explained the edit and rendered as a split diff.
+export interface DiffBlockShape {
+    patch_id: string;
+    file_path: string;
+    old_content: string;
+    new_content: string;
+    status: 'edit' | 'create';
+}
+
 // Discriminated union of every message the webview can post.
 // Mirrors the cases in src/providers/chat_sidebar.ts onDidReceiveMessage.
 export type WebviewToHostMessage =
