@@ -2,6 +2,38 @@
 
 ---
 
+## Hito 7.13.10: Orphanage Recovery II — Surface Sync & Push-Fed Panels — 2026-06-01
+
+**Status:** CERRADO — 7.13.10 COMPLETA | **Phase:** 7.13.10 (ADR-716)
+
+**Problem:** la auditoría v1 afirmaba que los paneles del dashboard eran "stubs sin datos". La re-auditoría (ADR-716) lo desmiente: los 4 paneles (Hardware/Runtime/Rules/Audit) fetchean endpoints **reales**. El mandato del WBS era *inventario gated PRIMERO, aprobado por el usuario, antes de cualquier mutación* — verificar, no borrar a ciegas — y luego cablear los huérfanos genuinos y convertir los pollers mount-poll a Push.
+
+**Corrección arquitectónica (CLAUDE.md §3):** una segunda premisa cayó al contacto. El dashboard es una **página HTML servida por el backend** (`http://127.0.0.1:{port}/dashboard/`, abierta vía `OPEN_DASHBOARD`) que habla con el core por `fetch` HTTP **same-origin** — **no tiene WebSocket ni bridge del host**. Los paneles se renderizan condicionalmente (`{activePanel === ... && <Panel/>}`), así que **se desmontan al cambiar de pestaña** y sus `setInterval` se limpian: el "leak de polling-cleanup" que temía el blueprint **no existe**. Un "bus de telemetría" WS exigiría levantar un subsistema WS nuevo en el dashboard + un emisor periódico de hardware/runtime en el backend — over-engineering para dos pollers que ya se comportan bien. Se llevó al usuario como decisión gated (§5.2).
+
+**Inventario aprobado + decisiones:**
+- **Hardware/Runtime** → poll **visibility-gated**. Nuevo hook `usePollingWhileVisible(fn, intervalMs)`: dispara una vez al montar y luego sondea **sólo mientras `document.visibilityState === 'visible'`**, escucha `visibilitychange` para pausar/reanudar, y limpia todo al desmontar. Cierra el único costo real (una ventana de dashboard en segundo plano que seguía sondeando) sin transporte nuevo.
+- **Rules/Audit, controles de modo/lanzamiento, terminal de `ContextOverlay`** → **verificados** (live / manual by design — ninguna API de VS Code expone salida de terminal). Sin cambios.
+- **`master_toggle` / `profile_change`** → **tipos FE muertos eliminados** de `config.ts` (sin emisor ni handler host en ninguna parte). Los handlers WS del backend (`main.py`) y los eventos en `ws_contracts` se **retienen** (aditivo/inofensivo; sin remoción de esquema) — anotados como limpieza futura de backend.
+- **OOM** → **cableado**. `Workspace.tsx` consumía un `OOM_ENGAGED` (toast) que **nunca se emitía**; `oom_fallback_active` sólo vivía en el state del grafo. Como el host reenvía **cualquier** `event_type` del backend al webview verbatim, el cableado es puramente aditivo: nuevo evento `ServerOomEngagedEvent` (`server_oom_engaged`, payload `failed_model`/`fallback_model`), helper `broadcast_oom_engaged` (espejo de `broadcast_model_warmup`), y un broadcast **best-effort** desde `_oom_cascade` en el rescate OOM, **ruteado por `state["task_id"]`** (la clave universal de broadcast del brain) y **guardado** (`state` es opcional y a menudo ausente; `except Exception` deja propagar `CancelledError`). El consumidor muerto se renombró a `case 'server_oom_engaged'`.
+
+**Files changed:**
+- `src/dashboard/hooks/usePollingWhileVisible.ts` (NUEVO) — hook de poll visibility-gated.
+- `src/dashboard/panels/HardwarePanel.tsx` · `src/dashboard/panels/RuntimePanel.tsx` — usan el hook (se mantiene el `setInterval` one-shot del deadline de lanzamiento de Runtime).
+- `src/shared/config.ts` — eliminados los tipos muertos `master_toggle`/`profile_change`.
+- `src/workspace/Workspace.tsx` — `OOM_ENGAGED` → `server_oom_engaged` (lee `fallback_model` si está).
+- `api/ws_contracts.py` — `OomEngagedPayload` + `ServerOomEngagedEvent` (aditivo, registrado en la unión).
+- `api/websocket_manager.py` — `broadcast_oom_engaged`.
+- `tools/llm_gateway.py` — broadcast del swap OOM en `_oom_cascade` (best-effort, ruteado por `task_id`).
+
+**Architectural outcomes:**
+- **Premisa corregida sin daño** la auditoría falsa de "stubs" se reemplaza por un inventario verificado; nada se borró a ciegas. **Gate DB1 enmendado** en el blueprint: mount-poll *visibility-gated* (aceptable — desmontan al cambiar de pestaña) en vez de WS-Push-fed.
+- **Aditividad** `server_oom_engaged` es un evento de servidor nuevo y opcional; sin remociones ni renombres de contratos (`SCHEMA_EVOLUTION` a salvo). Las eliminaciones FE tocan sólo miembros de unión jamás emitidos.
+- **Señal de resiliencia visible** el fallback OOM por fin se le muestra al usuario (el toast antes era código muerto), sin abrir un segundo canal ni romper el camino de rescate.
+
+**Verification (DoD, todo verde):** `npm run check-types` → exit 0; `npm run lint` → 0 errores (2 warnings pre-existentes intactos); `npm run compile` → OK; `mypy .` → Success (224 archivos); `pytest` → **748 passed**. Sin deps nuevas, sin migración de esquema.
+
+---
+
 ## Hito 7.13.9: Orphanage Recovery I — Máquina de Estados Multi-Turno & Planner UI — 2026-06-01
 
 **Status:** CERRADO — 7.13.9 COMPLETA | **Phase:** 7.13.9 (ADR-713)

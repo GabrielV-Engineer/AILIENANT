@@ -214,6 +214,19 @@ class ServerModelWarmupEvent(BaseModel):
     data: ModelWarmupPayload
 
 
+class OomEngagedPayload(BaseModel):
+    """Surfaces an OOM rescue swap so the IDE can warn the user that the local
+    model ran out of memory/context and the turn was re-emitted to the cloud."""
+
+    failed_model: str
+    fallback_model: str
+
+
+class ServerOomEngagedEvent(BaseModel):
+    event_type: Literal["server_oom_engaged"] = "server_oom_engaged"
+    data: OomEngagedPayload
+
+
 # =====================================================================
 # 7. PHASE 2.5 — LAZY WORKSPACE INDEXING CONTRACTS
 # =====================================================================
@@ -872,6 +885,7 @@ WebSocketMessage = Union[
     ClientHITLResponseEvent,
     ClientConcurrencyConflictEvent,
     ServerModelWarmupEvent,
+    ServerOomEngagedEvent,           # OOM rescue swap surfaced to the IDE
     ClientWorkspaceInitEvent,        # Phase 2.5
     ServerIndexingProgressEvent,     # Phase 2.5
     ServerIndexingErrorEvent,        # Phase 2.5 — pre-flight error

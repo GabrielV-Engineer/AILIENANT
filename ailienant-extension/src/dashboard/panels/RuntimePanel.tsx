@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
 
 interface RuntimeStatus {
     tier:              'DOCKER' | 'WASM' | 'NATIVE_HITL' | null;
@@ -63,12 +64,9 @@ export function RuntimePanel(): JSX.Element {
         } catch { /* backend offline */ }
     }, []);
 
-    // Poll every 5 s; clear on unmount.
-    useEffect(() => {
-        fetchStatus();
-        const id = setInterval(() => fetchStatus(), POLL_INTERVAL_MS);
-        return () => clearInterval(id);
-    }, [fetchStatus]);
+    // Poll runtime status while the dashboard is visible; a hidden window
+    // pauses polling and resumes on return.
+    usePollingWhileVisible(() => { void fetchStatus(); }, POLL_INTERVAL_MS);
 
     // Escape hatch: clear "launching" once daemon is up OR the 30 s deadline passes.
     useEffect(() => {

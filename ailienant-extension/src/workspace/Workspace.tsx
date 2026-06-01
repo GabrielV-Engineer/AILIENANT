@@ -707,9 +707,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     addToast('info', `Warming up ${d.model_name} (${d.is_local ? 'local' : 'cloud'})`);
                     break;
                 }
-                case 'OOM_ENGAGED':
-                    addToast('error', 'OOM detected — falling back to cloud model');
+                case 'server_oom_engaged': {
+                    const d = msg.payload as { failed_model?: string; fallback_model?: string } | undefined;
+                    const target = d?.fallback_model ? ` → ${d.fallback_model}` : '';
+                    addToast('error', `OOM detected — falling back to cloud model${target}`);
                     break;
+                }
                 case 'OCC_CONFLICT':
                     setOccStatus('soft_conflict');
                     setLockedFiles(prev => prev + 1);

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,22 +85,19 @@ export function HardwarePanel(): JSX.Element {
             .catch(() => { /* backend offline */ });
     }, []);
 
-    // Poll hardware profile every 3 s; clean up on unmount / tab-switch
-    useEffect(() => {
-        let cancelled = false;
-        const poll = async (): Promise<void> => {
+    // Poll the hardware profile while the dashboard is visible; a hidden window
+    // pauses polling and resumes on return.
+    usePollingWhileVisible(() => {
+        void (async (): Promise<void> => {
             try {
                 const r = await fetch('/api/v1/hardware/profile');
-                if (!r.ok || cancelled) return;
+                if (!r.ok) return;
                 const data: HardwareProfile = await r.json();
                 setProfile(data);
                 setProfileReady(true);
             } catch { /* backend offline */ }
-        };
-        poll();
-        const id = setInterval(poll, 3000);
-        return () => { cancelled = true; clearInterval(id); };
-    }, []);
+        })();
+    }, 3000);
 
     const changeMode = async (m: ExecutionModeChoice): Promise<void> => {
         setModeChoice(m);

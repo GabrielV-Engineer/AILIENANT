@@ -19,6 +19,7 @@ from api.ws_contracts import (
     ServerGraphMutationEvent, GraphMutationPayload,
     ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
     ServerModelWarmupEvent, ModelWarmupPayload,
+    ServerOomEngagedEvent, OomEngagedPayload,
     ServerIndexingProgressEvent, IndexingProgressPayload,
     ServerIndexingErrorEvent, IndexingErrorPayload,
     ServerVfsPatchApprovedEvent, VfsPatchApprovedPayload,
@@ -321,6 +322,23 @@ class ConnectionManager:
                     model_name=model_name,
                     is_local=is_local,
                     tier=tier,  # type: ignore[arg-type]
+                )
+            ),
+        )
+
+    async def broadcast_oom_engaged(
+        self,
+        session_id: str,
+        failed_model: str,
+        fallback_model: str,
+    ) -> None:
+        """Warn the IDE that an OOM rescue swapped the local model for the cloud."""
+        await self.send_personal_message(
+            session_id,
+            ServerOomEngagedEvent(
+                data=OomEngagedPayload(
+                    failed_model=failed_model,
+                    fallback_model=fallback_model,
                 )
             ),
         )
