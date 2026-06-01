@@ -82,8 +82,6 @@ export type WebviewToHostMessage =
     | { type: "SUBMIT_TASK";        value: string; preset?: ReasoningPreset; tier?: InferenceTier; planner_mode_active?: boolean }
     | { type: "ABORT_TASK" }
     | { type: "ABORT_MESH" }  // Phase 7.11.3 — Abort Controller Mesh (backend Task.cancel)
-    | { type: "master_toggle";      value: boolean }
-    | { type: "profile_change";     value: IntelligenceProfile }
     | { type: "dreaming_toggle";    value: boolean; profile: DreamingProfile }
     | { type: "FORCE_AGENT";        role: AgentRole }
     | { type: "FILE_BLOCKED_ACK" }

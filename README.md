@@ -200,6 +200,7 @@ Proyect_Ailienant/
 │   │   │                   #     RecoveryPanel (ADR-716 — Task Recovery: lists pending DLQ episodes, Resume button wires /dlq/pending + /task/resume)
 │   │   │   │   ├── memory/     #       api.ts (REST client), SectionsList, CodeGraphLayer (ReactFlow/PPR), VectorMapLayer (regl-scatterplot WebGL + PCA scatter)
 │   │   │   │   └── byom/       #       api.ts (REST client Phase 7.9.B.2 — fetchBYOMConfig/saveBYOMConfig/testEndpoint)
+│   │   │   └── hooks/          #     usePollingWhileVisible (visibility-gated REST poll — pauses when the dashboard is hidden; used by HardwarePanel/RuntimePanel)
 │   │   ├── api/                #   WSClient (BroadcastChannel delta sync, exponential reconnect), HTTP clients
 │   │   ├── editor/             #   vfs_reader (dirty buffer capture)
 │   │   └── core/               #   IntentRouter, PathResolver, PatchActuator (Phase 7.9.B.18 — VS Code applyEdit actuator + hash stale-guard + save()), InlineMutationManager (Phase 7.11.1 — ADR-706 §4.5a Cmd+K manager: FIFO promise-chain edit queue, two TextEditorDecorationTypes, LF↔CRLF offset conversion for Windows safety, single-Undo session, PatchActuator-backed accept)

@@ -243,15 +243,34 @@ Consolidate the VFS readers in **both** `agents/coder.py` **and** `agents/analys
 | OR1 | Planner UI | Manual Mode renders an interactive locked multi-turn form, not standard chat |
 | OR2 | DLQ resume | the dead-letter resume UI round-trips `/task/resume` + `/dlq/pending` |
 | OR3 | Planner toggle | the Planner mode toggle reaches the backend (`client_planner_mode_toggle` wired) |
-| DB1 | Dashboard | no panel shows "No data"; the genuine orphans are wired or deleted per the approved inventory; mount-poll panels are Push-fed |
+| DB1 | Dashboard | no panel shows "No data"; the genuine orphans are wired or deleted per the approved inventory; mount-poll panels are **visibility-gated** (amended from "Push-fed" per §5.2 / ADR-716 — the dashboard is HTTP-only, panels unmount on tab-switch, no leak) |
 | TL1 | Telemetry log | WS payloads + node transitions logged, secrets scrubbed, UTF-8, bounded/rotated, `.gitignore`'d |
 | DD1 | Dedup | no duplicate VFS readers (`coder.py` + `analyst.py`); retry budgets unified |
 | REG | Regression | full pytest green (≥ 675 at 7.13 start); `npm run compile` 0 errors; `mypy --strict` 0 on new/modified files |
 
 ### 5.2 — Dashboard surface-sync inventory (filled during 7.13.10, user-approved)
-| Control / metric | Panel | Expected endpoint | Status (live/stub/dead) | Decision (verify/wire/delete) |
+| Control / metric | Panel / file | Expected endpoint / signal | Status (live/stub/dead) | Decision |
 |---|---|---|---|---|
-| _(to be enumerated and approved before any frontend mutation; already-wired panels are verified, not blind-deleted)_ | | | | |
+| Hardware profile | `HardwarePanel` | `GET /api/v1/hardware/profile` | live, mount-poll 3s | **visibility-gated poll** |
+| Execution mode get/set | `HardwarePanel` | `GET/POST /api/v1/hardware/mode` | live, on-demand | verified |
+| Runtime status | `RuntimePanel` | `GET /api/v1/runtime/status` | live, mount-poll 5s | **visibility-gated poll** |
+| start-docker / pull-image | `RuntimePanel` | `POST /api/v1/runtime/*` | live, on-demand | verified |
+| Soul / settings / reject | `RulesPanel` | `GET/POST /api/v1/system/*`, `/telemetry/reject` | live, on-mount | verified |
+| Audit log / verify / stats | `AuditPanel` | `GET /api/v1/audit/*` | live, on-mount + paging | verified |
+| `client_master_toggle` | `config.ts` type | backend WS handler live; no FE emitter / no host forward | dead (FE) | **delete dead FE type** |
+| `client_profile_change` | `config.ts` type | backend WS handler live; no FE emitter / no host forward | dead (FE) | **delete dead FE type** |
+| `OOM_ENGAGED` toast | `Workspace.tsx` | consumed (toast) but never emitted; `oom_fallback_active` only in graph state | dead (consumer) | **wire** (new `server_oom_engaged`) |
+| Terminal context | `ContextOverlay` | manual paste → `ATTACH_CONTEXT kind:'terminal'` | live (manual by design — no VS Code API exposes terminal output) | verified |
+
+**Architectural correction (ADR-716):** the dashboard is a backend-served HTML page
+(`/dashboard/`) using same-origin HTTP `fetch` — no WebSocket, no host bridge. Panels are
+conditionally rendered, so they unmount on tab-switch and tear down their intervals; the
+"polling-cleanup leak" does **not** exist. A WS "telemetry-bus subscription" would require a
+new dashboard WS subsystem + a periodic backend hardware/runtime emitter — over-engineering
+for two correctly-behaving pollers. **Gate DB1 amended:** mount-poll panels are
+*visibility-gated* (poll only while the dashboard is visible) rather than WS-Push-fed. The
+dead `master_toggle`/`profile_change` FE types are deleted; their backend WS handlers are
+retained (additive/harmless, flagged as a future backend cleanup).
 
 **Manual smoke:** save a file → `.ailienant_telemetry.log` shows one incremental re-index, no toast. Open an excluded `.env` → no push; toggle Incognito → the bus halts. Click "Consolidate Memory" → Dreaming runs once; save mid-run → it aborts cleanly; no idle wake ever. Trigger a mock tool error → the agent self-heals silently, then DLQs after the budget. Kill the WS mid-stream → the spinner clears; reconnect → no duplicate generation. Toggle Planner Manual Mode → an interactive form appears. Open the dashboard → every panel shows real data or is gone.
 

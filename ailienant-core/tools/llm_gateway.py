@@ -160,6 +160,22 @@ async def _oom_cascade(
         "OOM cascade re-emitting to cloud fallback [trace=%s] model=%s",
         trace_id, fallback_model,
     )
+
+    # Surface the swap to the IDE. Best-effort: the rescue must never fail on a
+    # transport hiccup, and `state` is often absent. Broadcasts are keyed by
+    # task_id, like the rest of the brain layer. (`except Exception` lets a
+    # CancelledError propagate, since it derives from BaseException.)
+    if state is not None:
+        task_id = str(state.get("task_id", "") or "")
+        if task_id:
+            try:
+                from api.websocket_manager import vfs_manager  # deferred — avoids circular import
+                await vfs_manager.broadcast_oom_engaged(
+                    task_id, failed_model=failed_model, fallback_model=fallback_model,
+                )
+            except Exception as exc:  # noqa: BLE001 — UI surfacing is non-fatal
+                logger.debug("OOM engaged broadcast failed (non-fatal): %s", exc)
+
     _t0 = time.perf_counter()
     response: ModelResponse = await litellm.acompletion(
         **{**kwargs, "model": fallback_model, "messages": trimmed}
