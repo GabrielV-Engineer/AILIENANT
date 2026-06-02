@@ -2,6 +2,25 @@
 
 ---
 
+## Hito 7.14.3: Ghost Telemetry (Status Dots + Live Action-Log + Live Token Footer) — 2026-06-01
+
+- **Status:** OK — `npm run check-types` y `npm run lint` exit 0 (sólo los 2 warnings `semi` pre-existentes en `api_client.ts`/`vfs_reader.ts`, archivos ajenos). Bundle `dist/workspace.js` = **550 731 B ≤ 563 200 B** (+1 396 B sobre el baseline 7.14.2; un componente diminuto + CSS). Sin cambios bajo `ailienant-core/`, CSP y formato esbuild `iife` intactos.
+
+- **Motivación:** Entre el colapso del Thought Box y el render de la respuesta había un hueco sin estado — un spinner mudo. ADR-723 lo llena con señales baratas y **derivadas** (sin evento de servidor nuevo, sin Python): (a) puntos de estado en el header del `ToolChip`, (b) un action-log en vivo de las invocaciones en vuelo mientras piensa, (c) un footer de tokens por mensaje que tickea en vivo — hoy sólo existía el conteo final (en el HUD FinOps global).
+
+- **Decisiones de arquitectura:**
+  - **Puntos de estado — CSS puro:** el `ToolChip` ya emite `data-status` (`pending|success|error`); el punto es un `::before` sobre `.ws-tool-chip-head` leído desde `.ws-tool-chip[data-status=…]`, con pulse `ws-pulse` en `pending`, verde `--vscode-testing-iconPassed` en success, rojo `--vscode-testing-iconFailed` en error. **Cero cambio de lógica en ToolChip.**
+  - **Action-log — vista derivada, no estado:** `ActionLog.tsx` (nuevo) renderiza `toolCalls` como líneas muteadas (`<tool> <primary-arg>`, arg truncado a 60 chars), gateado a `m.streaming`; al terminar el stream el stack de `ToolChip` es el registro canónico y el log desaparece. `React.memo` con comparador por `tool_call_id`+`status` → tipear en el composer no lo reconcilia.
+  - **Footer de tokens en vivo:** el transporte sólo emite un costo agregado final (`TOKEN_SNAPSHOT`), nunca un delta por token, así que los tokens de respuesta se cuentan client-side (uno por `server_token_chunk`) vía `bumpLiveTokens()` en `thinkingReducer.ts` (pura, inmutable, foldeada en el rebuild que el handler ya hace). Total mostrado = `liveTokens + thinkingTokens`. Es una cifra de presentación, distinta del costo autoritativo del FinOps HUD.
+  - **`liveTokens` es dato durable, NO transitorio (corrección del IT Director):** se proyecta en `PERSIST_TRANSCRIPT` junto a `toolCalls`/`checkpoint_id`. El total congelado por mensaje sobrevive teardown/reload para que el usuario pueda auditar qué mensaje costó más. Sólo `parserState` y el slice de thinking en vuelo siguen siendo strip-eados.
+  - **HUD intacto:** `TelemetryHUD` (OCC ring / speedometer-TPS / FinOps bar) es una tarjeta global separada — Ghost Telemetry es estrictamente por-mensaje, sin solapamiento ni regresión. `prefers-reduced-motion` desactiva el pulse (los puntos siguen codificando estado por color).
+
+- **Files changed:** `workspace/utils/thinkingReducer.ts` (`bumpLiveTokens`), `workspace/components/ActionLog.tsx` (**nuevo**), `workspace/Workspace.tsx` (campo `liveTokens` + conteo en `server_token_chunk` + proyección persist + render action-log/footer), `workspace/workspace.css` (status dot en chip head, `.ws-status-dot`, `.ws-action-log`, `.ws-turn-footer`, reduced-motion).
+
+- **Próximo:** 7.14.4 — Inline per-diff HITL + keyboard.
+
+---
+
 ## Hito 7.14.2: Elite Diff Engine (Split-Diff + Hatching) — 2026-06-01
 
 - **Status:** OK — `npm run compile` y `npm run lint` exit 0. Bundle `dist/workspace.js` = **549 335 B ≤ 563 200 B** (techo enmendado). Sin cambios bajo `ailienant-core/`, CSP intacta, formato esbuild sigue `iife`.

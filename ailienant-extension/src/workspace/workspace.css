@@ -1361,6 +1361,26 @@ html, body, #root { height: 100%; }
   padding: 5px 8px;
   user-select: none;
 }
+/* Ghost Telemetry status dot — a leading glance-able state cue keyed off the
+   data-status the chip already emits. Pure presentation; no logic change. */
+.ws-tool-chip-head::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.ws-tool-chip[data-status="pending"] .ws-tool-chip-head::before {
+  background: var(--text-secondary);
+  animation: ws-pulse 1.2s ease-in-out infinite;
+}
+.ws-tool-chip[data-status="success"] .ws-tool-chip-head::before {
+  background: var(--vscode-testing-iconPassed, var(--accent-primary));
+}
+.ws-tool-chip[data-status="error"] .ws-tool-chip-head::before {
+  background: var(--vscode-testing-iconFailed, var(--danger, #e05252));
+}
 .ws-tool-chip-name {
   font-family: var(--vscode-editor-font-family, monospace);
   font-weight: 600;
@@ -1870,4 +1890,74 @@ html, body, #root { height: 100%; }
 }
 .ws-diff-loadfull:hover {
   background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-surface));
+}
+
+/* ── Ghost Telemetry (ADR-723) — live action-log + per-turn token footer ── */
+
+/* Shared status dot reused by the action-log rows (the ToolChip head defines
+   its own ::before; this is the standalone element variant). */
+.ws-status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.ws-status-dot[data-status="pending"] {
+  background: var(--text-secondary);
+  animation: ws-pulse 1.2s ease-in-out infinite;
+}
+.ws-status-dot[data-status="success"] {
+  background: var(--vscode-testing-iconPassed, var(--accent-primary));
+}
+.ws-status-dot[data-status="error"] {
+  background: var(--vscode-testing-iconFailed, var(--danger, #e05252));
+}
+
+/* While-you-wait stream of in-flight tool invocations. Deliberately quiet so it
+   reads as motion, not as the canonical record (that is the ToolChip stack). */
+.ws-action-log {
+  list-style: none;
+  margin: 2px 0 4px;
+  padding: 0 0 0 2px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.85;
+}
+.ws-action-log-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.6;
+}
+.ws-action-log-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ws-action-log-detail {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Per-message token footer — muted, non-interactive; never steals focus. */
+.ws-turn-footer {
+  margin: 2px 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  user-select: none;
+}
+.ws-turn-footer[data-streaming="true"] {
+  opacity: 0.9;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-tool-chip[data-status="pending"] .ws-tool-chip-head::before,
+  .ws-status-dot[data-status="pending"] {
+    animation: none;
+  }
 }
