@@ -103,15 +103,17 @@ suite('Phase 7.11.8 — MessageActions (Time-Travel branch button)', function ()
     // the cold-start test enough headroom on slow CI.
     this.timeout(20_000);
 
-    test('idle render shows the ↪ icon + "Branch" label (low-risk default)', () => {
+    test('idle render shows the ⟲ rewind icon + empty (icon-only) label', () => {
         const { container, root } = render();
         const btn = container.querySelector('.ws-msg-action-branch');
         assert.ok(btn, 'button missing');
         assert.strictEqual(btn!.getAttribute('data-confirming'), 'false');
         const icon = btn!.querySelector('.ws-msg-action-icon');
-        assert.strictEqual(icon!.textContent, '↪');
+        assert.strictEqual(icon!.textContent, '⟲');
+        // Idle is an icon-only circular control: the label is empty until the
+        // confirm step reveals "Confirm?".
         const label = btn!.querySelector('.ws-msg-action-label');
-        assert.strictEqual(label!.textContent, 'Branch');
+        assert.strictEqual(label!.textContent, '');
         act(() => root.unmount());
         container.remove();
     });

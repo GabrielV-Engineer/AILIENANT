@@ -37,7 +37,7 @@ export function MentionDropdown(
                 <div className="ws-mention-empty">
                     {query
                         ? `No workspace paths match “${query}”.`
-                        : 'Type a path fragment (or pick @terminal).'}
+                        : 'Type a path fragment (or pick @terminal to paste terminal output manually).'}
                 </div>
             ) : (
                 results.map((item, i) => (

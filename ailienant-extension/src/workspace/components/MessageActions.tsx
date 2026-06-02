@@ -1,22 +1,29 @@
 /**
- * Phase 7.11.8 (ADR-706 §4.5g) — Per-message action bar (Time-Travel).
+ * Per-message action bar (Time-Travel).
  *
  * Rendered under every COMPLETED assistant ``Message`` that carries a
  * ``checkpoint_id`` (i.e. its turn produced an L2-promoted snapshot the user
- * can fork from). Today the only action is "↪ Branch from here"; the
- * component is structured so future actions (Regenerate, Edit + resend)
- * can slot in alongside without disturbing the existing button.
+ * can fork from). The action is an icon-only circular "rewind to here"
+ * control; the component is structured so future actions (Regenerate, Edit +
+ * resend) can slot in alongside without disturbing the existing button.
  *
- * UX — two-step confirmation, identical to the 7.11.6 ToolChip retry flow:
- *     first click  → button flips to "↪ Confirm?" with a pulse animation
+ * The rewind glyph (⟲) reads as time-travel rather than a generic git branch:
+ * the user's mental model is "go back to this point", and the underlying
+ * fork-from-checkpoint keeps the original conversation untouched — a
+ * non-destructive rewind, surfaced as such.
+ *
+ * UX — two-step confirmation, identical to the ToolChip retry flow. A bare
+ * icon cannot safely signal a destructive-ish confirm, so the confirm step
+ * reveals a textual "Confirm?" label:
+ *     first click  → button reveals "Confirm?" with a pulse animation
  *     second click → dispatches BRANCH_FROM_CHECKPOINT to the host
  *     3 s idle     → reverts to idle (no stuck Confirm? state)
  *
  * Abort-savepoint variant — when the source checkpoint was captured by the
- * Phase 7.11.3 emergency-savepoint path (``termination_reason ===
- * "user_abort"``), the icon switches to ⏹ and the tooltip + aria-label make
- * it clear the branch starts from an aborted state. Powerful UX: "go back
- * to before I clicked Stop and try a different path".
+ * emergency-savepoint path (``termination_reason === "user_abort"``), the icon
+ * switches to ⏹ and the tooltip + aria-label make it clear the rewind starts
+ * from an aborted state. Powerful UX: "go back to before I clicked Stop and
+ * try a different path".
  *
  * Security note (ADR-705): the host relays this message verbatim onto the
  * WS as ``client_branch_from_checkpoint``; the backend's ``branch_session``
@@ -78,11 +85,11 @@ export const MessageActions = memo(function MessageActions(
     }, [confirming, props]);
 
     const isAbort = props.is_abort_savepoint === true;
-    const idleIcon = isAbort ? '⏹' : '↪';
-    const idleLabel = isAbort ? 'Branch from aborted state' : 'Branch from here';
+    const idleIcon = isAbort ? '⏹' : '⟲';
+    const idleLabel = isAbort ? 'Rewind from aborted state' : 'Rewind to here';
     const idleTitle = isAbort
-        ? 'Fork a new session from this aborted savepoint (Phase 7.11.3) and explore a different path.'
-        : 'Fork a new session from this checkpoint — the original conversation stays untouched.';
+        ? 'Rewind to this aborted savepoint and explore a different path — the original conversation stays untouched.'
+        : 'Rewind to this checkpoint — forks a new session, the original conversation stays untouched.';
 
     return (
         <div className="ws-msg-actions" data-abort-savepoint={isAbort}>
@@ -97,8 +104,11 @@ export const MessageActions = memo(function MessageActions(
                     : idleTitle}
             >
                 <span aria-hidden="true" className="ws-msg-action-icon">{idleIcon}</span>
+                {/* Idle is an icon-only circular control; the confirm step
+                    reveals a textual label so the destructive-ish step is
+                    never signalled by a bare glyph alone. */}
                 <span className="ws-msg-action-label">
-                    {confirming ? 'Confirm?' : 'Branch'}
+                    {confirming ? 'Confirm?' : ''}
                 </span>
             </button>
         </div>

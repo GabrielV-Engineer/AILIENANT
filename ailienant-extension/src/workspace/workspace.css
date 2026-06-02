@@ -759,6 +759,13 @@ html, body, #root { height: 100%; }
 }
 .ws-context-input:focus { border-color: var(--accent-primary); }
 .ws-context-submit { justify-content: center; }
+.ws-context-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  opacity: 0.85;
+  margin: 2px 0 6px 0;
+}
 
 /* ── Telemetry card (2-col grid, right of PromptBar) ──────── */
 .ws-telemetry-card {
@@ -1585,15 +1592,21 @@ html, body, #root { height: 100%; }
   padding: 0 8px;
 }
 
+/* Idle: a circular icon-only "rewind to here" control. On confirm it grows
+   into a pill to fit the textual "Confirm?" so the second step is never
+   signalled by a bare glyph alone. */
 .ws-msg-action {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  justify-content: center;
+  gap: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
   font-size: 11px;
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--text-secondary) 25%, transparent);
-  border-radius: 4px;
+  border-radius: 50%;
   color: var(--text-secondary);
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
@@ -1604,6 +1617,10 @@ html, body, #root { height: 100%; }
   color: var(--text-primary);
 }
 .ws-msg-action[data-confirming="true"] {
+  width: auto;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 11px;
   border-color: var(--accent-warn);
   color: var(--accent-warn);
   animation: ws-msg-action-pulse 1.2s ease-in-out infinite;
@@ -1622,8 +1639,12 @@ html, body, #root { height: 100%; }
 }
 
 .ws-msg-action-icon {
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1;
+}
+/* Empty in idle (icon-only); only takes space once "Confirm?" is revealed. */
+.ws-msg-action-label:empty {
+  display: none;
 }
 .ws-msg-action-label {
   font-weight: 500;

@@ -2,6 +2,23 @@
 
 ---
 
+## Hito 7.14.5: Procedural Memory surfacing (Rewind affordance + in-panel mention notices) — 2026-06-02
+
+- **Status:** OK — `npm run check-types` y `npm run lint` exit 0 (sólo los 2 warnings `semi` pre-existentes en `api_client.ts`/`vfs_reader.ts`). Bundle `dist/workspace.js` = **553 700 B ≤ 563 200 B** (+291 B sobre 7.14.4; sólo copy/CSS). Sin cambios bajo `ailienant-core/`, CSP/esbuild `iife` intactos. El gate de unit tests quedó **bloqueado por entorno** (`Error: mutex already exists` — el host Electron de `vscode-test` no arranca con una instancia de VS Code abierta); no es regresión, ver smoke manual.
+
+- **El hallazgo que define el alcance (per CLAUDE.md §3):** ADR-725 pide un "Revert circular inline que reusa `BRANCH_FROM_CHECKPOINT`". **Ese afford. ya estaba shipped:** `MessageActions` renderiza un botón sin-picker bajo cada turno asistente con `checkpoint_id` (two-step confirm, auto-revert 3 s, variante abort-savepoint, posteando directo al host → `client_branch_from_checkpoint`). Sólo estaba **vestido como "↪ Branch"**, no como time-travel. Surfacing, no reconstrucción.
+
+- **Decisiones de arquitectura:**
+  - **Revert = relabel + rediseño circular (sólo presentacional):** glifo idle `↪` → `⟲` (rewind/time-travel), copy "Branch from here" → "Rewind to here"; se mantiene `⏹` para el abort-savepoint (su semántica es distinta y ya era correcta). El control es **icon-only circular** en idle; el paso de confirm revela el label textual "Confirm?" (un glifo desnudo no puede señalar con seguridad un paso destructivo-ish). **Sin tocar** props, máquina `confirming`, `CONFIRM_REVERT_MS`, el payload `post(...)`, ni el `memo`. Los tests pinneaban el glifo/label idle → sync de copy (no de comportamiento); las aserciones de payload y two-step intactas.
+  - **Avisos de @-mention in-panel:** el oversize de @folder (>200 archivos, skip) y el cap (50) disparaban `vscode.window.show*Message` **fuera** del panel. Ahora el host postea `MENTION_NOTIFY {level,message}` y el webview hace `addToast` — reusa el `addToast` existente y el precedente `PARALLEL_SESSION_NOTIFY` (postMessage host→webview es loosely-typed → **sin editar el union `HostToWebviewMessage`**). Se reemplazan los popups nativos (ruido duplicado donde el usuario no mira).
+  - **Honestidad de `@terminal`:** stub honesto sólo en comentarios, no en UI. Añadido hint en la tab terminal del ContextOverlay ("No terminal auto-capture — paste the output here yourself") y nota en el empty-state del dropdown ("pick @terminal to paste terminal output manually"). Cero cambio de comportamiento — VS Code no expone API de output de terminal; el paste manual sigue siendo la única vía.
+
+- **Files changed:** `workspace/components/MessageActions.tsx` (glifo/copy/icon-only + docstring atemporal), `providers/workspace_panel.ts` (`MENTION_NOTIFY` postMessage en el bloque de mentions de `SUBMIT_TASK` + import de `FOLDER_EXPANSION_GIVE_UP`), `workspace/Workspace.tsx` (`case 'MENTION_NOTIFY'` → `addToast`), `workspace/components/ContextOverlay.tsx` (hint terminal), `workspace/components/MentionDropdown.tsx` (empty-state honesto), `workspace/workspace.css` (`.ws-msg-action` circular icon-only + pill en confirm, `.ws-context-hint`), `test/messageActions.test.ts` (sync de aserciones idle de copy). **Sin archivos nuevos** → README sin cambio de árbol.
+
+- **Próximo:** 7.14.6 — Elite Gaps (context-budget meter + auto-accept toggle, ADR-726).
+
+---
+
 ## Hito 7.14.4: Inline per-diff HITL + Keyboard — 2026-06-01
 
 - **Status:** OK — `npm run check-types` y `npm run lint` exit 0 (sólo los 2 warnings `semi` pre-existentes en `api_client.ts`/`vfs_reader.ts`). Bundle `dist/workspace.js` = **553 409 B ≤ 563 200 B** (+2 678 B sobre 7.14.3). Sin cambios bajo `ailienant-core/`, CSP/esbuild `iife` intactos.
