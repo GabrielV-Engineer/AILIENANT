@@ -74,3 +74,18 @@ export function freezeThinkingOnText<T extends ThinkingSlice>(
         thinkingOpen: false,
     };
 }
+
+/**
+ * Increment the per-turn live answer-token tally by one and return a NEW turn.
+ *
+ * The transport emits a final aggregate cost once (a single TOKEN_SNAPSHOT for
+ * the whole session) but never a per-token delta, so the only way to show a
+ * counter that ticks while the answer streams is to tally the text tokens on
+ * the client — one per arriving chunk. This is a presentation figure for the
+ * per-message footer, deliberately distinct from the authoritative FinOps cost.
+ * Kept here (not inlined in the stream handler) so the tally has one home and
+ * can be unit-tested without rendering the panel.
+ */
+export function bumpLiveTokens<T extends { liveTokens?: number }>(turn: T): T {
+    return { ...turn, liveTokens: (turn.liveTokens ?? 0) + 1 };
+}

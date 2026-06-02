@@ -21,7 +21,7 @@ import { PlannerSession } from './components/PlannerSession';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ThoughtBox } from './components/ThoughtBox';
-import { accumulateThinking, newThinkingTurn, freezeThinkingOnText } from './utils/thinkingReducer';
+import { accumulateThinking, newThinkingTurn, freezeThinkingOnText, bumpLiveTokens } from './utils/thinkingReducer';
 import { ToolChip } from './components/ToolChip';
 import { DiffBlock } from './components/DiffBlock';
 import { MessageActions } from './components/MessageActions';
@@ -33,6 +33,7 @@ import {
 } from './utils/StreamingMarkdownParser';
 import { IndexingStatus } from './components/IndexingStatus';
 import { PipelineProgress } from './components/PipelineProgress';
+import { ActionLog } from './components/ActionLog';
 import type { HITLIntervention } from './components/HITLInterventionCard';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 
@@ -152,6 +153,13 @@ export interface Message {
     thinkingStartedAt?: number;
     thinkingElapsedMs?: number;
     thinkingOpen?: boolean;
+    // Ghost Telemetry (ADR-723) — answer tokens tallied client-side (one per
+    // arriving text chunk) so the per-message footer can tick a live count; the
+    // transport only emits a final aggregate cost, never a per-token delta. This
+    // is a presentation figure, distinct from the authoritative FinOps total.
+    // Unlike the live thinking slice it is durable audit data — it IS carried
+    // through PERSIST_TRANSCRIPT so a reload preserves the per-turn breakdown.
+    liveTokens?: number;
 }
 export interface NattMessage {
     id?: string;   // Phase 7.12 — see Message.id (REHYDRATE_TRANSCRIPT merge key).
@@ -324,10 +332,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 // the rehydrated transcript still shows the ↪ Branch button.
                 messages: messages.map(({
                     id, role, content, steps, stepsDone, toolCalls, diffBlocks,
-                    checkpoint_id, is_abort_savepoint, authorLabel,
+                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens,
                 }) => ({
                     id, role, content, steps, stepsDone, toolCalls, diffBlocks,
-                    checkpoint_id, is_abort_savepoint, authorLabel,
+                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens,
                 })),
                 nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
             });
@@ -482,12 +490,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             // reasoning phase freezes the elapsed clock and
                             // auto-collapses the Thought Box.
                             const thinkingFreeze = freezeThinkingOnText(last, performance.now());
-                            return [...prev.slice(0, -1), {
+                            // Ghost Telemetry (ADR-723) — tally this answer token
+                            // into the per-turn live counter (fold into the same
+                            // immutable rebuild; no extra state / setState).
+                            return [...prev.slice(0, -1), bumpLiveTokens({
                                 ...last,
                                 content: last.content + d.token,
                                 parserState: nextState,
                                 ...(thinkingFreeze ?? {}),
-                            }];
+                            })];
                         }
                         return [...prev, {
                             id: mkId(),
@@ -496,6 +507,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             streaming: true,
                             parserState: mdPushToken(MD_INITIAL_STATE, d.token),
                             authorLabel: authorLabelFor('assistant', nattName),
+                            liveTokens: 1,
                         }];
                     });
                     break;
@@ -1121,6 +1133,13 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                                 j === i ? { ...mm, thinkingOpen: !mm.thinkingOpen } : mm))}
                                         />
                                     )}
+                                    {/* Ghost Telemetry (ADR-723) — live action-log: the
+                                        in-flight tool invocations, shown only while the turn
+                                        streams. On stream-end the ToolChip stack below is the
+                                        canonical record, so this while-you-wait view drops out. */}
+                                    {m.role === 'assistant' && m.streaming && m.toolCalls && m.toolCalls.length > 0 && (
+                                        <ActionLog toolCalls={m.toolCalls} />
+                                    )}
                                     {(m.role === 'user' || m.content) && (
                                         <div
                                             className="ws-msg"
@@ -1144,6 +1163,25 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             </div>
                                         </div>
                                     )}
+                                    {/* Ghost Telemetry (ADR-723) — per-message token footer.
+                                        Ticks live while streaming (answer tokens tallied
+                                        client-side + reasoning tokens) and freezes into a quiet
+                                        per-turn total on stream-end. Distinct from the global
+                                        FinOps HUD cost; zero-token turns render nothing. */}
+                                    {m.role === 'assistant' && (() => {
+                                        const total = (m.liveTokens ?? 0) + (m.thinkingTokens ?? 0);
+                                        if (total === 0) { return null; }
+                                        return (
+                                            <div
+                                                className="ws-turn-footer"
+                                                data-streaming={m.streaming ? 'true' : 'false'}
+                                            >
+                                                {m.streaming
+                                                    ? `Thinking… ${total} ${total === 1 ? 'token' : 'tokens'}`
+                                                    : `${total} ${total === 1 ? 'token' : 'tokens'}`}
+                                            </div>
+                                        );
+                                    })()}
                                     {/* Phase 7.11.6 — Rich Tool Chips attached to this turn. */}
                                     {m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0 && (
                                         <div className="ws-tool-chip-stack">
