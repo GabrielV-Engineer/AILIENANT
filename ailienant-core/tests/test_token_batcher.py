@@ -9,7 +9,8 @@ Seven tests:
   T4. NarrationGate cold start              — pre-answer narration is never suppressed.
   T5. NarrationGate enforcement             — narration <= 15% once the answer streams.
   T6. NarrationGate transition              — record_answer flips cold-start into enforcement.
-  T7. _run_coding_task ordering             — granular sub-steps fire in order, coder N/M.
+  T7. _run_coding_task ordering             — context_gather precedes the graph's own
+       sub-step narration (emitted from inside the compiled graph via state["narrate"]).
 """
 from __future__ import annotations
 
@@ -156,21 +157,27 @@ def _mission_two_tasks() -> MissionSpecification:
 
 @pytest.mark.anyio
 async def test_run_coding_task_emits_granular_narration_in_order() -> None:
-    async def _fake_planner(state: dict) -> dict:
-        # Simulate the real planner narrating its phases via the injected emitter.
-        narrate = state.get("narrate")
-        if narrate is not None:
-            await narrate("routing_decision")
-            await narrate("drafting_spec")
-        return {"mission_spec": _mission_two_tasks()}
+    # The coding path drives the compiled graph; sub-step narration now flows
+    # from inside the graph via the injected state["narrate"] emitter (the agents
+    # narrate their own phases). task_service still emits "context_gather" before
+    # entering the graph, so it must lead the sequence.
+    def _fake_astream(state: dict, *_a: object, **_k: object) -> AsyncIterator[dict]:
+        async def _gen() -> AsyncIterator[dict]:
+            narrate = state.get("narrate")
+            if narrate is not None:
+                await narrate("routing_decision")
+                await narrate("drafting_spec")
+            yield {"mission_spec": _mission_two_tasks()}
+
+        return _gen()
 
     pipeline = AsyncMock()  # captures broadcast_pipeline_step(session_id, node_name, step_id)
     ctxs = [
-        patch("agents.planner.run_planner_node", new=AsyncMock(side_effect=_fake_planner)),
-        patch("agents.coder.run_coder_node", new=AsyncMock(return_value={})),
+        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
         patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=pipeline),
         patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
         patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.request_human_approval", new=AsyncMock(return_value={"approved": False})),
     ]
     for c in ctxs:
         c.start()
@@ -182,10 +189,4 @@ async def test_run_coding_task_emits_granular_narration_in_order() -> None:
             c.stop()
 
     node_names = [call.args[1] for call in pipeline.await_args_list]
-    assert node_names == [
-        "context_gather",
-        "routing_decision",
-        "drafting_spec",
-        "coder_agent (1/2)",
-        "coder_agent (2/2)",
-    ]
+    assert node_names == ["context_gather", "routing_decision", "drafting_spec"]

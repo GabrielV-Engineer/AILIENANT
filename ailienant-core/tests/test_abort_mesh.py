@@ -6,10 +6,10 @@ Five tests covering the backend half of the Stop button:
   1. `TaskService.register_active_task` + `abort_session` round-trip — registry
      correctly stores the asyncio.Task and `abort_session` cancels it (returns
      True); unknown session_id returns False.
-  2. `_run_coding_task` honors cancellation — planner is patched to a slow
-     awaitable; the task is cancelled mid-await; afterwards
-     `broadcast_stream_end` was emitted and the cancellation propagated cleanly
-     (no unhandled exception escapes the orchestrator).
+  2. `_run_coding_task` honors cancellation — the compiled graph's `astream` is
+     patched to a slow async-generator; the task is cancelled mid-stream;
+     afterwards `broadcast_stream_end` was emitted and the cancellation
+     propagated cleanly (no unhandled exception escapes the orchestrator).
   3. `stream_analyst_reply` honors cancellation — analyst stream is patched to
      a slow async-generator; cancel mid-stream; `broadcast_natt_stream_end` was
      still emitted in the finally path.
@@ -71,10 +71,13 @@ async def test_run_coding_task_aborts_cleanly_on_cancel() -> None:
     ts = TaskService()  # type: ignore[no-untyped-call]
     started = asyncio.Event()
 
-    async def _slow_planner(_state: dict[str, Any]) -> dict[str, Any]:
-        started.set()
-        await asyncio.sleep(5.0)         # the test cancels before this returns
-        return {"mission_spec": None}
+    def _slow_astream(*_a: Any, **_k: Any) -> AsyncIterator[dict[str, Any]]:
+        async def _gen() -> AsyncIterator[dict[str, Any]]:
+            started.set()
+            await asyncio.sleep(5.0)     # the test cancels before this yields
+            yield {"mission_spec": None}
+
+        return _gen()
 
     broadcast_stream_end = AsyncMock()
     broadcast_token = AsyncMock()
@@ -89,7 +92,7 @@ async def test_run_coding_task_aborts_cleanly_on_cancel() -> None:
         workspace_root="",
     )
 
-    with patch("agents.planner.run_planner_node", side_effect=_slow_planner), \
+    with patch("brain.engine.alienant_app.astream", side_effect=_slow_astream), \
          patch("core.task_service.vfs_manager.broadcast_stream_end", broadcast_stream_end), \
          patch("core.task_service.vfs_manager.broadcast_token", broadcast_token), \
          patch("core.task_service.vfs_manager.broadcast_pipeline_step", broadcast_pipeline_step):

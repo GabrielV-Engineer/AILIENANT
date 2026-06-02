@@ -498,6 +498,15 @@ async def submit_task(
         if _fallback_root:
             payload.workspace_root = _fallback_root
 
+    # The WS planner-mode toggle is stored per-session in planner_mode_registry
+    # (client_id == x_task_id); fold it into the payload so the coding path can
+    # route to the Socratic ideation loop. Without this read the flag was always
+    # the default False and every coding turn fell through to the autonomous
+    # planner. The `in` guard means an HTTP-only client that never toggled keeps
+    # its body-supplied value untouched.
+    if x_task_id in planner_mode_registry:
+        payload.planner_mode_active = planner_mode_registry[x_task_id]
+
     # Idempotent submit: a duplicate request_id (a reconnect-driven resubmit, or
     # two windows racing) is acknowledged WITHOUT spawning a second runner.
     if payload.request_id and _is_duplicate_request(payload.request_id):

@@ -167,6 +167,29 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Notes:** The conservative risk gate (any medium/high metric forces the manual card) must be
   preserved if/when this moves server-side.
 
+### DEBT-008 — Coding turns stream node-level narration, not LLM tokens (graph agents don't stream)
+
+- **Date:** 2026-06-02
+- **Reproduce:** N/A (UX/perception, not an error). After the Engine Re-Spine, a coding turn drives the
+  compiled graph via `astream(stream_mode="values")`; live progress is **node-level narration**
+  (`NarrationGate` + `broadcast_pipeline_step`), but the proposed-diff summary still arrives in one
+  block — the chat path (`_stream_chat_answer`) streams token-by-token, the coding path does not.
+- **File(s):** `ailienant-core/agents/planner.py` (`run_planner_node`), `ailienant-core/agents/coder.py`
+  (`run_coder_node`) — both `ainvoke` the model and return complete results; `ailienant-core/core/task_service.py`
+  (`_run_coding_task` consumes the final graph state).
+- **Error:** Feature gap, not a type error. True token-by-token streaming from inside the graph would
+  require the agent nodes themselves to stream their LLM deltas, which they do not.
+- **Blocked by:** Nothing technical — it is a **deliberate scope cut** of the Re-Spine to keep that
+  change foundational and low-risk, and to avoid touching every agent + the gateway in the same PR
+  (event-loop / regression risk).
+- **Phase:** Owned by **Phase 7.17** (WBS **7.17.0-B**, ADR-739): refactor Planner/Coder to emit
+  incremental token deltas through the graph (`stream_mode="messages"` or a dedicated token channel),
+  reusing the chat path's `_stream_with_thinking` / `astream_byom` + `batch_tokens` pattern. **Distinct
+  from DEBT-006**, which is the *frontend syntax-highlighting* deferral (host-side tokenization); this
+  entry is the *backend token-emission* deferral. This entry moves to **Closed** when 7.17.0-B ships.
+- **Notes:** The `NarrationGate` (narration ≤ 15% of streamed volume) and FastAPI event-loop protection
+  (no one WS frame per token — coalesce via `batch_tokens`) must be honored by the eventual stream.
+
 ---
 
 ## Closed Entries

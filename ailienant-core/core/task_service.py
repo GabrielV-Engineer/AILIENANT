@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, cast
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager
@@ -75,7 +75,6 @@ _RAG_TOP_K: int = 5
 _conversations: Dict[str, List[Dict[str, str]]] = {}
 
 # Phase 7.9.B.16 — intent routing (edit/coding task vs conversational question).
-_MAX_CODER_STEPS: int = 6
 _EDIT_VERBS: tuple[str, ...] = (
     "add", "create", "write", "implement", "refactor", "fix", "rename", "delete",
     "remove", "change", "modify", "update", "move", "replace", "insert", "extract",
@@ -407,10 +406,20 @@ class TaskService:
     async def _run_coding_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str
     ) -> None:
-        """Drive the planner + coder agents to propose patches (review-only, no disk write)."""
-        from agents.planner import run_planner_node  # deferred — avoids import cycle
-        from agents.coder import run_coder_node
-        from agents.error_correction import attempt_correction
+        """Drive the compiled LangGraph engine to propose patches, then apply via the HITL bridge.
+
+        Entering the compiled graph (instead of calling the planner/coder nodes
+        directly) is what arms the mode router (autonomous planner vs Socratic
+        ideation loop), the in-graph self-healing path, and the checkpointer —
+        the graph runs on ``thread_id=session_id`` so a checkpoint is written
+        and the Rewind affordance becomes available. The graph proposes patches
+        but does not touch disk (its apply node is inert); the actual write stays
+        here behind the HITL approval card so the transport/permission boundary
+        is never pushed into a cognitive node.
+        """
+        from brain.engine import alienant_app  # deferred — avoids import cycle
+        from brain.state import AIlienantGraphState
+        from langchain_core.runnables import RunnableConfig
 
         state = self._build_initial_state(session_id, payload, execution_mode)
 
@@ -435,74 +444,61 @@ class TaskService:
         # standard abort response (broadcast marker + stream_end + persist).
         try:
             await _narrate("context_gather")
+            cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
+            final_state: Dict[str, Any] = {}
             try:
-                plan = await run_planner_node(state)
+                # stream_mode="values" yields the full accumulated state after
+                # each node; the last snapshot is the complete final state. The
+                # graph does NOT stream LLM tokens (planner/coder invoke the model
+                # and return whole results), so live sub-step progress comes from
+                # the agents' injected state["narrate"] callback, not from here.
+                # cast satisfies the astream() overload (the seed carries a few
+                # transient keys beyond the AIlienantGraphState TypedDict — the
+                # graph drops them, the same way ainvoke() is cast at resume).
+                async for snapshot in alienant_app.astream(
+                    cast(AIlienantGraphState, state), config=cfg, stream_mode="values"
+                ):
+                    final_state = snapshot
             except asyncio.CancelledError:
-                raise  # propagate to the outer handler — don't swallow here
-            except Exception as exc:  # noqa: BLE001 — planner failure must not crash the task
-                logger.warning("Planner failed: %s", exc)
+                raise  # propagate to the outer abort handler — don't swallow here
+            except Exception as exc:  # noqa: BLE001 — a graph failure must not crash the task
+                logger.warning("Graph run failed: %s", exc)
                 await vfs_manager.broadcast_token(
                     session_id,
-                    "I couldn't draft a plan — make sure a BYOM preset is active and its "
-                    f"engine is running. ({exc})",
+                    "I couldn't run the planning engine — make sure a BYOM preset is "
+                    f"active and its engine is running. ({exc})",
                 )
                 await self._finalize_stream(session_id)
                 return
 
-            mission = plan.get("mission_spec")
+            mission = final_state.get("mission_spec")
+            hitl_pending = bool(final_state.get("hitl_pending"))
+
+            # Socratic suspend: in planner mode the ideation loop asked a question
+            # (the analyst broadcasts it itself) and produced no plan yet. Finalize
+            # so the checkpoint is written (Rewind works) and return — the next
+            # user turn resumes on the same thread_id via the messages accumulator.
+            if mission is None and hitl_pending:
+                await self._finalize_stream(session_id)
+                self._append_history(session_id, "user", payload.task_prompt)
+                return
+
+            # Genuine planner failure (no plan, and not awaiting the user).
             if mission is None:
-                errs = plan.get("errors") or ["the planner did not return a plan"]
+                errs = final_state.get("errors") or ["the planner did not return a plan"]
                 await vfs_manager.broadcast_token(
                     session_id, "I couldn't draft a plan: " + "; ".join(errs)
                 )
                 await self._finalize_stream(session_id)
                 return
 
-            patches: Dict[str, str] = {}
-            contents: Dict[str, str] = {}
-            base_hashes: Dict[str, str] = {}
-            errors: List[str] = []
-            coder_steps = list(mission.tasks)[:_MAX_CODER_STEPS]
-            total_steps = len(coder_steps)
-            # In-turn self-healing budget, shared across the step loop. A trapped coder
-            # failure is handed to the ErrorCorrectionAgent (traceback → read file →
-            # propose a fix) instead of being silently dropped; its patch rejoins the
-            # same HITL approval set below. After the budget/breaker it falls back to
-            # surfacing the error in the summary (no raw error to the user).
-            correction_attempts = 0
-            for idx, step in enumerate(coder_steps, start=1):
-                # "coding step N/M" rides in node_name — PipelineStepPayload schema unchanged.
-                await _narrate(f"coder_agent ({idx}/{total_steps})", step_id=step.step_number)
-                try:
-                    cres = await run_coder_node(
-                        {**state, "mission_spec": mission, "current_step_id": step.step_number}
-                    )
-                except asyncio.CancelledError:
-                    raise  # propagate up to the outer abort handler
-                except Exception as exc:  # noqa: BLE001
-                    heal_state = {
-                        **state,
-                        "mission_spec": mission,
-                        "current_step_id": step.step_number,
-                        "correction_attempts": correction_attempts,
-                    }
-                    correction = await attempt_correction(
-                        exc, heal_state, failed_node="coder_agent",
-                        extra_candidates=[step.target_file] if step.target_file else None,
-                    )
-                    if correction is not None and correction.healed:
-                        correction_attempts += 1
-                        await _narrate(f"self_heal ({idx}/{total_steps})", step_id=step.step_number)
-                        patches.update(correction.pending_patches)
-                        contents.update(correction.pending_contents)
-                        base_hashes.update(correction.pending_base_hash)
-                    else:
-                        errors.append(f"step #{step.step_number}: {exc}")
-                    continue
-                patches.update(cres.get("pending_patches") or {})
-                contents.update(cres.get("pending_contents") or {})
-                base_hashes.update(cres.get("pending_base_hash") or {})
-                errors.extend(cres.get("errors") or [])
+            # The graph's reducers (operator.or_ / operator.add) already merged
+            # every coder step — across SWARM fan-out and the RELAY/validation
+            # loop — into the final state, plus any in-graph self-healing fix.
+            patches: Dict[str, str] = dict(final_state.get("pending_patches") or {})
+            contents: Dict[str, str] = dict(final_state.get("pending_contents") or {})
+            base_hashes: Dict[str, str] = dict(final_state.get("pending_base_hash") or {})
+            errors: List[str] = list(final_state.get("errors") or [])
 
             # 1) Stream the plan + proposed diffs as a reviewable message.
             summary = self._format_coding_summary(mission, patches, errors)

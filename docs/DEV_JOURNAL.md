@@ -2,6 +2,32 @@
 
 ---
 
+## Hito 7.15.0: Engine Re-Spine (camino vivo → grafo LangGraph compilado) — 2026-06-02
+
+- **Status:** OK — corrección backend fundacional de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 227 source files**; `pytest` **780 passed** (era 779+1: el único rojo era un test que aseveraba la secuencia de narración vieja, reparado).
+
+- **Motivación (causa raíz única, "la espina"):** una auditoría pre-checkpoint encontró que el panel 7.14 *surfacea* afordancias (router de modo, glifo ⟲ Rewind, diff inline, progreso vivo) que el backend no honraba E2E. Causa: `core/task_service.py::_run_coding_task` invocaba `run_planner_node` / `run_coder_node` **directamente como funciones async**, nunca a través del grafo compilado `alienant_app`. Ese atajo desactivaba a la vez: (1) el router `route_after_summarize` (todo caía al coder, HUD siempre "coder"); (2) el `ideation_loop` socrático (Planner mode alucinaba una `MissionSpecification` en vez de preguntar); (3) el `HybridCheckpointer` (sin grafo → `_finalize_stream.get_tuple()` → `None` → sin `checkpoint_id` → glifo Rewind suprimido). Bug compuesto: `planner_mode_registry` se escribía desde el toggle WS pero **nunca se leía** de vuelta al payload, así que el flag llegaba siempre `False`.
+
+- **Fix (re-spine):** `_run_coding_task` ahora maneja `alienant_app.astream(state, config={thread_id}, stream_mode="values")`; el último snapshot es el estado final. Entrar al grafo arma el router, el `ideation_loop` y el checkpointer en un solo movimiento — un turno corre ≥1 nodo en `thread_id=session_id`, así `_finalize_stream` encuentra el tuple L1, lo promueve a L2 y emite `checkpoint_id` (Rewind real). Los reducers del grafo (`operator.or_`/`operator.add`) ya fusionan los pasos del coder (SWARM fan-out + loop RELAY/validación) en el estado final, así que se eliminó el loop externo de pasos del coder y el `attempt_correction` externo (el self-healing vive ahora **dentro** del grafo vía `reflexion_guard → error_correction`). El apply real (tarjeta HITL + `apply_patch_set`) **permanece en `task_service`**, leyendo `pending_*` del estado final — el nodo `apply_patch` del grafo sigue inerte, preservando la frontera transporte/permisos. Suspensión socrática: si `mission_spec is None and hitl_pending`, el analyst ya emitió su pregunta → se finaliza el stream (checkpoint escrito) y se retorna; el siguiente turno reanuda en el mismo `thread_id` vía el acumulador `_merge_messages`. El handler externo de `CancelledError` (savepoint `user_abort`) queda intacto y ahora **sí** se dispara con un checkpoint real detrás.
+
+- **Toggle plumbing:** `main.py submit_task` lee `planner_mode_registry[x_task_id]` (== `client_id`) y lo pliega en `payload.planner_mode_active` (guard `in` → un cliente HTTP que nunca toggleó conserva su valor del body).
+
+- **Decisión vinculante de streaming (confirmada con el usuario):** el grafo **no** stream-ea tokens LLM (planner/coder hacen `ainvoke` y devuelven resultados completos; sólo el camino de chat stream-ea). El re-spine entrega **narración a nivel de nodo** (vía el callback `state["narrate"]` que ya inyectan los agentes + `NarrationGate`), preservando progreso vivo de sub-pasos. El streaming token-a-token del camino de código se **difiere a Fase 7.17** (nuevo ítem 7.17.0-B / ADR-739; deuda registrada como DEBT-008) — para proteger el event-loop de FastAPI y mantener el re-spine de bajo blast-radius. Por la misma decisión, la Fase 7.17 deja de ser "cero contrato Python".
+
+- **Cast mypy:** `alienant_app.astream(cast(AIlienantGraphState, state), …)` — el seed lleva claves transitorias (`narrate`, `active_file_path/content`) fuera del TypedDict; el grafo las descarta (mismo patrón que el `cast` del `ainvoke` de resume en `main.py`).
+
+- **Tests:** nuevo `tests/test_engine_respine.py` (5: suspensión por ideation con pregunta y sin tarjeta HITL; no-planner propone patches → aprobación → apply; un run completado emite `checkpoint_id` y es descubrible en L2; guard de regresión de que el self-heal/imports de nodos ya no viven en task_service; el submit pliega el registry). Reescritos al nuevo seam (`brain.engine.alienant_app.astream`): `test_task_service_apply.py`, `test_abort_mesh.py` (#2) y `test_token_batcher.py` (T7, ahora asevera `context_gather` precediendo la narración intra-grafo, sin el contador `coder_agent N/M` que el loop externo emitía).
+
+- **Binding dependency:** **7.14.7 sigue sin poder marcarse `[x]` hasta que 7.15.7 esté verde** (esto es 7.15.0, fundacional, no el gate). El §1 LOCK-IN del blueprint expira sólo cuando AMBOS gates certifiquen.
+
+- **Files changed:**
+  - Backend EDIT: `core/task_service.py` (re-spine de `_run_coding_task` + import del grafo + `cast`; removido `_MAX_CODER_STEPS` muerto), `main.py` (lectura del `planner_mode_registry` en `submit_task`).
+  - Tests NUEVO: `tests/test_engine_respine.py`.
+  - Tests EDIT: `tests/test_task_service_apply.py`, `tests/test_abort_mesh.py`, `tests/test_token_batcher.py` (reapuntados al seam `astream`).
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.15.0 → `[x]`; Fase 7.17 re-scopeada + nuevo 7.17.0-B; fila phase-map), `TECH_DEBT_BACKLOG.md` (DEBT-008), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.14.6: Elite Gaps (Context-Budget Meter + Auto-Accept Toggle) — 2026-06-02
 
 - **Status:** OK — `mypy .` 0 (226 archivos), `pytest` **775 passed** (+7 nuevos), `npm run check-types` y `npm run lint` exit 0 (sólo los 2 warnings `semi` pre-existentes), bundle `dist/workspace.js` = **556 170 B ≤ 563 200 B** (+2 470 B sobre 7.14.5). **Primera slice de 7.14 que toca Python** — sólo additivo (una ruta REST read-only + helper puro). Sin nuevos eventos WS, sin cambio de `ws_contracts.py`, sin shape de graph-state, sin archivos de runtime nuevos.
