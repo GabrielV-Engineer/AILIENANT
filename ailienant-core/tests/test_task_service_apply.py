@@ -1,11 +1,18 @@
 # ailienant-core/tests/test_task_service_apply.py
-"""Phase 7.9.B.18 — _run_coding_task approval → actuation gate.
+"""_run_coding_task approval → actuation gate.
 
-Approved ⇒ the write pipeline is invoked with the coder's content + base hashes.
-Rejected ⇒ nothing is applied.
+The coding path drives the compiled LangGraph engine and then applies the
+patches found in the FINAL graph state behind the HITL card. These tests patch
+the engine at the ``astream`` seam — yielding a crafted final state — so the
+control flow (summary → approval → apply) is exercised in isolation from the
+agents' internals.
+
+Approved ⇒ the write pipeline is invoked with the final state's content + base
+hashes. Rejected ⇒ nothing is applied.
 """
 from __future__ import annotations
 
+from typing import Any, AsyncIterator, Dict
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -42,18 +49,32 @@ def _payload() -> TaskPayload:
     )
 
 
-_CODER_RES = {
+# The final graph state the engine is mocked to produce: a finished plan plus
+# one coder step's merged patch/content/base-hash (the reducers would have
+# unioned these across steps in a real run).
+_FINAL_STATE: Dict[str, Any] = {
+    "mission_spec": _mission(),
     "pending_patches": {"calc.py": "--- a/calc.py\n+++ b/calc.py\n"},
     "pending_contents": {"calc.py": "def f():\n    return 2\n"},
     "pending_base_hash": {"calc.py": "deadbeef"},
+    "errors": [],
+    "hitl_pending": False,
 }
+
+
+def _fake_astream(*_a: Any, **_k: Any) -> AsyncIterator[Dict[str, Any]]:
+    """Stand in for ``alienant_app.astream(...)`` — yield one final snapshot."""
+
+    async def _gen() -> AsyncIterator[Dict[str, Any]]:
+        yield _FINAL_STATE
+
+    return _gen()
 
 
 def _common_patches(approved: bool, apply_mock: AsyncMock):
     decision = {"approved": approved, "comment": None, "modified_content": None}
     return [
-        patch("agents.planner.run_planner_node", new=AsyncMock(return_value={"mission_spec": _mission()})),
-        patch("agents.coder.run_coder_node", new=AsyncMock(return_value=_CODER_RES)),
+        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
         patch("core.write_pipeline.apply_patch_set", new=apply_mock),
         patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
         patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
@@ -78,8 +99,8 @@ async def test_approved_invokes_write_pipeline() -> None:
     assert apply_mock.await_args is not None
     session_id, contents, base_hashes = apply_mock.await_args.args[:3]
     assert session_id == "s1"
-    assert contents == _CODER_RES["pending_contents"]
-    assert base_hashes == _CODER_RES["pending_base_hash"]
+    assert contents == _FINAL_STATE["pending_contents"]
+    assert base_hashes == _FINAL_STATE["pending_base_hash"]
 
 
 @pytest.mark.anyio
