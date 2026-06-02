@@ -139,6 +139,12 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   complaint maps to THIS entry — it is the known, deliberate shiki deferral, not a new defect. The 7.15
   remediation does **not** re-open it (see Fase 7.15 in `PROJECT_MANIFEST.md`); highlighting stays here
   until the bundle/externalization plumbing is funded.
+- **Funded by:** **Phase 7.16** (Host-Delegated Tokenization) is the remediation — it takes the
+  host-side escape hatch this entry already names: a grammar engine (shiki/textmate) runs in the **Node
+  Extension Host** (no bundle ceiling) and ships a token AST over IPC to the dumb webview, so
+  `dist/workspace.js` gains no parsing deps. This entry moves to **Closed** when **7.16.2** ships the
+  webview AST renderer. The *streaming* half (progressive highlight without flicker) is owned by
+  **Phase 7.17**, not this entry.
 
 ### DEBT-007 — Auto-accept low-risk edits pays a full HITL round-trip (shift-left candidate)
 

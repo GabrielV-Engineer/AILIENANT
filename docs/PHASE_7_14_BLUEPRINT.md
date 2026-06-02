@@ -185,5 +185,5 @@ A pre-checkpoint technical audit found that 7.14 delivered the **frontend surfac
 **Checkpoint dependency (binding).** The §5 gate **7.14.7 must not tick `[x]` until Phase 7.15's gate (7.15.7) is green**, certifying the live task path engages the compiled engine. Closing 7.14 first would ratify cosmetic affordances. **The §1 LOCK-IN therefore expires only when both 7.14.7 and 7.15.7 are certified.**
 
 **Two deliberate non-regressions** (so a future reader does not refile them as 7.14 bugs):
-- **No syntax highlighting in chat code blocks** — the known shiki deferral, tracked as **DEBT-006** (bundle ceiling, ADR-722). Still deferred.
+- **No syntax highlighting in chat code blocks** — the known shiki deferral, tracked as **DEBT-006** (bundle ceiling, ADR-722). The deferral is now **owned by Phase 7.16** (static, host-delegated tokenization) and **Phase 7.17** (streaming render) — was previously "a future 7.14.x / Phase 11"; not a 7.14 regression.
 - **Rich plan side-panel** — never in 7.14 scope; it is a genuine new feature, now owned by **7.15.6**, not a 7.14 regression.
