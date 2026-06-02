@@ -171,3 +171,19 @@ This section ticks to `[x]` only when every row above is certified. **At closure
 
 ## 6. Out of scope / deferred (Phase 11 — Portfolio)
 Parallel multi-thread runs · cross-session context references · dual-mode GUI/CLI · true per-hunk approval IDs (backend) · binary packaging. Recorded here so a future PR does not silently absorb them into a "UI" slice.
+
+---
+
+## 7. Successor Track (Phase 7.15) & Checkpoint Dependency
+
+A pre-checkpoint technical audit found that 7.14 delivered the **frontend surfacing** faithfully — its ADRs (720–726) and DoD matrix (§5) remain valid as written — but the **backend does not yet honor several of the affordances the UI now surfaces**. Mode routing, the ⟲ Rewind affordance, the inline diff, and live token streaming are visible in the panel yet inert end-to-end.
+
+**Single root cause.** `core/task_service.py::_run_coding_task` invokes the planner/coder nodes **directly as async functions**, never through the compiled LangGraph engine (`alienant_app`). One shortcut disables, at once: the mode router `route_after_summarize`, the Socratic `ideation_loop`, and the `HybridCheckpointer` (no checkpoint → no `checkpoint_id` → no Rewind glyph) — and forces a freeze-then-dump instead of a token stream. Orthogonal defects (RBAC engine built but unwired; Spanish system prompts with no language-mirroring; a stale "Applying changes to disk is not yet enabled" string that contradicts the working apply path) round out the audit.
+
+**These are tracked in the new Phase 7.15 (Agentic Core Remediation, ADR-727..732), not here** — 7.14 stays scoped to the UI. Phase 7.15 **does** change the Python contract; that is expected and correct for a backend-correctness track and does **not** retroactively violate 7.14's ADR-721 (which governed the 7.14 UI slices only).
+
+**Checkpoint dependency (binding).** The §5 gate **7.14.7 must not tick `[x]` until Phase 7.15's gate (7.15.7) is green**, certifying the live task path engages the compiled engine. Closing 7.14 first would ratify cosmetic affordances. **The §1 LOCK-IN therefore expires only when both 7.14.7 and 7.15.7 are certified.**
+
+**Two deliberate non-regressions** (so a future reader does not refile them as 7.14 bugs):
+- **No syntax highlighting in chat code blocks** — the known shiki deferral, tracked as **DEBT-006** (bundle ceiling, ADR-722). Still deferred.
+- **Rich plan side-panel** — never in 7.14 scope; it is a genuine new feature, now owned by **7.15.6**, not a 7.14 regression.
