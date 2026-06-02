@@ -56,6 +56,16 @@ export interface TokenUsage {
     estimated_invested_usd: number;
 }
 
+// Live context-window occupancy for one thread (mirrors
+// GET /api/v1/sessions/{thread_id}/context). `context_used_tokens` is the
+// token length of the CURRENT (pruned/summarized) message window — it can fall
+// after the backend summarizes — not a cumulative lifetime total.
+export interface ContextOccupancy {
+    context_window: number;
+    context_used_tokens: number;
+    context_pct: number;
+}
+
 // Phase 3.4.5 — MCTS Mirror response schema (mirrors FastAPI MergeReport).
 export interface MergeReport {
     success: boolean;
@@ -212,6 +222,28 @@ export class APIClient {
             });
             if (!response.ok) { return null; }
             return (await response.json()) as TokenUsage;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Fetch the live context-window occupancy for a thread. Read-only and
+     * empty-state safe server-side (a cold thread reads zeros), so the worst
+     * case here is a null that simply hides the meter.
+     */
+    public async fetchContextOccupancy(threadId: string): Promise<ContextOccupancy | null> {
+        try {
+            const response = await fetch(
+                `${this._baseUrl}/sessions/${encodeURIComponent(threadId)}/context`,
+                {
+                    method: 'GET',
+                    headers: { ...this._authHeaders() },
+                    signal: AbortSignal.timeout(3000),
+                },
+            );
+            if (!response.ok) { return null; }
+            return (await response.json()) as ContextOccupancy;
         } catch {
             return null;
         }

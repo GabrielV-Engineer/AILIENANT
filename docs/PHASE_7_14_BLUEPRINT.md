@@ -55,6 +55,20 @@ The chat abandons the bubble paradigm for an **interactive code document**. Bind
 
 Inline diffs are fed by the **already-flowing** `ApplyWorkspaceEditPayload` (`file_path` + full `new_content` + `base_hash`). The **host** enriches at the `server_apply_workspace_edit` seam: since `PatchActuator` already opens the target doc and reads its current text, the host posts a new **webview** message `RENDER_DIFF {patch_id, file_path, old_content, new_content, status}` to the panel (in addition to / ahead of applying, depending on mode). The diff is computed **client-side with `jsdiff`** in the webview. **No `ws_contracts.py` / Python change**, no new server event, no second data path. *Rationale:* the structured edit + old content already exist host-side; a new backend event would duplicate a working pipeline. *Anti-patterns:* parsing diffs out of markdown fences as the primary path; minting a `server_chat_diff` event; sending file contents the host doesn't already have.
 
+#### [ADR-721 · Amendment A] Additive read-only telemetry surfacing for the context meter
+
+The context-budget meter (ADR-726) needs the model's `context_window` and the **live** window occupancy,
+neither of which crossed to the webview. A strategic audit confirmed the only token data reaching the
+panel was the cumulative `TokenSnapshot` (lifetime ledger cost/savings) — insufficient and, if used as a
+proxy, actively misleading: the ledger is a monotonic sum `L_total = Σ Tᵢ` whereas LangGraph runs a
+pruned/summarized window `O_current = Σ_{i=n-k}^{n} Tᵢ ≤ C_max`, so a ledger-fed meter would pin to 100%
+in long sessions even after the graph pruned context. **Decision:** ADR-721's "no Python contract change"
+is amended to permit **additive, read-only** surfacing — a new `GET /api/v1/sessions/{thread_id}/context`
+route returning `{context_window, context_used_tokens, context_pct}`, computed by tokenizing the current
+checkpointed message window. This adds **no WS event**, no `ws_contracts.py` change, and no graph-state
+shape change; the diff pipeline's ADR-721 invariants are otherwise untouched. The frontend gate (a
+ledger proxy) was **explicitly rejected** — telemetry accuracy is non-negotiable.
+
 ### [ADR-722] Diff render stack + theming + bundle discipline
 
 Stack: **`jsdiff`** (line/word math) · **`react-diff-viewer-continued`** (asymmetric split grid; React 18.3.1 → compatible) · **`shiki`** (VS Code-identical tokenization). **Hatching** (diagonal `repeating-linear-gradient`) fills the empty side of an unbalanced hunk so the reader's spatial anchor never breaks. All reds/greens/background bind to **`var(--vscode-diffEditor-insertedTextBackground` / `-removedTextBackground` / `--vscode-editor-background` / `--vscode-editor-font-family)`** so light/dark themes adjust automatically. **Bundle discipline (binding):** shiki is **dynamically imported** (off the critical path) and built with a **fine-grained core** loading only the languages/themes actually used; the 7.14.2 DoD measures the webview IIFE `dist/` delta. **Streaming discipline (binding):** never re-highlight or re-diff on a per-token basis — highlight on **block-complete**, diff on **edit-arrival** only. *Anti-patterns:* bundling full shiki with all grammars; re-tokenizing every streamed chunk; hard-coded hex reds/greens that ignore the theme.
