@@ -11,6 +11,7 @@
 - **División 8.0 — Documentada:** auditoría `mypy --strict` completa (`PHASE_8_BLUEPRINT.md` + `TECH_DEBT_BACKLOG.md`). Baseline: 32 errores, 9 módulos silenciados. Primer ítem ejecutable: **8.0.0 Correcciones mecánicas de superficie**.
 - **Track 7.14 — Documentado (frontend, ortogonal a 8.0.0):** blueprint `PHASE_7_14_BLUEPRINT.md` + WBS 7.14.0–7.14.7. Transformación UI/UX a "code agent" (Zero-Bubble canvas + Elite Diff Engine inline). Primer slice recomendado: **7.14.1 (Zero-Bubble)**. Cero cambio de contrato Python.
 - **Track 7.15 — Documentado (backend de corrección, GATEA el checkpoint de 7.14):** una auditoría técnica pre-checkpoint descubrió que el panel 7.14 *surfacea* afordancias (routing por modo, ⟲ Rewind, diff inline, streaming) que el backend aún no honra. **Causa raíz única:** el camino vivo de tarea (`task_service._run_coding_task`) llama a los nodos planner/coder *directamente*, sin pasar por el grafo LangGraph compilado — por lo que el router `route_after_summarize`, el `ideation_loop` y el `HybridCheckpointer` nunca se activan. WBS 7.15.0–7.15.7 (ADR-727..732). **7.14.7 no debe cerrarse hasta que 7.15.7 certifique que el camino vivo entra al grafo compilado.** A diferencia de 7.14, este track **sí** toca el contrato Python (es lo correcto para una corrección de backend).
+- **Track 7.16/7.17 — Documentado (pulido UI, cierra DEBT-006):** mueve la tokenización de sintaxis y el lexing de diffs FUERA del webview y DENTRO del Host (Node) — un motor de gramática real (shiki/textmate) corre donde **no hay techo de bundle**, y emite un AST de tokens por IPC al webview, que permanece como renderer "tonto" (cero deps de parsing nuevas → respeta el VETO y la restricción `iife`-sin-splitting que originó DEBT-006). **7.16** entrega el pipeline **estático** (contrato AST + lexer host + spans en el renderer) y cierra DEBT-006; **7.17** añade encima el **buffer de streaming** (hidratación AST progresiva con reconciliación React + debounce contra el flicker "árbol de navidad"). Sólo frontend/host + IPC, **cero Python**; se apoya en el seam de diff de 7.15.4. ADRs **733..738**.
 - **Próximo Objetivo:** 8.0.0 — Correcciones mecánicas de superficie (primer ítem ejecutable de la División 8.0). En paralelo, 7.14.1 puede arrancar el track frontend; el track 7.15 es prerequisito del cierre de 7.14.
 
 ---
@@ -36,6 +37,8 @@
 | 7.13 | The Enterprise Spinal Cord (Event-Driven Telemetry, Reactive Memory & Self-Healing) | ✅ |
 | 7.14 | UI/UX Transformation to Enterprise Agent (Zero-Bubble & Full-Cognition) | ⬜ |
 | 7.15 | Agentic Core Remediation (Engine Re-Spine, RBAC Enforcement, i18n) | ⬜ |
+| 7.16 | Host-Delegated Tokenization & Rich Diff Rendering (DEBT-006) | ⬜ |
+| 7.17 | Streaming-AST Progressive Render (Hydration & Debounce Buffer) | ⬜ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante (observabilidad absorbida por 7.13) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream · ADR-707) | ✅ |
 | 10 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
@@ -2158,6 +2161,45 @@ the blueprint freeze lifts.
 
 - [ ] **7.15.7 — Checkpoint Gate Fase 7.15**
   - Matriz DoD por defecto re-aseverando cada fila anterior contra el camino vivo (las filas backend-asertables reciben un gate pytest hermano, convención de 7.13/7.14). **El cierre de esta valla es prerequisito para marcar `[x]` el gate 7.14.7.**
+
+---
+
+## 🎨 FASE 7.16 — Host-Delegated Tokenization & Rich Diff Rendering — ⬜ PENDIENTE
+
+> **Pulido UI que cierra DEBT-006.** El "Elite Diff Engine" (7.14.2) ya intercepta diffs, despoja los marcadores crudos `+`/`-`/`---`/`+++`, renderiza split-view y liga colores a `--vscode-diffEditor-*` (theme-flip sin reload), acotando el DOM montado (`DIFF_RENDER_LINE_CAP`). Lo único que falta es la **capa de tokens** (syntax highlighting), diferida en DEBT-006 porque el bundle del webview es un `iife` de esbuild que **no code-splittea** ([`esbuild.js`](../ailienant-extension/esbuild.js)) y shiki rebasaba el techo de ~550 KB. **Decisión arquitectónica:** mover la tokenización al **Host (Node)**, donde no hay techo de bundle — un motor de gramática real (shiki/textmate) corre host-side y emite un **AST de tokens** por IPC; el webview permanece como renderer "tonto" (`.map()` puro, **cero deps de parsing**). Esto honra el VETO (sin shiki/prismjs/highlight.js en el webview) y resuelve la restricción que creó DEBT-006 sin re-incurrirla. **Sólo entrega el pipeline estático** (render probado-estable primero, protege el hilo de UI del thrash de DOM); el render en streaming es Fase 7.17. **Depende de 7.15.4** (el `DiffBlock` rico debe ser alcanzable desde el turno de propuesta para poder tokenizarlo). Pathing real: contratos IPC en [`src/shared/config.ts`](../ailienant-extension/src/shared/config.ts) y [`src/api/contracts.ts`](../ailienant-extension/src/api/contracts.ts); renderers en [`src/workspace/components/`](../ailienant-extension/src/workspace/components/) (**no** existe `shared/` ni `webview-ui/`). **Cero contrato Python.** ADRs **733..736** (contiguos a los 727..732 de 7.15). Código atemporal (CLAUDE.md): ningún marcador de fase en el fuente.
+
+- [ ] **7.16.0 — Contrato AST sobre IPC** — **[ADR-733]**
+  - Definir las interfaces `ASTToken` (`{ type, content }`) y `DiffLine` (`{ type: 'diff', status: 'inserted' | 'deleted' | 'context', content }`) en [`src/shared/config.ts`](../ailienant-extension/src/shared/config.ts) (junto a `DiffBlockShape`). Extender la unión de mensajes host→webview ([`src/api/contracts.ts`](../ailienant-extension/src/api/contracts.ts) / el tipo referenciado en `Workspace.tsx`) para transmitir un array de tokens-AST por cada bloque de código/diff en lugar del string markdown crudo.
+  - **DoD:** los tipos compilan; un bloque de código viaja como array AST por IPC; `npm run compile` 0.
+
+- [ ] **7.16.1 — Lexer de gramática en el Host** — **[ADR-734]**
+  - Correr un motor de gramática real (shiki/textmate) **en el Host de la extensión (Node)** ([`src/`](../ailienant-extension/src/)), tokenizando los bloques de código que llegan del LLM. Reconciliar el lexing de diffs con el despojado de marcadores que el Host **ya** hace en [`PatchActuator`](../ailienant-extension/src/core/PatchActuator.ts) y el seam `RENDER_DIFF` ([`src/providers/workspace_panel.ts`](../ailienant-extension/src/providers/workspace_panel.ts)) — no despojar dos veces. El webview **no gana ninguna dep de parsing**: el motor vive donde no hay techo de bundle.
+  - **DoD:** el Host emite tipos de token idénticos a VS Code; el bundle `iife` del workspace queda intacto (sin shiki en `dist/workspace.js`); `npm run compile`/`lint` 0.
+
+- [ ] **7.16.2 — Renderer AST en el Webview (cierra DEBT-006)** — **[ADR-735]**
+  - Renderizar el AST de tokens como `<span>`s en [`MarkdownRenderer.tsx`](../ailienant-extension/src/workspace/components/MarkdownRenderer.tsx) y en las celdas de diff de [`DiffBlock.tsx`](../ailienant-extension/src/workspace/components/DiffBlock.tsx), estilados **sólo** con variables CSS nativas de VS Code (`--vscode-editor-*Foreground`, `--vscode-diffEditor-*Background`). El renderer permanece "tonto" — `.map()` puro, sin parsing. Reemplaza el `<pre><code>` plano actual (la queja del "texto blanco"). **Cierra la capa de tokens de DEBT-006.**
+  - **DoD:** los bloques de código del chat y los diffs salen con syntax highlighting; el theme-flip repinta vía las CSS vars; `npm run compile`/`lint` 0.
+
+- [ ] **7.16.3 — Checkpoint Gate Fase 7.16** — **[ADR-736]**
+  - Aseverar que el techo de bundle se mantuvo (que la tokenización se movió host-side y las deps del webview no cambiaron es **el punto entero** de la fase), que el highlighting renderiza y que el theme-flip funciona. Sólo render **estático** (sin streaming todavía). Al pasar en verde, **DEBT-006 pasa a Closed**.
+  - **DoD:** bundle `dist/workspace.js` ≤ techo vigente; highlighting visible; `npm run compile`/`lint` exit 0.
+
+---
+
+## 🌊 FASE 7.17 — Streaming-AST Progressive Render (Hydration & Debounce Buffer) — ⬜ PENDIENTE
+
+> **El pipeline en streaming sobre el estático de 7.16.** Una vez que el render estático (7.16) esté probado-estable, esta fase añade el render **en tiempo real**: el Host parsea y despacha **chunks parciales** de AST mientras el LLM emite tokens, y el webview los hidrata progresivamente. Asume explícitamente la parte difícil que 7.16 difirió — la reconciliación de React y el buffering para lograr highlight/diff fluido sin el efecto flicker "árbol de navidad" durante la generación. **Depende de 7.16 en verde.** Debe preservar el contrato anti-flicker de cierres virtuales del [`StreamingMarkdownParser`](../ailienant-extension/src/workspace/utils/StreamingMarkdownParser.ts) (ADR-706 §4.5e) sobre el que se construyó el render de streaming. **Cero contrato Python.** ADRs **737..738**.
+
+- [ ] **7.17.0 — Streaming del AST por el canal de tokens** — **[ADR-737]**
+  - El Host parsea y despacha **chunks parciales** de AST conforme el LLM emite tokens, preservando el contrato de cierres virtuales del [`StreamingMarkdownParser`](../ailienant-extension/src/workspace/utils/StreamingMarkdownParser.ts) (la tipografía de código aparece al llegar la fence de apertura, no al cerrar). La re-tokenización debe quedar **acotada por chunk** — no re-lexar el buffer completo en cada token (la invariante O(1)/token del parser).
+  - **DoD:** un bloque de código en streaming se ilumina progresivamente; sin re-lex de buffer completo por token.
+
+- [ ] **7.17.1 — Hidratación & Debounce Buffer** — **[ADR-738]**
+  - Gestionar la reconciliación de React para que el highlighting progresivo no thrashee el DOM ni produzca el flicker "árbol de navidad": un buffer de debounce/coalescencia entre los chunks de AST y el render, con spans de token memoizados (espejando la disciplina `React.memo` ya presente en [`DiffBlock.tsx`](../ailienant-extension/src/workspace/components/DiffBlock.tsx)).
+  - **DoD:** un stream sostenido de tokens se mantiene fluido (sin flicker); la reconciliación queda acotada (filas memoizadas, flush con debounce).
+
+- [ ] **7.17.2 — Checkpoint Gate Fase 7.17**
+  - Highlight en streaming fluido y sin flicker bajo un stream rápido forzado; el camino estático (7.16) sin regresión; `npm run compile`/`lint` exit 0.
 
 ---
 
