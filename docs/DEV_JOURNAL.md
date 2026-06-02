@@ -2,6 +2,28 @@
 
 ---
 
+## Hito 7.14.4: Inline per-diff HITL + Keyboard — 2026-06-01
+
+- **Status:** OK — `npm run check-types` y `npm run lint` exit 0 (sólo los 2 warnings `semi` pre-existentes en `api_client.ts`/`vfs_reader.ts`). Bundle `dist/workspace.js` = **553 409 B ≤ 563 200 B** (+2 678 B sobre 7.14.3). Sin cambios bajo `ailienant-core/`, CSP/esbuild `iife` intactos.
+
+- **Motivación:** La decisión de autorización vivía en una card del pane Natt y gateaba todo el composer, lejos del diff del cambio propuesto. ADR-724 pide co-locar `[✓ Accept] [✗ Reject] [💬 Comment]` **bajo el diff**, reusando `HITL_RESPONSE` (sin evento nuevo), con `Ctrl+Enter`/`Esc` en el diff enfocado y un input anidado que **no borre el draft del composer**.
+
+- **El hallazgo de arquitectura (confrontado per CLAUDE.md §3):** existe una **disjunción** que la "nota honesta" del blueprint sólo enunciaba a medias — el `server_hitl_approval_request` lleva `approval_id` **sin `patch_id`** y es un gate **PRE-apply**; el `DiffBlock` lleva `patch_id` **sin `approval_id`** y se renderiza **POST-apply** (PatchActuator ya escribió el archivo). **No hay link a nivel de wire.** El `approval_id` es la única correlación, en la state machine del backend.
+
+- **Decisiones de arquitectura:**
+  - **Co-locación, no nuevo gate per-hunk:** las acciones inline son la **misma decisión per-patch** existente, mostradas **sólo mientras hay un approval pendiente**; sin approval, el diff es read-only (ya aplicado). Aprobación **per-patch, NO per-hunk** — los `approval_id` per-hunk son un cambio de backend, diferido (nota honesta en código + journal).
+  - **Heurística de correlación:** sin id de wire que ligue approval↔patch, las acciones se atan a las diffs del **último turno asistente** (el que espera autorización), todas compartiendo el único `approval_id`. Documentado como best-effort.
+  - **Dedup de una sola decisión:** dispatch + resolved-guard extraídos a `useHitlResponder` (hook compartido). Card del Natt + fila inline manejan el **mismo `approval_id`** → un solo `client_hitl_response`. Resolver llama `handleResolveHitl` → `setHitlPending(undefined)`, que **desmonta ambas superficies a la vez** (la card y la fila inline); el `resolvedRef` se resetea al llegar un nuevo approval.
+  - **Comment = reject-with-note:** `{approved:false, comment}` — declinar con feedback accionable para que el agente re-proponga. Note vacío degrada a reject limpio. (Approve-with-note rechazado para mantener Accept inequívoco.) El campo `comment` **ya existía** en `HITLResponsePayload` → **cero cambio Python**.
+  - **Teclado scoped, no global:** la card usa un listener global de `document`; el diff usa `onKeyDown` sobre un wrapper `tabIndex=0` que sólo actúa cuando ese diff tiene foco **y** hay approval pendiente, con `stopPropagation` — no secuestra el composer ni doble-dispara con la card.
+  - **Draft aislado por construcción:** el input anidado es estado local del componente; nunca toca `draftMessages[sessionId]`. M3 preservado: `DiffBlock` sigue memoizado (comparador suma sólo el primitivo `hitlActive`; `onRespond` es `useCallback` estable → tipear en el composer no reconcilia diffs read-only).
+
+- **Files changed:** `workspace/utils/useHitlResponder.ts` (**nuevo**), `workspace/components/DiffHitlActions.tsx` (**nuevo**), `workspace/components/HITLInterventionCard.tsx` (consume el responder compartido; comportamiento idéntico), `workspace/components/DiffBlock.tsx` (wrapper enfocable + teclado scoped + slot de acciones + memo M3-safe), `workspace/Workspace.tsx` (responder + turno-en-espera → diffs), `workspace/workspace.css` (`.ws-diff-hitl*`, focus ring).
+
+- **Próximo:** 7.14.5 — Procedural Memory surfacing (inline Revert sobre `checkpoint_id` → branch flow; pulido de @-mentions).
+
+---
+
 ## Hito 7.14.3: Ghost Telemetry (Status Dots + Live Action-Log + Live Token Footer) — 2026-06-01
 
 - **Status:** OK — `npm run check-types` y `npm run lint` exit 0 (sólo los 2 warnings `semi` pre-existentes en `api_client.ts`/`vfs_reader.ts`, archivos ajenos). Bundle `dist/workspace.js` = **550 731 B ≤ 563 200 B** (+1 396 B sobre el baseline 7.14.2; un componente diminuto + CSS). Sin cambios bajo `ailienant-core/`, CSP y formato esbuild `iife` intactos.

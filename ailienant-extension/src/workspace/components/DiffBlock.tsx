@@ -1,10 +1,17 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import ReactDiffViewer, { type ReactDiffViewerStylesOverride } from 'react-diff-viewer-continued';
 import { diffLines } from 'diff';
 import type { DiffBlockShape } from '../../shared/config';
+import type { HitlRespond } from '../utils/useHitlResponder';
+import { DiffHitlActions } from './DiffHitlActions';
 
 interface DiffBlockProps {
     block: DiffBlockShape;
+    // ADR-724 — when this turn is awaiting authorization, the inline per-patch
+    // HITL action row is shown under the diff and `Ctrl+Enter`/`Esc` on the
+    // focused diff Accept/Reject. Absent on already-applied (read-only) diffs.
+    hitlActive?: boolean;
+    onRespond?: HitlRespond;
 }
 
 // Beyond this many changed lines we stop handing the full file to the viewer.
@@ -114,10 +121,26 @@ const DIFF_STYLES: ReactDiffViewerStylesOverride = {
     lineNumber: { color: 'var(--vscode-editorLineNumber-foreground, #6E7681)' },
 };
 
-function DiffBlockInner({ block }: DiffBlockProps): JSX.Element {
+function DiffBlockInner({ block, hitlActive, onRespond }: DiffBlockProps): JSX.Element {
     const { file_path, old_content, new_content, status } = block;
     const [showFull, setShowFull] = useState(false);
     const dark = isDarkTheme();
+
+    // Scoped keyboard: only fires when this diff has focus AND an approval is
+    // pending. Unlike the Natt card's global document listener, this stays on the
+    // element so it never hijacks the composer or double-fires with the card.
+    const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (!hitlActive || !onRespond) { return; }
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            e.stopPropagation();
+            onRespond(true);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            onRespond(false);
+        }
+    }, [hitlActive, onRespond]);
 
     const view = useMemo(
         () => (showFull
@@ -134,7 +157,13 @@ function DiffBlockInner({ block }: DiffBlockProps): JSX.Element {
     // tokenized diffs are tracked as future tech debt rather than shipped at the
     // cost of Time-to-Interactive.
     return (
-        <div className="ws-diff" data-status={status}>
+        <div
+            className="ws-diff"
+            data-status={status}
+            data-hitl={hitlActive ? 'true' : 'false'}
+            tabIndex={hitlActive ? 0 : undefined}
+            onKeyDown={onKeyDown}
+        >
             <div className="ws-diff-header">
                 <span className="ws-diff-badge" data-status={status}>{badge}</span>
                 <span className="ws-diff-path">{file_path}</span>
@@ -164,6 +193,7 @@ function DiffBlockInner({ block }: DiffBlockProps): JSX.Element {
                     Load full diff ({view.changedLineCount} changed lines)
                 </button>
             )}
+            {hitlActive && onRespond && <DiffHitlActions onRespond={onRespond} />}
         </div>
     );
 }
@@ -177,5 +207,9 @@ export const DiffBlock = memo(DiffBlockInner, (a, b) =>
     a.block.file_path === b.block.file_path &&
     a.block.old_content === b.block.old_content &&
     a.block.new_content === b.block.new_content &&
-    a.block.status === b.block.status,
+    a.block.status === b.block.status &&
+    // Compare only the stable HITL primitive; `onRespond` is a stable useCallback
+    // from the parent, so a composer keystroke that re-renders Workspace never
+    // reconciles a read-only diff (M3 — preserved from 7.14.2).
+    !!a.hitlActive === !!b.hitlActive,
 );
