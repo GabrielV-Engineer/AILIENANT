@@ -135,6 +135,10 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   in `docs/PHASE_7_14_0_STACK_CONTRACT.md` §3 for whenever this is picked up. ADR-722's *theming*
   half is already honored — diff colors bind to `--vscode-diffEditor-*` CSS vars today; only the
   token layer is missing.
+- **Audit cross-ref:** the Phase 7.15 pre-checkpoint audit's "code blocks render as plain white text"
+  complaint maps to THIS entry — it is the known, deliberate shiki deferral, not a new defect. The 7.15
+  remediation does **not** re-open it (see Fase 7.15 in `PROJECT_MANIFEST.md`); highlighting stays here
+  until the bundle/externalization plumbing is funded.
 
 ### DEBT-007 — Auto-accept low-risk edits pays a full HITL round-trip (shift-left candidate)
 

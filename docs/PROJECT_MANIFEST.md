@@ -10,7 +10,8 @@
 - **Hito Reciente:** 7.13.12 COMPLETA — **Checkpoint Gate Fase 7.13 (CIERRE)**: nuevo `tests/test_phase7_13_checkpoint_gate.py` (20 tests) re-certifica cada gate row backend-asertable contra los entry points ya enviados (SC/PR1/CC1/RL1/SF1/CN1/DR1/AL1/ISO1/FR1-3/OR2/OR3/TL1/DD1). Las filas frontend-only (PR2 Incognito — el bus se corta en `ide_sync.ts`, sin hook backend; OR1 form del Planner; DB1 paneles del dashboard) son scope `npm run compile` + smoke manual. DoD verde: `pytest` **768 passed**, `mypy .` **225 OK**, `mypy --strict --follow-imports=silent` sobre el archivo nuevo **0 errores**, `npm run compile` 0 errores. La valla LOCK-IN del blueprint 7.13 expira al marcarse el gate.
 - **División 8.0 — Documentada:** auditoría `mypy --strict` completa (`PHASE_8_BLUEPRINT.md` + `TECH_DEBT_BACKLOG.md`). Baseline: 32 errores, 9 módulos silenciados. Primer ítem ejecutable: **8.0.0 Correcciones mecánicas de superficie**.
 - **Track 7.14 — Documentado (frontend, ortogonal a 8.0.0):** blueprint `PHASE_7_14_BLUEPRINT.md` + WBS 7.14.0–7.14.7. Transformación UI/UX a "code agent" (Zero-Bubble canvas + Elite Diff Engine inline). Primer slice recomendado: **7.14.1 (Zero-Bubble)**. Cero cambio de contrato Python.
-- **Próximo Objetivo:** 8.0.0 — Correcciones mecánicas de superficie (primer ítem ejecutable de la División 8.0). En paralelo, 7.14.1 puede arrancar el track frontend.
+- **Track 7.15 — Documentado (backend de corrección, GATEA el checkpoint de 7.14):** una auditoría técnica pre-checkpoint descubrió que el panel 7.14 *surfacea* afordancias (routing por modo, ⟲ Rewind, diff inline, streaming) que el backend aún no honra. **Causa raíz única:** el camino vivo de tarea (`task_service._run_coding_task`) llama a los nodos planner/coder *directamente*, sin pasar por el grafo LangGraph compilado — por lo que el router `route_after_summarize`, el `ideation_loop` y el `HybridCheckpointer` nunca se activan. WBS 7.15.0–7.15.7 (ADR-727..732). **7.14.7 no debe cerrarse hasta que 7.15.7 certifique que el camino vivo entra al grafo compilado.** A diferencia de 7.14, este track **sí** toca el contrato Python (es lo correcto para una corrección de backend).
+- **Próximo Objetivo:** 8.0.0 — Correcciones mecánicas de superficie (primer ítem ejecutable de la División 8.0). En paralelo, 7.14.1 puede arrancar el track frontend; el track 7.15 es prerequisito del cierre de 7.14.
 
 ---
 
@@ -34,6 +35,7 @@
 | 7.12 | UX/State Stabilization & Context Injection Pathing | ✅ |
 | 7.13 | The Enterprise Spinal Cord (Event-Driven Telemetry, Reactive Memory & Self-Healing) | ✅ |
 | 7.14 | UI/UX Transformation to Enterprise Agent (Zero-Bubble & Full-Cognition) | ⬜ |
+| 7.15 | Agentic Core Remediation (Engine Re-Spine, RBAC Enforcement, i18n) | ⬜ |
 | 8 | Pruebas, Refinamiento y Degradación Elegante (observabilidad absorbida por 7.13) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream · ADR-707) | ✅ |
 | 10 | Onboarding, Gamificación y Ecosistema Abierto | ⬜ |
@@ -2116,6 +2118,46 @@ the blueprint freeze lifts.
 
 - [ ] **7.14.7 — Checkpoint Gate Fase 7.14** — **[blueprint §5]**
   - Matriz DoD por épica (ZB1/ZB2/DF1-4/GT1/HL1/PM1/EG1/REG). Casi todo frontend → `npm run compile` + `npm run lint` + smoke manual (espejo de las filas frontend-only de 7.13). Cierre expira el LOCK-IN del blueprint.
+  - **Bloqueo de cierre:** esta valla **no se marca `[x]` hasta que 7.15.7 esté verde** (ver Fase 7.15). De lo contrario las afordancias surfaceadas por 7.14 (Rewind, routing por modo, diff inline) son cosméticas porque el backend no las honra.
+
+---
+
+## 🔧 FASE 7.15 — Agentic Core Remediation (Engine Re-Spine, RBAC Enforcement, i18n) — ⬜ PENDIENTE
+
+> **Track backend de corrección, prerequisito del cierre de 7.14.** Una auditoría técnica pre-checkpoint encontró que el panel 7.14 *surfacea* capacidades que el backend aún no honra. **Causa raíz única (la "espina"):** `core/task_service.py::process_task` enruta el trabajo de código a `_run_coding_task`, que invoca los nodos `run_planner_node` / `run_coder_node` **directamente como funciones async** — nunca llama al grafo LangGraph compilado (`alienant_app`). Esa única omisión deja sin activar, a la vez, al router de modo (`route_after_summarize`), al `ideation_loop` socrático y al `HybridCheckpointer`. El resto son defectos ortogonales (RBAC no cableado, fuga de idioma, copy fantasma) y un ítem de alcance nuevo (panel lateral de plan). ADRs **727..732** (contiguos a los 720..726 de 7.14). A diferencia de 7.14, este track **sí** modifica el contrato Python — es lo correcto para una corrección de backend. Convención de código atemporal (CLAUDE.md): ningún marcador de fase/hito en el código fuente; sólo aquí, en `DEV_JOURNAL.md` y en commits.
+
+- [ ] **7.15.0 — Engine Re-Spine (camino vivo → grafo LangGraph compilado)** — **[ADR-727]** *(fundacional)*
+  - Enrutar `_run_coding_task` a través del grafo compilado (`alienant_app.astream` / `ainvoke` con un `RunnableConfig{thread_id}` por sesión) en lugar de las llamadas directas a `run_planner_node` / `run_coder_node`. Al entrar al grafo se activan, en un solo movimiento: el branch existente `route_after_summarize` ([`brain/engine.py`](../ailienant-core/brain/engine.py)), el `ideation_loop` ([`brain/ideation.py`](../ailienant-core/brain/ideation.py)) y la persistencia del `HybridCheckpointer` (→ se emite `checkpoint_id` → la afordancia ⟲ "Rewind to here" aparece), más streaming real token-a-token desde dentro del grafo.
+  - **Fontanería del toggle:** leer `planner_mode_registry[client_id]` y poblar `payload.planner_mode_active` en el handler de submit ([`main.py`](../ailienant-core/main.py)). Hoy el registro se **escribe pero nunca se lee**, así que el flag llega siempre `False` y todo cae al coder.
+  - **DoD:** Planner mode entra al `ideation_loop` (pregunta antes de redactar el spec, no alucina una `MissionSpecification`); el HUD muestra planner≠coder según el modo; un turno de código persiste un checkpoint y el mensaje renderiza el glifo Rewind; los tokens llegan incrementales (sin congelar-y-volcar). `mypy .` 0, `pytest` verde.
+
+- [ ] **7.15.1 — Mode → RBAC Enforcement (cablear el motor existente)** — **[ADR-728]**
+  - Mapear el modo del frontend (`automatic` / `ask_before_edits` / `plan_mode`) a `SessionPermissionMode` (`AUTO` / `DEFAULT` / `PLAN`) en el payload, e **invocar el motor ya construido** `evaluate_action()` + `rbwe_guard()` ([`core/permissions.py`](../ailienant-core/core/permissions.py)) en el borde de dispatch de herramientas vivo (hoy sólo referenciado en tests + pre-filtrado de Tool-RAG). El modo Ask debe resolver herramientas de escritura a `HITL`; el modo Plan a `DENY` para todo lo no-`READ_ONLY`.
+  - *Encuadre: es cableado, no construcción — la matriz de 3 ejes ya está completa y correcta.* El modo `ask_before_edits` hoy **no tiene mapeo backend alguno**, por eso una sesión Read-Only logró proponer un write.
+  - **DoD:** Ask no puede escribir sin tarjeta HITL; Plan bloquea mutaciones; matriz ejercitada por un test enfocado. `mypy .` 0.
+
+- [ ] **7.15.2 — HITL Coverage para tier Command/Execute** — **[ADR-728]**
+  - Garantizar que las acciones tier `EXECUTE` / `DANGEROUS` (p. ej. `run_command`) pasen por `request_human_approval` con `risk_metrics` correctos, cerrando el hueco "Auto ejecutó un script sin tarjeta". Reconciliar con el skip actual de pasos `run_command` en el coder ([`agents/coder.py`](../ailienant-core/agents/coder.py)): o se ejecutan-bajo-HITL o se declaran explícitamente fuera de alcance por diseño (documentado, sin ambigüedad).
+  - **DoD:** una acción execute-tier surfacea la tarjeta; ningún camino execute evita la aprobación.
+
+- [ ] **7.15.3 — Prompt i18n & Language Mirroring** — **[ADR-729]**
+  - Añadir una directiva vinculante "responde y escribe código/comentarios en el idioma del prompt del usuario" a `BASE_SYSTEM_PROMPT` ([`agents/prompts.py`](../ailienant-core/agents/prompts.py)); auditar los prompts de rol para que el español de la persona no sobrescriba el inglés del usuario. Hoy el prompt base abre en español sin instrucción de espejo de idioma, por lo que prompts en inglés producen `def transcribir_audio` / `print("Cargando modelo...")`.
+  - **DoD:** un prompt en inglés produce identificadores/comentarios en inglés; un prompt en español sigue produciendo español (sin regresión). El blindaje XML-sandboxing del prompt permanece intacto.
+
+- [ ] **7.15.4 — Disk-Write Honesty & Diff Rendering** — **[ADR-730]**
+  - Eliminar/reemplazar la copy contradictoria "Applying changes to disk is not yet enabled" en `_format_coding_summary` ([`core/task_service.py`](../ailienant-core/core/task_service.py)) para que el mensaje refleje el camino real de aplicación (que sí pide HITL y aplica vía `apply_patch_set`). Asegurar que el turno de propuesta alimente el `DiffBlock` rico (vía el seam de apply/`RENDER_DIFF` re-espinado en 7.15.0) en lugar de sólo fences ```diff crudos.
+  - **DoD:** ningún mensaje afirma que la aplicación está deshabilitada cuando está habilitada; una propuesta de código renderiza el split-diff inline. *(El syntax highlighting sigue diferido — ver DEBT-006; no entra aquí.)*
+
+- [ ] **7.15.5 — Observabilidad: Live Action-Log & Failure Narration** — **[ADR-731]**
+  - Surfacear qué archivos se están leyendo y una explicación legible cuando el agente pivota (p. ej. `litellm.Timeout` → "el modelo agotó el tiempo, reintentando el paso N"), extendiendo la narración existente ([`core/task_service.py`](../ailienant-core/core/task_service.py)). Construye sobre el stream de tokens de 7.15.0 y reutiliza la superficie ghost-telemetry de 7.14.3 — **sin un segundo HUD** (ADR-723).
+  - **DoD:** actividad de lectura de archivos visible durante un turno; un timeout forzado muestra una nota de pivote en lenguaje natural.
+
+- [ ] **7.15.6 — Rich Plan Side-Panel (alcance NUEVO)** — **[ADR-732]**
+  - Renderizar una `MissionSpecification` finalizada en una superficie webview dedicada (documento estructurado: keywords en negrita, file-links azules clicables que abren el archivo en el editor, bloques de código segregados de la prosa) en lugar de un mensaje de chat plano. *Es una característica nueva, no una regresión.* Puede acotarse mínima aquí o diferirse a Fase 11 al momento de ejecución.
+  - **DoD:** un plan aprobado renderiza en la superficie rica con file-links funcionales.
+
+- [ ] **7.15.7 — Checkpoint Gate Fase 7.15**
+  - Matriz DoD por defecto re-aseverando cada fila anterior contra el camino vivo (las filas backend-asertables reciben un gate pytest hermano, convención de 7.13/7.14). **El cierre de esta valla es prerequisito para marcar `[x]` el gate 7.14.7.**
 
 ---
 
