@@ -560,6 +560,15 @@ export class WorkspacePanelManager {
                 msg.event_type === 'server_task_complete'
             ) {
                 this._runningTasks.delete(session.id);
+                // Refresh the context-budget meter once the turn settles: the
+                // window has stopped growing, so this is the cheapest moment to
+                // read its true occupancy. Fire-and-forget — a failed/empty read
+                // just leaves the prior meter value (the fetch is null-safe).
+                void APIClient.getInstance().fetchContextOccupancy(session.id).then((occ) => {
+                    if (occ) {
+                        panel.webview.postMessage({ type: 'CONTEXT_OCCUPANCY', payload: occ });
+                    }
+                });
             }
         };
         WSClient.getInstance().onMessage(wsMsgHandler);

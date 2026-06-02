@@ -54,6 +54,8 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
     // workspace store (survives panel reload) and injected into SUBMIT_TASK.
     const nativeThinking = useWorkspaceStore(s => s.nativeThinking);
     const setNativeThinking = useWorkspaceStore(s => s.setNativeThinking);
+    const autoAcceptLowRisk = useWorkspaceStore(s => s.autoAcceptLowRisk);
+    const setAutoAcceptLowRisk = useWorkspaceStore(s => s.setAutoAcceptLowRisk);
 
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
@@ -227,6 +229,30 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
                 <p className="ws-models-note">
                     On by default for maximum reasoning. Turn off for lower-latency,
                     lower-cost replies — your choice is remembered across reloads.
+                </p>
+
+                <button
+                    className="ws-mode-row"
+                    role="switch"
+                    aria-checked={autoAcceptLowRisk}
+                    data-active={autoAcceptLowRisk ? 'true' : 'false'}
+                    onClick={() => setAutoAcceptLowRisk(!autoAcceptLowRisk)}
+                >
+                    <div className="ws-mode-row-text">
+                        <span className="ws-mode-row-title">Auto-accept low-risk edits</span>
+                        <span className="ws-mode-row-desc">
+                            Skip the approval card for edits the agent flags as low-risk and
+                            apply them immediately. Medium- and high-risk actions always still
+                            ask for your authorization.
+                        </span>
+                    </div>
+                    <span className="ws-toggle" data-on={autoAcceptLowRisk ? 'true' : 'false'} aria-hidden="true">
+                        {autoAcceptLowRisk ? 'ON' : 'OFF'}
+                    </span>
+                </button>
+                <p className="ws-models-note">
+                    Off by default. Use it for fast, repetitive flows where you trust the
+                    agent's low-risk edits — you stay in control of anything riskier.
                 </p>
             </div>
         );

@@ -767,16 +767,54 @@ html, body, #root { height: 100%; }
   margin: 2px 0 6px 0;
 }
 
-/* ── Telemetry card (2-col grid, right of PromptBar) ──────── */
+/* ── Telemetry card (gauges grid + context meter, right of PromptBar) ── */
 .ws-telemetry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  width: 72px;
+  position: relative;
+}
+.ws-telemetry-gauges {
   display: grid;
   grid-template-columns: 36px 14px;
   grid-template-rows: 1fr 1fr;
   gap: 2px;
-  padding: 4px;
-  width: 72px;
   align-items: center;
-  position: relative;
+}
+/* Context-window occupancy: a thin full-width bar under the gauges. The fill
+   color is set inline (theme-var driven) so the band tracks how full the live
+   window is. */
+.ws-context-meter {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+}
+.ws-context-meter-label {
+  font-size: 7px;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+.ws-context-meter-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+.ws-context-meter-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease, background 0.3s ease;
+}
+.ws-context-meter-pct {
+  font-size: 7px;
+  color: var(--text-secondary);
+  min-width: 16px;
+  text-align: right;
 }
 .ws-telemetry-left {
   grid-column: 1;

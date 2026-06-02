@@ -136,6 +136,27 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   half is already honored — diff colors bind to `--vscode-diffEditor-*` CSS vars today; only the
   token layer is missing.
 
+### DEBT-007 — Auto-accept low-risk edits pays a full HITL round-trip (shift-left candidate)
+
+- **Date:** 2026-06-02
+- **Reproduce:** N/A (latency, not an error). With auto-accept ON, every low-risk approval still flows
+  backend → WS `server_hitl_approval_request` → webview → `HITL_RESPONSE` → host → WS
+  `client_hitl_response` → backend before the edit applies.
+- **File(s):** `ailienant-extension/src/workspace/Workspace.tsx` (auto-accept gate in the
+  `server_hitl_approval_request` handler); `ailienant-extension/src/workspace/workspaceStore.ts`
+  (`autoAcceptLowRisk`).
+- **Error:** Per-step network RTT for actions the user pre-authorized. `O(1)` per step but one full
+  round-trip each — avoidable.
+- **Blocked by:** A client→host→backend channel that carries the auto-accept preference (none exists
+  today; the setting is webview-local). Adding it is out of scope for the UI slice that introduced the
+  toggle.
+- **Phase:** A future shift-left optimization (Phase 11 or a later 7.14.x): the backend reads the
+  auto-accept setting and, for low-risk edits, **omits emitting the approval event altogether** — the
+  edit applies server-side with no round-trip. Trade-off accepted now for implementation simplicity
+  (reuse `useHitlResponder`'s wire message, zero new Python logic).
+- **Notes:** The conservative risk gate (any medium/high metric forces the manual card) must be
+  preserved if/when this moves server-side.
+
 ---
 
 ## Closed Entries

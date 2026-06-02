@@ -98,6 +98,14 @@ export interface WorkspaceState {
      */
     nativeThinking: boolean;
     /**
+     * Soft-permission switch: when ON, an incoming HITL approval whose risk
+     * metrics are ALL low (or absent) is auto-approved without surfacing the
+     * intervention card — a fast path for repetitive, low-risk edit flows. Any
+     * medium/high-risk request still requires explicit authorization. OFF by
+     * default (the safe posture); persisted so the choice survives reload.
+     */
+    autoAcceptLowRisk: boolean;
+    /**
      * Phase 7.12 — last snapshot of the in-flight streaming turn. Persisted so a
      * reconnect / tab re-reveal can rehydrate a partial Thought Box instead of
      * dropping it. Cleared (`null`) on `server_stream_end`. Display-only.
@@ -116,6 +124,7 @@ export interface WorkspaceState {
     setLastScrollY: (v: number) => void;
     setIsAborting: (v: boolean) => void;
     setNativeThinking: (v: boolean) => void;
+    setAutoAcceptLowRisk: (v: boolean) => void;
     setInflightTurn: (v: InflightSnapshot | null) => void;
 }
 
@@ -132,6 +141,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         lastScrollY: 0,
         isAborting: false,
         nativeThinking: true,
+        autoAcceptLowRisk: false,
         inflightTurn: null,
 
         setDraft:        (sessionId, text) =>
@@ -146,6 +156,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         setLastScrollY:  (v) => set({ lastScrollY: v }),
         setIsAborting:   (v) => set({ isAborting: v }),
         setNativeThinking: (v) => set({ nativeThinking: v }),
+        setAutoAcceptLowRisk: (v) => set({ autoAcceptLowRisk: v }),
         setInflightTurn: (v) => set({ inflightTurn: v }),
     }),
     {
@@ -166,6 +177,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
             tier: s.tier,
             lastScrollY: s.lastScrollY,
             nativeThinking: s.nativeThinking,
+            autoAcceptLowRisk: s.autoAcceptLowRisk,
             inflightTurn: s.inflightTurn,
         }),
     },

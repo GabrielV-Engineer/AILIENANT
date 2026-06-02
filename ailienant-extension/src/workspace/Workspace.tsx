@@ -672,6 +672,24 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_hitl_approval_request': {
                     const req = msg.payload as HITLIntervention;
+                    // Soft-permission fast path: when the user enabled auto-accept
+                    // and every risk metric is low (or none was attached), approve
+                    // without ever mounting the card. Read the flag non-reactively
+                    // so a toggle flipped after this handler was bound still counts;
+                    // a stale closure value would silently ignore the user's choice.
+                    // The conservative gate — ANY medium/high metric falls through
+                    // to the manual card — is the whole safety contract here.
+                    const autoAccept = useWorkspaceStore.getState().autoAcceptLowRisk;
+                    const allLowRisk = (req.risk_metrics ?? []).every(m => m.level === 'low');
+                    if (autoAccept && allLowRisk) {
+                        vscode.postMessage({
+                            type: 'HITL_RESPONSE',
+                            approval_id: req.approval_id,
+                            approved: true,
+                        });
+                        addToast('info', 'Auto-accepted low-risk edit');
+                        break;
+                    }
                     setHitlPending(req);
                     setNattOpen(true);
                     addToast('warn', `${nattName} requires your authorization`);
@@ -786,8 +804,24 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     setLockedFiles(0);
                     break;
                 case 'TOKEN_SNAPSHOT':
-                    setSnapshot(msg.payload as TokenSnapshot);
+                    // Preserve any context-occupancy fields already merged in by
+                    // a prior CONTEXT_OCCUPANCY frame — the cost/savings snapshot
+                    // and the window-occupancy read arrive on separate cadences.
+                    setSnapshot(prev => ({ ...prev, ...(msg.payload as TokenSnapshot) }));
                     break;
+                case 'CONTEXT_OCCUPANCY': {
+                    const occ = msg.payload as { context_window: number; context_used_tokens: number };
+                    setSnapshot(prev => ({
+                        local_tokens: prev?.local_tokens ?? 0,
+                        cloud_tokens: prev?.cloud_tokens ?? 0,
+                        savings_pct: prev?.savings_pct ?? 0,
+                        total_cost_usd: prev?.total_cost_usd ?? 0,
+                        ...prev,
+                        context_window: occ.context_window,
+                        context_used_tokens: occ.context_used_tokens,
+                    }));
+                    break;
+                }
                 case 'TASK_STARTED': {
                     const d = msg.payload as { task_id: string };
                     setActiveTaskId(d.task_id);

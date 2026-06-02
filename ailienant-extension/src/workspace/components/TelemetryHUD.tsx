@@ -133,6 +133,44 @@ export function FinOpsBar({ costUsd, budgetUsd }: FinOpsBarProps): JSX.Element {
     );
 }
 
+interface ContextMeterProps { usedTokens: number; window: number; }
+
+/**
+ * Context-window occupancy bar. Unlike the FinOps bar (which shows budget
+ * *remaining*), this shows how *full* the live window is — so the danger
+ * direction is inverted: green when there's headroom, red as it approaches the
+ * limit. The figure is the current pruned/summarized window, so it can fall
+ * after the backend summarizes; the tooltip says so to set expectations.
+ */
+export function ContextMeter({ usedTokens, window }: ContextMeterProps): JSX.Element | null {
+    if (window <= 0) { return null; }
+    const pct = Math.max(0, Math.min(usedTokens / window, 1));
+    const pctLabel = (pct * 100).toFixed(pct >= 0.1 ? 0 : 1);
+
+    const color =
+        pct < 0.6 ? 'var(--accent-primary)' :
+        pct < 0.85 ? 'var(--accent-warn)' :
+        'var(--accent-alert)';
+
+    const tip = `Context window: ${Math.round(usedTokens).toLocaleString()} / ${window.toLocaleString()} tokens `
+        + `(${pctLabel}% full). Reflects the live conversation window — it drops when the agent summarizes old turns.`;
+
+    return (
+        <Tooltip content={tip}>
+            <div className="ws-context-meter" aria-label="Context window occupancy">
+                <span className="ws-context-meter-label">CTX</span>
+                <div className="ws-context-meter-track">
+                    <div
+                        className="ws-context-meter-fill"
+                        style={{ width: `${pct * 100}%`, background: color }}
+                    />
+                </div>
+                <span className="ws-context-meter-pct">{pctLabel}%</span>
+            </div>
+        </Tooltip>
+    );
+}
+
 export function useTpsCalculator(): { recordChunk: () => void; tps: number } {
     const [tps, setTps] = useState(0);
     const chunkTimestamps = useRef<number[]>([]);
@@ -284,31 +322,37 @@ export function TelemetryHUD({
     occStatus, lockedFiles, tps, snapshot, budgetUsd,
     budgetLimitMode, budgetWeeklyUsd, budgetMonthlyUsd, onBudgetChange,
 }: TelemetryHUDProps): JSX.Element {
+    const ctxWindow = snapshot?.context_window ?? 0;
+    const ctxUsed = snapshot?.context_used_tokens ?? 0;
+
     return (
         <div className="ws-telemetry-card ai-card">
-            <div className="ws-telemetry-left">
-                <OccRing status={occStatus} lockedFiles={lockedFiles} />
-                <Speedometer tps={tps} />
-            </div>
-            <div className="ws-telemetry-right">
-                <Tooltip content="Spend cap — account cost ceiling">
-                    <span className="ws-finops-icon-static">
-                        <Icon name="gauge" size={11} color="var(--text-secondary)" />
-                    </span>
-                </Tooltip>
-                <div className="ws-finops-bar-wrapper">
-                    <FinOpsBar
-                        costUsd={snapshot?.total_cost_usd ?? 0}
-                        budgetUsd={budgetUsd}
+            <div className="ws-telemetry-gauges">
+                <div className="ws-telemetry-left">
+                    <OccRing status={occStatus} lockedFiles={lockedFiles} />
+                    <Speedometer tps={tps} />
+                </div>
+                <div className="ws-telemetry-right">
+                    <Tooltip content="Spend cap — account cost ceiling">
+                        <span className="ws-finops-icon-static">
+                            <Icon name="gauge" size={11} color="var(--text-secondary)" />
+                        </span>
+                    </Tooltip>
+                    <div className="ws-finops-bar-wrapper">
+                        <FinOpsBar
+                            costUsd={snapshot?.total_cost_usd ?? 0}
+                            budgetUsd={budgetUsd}
+                        />
+                    </div>
+                    <BudgetMenu
+                        mode={budgetLimitMode}
+                        weeklyUsd={budgetWeeklyUsd}
+                        monthlyUsd={budgetMonthlyUsd}
+                        onChange={onBudgetChange}
                     />
                 </div>
-                <BudgetMenu
-                    mode={budgetLimitMode}
-                    weeklyUsd={budgetWeeklyUsd}
-                    monthlyUsd={budgetMonthlyUsd}
-                    onChange={onBudgetChange}
-                />
             </div>
+            <ContextMeter usedTokens={ctxUsed} window={ctxWindow} />
         </div>
     );
 }

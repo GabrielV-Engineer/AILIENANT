@@ -50,6 +50,11 @@ export interface TokenSnapshot {
     cloud_tokens: number;
     savings_pct: number;
     total_cost_usd: number;
+    // Live context-window occupancy, merged in by the host from the per-thread
+    // context route. Optional: a snapshot frame that predates the fetch (or a
+    // cold thread) simply omits them and the meter hides itself.
+    context_window?: number;
+    context_used_tokens?: number;
 }
 
 // Phase 7.11.4 — @mention dropdown autocomplete result row.
