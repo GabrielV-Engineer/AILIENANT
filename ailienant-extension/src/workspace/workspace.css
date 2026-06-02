@@ -1961,3 +1961,37 @@ html, body, #root { height: 100%; }
     animation: none;
   }
 }
+
+/* ── Inline per-diff HITL actions (ADR-724) ─────────────────── */
+
+/* The diff becomes focusable only while awaiting authorization, so the
+   Ctrl+Enter / Esc keyboard affordance is discoverable via a focus ring. */
+.ws-diff[data-hitl="true"]:focus-visible {
+  outline: 2px solid var(--accent-warn, var(--accent-primary));
+  outline-offset: 1px;
+}
+.ws-diff-hitl {
+  border-top: 1px solid var(--border-subtle);
+  padding: 6px 8px;
+  background: var(--bg-surface);
+}
+.ws-diff-hitl-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ws-diff-hitl-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ws-diff-hitl-input textarea {
+  min-height: 56px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+.ws-diff-hitl-input .ai-btn {
+  align-self: flex-end;
+}

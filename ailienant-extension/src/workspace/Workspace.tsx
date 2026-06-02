@@ -35,6 +35,7 @@ import { IndexingStatus } from './components/IndexingStatus';
 import { PipelineProgress } from './components/PipelineProgress';
 import { ActionLog } from './components/ActionLog';
 import type { HITLIntervention } from './components/HITLInterventionCard';
+import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 
 type ToastLevel = 'info' | 'warn' | 'error';
@@ -956,6 +957,18 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         setHitlPending(undefined);
     }, []);
 
+    // ADR-724 — shared responder for the inline per-diff HITL row. Bound to the
+    // currently-pending approval; the resolved-guard is reset whenever a new
+    // approval arrives so a later request isn't swallowed by the previous one's
+    // latched ref. Resolving here clears `hitlPending`, which simultaneously
+    // tears down the Natt-pane card — one approval_id, one decision, no double-post.
+    const hitlActiveApprovalId = hitlPending?.approval_id ?? '';
+    const { respond: respondInlineHitl, resolvedRef: inlineHitlResolved } =
+        useHitlResponder(hitlActiveApprovalId, handleResolveHitl);
+    useEffect(() => {
+        inlineHitlResolved.current = false;
+    }, [hitlActiveApprovalId, inlineHitlResolved]);
+
     const handleBudgetChange = useCallback((
         mode: BudgetLimitMode, weeklyUsd: number, monthlyUsd: number,
     ) => {
@@ -1115,7 +1128,20 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     </div>
                                 </div>
                             )}
-                            {messages.map((m, i) => (
+                            {(() => {
+                                // ADR-724 — while an approval is pending, the inline HITL
+                                // actions attach to the latest assistant turn (the one awaiting
+                                // authorization). No wire id correlates approval_id↔patch_id, so
+                                // this is a deliberate best-effort heuristic, documented as such.
+                                let awaitingTurnIdx = -1;
+                                if (hitlPending) {
+                                    for (let k = messages.length - 1; k >= 0; k--) {
+                                        if (messages[k].role === 'assistant') { awaitingTurnIdx = k; break; }
+                                    }
+                                }
+                                return messages.map((m, i) => {
+                                    const diffHitlActive = i === awaitingTurnIdx;
+                                    return (
                                 <Fragment key={i}>
                                     {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
                                         <PipelineProgress steps={m.steps} done={!!m.stepsDone} />
@@ -1194,13 +1220,18 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             ))}
                                         </div>
                                     )}
-                                    {/* Inline Elite Diff Engine — split diffs for edits applied during this turn. */}
+                                    {/* Inline Elite Diff Engine — split diffs for edits applied during this turn.
+                                        ADR-724 — while this is the turn awaiting authorization, every
+                                        DiffBlock of the patch carries the inline Accept/Reject/Comment row
+                                        and the focused-diff keyboard (one approval_id, mirrored per file). */}
                                     {m.role === 'assistant' && m.diffBlocks && m.diffBlocks.length > 0 && (
                                         <div className="ws-diff-stack">
                                             {m.diffBlocks.map(db => (
                                                 <DiffBlock
                                                     key={`${db.patch_id}:${db.file_path}`}
                                                     block={db}
+                                                    hitlActive={diffHitlActive}
+                                                    onRespond={diffHitlActive ? respondInlineHitl : undefined}
                                                 />
                                             ))}
                                         </div>
@@ -1219,7 +1250,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         />
                                     )}
                                 </Fragment>
-                            ))}
+                                    );
+                                });
+                            })()}
                             <div ref={messagesEndRef} />
                         </div>
 

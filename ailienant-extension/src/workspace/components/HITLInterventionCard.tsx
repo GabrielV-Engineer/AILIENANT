@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
-import { vscode } from '../vscode_bridge';
+import { useHitlResponder } from '../utils/useHitlResponder';
 
 export interface HITLIntervention {
     approval_id: string;
@@ -26,21 +26,13 @@ export function HITLInterventionCard({ intervention, nattName, onResolved }: Pro
     const [editMode, setEditMode] = useState(false);
     const [editedContent, setEditedContent] = useState(intervention.proposed_content ?? '');
     const cardRef = useRef<HTMLDivElement>(null);
-    // Guard against a double-resolve race (e.g. the in-chat card and the native
-    // OS toast both firing for the same approval_id) — only the first posts.
-    const resolvedRef = useRef(false);
-
+    // The post + single-resolve guard (the in-chat card, the native OS toast and
+    // the inline per-diff row can all target one approval_id) live in the shared
+    // responder so the surfaces cannot diverge — only the first call posts.
+    const { respond: respondRaw } = useHitlResponder(intervention.approval_id, onResolved);
     const respond = useCallback((approved: boolean, modified?: string) => {
-        if (resolvedRef.current) { return; }
-        resolvedRef.current = true;
-        vscode.postMessage({
-            type: 'HITL_RESPONSE',
-            approval_id: intervention.approval_id,
-            approved,
-            modified_content: modified,
-        });
-        onResolved(intervention.approval_id);
-    }, [intervention.approval_id, onResolved]);
+        respondRaw(approved, modified !== undefined ? { modified_content: modified } : undefined);
+    }, [respondRaw]);
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent): void => {

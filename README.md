@@ -190,7 +190,9 @@ Proyect_Ailienant/
 │   │   │   │                   #     + CustomizeMenu (7.9.A.7 permissions/output-styles/agents/hooks/mcp) + SkillsMenu (7.9.A.7.f insert/create)
 │   │   │   │                   #     + DiffBlock (inline Elite Diff Engine — react-diff-viewer split grid, jsdiff math, vscode-themed, M1 memory-truncation guard)
 │   │   │   │                   #     + ActionLog (Ghost Telemetry — live while-you-wait stream of in-flight tool invocations, derived from toolCalls)
+│   │   │   │                   #     + DiffHitlActions (inline per-diff HITL: Accept/Reject/Comment-as-reject-with-note, draft-safe nested input; shown only while an approval is pending)
 │   │   │   └── hooks/          #     useReasoningPreset (surgeon/architect/explorer preset serializer)
+│   │   │   #   utils/useHitlResponder — shared HITL_RESPONSE dispatch + single-resolve guard (Natt card + inline diff row drive one approval_id)
 │   │   ├── dashboard/          #   Web Dashboard SPA (ESM + code splitting, custom palette)
 │   │   │   ├── main.tsx        #     SPA entry — default Overview tab, lazy StagingArea (Monaco), eager HW/BYOM/Rules/Audit/Extensions/Telemetry/Recovery panels
 │   │   │   ├── dashboard.css   #     full palette: --color-bg #FEF9F3, --color-primary #63a583, --color-dark #233237
