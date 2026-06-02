@@ -799,6 +799,13 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     addToast('info', `${count} parallel ${label} running — AILIENANT isolates each independently.`);
                     break;
                 }
+                case 'MENTION_NOTIFY': {
+                    // @-mention expansion outcome (oversize folder skipped / cap
+                    // hit) surfaced in-panel rather than as a native popup.
+                    const m = msg as unknown as { level: ToastLevel; message: string };
+                    addToast(m.level, m.message);
+                    break;
+                }
                 // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel.
                 case 'CHECKPOINTS_LIST': {
                     // Host fetched GET /api/v1/sessions/{id}/checkpoints and is

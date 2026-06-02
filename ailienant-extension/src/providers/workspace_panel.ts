@@ -14,7 +14,7 @@ import { APIClient } from '../api/api_client';
 import type { AilienantConfig, Session } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { ConfigLoader } from '../shared/config_loader';
-import { WorkspacePathIndex, extractMentions, FOLDER_EXPANSION_CAP } from './workspacePathIndex';
+import { WorkspacePathIndex, extractMentions, FOLDER_EXPANSION_CAP, FOLDER_EXPANSION_GIVE_UP } from './workspacePathIndex';
 import { HitlNotifier, type HITLApprovalRequestPayload, type HitlMode } from './hitlNotifier';
 
 function findBackendPath(extensionFsPath: string): string | null {
@@ -592,19 +592,25 @@ export class WorkspacePanelManager {
                         if (/@(file|folder):/.test(taskText)) {
                             const idx = await this._getPathIndex();
                             const mentions = extractMentions(taskText, idx, (folder) => {
-                                void vscode.window.showWarningMessage(
-                                    `AILIENANT: @folder:${folder} is too large to inject as hard context (skipped). ` +
-                                    `Use @file: for specific paths or narrow the folder.`,
-                                );
+                                // Surface in the panel (where the user's eyes
+                                // are) rather than a native popup outside it.
+                                panel.webview.postMessage({
+                                    type: 'MENTION_NOTIFY',
+                                    level: 'warn',
+                                    message: `@folder:${folder} too large (>${FOLDER_EXPANSION_GIVE_UP} files) — skipped. ` +
+                                        `Use @file: for specific paths or narrow the folder.`,
+                                });
                             });
                             if (mentions.length > 0) {
                                 explicit_mentions = mentions;
                                 const fileCount = mentions.length;
                                 const cap = FOLDER_EXPANSION_CAP;
                                 if (fileCount >= cap) {
-                                    void vscode.window.showInformationMessage(
-                                        `AILIENANT: capped @folder expansion at ${cap} files.`,
-                                    );
+                                    panel.webview.postMessage({
+                                        type: 'MENTION_NOTIFY',
+                                        level: 'info',
+                                        message: `Capped @folder expansion at ${cap} files.`,
+                                    });
                                 }
                             }
                         }

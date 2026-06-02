@@ -68,9 +68,12 @@ export function ContextOverlay({ onClose }: Props): JSX.Element {
             </div>
             {active === 'terminal' ? (
                 <>
+                    <div className="ws-context-hint">
+                        No terminal auto-capture — paste the output here yourself (VS Code exposes no terminal-output API).
+                    </div>
                     <input
                         className="ws-context-input"
-                        placeholder="last 40 lines of npm output"
+                        placeholder="paste the last ~40 lines of terminal output"
                         value={payload}
                         onChange={(e) => setPayload(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') { submitTerminal(); } }}
