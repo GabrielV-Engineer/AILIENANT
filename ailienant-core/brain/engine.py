@@ -40,9 +40,9 @@ from agents.error_correction import run_error_correction_node  # noqa: E402 — 
 
 
 async def run_apply_patch_node(state: dict) -> dict:
-    """Phase 2.2.D stub — applies pending_patches via blob_storage in Phase 4.
+    """applies pending_patches via blob_storage.
 
-    In Phase 4: reads state["pending_patches"] (filepath → unified diff written by
+    reads state["pending_patches"] (filepath → unified diff written by
     CoderAgent), calls blob_storage.apply_patch() per entry, and writes updated
     VFSFile(blob_hash=new_hash, ...) objects back into vfs_buffer.
     """
@@ -72,6 +72,37 @@ def route_after_summarize(state: dict) -> str:
         reason=reason,
     )
     logger.info("route_after_summarize: planner_mode_active=%s → %s.", state.get("planner_mode_active"), target)
+    return target
+
+
+def route_after_ideation(state: dict) -> str:
+    """Conditional edge after the Socratic ideation sub-graph.
+
+    The ideation loop either suspended mid-dialogue (analyst still grilling) or
+    distilled the conversation into a planner brief. On synthesis we hand the brief
+    to the autonomous PlannerAgent — its Actor-Critic reflection loop produces the
+    schema-valid WBS — so the Socratic outcome never dead-ends at a zero-shot plan.
+
+    hitl_pending=True        → END (suspend; the next user turn resumes the dialogue)
+    ideation_synthesized=True → planner_agent (run the reflection loop on the brief)
+    """
+    from core.telemetry import log_routing_decision
+    if state.get("hitl_pending"):
+        target = END
+        reason = "ideation_suspended_awaiting_user"
+    elif state.get("ideation_synthesized"):
+        target = "planner_agent"
+        reason = "ideation_synthesized_handoff"
+    else:
+        target = END  # defensive: nothing distilled and not suspended → nothing to plan
+        reason = "ideation_no_op"
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        source="ideation_loop",
+        target=str(target),
+        reason=reason,
+    )
+    logger.info("route_after_ideation: → %s (%s).", target, reason)
     return target
 
 
@@ -171,7 +202,7 @@ def route_after_coder(state: Dict[str, Any]) -> str:
 
 
 workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))  # type: ignore[type-var]
-# Phase 6.4 — DLQ-wrapped node entrypoints. An unhandled exception promotes
+# DLQ-wrapped node entrypoints. An unhandled exception promotes
 # L1→L2 and persists a dead_letter_tasks row before re-raising (see
 # core/dead_letter.py). The 4 wrapped nodes are the state-bearing entrypoints;
 # summarize_history / drift_monitor / contract_guard / finops_gate are left bare.
@@ -190,8 +221,8 @@ workflow.add_node("finops_gate", _instrument_node("finops_gate", run_finops_node
 workflow.add_node("ideation_loop", ideation_graph)
 workflow.add_node("session_delta_aggregator", _instrument_node("session_delta_aggregator", run_session_delta_aggregator_node))
 workflow.add_node("contract_guard", _instrument_node("contract_guard", run_contract_guard_node))  # Phase 2.23
-# Phase 6.5 — deterministic FinOps Supervisor spliced between finops_gate and
-# apply_patch. DLQ-wrapped (Blueprint §5.2): an AuditChainBrokenError becomes a
+# deterministic FinOps Supervisor spliced between finops_gate and
+# apply_patch. DLQ-wrapped an AuditChainBrokenError becomes a
 # recoverable dead_letter_tasks episode rather than a silent graph death.
 workflow.add_node(
     "supervisor_node",
@@ -199,7 +230,7 @@ workflow.add_node(
 )
 
 # =====================================================================
-# 3. LÓGICA DE ENRUTAMIENTO (MapReduce Fan-Out)
+# 3. ROUTING LOGIC (MapReduce Fan-Out)
 # =====================================================================
 
 
@@ -262,17 +293,23 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 
 
 # =====================================================================
-# 4. TOPOLOGÍA DEL GRAFO (Edges)
+# 4. GRAPH TOPOLOGY (Edges)
 # =====================================================================
 workflow.add_edge(START, "summarize_history")
 workflow.add_edge("summarize_history", "session_delta_aggregator")
 workflow.add_conditional_edges(
     "session_delta_aggregator", route_after_summarize, ["planner_agent", "ideation_loop"]
 )
-workflow.add_edge("ideation_loop", END)
+# The ideation loop no longer dead-ends: once the Socratic dialogue is distilled it
+# hands the brief to the Actor-Critic PlannerAgent (run once, downstream of ideation
+# and with planner_mode_active=False, so it never re-enters the loop). A mid-dialogue
+# turn still suspends to END to await the next user response.
+workflow.add_conditional_edges(
+    "ideation_loop", route_after_ideation, ["planner_agent", END]
+)
 workflow.add_edge("planner_agent", "drift_monitor")
 workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"])
-# Phase 2.23 — ContractGuardNode is inserted as transparent middleware between
+# ContractGuardNode is inserted as transparent middleware between
 # CoderAgent and FinOpsGate. The node short-circuits internally (returns {} on
 # quiet turns), so a routing callback would be cognitive noise. The node also
 # owns contract_anchor mutation, which would have to be fragmented across the
@@ -286,7 +323,7 @@ workflow.add_conditional_edges(
 )
 workflow.add_edge("error_correction", "contract_guard")
 workflow.add_edge("contract_guard", "finops_gate")
-# Phase 6.5 — the finops_gate path-map is remapped from a list to a dict so the
+# the finops_gate path-map is remapped from a list to a dict so the
 # router's "apply_patch" verdict is rerouted through supervisor_node. This
 # splices the Supervisor without touching brain/finops.py: route_after_finops
 # still returns "apply_patch" / "__end__" unchanged.
@@ -304,23 +341,24 @@ workflow.add_edge("apply_patch", "validate_output")
 workflow.add_conditional_edges("validate_output", route_after_validation, ["coder_agent", END])
 
 # =====================================================================
-# 5. COMPILACIÓN CON PERSISTENCIA (CheckpointManager)
+# 5. COMPILATION WITH PERSISTENCE (CheckpointManager)
 # =====================================================================
-# Usamos checkpoint_manager de brain/checkpoint.py para centralizar la
-# gestión del ciclo de vida de la conexión SQLite. La instancia compilada
-# `alienant_app` es importada por main.py y task_service.py.
+# We use checkpoint manager from brain/checkpoint.py to centralize the
+# SQLite connection lifecycle management. The compiled instance
+# `alienant_app` is imported by main.py and task_service.py.
 alienant_app = workflow.compile(checkpointer=checkpoint_manager)
 
 logger.info(
-    "🟢 Motor AILIENANT compilado: "
+    "Compiled AILIENANT engine: "
     "SummarizeHistory → SessionDeltaAggregator → [PlannerAgent | IdeationLoop(Socratic)] → "
+    "(IdeationLoop ─distilled→ PlannerAgent) → "
     "DriftMonitor → route_to_coders → CoderAgent(s) → ContractGuard → "
     "FinOpsGate → Supervisor → ApplyPatch → ValidateOutput."
 )
 
 
 # =====================================================================
-# 6. CONTEXT ASSEMBLY UTILITIES (Phase 1.1.0.4)
+# 6. CONTEXT ASSEMBLY UTILITIES
 # =====================================================================
 
 
@@ -351,7 +389,7 @@ def resolve_explicit_mentions(
 
 
 # =====================================================================
-# 7. TOP-LEVEL ROUTING ENTRY POINT (Phase 4.3)
+# 7. TOP-LEVEL ROUTING ENTRY POINT
 # =====================================================================
 # Re-exported from brain.intent_router so existing import sites
 # (`from brain.engine import process_user_intent`) keep working unchanged.

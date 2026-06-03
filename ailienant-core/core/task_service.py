@@ -237,6 +237,11 @@ class TaskService:
             "hitl_pending": False,
             "hitl_response": None,
             "shared_understanding_reached": False,
+            # Transient handoff flag: synthesis_node sets it True after distilling
+            # the Socratic dialogue so route_after_ideation forwards the brief to the
+            # autonomous planner. Not on the AIlienantGraphState TypedDict — the
+            # router reads it off the loose state dict, like active_file_path.
+            "ideation_synthesized": False,
             "target_role": None,
             "current_step_id": None,
             "mission_spec": None,

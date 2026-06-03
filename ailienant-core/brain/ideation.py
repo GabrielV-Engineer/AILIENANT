@@ -7,59 +7,55 @@
 #
 # Node topology:
 #   analyst_grill → [route_after_analyst]
-#       shared_understanding_reached=True  → synthesis_node → END
+#       shared_understanding_reached=True  → synthesis_node → END (handoff to planner)
 #       shared_understanding_reached=False → END  (suspend; await next task_service call)
+#
+# synthesis_node does NOT draft the plan. It distills the dialogue into a brief and
+# hands off to the autonomous PlannerAgent (engine.route_after_ideation), whose
+# Actor-Critic reflection loop produces the schema-valid WBS. Compressing ambiguous
+# dialogue straight into the rigid MissionSpecification in one zero-shot call is a
+# single P(E) failure point that collapses on weak/quantized models; the planner's
+# draft→validate→re-draft loop drives that to P(E)^n instead.
 
 import json
 import logging
 import os as _os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 
-from brain.state import AIlienantGraphState, MissionSpecification
+from brain.state import AIlienantGraphState
 
 logger = logging.getLogger("IDEATION_GRAPH")
 
-# Live structured synthesis is the default; the placeholder stub is the
-# deterministic escape hatch for CI/UI smoke tests. Mirrors planner/analyst:
+# Live distillation is the default; the placeholder stub is the deterministic
+# escape hatch for CI/UI smoke tests. Mirrors planner/analyst:
 # set AILIENANT_IDEATION_DEBUG=1 to force the stub.
 DEBUG_MODE: bool = _os.getenv("AILIENANT_IDEATION_DEBUG", "0") != "0"
 
-# Compress the accumulated Socratic dialogue into a strict MissionSpecification.
-# The model must emit the WBS too — an empty task list is what made the planner
-# announce "no concrete edits", so we demand concrete, buildable steps.
-_SYNTHESIS_SYSTEM_PROMPT: str = (
-    "You are the AnalystAgent synthesizing a finished plan from a completed "
-    "Socratic planning dialogue. Compress the whole conversation into a single "
-    "strict JSON object matching this schema (no prose, no markdown fences):\n"
+# Distill the Socratic dialogue into a SOFT brief — intent + hard constraints +
+# domain glossary. Deliberately NOT the rigid MissionSpecification: a missing field
+# degrades gracefully, so there is no schema gamble here. The downstream PlannerAgent
+# turns this brief into the validated WBS under its reflection loop.
+_DISTILL_SYSTEM_PROMPT: str = (
+    "You are the AnalystAgent closing a Socratic planning dialogue. Distill the "
+    "whole conversation into a concise build brief for an autonomous planner — NOT "
+    "a full plan. Return a single JSON object (no prose, no markdown fences):\n"
     '{\n'
-    '  "outcome": "<one-paragraph statement of the end result and its value>",\n'
-    '  "scope": ["<files/areas IN scope>", "<and explicitly OUT of scope>"],\n'
-    '  "constraints": ["<technical limits agreed during the dialogue>"],\n'
-    '  "decisions": ["<design/architecture decisions taken>"],\n'
-    '  "tasks": [\n'
-    '    {"step_number": 1, "target_role": "core_dev", '
-    '"action": "edit_file", "target_file": "<path>", '
-    '"description": "<precise instruction for this step>"}\n'
-    '  ],\n'
-    '  "checks": ["<acceptance criteria — how we know it works>"],\n'
-    '  "ubiquitous_language": {"<term>": "<definition>"},\n'
-    '  "tdd_criteria": ["<test-first acceptance criteria>"]\n'
+    '  "intent": "<one tight paragraph: what to build and what done looks like>",\n'
+    '  "constraints": ["<hard technical limits agreed in the dialogue>"],\n'
+    '  "scope_hints": ["<files/areas in or out of scope, if named>"],\n'
+    '  "ubiquitous_language": {"<term>": "<definition>"}\n'
     '}\n'
-    "RULES:\n"
-    "- target_role is one of: core_dev, architect_refactor, devops_infra, "
-    "secops, qa_tester, doc_manager, vcs_manager, data_ml_engineer.\n"
-    "- action is one of: read_file, write_file, edit_file, run_command.\n"
-    "- tasks MUST be concrete and buildable, ordered by step_number starting at "
-    "1, each naming a real target_file derived from the dialogue and workspace. "
-    "Never return an empty tasks list when the dialogue described work to do.\n"
-    "- Mirror the language of the dialogue in all prose fields."
+    "Capture only what the dialogue actually settled; do not invent a work "
+    "breakdown, file edits, or steps — the planner does that. Mirror the language "
+    "of the dialogue."
 )
 
 
 def _dialogue_transcript(messages: List[dict]) -> str:
-    """Flatten the accumulated Q&A into a plain transcript for the synthesis prompt."""
+    """Flatten the accumulated Q&A into a plain transcript for the distillation prompt."""
     lines: List[str] = []
     for m in messages:
         role = m.get("role")
@@ -70,79 +66,82 @@ def _dialogue_transcript(messages: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def _fallback_mission(messages: List[dict]) -> MissionSpecification:
-    """Honest minimal plan when structured synthesis cannot produce a WBS.
+def _compose_planner_brief(brief: Dict[str, Any], fallback: str) -> str:
+    """Render the distilled brief into the prose ``user_input`` the planner reads.
 
-    Carries an empty ``tasks`` list so ``_format_coding_summary`` surfaces the
-    truthful "no concrete edits" line instead of the graph crashing — the user
-    can then refine the dialogue rather than hitting an opaque failure.
+    The planner consumes ``user_input`` as its requirement statement; folding the
+    settled intent + constraints + glossary into it lets the planner draft a WBS
+    grounded in the Socratic outcome without re-litigating the dialogue.
     """
-    return MissionSpecification(
-        outcome=(
-            f"Plan synthesized from the Socratic dialogue "
-            f"({len(messages)} message(s)), but no concrete file steps could be "
-            f"extracted — refine the plan and try again."
-        ),
-        scope=[],
-        constraints=[],
-        decisions=[],
-        tasks=[],
-        checks=[],
-    )
+    intent = str(brief.get("intent") or "").strip() or fallback
+    parts: List[str] = [intent]
+    constraints = [str(c) for c in (brief.get("constraints") or []) if str(c).strip()]
+    if constraints:
+        parts.append("Constraints:\n" + "\n".join(f"- {c}" for c in constraints))
+    hints = [str(h) for h in (brief.get("scope_hints") or []) if str(h).strip()]
+    if hints:
+        parts.append("Scope:\n" + "\n".join(f"- {h}" for h in hints))
+    glossary = brief.get("ubiquitous_language") or {}
+    if isinstance(glossary, dict) and glossary:
+        gloss = "; ".join(f"{k} = {v}" for k, v in glossary.items())
+        parts.append(f"Glossary: {gloss}")
+    return "\n\n".join(parts)
 
 
-async def run_synthesis_node(state: dict) -> dict:
-    """LangGraph node: compress the Socratic conversation into a MissionSpecification.
+async def run_synthesis_node(
+    state: dict, config: Optional[RunnableConfig] = None
+) -> dict:
+    """LangGraph node: distill the Socratic dialogue, then hand off to the planner.
 
-    Live path: one structured LLM call extracts the full SDD contract — outcome,
-    scope, constraints, decisions, a concrete WBS, acceptance checks, and the DDD
-    optionals — from the accumulated dialogue. On a parse/validation failure it
-    degrades to an honest empty-WBS plan rather than crashing the graph.
+    This node does not produce a plan. It compresses the conversation into a soft
+    brief, folds it into ``user_input``, and sets ``ideation_synthesized`` so the
+    parent graph routes the turn into the autonomous PlannerAgent — whose
+    draft→validate→re-draft loop produces the schema-valid WBS. ``mission_spec`` is
+    intentionally left for the planner to own.
     """
     messages: List[dict] = state.get("messages", [])
+    _narrate = (config or {}).get("configurable", {}).get("narrate")
 
+    async def _emit(node_name: str) -> None:
+        if _narrate is not None:
+            await _narrate(node_name)
+
+    await _emit("synthesizing_intent")
+
+    fallback_intent = _dialogue_transcript(messages) or (state.get("user_input") or "")
     if DEBUG_MODE:
-        synthesis = MissionSpecification(
-            outcome=(
-                f"Plan synthesized from Socratic dialogue "
-                f"({len(messages)} message(s) accumulated)."
-            ),
-            scope=["Derived from Socratic Q&A session."],
-            constraints=["Constraints identified during ideation."],
-            decisions=["Decisions agreed upon during dialogue."],
-            tasks=[],  # PlannerAgent populates full WBS in autonomous mode
-            checks=["TDD criteria agreed in the Socratic session."],
-            ubiquitous_language={},
-            deep_modules_sdd=None,
-            tdd_criteria=[],
-        )
+        planner_brief = fallback_intent
+        glossary: Dict[str, str] = {}
     else:
-        synthesis = await _synthesize_mission_llm(state, messages)
+        brief = await _distill_brief_llm(state, messages)
+        planner_brief = _compose_planner_brief(brief, fallback_intent)
+        _gloss = brief.get("ubiquitous_language") or {}
+        glossary = {str(k): str(v) for k, v in _gloss.items()} if isinstance(_gloss, dict) else {}
 
     logger.info(
-        "SynthesisNode: MissionSpecification compressed from %d message(s) "
-        "(%d WBS step(s)). Handing off to autonomous execution.",
-        len(messages), len(synthesis.tasks),
+        "SynthesisNode: distilled brief from %d message(s) (%d char(s)). "
+        "Handing off to the autonomous PlannerAgent.",
+        len(messages), len(planner_brief),
     )
 
+    await _emit("handoff_to_planner")
+
     return {
-        "mission_spec": synthesis,
+        "user_input": planner_brief,
+        "ideation_glossary": glossary,
+        "ideation_synthesized": True,
         "planner_mode_active": False,
         "shared_understanding_reached": True,
         "hitl_pending": False,
     }
 
 
-async def _synthesize_mission_llm(
-    state: dict, messages: List[dict]
-) -> MissionSpecification:
-    """Structured LLM synthesis of the dialogue into a MissionSpecification.
+async def _distill_brief_llm(state: dict, messages: List[dict]) -> Dict[str, Any]:
+    """Soft-schema distillation of the dialogue into an intent/constraints brief.
 
-    Grounds the WBS in the workspace (active file + GraphRAG, best-effort) and
-    validates the model's JSON by constructing the Pydantic model — its
-    before-validators coerce hallucinated role names and scalar-vs-list fields, so
-    a slightly-off payload still yields a valid plan. Any failure falls back to an
-    honest empty-WBS plan; this node never raises.
+    Grounds the brief in the workspace (active file + GraphRAG, best-effort). Never
+    raises — a parse failure degrades to an intent-only brief so the handoff to the
+    planner always proceeds (the planner's reflection loop carries the rigor).
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
     from shared.config import MODEL_BIG
@@ -157,7 +156,7 @@ async def _synthesize_mission_llm(
     try:
         resp = await LLMGateway.ainvoke(
             messages=[
-                {"role": "system", "content": _SYNTHESIS_SYSTEM_PROMPT},
+                {"role": "system", "content": _DISTILL_SYSTEM_PROMPT},
                 {"role": "user", "content": user_payload},
             ],
             model=MODEL_BIG,
@@ -167,17 +166,17 @@ async def _synthesize_mission_llm(
             state=state,
         )
         raw = LLMGateway._sanitize_json_response(resp.choices[0].message.content or "")
-        parsed: Dict[str, Any] = json.loads(raw)
-        return MissionSpecification(**parsed)
-    except Exception as exc:  # noqa: BLE001 — synthesis must never crash the graph
-        logger.warning("SynthesisNode: structured synthesis failed (%s: %s); "
-                       "falling back to honest empty-WBS plan.",
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {"intent": transcript}
+    except Exception as exc:  # noqa: BLE001 — distillation must never crash the graph
+        logger.warning("SynthesisNode: distillation failed (%s: %s); "
+                       "handing the raw intent to the planner.",
                        type(exc).__name__, exc)
-        return _fallback_mission(messages)
+        return {"intent": transcript}
 
 
 async def _assemble_synthesis_context(state: dict) -> str:
-    """Best-effort workspace context block to ground the WBS in real file paths."""
+    """Best-effort workspace context block to ground the distilled brief."""
     active_path: str = state.get("active_file_path") or ""
     paths: List[str] = [active_path] if active_path else []
     project_root: str = state.get("workspace_root") or ""

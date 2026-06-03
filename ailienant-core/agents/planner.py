@@ -465,8 +465,12 @@ async def run_planner_node(
     if decision.cancelled:
         return {"errors": ["Planner cancelled by user during VRAM contention."]}
 
-    # bounded ValidationError retry loop. On each failure we inject the
-    # raw Pydantic error into the user message so the LLM corrects on the next attempt.
+    # Actor-Critic reflection loop: the Pydantic schema IS the critic. Each draft is
+    # validated against MissionSpecification; on rejection the exact errors are fed
+    # back and the actor re-drafts. Bounded by MAX_PLANNER_RETRIES, this drives the
+    # single-shot error rate P(E) down to ~P(E)^n. The narration below frames the
+    # cycle (review → rejected → replanning → validated) so it is legible in the log.
+    await _emit("critic_review")
     retry_count: int = 0
     last_validation_err: str = ""
     mission_plan: Optional[MissionSpecification] = None
@@ -474,8 +478,8 @@ async def run_planner_node(
     try:
         while retry_count <= MAX_PLANNER_RETRIES:
             if retry_count > 0 and last_validation_err:
-                # narrate the retry with its attempt count.
-                await _emit(f"validation_retry ({retry_count}/{MAX_PLANNER_RETRIES})")
+                # The critic rejected the prior draft — narrate the re-plan attempt.
+                await _emit(f"critic_rejected → replanning ({retry_count}/{MAX_PLANNER_RETRIES})")
                 corrective: str = (
                     f"\n\nYour previous attempt failed schema validation with these errors:\n"
                     f"{last_validation_err}\n"
@@ -506,9 +510,10 @@ async def run_planner_node(
                     raw_content, MissionSpecification
                 )
                 mission_plan = MissionSpecification.model_validate(extracted)
-                mission_plan = mission_plan.model_copy(update={  
+                mission_plan = mission_plan.model_copy(update={
                     "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
                 })
+                await _emit("plan_validated")  # the critic accepted the draft.
                 break
             except Exception as parse_err:  # noqa: BLE001 — Pydantic ValidationError + sanitiser errors
                 last_validation_err = str(parse_err)
@@ -552,6 +557,15 @@ async def run_planner_node(
         len(mission_plan.tasks),
         len(mission_plan.checks),
     )
+
+    # Carry the Socratic glossary (when the ideation handoff produced one) into the
+    # plan's ubiquitous_language so the domain terms settled during the dialogue
+    # survive into the final MissionSpecification. Planner-drafted terms win on key
+    # collision; the dialogue glossary only fills gaps.
+    _gloss = state.get("ideation_glossary")
+    if isinstance(_gloss, dict) and _gloss:
+        merged = {**{str(k): str(v) for k, v in _gloss.items()}, **mission_plan.ubiquitous_language}
+        mission_plan = mission_plan.model_copy(update={"ubiquitous_language": merged})
 
     # For High-TCI, all WBSSteps are candidates for MapReduce fan-out.
     parallel_tasks = mission_plan.tasks if tci > 80.0 else []
