@@ -14,7 +14,7 @@ Two call shapes share one implementation:
     loop, which orchestrates steps outside the compiled graph.
 
 Cognitive isolation (binding): this module MUST NOT import ``brain.personality``. It
-is a logic agent behind the Phase 4.1.5 fence — no persona, no empathy, no apologies
+is a logic agent behind the fence — no persona, no empathy, no apologies
 that would waste tokens and add latency inside the loop. Enforced by the ISO1 audit.
 """
 from __future__ import annotations
@@ -42,6 +42,24 @@ _TRACE_CAP: int = 4000          # cap traceback text fed back into the loop / st
 _FILE_SLICE_CAP: int = 16000    # cap offending-file content sent to the model (OOM guard)
 # Extract source paths from CPython traceback frames: `  File "x.py", line N, ...`.
 _TB_FILE_RE = re.compile(r'File "([^"]+)", line \d+')
+
+# Friendly phrasing for the common transient faults the self-heal loop pivots on,
+# so the IDE action-log explains a retry in plain language instead of leaking a
+# raw exception class.
+_PIVOT_REASONS: Dict[str, str] = {
+    "Timeout": "the model timed out",
+    "APITimeoutError": "the model timed out",
+    "APIConnectionError": "the connection dropped",
+    "ConnectionError": "the connection dropped",
+}
+
+
+def _pivot_reason(signature: str) -> str:
+    """Plain phrase for a failure signature's exception class (field 1 of the
+    NUL-delimited key); falls back to the raw class name, never raises."""
+    parts = signature.split("\x00")
+    exc_class = parts[1] if len(parts) > 1 and parts[1] else "error"
+    return _PIVOT_REASONS.get(exc_class, f"hit a {exc_class}")
 
 
 class CorrectionProposal(BaseModel):
@@ -272,6 +290,20 @@ async def run_error_correction_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 if target and os.path.normpath(target) not in candidates:
                     candidates.append(os.path.normpath(target))
 
+    # Narrate the pivot in plain language so a transient fault (e.g. a model
+    # timeout) reads as a deliberate retry rather than an unexplained stall.
+    # task_service injects the async emitter via state["narrate"]; this node
+    # never imports the transport layer — the cognitive-isolation fence holds.
+    _narrate = state.get("narrate")
+
+    async def _emit(node_name: str) -> None:
+        if _narrate is not None:
+            await _narrate(node_name)
+
+    reason = _pivot_reason(signature)
+    retry_clause = f", retrying step {step_id}" if step_id is not None else ""
+    await _emit(f"self-healing {failed_node} — {reason}{retry_clause}")
+
     result = await _default_agent.propose_fix(
         traceback_text=tb_text, candidate_files=candidates, state=state
     )
@@ -280,6 +312,7 @@ async def run_error_correction_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if signature:
             failure_breaker.record_success(signature)
         logger.info("Correction healed [node=%s]: %s", failed_node, result.diagnosis)
+        await _emit(f"recovered {failed_node}")
         return {
             "healing_required": False,
             "pending_patches": result.pending_patches,
@@ -291,6 +324,7 @@ async def run_error_correction_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if signature:
         failure_breaker.record_failure(signature)
     logger.info("Correction conceded [node=%s]: %s", failed_node, result.diagnosis)
+    await _emit(f"could not auto-fix {failed_node}")
     return {
         "healing_required": False,
         "errors": [f"self-heal could not correct {failed_node}: {result.diagnosis}"],
