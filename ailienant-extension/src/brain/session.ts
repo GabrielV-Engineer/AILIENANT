@@ -70,7 +70,7 @@ export class SessionManager {
      */
     public async startAITask(
         taskPrompt: string,
-        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean },
+        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string },
     ): Promise<number | undefined> {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
@@ -130,6 +130,9 @@ export class SessionManager {
                 // When the Planner surface is active, route this turn into the
                 // backend Socratic ideation loop instead of autonomous planning.
                 planner_mode_active: opts?.planner_mode_active,
+                // The mode selector maps to the backend session permission policy
+                // (Auto → auto-apply, Ask → HITL card, Plan → block mutations).
+                execution_mode: opts?.execution_mode,
             };
 
             // 5. Emitir la Misión (Boca) al API Gateway

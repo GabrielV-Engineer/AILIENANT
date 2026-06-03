@@ -54,6 +54,25 @@ class PermissionDecision(str, Enum):
     DENY = "deny"
 
 
+# Frontend mode selector → session-wide permission policy. The UI offers a
+# three-way choice; each maps to one session mode: Auto runs uninterrupted,
+# Ask gates every write through HITL, Plan blocks all non-read-only actions.
+_FRONTEND_MODE_TO_SESSION = {
+    "automatic": SessionPermissionMode.AUTO,
+    "ask_before_edits": SessionPermissionMode.DEFAULT,
+    "plan_mode": SessionPermissionMode.PLAN,
+}
+
+
+def session_mode_from_frontend(mode: Optional[str]) -> Optional[SessionPermissionMode]:
+    """Map a frontend selector string to a session policy; None if unrecognized.
+
+    An unrecognized or absent value returns None so callers fall back to the
+    per-session settings-file seed rather than silently forcing a policy.
+    """
+    return _FRONTEND_MODE_TO_SESSION.get((mode or "").strip().lower())
+
+
 # =====================================================================
 # 2. PermissionDeniedError — surfaced to agent scratchpad by RBWE
 # =====================================================================

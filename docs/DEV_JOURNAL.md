@@ -2,6 +2,40 @@
 
 ---
 
+## Hito 7.15.1: Mode → RBAC Enforcement (cablear el motor de permisos al borde de escritura) — 2026-06-03
+
+- **Status:** OK — segunda slice de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 228 source files**; `pytest` **794 passed** (+14 nuevos) en orden determinista; `npm run lint` 0 errores (sólo los 2 warnings `semi` pre-existentes) y `npm run compile` exit 0. Los 3 rojos que aparecían bajo `pytest-randomly` viven en `test_analyst_context.py` (fuga de estado RAG entre tests, **ortogonal a esta slice** — pasan aislados y en orden por defecto).
+
+- **Motivación:** una sesión Read-Only/Ask todavía podía proponer (y aplicar) un write — el selector de modo de 3 vías del frontend nunca llegaba al motor de permisos `evaluate_action()`, que estaba **construido y testeado pero sólo referenciado en tests**.
+
+- **Hallazgo de auditoría que recalibró el encuadre del WBS:** la causa raíz no era sólo "Ask sin mapeo backend". (1) El webview computa `execution_mode ∈ {automatic, ask_before_edits, plan_mode}` y lo envía en `SUBMIT_TASK`, pero el **host lo descartaba** ([`workspace_panel.ts`](../ailienant-extension/src/providers/workspace_panel.ts) sólo reenviaba `planner_mode_active`) → el backend no podía distinguir Auto de Ask. (2) `session_permission_mode` se sembraba **sólo** desde el `~/.ailienant/settings.json` global, no desde el selector por-tarea (un escalar global disfrazado de modo por-tarea). (3) **No existe un borde de dispatch de herramientas vivo:** el coder escribe parches en memoria (`agents/coder.py`); la única ruta de mutación real es `_run_coding_task` → `request_human_approval` (tarjeta HITL) → `core.write_pipeline.apply_patch_set` → `applyEdit` de VS Code. Por eso el `evaluate_action()` se cableó en ese chokepoint, no en un `ToolNode` (que no existe).
+
+- **Fix (cableado E2E, no construcción):**
+  - **Transporte:** `execution_mode` viaja ahora como campo de `TaskPayload`; el webview ya lo enviaba → se reenvía por el host (`workspace_panel.ts` → `session.startAITask` → payload HTTP, más el campo en la interfaz `api_client.ts`).
+  - **Mapeo:** helper puro `session_mode_from_frontend()` en [`core/permissions.py`](../ailienant-core/core/permissions.py) (`automatic→AUTO`, `ask_before_edits→DEFAULT`, `plan_mode→PLAN`; desconocido/ausente → `None`).
+  - **Submit:** `main.submit_task` pliega el selector; `plan_mode` además fuerza `planner_mode_active=True` (la postura read-only y la socrática van juntas).
+  - **Seed de estado:** `_build_initial_state` siembra `session_permission_mode` desde el selector **con precedencia** sobre el settings global (fallback al settings si el selector está ausente).
+  - **Gate de escritura:** antes de la tarjeta HITL, `evaluate_action(session_mode, WRITE, EDIT_EXECUTE_RBW)` → `DENY` (Plan) descarta con mensaje read-only y sin tarjeta; `HITL` (Ask) corre la tarjeta como antes; `ALLOW` (Auto) auto-aplica.
+
+- **Correcciones por auditoría del usuario (3 puntos):**
+  - **Bug de flujo en AUTO:** el apply compartido leía `contents`, que el bloque de la tarjeta mutaba in-place — en AUTO (sin tarjeta) eso arriesgaba un dataset vacío / dependencia oculta. **Desacoplado:** `patches_to_apply = dict(contents)` se inicializa **antes** del branch del veredicto; HITL sobreescribe la entrada single-file con el texto editado por el operador, ALLOW usa la propuesta original. El `apply_patch_set` compartido lee sólo `patches_to_apply`.
+  - **Opacidad cognitiva en AUTO:** se emite un token "⚡ Auto-applying approved changes directly to disk…" **antes** del I/O para que el feed nunca muestre una mutación silenciosa (la escritura puede tardar tras locks de VFS).
+  - **Contrato de coerción de mayúsculas:** el canal guarda `Literal["DEFAULT","PLAN","AUTO"]` (mayúsculas) pero los valores del enum `SessionPermissionMode` son minúsculas → toda lectura del canal hace `.lower()` antes de construir el enum, envuelta en `ValueError → DEFAULT` (mismo patrón que el reader in-graph `swarms.py:56-60`).
+
+- **Decisiones:** (1) `plan_mode` → **ambos** `PLAN` + `planner_mode_active` (defensa en profundidad: el `ideation_loop` rutea el turno, `PLAN` bloquea cualquier write que se escape, y el filtro PLAN del Tool-RAG in-graph también lo honra ahora gratis vía el seed). (2) `rbwe_guard` se **difiere**: el coder lee vía el VFS, no `FileReadTool`, así que `read_files_state` daría falsos `DENY` en esta ruta.
+
+- **Cambio de comportamiento (intencional, alineado al DoD):** el modo Auto ahora **auto-aplica sin tarjeta** (antes toda submission mostraba la tarjeta porque el seed del settings jamás llegaba a este gate). Realiza la etiqueta "Just run — minimal interruptions"; el "✓ Applied … use Ctrl+Z to undo" sigue disparándose después.
+
+- **Tests:** nuevo `tests/test_mode_rbac_enforcement.py` (6 lógicos / 14 con parametrización): Plan→DENY (sin tarjeta, sin apply); Ask→HITL (aplica en aprobación, nada en rechazo); Auto→ALLOW (sin tarjeta, notice "Auto-applying…" antes del apply, asevera que `apply_patch_set` recibe la propuesta original — guarda el fix de desacople contra la regresión de dataset vacío); helper de mapeo parametrizado; `submit_task` con `plan_mode` fuerza el flag / `automatic` lo deja `False`; test de contrato de la matriz de 3 ejes.
+
+- **Files changed:**
+  - Frontend EDIT: `src/providers/workspace_panel.ts` (reenvío de `execution_mode`), `src/brain/session.ts` (opts + payload), `src/api/api_client.ts` (campo de interfaz).
+  - Backend EDIT: `core/permissions.py` (helper aditivo `session_mode_from_frontend`), `core/task_service.py` (campo `execution_mode` en `TaskPayload`, seed con precedencia, gate de permisos en el borde de escritura con desacople de payload + notice de Auto), `main.py` (pliegue del selector en `submit_task`).
+  - Tests NUEVO: `tests/test_mode_rbac_enforcement.py`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.15.1 → `[x]` + hallazgo/decisiones), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.15.0: Engine Re-Spine (camino vivo → grafo LangGraph compilado) — 2026-06-02
 
 - **Status:** OK — corrección backend fundacional de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 227 source files**; `pytest` **780 passed** (era 779+1: el único rojo era un test que aseveraba la secuencia de narración vieja, reparado).

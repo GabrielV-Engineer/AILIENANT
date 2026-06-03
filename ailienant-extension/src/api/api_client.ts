@@ -38,6 +38,9 @@ export interface TaskPayload {
     // (analyst grills the user one question at a time) instead of autonomous
     // planning. Optional so non-Planner turns keep the backend default (False).
     planner_mode_active?: boolean;
+    // The three-way mode selector (automatic | ask_before_edits | plan_mode).
+    // The backend maps it to the session permission policy that gates writes.
+    execution_mode?: string;
 }
 
 // Phase 1.6.3 — Model discovery response schema (mirrors FastAPI ModelInfo).

@@ -631,6 +631,9 @@ export class WorkspacePanelManager {
                             // Forwarded from the Planner surface — routes this turn into
                             // the backend Socratic ideation loop when set.
                             planner_mode_active: data.planner_mode_active as boolean | undefined,
+                            // The three-way mode selector governs the backend session
+                            // permission policy (automatic | ask_before_edits | plan_mode).
+                            execution_mode: data.execution_mode as string | undefined,
                         });
                         // Backend-governed stream-stall timeout (longer for slow local
                         // engines). The webview arms its watchdog from this — never a
