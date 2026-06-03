@@ -2,6 +2,29 @@
 
 ---
 
+## Hito 7.14.7: Checkpoint Gate Fase 7.14 — 2026-06-03
+
+- **Status:** OK — valla de cierre de la Fase 7.14 (Zero-Bubble + Elite Diff Engine UI/UX Transformation). **FASE 7.14 CERRADA.** §1 LOCK-IN del blueprint expirado. Gates: `npm run compile` 0 errores · `npm run lint` 0 errores · `mypy .` **235 archivos** 0 errores · `pytest` **834 passed** (sin regresión) · smoke manual verde.
+
+- **Naturaleza (sin archivo pytest):** Fase 7.14 es **frontend-only** (ADR-721 vinculante: cero cambio de contrato Python). Cada fila del DoD del blueprint §5 (ZB1/ZB2/DF1–4/GT1/HL1/PM1/EG1/REG) es un invariante visual/TS — ninguna es pytest-asertable. Crear un archivo pytest habría duplicado las aserciones de `test_phase7_15_checkpoint_gate.py` o habría intentado observar comportamiento UI que pytest no puede ver. La valla sigue la convención establecida por las filas frontend-only de 7.13 (PR2/OR1/DB1 → `npm run compile` + smoke manual).
+
+- **Contrato de backend que sustenta las afordancias:** certificado por 7.15.7. Las invariantes Python que 7.14 *surfacea* (routing de modo `route_after_summarize`, matriz RBAC `evaluate_action`, gate de execute-tier, round-trip de `ServerPlanDocumentEvent`) fueron asertadas fila por fila en `test_phase7_15_checkpoint_gate.py` (RS2, RB1, EX1, RP1). El bloqueador 7.15.7 quedó verde el mismo día.
+
+- **Filas DoD certificadas:**
+  - **ZB1/ZB2** (Zero-Bubble Canvas): chrome de burbuja eliminado; ancho completo; label de rol legible en ambos temas. `Workspace.tsx` + `workspace.css`.
+  - **DF1–DF4** (Elite Diff Engine): split-diff + cabecera contextual + hatching en hunks desbalanceados; colores via `--vscode-diffEditor-*` (theme-flip); shiki lazy-loaded dentro del presupuesto IIFE (bundle 556 KB ≤ 563 KB); diff memoizado (sin re-render por token). `DiffBlock.tsx`.
+  - **GT1** (Ghost Telemetry): dots de estado en `ToolChip`; action-log en vivo; footer de tokens en vivo; HUD OCC/TPS/FinOps intacto. `PipelineProgress.tsx`, `ActionLog.tsx`.
+  - **HL1** (Inline HITL): Accept/Reject/Comment round-trip por el canal `HITL_RESPONSE` existente (ADR-724, sin evento nuevo); reject preserva draft; teclado scoped al diff enfocado.
+  - **PM1** (Rewind): affordance relabeled con glifo `⟲`; `branch_from_checkpoint` sin cambio de contrato.
+  - **EG1** (Elite Gaps): medidor de context-budget con ocupación real de la ventana viva (`GET /context`, ADR-726·A); toggle auto-accept-low-risk reusando `HITL_RESPONSE`.
+  - **REG**: `npm run compile` 0 · `npm run lint` 0 · `mypy .` 0/235 · `pytest` 834 · smoke verde.
+
+- **Smoke manual (filas frontend-only, sin hook backend):** canvas sin chrome; diff inline con theme-flip; shiki lazy (chunk diferido en Network); Accept/Reject round-trip; Rewind ramifica; medidor refleja % real; auto-accept respeta modo; Plan panel renderiza con file-links funcionales.
+
+- **Files changed:** Docs EDIT: `PROJECT_MANIFEST.md` (7.14.7 → `[x]`, fase header `✅ COMPLETADA`), `DEV_JOURNAL.md` (este hito). No se crearon archivos nuevos.
+
+---
+
 ## Hito 7.15.7: Checkpoint Gate Fase 7.15 — 2026-06-03
 
 - **Status:** OK — slice de cierre de la Fase 7.15 (Agentic Core Remediation). **FASE 7.15 CERRADA.** DoD verde: `mypy .` whole-tree **Success: no issues found in 235 source files**; `mypy --strict --follow-imports=silent tests/test_phase7_15_checkpoint_gate.py` → **0**; `pytest -p no:randomly tests/test_phase7_15_checkpoint_gate.py` **11 passed**; suite completa `pytest -p no:randomly` **834 passed** (sin regresión, +12 vs 822); `npm run compile` (tsc `--noEmit` + eslint + esbuild) **0 errores** (2 warnings `semi` pre-existentes en archivos no tocados).

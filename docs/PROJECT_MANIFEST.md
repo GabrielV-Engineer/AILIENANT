@@ -2089,7 +2089,7 @@ the blueprint freeze lifts.
 
 ---
 
-## 🎨 FASE 7.14 — UI/UX Transformation to Enterprise Agent (Zero-Bubble & Full-Cognition) — ⬜ PENDIENTE
+## 🎨 FASE 7.14 — UI/UX Transformation to Enterprise Agent (Zero-Bubble & Full-Cognition) — ✅ COMPLETADA
 
 > **Track frontend, ortogonal al backend 8.0.0.** Lleva el panel de "chatbot" a "code agent integrado" (fidelidad Cursor/Claude-Code). Contrato completo + ADRs en [`PHASE_7_14_BLUEPRINT.md`](PHASE_7_14_BLUEPRINT.md). Auditoría (CLAUDE.md §3): ~20 de 25 técnicas elite ya existen maduras — 7.14 es **2 épicas net-new + 3 mejoras + 1 slice de gaps estratégicos**, no un rebuild. **Cero cambio de contrato Python** (ADR-721). El §1 LOCK-IN del blueprint expira al cerrarse 7.14.7.
 
@@ -2119,9 +2119,9 @@ the blueprint freeze lifts.
   - **En scope:** medidor de presupuesto de contexto ("N tokens / X% lleno", de `token_usage`+`context_window`); toggle de auto-accept de edits (soft permissions). **Diferido a Fase 11:** multi-thread paralelo, refs cross-session, dual-mode CLI. DoD: medidor refleja uso real; auto-accept respeta el modo.
   - **As-built:** primera slice de 7.14 que toca Python (sólo additivo). El proxy de ledger fue **vetado por el revisor** (suma monotónica ≠ ventana deslizante prunada); el medidor usa ocupación **real** de la ventana viva vía nueva ruta read-only `GET /api/v1/sessions/{thread_id}/context` (`compute_context_occupancy` con `checkpoint_manager.get_tuple` + `PrecisionTokenCounter`, empty-state safe → cold thread lee 0). Enmienda **ADR-721·A** en el blueprint. Auto-accept = gate frontend low-risk-only en `Workspace.tsx` reusando `HITL_RESPONSE` (toggle persistido en `workspaceStore`, switch en `ModelsMenu`); RTT por paso registrado como **DEBT-007** (shift-left futuro). Sin nuevos eventos WS, sin cambio de `ws_contracts.py`, sin archivos nuevos de runtime. Gates: `mypy .` 0, `pytest` 775 passed (+7), `check-types`/`lint` 0, bundle 556,170 B ≤ 563,200 B.
 
-- [ ] **7.14.7 — Checkpoint Gate Fase 7.14** — **[blueprint §5]**
+- [x] **7.14.7 — Checkpoint Gate Fase 7.14** — **[blueprint §5]**
   - Matriz DoD por épica (ZB1/ZB2/DF1-4/GT1/HL1/PM1/EG1/REG). Casi todo frontend → `npm run compile` + `npm run lint` + smoke manual (espejo de las filas frontend-only de 7.13). Cierre expira el LOCK-IN del blueprint.
-  - **Bloqueo de cierre:** esta valla **no se marca `[x]` hasta que 7.15.7 esté verde** (ver Fase 7.15). De lo contrario las afordancias surfaceadas por 7.14 (Rewind, routing por modo, diff inline) son cosméticas porque el backend no las honra.
+  - **As-built:** Fase 7.14 es frontend-only (ADR-721: cero cambio de contrato Python). Las filas de DoD son invariantes visuales/TS — ninguna es pytest-asertable. El contrato de backend que sustenta las afordancias (routing de modo, HITL, round-trip del plan-document) fue certificado por `test_phase7_15_checkpoint_gate.py` (RP1, RB1, EX1, RS2). No se creó un archivo pytest nuevo (duplicaría 7.15 o intentaría observar UI que pytest no puede ver). Gates: `npm run compile` 0 errores · `npm run lint` 0 errores · `mypy .` 0/235 · `pytest` 834 passed (sin regresión) · smoke manual verde. **El bloqueador 7.15.7 quedó verde el mismo día (2026-06-03).** §1 LOCK-IN expirado. **FASE 7.14 CERRADA.**
 
 ---
 
