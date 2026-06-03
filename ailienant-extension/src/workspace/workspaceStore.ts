@@ -29,16 +29,6 @@ import type { ReasoningPreset, InferenceTier } from '../shared/config';
 import { createPersistedStore } from '../shared/persistedStore';
 
 /**
- * Top-level interaction surface. Derived from the execution `mode` (the HUD is
- * the single source of truth): `plan_mode` yields `planner`, every other mode
- * yields `chat`. The `planner` surface swaps the standard composer for the
- * Socratic ideation form and tags each submit with `planner_mode_active`,
- * routing the turn into the backend `ideation_loop`. Not stored — recomputed
- * from `mode` on every render so the two can never drift.
- */
-export type WorkspaceSurface = 'chat' | 'planner';
-
-/**
  * Phase 7.12 — minimal snapshot of the active streaming assistant turn, kept so
  * an in-flight Native-Thinking trace (display-only, ADR-707) survives a panel
  * teardown/reconnect (retainContextWhenHidden:false). Defined structurally (not

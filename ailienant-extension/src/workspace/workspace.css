@@ -282,22 +282,14 @@ html, body, #root { height: 100%; }
   margin-right: auto;
 }
 
-/* ── Planner surface ───────────────────────────────────────── */
-.ws-planner-banner {
+/* ── Plan card: accept action ──────────────────────────────── */
+.ws-plan-accept {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  justify-content: flex-end;
+  padding-top: 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-subtle);
 }
-.ws-planner-banner-text {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.ws-planner-banner-text strong { color: var(--text-primary); }
 
 /* ── PromptBar ─────────────────────────────────────────────── */
 .ws-prompt {

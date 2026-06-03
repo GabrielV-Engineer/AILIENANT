@@ -3,7 +3,6 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
 import { useWorkspaceStore } from './workspaceStore';
-import type { WorkspaceSurface } from './workspaceStore';
 import {
     BudgetLimitMode, ReasoningPreset, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
@@ -17,7 +16,6 @@ import { WorkspaceHeader } from './components/WorkspaceHeader';
 import { TelemetryHUD, useTpsCalculator } from './components/TelemetryHUD';
 import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
-import { PlannerSession } from './components/PlannerSession';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ThoughtBox } from './components/ThoughtBox';
@@ -42,6 +40,15 @@ import { getPresetConfig } from './hooks/useReasoningPreset';
 type ToastLevel = 'info' | 'warn' | 'error';
 interface ToastItem { id: number; level: ToastLevel; message: string; }
 let _toastId = 0;
+
+/**
+ * The literal phrase that flips the backend Socratic loop into synthesis.
+ * `analyst._is_agreement` does a case-insensitive substring match against its
+ * `_AGREEMENT_SIGNALS` frozenset; this phrase matches both "looks good" and
+ * "proceed". It is the sole frontend↔backend coupling point for the Planner
+ * handoff — keep it in sync with that set.
+ */
+const AGREEMENT_SIGNAL = 'Looks good, proceed.';
 
 // Pre-first-submit fallback only — the live timeout arrives from the backend via
 // STREAM_WATCHDOG_MS (governed per active model: longer for slow local engines).
@@ -237,10 +244,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // Routing tier is no longer user-selectable (presets drive routing); the
     // value persists with its default and still rides every SUBMIT_TASK payload.
     const tier    = useWorkspaceStore((s) => s.tier);
-    // The interaction surface is derived from the execution mode — the HUD is the
-    // single source of truth. Plan mode owns the Socratic Planner; everything else
-    // is the standard chat composer.
-    const surface: WorkspaceSurface = mode === 'plan_mode' ? 'planner' : 'chat';
 
     // Dreaming
     const [dreamingActive, setDreamingActive] = useState(false);
@@ -991,6 +994,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         });
     }, [preset, tier, mode, initial.sessionId]);
 
+    // Accept the plan from the plan card: signal agreement to the backend so the
+    // ideation loop synthesizes, then leave Plan mode. This is an explicit user
+    // act on the plan artifact — not an optimistic exit welded to the composer —
+    // so we never drop Plan mode before a plan actually exists.
+    const handleAcceptPlan = useCallback(() => {
+        handleSubmit(AGREEMENT_SIGNAL);
+        setMode('automatic');
+    }, [handleSubmit, setMode]);
+
     // Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh.
     // ABORT_TASK keeps the client-side HTTP AbortController (legacy, harmless).
     // ABORT_MESH is the new path: workspace_panel.ts turns it into a
@@ -1359,43 +1371,37 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         )}
 
                         {/* Composer + Telemetry sibling cards (matches manifest §7.2).
-                            The active surface is derived from the HUD execution mode —
-                            Plan mode owns the Planner; there is no separate surface toggle. */}
+                            ONE composer in every mode — the HUD mode pill is the only
+                            signal of Plan mode. The plan's "Accept" affordance lives on
+                            the plan card, not on the input bar (Cursor/Claude-Code shape). */}
                         <div className="ws-bottom">
-                            {surface === 'planner' ? (
-                                <PlannerSession
-                                    disabled={Boolean(hitlPending)}
-                                    isStreaming={isStreaming}
-                                    isAborting={isAborting}
-                                    canAgree={!isStreaming && messages.some(m => m.role === 'assistant')}
-                                    nattName={nattName}
-                                    onSubmit={handleSubmit}
-                                    onAbort={handleAbort}
-                                    onExit={() => setMode('automatic')}
-                                />
-                            ) : (
-                                <PromptBar
-                                    disabled={Boolean(hitlPending)}
-                                    placeholder={hitlPending ? `${nattName} is waiting for your decision` : undefined}
-                                    activeTaskId={activeTaskId}
-                                    isStreaming={isStreaming}
-                                    isAborting={isAborting}
-                                    config={config}
-                                    mode={mode}
-                                    preset={preset}
-                                    onModeChange={setMode}
-                                    onPresetChange={setPreset}
-                                    dreamingActive={dreamingActive}
-                                    dreamingProfile={dreamingProfile}
-                                    onDreamingToggle={handleDreamingToggle}
-                                    activeModelId={activeModelId}
-                                    orchestrationMode={orchestrationMode}
-                                    onModelPrefChange={handleModelPrefChange}
-                                    sessionId={initial.sessionId}
-                                    onSubmit={handleSubmit}
-                                    onAbort={handleAbort}
-                                />
-                            )}
+                            <PromptBar
+                                disabled={Boolean(hitlPending)}
+                                placeholder={
+                                    hitlPending
+                                        ? `${nattName} is waiting for your decision`
+                                        : mode === 'plan_mode'
+                                            ? `Describe what you want to build — ${nattName} will grill you into a plan…`
+                                            : undefined
+                                }
+                                activeTaskId={activeTaskId}
+                                isStreaming={isStreaming}
+                                isAborting={isAborting}
+                                config={config}
+                                mode={mode}
+                                preset={preset}
+                                onModeChange={setMode}
+                                onPresetChange={setPreset}
+                                dreamingActive={dreamingActive}
+                                dreamingProfile={dreamingProfile}
+                                onDreamingToggle={handleDreamingToggle}
+                                activeModelId={activeModelId}
+                                orchestrationMode={orchestrationMode}
+                                onModelPrefChange={handleModelPrefChange}
+                                sessionId={initial.sessionId}
+                                onSubmit={handleSubmit}
+                                onAbort={handleAbort}
+                            />
                             <TelemetryHUD
                                 occStatus={occStatus}
                                 lockedFiles={lockedFiles}
@@ -1426,12 +1432,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         />
                     )}
 
-                    {/* RIGHT: dedicated rich Plan surface (ADR-732) */}
+                    {/* RIGHT: dedicated rich Plan surface (ADR-732). In Plan mode the
+                        card carries an "Accept plan" action — the agreement affordance
+                        lives on the artifact, not on the composer. */}
                     {plan && (
                         <PlanPanel
                             plan={plan}
                             onOpenFile={(path) => vscode.postMessage({ type: 'OPEN_FILE', path })}
                             onClose={() => setPlan(null)}
+                            onAccept={mode === 'plan_mode' && !isStreaming ? handleAcceptPlan : undefined}
                         />
                     )}
                 </main>
