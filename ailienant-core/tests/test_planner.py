@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.runnables import RunnableConfig
 
 from brain.state import MissionSpecification, WBSStep
 
@@ -152,6 +153,76 @@ async def test_planner_retries_on_malformed_json_then_succeeds() -> None:
     corrective = second_call_messages[-1]["content"]
     assert "failed schema validation with these errors" in corrective
     assert "DO NOT wrap it in any top-level key" in corrective
+
+
+# ── Test 1b: Actor-Critic narration surfaces on the ideation→planner handoff ───
+
+
+@pytest.mark.anyio
+async def test_planner_narrates_critic_cycle_on_handoff_brief() -> None:
+    """A distilled brief (the ideation handoff) drives the planner's reflection loop;
+    the critic cycle must surface in the action log: review → rejected → validated."""
+    captured: List[str] = []
+
+    async def _narrate(node_name: str, step_id: Any = None) -> None:
+        captured.append(node_name)
+
+    cfg: RunnableConfig = {"configurable": {"narrate": _narrate}}
+
+    bad_response = _make_response("{ not json ")
+    good_response = _make_response(_valid_mission_json())
+    mock_ainvoke = AsyncMock(side_effect=[bad_response, good_response])
+    mock_search = AsyncMock(return_value=(0.8, ["test/scope.py"]))
+    mock_deep_parse = AsyncMock(
+        return_value=MagicMock(
+            coverage_ratio=0.6, context_block="",
+            parsed_files=["test/scope.py"], target_files=["test/scope.py"],
+        )
+    )
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    # The brief the ideation handoff folds into user_input, plus the glossary it carries.
+    state = _base_state(
+        user_input="Build a JWT auth service.\n\nConstraints:\n- No new deps.",
+        ideation_glossary={"token": "a signed JWT"},
+    )
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.state_manager.load_state_from_markdown", return_value=None
+    ), patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, patch(
+        "agents.planner.GraphRAGDynamicExtractor"
+    ) as mock_extractor_cls, patch(
+        "agents.planner.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ), patch(
+        "core.state_manager.dump_state_to_markdown", return_value=True
+    ), patch(
+        "agents.planner.audit_task_complexity",
+        AsyncMock(return_value=__import__("core.memory.context_auditor",
+                                          fromlist=["RiskLevel"]).RiskLevel.NONE),
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+        mock_extractor_cls.return_value.deep_parse = mock_deep_parse
+        mock_sem_cls.return_value.search_with_paths = mock_search
+
+        from agents.planner import run_planner_node
+
+        result = await run_planner_node(state, cfg)
+
+    mission = result.get("mission_spec")
+    assert mission is not None
+    # The critic cycle is legible in the action log.
+    assert "critic_review" in captured
+    assert any(c.startswith("critic_rejected → replanning") for c in captured)
+    assert "plan_validated" in captured
+    # The Socratic glossary survived the handoff into the final plan.
+    assert mission.ubiquitous_language.get("token") == "a signed JWT"
 
 
 # ── Test 2: retries exhausted → clean error return ────────────────────────────
