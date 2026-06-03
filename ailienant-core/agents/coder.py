@@ -5,6 +5,7 @@ import difflib
 import hashlib
 import json
 import logging
+import os
 import uuid
 
 from brain.state import WBSStep
@@ -154,6 +155,20 @@ async def run_coder_node(state: dict) -> dict:
             ],
             "security_flags": new_security_flags,
         }
+
+    # Granular sub-step narration. task_service injects an async emitter via
+    # state["narrate"]; the coder stays decoupled from the transport layer (never
+    # imports the WS manager for this) — the cognitive-isolation fence holds.
+    _narrate = state.get("narrate")
+
+    async def _emit(node_name: str) -> None:
+        if _narrate is not None:
+            await _narrate(node_name)
+
+    # Surface the file the coder is about to inspect so the IDE action-log shows
+    # live read activity; basename keeps the workspace path private and the
+    # narration-gate charge small.
+    await _emit(f"reading {os.path.basename(target_file)}")
 
     # 1. Context assembly: current file + GraphRAG snippets.
     _read_vfs = _make_vfs_reader(project_id, workspace_root, session_id)

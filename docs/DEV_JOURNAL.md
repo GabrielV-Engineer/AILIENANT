@@ -2,6 +2,29 @@
 
 ---
 
+## Hito 7.15.5: Observabilidad — Live Action-Log & Failure Narration — 2026-06-03
+
+- **Status:** OK — sexta slice de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 233 source files**; `mypy --strict` sobre archivos propios (`agents/error_correction.py`, `tests/test_action_log_narration.py`) → **0**; `pytest -p no:randomly` **819 passed** (+4 nuevos). Los 5 errores `--strict` residuales en `agents/coder.py` son **pre-existentes** y se verificaron idénticos en la base pre-edición (`git stash` → mismos 5) — las adiciones de este slice no introdujeron deuda.
+
+- **Motivación:** el agente hacía trabajo invisible para el IDE en dos superficies. (1) **Lecturas de archivo silenciosas** — pasan por el lector VFS firewalled (`make_safe_reader`, que ya las loguea a SQLite vía `log_file_read_sync`) pero **nunca** se surfacean; el usuario ve un spinner, no *qué* mira el agente. (2) **Pivotes de fallo silenciosos** — cuando un paso del coder lanza, `reflexion_guard` ([`brain/engine.py`](../ailienant-core/brain/engine.py)) lo atrapa en una señal `healing_required` y enruta a `run_error_correction_node`, pero el guard sólo hace `logger.warning`; el pivote nunca se narra al usuario, así que un reintento por `litellm.Timeout` parece un cuelgue inexplicado.
+
+- **Hallazgo de arquitectura (cero contrato/HUD nuevo):** la superficie de narración ya estaba **completa y genérica** — este slice sólo añade strings nuevos por el seam existente. El seam es `state["narrate"]`, un emisor async `(node_name, step_id) -> None` inyectado por `task_service` ([`core/task_service.py`](../ailienant-core/core/task_service.py)) y **medido por `NarrationGate`** (presupuesto de 15%; la narración pre-respuesta es gratis). Los nodos cognitivos lo llaman vía `state.get("narrate")` **sin importar la capa de transporte** — la valla de aislamiento cognitivo se mantiene. El frontend (`server_pipeline_step` → `PipelineProgress.tsx`) renderiza **cualquier** string (`_`→espacio, último como "Executing: …"). El planner ya usaba este idiom y ya narraba un reintento con su cuenta (`validation_retry (n/MAX)`), así que narrar pivotes es un precedente, no una forma nueva.
+
+- **Decisiones (mínima complejidad, valla-segura):** (1) **`_emit` se inlinea por nodo** (closure de 3 líneas, copiando el del planner) — un helper compartido añadiría una arista nueva al grafo de imports entre nodos cognitivos y un módulo util, forzando una re-auditoría de la valla; el planner ya eligió esta duplicación. (2) **Basename, no path completo** — privacidad (un path completo filtra la estructura del workspace al log del IDE) + volumen menor para el gate. (3) **Un solo string de lectura, sin "creating" aparte** — el hecho de archivo-nuevo sólo se conoce *después* de leer; narrar dos veces un paso desperdicia presupuesto del gate. (4) **Todo fluye por `state["narrate"]`** para que el `NarrationGate` siga midiendo — nunca se llama a `vfs_manager` directo.
+
+- **Fix:**
+  - `agents/coder.py`: `import os` + closure `_emit` local; antes de leer, `await _emit(f"reading {os.path.basename(target_file)}")`. El `target_file` se conoce *antes* de la lectura (`target_step.target_file`), así que el nodo async narra sin instrumentar el lector sync — `make_safe_reader` queda intacto.
+  - `agents/error_correction.py`: mapa `_PIVOT_REASONS` + helper `_pivot_reason(signature)` (extrae la clase de excepción del campo 1 de la firma NUL-delimitada de `normalize_signature`, con fallback que nunca lanza); en `run_error_correction_node`, antes de `propose_fix`: `self-healing <failed_node> — <razón>, retrying step N` (cláusula de step omitida si `step_id is None`); en cada rama, nota de desenlace `recovered <node>` / `could not auto-fix <node>`. `attempt_correction` (el call-site del loop manual fuera del grafo) queda intacto — no tiene seam de narrate.
+
+- **Tests:** `tests/test_action_log_narration.py` (4): el coder narra `reading app.py` (basename, no el path); un timeout forzado narra `self-healing run_coder_node — the model timed out, retrying step 3` + `could not auto-fix run_coder_node`; un `APIConnectionError` curado narra `the connection dropped` + `recovered run_coder_node`; con `step_id=None` se omite la cláusula `retrying step`. Llaman a los nodos directos con un stub `narrate` que captura a una lista (convención de `tests/test_token_batcher.py`).
+
+- **Files changed:**
+  - Backend EDIT: `agents/coder.py` (narración de lectura), `agents/error_correction.py` (narración de pivote + desenlace).
+  - Tests NUEVO: `tests/test_action_log_narration.py`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.15.5 → `[x]`), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.15.3 + 7.15.4: Prompt i18n (Language Mirroring) + Disk-Write Honesty — 2026-06-03
 
 - **Status:** OK — slices cuarta y quinta de la Fase 7.15, empaquetadas en un PR (son independientes: i18n vive en los prompts; la honestidad de copy en el resumen). DoD verde: `mypy .` whole-tree **Success: no issues found in 232 source files** (228→232 = +2 archivos de test + recuento); `mypy --strict` sobre archivos propios (`agents/roles.py`, `agents/prompts.py`, ambos tests) → **0**; `pytest -p no:randomly` **815 passed** (+7 nuevos).
