@@ -104,6 +104,27 @@ export interface PlanDocumentShape {
     ubiquitous_language: Record<string, string>;
 }
 
+// One syntax token emitted by the host grammar engine. `type` is a raw, possibly
+// hierarchical TextMate scope string (space-separated, e.g.
+// "source.python storage.type.function.python"); the renderer resolves the most
+// specific scope to a CSS var. `content` is the literal text. The webview carries
+// zero grammar/parsing dependency — all parsing happens host-side, off the bundle.
+export interface ASTToken {
+    type: string;
+    content: string;
+}
+
+// One rendered diff line: its change status and the tokens the renderer paints.
+// This is the canonical line shape; the form actually consumed by the split-view
+// renderer is the column-aligned ASTToken[][] pair on DiffBlockShape (see
+// old_ast_lines / new_ast_lines), because the diff viewer calls back per column,
+// per line, with a raw string — not an interleaved line stream.
+export interface DiffLine {
+    type: 'diff';
+    status: 'inserted' | 'deleted' | 'context';
+    content: ASTToken[];
+}
+
 // One file's worth of inline diff, surfaced by the host once an approved edit is
 // applied (both sides arrive EOL-normalized host-side). Attached to the assistant
 // turn that explained the edit and rendered as a split diff.
@@ -113,6 +134,14 @@ export interface DiffBlockShape {
     old_content: string;
     new_content: string;
     status: 'edit' | 'create';
+    // Host-tokenized syntax spans, one inner array per source line, row-aligned to
+    // old_content / new_content respectively. Optional and undefined until the host
+    // grammar engine populates them; absence falls back to themed-monospace. Split
+    // into old/new so each maps cleanly onto the diff viewer's per-column
+    // renderContent(source) callback without re-correlating lines (preserves split
+    // alignment) and keeps the AST off the webview bundle.
+    old_ast_lines?: ASTToken[][];
+    new_ast_lines?: ASTToken[][];
 }
 
 // Discriminated union of every message the webview can post.
