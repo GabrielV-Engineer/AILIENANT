@@ -4,31 +4,31 @@ from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Literal, Optional, Union
 
 # =====================================================================
-# 1. PAYLOADS DE LOS EVENTOS
+# 1. EVENT PAYLOADS
 # =====================================================================
 
 
 class FileUpdatePayload(BaseModel):
-    """Payload para cuando el IDE envía código fresco al Backend."""
+    """Payload for when the IDE sends fresh code to the Backend."""
 
-    filepath: str = Field(..., description="Ruta absoluta del archivo en el IDE")
-    content: str = Field(..., description="Contenido actual en el buffer de VS Code")
-    # Este es el corazón del OCC que definimos en state.py
+    filepath: str = Field(..., description="Absolute path of the file in the IDE")
+    content: str = Field(..., description="Current content in the VS Code buffer")
+    # This is the heart of the OCC that we defined in state.py
     document_version_id: str = Field(..., description="Timestamp o Hash del IDE")
 
 
 class CodeProposalPayload(BaseModel):
-    """Payload para cuando la IA quiere escribir en el IDE."""
+    """Payload for when the AI ​​wants to write to the IDE."""
 
     filepath: str
     proposed_content: str
-    # La IA envía el ID sobre el cual basó sus cálculos
+    # The AI ​​sends the ID on which it based its calculations
     base_document_version_id: str
-    agent_signature: str = Field(..., description="Agente que propone (ej. LogicAgent)")
+    agent_signature: str = Field(..., description="Proposing Agent (e.g. LogicAgent)")
 
 
 class StatusPayload(BaseModel):
-    """Payload efímero para actualizar la UI de la extensión."""
+    """Ephemeral payload to update the extension's UI."""
 
     agent_name: str
     status_message: str
@@ -36,12 +36,12 @@ class StatusPayload(BaseModel):
 
 
 # =====================================================================
-# 2. ENVOLTORIOS DE EVENTOS (Tagged Unions)
+# 2. EVENT WRAPPERS (Tagged Unions)
 # =====================================================================
 
 
 class ClientFileUpdateEvent(BaseModel):
-    # La clave 'event_type' es nuestro discriminador constante
+    # The 'event_type' key is our constant discriminator.
     event_type: Literal["client_file_update"] = "client_file_update"
     data: FileUpdatePayload
 
@@ -57,7 +57,7 @@ class ServerStatusEvent(BaseModel):
 
 
 # =====================================================================
-# 3. PHASE 1.4 — BIDIRECTIONAL STREAMING & HITL CONTRACTS
+# 3. BIDIRECTIONAL STREAMING & HITL CONTRACTS
 # =====================================================================
 
 
@@ -69,11 +69,11 @@ class TokenChunkPayload(BaseModel):
 
 
 class ThinkingChunkPayload(BaseModel):
-    """Phase 9 (ADR-707) — a native-reasoning ("thinking") delta streamed to the
+    """ a native-reasoning ("thinking") delta streamed to the
     IDE's collapsible Thought Box.
 
     Distinct from ``TokenChunkPayload`` (the answer stream) and from
-    ``PipelineStepPayload`` (synthesized node narration, ADR-702). ``delta`` is
+    ``PipelineStepPayload`` (synthesized node narration). ``delta`` is
     a raw reasoning-token fragment; ``token_count`` is the cumulative thinking
     token count for the current turn (drives the live "N tokens" telemetry).
     Display-only: the frontend renders it sanitized and NEVER feeds it back into
@@ -116,9 +116,9 @@ class HITLApprovalRequestPayload(BaseModel):
     approval_id: str                    # UUID4 — unique per request; client must echo this back
     action_description: str
     proposed_content: Optional[str] = None
-    # Phase 7.11.7 (ADR-706 §4.5f) — additive classifier so the native-toast
+    # additive classifier so the native-toast
     # surface can choose severity (info vs warning) and emit a short title.
-    # Backward-compatible: pre-7.11.7 payloads omit this field and pydantic
+    # Backward-compatible: pre - payloads omit this field and pydantic
     # treats it as None. Known kinds today: BUDGET_OVERFLOW, TOKEN_SPIKE,
     # SANDBOX_DEGRADED_EXEC, DRIFT_DETECTED, BUDGET_CEILING, RESOURCE_CONTENTION,
     # FILE_WRITE. Kept as a plain string (not a Literal[...]) so future emitters
@@ -133,7 +133,7 @@ class HITLResponsePayload(BaseModel):
     approval_id: str                    # Must match the approval_id from the request
     approved: bool
     comment: Optional[str] = None
-    # Phase 7.9.B.18 — optional edited payload from the HITL card's edit mode.
+    # optional edited payload from the HITL card's edit mode.
     # For a single-file patch, this overrides the proposed content before apply.
     modified_content: Optional[str] = None
 
@@ -146,7 +146,7 @@ class ServerTokenChunkEvent(BaseModel):
 
 
 class ServerThinkingChunkEvent(BaseModel):
-    # Phase 9 (ADR-707) — Native Thinking reasoning delta.
+    # Native Thinking reasoning delta.
     event_type: Literal["server_thinking_chunk"] = "server_thinking_chunk"
     data: ThinkingChunkPayload
 
@@ -179,7 +179,7 @@ class ClientHITLResponseEvent(BaseModel):
 
 
 # =====================================================================
-# 5. OCC — OPTIMISTIC CONCURRENCY CONTROL (Phase 1.5)
+# 5. OCC — OPTIMISTIC CONCURRENCY CONTROL
 # =====================================================================
 
 
@@ -197,7 +197,7 @@ class ClientConcurrencyConflictEvent(BaseModel):
 
 
 # =====================================================================
-# 6. PHASE 2.2 — MODEL WARMUP SIGNAL
+# 6. MODEL WARMUP SIGNAL
 # =====================================================================
 
 
@@ -228,7 +228,7 @@ class ServerOomEngagedEvent(BaseModel):
 
 
 # =====================================================================
-# 7. PHASE 2.5 — LAZY WORKSPACE INDEXING CONTRACTS
+# 7. LAZY WORKSPACE INDEXING CONTRACTS
 # =====================================================================
 
 
@@ -236,7 +236,7 @@ class WorkspaceInitPayload(BaseModel):
     """Client announces the workspace root path for lazy background indexing."""
     workspace_root: str
     project_id: str
-    workspace_pid: Optional[int] = None  # Phase 4.4 — VS Code window PID
+    workspace_pid: Optional[int] = None  # VS Code window PID
 
 
 class IndexingProgressPayload(BaseModel):
@@ -278,7 +278,7 @@ class ServerByomConfigAppliedEvent(BaseModel):
 
 
 # =====================================================================
-# 8. PHASE 2.1.13 — FILE DELETE / UNLINK EVENTS
+# 8. FILE DELETE / UNLINK EVENTS
 # =====================================================================
 
 
@@ -347,7 +347,7 @@ class ClientDreamingRunEvent(BaseModel):
 
 
 # =====================================================================
-# 9. PHASE 2.22.4 — VFS PATCH APPROVED (IPC Bridge)
+# 9. VFS PATCH APPROVED (IPC Bridge)
 # =====================================================================
 
 
@@ -365,7 +365,7 @@ class ServerVfsPatchApprovedEvent(BaseModel):
 
 
 # =====================================================================
-# 9b. PHASE 7.9.B.18 — ENTERPRISE WRITE PIPELINE (VS Code applyEdit bridge)
+# 9b. ENTERPRISE WRITE PIPELINE (VS Code applyEdit bridge)
 # =====================================================================
 
 
@@ -406,7 +406,7 @@ class ClientPatchAppliedEvent(BaseModel):
 
 
 # =====================================================================
-# 10. PHASE 3.4.1 — INTELLIGENCE PROFILE / MASTER TOGGLE EVENTS
+# 10. INTELLIGENCE PROFILE / MASTER TOGGLE EVENTS
 # =====================================================================
 
 
@@ -429,7 +429,7 @@ class ClientProfileChangeEvent(BaseModel):
 
 
 # =====================================================================
-# 11. PHASE 7.9.A.5.1 — EPHEMERAL AUTH HANDSHAKE
+# 11. EPHEMERAL AUTH HANDSHAKE
 # =====================================================================
 
 
@@ -440,7 +440,7 @@ class AuthEvent(BaseModel):
 
 
 # =====================================================================
-# 12. PHASE 7.9.B.12 — ANALYST PANE BRIDGE + PIPELINE PROGRESS
+# 12. ANALYST PANE BRIDGE + PIPELINE PROGRESS
 # =====================================================================
 
 
@@ -449,8 +449,8 @@ class AnalystQueryPayload(BaseModel):
     text: str
     session_id: Optional[str] = None
     context_paths: list[str] = Field(default_factory=list)
-    # Phase 7.10.3 (ADR-703 G4) — caret offset for cursor-targeted semantic slicing.
-    # Additive + optional: pre-7.11 clients omit it and the slice degrades gracefully.
+    # caret offset for cursor-targeted semantic slicing.
+    # Additive + optional: pre - clients omit it and the slice degrades gracefully.
     cursor: Optional[int] = None
 
 
@@ -470,7 +470,7 @@ class ServerNattMessageEvent(BaseModel):
     data: NattMessagePayload
 
 
-# Phase 7.10.3 (ADR-703 + ADR-702) — token-by-token analyst streaming to the Natt pane.
+# token-by-token analyst streaming to the Natt pane.
 class NattTokenChunkPayload(BaseModel):
     """Server → client: a single batched analyst token chunk for the Natt canvas."""
     token: str
@@ -485,7 +485,7 @@ class NattStreamEndPayload(BaseModel):
     """Server → client: finalizes the streamed analyst bubble.
 
     Carries the G2 context version tag (a quick hash of the assembled context) so the
-    7.11 extension can apply context-tolerant divergence if the buffer changed mid-stream.
+    extension can apply context-tolerant divergence if the buffer changed mid-stream.
     """
     context_version: Optional[str] = None
 
@@ -507,6 +507,31 @@ class ServerPipelineStepEvent(BaseModel):
     data: PipelineStepPayload
 
 
+class PlanDocumentPayload(BaseModel):
+    """Server → client: the finalized plan as structured data for the rich Plan
+    surface (NOT chat prose). Mirrors MissionSpecification's public shape.
+
+    ``summary`` is the one-line chat-bubble pointer; it travels WITH the structure
+    so the conversation text and the docked panel land in a single frontend state
+    transition — two sequential broadcasts could otherwise arrive out of order and
+    flash the pointer against an empty panel.
+    """
+    summary: str
+    outcome: str
+    scope: List[str] = Field(default_factory=list)
+    constraints: List[str] = Field(default_factory=list)
+    decisions: List[str] = Field(default_factory=list)
+    tasks: List[Dict[str, Any]] = Field(default_factory=list)  # serialized WBSStep rows
+    checks: List[str] = Field(default_factory=list)
+    ubiquitous_language: Dict[str, str] = Field(default_factory=dict)
+
+
+class ServerPlanDocumentEvent(BaseModel):
+    """Server → client: a finalized plan, structured for the rich Plan surface."""
+    event_type: Literal["server_plan_document"] = "server_plan_document"
+    data: PlanDocumentPayload
+
+
 class ServerStreamEndEvent(BaseModel):
     """Server → client: the assistant message stream is finalized."""
     event_type: Literal["server_stream_end"] = "server_stream_end"
@@ -514,7 +539,7 @@ class ServerStreamEndEvent(BaseModel):
 
 
 class ClientClearConversationEvent(BaseModel):
-    """Client → server: drop the session's short-term chat memory (Phase 7.9.B.15)."""
+    """Client → server: drop the session's short-term chat memory."""
     event_type: Literal["client_clear_conversation"] = "client_clear_conversation"
     data: Dict[str, Any] = Field(default_factory=dict)
 
@@ -537,19 +562,19 @@ class ClientRestoreHistoryEvent(BaseModel):
 
 
 # =====================================================================
-# 13. PHASE 7.11.1 — INLINE EDITOR MUTATIONS (ADR-706 §4.5a, Cmd+K)
+# 13. INLINE EDITOR MUTATIONS (Cmd+K)
 # =====================================================================
 #
 # Two-layer transport (plan):
 #   • Streaming intermediate deltas use the lightweight typed shape below
 #     (the InlineMutationManager replays them into the active editor).
-#   • The FINAL commit on user-accept reuses ApplyWorkspaceEditPayload (§9b)
-#     so the SHA-256 stale-guard / OCC contract from 7.9.B.18 is preserved.
+#   • The FINAL commit on user-accept reuses ApplyWorkspaceEditPayload
+#     so the SHA-256 stale-guard / OCC contract is preserved.
 #
 # All `offset` / `length` values are absolute character offsets into the
 # LF-normalized file content (the frontend normalizes CRLF→LF before
 # computing offsets, then converts each LF offset back to native editor
-# coordinates before applying — see plan §W1).
+# coordinates before applying).
 
 
 class ClientInlineEditRequestPayload(BaseModel):
@@ -630,7 +655,7 @@ class ServerInlineEditEndEvent(BaseModel):
 
 
 # =====================================================================
-# 14. PHASE 7.11.3 — ABORT CONTROLLER MESH (ADR-706 §4.5b, Stop button)
+# 14. ABORT CONTROLLER MESH (Stop button)
 # =====================================================================
 #
 # Priority WS signal: the frontend asks the backend to cancel the in-flight
@@ -687,7 +712,7 @@ class ServerHitlAckEvent(BaseModel):
 
 
 # =====================================================================
-# 15. Phase 7.11.6 — Rich Tool Chips (ADR-706 §4.5f)
+# 15. Rich Tool Chips
 # =====================================================================
 # Stateful tool-execution artifacts: every tracked tool invocation broadcasts
 # a (server_tool_start, server_tool_stream_chunk*, server_tool_result) sequence
@@ -727,7 +752,7 @@ class ServerToolStartEvent(BaseModel):
 class ToolStreamChunkPayload(BaseModel):
     """Server → IDE: incremental stdout/stderr chunk from a tracked tool.
 
-    For Phase 7.11.6 the sandbox adapter is one-shot (`adapter.execute`
+    For the sandbox adapter is one-shot (`adapter.execute`
     returns a complete SandboxResult), so the backend emits exactly one chunk
     with the truncated body. Future streaming adapters can emit many.
     """
@@ -819,10 +844,10 @@ class ClientInvokeTrackedBashEvent(BaseModel):
 
 
 # =====================================================================
-# 16. Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging (Thread Branching)
+# 16. Time-Travel Debugging (Thread Branching)
 # =====================================================================
 # Three events + one additive field on TaskPayload (in core/task_service.py).
-# Schema-additive only: pre-7.11.8 clients/servers that don't know these
+# Schema-additive only: clients/servers that don't know these
 # events keep working.
 
 class ClientBranchFromCheckpointPayload(BaseModel):
@@ -866,18 +891,18 @@ class ServerSessionBranchedEvent(BaseModel):
 
 
 # =====================================================================
-# 4. EL CONTRATO MAESTRO O(1)
+# 17. THE MASTER CONTRACT O(1)
 # =====================================================================
 
-# FastAPI usará este tipo para validar CUALQUIER mensaje entrante.
-# Pydantic usará el campo 'event_type' para castearlo a la clase correcta.
+# FastAPI will use this type to validate ANY incoming message.
+# Pydantic will use the 'event_type' field to cast it to the correct class.
 
 WebSocketMessage = Union[
     ClientFileUpdateEvent,
     ServerCodeProposalEvent,
     ServerStatusEvent,
     ServerTokenChunkEvent,
-    ServerThinkingChunkEvent,         # Phase 9 — Native Thinking reasoning delta
+    ServerThinkingChunkEvent,         # Native Thinking reasoning delta
     ServerTelemetryEvent,
     ServerGraphMutationEvent,
     ServerHITLApprovalRequestEvent,
@@ -886,41 +911,42 @@ WebSocketMessage = Union[
     ClientConcurrencyConflictEvent,
     ServerModelWarmupEvent,
     ServerOomEngagedEvent,           # OOM rescue swap surfaced to the IDE
-    ClientWorkspaceInitEvent,        # Phase 2.5
-    ServerIndexingProgressEvent,     # Phase 2.5
-    ServerIndexingErrorEvent,        # Phase 2.5 — pre-flight error
-    ServerByomConfigAppliedEvent,    # Phase 7.9.B.11 — preset applied notification
-    ClientFileDeleteEvent,           # Phase 2.1.13
+    ClientWorkspaceInitEvent,        
+    ServerIndexingProgressEvent,     
+    ServerIndexingErrorEvent,        # pre-flight error
+    ServerByomConfigAppliedEvent,    # preset applied notification
+    ClientFileDeleteEvent,           
     ClientIdeTelemetryEvent,         # IDE telemetry bus — silent file-lifecycle channel
     ClientDreamingRunEvent,          # Manual Dreaming — explicit consolidate-memory trigger
-    ServerVfsPatchApprovedEvent,     # Phase 2.22.4
-    ServerApplyWorkspaceEditEvent,   # Phase 7.9.B.18 — write pipeline dispatch
-    ClientPatchAppliedEvent,         # Phase 7.9.B.18 — write pipeline ack
-    ClientMasterToggleEvent,         # Phase 3.4.1
-    ClientProfileChangeEvent,        # Phase 3.4.1
-    AuthEvent,                       # Phase 7.9.A.5.1 — ephemeral auth handshake
-    ClientAnalystQueryEvent,         # Phase 7.9.B.12 — Natt analyst pane query
-    ServerNattMessageEvent,          # Phase 7.9.B.12 — analyst reply
-    ServerNattTokenChunkEvent,       # Phase 7.10.3 — streamed analyst token chunk
-    ServerNattStreamEndEvent,        # Phase 7.10.3 — analyst stream finalized (+ context_version)
-    ServerPipelineStepEvent,         # Phase 7.9.B.12 — pipeline node progress
-    ServerStreamEndEvent,            # Phase 7.9.B.12 — assistant stream finalized
-    ClientClearConversationEvent,    # Phase 7.9.B.15 — clear short-term chat memory
-    ClientRestoreHistoryEvent,       # Phase 7.9.B.20 — rehydrate session memory on reopen
-    ClientInlineEditRequestEvent,    # Phase 7.11.1 — Cmd+K inline edit request
-    ClientInlineEditCancelEvent,     # Phase 7.11.1 — inline edit cancel
-    ServerInlineEditStartEvent,      # Phase 7.11.1 — stream start (open decorations)
-    ServerInlineEditDeltaEvent,      # Phase 7.11.1 — typed mutation delta
-    ServerInlineEditEndEvent,        # Phase 7.11.1 — stream finalized
-    ClientAbortMeshEvent,            # Phase 7.11.3 — abort controller mesh (Stop button)
+    ServerVfsPatchApprovedEvent,     
+    ServerApplyWorkspaceEditEvent,   # write pipeline dispatch
+    ClientPatchAppliedEvent,         # write pipeline ack
+    ClientMasterToggleEvent,         
+    ClientProfileChangeEvent,        
+    AuthEvent,                       # ephemeral auth handshake
+    ClientAnalystQueryEvent,         # Natt analyst pane query
+    ServerNattMessageEvent,          # analyst reply
+    ServerNattTokenChunkEvent,       # streamed analyst token chunk
+    ServerNattStreamEndEvent,        # analyst stream finalized (+ context_version)
+    ServerPipelineStepEvent,         # pipeline node progress
+    ServerPlanDocumentEvent,         # finalized plan → rich Plan surface
+    ServerStreamEndEvent,            # assistant stream finalized
+    ClientClearConversationEvent,    # clear short-term chat memory
+    ClientRestoreHistoryEvent,       # rehydrate session memory on reopen
+    ClientInlineEditRequestEvent,    # Cmd+K inline edit request
+    ClientInlineEditCancelEvent,     # inline edit cancel
+    ServerInlineEditStartEvent,      # stream start (open decorations)
+    ServerInlineEditDeltaEvent,      # typed mutation delta
+    ServerInlineEditEndEvent,        # stream finalized
+    ClientAbortMeshEvent,            # abort controller mesh (Stop button)
     ServerAbortAckEvent,             # abort delivery acknowledgement
     ServerHitlAckEvent,              # HITL response delivery acknowledgement
-    ServerToolStartEvent,            # Phase 7.11.6 — Rich Tool Chips: tool started
-    ServerToolStreamChunkEvent,      # Phase 7.11.6 — Rich Tool Chips: incremental output
-    ServerToolResultEvent,           # Phase 7.11.6 — Rich Tool Chips: tool finished
-    ServerToolDepGraphEvent,         # Phase 7.11.6 — Rich Tool Chips: optional dep-graph attachment
-    ClientRetryToolEvent,            # Phase 7.11.6 — Rich Tool Chips: exact-replay retry
-    ClientInvokeTrackedBashEvent,    # Phase 7.11.6 — Rich Tool Chips: dev smoke command
-    ClientBranchFromCheckpointEvent, # Phase 7.11.8 — time-travel: fork from a checkpoint
-    ServerSessionBranchedEvent,      # Phase 7.11.8 — time-travel: new session minted from fork
+    ServerToolStartEvent,            # Rich Tool Chips: tool started
+    ServerToolStreamChunkEvent,      # Rich Tool Chips: incremental output
+    ServerToolResultEvent,           # Rich Tool Chips: tool finished
+    ServerToolDepGraphEvent,         # Rich Tool Chips: optional dep-graph attachment
+    ClientRetryToolEvent,            # Rich Tool Chips: exact-replay retry
+    ClientInvokeTrackedBashEvent,    # Rich Tool Chips: dev smoke command
+    ClientBranchFromCheckpointEvent, # time-travel: fork from a checkpoint
+    ServerSessionBranchedEvent,      # time-travel: new session minted from fork
 ]

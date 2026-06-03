@@ -7,7 +7,7 @@ import type { WorkspaceSurface } from './workspaceStore';
 import {
     BudgetLimitMode, ReasoningPreset, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
-    ToolCallShape, DiffBlockShape,
+    ToolCallShape, DiffBlockShape, PlanDocumentShape,
 } from '../shared/config';
 import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
@@ -33,6 +33,7 @@ import {
 } from './utils/StreamingMarkdownParser';
 import { IndexingStatus } from './components/IndexingStatus';
 import { PipelineProgress } from './components/PipelineProgress';
+import { PlanPanel } from './components/PlanPanel';
 import { ActionLog } from './components/ActionLog';
 import type { HITLIntervention } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
@@ -271,6 +272,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const setInflightTurn = useWorkspaceStore((s) => s.setInflightTurn);
     const [activeTaskId, setActiveTaskId] = useState<string | undefined>();
     const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    // Rich Plan side-panel (ADR-732). Held in TRANSIENT React state only — a
+    // large plan is re-posted from host memory on remount, never written to the
+    // webview's persistent state, so it can't exceed the setState quota.
+    const [plan, setPlan] = useState<PlanDocumentShape | null>(null);
 
     // Stream-stall watchdog. `streamWatchdogMs` is the backend-governed budget
     // (posted via STREAM_WATCHDOG_MS after each submit); `lastStreamActivityRef`
@@ -544,6 +550,34 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         }
                         return [...prev, { id: mkId(), role: 'assistant', content: '', streaming: true, steps: [node], authorLabel: authorLabelFor('assistant', nattName) }];
                     });
+                    break;
+                }
+                case 'server_plan_document': {
+                    // The structured plan and its one-line chat pointer arrive in
+                    // ONE message, so the docked panel and the conversation bubble
+                    // update in a single render transition — no two-message race
+                    // that could flash the pointer against an empty panel.
+                    const doc = msg.payload as PlanDocumentShape;
+                    setPlan(doc);
+                    if (doc.summary) {
+                        recordChunk();
+                        setMessages(prev => {
+                            const last = prev[prev.length - 1];
+                            if (last?.role === 'assistant' && last.streaming) {
+                                return [...prev.slice(0, -1), {
+                                    ...last,
+                                    content: last.content ? `${last.content}\n${doc.summary}` : doc.summary,
+                                }];
+                            }
+                            return [...prev, {
+                                id: mkId(),
+                                role: 'assistant',
+                                content: doc.summary,
+                                streaming: true,
+                                authorLabel: authorLabelFor('assistant', nattName),
+                            }];
+                        });
+                    }
                     break;
                 }
                 case 'server_stream_end': {
@@ -871,6 +905,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'CONVERSATION_CLEARED': {
                     setMessages([]);
+                    setPlan(null);
                     break;
                 }
                 case 'PICKED_PATHS': {
@@ -1384,6 +1419,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             onClose={() => setNattOpen(false)}
                             onResolveIntervention={handleResolveHitl}
                             onSendMessage={handleNattSubmit}
+                        />
+                    )}
+
+                    {/* RIGHT: dedicated rich Plan surface (ADR-732) */}
+                    {plan && (
+                        <PlanPanel
+                            plan={plan}
+                            onOpenFile={(path) => vscode.postMessage({ type: 'OPEN_FILE', path })}
+                            onClose={() => setPlan(null)}
                         />
                     )}
                 </main>

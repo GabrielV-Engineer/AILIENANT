@@ -192,7 +192,7 @@ const MAX_PERSISTED_MESSAGES = 200;  // bound storage growth per session
 
 // Phase 7.11.6 — Rich Tool Chips: persisted alongside the transcript so chips
 // (including their final status, output, and dep_graph) survive a panel close.
-import type { ToolCallShape } from '../shared/config';
+import type { ToolCallShape, PlanDocumentShape } from '../shared/config';
 interface StoredMessage {
     id?: string;   // Phase 7.12 — stable turn id; keys the REHYDRATE_TRANSCRIPT merge.
     role: 'user' | 'assistant';
@@ -217,6 +217,10 @@ export class WorkspacePanelManager {
     private _runningTasks: Set<string> = new Set();
     // Track which sessions have the Natt pane open (gates native notifications)
     private _nattOpen: Set<string> = new Set();
+    // Latest finalized plan per session, held in HOST memory (not webview
+    // setState) so a large MissionSpecification can never blow the webview's
+    // persistent-state quota. Re-posted when a torn-down panel becomes visible.
+    private _latestPlan: Map<string, PlanDocumentShape> = new Map();
     private readonly _configLoader: ConfigLoader;
     private readonly _disposables: vscode.Disposable[] = [];
     private _onTitleUpdate: TitleUpdater | undefined;
@@ -467,6 +471,13 @@ export class WorkspacePanelManager {
                     type: 'WS_STATUS',
                     payload: WSClient.getInstance().getStatus(),
                 });
+                // Re-post the last finalized plan from host memory — the
+                // remounted webview holds it only in transient React state, so
+                // without this the Plan panel would be empty after a tab-switch.
+                const plan = this._latestPlan.get(session.id);
+                if (plan) {
+                    e.webviewPanel.webview.postMessage({ type: 'server_plan_document', payload: plan });
+                }
             }
         });
         panel.onDidDispose(() => hitlNotifier.setVisibility(false));
@@ -529,6 +540,12 @@ export class WorkspacePanelManager {
             ) {
                 InlineMutationManager.instance.handle(msg.event_type, msg.data);
                 return;
+            }
+
+            // Cache the finalized plan in host memory so it survives a webview
+            // teardown without ever touching the webview's persistent-state quota.
+            if (msg.event_type === 'server_plan_document' && msg.data) {
+                this._latestPlan.set(session.id, msg.data as unknown as PlanDocumentShape);
             }
 
             panel.webview.postMessage({ type: msg.event_type, payload: msg.data });
@@ -897,12 +914,36 @@ export class WorkspacePanelManager {
                     }
                     break;
                 }
+                case 'OPEN_FILE': {
+                    // Rich Plan panel file-link → open the file in the editor. The
+                    // path is LLM-authored, so resolve it strictly under the
+                    // workspace root and reject escapes. showTextDocument rejects
+                    // for a file the plan names but hasn't created yet; an
+                    // unhandled rejection would crash the host, so catch and warn.
+                    const rel = typeof data.path === 'string' ? data.path : '';
+                    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+                    if (!rel || !root) { break; }
+                    const target = vscode.Uri.joinPath(root, rel);
+                    const rootPrefix = root.fsPath.endsWith('\\') || root.fsPath.endsWith('/')
+                        ? root.fsPath
+                        : root.fsPath + (process.platform === 'win32' ? '\\' : '/');
+                    if (!target.fsPath.startsWith(rootPrefix)) { break; }  // path escapes the workspace
+                    try {
+                        await vscode.window.showTextDocument(target, { preview: true });
+                    } catch {
+                        void vscode.window.showWarningMessage(
+                            `AILIENANT: can't open "${rel}" — it may not exist yet.`,
+                        );
+                    }
+                    break;
+                }
                 case 'CLEAR_CONVERSATION': {
                     // Phase 7.9.B.15 — also drop the backend's short-term memory.
                     WSClient.getInstance().send({ event_type: 'client_clear_conversation', data: {} });
                     panel.webview.postMessage({ type: 'CONVERSATION_CLEARED' });
                     // Phase 7.9.B.20 — and the persisted transcript for this session.
                     this.clearTranscript(session.id);
+                    this._latestPlan.delete(session.id);
                     break;
                 }
                 case 'PERSIST_TRANSCRIPT': {

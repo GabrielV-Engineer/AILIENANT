@@ -2,6 +2,32 @@
 
 ---
 
+## Hito 7.15.6: Rich Plan Side-Panel — 2026-06-03
+
+- **Status:** OK — séptima slice de la Fase 7.15 (alcance NUEVO, no regresión). DoD verde: `mypy .` whole-tree **Success: no issues found in 234 source files**; `mypy --strict` sobre archivos propios (`api/ws_contracts.py`, `core/task_service.py`, `tests/test_plan_document_contract.py`) → **0**; `pytest -p no:randomly` **822 passed** (+4 contrato); `npm run compile` (tsc `--noEmit` + eslint + esbuild) **0 errores** (2 warnings `semi` pre-existentes en archivos no tocados).
+
+- **Motivación:** el planner emite una `MissionSpecification` totalmente estructurada (`outcome`, `scope`, `constraints`, `decisions`, `tasks: WBSStep[]`, `checks`, + campos 2.21), pero `_format_coding_summary` ([`core/task_service.py`](../ailienant-core/core/task_service.py)) **descartaba todo salvo `outcome` + los diffs** y lo aplanaba a markdown sobre un `server_token_chunk` genérico — la estructura nunca llegaba al webview. Tampoco existía ninguna ruta de abrir-archivo: `MarkdownRenderer` renderiza los links como `<span>` inertes por seguridad (output del LLM no confiable).
+
+- **Decisión clave (superficie dedicada sin segundo panel):** nuevo evento WS `server_plan_document` **aditivo** que lleva la `MissionSpecification` completa (`model_dump`) **más** el puntero de chat (`summary`) en **un solo mensaje**. La superficie rica es una **región acoplada dentro del webview Workspace existente** (idiom del overlay CheckpointPicker), NO un segundo `vscode.window.createWebviewPanel` — un segundo panel re-incurriría todo el ciclo de vida que el Workspace ya resuelve (routing WS, bridge HITL push, teardown `retainContextWhenHidden:false` + `REHYDRATE_TRANSCRIPT`, snapshot `data-initial`) para un documento de sólo lectura: la trampa del "segundo HUD" (ADR-723) en forma de panel. File-links → nuevo mensaje `OPEN_FILE` (webview→host) resuelto bajo la raíz del workspace y abierto vía `showTextDocument`.
+
+- **Tres vectores de riesgo (crítica del arquitecto) diseñados fuera, no diferidos:**
+  - **RISK-1 — Carrera de orden de eventos.** Dos broadcasts secuenciales no garantizan llegar/procesarse en el mismo tick del event-loop JS; texto-antes-de-JSON parpadearía el puntero contra un panel vacío. **Fix:** un solo mensaje — el puntero (`summary`) viaja *dentro* de `PlanDocumentPayload`; el handler único de `server_plan_document` renderiza burbuja + panel en una transición de React.
+  - **RISK-2 — Cuota de estado persistente del webview.** Un plan grande en `acquireVsCodeApi().setState()` puede exceder la cuota y crashear silenciosamente al cambiar de tab. **Fix:** el plan se cachea en **memoria del host** (`workspace_panel.ts`, `Map<sessionId, PlanDocumentShape>`) y se re-postea en `onDidChangeViewState → visible`, igual que `REHYDRATE_TRANSCRIPT`; el webview lo mantiene sólo en estado React transitorio, nunca `setState`.
+  - **RISK-3 — `showTextDocument` rechaza para un archivo aún no creado.** Un rejection no manejado crashea el host. **Fix:** `try/catch` estricto + `showWarningMessage` en lugar de lanzar.
+
+- **Fix:**
+  - Backend: `api/ws_contracts.py` (`PlanDocumentPayload` + `ServerPlanDocumentEvent` + registro en la unión `WebSocketMessage`); `api/websocket_manager.py` (helper `broadcast_plan_document`); `core/task_service.py` (emite un solo `server_plan_document` vía `_build_plan_payload(mission, summary)`; `_format_coding_summary` se encoge a un puntero — los diffs ya tienen su propia ruta `DiffBlock` en el apply, no se re-aplanan al chat).
+  - Frontend: `src/shared/config.ts` (mensaje `OPEN_FILE` + interfaces `PlanWBSStep`/`PlanDocumentShape`); `src/providers/workspace_panel.ts` (handler `OPEN_FILE` con `try/catch`, cache de plan por sesión + re-post en `visible`, limpieza en `CLEAR_CONVERSATION`); `src/workspace/components/PlanPanel.tsx` (NUEVO — documento estructurado, reusa `MarkdownRenderer` para la prosa, file-links clicables); `src/workspace/Workspace.tsx` (caso `server_plan_document`: puntero + panel en una transición); `src/workspace/workspace.css` (región acoplada + estilo de file-link azul vía `--vscode-textLink-foreground`).
+
+- **Nota de calibración:** el test `test_summary_still_renders_proposed_diffs` (de 7.15.4) afirmaba que `_format_coding_summary` seguía emitiendo el fence ```diff``` en el chat. 7.15.6 **supera deliberadamente** ese contrato — los diffs viven ahora en el panel — así que el test se reescribió a `test_summary_points_to_the_plan_panel_without_embedding_diffs`. La garantía de honestidad que ese archivo protege (`test_summary_does_not_claim_apply_disabled`) queda intacta.
+
+- **Files changed:**
+  - Backend EDIT: `api/ws_contracts.py`, `api/websocket_manager.py`, `core/task_service.py`. Tests NUEVO: `tests/test_plan_document_contract.py`; EDIT: `tests/test_coding_summary_honesty.py`.
+  - Frontend EDIT: `src/shared/config.ts`, `src/providers/workspace_panel.ts`, `src/workspace/Workspace.tsx`, `src/workspace/workspace.css`. NUEVO: `src/workspace/components/PlanPanel.tsx`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.15.6 → `[x]`), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.15.5: Observabilidad — Live Action-Log & Failure Narration — 2026-06-03
 
 - **Status:** OK — sexta slice de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 233 source files**; `mypy --strict` sobre archivos propios (`agents/error_correction.py`, `tests/test_action_log_narration.py`) → **0**; `pytest -p no:randomly` **819 passed** (+4 nuevos). Los 5 errores `--strict` residuales en `agents/coder.py` son **pre-existentes** y se verificaron idénticos en la base pre-edición (`git stash` → mismos 5) — las adiciones de este slice no introdujeron deuda.

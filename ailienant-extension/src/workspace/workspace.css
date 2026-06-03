@@ -2054,3 +2054,131 @@ html, body, #root { height: 100%; }
 .ws-diff-hitl-input .ai-btn {
   align-self: flex-end;
 }
+
+/* ── Rich Plan side-panel (ADR-732) ─────────────────────────── */
+.ws-plan-panel {
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  min-width: 280px;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.ws-plan-panel.ws-plan-collapsed {
+  width: auto;
+  min-width: 0;
+}
+.ws-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.ws-plan-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+.ws-plan-toggle,
+.ws-plan-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.ws-plan-toggle:hover,
+.ws-plan-close:hover { color: var(--text-primary); }
+.ws-plan-body {
+  overflow-y: auto;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.ws-plan-section { margin-bottom: 16px; }
+.ws-plan-section-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.ws-plan-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ws-plan-outcome { line-height: 1.5; }
+
+/* A path that opens in the editor — themed blue to read as a link. */
+.ws-plan-filelink {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-textLink-foreground, #4daafc);
+  cursor: pointer;
+  text-decoration: none;
+}
+.ws-plan-filelink:hover { text-decoration: underline; }
+
+.ws-plan-wbs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ws-plan-step {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.ws-plan-step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ws-plan-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  color: #0D1117;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.ws-plan-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ws-plan-step-desc {
+  margin-top: 6px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
