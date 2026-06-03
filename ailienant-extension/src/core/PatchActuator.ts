@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import type { ASTToken } from '../shared/config';
 
 interface WorkspaceEditItem {
     file_path: string;
@@ -26,6 +27,12 @@ export interface PatchedFileDiff {
     old_content: string;
     new_content: string;
     status: 'edit' | 'create';
+    // Column-aligned host-tokenized spans for syntax-highlighted rendering, mirrored
+    // from DiffBlockShape. Absent until the host grammar engine populates them; when
+    // it does, it must set these explicitly on the pushed diff literal so the own
+    // property survives the postMessage structured-clone boundary to the webview.
+    old_ast_lines?: ASTToken[][];
+    new_ast_lines?: ASTToken[][];
 }
 
 export interface PatchAppliedResult {
