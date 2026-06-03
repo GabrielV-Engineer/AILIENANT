@@ -81,6 +81,29 @@ export interface ToolCallShape {
     };
 }
 
+// A finalized plan, delivered as one structured `server_plan_document` message.
+// Mirrors the backend PlanDocumentPayload — `summary` is the one-line chat pointer
+// that travels WITH the structure so the bubble and the rich Plan panel render on
+// a single state transition (no two-message ordering race).
+export interface PlanWBSStep {
+    step_number: number;
+    target_role: string;
+    action: string;
+    target_file: string;
+    description: string;
+    status: string;
+}
+export interface PlanDocumentShape {
+    summary: string;
+    outcome: string;
+    scope: string[];
+    constraints: string[];
+    decisions: string[];
+    tasks: PlanWBSStep[];
+    checks: string[];
+    ubiquitous_language: Record<string, string>;
+}
+
 // One file's worth of inline diff, surfaced by the host once an approved edit is
 // applied (both sides arrive EOL-normalized host-side). Attached to the assistant
 // turn that explained the edit and rendered as a split diff.
@@ -120,7 +143,10 @@ export type WebviewToHostMessage =
     | { type: "BRANCH_FROM_CHECKPOINT"; session_id: string; checkpoint_id: string; message_index?: number }
     // Phase 7.11.8 — Palette → host: fetch the checkpoint chain for the
     // active session (REST GET) and open the CheckpointPicker overlay.
-    | { type: "LIST_CHECKPOINTS"; session_id: string };
+    | { type: "LIST_CHECKPOINTS"; session_id: string }
+    // Rich Plan panel: a file-link click asks the host to open the file in the
+    // editor. The path is workspace-relative and host-validated before opening.
+    | { type: "OPEN_FILE"; path: string };
 
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",

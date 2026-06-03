@@ -25,14 +25,16 @@ def test_summary_does_not_claim_apply_disabled() -> None:
     assert "not yet enabled" not in summary
 
 
-def test_summary_still_renders_proposed_diffs() -> None:
-    # Honesty fix must not regress the proposal render: the diff fence and the
-    # file path still appear.
+def test_summary_points_to_the_plan_panel_without_embedding_diffs() -> None:
+    # The chat bubble is now a pointer to the rich Plan surface — the diffs (and
+    # the full WBS) render there, not flattened into chat prose. This keeps the
+    # bubble small regardless of plan size; the honesty guarantee above is
+    # unchanged (the copy still never claims apply is disabled).
     summary = TaskService._format_coding_summary(
         _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, []
     )
-    assert "```diff" in summary
-    assert "src/x.py" in summary
+    assert "Plan panel" in summary
+    assert "```diff" not in summary
 
 
 def test_summary_empty_patches_branch_unchanged() -> None:

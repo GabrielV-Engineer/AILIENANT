@@ -7,12 +7,15 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Tuple, cast
+from typing import List, Dict, Any, Optional, Tuple, cast, TYPE_CHECKING
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager
 from tools.llm_gateway import LLMGateway
 import logging
+
+if TYPE_CHECKING:
+    from api.ws_contracts import PlanDocumentPayload
 from shared.persona import compose
 from transport.token_batcher import batch_tokens, NarrationGate
 
@@ -515,10 +518,17 @@ class TaskService:
             base_hashes: Dict[str, str] = dict(final_state.get("pending_base_hash") or {})
             errors: List[str] = list(final_state.get("errors") or [])
 
-            # 1) Stream the plan + proposed diffs as a reviewable message.
+            # 1) Surface the plan. The structured document and its one-line chat
+            # pointer ride in a single message so the bubble and the rich Plan
+            # panel land on one frontend state transition — two sequential
+            # broadcasts could arrive out of order and flash the pointer against
+            # an empty panel. The proposed diffs keep their own DiffBlock render
+            # path on apply, so they are not re-flattened into chat prose here.
             summary = self._format_coding_summary(mission, patches, errors)
             gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
-            await vfs_manager.broadcast_token(session_id, summary)
+            await vfs_manager.broadcast_plan_document(
+                session_id, self._build_plan_payload(mission, summary)
+            )
             await self._finalize_stream(session_id)
             self._append_history(session_id, "user", payload.task_prompt)
             self._append_history(session_id, "assistant", summary)
@@ -632,24 +642,42 @@ class TaskService:
     def _format_coding_summary(
         mission: Any, patches: Dict[str, str], errors: List[str]
     ) -> str:
-        """Render the plan outcome + proposed diffs as a reviewable chat message."""
+        """Render the one-line chat pointer to the rich Plan surface. The full
+        outcome, scope, WBS and proposed diffs live in the Plan panel; the chat
+        bubble only orients the user toward it (and carries any planner notes)."""
         lines: List[str] = []
-        outcome = getattr(mission, "outcome", "") or ""
-        if outcome:
-            lines.append(str(outcome))
         if patches:
-            lines.append(f"\nProposed changes to {len(patches)} file(s):")
-            for fp, diff in patches.items():
-                lines.append(f"\n**{fp}**\n```diff\n{diff.rstrip()}\n```")
             lines.append(
-                "\n_Review the proposed diffs above. Depending on your mode, applying "
-                "them will either ask for your approval or apply automatically._"
+                f"Drafted a plan with {len(patches)} proposed file change(s) — "
+                "see the Plan panel for the full breakdown and diffs."
             )
         else:
-            lines.append("\nI drafted a plan but produced no concrete edits for this request.")
+            lines.append(
+                "Drafted a plan but produced no concrete edits for this request — "
+                "see the Plan panel."
+            )
         if errors:
-            lines.append("\n_Notes:_ " + "; ".join(errors[:5]))
+            lines.append("_Notes:_ " + "; ".join(errors[:5]))
         return "\n".join(lines)
+
+    @staticmethod
+    def _build_plan_payload(mission: Any, summary: str) -> "PlanDocumentPayload":
+        """Project a MissionSpecification onto the wire payload, carrying the chat
+        pointer alongside the structure. Imported lazily to keep the contract
+        module off this hot path's import graph."""
+        from api.ws_contracts import PlanDocumentPayload
+
+        dump = mission.model_dump() if hasattr(mission, "model_dump") else {}
+        return PlanDocumentPayload(
+            summary=summary,
+            outcome=str(dump.get("outcome", "") or ""),
+            scope=list(dump.get("scope") or []),
+            constraints=list(dump.get("constraints") or []),
+            decisions=list(dump.get("decisions") or []),
+            tasks=list(dump.get("tasks") or []),
+            checks=list(dump.get("checks") or []),
+            ubiquitous_language=dict(dump.get("ubiquitous_language") or {}),
+        )
 
     def _append_history(self, session_id: str, role: str, content: str) -> None:
         """Append a turn message to the session's short-term memory (bounded)."""

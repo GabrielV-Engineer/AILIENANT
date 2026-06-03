@@ -14,7 +14,7 @@ from pydantic import ValidationError, TypeAdapter
 from api.ws_contracts import (
     WebSocketMessage,
     ServerTokenChunkEvent, TokenChunkPayload,
-    ServerThinkingChunkEvent, ThinkingChunkPayload,   # Phase 9 — Native Thinking
+    ServerThinkingChunkEvent, ThinkingChunkPayload,   # Native Thinking
     ServerTelemetryEvent, TelemetryPayload,
     ServerGraphMutationEvent, GraphMutationPayload,
     ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
@@ -29,11 +29,11 @@ from api.ws_contracts import (
     ServerNattTokenChunkEvent, NattTokenChunkPayload,
     ServerNattStreamEndEvent, NattStreamEndPayload,
     ServerPipelineStepEvent, PipelineStepPayload,
+    ServerPlanDocumentEvent, PlanDocumentPayload,
     ServerStreamEndEvent,
     ServerInlineEditStartEvent, InlineEditStartPayload,
     ServerInlineEditDeltaEvent, InlineEditDeltaPayload,
     ServerInlineEditEndEvent, InlineEditEndPayload,
-    # Phase 7.11.6 — Rich Tool Chips (ADR-706 §4.5f)
     ServerToolStartEvent, ToolStartPayload,
     ServerToolStreamChunkEvent, ToolStreamChunkPayload,
     ServerToolResultEvent, ToolResultPayload,
@@ -50,7 +50,7 @@ logger = logging.getLogger("VFS_Manager")
 _TELEMETRY_LINE_CAP: int = 1_000
 
 
-# Phase 7.11.6 (ADR-706 §4.5f) — session-disconnect hooks. Other modules
+# session-disconnect hooks. Other modules
 # (notably ``core.task_service`` for the tool-call registry) register a
 # cleanup callback that runs whenever a WS session disconnects. This avoids
 # coupling the manager to those modules directly and sidesteps the
@@ -105,7 +105,7 @@ class ConnectionManager:
         # HITL state — keyed by approval_id (UUID4), NOT session_id
         self._hitl_pending: Dict[str, asyncio.Event] = {}
         self._hitl_responses: Dict[str, dict] = {}
-        # Phase 7.9.B.18 — write-pipeline acks, keyed by patch_id (UUID4 hex)
+        # write-pipeline acks, keyed by patch_id (UUID4 hex)
         self._patch_acks: Dict[str, asyncio.Event] = {}
         self._patch_ack_results: Dict[str, dict] = {}
         # Inbound flood guard — per-client token bucket (tokens + last-refill clock)
@@ -147,7 +147,7 @@ class ConnectionManager:
     ) -> bool:
         """Accept a WebSocket connection, optionally validating an ephemeral auth token.
 
-        Phase 7.9.A.5.1: when auth_token is set, the very first message must be
+        when auth_token is set, the very first message must be
         {"event_type": "auth", "token": "<token>"}. Constant-time comparison
         (secrets.compare_digest) prevents timing attacks on localhost.
         Returns True if the connection was accepted, False if rejected.
@@ -189,7 +189,7 @@ class ConnectionManager:
         # reconnects (a fresh connection re-initializes a full bucket lazily).
         self._inbound_tokens.pop(client_id, None)
         self._inbound_refill_at.pop(client_id, None)
-        # Phase 7.11.6 — fire every registered session-cleanup hook (e.g.,
+        # fire every registered session-cleanup hook (e.g.,
         # TaskService.cleanup_session purges the tool-call registry). Hooks
         # are registered from main.py during startup; we never let a hook
         # exception derail the disconnect path.
@@ -244,7 +244,7 @@ class ConnectionManager:
     async def broadcast_thinking_chunk(
         self, session_id: str, delta: str, token_count: int = 0
     ) -> None:
-        """Phase 9 (ADR-707) — stream a native-reasoning delta to the Thought Box.
+        """stream a native-reasoning delta to the Thought Box.
 
         A separate channel from ``broadcast_token`` (the answer stream) and
         ``broadcast_pipeline_step`` (node narration). Reuses the same
@@ -344,7 +344,7 @@ class ConnectionManager:
         )
 
     # ------------------------------------------------------------------
-    # Phase 2.5 — Workspace Indexing Progress
+    # Workspace Indexing Progress
     # ------------------------------------------------------------------
 
     async def broadcast_indexing_progress(
@@ -383,7 +383,7 @@ class ConnectionManager:
         )
 
     # ------------------------------------------------------------------
-    # Phase 7.9.B.12 — Analyst pane + pipeline progress + stream end
+    # Analyst pane + pipeline progress + stream end
     # ------------------------------------------------------------------
 
     async def send_natt_message(
@@ -402,6 +402,16 @@ class ConnectionManager:
         await self.send_personal_message(
             session_id,
             ServerPipelineStepEvent(data=PipelineStepPayload(node_name=node_name, step_id=step_id)),
+        )
+
+    async def broadcast_plan_document(
+        self, session_id: str, payload: PlanDocumentPayload
+    ) -> None:
+        """Send a finalized plan as structured data plus its chat pointer in one
+        message, so the IDE renders the conversation bubble and the rich Plan panel
+        in a single state transition (no two-message ordering race)."""
+        await self.send_personal_message(
+            session_id, ServerPlanDocumentEvent(data=payload)
         )
 
     async def broadcast_natt_token(self, session_id: str, token: str) -> None:
@@ -427,11 +437,11 @@ class ConnectionManager:
     ) -> None:
         """Finalize the streaming assistant message bubble on the client.
 
-        Phase 7.11.8 (ADR-706 §4.5g) — the optional ``checkpoint_id`` carries
+        the optional ``checkpoint_id`` carries
         the L2-promoted snapshot id for the turn that just ended. The
         frontend attaches this to the last assistant ``Message`` so the
         per-message "↪ Branch from here" button can target it. Default
-        ``None`` preserves the pre-7.11.8 wire shape; all existing callers
+        ``None`` preserves the pre wire shape; all existing callers
         keep compiling unchanged.
         """
         data: dict = {}
@@ -440,7 +450,7 @@ class ConnectionManager:
         await self.send_personal_message(session_id, ServerStreamEndEvent(data=data))
 
     # ------------------------------------------------------------------
-    # Phase 7.11.1 — Inline editor mutations (Cmd+K, ADR-706 §4.5a)
+    # Inline editor mutations (Cmd+K)
     # ------------------------------------------------------------------
 
     async def broadcast_inline_edit_start(
@@ -512,7 +522,7 @@ class ConnectionManager:
         )
 
     # ------------------------------------------------------------------
-    # Phase 7.11.6 — Rich Tool Chips (ADR-706 §4.5f)
+    # Rich Tool Chips
     # ------------------------------------------------------------------
 
     async def broadcast_tool_start(
@@ -619,7 +629,7 @@ class ConnectionManager:
         )
 
     # ------------------------------------------------------------------
-    # Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging (Thread Branching)
+    # Time-Travel Debugging (Thread Branching)
     # ------------------------------------------------------------------
 
     async def broadcast_session_branched(
@@ -681,7 +691,7 @@ class ConnectionManager:
         )
 
     # ------------------------------------------------------------------
-    # Phase 2.22.4 — VFS Patch Approved (IPC Bridge)
+    # VFS Patch Approved (IPC Bridge)
     # ------------------------------------------------------------------
 
     async def emit_vfs_patch_approved(
@@ -704,7 +714,7 @@ class ConnectionManager:
         )
 
     # ------------------------------------------------------------------
-    # Phase 7.9.B.18 — Write pipeline: dispatch applyEdit + await host ack
+    # Write pipeline: dispatch applyEdit + await host ack
     # ------------------------------------------------------------------
 
     async def emit_apply_workspace_edit(
@@ -758,9 +768,9 @@ class ConnectionManager:
         preventing cross-talk when multiple approval requests are in-flight on
         the same session.
 
-        ``request_kind`` (Phase 7.11.7) — optional classifier string (e.g.
+        ``request_kind`` — optional classifier string (e.g.
         ``"BUDGET_OVERFLOW"``, ``"FILE_WRITE"``) that the native-HITL toast bridge
-        uses to choose severity and title. Default None preserves the pre-7.11.7
+        uses to choose severity and title. Default None preserves the pre
         wire shape; unknown kinds fall back to info-level on the frontend.
 
         Returns {"approved": bool, "comment": str|None} or None on timeout.
@@ -790,7 +800,7 @@ class ConnectionManager:
         finally:
             self._hitl_pending.pop(approval_id, None)
 
-        # Phase 6.6 — append one immutable row to the HITL audit chain. Approved,
+        # append one immutable row to the HITL audit chain. Approved,
         # rejected and timeout are all logged (no gap-attack surface). Best-effort:
         # an audit-write failure must never break the HITL round-trip.
         resolution = (
@@ -824,7 +834,7 @@ class ConnectionManager:
         Stores the response and unblocks the waiting coroutine.
         Silently ignores unknown approval_ids (e.g. late responses after timeout).
 
-        modified_content (Phase 7.9.B.18) carries an optional edited payload from the
+        modified_content carries an optional edited payload from the
         HITL card's edit mode — consumed by the write pipeline for single-file patches.
         """
         self._hitl_responses[approval_id] = {
