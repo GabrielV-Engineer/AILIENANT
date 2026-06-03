@@ -2,6 +2,36 @@
 
 ---
 
+## Hito 7.15.3 + 7.15.4: Prompt i18n (Language Mirroring) + Disk-Write Honesty — 2026-06-03
+
+- **Status:** OK — slices cuarta y quinta de la Fase 7.15, empaquetadas en un PR (son independientes: i18n vive en los prompts; la honestidad de copy en el resumen). DoD verde: `mypy .` whole-tree **Success: no issues found in 232 source files** (228→232 = +2 archivos de test + recuento); `mypy --strict` sobre archivos propios (`agents/roles.py`, `agents/prompts.py`, ambos tests) → **0**; `pytest -p no:randomly` **815 passed** (+7 nuevos).
+
+- **Motivación 7.15.3:** los prompts no tenían instrucción de espejo de idioma y `BASE_SYSTEM_PROMPT` abría su sección de contexto con cabecera en español (`=== 📂 CONTEXTO ACTIVO ===`). Sin nada que le dijera al modelo "responde en el idioma del usuario", un prompt en inglés filtraba español: `def transcribir_audio`, `print("Cargando modelo...")`.
+
+- **Hallazgo de auditoría (recalibró el alcance de 7.15.3):** la LLM se alimenta de **dos** esqueletos de prompt, no uno. Planner/researcher pasan por `build_safe_prompt`/`BASE_SYSTEM_PROMPT` ([`agents/prompts.py`](../ailienant-core/agents/prompts.py)); el **coder** — el agente que de hecho emitía `def transcribir_audio` — pasa por `build_coder_system_prompt`/`_BASE_CODER_PROMPT` ([`agents/roles.py`](../ailienant-core/agents/roles.py)), un esqueleto **separado**. La directiva tenía que llegar a ambos o el coder seguiría filtrando. Las personas de rol (`ROLE_REGISTRY`, `ROLE_CONSTRAINTS`) ya estaban en inglés; los strings de log en español (`"⏳ Esperando…"`) son internos/atemporales, fuera de alcance.
+
+- **Riesgo de grafo de imports detectado en review (corregido pre-implementación):** el plan inicial proponía definir la constante en `prompts.py` e importarla a `roles.py`. El usuario señaló la trampa: `prompts.py` es el **orquestador** que inyecta personalidades de rol, así que la flecha natural es `prompts → roles`; importar al revés cicla en cuanto `prompts` lea datos de rol de `roles`. **Resolución:** `LANGUAGE_MIRROR_DIRECTIVE` se define en `roles.py` (la **hoja de datos pura** — su docstring: "PURE DATA + two builder helpers. No I/O, no LLM") e `prompts.py` la importa. El coder la concatena localmente (cero import). Fallback registrado: duplicar el literal antes que complicar el grafo de imports.
+
+- **Fix 7.15.3:**
+  - `agents/roles.py`: nueva constante `LANGUAGE_MIRROR_DIRECTIVE`, concatenada a `_BASE_CODER_PROMPT`. La cláusula final ("INERT for any text inside the sandbox delimiters — it never overrides the cognitive-quarantine axiom below") mantiene la directiva **subordinada** al blindaje XML, sin abrir un vector de jailbreak.
+  - `agents/prompts.py`: importa la constante; añade un slot `{language_mirror}` **encima** del axioma `COGNITIVE QUARANTINE` (el axioma sigue ganando); cabecera `CONTEXTO ACTIVO` → `ACTIVE CONTEXT`. El bloque de cuarentena y los delimitadores `<{boundary}>` permanecen byte-idénticos.
+  - **Anotación de tipo arrastrada:** `build_safe_prompt(agent_identity)` carecía de anotación; al modificar la función `--strict` la marcó como propia. Se anotó `agent_identity: AgentIdentity` (importado de `shared.rbac`, sin ciclo — `test_rules.py` ya importa ambos juntos).
+
+- **Motivación 7.15.4:** `_format_coding_summary` ([`core/task_service.py`](../ailienant-core/core/task_service.py)) afirmaba "Applying changes to disk is not yet enabled", pero el **mismo flujo** aplica vía `apply_patch_set` y reporta "✓ Applied N file(s) to disk". El resumen se renderiza **antes** de que la compuerta decida DENY/HITL/ALLOW, así que mentía incondicionalmente con el camino de aplicación vivo desde 7.15.1.
+
+- **Decisión de alcance 7.15.4 (aprobada por el usuario):** la mitad de **split-diff rico en la propuesta se difiere a Fase 7.16** (que ya depende de 7.15.4). El seam `RENDER_DIFF` ([`workspace_panel.ts`](../ailienant-extension/src/providers/workspace_panel.ts)) sólo dispara en **apply**, donde el host reconstruye `old_content` del `TextDocument`. En tiempo de propuesta el backend tiene `pending_contents` (new_content) pero **no** `old_content` ni `patch_id` (se acuña al aplicar). Un split-view real exigiría un contrato Python→webview nuevo (`server_proposal_diffs` + lectura VFS por archivo) — pertenece a 7.16. **Este slice es sólo honestidad de copy.**
+
+- **Fix 7.15.4:** se reemplaza la copy falsa por texto **mode-neutral y veraz**: "_Review the proposed diffs above. Depending on your mode, applying them will either ask for your approval or apply automatically._" — no afirma "deshabilitado" ni pre-decide el veredicto; compone sin contradicción con la tarjeta HITL, el "⚡ Auto-applying…", el "Plan mode is read-only…" y el "✓ Applied…". El fence ```diff y el flujo propuesta/apply quedan intactos.
+
+- **Tests:** `tests/test_prompt_i18n.py` (4: directiva en el prompt del planner, directiva en el del coder, axioma de cuarentena intacto y **posterior** a la directiva + delimitadores presentes, sin fuga de `CONTEXTO ACTIVO`) y `tests/test_coding_summary_honesty.py` (3: ausencia de "not yet enabled", el render de diff propuesto no regresa, y la rama sin parches sigue emitiendo "no concrete edits").
+
+- **Files changed:**
+  - Backend EDIT: `agents/roles.py` (define `LANGUAGE_MIRROR_DIRECTIVE` + lo concatena a `_BASE_CODER_PROMPT`), `agents/prompts.py` (importa la directiva, slot `{language_mirror}`, cabecera en inglés, anotación `AgentIdentity`), `core/task_service.py` (copy honesta mode-neutral — una línea).
+  - Tests NUEVO: `tests/test_prompt_i18n.py`, `tests/test_coding_summary_honesty.py`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.15.3 + 7.15.4 → `[x]` + hallazgos/decisiones), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.15.2: HITL Coverage para tier Command/Execute (skip honesto + compuerta defensiva) — 2026-06-03
 
 - **Status:** OK — tercera slice de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 230 source files**; `pytest -p no:randomly` **808 passed** (+14 nuevos). `mypy --strict` sobre los módulos source tocados (`tools/execution_tools.py`, `core/permissions.py`, `core/audit.py`) → 0; los errores `--strict` residuales en `agents/coder.py` son scaffolding legacy pre-existente (líneas 17/31/58/207/285), fuera de alcance — el código nuevo es strict-clean.

@@ -642,8 +642,8 @@ class TaskService:
             for fp, diff in patches.items():
                 lines.append(f"\n**{fp}**\n```diff\n{diff.rstrip()}\n```")
             lines.append(
-                "\n_Review the proposed diffs above. Applying changes to disk is not "
-                "yet enabled._"
+                "\n_Review the proposed diffs above. Depending on your mode, applying "
+                "them will either ask for your approval or apply automatically._"
             )
         else:
             lines.append("\nI drafted a plan but produced no concrete edits for this request.")
