@@ -10,12 +10,13 @@ Seven tests:
   T5. NarrationGate enforcement             — narration <= 15% once the answer streams.
   T6. NarrationGate transition              — record_answer flips cold-start into enforcement.
   T7. _run_coding_task ordering             — context_gather precedes the graph's own
-       sub-step narration (emitted from inside the compiled graph via state["narrate"]).
+       sub-step narration (emitted from inside the compiled graph via the narrate
+       emitter on config.configurable).
 """
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Tuple, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -158,12 +159,13 @@ def _mission_two_tasks() -> MissionSpecification:
 @pytest.mark.anyio
 async def test_run_coding_task_emits_granular_narration_in_order() -> None:
     # The coding path drives the compiled graph; sub-step narration now flows
-    # from inside the graph via the injected state["narrate"] emitter (the agents
-    # narrate their own phases). task_service still emits "context_gather" before
-    # entering the graph, so it must lead the sequence.
+    # from inside the graph via the narrate emitter on config.configurable (the
+    # agents narrate their own phases). task_service still emits "context_gather"
+    # before entering the graph, so it must lead the sequence.
     def _fake_astream(state: dict, *_a: object, **_k: object) -> AsyncIterator[dict]:
         async def _gen() -> AsyncIterator[dict]:
-            narrate = state.get("narrate")
+            config = cast(Dict[str, Any], _k.get("config") or {})
+            narrate = config.get("configurable", {}).get("narrate")
             if narrate is not None:
                 await narrate("routing_decision")
                 await narrate("drafting_spec")

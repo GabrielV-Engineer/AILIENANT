@@ -444,15 +444,17 @@ class TaskService:
         # Phase 7.10.2 (ADR-702): granular sub-step narration over server_pipeline_step.
         # A NarrationGate keeps narration <= 15% of streamed volume once the answer is
         # live; pre-answer phases (answer_bytes == 0) are never suppressed. The emitter
-        # is injected into the graph state so the planner can narrate without importing
-        # the transport layer (cognitive-isolation fence stays intact).
+        # rides on the run config (RunnableConfig.configurable), NOT graph state: a
+        # callable is not msgpack-serializable, and the checkpointer freezes the whole
+        # state after every node. `configurable` is never checkpointed and never part
+        # of a Send({**state}) fan-out payload, so the closure can never reach the
+        # serializer while the planner still narrates without importing the transport
+        # layer (cognitive-isolation fence stays intact).
         gate = NarrationGate()
 
         async def _narrate(node_name: str, step_id: Optional[int] = None) -> None:
             if gate.allow(len(node_name.encode())):
                 await vfs_manager.broadcast_pipeline_step(session_id, node_name, step_id)
-
-        state["narrate"] = _narrate
 
         # Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh. CancelledError
         # may surface from ANY await in this coroutine (planner, coder steps,
@@ -462,14 +464,16 @@ class TaskService:
         # standard abort response (broadcast marker + stream_end + persist).
         try:
             await _narrate("context_gather")
-            cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
+            cfg: RunnableConfig = {
+                "configurable": {"thread_id": session_id, "narrate": _narrate}
+            }
             final_state: Dict[str, Any] = {}
             try:
                 # stream_mode="values" yields the full accumulated state after
                 # each node; the last snapshot is the complete final state. The
                 # graph does NOT stream LLM tokens (planner/coder invoke the model
                 # and return whole results), so live sub-step progress comes from
-                # the agents' injected state["narrate"] callback, not from here.
+                # the narrate emitter on config.configurable, not from here.
                 # cast satisfies the astream() overload (the seed carries a few
                 # transient keys beyond the AIlienantGraphState TypedDict — the
                 # graph drops them, the same way ainvoke() is cast at resume).

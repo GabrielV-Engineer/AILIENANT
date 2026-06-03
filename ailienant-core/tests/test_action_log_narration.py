@@ -1,10 +1,12 @@
 """Observability — live action-log + failure-pivot narration (ADR-731).
 
-The agent's reads and self-heal pivots flow through the existing
-``state["narrate"]`` seam (a metered ``server_pipeline_step`` emitter injected by
-the task service), so the IDE action-log shows *what* the agent is doing without
-a second HUD or a new wire contract. These tests pin the two narration contracts
-by calling the graph nodes directly with a list-capturing ``narrate`` stub:
+The agent's reads and self-heal pivots flow through the
+``config.configurable["narrate"]`` seam (a metered ``server_pipeline_step`` emitter
+injected by the task service on the run config — never on graph state, so the
+checkpointer never serializes a callable), so the IDE action-log shows *what* the
+agent is doing without a second HUD or a new wire contract. These tests pin the two
+narration contracts by calling the graph nodes directly with a list-capturing
+``narrate`` stub passed through the run config:
 
   A. ``run_coder_node`` announces the file it is about to read (basename only).
   B. ``run_error_correction_node`` narrates a self-heal pivot in plain language —
@@ -18,6 +20,8 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from langchain_core.runnables import RunnableConfig
 
 from brain.failure_breaker import normalize_signature
 from brain.state import MissionSpecification, WBSStep
@@ -36,6 +40,11 @@ def _capture() -> tuple[List[str], Any]:
         captured.append(node_name)
 
     return captured, _narrate
+
+
+def _cfg(narrate: Any) -> RunnableConfig:
+    """The run config a node receives — the narrate emitter lives on configurable."""
+    return {"configurable": {"narrate": narrate}}
 
 
 # ── A — coder narrates the file it reads ──────────────────────────────────────
@@ -74,7 +83,6 @@ def _coder_state(narrate: Any, *, target_file: str) -> Dict[str, Any]:
         "errors": [],
         "security_flags": [],
         "validation_feedback": None,
-        "narrate": narrate,
     }
 
 
@@ -99,7 +107,7 @@ async def test_coder_narrates_basename_of_read_target() -> None:
         "tools.llm_gateway.LLMGateway.ainvoke",
         new=AsyncMock(return_value=_fake_llm_response('{"edits": []}')),
     ):
-        await run_coder_node(state)
+        await run_coder_node(state, _cfg(narrate))
 
     # Basename, not full path — the workspace structure stays private and the
     # narration-gate charge small.
@@ -119,7 +127,6 @@ def _heal_state(narrate: Any, signature: str, *, step_id: Optional[int] = 3) -> 
         "current_step_id": step_id,
         "workspace_root": "",
         "mission_spec": None,
-        "narrate": narrate,
     }
 
 
@@ -135,7 +142,7 @@ async def test_pivot_narrates_timeout_in_plain_language_and_concedes() -> None:
         "agents.error_correction._default_agent.propose_fix",
         new=AsyncMock(return_value=CorrectionResult(healed=False, diagnosis="no safe fix")),
     ):
-        await run_error_correction_node(state)
+        await run_error_correction_node(state, _cfg(narrate))
 
     pivot = next((c for c in captured if c.startswith("self-healing")), "")
     assert "run_coder_node" in pivot
@@ -164,7 +171,7 @@ async def test_pivot_narrates_connection_drop_and_recovery() -> None:
             )
         ),
     ):
-        await run_error_correction_node(state)
+        await run_error_correction_node(state, _cfg(narrate))
 
     pivot = next((c for c in captured if c.startswith("self-healing")), "")
     assert "the connection dropped" in pivot
@@ -183,7 +190,7 @@ async def test_pivot_omits_retry_clause_when_step_unknown() -> None:
         "agents.error_correction._default_agent.propose_fix",
         new=AsyncMock(return_value=CorrectionResult(healed=False, diagnosis="no fix")),
     ):
-        await run_error_correction_node(state)
+        await run_error_correction_node(state, _cfg(narrate))
 
     pivot = next((c for c in captured if c.startswith("self-healing")), "")
     assert "the model timed out" in pivot

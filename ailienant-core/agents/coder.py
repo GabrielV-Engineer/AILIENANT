@@ -7,6 +7,9 @@ import json
 import logging
 import os
 import uuid
+from typing import Optional
+
+from langchain_core.runnables import RunnableConfig
 
 from brain.state import WBSStep
 # role registry lives in agents/roles.py (flat-module import via conftest).
@@ -56,7 +59,7 @@ async def _build_rag_block(target_file: str, description: str, project_id: str) 
     )
 
 
-async def run_coder_node(state: dict) -> dict:
+async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """
     LangGraph node: El Ejecutor (CoderAgent)
 
@@ -156,10 +159,11 @@ async def run_coder_node(state: dict) -> dict:
             "security_flags": new_security_flags,
         }
 
-    # Granular sub-step narration. task_service injects an async emitter via
-    # state["narrate"]; the coder stays decoupled from the transport layer (never
-    # imports the WS manager for this) — the cognitive-isolation fence holds.
-    _narrate = state.get("narrate")
+    # Granular sub-step narration. task_service injects an async emitter on
+    # config.configurable["narrate"] (kept off graph state so the checkpointer never
+    # serializes a callable); the coder stays decoupled from the transport layer
+    # (never imports the WS manager for this) — the cognitive-isolation fence holds.
+    _narrate = (config or {}).get("configurable", {}).get("narrate")
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:
