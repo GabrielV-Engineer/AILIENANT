@@ -1,8 +1,8 @@
 # ailienant-core/agents/analyst.py
 #
-# Phase 2.21 — Socratic "Grill Me" AnalystAgent.
+# — Socratic "Grill Me" AnalystAgent.
 #
-# Implements the Matt Pocock "Grill Me" pattern:
+# Implements the "Grill Me" pattern:
 #   - ONE question per turn, always with a recommended answer
 #   - Reads codebase via read_file tool before asking (avoid asking what can be known)
 #   - Sets hitl_pending=True to suspend the graph (non-blocking — no asyncio.wait)
@@ -14,19 +14,24 @@
 import asyncio
 import json
 import logging
+import os as _os
 from typing import AsyncIterator, Dict, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
-# Phase 4.1.5 — SOUL.md persona reader. Analyst is the EXCLUSIVE consumer of
-# brain.personality per blueprint §3.4 cognitive-isolation fence. Other agents
+# SOUL.md persona reader. Analyst is the EXCLUSIVE consumer of
+# brain.personality cognitive-isolation fence. Other agents
 # (planner, coder, orchestrator, researcher) MUST NEVER import this module —
 # Test D audits the four logic-agent files for foreign imports on every CI run.
 from brain.personality import soul_manager
 
 logger = logging.getLogger("ANALYST_AGENT")
 
-DEBUG_MODE = True  # Phase 4: real LLM call; same pattern as planner.py
+# The live LLM path is the default; the synthetic [DEBUG Q1/Q2] script is the
+# escape hatch retained for deterministic CI/UI smoke tests. Mirrors planner.py:
+# set AILIENANT_ANALYST_DEBUG=1 to force the stub.
+DEBUG_MODE: bool = _os.getenv("AILIENANT_ANALYST_DEBUG", "0") != "0"
 
 _AGREEMENT_SIGNALS = frozenset([
     # English
@@ -42,7 +47,28 @@ _AGREEMENT_SIGNALS = frozenset([
 _background_tasks: set = set()
 
 _CLOSE_HINT = (
-    "\n> Para sintetizar el plan, responde con 'OK', 'Proceed', o 'Dale'."
+    "\n> To summarize the plan, respond with 'OK', 'Proceed', or 'Go'."
+)
+
+# The "Grill Me" contract handed to the model on top of the SOUL persona. It
+# enforces the one-question-per-turn Socratic rhythm and forbids the robotic
+# failure modes the DEBUG stub exhibited (ignoring the user, repeating itself).
+_GRILL_DIRECTIVE: str = (
+    "You are running a Socratic 'Grill Me' planning session. Your job is to "
+    "extract a precise, buildable plan from the user one question at a time.\n"
+    "RULES:\n"
+    "- Ask EXACTLY ONE focused question this turn. Never bundle multiple "
+    "questions.\n"
+    "- Build directly on what the user just said and on the workspace context "
+    "below — reference their actual words, files, and code. Never ask something "
+    "already answered, and never repeat a previous question.\n"
+    "- Always end with a concrete recommended default answer so the user can "
+    "agree in one word (format: 'Recommended: <your best guess>').\n"
+    "- If the user defers ('you choose', 'give me your ideas'), MAKE the "
+    "decision yourself, state it briefly, and ask the next question that moves "
+    "the plan forward.\n"
+    "- Be concise. No preamble, no restating the rules. Output only the question "
+    "and its recommended answer."
 )
 
 
@@ -66,7 +92,7 @@ _INTENT_SYSTEM_PROMPT: str = (
 
 
 async def generate_intent_summary_llm(user_messages: List[str], task_id: str = "") -> str:
-    """Phase 3.4.2: One-shot LLM call to summarise last N user intents (Pre-Dream Reflection)."""
+    """ One-shot LLM call to summarise last N user intents (Pre-Dream Reflection)."""
     from tools.llm_gateway import LLMGateway   # deferred — avoids circular import
     from shared.config import MINI_JUDGE_MODEL  # reuse the fast mini-judge model
     combined = "\n".join(f"- {m}" for m in user_messages)
@@ -83,15 +109,19 @@ async def generate_intent_summary_llm(user_messages: List[str], task_id: str = "
     return str(result).strip()
 
 
-async def run_analyst_node(state: dict) -> dict:
-    """LangGraph node: Socratic Grill Me AnalystAgent (Phase 2.21).
+async def run_analyst_node(
+    state: dict, config: Optional[RunnableConfig] = None
+) -> dict:
+    """LangGraph node: Socratic Grill Me AnalystAgent.
 
-    Each invocation asks ONE question, broadcasts it non-blockingly, and sets
-    hitl_pending=True so the graph suspends. The next task_service.py invocation
-    carries the user's answer as user_input; the _merge_messages reducer
-    accumulates Q&A history across invocations.
+    Each invocation asks ONE context-aware question, streams it to the chat, and
+    sets hitl_pending=True so the graph suspends. The next task_service.py
+    invocation carries the user's answer as user_input; the _merge_messages
+    reducer accumulates Q&A history across invocations.
 
-    Phase 4: Replace DEBUG stub with real LLM call + VFS read_file tool binding.
+    The live path grounds each question in the workspace (active file + GraphRAG,
+    via the same assembler the Natt pane uses) and mirrors the user's language, so
+    questions adapt to what the user actually said and to their real code.
     """
     task_id: str = state.get("task_id", "")
     user_input: str = state.get("user_input", "")
@@ -120,9 +150,9 @@ async def run_analyst_node(state: dict) -> dict:
         else []
     )
 
-    # Phase 4.1.5 — fetch the persona prompt as an EPHEMERAL local variable.
+    # fetch the persona prompt as an EPHEMERAL local variable.
     # CRITICAL: soul_prompt is NEVER written to state.messages or returned in the
-    # result dict (R1 — state-key contract). The Phase 5 LLM call will receive
+    # result dict (R1 — state-key contract). LLM call will receive
     # it as the system message body; for now it is held locally and only its
     # length + emoji flag are logged, so tests can audit integration without
     # leaking prompt content.
@@ -132,6 +162,8 @@ async def run_analyst_node(state: dict) -> dict:
         len(soul_prompt),
         "🐜" in soul_prompt,
     )
+
+    from api.websocket_manager import vfs_manager  # deferred: avoids circular import
 
     if DEBUG_MODE:
         if not has_prior:
@@ -152,15 +184,34 @@ async def run_analyst_node(state: dict) -> dict:
                 + _CLOSE_HINT
             )
         logger.info("AnalystAgent (DEBUG): synthetic question generated.")
+        # Non-blocking broadcast — graph must not stall on WS I/O.
+        _t = asyncio.create_task(vfs_manager.broadcast_token(task_id, question))
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
     else:
-        # Phase 4: real LLM call with VFS read_file tool.
-        question = await _generate_question_llm(messages + new_messages, user_input)
-
-    # Non-blocking broadcast — graph must not stall on WS I/O.
-    from api.websocket_manager import vfs_manager  # deferred: avoids circular import
-    _t = asyncio.create_task(vfs_manager.broadcast_token(task_id, question))
-    _background_tasks.add(_t)
-    _t.add_done_callback(_background_tasks.discard)
+        # Live path: stream a context-aware question token-by-token so it reads
+        # like a real reply, then close the stream. The node MUST fully drain the
+        # stream here (await) before returning hitl_pending=True — the graph
+        # suspends on return, so a backgrounded stream would be truncated.
+        context_block = await _assemble_socratic_context(state)
+        parts: List[str] = []
+        try:
+            async for chunk in _stream_question_llm(
+                messages + new_messages, soul_prompt, context_block, task_id
+            ):
+                parts.append(chunk)
+                await vfs_manager.broadcast_token(task_id, chunk)
+        except Exception as exc:  # noqa: BLE001 — analyst must never crash the graph
+            logger.warning("AnalystAgent live question failed [%s: %s]",
+                           type(exc).__name__, exc)
+            if not parts:
+                await vfs_manager.broadcast_token(task_id, _ANALYST_BYOM_DOWN)
+                parts.append(_ANALYST_BYOM_DOWN)
+        question = "".join(parts).strip() or _ANALYST_BYOM_DOWN
+        try:
+            await vfs_manager.broadcast_stream_end(task_id)
+        except Exception:  # noqa: BLE001 — stream_end is best-effort on a dead socket
+            pass
 
     new_messages.append({"role": "assistant", "content": question})
 
@@ -171,11 +222,61 @@ async def run_analyst_node(state: dict) -> dict:
     }
 
 
-async def _generate_question_llm(messages: List[Dict], user_input: str) -> str:
-    """Phase 4 stub: real LLM call with VFS read_file tool bound via closure."""
-    raise NotImplementedError(
-        "Phase 4: wire LLMGateway with make_read_file_tool(vfs.read) via tool_registry."
-    )
+async def _assemble_socratic_context(state: dict) -> str:
+    """Build the read-only workspace context block for a Socratic question.
+
+    Reuses the analyst context assembler (active file + workspace tree + GraphRAG)
+    so the grilling references the user's real code. Never raises — a context
+    failure degrades to an empty block, never crashes the graph node.
+    """
+    active_path: str = state.get("active_file_path") or ""
+    paths: List[str] = [active_path] if active_path else []
+    project_root: str = state.get("workspace_root") or ""
+    project_id: Optional[str] = state.get("project_id") or None
+    session_id: str = state.get("task_id", "")
+    if not paths and not project_root:
+        return ""
+    try:
+        from agents.analyst_context import assemble_analyst_context
+        return await assemble_analyst_context(
+            paths, project_id, session_id, project_root=project_root,
+        )
+    except Exception as exc:  # noqa: BLE001 — context assembly is best-effort
+        logger.debug("Socratic context assembly failed (degrading): %s", exc)
+        return ""
+
+
+async def _stream_question_llm(
+    messages: List[Dict],
+    soul_prompt: str,
+    context_block: str,
+    session_id: str,
+) -> AsyncIterator[str]:
+    """Stream ONE Socratic question from the active BYOM model.
+
+    System prompt = SOUL persona + the Grill-Me directive + language mirror +
+    the sandboxed workspace context. Conversation history is replayed so the
+    analyst builds on prior turns and never repeats itself. Tokens are coalesced
+    into 40ms frames via the shared batcher (DOM-thrash neutralization).
+    """
+    from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
+    from transport.token_batcher import batch_tokens
+    from agents.roles import LANGUAGE_MIRROR_DIRECTIVE
+
+    system_prompt = f"{soul_prompt}\n\n{_GRILL_DIRECTIVE}\n\n{LANGUAGE_MIRROR_DIRECTIVE}"
+    if context_block:
+        system_prompt = f"{system_prompt}\n\n{context_block}"
+
+    llm_messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if role in ("user", "assistant") and content:
+            llm_messages.append({"role": role, "content": str(content)})
+
+    raw = LLMGateway.astream_byom(llm_messages, tier="medium", session_id=session_id)
+    async for chunk in batch_tokens(raw, chunk_ms=40):
+        yield chunk
 
 
 _ANALYST_BYOM_DOWN: str = (
@@ -190,9 +291,9 @@ async def generate_analyst_reply_stream(
     history: Optional[List[Dict[str, str]]] = None,
     session_id: str = "",
 ) -> AsyncIterator[str]:
-    """Phase 7.10.3 — streaming analyst reply for the Natt pane (ADR-703 + ADR-702).
+    """ streaming analyst reply for the Natt pane.
 
-    System prompt = SOUL persona (already identity-clad per ADR-701) + the assembled,
+    System prompt = SOUL persona (already identity) + the assembled,
     budgeted, sandboxed analyst context block. Conversation memory (history) is replayed
     so the analyst keeps continuity. Outbound tokens are coalesced into chunk_ms=40 frames
     via the shared batcher. Degrades to one actionable message if the BYOM engine is down —
@@ -224,9 +325,9 @@ async def generate_analyst_reply_stream(
 
 
 async def generate_analyst_reply(text: str, session_id: str = "") -> str:
-    """Phase 7.9.B.13 — full (non-streaming) analyst reply for the Natt pane.
+    """full (non-streaming) analyst reply for the Natt pane.
 
-    Backward-compatible single-string entry point, now backed by the 7.10.3 streaming
+    Backward-compatible single-string entry point, now backed by the streaming
     generator (no context wiring; callers wanting context use stream_analyst_reply).
     """
     parts: List[str] = []
@@ -236,7 +337,7 @@ async def generate_analyst_reply(text: str, session_id: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.4.3a — Nightmare Protocol
+# Nightmare Protocol
 # ---------------------------------------------------------------------------
 
 _NIGHTMARE_SYSTEM_PROMPT: str = (
@@ -266,7 +367,7 @@ _NIGHTMARE_FAILSAFE: NightmareEvaluation = NightmareEvaluation(
 def _parse_nightmare_response(raw_content: Optional[str]) -> NightmareEvaluation:
     """Parse the JSON body of a Nightmare/SupremeJudge response. Failsafe on bad input.
 
-    Phase 7.10.4 (ADR-704) — routes through the gateway's envelope unwrapper so a wrapped
+    routes through the gateway's envelope unwrapper so a wrapped
     verdict ({"result": {…}}, fenced, or prose-prefixed) is still scored instead of
     failsafing to 0.0. Returns the failsafe only when the text is genuinely unparseable.
     """
@@ -335,7 +436,7 @@ async def evaluate_nightmare(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.4.8 — Supreme Judge (Tier.CLOUD reward evaluation)
+# Supreme Judge (Tier.CLOUD reward evaluation)
 # ---------------------------------------------------------------------------
 
 async def supreme_judge_evaluate(
@@ -343,7 +444,7 @@ async def supreme_judge_evaluate(
     rules_json_path: str,
     session_id: str = "",
 ) -> NightmareEvaluation:
-    """Phase 3.4.8 — Tier.CLOUD reward evaluation for MCTS rollouts.
+    """Tier.CLOUD reward evaluation for MCTS rollouts.
 
     Identical contract to evaluate_nightmare() but routes via Tier.CLOUD
     (MODEL_BIG) for higher-quality reasoning. Called only after the local
@@ -382,7 +483,7 @@ async def supreme_judge_evaluate(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.4.7 — Rule Distillation
+# Rule Distillation
 # ---------------------------------------------------------------------------
 
 _RULE_DISTILLER_SYSTEM_PROMPT: str = (

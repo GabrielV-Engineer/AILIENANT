@@ -23,6 +23,12 @@ interface Props {
     plan: PlanDocumentShape;
     onOpenFile: (path: string) => void;
     onClose: () => void;
+    /**
+     * When present, renders an "Accept plan" action that signals agreement to the
+     * backend Socratic loop and hands off to execution. Omitted outside Plan mode,
+     * so the card stays a read-only document in autonomous flows.
+     */
+    onAccept?: () => void;
 }
 
 // A scope entry is treated as a file-link when it looks like a path (has a slash
@@ -58,7 +64,7 @@ function Section({ title, items }: { title: string; items: string[] }): JSX.Elem
     );
 }
 
-export const PlanPanel = memo(function PlanPanel({ plan, onOpenFile, onClose }: Props): JSX.Element {
+export const PlanPanel = memo(function PlanPanel({ plan, onOpenFile, onClose, onAccept }: Props): JSX.Element {
     const [collapsed, setCollapsed] = useState<boolean>(false);
 
     // Scope entries that name files become links; the rest stay as prose.
@@ -140,6 +146,21 @@ export const PlanPanel = memo(function PlanPanel({ plan, onOpenFile, onClose }: 
                     )}
 
                     <Section title="Acceptance checks" items={plan.checks} />
+
+                    {onAccept && (
+                        <div className="ws-plan-accept">
+                            <button
+                                type="button"
+                                className="ai-btn"
+                                data-variant="primary"
+                                onClick={onAccept}
+                                aria-label="Accept plan and proceed"
+                            >
+                                <Icon name="check" size={13} />
+                                <span>Accept plan</span>
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
         </aside>
