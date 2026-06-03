@@ -73,6 +73,11 @@ TASK_OUTPUT_TRUNC: int = 2000
 _DEFAULT_BASH_TIMEOUT_SEC: float = 30.0
 _DEFAULT_TYPECHECK_TIMEOUT_SEC: float = 120.0
 
+# Execute-tier HITL approvals use a tighter window than the 300 s default: a
+# forgotten approval card must not pin the awaiting task (and its session slot)
+# for five minutes. On timeout the gate resolves to BLOCKED and never spawns.
+_EXEC_HITL_TIMEOUT_SEC: float = 120.0
+
 _EXECUTE_ROLES: FrozenSet[str] = frozenset(
     {"core_dev", "devops_infra", "secops", "qa_tester", "data_ml_engineer"}
 )
@@ -139,6 +144,10 @@ class SandboxBashInput(BaseModel):
         default=_DEFAULT_BASH_TIMEOUT_SEC, description="Hard timeout (sec)."
     )
     working_dir: Optional[str] = Field(default=None, description="Optional cwd.")
+    # session_id / session_permission_mode are caller-injected runtime context,
+    # NOT model-chosen arguments — the LLM must never pick its own permission
+    # mode. They are accepted by _arun but kept OUT of args_schema so they never
+    # enter the tool-selection payload (preserving the Tool-RAG size guarantee).
 
 
 class SandboxBashTool(BaseTool):
@@ -167,7 +176,58 @@ class SandboxBashTool(BaseTool):
         command: str,
         timeout_sec: float = _DEFAULT_BASH_TIMEOUT_SEC,
         working_dir: Optional[str] = None,
+        session_id: Optional[str] = None,
+        session_permission_mode: Optional[str] = None,
     ) -> str:
+        # Execute-tier permission gate, consulted before any spawn. It engages
+        # only when a caller supplies the session policy — the gate is the
+        # contract for a graph-wired dispatch that knows the session mode. An
+        # unwired caller (no mode) falls through to the dangerous-pattern
+        # interceptor, which remains the floor for that path. PLAN denies
+        # outright; DEFAULT routes through the HITL card; AUTO falls through.
+        if session_permission_mode is not None:
+            from core.permissions import (  # deferred — keeps the tool import light
+                PermissionDecision,
+                gate_execute_action,
+                session_mode_from_channel,
+            )
+
+            session_mode = session_mode_from_channel(session_permission_mode)
+            verdict = gate_execute_action(session_mode)
+
+            if verdict is PermissionDecision.DENY:
+                return (
+                    "[sandbox_bash] DENIED — plan mode is read-only; "
+                    "command not executed."
+                )
+
+            if verdict is PermissionDecision.HITL:
+                # No session means no channel to surface the card on — refuse
+                # rather than silently spawn an unapproved command.
+                if not session_id:
+                    return (
+                        "[sandbox_bash] BLOCKED — command requires HITL approval but "
+                        "no session is available to request it; command not executed."
+                    )
+                from api.websocket_manager import vfs_manager  # deferred — import cycle
+
+                # Await releases the loop until the operator responds or the
+                # tighter execute timeout fires; the loop is never busy-spun.
+                # Every refusal path returns before get_active_adapter(), so no
+                # subprocess is spawned while (or because) we are awaiting.
+                approval = await vfs_manager.request_human_approval(
+                    session_id=session_id,
+                    action_description=f"COMMAND_EXECUTE: {command}",
+                    proposed_content=command,
+                    request_kind="COMMAND_EXECUTE",
+                    timeout_s=_EXEC_HITL_TIMEOUT_SEC,
+                )
+                if not approval or not approval.get("approved"):
+                    return (
+                        "[sandbox_bash] BLOCKED — command execution was not "
+                        "approved; command not executed."
+                    )
+
         pattern = _match_dangerous(command)
         if pattern is not None:
             logger.warning(

@@ -8,7 +8,7 @@ import logging
 import uuid
 
 from brain.state import WBSStep
-# Phase 4.1.4 — role registry lives in agents/roles.py (flat-module import via conftest).
+# role registry lives in agents/roles.py (flat-module import via conftest).
 from agents.roles import build_coder_system_prompt, get_role_config
 
 logger = logging.getLogger("CODER_NODE")
@@ -18,7 +18,7 @@ _background_tasks: set = set()
 
 
 def content_hash(s: str) -> str:
-    """SHA-256 over newline-normalized text (Phase 7.9.B.18 stale-file guard).
+    """SHA-256 over newline-normalized text.
 
     Python text-mode reads collapse CRLF→LF, while VS Code's doc.getText() keeps
     the editor EOL. Normalizing both sides before hashing prevents every Windows
@@ -57,7 +57,7 @@ async def _build_rag_block(target_file: str, description: str, project_id: str) 
 
 async def run_coder_node(state: dict) -> dict:
     """
-    LangGraph node: El Ejecutor (CoderAgent) — Phase 7.9.B.16 real implementation.
+    LangGraph node: El Ejecutor (CoderAgent)
 
     Structured single-shot: the LLM returns a JSON list of AtomicPatch edits
     ({file_path, search_block, replace_block}) for the active WBS step. Edits are
@@ -76,7 +76,7 @@ async def run_coder_node(state: dict) -> dict:
     mission_spec = state.get("mission_spec")
 
     if mission_spec is None:
-        logger.error("CoderAgent invocado sin mission_spec en el estado.")
+        logger.error("CoderAgent invoked without mission_spec in state.")
         return {"errors": ["CoderAgent: mission_spec ausente — abortando paso."]}
 
     target_step: WBSStep | None = next(
@@ -84,11 +84,11 @@ async def run_coder_node(state: dict) -> dict:
         None,
     )
     if target_step is None:
-        logger.error("CoderAgent: step_id=%s no encontrado en mission_spec.", step_id)
-        return {"errors": [f"CoderAgent: WBSStep #{step_id} no existe en el plan."]}
+        logger.error("CoderAgent: step_id=%s not found in mission_spec.", step_id)
+        return {"errors": [f"CoderAgent: WBSStep #{step_id} It's not in the plan."]}
 
     logger.info(
-        "⚙️  CoderAgent ejecutando paso #%d [%s] → %s",
+        "⚙️  CoderAgent executing step #%d [%s] → %s",
         target_step.step_number, target_step.target_role, target_step.target_file,
     )
 
@@ -112,13 +112,47 @@ async def run_coder_node(state: dict) -> dict:
 
     from api.websocket_manager import vfs_manager  # deferred — avoids circular import
 
-    # Skip non-mutating steps (read_file / run_command) — nothing to patch.
-    if target_step.action in ("read_file", "run_command"):
+    # read_file produces nothing to patch — the context it gathers is already
+    # folded into the running state, so the step genuinely completed.
+    if target_step.action == "read_file":
         target_step.status = "completed"
         return {
             "current_step_id": target_step.step_number,
             "target_role": target_step.target_role,
             **({"security_flags": new_security_flags} if new_security_flags else {}),
+        }
+
+    # run_command is an execute-tier action with no live dispatch edge: the coder
+    # has no sandbox to spawn into. Marking it "completed" would lie to the
+    # operator that a command ran. Surface it honestly as failed-and-deferred so
+    # the step chip and the review notes both reflect that nothing executed.
+    if target_step.action == "run_command":
+        target_step.status = "failed"
+        new_security_flags.append(
+            f"EXECUTE_TIER_DEFERRED:{target_step.target_role}:{target_step.target_file}"
+        )
+        # The synchronous status write above is atomic w.r.t. the loop (no await
+        # between read and write); the IDE notify is fire-and-forget so it never
+        # blocks the node, and the returned dict is the authoritative transition
+        # the reducer applies serially on node exit.
+        _t = asyncio.create_task(
+            vfs_manager.emit_graph_mutation(
+                session_id=session_id,
+                step_number=target_step.step_number,
+                new_status="failed",
+                agent_name="CoderAgent",
+            )
+        )
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
+        return {
+            "current_step_id": target_step.step_number,
+            "target_role": target_step.target_role,
+            "errors": [
+                f"CoderAgent step #{target_step.step_number}: run_command was NOT "
+                "executed — execute-tier actions are out-of-scope by design."
+            ],
+            "security_flags": new_security_flags,
         }
 
     # 1. Context assembly: current file + GraphRAG snippets.

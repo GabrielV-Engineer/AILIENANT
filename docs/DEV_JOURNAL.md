@@ -2,6 +2,37 @@
 
 ---
 
+## Hito 7.15.2: HITL Coverage para tier Command/Execute (skip honesto + compuerta defensiva) — 2026-06-03
+
+- **Status:** OK — tercera slice de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 230 source files**; `pytest -p no:randomly` **808 passed** (+14 nuevos). `mypy --strict` sobre los módulos source tocados (`tools/execution_tools.py`, `core/permissions.py`, `core/audit.py`) → 0; los errores `--strict` residuales en `agents/coder.py` son scaffolding legacy pre-existente (líneas 17/31/58/207/285), fuera de alcance — el código nuevo es strict-clean.
+
+- **Motivación:** el WBS encuadraba el hueco como "Auto ejecutó un script sin tarjeta". La auditoría reveló algo peor: el coder **descartaba silenciosamente** los pasos `run_command` (los marcaba `completed` sin ejecutar nada), mintiéndole al operador que el comando corrió. No es "ejecutó sin tarjeta" — es "no ejecutó y dijo que sí".
+
+- **Hallazgo de auditoría que reencuadró el DoD:** (1) **No existe borde de ejecución vivo** — el coder genera parches, nunca lanza un shell; `make_run_command_tool()` es un stub. (2) El `SandboxBashTool` (tier EXECUTE, [`tools/execution_tools.py`](../ailienant-core/tools/execution_tools.py)) existe con su interceptor de patrones peligrosos, pero el grafo no lo despacha (mismo hallazgo del "no `ToolNode`" de 7.15.1). (3) `request_human_approval` **no tiene** parámetro `risk_metrics` — el primitivo real es `request_kind` (siblings: `FILE_WRITE`, `BUDGET_OVERFLOW`). (4) La matriz EXECUTE **ya estaba testeada** a nivel unitario (`tests/test_permissions.py:55-88`) — esta slice cubre el *cableado del gate*, no la matriz.
+
+- **Reencuadres del WBS (infeasibles tal cual):** "con `risk_metrics` correctos" → `request_kind="COMMAND_EXECUTE"`. "ejecutar-bajo-HITL" → **fuera de alcance por diseño** (no hay edge vivo); se cumple estructuralmente (skip honesto + compuerta defensiva + test), no ejecutando.
+
+- **Fix:**
+  - **Skip honesto (`agents/coder.py`):** se separó `run_command` de `read_file`. `read_file` sigue completando en silencio (genuinamente no hay nada que aplicar). `run_command` ahora → estado `failed` + flag `EXECUTE_TIER_DEFERRED:<role>:<file>` + entrada en `errors` ("run_command was NOT executed — execute-tier actions are out-of-scope by design") que ya fluye al `_Notes:_` del resumen. El chip del paso se voltea a `failed` vía `emit_graph_mutation`.
+  - **Helpers compartidos (`core/permissions.py`):** `session_mode_from_channel()` (lee el canal en mayúsculas → enum en minúsculas con fallback `ValueError→DEFAULT`, consolidando la coerción que 7.15.1 hacía inline) y `gate_execute_action()` (único chokepoint que compone `(EXECUTE, EDIT_EXECUTE_RBW)`).
+  - **Compuerta defensiva (`SandboxBashTool._arun`):** consulta `gate_execute_action` **antes** de cualquier spawn — PLAN→`DENIED`, DEFAULT→tarjeta HITL (`request_kind="COMMAND_EXECUTE"`, timeout acotado a 120 s en vez de los 300 s por defecto), AUTO→pasa al interceptor + adapter. La compuerta **sólo se activa si el llamador provee `session_permission_mode`**: un llamador no-cableado (sin modo) cae al interceptor de patrones peligrosos, que sigue siendo el piso de esa ruta. Esto preserva el contrato legacy del bundle EXECUTE y hace de la garantía "ningún camino execute evita la aprobación" algo estructural el día que se cablee un edge vivo.
+  - **Clasificador de auditoría (`core/audit.py`):** se añadió `COMMAND_EXECUTE` a `_KIND_SENTINELS`.
+
+- **Riesgos shift-left detectados en review y mitigados:**
+  - **DoS por bloqueo del event loop:** el `await request_human_approval` libera el loop (internamente `await asyncio.wait_for(event.wait(), …)`, nunca busy-spin); timeout acotado para que una tarjeta olvidada no fije el slot 5 min; todas las ramas de rechazo retornan **antes** de `get_active_adapter()` → ningún subproceso se lanza mientras (o porque) se espera.
+  - **Atomicidad / race en la mutación de estado:** el `target_step.status = "failed"` es una escritura síncrona in-object (sin `await` intermedio → sin interleave); el notify al IDE es fire-and-forget (`create_task` + strong-ref); la transición autoritativa es el dict que retorna el nodo, que el reducer de LangGraph aplica en serie a la salida. El emit por WebSocket es un espejo advisory, nunca la fuente de verdad.
+
+- **Desviación del plan (justificada):** el plan proponía añadir `session_id`/`session_permission_mode` como campos de `SandboxBashInput`. Eso infló el `args_schema` de `sandbox_bash` (una tool *seleccionada*) y rompió la garantía financiera de reducción de payload del Tool-RAG (`test_phase5_7_checkpoint_gate.py`, cayó de ≥0.70 a 0.646). Corrección arquitectónica: estos parámetros son **contexto de runtime inyectado por el llamador, no argumentos elegidos por el modelo** — el LLM jamás debe elegir su propio modo de permiso. Se mantuvieron como kwargs de `_arun` fuera del schema → el schema vuelve a su tamaño original (gate verde) y se elimina la superficie de que el modelo alucine un modo.
+
+- **Tests:** `tests/test_coder_run_command_deferral.py` (5: `run_command`→`failed`, emite error de deferral, emite flag, notifica `failed`, y regresión de que `read_file` sigue silencioso) y `tests/test_execute_tier_gate.py` (9: roundtrip de mayúsculas del canal, default seguro ante desconocido, veredictos del gate, clasificación de auditoría, y wiring de `_arun`: PLAN deniega sin spawn, DEFAULT rechazado bloquea sin spawn con `request_kind` correcto, timeout usa el bound acotado, sin sesión rehúsa, AUTO ejecuta).
+
+- **Files changed:**
+  - Backend EDIT: `core/permissions.py` (helpers aditivos `session_mode_from_channel` + `gate_execute_action`), `core/audit.py` (sentinel `COMMAND_EXECUTE`), `agents/coder.py` (skip honesto de `run_command`), `tools/execution_tools.py` (compuerta EXECUTE en `_arun` con params como kwargs de runtime + constante `_EXEC_HITL_TIMEOUT_SEC`).
+  - Tests NUEVO: `tests/test_coder_run_command_deferral.py`, `tests/test_execute_tier_gate.py`.
+  - Docs EDIT: `PROJECT_MANIFEST.md` (7.15.2 → `[x]` + hallazgo/decisiones), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.15.1: Mode → RBAC Enforcement (cablear el motor de permisos al borde de escritura) — 2026-06-03
 
 - **Status:** OK — segunda slice de la Fase 7.15. DoD verde: `mypy .` whole-tree **Success: no issues found in 228 source files**; `pytest` **794 passed** (+14 nuevos) en orden determinista; `npm run lint` 0 errores (sólo los 2 warnings `semi` pre-existentes) y `npm run compile` exit 0. Los 3 rojos que aparecían bajo `pytest-randomly` viven en `test_analyst_context.py` (fuga de estado RAG entre tests, **ortogonal a esta slice** — pasan aislados y en orden por defecto).
