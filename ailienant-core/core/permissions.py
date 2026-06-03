@@ -128,6 +128,33 @@ def evaluate_action(
     return PermissionDecision.HITL
 
 
+def session_mode_from_channel(raw: Optional[str]) -> SessionPermissionMode:
+    """Read a channel-stored session mode into the enum.
+
+    The graph channel stores the policy UPPERCASE (``"DEFAULT" | "PLAN" |
+    "AUTO"``) while the enum values are lowercase, so a direct construction of
+    the uppercase string raises. Lowercase first, and fall back to the safest
+    policy (DEFAULT) on any unrecognized value rather than letting a typo
+    escalate privileges.
+    """
+    try:
+        return SessionPermissionMode(str(raw or "DEFAULT").lower())
+    except ValueError:
+        return SessionPermissionMode.DEFAULT
+
+
+def gate_execute_action(session_mode: SessionPermissionMode) -> PermissionDecision:
+    """Single choke point for any execute-tier dispatch under the coder identity.
+
+    Centralizing the ``(EXECUTE, EDIT_EXECUTE_RBW)`` axes means a future
+    graph-wired subprocess dispatch has exactly one place to consult — it cannot
+    re-derive the matrix args and accidentally weaken them.
+    """
+    return evaluate_action(
+        session_mode, ToolPrivilegeTier.EXECUTE, PermissionMode.EDIT_EXECUTE_RBW
+    )
+
+
 # =====================================================================
 # 4. rbwe_guard — Read-Before-Write enforcement
 # =====================================================================
