@@ -2125,7 +2125,7 @@ the blueprint freeze lifts.
 
 ---
 
-## 🔧 FASE 7.15 — Agentic Core Remediation (Engine Re-Spine, RBAC Enforcement, i18n) — ⬜ PENDIENTE
+## 🔧 FASE 7.15 — Agentic Core Remediation (Engine Re-Spine, RBAC Enforcement, i18n) — ✅ COMPLETADA
 
 > **Track backend de corrección, prerequisito del cierre de 7.14.** Una auditoría técnica pre-checkpoint encontró que el panel 7.14 *surfacea* capacidades que el backend aún no honra. **Causa raíz única (la "espina"):** `core/task_service.py::process_task` enruta el trabajo de código a `_run_coding_task`, que invoca los nodos `run_planner_node` / `run_coder_node` **directamente como funciones async** — nunca llama al grafo LangGraph compilado (`alienant_app`). Esa única omisión deja sin activar, a la vez, al router de modo (`route_after_summarize`), al `ideation_loop` socrático y al `HybridCheckpointer`. El resto son defectos ortogonales (RBAC no cableado, fuga de idioma, copy fantasma) y un ítem de alcance nuevo (panel lateral de plan). ADRs **727..732** (contiguos a los 720..726 de 7.14). A diferencia de 7.14, este track **sí** modifica el contrato Python — es lo correcto para una corrección de backend. Convención de código atemporal (CLAUDE.md): ningún marcador de fase/hito en el código fuente; sólo aquí, en `DEV_JOURNAL.md` y en commits.
 
@@ -2179,8 +2179,10 @@ the blueprint freeze lifts.
   - **Gates:** `mypy .` 0 (234 archivos); `mypy --strict` 0 en archivos propios; `pytest -p no:randomly` 822 passed (+4 contrato; el test de 7.15.4 `test_summary_still_renders_proposed_diffs` se actualizó porque su contrato — diffs en el chat — fue superado deliberadamente: ahora viven en el panel); `npm run compile` (tsc + eslint) 0 errores.
   - **DoD:** un plan aprobado renderiza en la superficie rica con file-links funcionales.
 
-- [ ] **7.15.7 — Checkpoint Gate Fase 7.15**
+- [x] **7.15.7 — Checkpoint Gate Fase 7.15**
   - Matriz DoD por defecto re-aseverando cada fila anterior contra el camino vivo (las filas backend-asertables reciben un gate pytest hermano, convención de 7.13/7.14). **El cierre de esta valla es prerequisito para marcar `[x]` el gate 7.14.7.**
+  - **As-built:** un solo archivo **test-only** `tests/test_phase7_15_checkpoint_gate.py` (importa los puntos de entrada **enviados**, cero cambio de lógica de producción). 11 filas backend-asertables certificadas contra el camino vivo: RS1 grafo compilado (`alienant_app.astream`, sin llamadas directas a nodos) · RS2/RS3 routing del planner + registro · RB1/RB2 matriz `evaluate_action` + `session_mode_from_frontend` · EX1/EX2 `gate_execute_action` + honestidad de `run_command` (`failed`+`EXECUTE_TIER_DEFERRED`) · I18N1 `LANGUAGE_MIRROR_DIRECTIVE` en el prompt del coder · HON1 sin copy "not yet enabled" · OBS1 fence de narración (`state.get("narrate")`, sin import `api.*` en `error_correction.py`) · RP1 `_build_plan_payload` + round-trip de `ServerPlanDocumentEvent`. Las filas puramente frontend (`OPEN_FILE`→`showTextDocument`, render de `PlanPanel.tsx`, host reenviando `execution_mode`) se difieren a `npm run compile` + smoke manual (convención frontend-only de 7.13/7.14); su contrato backend queda cubierto por RP1.
+  - **Gates:** `mypy .` 0 (235 archivos); `mypy --strict --follow-imports=silent` 0 en el archivo nuevo; `pytest -p no:randomly` **834 passed** (+12; 11 del gate); `npm run compile` 0 errores. **Desbloquea el cierre de 7.14.7** (no se marca aquí — ver 7.14.7). **FASE 7.15 CERRADA.**
 
 ---
 
