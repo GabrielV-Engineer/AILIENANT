@@ -507,6 +507,15 @@ async def submit_task(
     if x_task_id in planner_mode_registry:
         payload.planner_mode_active = planner_mode_registry[x_task_id]
 
+    # The execution-mode selector governs the session permission policy (mapped
+    # to session_permission_mode when the graph state is seeded). Plan mode
+    # additionally routes the turn into the Socratic ideation loop, so it must
+    # also raise planner_mode_active — the read-only stance and the questioning
+    # stance go together. Auto/Ask leave the planner flag as resolved above.
+    from core.permissions import SessionPermissionMode, session_mode_from_frontend
+    if session_mode_from_frontend(payload.execution_mode) is SessionPermissionMode.PLAN:
+        payload.planner_mode_active = True
+
     # Idempotent submit: a duplicate request_id (a reconnect-driven resubmit, or
     # two windows racing) is acknowledged WITHOUT spawning a second runner.
     if payload.request_id and _is_duplicate_request(payload.request_id):

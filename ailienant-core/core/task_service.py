@@ -106,6 +106,10 @@ class TaskPayload(BaseModel):
     # server mints/ignores it), so the wire stays backward compatible.
     request_id: Optional[str] = None
     planner_mode_active: bool = False  # Phase 2.19: Planner-Mode toggle forwarded from WS registry
+    # The frontend three-way mode selector (automatic | ask_before_edits | plan_mode).
+    # Maps to the session permission policy that gates writes at the apply edge.
+    # Optional: an omitting client keeps the per-session settings-file default.
+    execution_mode: Optional[str] = None
     workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
     # Phase 7.12.9 (Fix 3) — the focused editor tab (may be SAVED, so absent from
     # dirty_buffers). Content is hard-capped client-side (ACTIVE_FILE_CHAR_CAP).
@@ -257,13 +261,24 @@ class TaskService:
             # Phase 7.11.3 — populated by the abort handler on CancelledError.
             "termination_reason": None,
         }
-        try:
-            from api.system_settings import _read_settings as _read_sys_settings
-            _pref_mode = str(_read_sys_settings().get("permission_mode", "default")).upper()
-            if _pref_mode in ("DEFAULT", "PLAN", "AUTO"):
-                initial_state["session_permission_mode"] = _pref_mode
-        except Exception:  # noqa: BLE001 — preference seeding must never block a task
-            pass
+        # The per-task execution-mode selector takes precedence over the global
+        # settings-file preference: the selector reflects the user's intent for
+        # THIS turn, while the settings file is only a session-wide default. The
+        # channel stores the uppercase Literal["DEFAULT","PLAN","AUTO"]; readers
+        # lowercase before constructing the SessionPermissionMode enum (whose
+        # values are lowercase), guarded by a ValueError → DEFAULT fallback.
+        from core.permissions import session_mode_from_frontend
+        _selector = session_mode_from_frontend(payload.execution_mode)
+        if _selector is not None:
+            initial_state["session_permission_mode"] = _selector.value.upper()
+        else:
+            try:
+                from api.system_settings import _read_settings as _read_sys_settings
+                _pref_mode = str(_read_sys_settings().get("permission_mode", "default")).upper()
+                if _pref_mode in ("DEFAULT", "PLAN", "AUTO"):
+                    initial_state["session_permission_mode"] = _pref_mode
+            except Exception:  # noqa: BLE001 — preference seeding must never block a task
+                pass
         return initial_state
 
     async def _classify_intent(self, prompt: str) -> str:
@@ -512,34 +527,80 @@ class TaskService:
             if not contents:
                 return
 
-            # 3) One authorization for the whole change set (HITL card).
-            combined_diff = "\n".join(patches[p] for p in patches)
-            decision = await vfs_manager.request_human_approval(
-                session_id=session_id,
-                action_description=(
-                    f"Apply {len(contents)} file change(s): " + ", ".join(contents)
-                ),
-                proposed_content=combined_diff,
-                request_kind="FILE_WRITE",
+            # 3) Permission gate. The session mode (driven by the user's mode
+            # selector) composes with the WRITE tier and the coder's identity
+            # floor into a single verdict: DENY blocks the write outright (Plan
+            # mode), HITL routes through the approval card (Ask), ALLOW applies
+            # without interruption (Auto). The channel stores uppercase; the
+            # enum is lowercase, so lowercase before constructing it.
+            from core.permissions import (
+                PermissionDecision,
+                SessionPermissionMode,
+                ToolPrivilegeTier,
+                evaluate_action,
             )
-            if not decision or not decision.get("approved"):
-                discarded = "Changes discarded — no files were modified."
-                gate.record_answer(len(discarded.encode()))
-                await vfs_manager.broadcast_token(session_id, discarded)
+            from shared.rbac import PermissionMode
+
+            raw_mode = str(final_state.get("session_permission_mode") or "DEFAULT").lower()
+            try:
+                session_mode = SessionPermissionMode(raw_mode)
+            except ValueError:
+                session_mode = SessionPermissionMode.DEFAULT
+
+            verdict = evaluate_action(
+                session_mode, ToolPrivilegeTier.WRITE, PermissionMode.EDIT_EXECUTE_RBW
+            )
+
+            if verdict is PermissionDecision.DENY:
+                blocked = (
+                    "Plan mode is read-only — no files were changed. "
+                    "Switch to Ask or Auto to apply edits."
+                )
+                gate.record_answer(len(blocked.encode()))
+                await vfs_manager.broadcast_token(session_id, blocked)
                 await self._finalize_stream(session_id)
                 return
 
-            # 4) Single-file edit-before-apply: honor the card's edited payload.
-            modified = decision.get("modified_content")
-            if modified and len(contents) == 1:
-                only_path = next(iter(contents))
-                contents[only_path] = modified
+            # Decouple the payload from the UI so the actuation reads one variable
+            # in every path: HITL may overwrite a single-file entry with the
+            # operator's edited text; ALLOW applies the coder's proposal as-is.
+            patches_to_apply: Dict[str, str] = dict(contents)
 
-            # 5) Actuate via the VS Code applyEdit bridge (Python never writes to disk).
+            if verdict is PermissionDecision.HITL:
+                combined_diff = "\n".join(patches[p] for p in patches)
+                approval = await vfs_manager.request_human_approval(
+                    session_id=session_id,
+                    action_description=(
+                        f"Apply {len(patches_to_apply)} file change(s): "
+                        + ", ".join(patches_to_apply)
+                    ),
+                    proposed_content=combined_diff,
+                    request_kind="FILE_WRITE",
+                )
+                if not approval or not approval.get("approved"):
+                    discarded = "Changes discarded — no files were modified."
+                    gate.record_answer(len(discarded.encode()))
+                    await vfs_manager.broadcast_token(session_id, discarded)
+                    await self._finalize_stream(session_id)
+                    return
+                # Single-file edit-before-apply: honor the card's edited payload.
+                modified = approval.get("modified_content")
+                if modified and len(patches_to_apply) == 1:
+                    only_path = next(iter(patches_to_apply))
+                    patches_to_apply[only_path] = modified
+            else:
+                # ALLOW (Auto): announce the write BEFORE touching disk so the live
+                # action log never shows a silent mutation — apply_patch_set's I/O
+                # may take noticeable time behind VFS locks.
+                notice = "⚡ Auto-applying approved changes directly to disk…"
+                gate.record_answer(len(notice.encode()))
+                await vfs_manager.broadcast_token(session_id, notice)
+
+            # 4) Actuate via the VS Code applyEdit bridge (Python never writes to disk).
             from core.write_pipeline import apply_patch_set
-            res = await apply_patch_set(session_id, contents, base_hashes)
+            res = await apply_patch_set(session_id, patches_to_apply, base_hashes)
             if res.get("ok"):
-                applied = res.get("applied_files") or list(contents)
+                applied = res.get("applied_files") or list(patches_to_apply)
                 result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
             elif res.get("stale_files"):
                 result_msg = (
