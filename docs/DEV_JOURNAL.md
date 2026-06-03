@@ -2,6 +2,22 @@
 
 ---
 
+## Hito 7.15.7: Checkpoint Gate Fase 7.15 — 2026-06-03
+
+- **Status:** OK — slice de cierre de la Fase 7.15 (Agentic Core Remediation). **FASE 7.15 CERRADA.** DoD verde: `mypy .` whole-tree **Success: no issues found in 235 source files**; `mypy --strict --follow-imports=silent tests/test_phase7_15_checkpoint_gate.py` → **0**; `pytest -p no:randomly tests/test_phase7_15_checkpoint_gate.py` **11 passed**; suite completa `pytest -p no:randomly` **834 passed** (sin regresión, +12 vs 822); `npm run compile` (tsc `--noEmit` + eslint + esbuild) **0 errores** (2 warnings `semi` pre-existentes en archivos no tocados).
+
+- **Naturaleza:** valla E2E **test-only** — importa e invoca los puntos de entrada **ya enviados** de cada slice 7.15 y asevera el único invariante que sostiene esa fila; no re-corre las suites dedicadas y **no modifica lógica de producción**. Sigue la convención de archivo-hermano de 7.13/7.14 (`test_phase{3,5_7,6,7_10,7_13}_checkpoint_gate.py`). Casos async vía `asyncio.run`; aserciones de fence vía `ast` (precedente ISO1 de 7.13 — juzgar sobre statements reales, no prosa de docstring).
+
+- **Filas certificadas (backend-asertables):** RS1 el camino de código vivo corre el grafo compilado (`alienant_app.astream` presente, sin llamadas directas a `run_coder_node`/`run_planner_node`) · RS2 `route_after_summarize` enruta planner↔coder (flag ausente → autónomo) · RS3 `main.planner_mode_registry` es un seam real · RB1 matriz `evaluate_action` (PLAN+WRITE→DENY, DEFAULT→HITL, AUTO→ALLOW, READ siempre ALLOW) · RB2 `session_mode_from_frontend` (automatic→AUTO, ask_before_edits→DEFAULT, plan_mode→PLAN, desconocido→None) · EX1 `gate_execute_action` (PLAN/DEFAULT/AUTO) · EX2 el paso `run_command` es honesto (`failed` + `EXECUTE_TIER_DEFERRED`, nunca un `completed` falso) · I18N1 `LANGUAGE_MIRROR_DIRECTIVE` presente en el prompt del coder construido · HON1 el resumen no afirma "not yet enabled", apunta al Plan panel, sin fence ```diff``` embebido · OBS1 la narración viaja por el seam `state.get("narrate")` y `error_correction.py` no importa la capa de transporte (sin `api.*`) · RP1 `_build_plan_payload` preserva scope/constraints/decisions/WBS/checks y `ServerPlanDocumentEvent` round-trippea por el `ws_adapter`.
+
+- **Alcance frontend (convención):** las filas puramente frontend (host reenviando `execution_mode`, el handler `OPEN_FILE`→`showTextDocument` con try/catch en `workspace_panel.ts`, el render de `PlanPanel.tsx`) se certifican por `npm run compile` + smoke manual documentado en el docstring, NO por pytest — espejo de las filas frontend-only de 7.13/7.14. Su contrato backend queda cubierto por RP1.
+
+- **Dependencia vinculante:** esta valla en verde **desbloquea el cierre de 7.14.7**. 7.14.7 **no** se marca `[x]` en este hito — ese es su propio acto de cierre cuando aterrice su archivo de gate; este slice sólo retira el bloqueo (las afordancias surfaceadas por 7.14 — ⟲ Rewind, routing por modo, diff inline — ahora están honradas por el backend, certificado fila por fila).
+
+- **Files changed:** Tests NUEVO: `tests/test_phase7_15_checkpoint_gate.py` (único archivo cercano a producción; test-only, cero cambio de lógica). Docs EDIT: `PROJECT_MANIFEST.md` (7.15.7 → `[x]`, FASE 7.15 cerrada), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.15.6: Rich Plan Side-Panel — 2026-06-03
 
 - **Status:** OK — séptima slice de la Fase 7.15 (alcance NUEVO, no regresión). DoD verde: `mypy .` whole-tree **Success: no issues found in 234 source files**; `mypy --strict` sobre archivos propios (`api/ws_contracts.py`, `core/task_service.py`, `tests/test_plan_document_contract.py`) → **0**; `pytest -p no:randomly` **822 passed** (+4 contrato); `npm run compile` (tsc `--noEmit` + eslint + esbuild) **0 errores** (2 warnings `semi` pre-existentes en archivos no tocados).
