@@ -5,19 +5,21 @@ import os as _os
 import uuid
 from typing import Optional, Any
 
-# Importamos nuestra puerta de enlace y los contratos estrictos
+from langchain_core.runnables import RunnableConfig
+
+# We import our gateway and strict contracts
 from tools.llm_gateway import LLMGateway
 from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
 from agents.prompts import build_safe_prompt
-from agents.workspace_context import build_workspace_overview  # Phase 7.12 (Issues 4 & 8)
+from agents.workspace_context import build_workspace_overview 
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
 from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
 from core.memory.semantic_memory import SemanticMemoryManager
-from core.resource_manager import ResourceBroker  # Phase 2.27
+from core.resource_manager import ResourceBroker 
 from core.memory.context_auditor import (
     audit_task_complexity,
     derive_routing_decision,
@@ -33,8 +35,8 @@ MAX_PLANNER_RETRIES: int = PLANNER_MAX_RETRIES
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
 
-# Phase 3.6: promoted to module-level so tests can patch it.
-# Phase 7.9.B.16: default OFF — the real LLM path now runs (BYOM-aware ainvoke).
+# promoted to module-level so tests can patch it.
+# default OFF — the real LLM path now runs (BYOM-aware ainvoke).
 # Set AILIENANT_PLANNER_DEBUG=1 to force the synthetic stub (CI/UI smoke tests).
 DEBUG_MODE: bool = _os.getenv("AILIENANT_PLANNER_DEBUG", "0") != "0"
 
@@ -58,20 +60,22 @@ def _inject_polyglot_constraints(tasks: list[WBSStep]) -> list[WBSStep]:
     return result
 
 
-async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
+async def run_planner_node(
+    state: dict[str, Any], config: Optional[RunnableConfig] = None
+) -> dict[str, Any]:
     """
-    Nodo de LangGraph: El Estratega (The Architect & SDD Enforcer).
+    LangGraph Node: The Strategist (The Architect & SDD Enforcer).
 
-    Misión:
-        Analiza el requerimiento del usuario y el contexto del IDE (VFS) para
-        generar un Macro-Contrato estricto (MissionSpecification). No ejecuta código.
+    Mission::
+        Analyzes the user's requirements and the IDE (VFS) context to
+        generate a strict Macro-Contract (MissionSpecification). Does not execute code.
 
     Args:
-        state (dict): El estado global actual (AIlienantGraphState).
+        state (dict): The current global state (AIlienantGraphState).
 
     Returns:
-        dict: Un diccionario con la actualización parcial del estado.
-              Específicamente actualiza la clave 'mission_spec' y opcionalmente 'errors'.
+        dict: A dictionary with a partial update of the status.
+              Specifically, it updates the 'mission_spec' key and optionally 'errors'.
     """
     logger.info("🧠 PlannerAgent iniciando análisis arquitectónico de la misión...")
     # Prefer task_id (AIlienantGraphState) then session_id (loose dict); fall back to uuid4.
@@ -79,23 +83,24 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
         state.get("task_id") or state.get("session_id") or str(uuid.uuid4())
     )
 
-    # Phase 7.10.2 (ADR-702): granular sub-step narration. task_service injects an
-    # async emitter via state["narrate"]; the planner stays decoupled from the
+    # granular sub-step narration. task_service injects an async emitter on
+    # config.configurable["narrate"] (kept off graph state so the checkpointer
+    # never tries to serialize a callable); the planner stays decoupled from the
     # transport layer (never imports vfs_manager) — cognitive-isolation fence intact.
-    _narrate = state.get("narrate")
+    _narrate = (config or {}).get("configurable", {}).get("narrate")
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:
             await _narrate(node_name)
 
     # =====================================================================
-    # 0. MODO SIMULACRO (Circuito Corto para Pruebas UI/Backend)
+    # 0. SIMULATION MODE (Short Circuit for UI/Backend Testing)
     # =====================================================================
     # DEBUG_MODE is now a module-level constant (see top of file). Set env var
     # AILIENANT_PLANNER_DEBUG=0 in production to enable the full LLM path.
 
-    # Leemos TCI y CSS del estado. Preferimos los shortcuts de top-level (Phase 2);
-    # si no están presentes aún, navegamos context_metrics como fallback seguro.
+    # We read TCI and CSS from the state. We prefer top-level shortcuts;
+    # If they are not present yet, we navigate to context_metrics as a safe fallback..
     tci: float = state.get("tci", 0.0)
     css: float = state.get("css", 100.0)
     metrics = state.get("context_metrics")
@@ -104,7 +109,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     if metrics is not None and css == 100.0:
         css = getattr(metrics, "css_total", 100.0)
 
-    # Phase 3.0 BFS removed in Phase 3.2 — replaced by semantic-guided deep parse (production path below).
+    # replaced by semantic-guided deep parse (production path below).
     updated_context_metrics = metrics  # default: pass through unchanged
 
     if DEBUG_MODE:
@@ -114,7 +119,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
             css,
         )
 
-        # Para High-TCI (>80), generamos dos tareas independientes para ejercitar el fan-out.
+        # For High-TCI (>80), we generated two independent tasks to exercise the fan-out.
         if tci > 80.0:
             tasks = [
                 WBSStep(
@@ -134,7 +139,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
                     status="pending",
                 ),
             ]
-            logger.info("🔀 High-TCI detectado: %d tareas paralelas generadas.", len(tasks))
+            logger.info("High-TCI detected: %d parallel tasks generated.", len(tasks))
         else:
             tasks = [
                 WBSStep(
@@ -142,20 +147,20 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
                     target_role="architect_refactor",
                     action="read_file",
                     target_file="main.py",
-                    description="Leer archivo principal para validar conexión del IDE.",
+                    description="Read main file to validate IDE connection.",
                     status="pending",
                 )
             ]
 
-        tasks = _inject_polyglot_constraints(tasks)   # Phase 2.22.6
+        tasks = _inject_polyglot_constraints(tasks) 
 
         mock_mission = MissionSpecification(
-            outcome="Análisis inicial completado de forma sintética.",
+            outcome="Initial analysis completed in a synthetic form.",
             scope=["main.py"],
-            constraints=["Sin dependencias externas."],
-            decisions=["Usar el modo DEBUG para validar el enrutamiento del grafo."],
+            constraints=["Without external dependencies."],
+            decisions=["Use DEBUG mode to validate graph routing."],
             tasks=tasks,
-            checks=["El archivo se leyó sin lanzar excepciones."],
+            checks=["The file was read without throwing any exceptions."],
         )
 
         # Extraemos parallel_tasks para High-TCI: todos los pasos son candidatos al fan-out.
@@ -175,13 +180,13 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
         return result
 
     # =====================================================================
-    # 1. EXTRACCIÓN DE CONTEXTO (Input del Usuario e IDE)
+    # 1. CONTEXT EXTRACTION (User Input and IDE)
     # =====================================================================
     user_input = state.get("user_input", "")
-    # Extraemos de forma segura los buffers (puede venir como dict u objeto dependiendo del serializador)
+    # We safely extract the buffers (it may come as a dict or object depending on the serializer)
     ide_context = state.get("ide_context", {})
 
-    # Compatibilidad: si ide_context es un modelo Pydantic, usamos .dict(), si ya es dict, lo usamos directo.
+    # Compatibility: If ide_context is a Pydantic model, we use .dict(); if it is already a dict, we use it directly.
     dirty_buffers = (
         ide_context.get("dirty_buffers", [])
         if isinstance(ide_context, dict)
@@ -189,14 +194,14 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     )
 
     # =====================================================================
-    # 2. 🛡️ BLOQUE DE SEGURIDAD: SANDBOXING INVISIBLE (Defensa contra Prompt Injection)
+    # 2. SECURITY BLOCK: INVISIBLE SANDBOXING (Defense against Prompt Injection)
     # =====================================================================
-    # Generamos un candado criptográfico efímero para aislar el código del usuario de las instrucciones del sistema.
+    # We generate an ephemeral cryptographic lock to isolate the user code from the system instructions.
     boundary = uuid.uuid4().hex
 
     context_str = ""
 
-    # Phase 7.12.9 (Fix 3) — the ACTIVE FILE the user is looking at, injected FIRST
+    # the ACTIVE FILE the user is looking at, injected FIRST
     # and prominently labeled so the Planner anchors on the open tab instead of
     # hallucinating from the stale LanceDB/GraphRAG index. The active tab may be
     # SAVED (so absent from dirty_buffers); content is hard-capped client-side.
@@ -221,7 +226,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
                 f'<{boundary} filepath="{filepath}">\n{content}\n</{boundary}>\n\n'
             )
 
-    # Phase 7.12 (Issues 4 & 8) — inject workspace SHAPE (depth-limited tree +
+    # inject workspace SHAPE (depth-limited tree +
     # root manifests) so the Planner is no longer blind to project structure.
     # Wrapped in the same ephemeral boundary as raw data (never instructions).
     _ws_overview = build_workspace_overview(state.get("workspace_root", ""))
@@ -231,9 +236,9 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
         )
 
     # =====================================================================
-    # 3. CONSTRUCCIÓN DEL PROMPT (RBAC y Spec-Driven Development)
+    # 3. PROMPT CONSTRUCTION (RBAC and Spec-Driven Development)
     # =====================================================================
-    # Construimos el System Prompt usando el rol estricto del Planner
+    # We built the System Prompt using the strict role of the Planner
     system_prompt_text = build_safe_prompt(
         agent_identity=PLANNER_IDENTITY, context_str=context_str, boundary=boundary
     )
@@ -242,7 +247,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     if _rules:
         system_prompt_text += f"\n\n{_rules}"
 
-    # ── Phase 3.0.1: Trajectory Memory Injection ────────────────────────
+    # ── Trajectory Memory Injection ────────────────────────
     _traj_mgr = TrajectoryMemoryManager()
     _past_trajectories = await _traj_mgr.search(
         user_input=user_input,
@@ -256,13 +261,13 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
         )
     # ────────────────────────────────────────────────────────────────────
 
-    # ── Phase 3.2: Semantic-Guided Deep Context Extraction ─────────────────────────
+    # ── Semantic-Guided Deep Context Extraction ─────────────────────────
     # Single embedding call returns Top-K file paths + similarity score.
     # deep_parse: 1-degree SQLite neighbor expansion → VFS read → Tree-sitter (in thread).
-    # CSS is fully recomputed here; Phase 3.1 block is subsumed.
+    # CSS is fully recomputed here; block is subsumed.
     if updated_context_metrics is not None:
         try:
-            # ── Phase 3.6 Fast-Boot: skip LanceDB embedding when AGENTS.md is fresh ─
+            # ── Fast-Boot: skip LanceDB embedding when AGENTS.md is fresh ─
             from core.state_manager import load_state_from_markdown
             _ws_root_fb: str = state.get("workspace_root", "")
             _fast_boot = load_state_from_markdown(_ws_root_fb) if _ws_root_fb else None
@@ -314,7 +319,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
             logger.warning("Phase 3.2: context extraction failed (non-fatal): %s", _ctx_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
-    # ── Phase 3.3: Context Meter Cascade (Early Exit + Mini-Judge) ──────────────────
+    # ── Context Meter Cascade (Early Exit + Mini-Judge) ──────────────────
     _cascade_routing: str = "LOCAL_SMALL"   # conservative safe default
     _cascade_provider: str = "LOCAL"        # safe default
 
@@ -393,12 +398,12 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
             _cascade_routing, _cascade_provider, updated_context_metrics.css_total, tci,
         )
     except Exception as _cascade_err:
-        logger.warning("Phase 3.3: cascade failed (non-fatal): %s", _cascade_err)
+        logger.warning("cascade failed (non-fatal): %s", _cascade_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
-    await _emit("routing_decision")  # Phase 7.10.2 — routing/cascade resolved.
+    await _emit("routing_decision")  # routing/cascade resolved.
 
-    # Phase 4.1.2 — consume the Researcher's Skeleton Map when available.
+    # consume the Researcher's Skeleton Map when available.
     # Injected as a sandboxed block so the LLM treats it as inert data (matches the
     # XML-boundary discipline used for dirty buffers throughout this module).
     researcher_skeleton: str = state.get("researcher_skeleton") or ""
@@ -414,17 +419,17 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
             len(researcher_skeleton),
         )
 
-    # Instrucción humana: Aquí forzamos mentalmente al modelo a respetar el contrato SDD.
+    # Human instruction: Here we mentally force the model to respect the SDD contract.
     instruction = (
-        f"Requerimiento del usuario: '{user_input}'.\n\n"
-        f"Contexto del IDE (Los archivos están encapsulados bajo la etiqueta segura <{boundary}>):\n"
+        f"User requirement: '{user_input}'.\n\n"
+        f"IDE context (The files are encapsulated under the secure label) <{boundary}>):\n"
         f"{context_str}\n"
         f"{skeleton_block}"
-        "Eres el Arquitecto (The Planner). Tienes PROHIBIDO escribir código de implementación.\n"
-        "Tu única tarea es generar una especificación técnica completa y lógica (MissionSpecification). "
-        "Define de forma estricta el Outcome, Scope, Constraints, Decisions, las Tasks secuenciales (WBS) "
-        "asignando un target_role válido a cada tarea, y los Checks de validación QA.\n\n"
-        # Phase 7.12 — explicit type discipline. The LLM intermittently emits objects
+        "You are the Architect (The Planner). You are PROHIBITED from writing implementation code.\n"
+        "Your only task is to generate a complete and logical technical specification (MissionSpecification)."
+        "Strictly define the Outcome, Scope, Constraints, Decisions, and sequential Tasks (WBS)"
+        "assigning a valid target_role to each task, and the QA validation checks.\n\n"
+        # explicit type discipline. The LLM intermittently emits objects
         # where strings belong, and arbitrary role strings; spell out the contract.
         "STRICT TYPE RULES:\n"
         "- Every element of 'scope', 'constraints', 'decisions' and 'checks' MUST be a "
@@ -432,7 +437,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
         "- Each task's 'target_role' MUST be exactly ONE of: core_dev, architect_refactor, "
         "devops_infra, secops, qa_tester, doc_manager, vcs_manager, data_ml_engineer.\n"
         "- Each task's 'action' MUST be one of: read_file, write_file, edit_file, run_command.\n\n"
-        # Phase 7.10.4 (ADR-704) — flat-JSON contract to stop envelope wrapping.
+        # flat-JSON contract to stop envelope wrapping.
         "CRITICAL FORMATTING RULE: Return ONLY the raw JSON object. DO NOT wrap it in any "
         "top-level key such as 'response', 'mission', 'result', or 'MissionSpecification'. "
         "No prose, no markdown fences. Emit exactly these top-level fields: "
@@ -449,18 +454,18 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     ]
 
     # =====================================================================
-    # 4. INVOCACIÓN AL MOTOR LLM (Con Validación Pydantic Forzada)
+    # 4. INVOCATION OF THE LLM ENGINE (With Forced Pydantic Validation)
     # =====================================================================
     logger.info("⏳ Esperando Especificación Técnica (SDD) del LLM...")
-    await _emit("drafting_spec")  # Phase 7.10.2 — about to draft the MissionSpecification.
+    await _emit("drafting_spec")  # about to draft the MissionSpecification.
 
-    # Phase 4.1.2 — blueprint §4.1.2 mandates Heavy/Opus for the Planner.
+    # mandates Big/cloud model for the Planner.
     # ResourceBroker still arbitrates the VRAM lock; we just request BIG by default.
     decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_BIG)
     if decision.cancelled:
         return {"errors": ["Planner cancelled by user during VRAM contention."]}
 
-    # Phase 4.1.2 — bounded ValidationError retry loop. On each failure we inject the
+    # bounded ValidationError retry loop. On each failure we inject the
     # raw Pydantic error into the user message so the LLM corrects on the next attempt.
     retry_count: int = 0
     last_validation_err: str = ""
@@ -469,7 +474,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
     try:
         while retry_count <= MAX_PLANNER_RETRIES:
             if retry_count > 0 and last_validation_err:
-                # Phase 7.10.2/7.10.4 — narrate the retry with its attempt count.
+                # narrate the retry with its attempt count.
                 await _emit(f"validation_retry ({retry_count}/{MAX_PLANNER_RETRIES})")
                 corrective: str = (
                     f"\n\nYour previous attempt failed schema validation with these errors:\n"
@@ -493,7 +498,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
                     session_id=session_id,
                 )
                 raw_content = response.choices[0].message.content or ""
-                # Phase 7.10.4 (ADR-704/G5): unwrap envelopes (markdown / prose /
+                # unwrap envelopes (markdown / prose /
                 # top-level key) before validation so a wrapped-but-valid plan no longer
                 # burns a retry. No-match returns the base dict → Pydantic still fails loudly.
                 await _emit("unwrapping_schema")
@@ -501,7 +506,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
                     raw_content, MissionSpecification
                 )
                 mission_plan = MissionSpecification.model_validate(extracted)
-                mission_plan = mission_plan.model_copy(update={   # Phase 2.22.6
+                mission_plan = mission_plan.model_copy(update={  
                     "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
                 })
                 break
@@ -532,11 +537,11 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
             await ResourceBroker.release(state.get("task_id", ""))
 
     # =====================================================================
-    # 5. AUDITORÍA Y ACTUALIZACIÓN DEL ESTADO GLOBAL
+    # 5. AUDIT AND UPDATE OF THE GLOBAL STATUS
     # =====================================================================
     logger.info("✅ Especificación Técnica generada y validada estrictamente.")
 
-    # Phase 7.12.9 (Fix 4) — structured logging instead of raw print() to stdout.
+    # structured logging instead of raw print() to stdout.
     # The previous emoji print() block crashed the node on Windows cp1252 consoles
     # ('charmap' codec can't encode '\U0001f4cb'); the logger honours the UTF-8
     # stream reconfigured at startup and keeps the trace out of stdout.
@@ -548,7 +553,7 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
         len(mission_plan.checks),
     )
 
-    # Para High-TCI, todos los WBSSteps son candidatos al fan-out MapReduce.
+    # For High-TCI, all WBSSteps are candidates for MapReduce fan-out.
     parallel_tasks = mission_plan.tasks if tci > 80.0 else []
 
     result = {
@@ -558,20 +563,20 @@ async def run_planner_node(state: dict[str, Any]) -> dict[str, Any]:
         "css": css,
         "context_metrics": updated_context_metrics,
         "provider": _cascade_provider,
-        "planner_retry_count": retry_count,  # Phase 4.1.2 — 0 on first-shot success
+        "planner_retry_count": retry_count,  # 0 on first-shot success
     }
     if state.get("immutable_wbs") is None:
         result["immutable_wbs"] = mission_plan
         logger.info("PlannerAgent: immutable_wbs frozen (first turn, LLM mode).")
 
-    # ── Phase 3.6: flush cognitive state to .ailienant/AGENTS.md ────────────
+    # flush cognitive state to .ailienant/AGENTS.md ────────────
     try:
         from core.state_manager import dump_state_to_markdown
         _state_for_dump = dict(state) | result
         _state_for_dump["_top_k_files_cache"] = locals().get("_top_k_files", [])
         dump_state_to_markdown(_state_for_dump, state.get("workspace_root", ""))
     except Exception as _dump_err:
-        logger.debug("Phase 3.6: state dump skipped: %s", _dump_err)
+        logger.debug("state dump skipped: %s", _dump_err)
     # ─────────────────────────────────────────────────────────────────────────
 
     return result

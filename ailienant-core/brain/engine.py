@@ -88,13 +88,16 @@ def _instrument_node(name: str, fn: _NodeFn) -> _NodeFn:
     node, and the enqueue is O(1). The original callable type is preserved so the
     ``add_node`` overloads still resolve.
     """
-    async def _wrapped(state: Any) -> Any:
+    async def _wrapped(state: Any, *args: Any, **kwargs: Any) -> Any:
         try:
             session_id = str(state.get("task_id", "")) if isinstance(state, dict) else ""
             log_node_transition(session_id=session_id, source="graph", target=name, reason="node_enter")
         except Exception:  # noqa: BLE001 — telemetry is best-effort
             pass
-        return await fn(state)
+        # Forward the runtime-supplied RunnableConfig (and any positional extras)
+        # so nodes that declare a `config` parameter receive it — LangGraph inspects
+        # the outermost callable's signature, so the wrapper must be variadic.
+        return await fn(state, *args, **kwargs)
 
     return cast(_NodeFn, _wrapped)
 
@@ -118,9 +121,11 @@ def reflexion_guard(node_name: str) -> Callable[[_NodeFn], _NodeFn]:
 
     def decorator(fn: _NodeFn) -> _NodeFn:
         @functools.wraps(fn)
-        async def _wrapped(state: Any) -> Any:
+        async def _wrapped(state: Any, *args: Any, **kwargs: Any) -> Any:
             try:
-                return await fn(state)
+                # Variadic passthrough so the runtime RunnableConfig reaches a node
+                # that declares `config` — LangGraph reads the outermost signature.
+                return await fn(state, *args, **kwargs)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — convert to a healing signal or concede

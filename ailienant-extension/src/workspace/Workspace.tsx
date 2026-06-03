@@ -936,8 +936,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     }, [addToast, recordChunk, telemetry, nattName]);
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+        // Instant while streaming — a smooth animation can't keep pace with a token
+        // flood and visibly stutters; smooth is reserved for discrete new turns.
+        messagesEndRef.current?.scrollIntoView({
+            behavior: isStreaming ? 'auto' : 'smooth',
+        });
+    }, [messages, isStreaming]);
 
     // Stream-stall watchdog (ADR-715). While streaming, if no token / tool / natt
     // activity arrives within the backend-governed budget, `server_stream_end` was

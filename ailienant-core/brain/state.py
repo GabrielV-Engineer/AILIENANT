@@ -303,6 +303,21 @@ def _merge_messages(
     return existing + update
 
 
+def _resolve_step_id(left: Optional[int], right: Optional[int]) -> Optional[int]:
+    """Reducer for current_step_id under SWARM fan-out. The MapReduce router sends one
+    CoderAgent per WBS task in the same super-step, and each writes its own step_number
+    back; with no reducer LangGraph cannot merge the concurrent scalar writes and raises
+    INVALID_CONCURRENT_GRAPH_UPDATE. Keep the highest step_number so the post-swarm
+    pointer advances monotonically toward completion. None is the 'no pending step'
+    sentinel (e.g. the orchestrator's all-complete write) and is treated as 'no opinion',
+    so it never clobbers a concurrent real step."""
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
 class AIlienantGraphState(TypedDict):
     """
     El cerebro compartido del flujo de LangGraph.
@@ -333,8 +348,10 @@ class AIlienantGraphState(TypedDict):
     target_role: Optional[
         str
     ]  # Sustituye a 'target_agent'. Define el rol actual del CoderAgent.
-    current_step_id: Optional[
-        int
+    # Reducer-guarded: SWARM fan-out makes multiple CoderAgents write their own
+    # step_number in one super-step; _resolve_step_id merges them (see its docstring).
+    current_step_id: Annotated[
+        Optional[int], _resolve_step_id
     ]  # Puntero a la tarea actual del WBS en ejecución (step_number).
 
     # --- Human-in-the-Loop & Planner Mode (Phase 1.4 / 2.21) ---

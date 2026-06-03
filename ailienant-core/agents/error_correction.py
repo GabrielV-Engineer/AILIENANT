@@ -27,6 +27,7 @@ import re
 import traceback as _traceback
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from brain.failure_breaker import failure_breaker, normalize_signature
@@ -269,7 +270,9 @@ async def attempt_correction(
     return None
 
 
-async def run_error_correction_node(state: Dict[str, Any]) -> Dict[str, Any]:
+async def run_error_correction_node(
+    state: Dict[str, Any], config: Optional[RunnableConfig] = None
+) -> Dict[str, Any]:
     """LangGraph node: read the diagnostic fields the reflexion guard stored, attempt
     one bounded correction, and emit channel deltas. Always clears ``healing_required``
     so the graph routes forward whether or not a fix was found."""
@@ -292,9 +295,10 @@ async def run_error_correction_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # Narrate the pivot in plain language so a transient fault (e.g. a model
     # timeout) reads as a deliberate retry rather than an unexplained stall.
-    # task_service injects the async emitter via state["narrate"]; this node
-    # never imports the transport layer — the cognitive-isolation fence holds.
-    _narrate = state.get("narrate")
+    # task_service injects the async emitter on config.configurable["narrate"]
+    # (kept off graph state so the checkpointer never serializes a callable); this
+    # node never imports the transport layer — the cognitive-isolation fence holds.
+    _narrate = (config or {}).get("configurable", {}).get("narrate")
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:

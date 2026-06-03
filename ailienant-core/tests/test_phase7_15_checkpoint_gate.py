@@ -167,11 +167,15 @@ def test_hon1_summary_does_not_claim_apply_disabled() -> None:
 
 
 def test_obs1_narration_stays_behind_the_isolation_fence() -> None:
-    # Both cognitive nodes narrate through the task_service-injected state["narrate"]
-    # callback rather than importing the transport layer at module scope.
+    # Both cognitive nodes narrate through the task_service-injected narrate emitter
+    # carried on config.configurable (NOT graph state — a callable is not msgpack-
+    # serializable and the checkpointer freezes the whole state), without importing
+    # the transport layer at module scope.
     for rel in ("coder.py", "error_correction.py"):
         src = (_PKG_ROOT / "agents" / rel).read_text(encoding="utf-8")
-        assert 'state.get("narrate")' in src
+        assert '.get("configurable", {}).get("narrate")' in src
+        # The callable must never be sourced from serializable graph state again.
+        assert 'state.get("narrate")' not in src
 
     # error_correction stays fully behind the fence: no api.* import at all
     # (judged on the AST, not docstring prose).

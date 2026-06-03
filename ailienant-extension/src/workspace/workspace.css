@@ -201,6 +201,9 @@ html, body, #root { height: 100%; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Without this a flex child defaults to min-height:auto and refuses to shrink
+     below its content, so the message list cannot scroll and overflow is clipped. */
+  min-height: 0;
   padding: 6px 14px 0;
   gap: 6px;
 }
@@ -221,6 +224,9 @@ html, body, #root { height: 100%; }
 /* ── Messages ─────────────────────────────────────────────── */
 .ws-messages {
   flex: 1;
+  /* Pairs with flex:1 so the list shrinks to its track and scrolls internally
+     instead of growing past the viewport and being clipped by the parent. */
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
