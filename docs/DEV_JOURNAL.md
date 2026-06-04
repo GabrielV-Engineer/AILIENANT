@@ -2,6 +2,20 @@
 
 ---
 
+## Hito 7.18.2: `response_format` Graceful Degradation (Tool Use) — 2026-06-04
+
+- **Status:** OK — tercera sub-fase de la Fase 7.18 (ADR-742). Varios agentes pasan `response_format={"type":"json_object"}` al gateway (planner, coder, ideation, analyst×3, contract_guard, error_correction, task_service). Muchos backends locales (builds viejos de Ollama/llama.cpp, algunos endpoints BYOM) rechazan ese parámetro con un 400 que hoy mata el turno del agente — aunque el modelo podría responder bien en texto plano y todos los callers **ya** corren una capa robusta de reparación JSON. DoD verde: `mypy .` **Success: no issues found in 241 source files** (0 errores); `test_response_format_degradation.py` 7 passed; regresiones OOM cascade + timeout 20 passed sin regresión.
+
+- **Naturaleza (adaptive memo, no suposición de is_local):** en lugar de asumir que cualquier backend local es incompatible (falso para Ollama moderno) o de exigir un round-trip fallido en cada llamada, la solución **aprende**: cuando un backend rechaza el parámetro, su model-id se agrega a un pequeño `set[str]` acotado (`_RESPONSE_FORMAT_UNSUPPORTED`, cap=128); las llamadas subsiguientes al mismo modelo omiten el parámetro de forma pre-emptiva. Los backends capaces nunca errorean → nunca se memoan → conservan JSON nativo. Los incompatibles pagan el round-trip fallido exactamente una vez por sesión.
+
+- **Net-new confinado a `tools/llm_gateway.py` (sin cambios de callers):** módulo-level `_RESPONSE_FORMAT_UNSUPPORTED` + dos helpers puros (`_is_response_format_error`, `_remember_rf_unsupported`). Ambos sitios de attach (`invoke:374`, `ainvoke:459`) cambian de `if response_format:` a `if response_format and kwargs["model"] not in _RESPONSE_FORMAT_UNSUPPORTED:`. El bloque except genérico de cada path se extiende: si `"response_format" in kwargs and _is_response_format_error(e)`, log WARNING + memo + pop + retry una vez; en caso contrario, re-raise. Los handlers de OOM (`ContextWindowExceededError`, `APIConnectionError` + `_looks_like_oom`) se mantienen primeros e intactos — el test dedicado `test_ainvoke_oom_still_cascades_not_rf_retry` lo aserta explícitamente. En `invoke` (sync) se sacaron los `kwargs` antes del `try` para que el `except` los vea; comportamiento idéntico.
+
+- **Reparación JSON sin nueva capa:** cuando el gateway dropea `response_format`, la salida en texto plano fluye por `_sanitize_json_response` / `_extract_nested_schema_target` que los callers **ya invocan** — cero cambios de callers, cero reparador nuevo (honra la restricción del blueprint).
+
+- **Files changed:** EDIT `ailienant-core/tools/llm_gateway.py` (memo state + helpers + memo-gated attach + catch-retry-once en `invoke` y `ainvoke`). NUEVO `ailienant-core/tests/test_response_format_degradation.py` (7 tests: reject+recover async/sync, adaptive skip, capable backend intacto, error no-rf propaga, OOM cascade intacta). Docs EDIT: `PROJECT_MANIFEST.md` (7.18.2 → `[x]`, Próximo Objetivo → 7.18.3), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.18.1: Session-Heatmap Recency (RAG · upgrade #2) — 2026-06-04
 
 - **Status:** OK — segunda sub-fase de la Fase 7.18 (ADR-741). El término `0.2·Recency` del Context Sufficiency Score era lastre: `recency_score` estaba fijado a `0.5` constante, así que el 20% de la señal de enrutamiento Local-vs-Cloud no distinguía un archivo caliente/fresco de uno frío/viejo. Ahora es señal viva: `recency_score = 0.7·time_decay + 0.3·access_frequency`. DoD verde: `mypy .` **Success: no issues found in 240 source files** (0 errores); `test_recency.py` 16 passed + gate/planner/researcher/fast_boot 39 passed sin regresión (la única falla, `test_v3_tracemalloc`, es **pre-existente y ambiental** — su techo relativo a un baseline ≈0 siempre revienta con 50 modelos Pydantic; verificada fallando en el árbol stasheado antes de tocar nada).

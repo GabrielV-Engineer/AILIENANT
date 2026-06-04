@@ -210,6 +210,30 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Phase:** Decision recorded under **7.18 (ADR-746)**. Re-open **only** if a demonstrated corruption bug proves reducers insufficient (then Option B targeted idempotency for async MCP writes, or — last resort — Option C full version-vector re-spine).
 - **Notes:** A genuine future risk this entry flags: once 7.18 wires execute-tier dispatch, **async MCP tool calls** mutating state mid-node could warrant Option B (targeted execute-tier write idempotency) — a small hardening, not a global OCC rewrite.
 
+### DEBT-011 — test_v3_tracemalloc heap-baseline ceiling is structurally broken (red in the Phase 3.7 gate)
+
+- **Date:** 2026-06-04
+- **Reproduce:** `cd ailienant-core && .\venv\Scripts\python -m pytest tests/test_phase3_checkpoint_gate.py::test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline -q`
+- **File(s):** `tests/test_phase3_checkpoint_gate.py:418-452` (`test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline`).
+- **Error:** Pre-existing test-design defect, not a product bug. The test takes the `tracemalloc`
+  baseline snapshot **immediately after** `tracemalloc.start()`, so `baseline_bytes ≈ 0`; the ceiling
+  `int(baseline_bytes * 0.05) + 65_536` therefore collapses to a fixed ~64 KB. Allocating 50
+  `MCTSNode` + 50 `MissionSpecification` (Pydantic v2) objects retains ~210-240 KB (validator/core-schema
+  caches + node dict), so the assertion `delta_bytes < ceiling` always fails (observed 212-237 KB).
+  The `prune_branch` + `del tree` cleanup does not (and cannot) reclaim Pydantic's process-wide schema
+  caches, so the "returns to baseline" premise is unmeetable as written.
+- **Blocked by:** None — fixable now, but **out of scope for 7.18.1** (recency); deliberately deferred
+  per the Continuous Registry Protocol rather than fixed in-place. Verified failing on the stashed
+  pre-7.18.1 tree, so it is **not** a regression from the recency work.
+- **Phase:** A future test-hardening slice (Phase 8 / gate maintenance).
+- **Notes:** Remediation options: (a) call `gc.collect()` before *both* snapshots and warm Pydantic by
+  constructing one `MissionSpecification` before the baseline so its schema cache is already resident;
+  (b) replace the baseline-relative ceiling with a fixed absolute budget sized for 50 nodes (e.g.
+  ~512 KB) since the real claim is "bounded growth," not "returns to zero"; (c) measure only the
+  `MCTSTree`/RAM-VFS delta via `snapshot.filter_traces` on `brain/mcts/tree.py` + `core/vfs_middleware.py`
+  rather than the whole-process `"filename"` sum. Option (b)+(c) together best preserve the original
+  intent (heap-leak guard on the MCTS lifecycle) without the brittle near-zero baseline.
+
 ---
 
 ## Closed Entries
@@ -234,4 +258,7 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 # DEBT-005 (exploratory — count changes over time)
 .\venv\Scripts\python -m mypy --strict brain/engine.py 2>&1 | grep "error:" | wc -l
+
+# DEBT-011 (pre-existing red gate test — heap baseline ceiling)
+.\venv\Scripts\python -m pytest tests/test_phase3_checkpoint_gate.py::test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline -q
 ```
