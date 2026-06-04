@@ -2,6 +2,32 @@
 
 ---
 
+## Hito 7.18.6: Checkpoint Gate Fase 7.18 (CIERRE del Sweep de Endurecimiento) — 2026-06-04
+
+**Estado:** ✅ COMPLETO | **ADR:** 746 | **Resultado de gates:** `mypy .` 0/245 · gate 9 passed · suite completa sin regresión
+
+### Problema resuelto
+Las seis sub-fases del sweep de endurecimiento (7.18.0–7.18.5) se enviaron cada una con su suite dedicada, pero faltaba la certificación E2E única que pruebe que los seis pilares siguen sosteniéndose juntos contra sus entry points **enviados**. Este gate cierra esa brecha (convención de archivo-hermano, espejo de `test_phase7_15_checkpoint_gate.py`): una aserción de carga por fila, importando e invocando código de producción, **sin modificar lógica**.
+
+### Decisiones arquitectónicas
+- **Reuso de patrones, no re-ejecución de las suites dedicadas:** el gate toma UNA invariante de carga por fila. EXLOOP1/EXLOOP2/DIAG1 reusan el `_StubAdapter` determinista del ejecutor (sin subproceso real) + `route_after_coder`; RF1 reusa el patrón `_rf_rejecting` (litellm que 400ea con `response_format` y triunfa sin él); FS1 reusa el `_PY_FUNC` con un token de cuerpo distintivo para probar la elisión.
+- **Async vía `asyncio.run`, sin backend anyio:** las filas con corutinas (`run_coder_node`, `LLMGateway.ainvoke`) se envuelven en `asyncio.run` igual que el gate 7.15 — el archivo no importa `pytest` ni usa fixtures.
+- **Estructura juzgada por `ast`, no por substring (precedente ISO1/OBS1):** MCTS-DEFER parsea `brain/engine.py` y `agents/coder.py`, recolecta los nodos `Import`/`ImportFrom` y aserta que ninguno apunta a `brain.mcts`/`mcts_coder` — así un comentario que mencione `mcts_coder` jamás dispara el gate; sólo un edge de import real lo haría.
+- **Frontera host-side honrada (OCC1):** el *rechazo* del `base_hash` stale corre en el bridge `applyEdit` de VS Code — `core/write_pipeline.py` no hace I/O de disco y delega el guard al host (que devuelve `stale_files` / emite `client_concurrency_conflict`). El gate certifica la mitad Python: los reducers (`_merge_generated_code`) fusionan el fan-out concurrente sin pérdida, y el ancla `content_hash` es estable y sensible a ediciones. El rechazo host-side queda host-certificado (npm compile + smoke), por la misma convención que las filas frontend del gate 7.15.
+- **El gate hizo su trabajo (regresión latente destapada):** la corrida de suite completa surfaceó 2 fallos pre-existentes en `tests/test_planner.py` — el singleton `response_cache` (7.18.4) filtraba un plan validado entre tests (la corrida dirigida de 7.18.4 sólo limpiaba sus propios tests, no la suite hermana del planner). Fix **sólo de test**: fixture autouse `_reset_response_cache`, espejo del `_reset_heatmap` (7.18.1). No es bug de producción — la caché es correcta para replays de turno idéntico (el skeleton del researcher es función determinista de inputs ya en la clave, y además plegarlo a la clave no arreglaría el test de agotamiento, que colisiona sin skeleton).
+- **Cierre de fase:** al marcar esta fila `[x]`, la valla LOCK-IN §1 del blueprint 7.18 expira y la Fase 7.18 queda CERRADA. Próximo: el track frontend/host 7.16.1 (cierra DEBT-006), con 8.0.0 (mypy --strict) disponible en paralelo.
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `tests/test_phase7_18_checkpoint_gate.py` | NEW | gate de 9 filas (EXLOOP1/2, DIAG1, REC1, RF1, FS1, CACHE1, OCC1, MCTS-DEFER) + helpers |
+| `tests/test_planner.py` | EDIT | fixture autouse `_reset_response_cache` (aísla el singleton de caché 7.18.4; sólo test) |
+| `docs/PROJECT_MANIFEST.md` | EDIT | 7.18.6 → `[x]` con nota de cierre; Próximo Objetivo → 7.16.1; Fase 7.18 CERRADA |
+| `docs/DEV_JOURNAL.md` | EDIT | este hito |
+| `README.md` | EDIT | gate añadido al árbol Repository Layout (línea `tests/`) |
+
+---
+
 ## Hito 7.18.5: MCTS-into-Live-Loop — DEFER (fila de decisión) — 2026-06-04
 
 **Estado:** ✅ COMPLETO (RATIFICACIÓN) | **ADR:** 745 | **Resultado:** sin cambios de fuente; solo bookkeeping de cierre (CLAUDE.md §5)

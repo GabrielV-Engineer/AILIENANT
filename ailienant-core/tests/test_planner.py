@@ -19,6 +19,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agents.recency import session_heatmap
 from brain.state import MissionSpecification, WBSStep
+from core.response_cache import response_cache
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -30,6 +31,18 @@ def _reset_heatmap() -> Any:
     session_heatmap.reset()
     yield
     session_heatmap.reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_response_cache() -> Any:
+    """Isolate the process-singleton semantic response cache between tests.
+
+    A planner turn stores its validated plan keyed by the stable inputs; without
+    this reset an identical-key turn in a sibling test would be served from cache
+    and skip the gateway, masking retry/skeleton behaviour."""
+    response_cache.clear()
+    yield
+    response_cache.clear()
 
 
 def _valid_mission_json() -> str:
