@@ -2,6 +2,24 @@
 
 ---
 
+## Hito 7.18.5: MCTS-into-Live-Loop — DEFER (fila de decisión) — 2026-06-04
+
+**Estado:** ✅ COMPLETO (RATIFICACIÓN) | **ADR:** 745 | **Resultado:** sin cambios de fuente; solo bookkeeping de cierre (CLAUDE.md §5)
+
+### Naturaleza — fila de decisión, no implementación
+La auditoría de 6 técnicas calificó la búsqueda de variantes MCTS como la **única técnica a diferir**. `brain/mcts/` + `agents/mcts_coder.py` existen pero son **offline-only** (daemon de dreaming paralelo). Cablear UCB1 al bucle vivo single-shot del coder multiplicaría las llamadas LLM por paso, colisionaría con los budgets de corrección recién cableados en 7.18.0 y arriesgaría regresión de latencia/costo en el mismo bucle que 7.18.0 vuelve crítico — mayor riesgo, menor valor marginal. Su señal de recompensa natural es *exactamente* el veredicto estructurado `[file,line,code,msg]` que 7.18.0 introduce, así que MCTS-live es estrictamente mejor intentarlo **después** de que 7.18.0 estabilice.
+
+### Cierre
+- **Entregables del DoD ya redactados:** ambos artefactos se escribieron en la autoría del WBS 7.18 (commit `970ec58`). **ADR-745** vive en `PHASE_7_18_BLUEPRINT.md` (§7.18.5 + fila del ADR Ledger + la fila de gate `MCTS-DEFER` que 7.18.6 usará para *aplicar* el límite). **DEBT-009** en `TECH_DEBT_BACKLOG.md` registra el defer y su precondición. Este hito los **ratifica** y cierra la fila ahora que la precondición está enviada y verde — no re-escribe contenido vigente (evita churn).
+- **Precondición satisfecha:** la señal de recompensa que MCTS necesita es el veredicto estructurado de 7.18.0, ya enviado (cerrado 2026-06-04). El defer se mantiene **por elección**, no por bloqueo técnico.
+- **Premisa verificada (hoy):** ningún edge de import al bucle vivo desde `brain/mcts`. Los únicos importadores no-test son rutas offline/episodic — `brain/episodic/checkpointing.py`, `api/mcts_mirror.py` (mirror read-only), el propio `agents/mcts_coder.py` offline, e imports internos del paquete. Ni `brain/engine.py` ni `agents/coder.py` (`run_coder_node`) importan MCTS.
+- **Aplicación delegada:** la fila `MCTS-DEFER` del gate 7.18.6 convertirá esta premisa en un test real (un cableado accidental futuro rompe el gate).
+
+### Archivos modificados (docs-only)
+EDIT `docs/PROJECT_MANIFEST.md` (7.18.5 → `[x]` con nota de cierre; Próximo Objetivo → 7.18.6), `docs/DEV_JOURNAL.md` (este hito). **Cero cambios de fuente Python/TS; `TECH_DEBT_BACKLOG.md` y `PHASE_7_18_BLUEPRINT.md` intactos (ya vigentes); `README.md` sin cambios (sin nuevos archivos/estructura).**
+
+---
+
 ## Hito 7.18.4: AST-Hashed Semantic Response Cache (Caché Semántica · upgrade #4) — 2026-06-04
 
 **Estado:** ✅ COMPLETO | **ADR:** 744 | **Resultado de gates:** `mypy .` 0/244 · pyright 0/0 · `test_response_cache.py` 8 passed
