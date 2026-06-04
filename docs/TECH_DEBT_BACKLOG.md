@@ -190,6 +190,26 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Notes:** The `NarrationGate` (narration ≤ 15% of streamed volume) and FastAPI event-loop protection
   (no one WS frame per token — coalesce via `batch_tokens`) must be honored by the eventual stream.
 
+### DEBT-009 — MCTS variant-search is offline-only (not wired into the live coder loop)
+
+- **Date:** 2026-06-03
+- **Reproduce:** N/A (capability gap, not an error). `brain/mcts/` (UCB1 tree, reward eval) + `agents/mcts_coder.py` exist and run only in the parallel dreaming daemon; the live Phase-4 LangGraph coder loop (`run_coder_node`) is single-shot-per-step and never enters MCTS.
+- **File(s):** `brain/mcts/tree.py`, `agents/mcts_coder.py`, `brain/engine.py` (no edge into the MCTS search from the live path).
+- **Error:** Feature gap. Surfacing UCB1 variant-search inline would multiply LLM calls per step, collide with the 7.18.0 correction budgets, and risk latency/cost regression on the exact loop 7.18.0 makes load-bearing.
+- **Blocked by:** **Precondition = Phase 7.18.0.** MCTS needs a per-variant reward signal; the *structured test/typecheck verdict* introduced by 7.18.0 is exactly that signal. MCTS-live is only sensible **after** 7.18.0 ships and stabilizes — coupling both risky changes on one edge is forbidden.
+- **Phase:** Deferred by **7.18.5 (ADR-745)**. If pursued, scope as a follow-up phase gated behind 7.18.0's green checkpoint; the 7.18.6 gate row **MCTS-DEFER** pins the offline boundary (no live-loop import edge into `brain/mcts`) so an accidental wiring trips the gate.
+- **Notes:** Highest risk, lowest marginal value of the six audited techniques. Not a defect — a deliberate sequencing decision.
+
+### DEBT-010 — OCC version-vectors on the graph state dict: rejected in favor of existing reducers (decision record)
+
+- **Date:** 2026-06-03
+- **Reproduce:** N/A (architecture decision, not an error). Architect upgrade #5 requested strict version-vector OCC on the LangGraph state dict (reject-and-retry, idempotent nodes).
+- **File(s):** `brain/state.py:241-289` (per-file `document_version_id` OCC), `brain/state.py:458-459` (LangGraph reducers: `operator.add`, last-writer-wins `merge`); `agents/coder.py` (emitted `base_hash` stale-guard).
+- **Error:** Not a defect — a **conflict surfaced per CLAUDE.md §3.** OCC already exists at the file granularity that governs mutation safety, and the graph state is managed by **reducers** that *merge* the concurrent `Send()` fan-out a version-vector model would *abort* — opposite strategies for the same contention. A parallel OCC layer would either duplicate the guarantee or serialize (break) the SWARM fan-out.
+- **Blocked by:** N/A — **resolved as Option A (Pivot):** the intent (zero state-corruption under concurrency) is treated as already satisfied; the 7.18.6 gate row **OCC1** *asserts* the existing reducer + `base_hash` guarantee rather than adding a mechanism.
+- **Phase:** Decision recorded under **7.18 (ADR-746)**. Re-open **only** if a demonstrated corruption bug proves reducers insufficient (then Option B targeted idempotency for async MCP writes, or — last resort — Option C full version-vector re-spine).
+- **Notes:** A genuine future risk this entry flags: once 7.18 wires execute-tier dispatch, **async MCP tool calls** mutating state mid-node could warrant Option B (targeted execute-tier write idempotency) — a small hardening, not a global OCC rewrite.
+
 ---
 
 ## Closed Entries
