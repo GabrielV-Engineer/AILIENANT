@@ -2,6 +2,7 @@
 
 import logging
 import os as _os
+import time as _time
 import uuid
 from typing import Optional, Any
 
@@ -13,7 +14,8 @@ from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retai
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
 from agents.prompts import build_safe_prompt
-from agents.workspace_context import build_workspace_overview 
+from agents.workspace_context import build_workspace_overview
+from agents.recency import compute_recency_score, session_heatmap
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
@@ -45,6 +47,26 @@ _POLYGLOT_WARNING = (
     "You MUST use the 'patch_file' tool for any modifications. "
     "Full file rewrites are strictly forbidden to prevent corrupting mixed syntax."
 )
+
+
+def _collect_buffer_mtimes(workspace_root: str, paths: list[str]) -> list[float]:
+    """Best-effort epoch mtimes for the active/dirty IDE buffers.
+
+    Feeds the recency time-decay term so a file the user just edited reads as
+    fresh even when its LanceDB ``indexed_at`` is stale. Resolves relative paths
+    against the workspace root; any path that is unsaved, virtual, or otherwise
+    not on disk is silently skipped — recency must never break the planner turn.
+    """
+    mtimes: list[float] = []
+    for path in paths:
+        if not path:
+            continue
+        candidate = path if _os.path.isabs(path) else _os.path.join(workspace_root, path)
+        try:
+            mtimes.append(_os.stat(candidate).st_mtime)
+        except OSError:
+            continue
+    return mtimes
 
 
 def _inject_polyglot_constraints(tasks: list[WBSStep]) -> list[WBSStep]:
@@ -274,6 +296,7 @@ async def run_planner_node(
 
             _sem_score: float
             _top_k_files: list[str]
+            _indexed_at: list[str]
             _extractor = GraphRAGDynamicExtractor(project_id=state.get("project_id") or "")
 
             if _fast_boot is not None:
@@ -283,9 +306,12 @@ async def run_planner_node(
                     if _fast_boot.context_metrics else 0.0
                 )
                 _top_k_files = _fast_boot.top_k_files
+                # Cache path carries no indexed_at; recency leans on buffer mtimes
+                # and the session heatmap instead.
+                _indexed_at = []
             else:
                 _sem_mgr = SemanticMemoryManager()
-                _sem_score, _top_k_files = await _sem_mgr.search_with_paths(
+                _sem_score, _top_k_files, _indexed_at = await _sem_mgr.search_with_paths(
                     user_input=user_input,
                     workspace_hash=state.get("project_id") or "",
                 )
@@ -294,15 +320,39 @@ async def run_planner_node(
                 seed_files=_top_k_files,
                 workspace_root=state.get("workspace_root", ""),
             )
+            # ── Session-Heatmap Recency ──────────────────────────────────
+            # Record this turn's retrievals, then derive a live recency signal
+            # (index/edit freshness + in-session access frequency) to replace the
+            # former static placeholder in the 0.2·Recency CSS term.
+            _project_id: str = state.get("project_id") or ""
+            session_heatmap.bump(_project_id, _top_k_files)
+            _buffer_paths: list[str] = (
+                [_active_path] if _active_path else []
+            ) + [
+                (b.get("path") if isinstance(b, dict) else b.path)
+                for b in dirty_buffers
+            ]
+            _access_count: int = sum(
+                session_heatmap.count(_project_id, p) for p in _top_k_files
+            )
+            _recency: float = compute_recency_score(
+                indexed_at_iso=_indexed_at,
+                buffer_mtimes=_collect_buffer_mtimes(
+                    state.get("workspace_root", ""), _buffer_paths
+                ),
+                access_count=_access_count,
+                now=_time.time(),
+            )
             _new_css: float = min(100.0, max(0.0, (
                 0.5 * _sem_score
                 + 0.3 * _deep_result.coverage_ratio
-                + 0.2 * updated_context_metrics.recency_score
+                + 0.2 * _recency
             ) * 100.0))
             updated_context_metrics = updated_context_metrics.model_copy(
                 update={
                     "semantic_similarity": _sem_score,
                     "graph_coverage": _deep_result.coverage_ratio,
+                    "recency_score": _recency,
                     "css_total": _new_css,
                     "is_red_alert": _new_css < 40.0,
                 }
@@ -326,10 +376,30 @@ async def run_planner_node(
     try:
         # Initialize ContextMeter on first invocation (context_metrics absent from state).
         if updated_context_metrics is None:
+            # No retrieval ran on this cold path, so recency leans on edit-freshness
+            # of the open/dirty buffers plus any in-session access history.
+            _cold_buffer_paths: list[str] = (
+                [_active_path] if _active_path else []
+            ) + [
+                (b.get("path") if isinstance(b, dict) else b.path)
+                for b in dirty_buffers
+            ]
+            _cold_project_id: str = state.get("project_id") or ""
+            _cold_recency: float = compute_recency_score(
+                indexed_at_iso=[],
+                buffer_mtimes=_collect_buffer_mtimes(
+                    state.get("workspace_root", ""), _cold_buffer_paths
+                ),
+                access_count=sum(
+                    session_heatmap.count(_cold_project_id, p)
+                    for p in _cold_buffer_paths
+                ),
+                now=_time.time(),
+            )
             updated_context_metrics = ContextMeter(
                 semantic_similarity=0.0,
                 graph_coverage=0.0,
-                recency_score=0.5,
+                recency_score=_cold_recency,
                 css_total=css,
                 task_complexity_index=tci,
                 routing_decision="LOCAL_SMALL",  # placeholder; overwritten below

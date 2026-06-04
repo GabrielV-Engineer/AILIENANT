@@ -7,6 +7,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agents.recency import session_heatmap
+
+
+@pytest.fixture(autouse=True)
+def _reset_heatmap() -> Any:
+    """Keep the process-singleton recency heatmap isolated between tests."""
+    session_heatmap.reset()
+    yield
+    session_heatmap.reset()
+
 
 def _base_state(**overrides: Any) -> Dict[str, Any]:
     """Minimal AIlienantGraphState slice that satisfies run_researcher_node."""
@@ -29,7 +39,7 @@ def _base_state(**overrides: Any) -> Dict[str, Any]:
 async def test_researcher_standard_retrieval() -> None:
     """Without explicit_mentions, the node must hit SemanticMemoryManager
     and GraphRAGDynamicExtractor and surface the LLM's skeleton output."""
-    mock_search = AsyncMock(return_value=(0.7, ["core/state.py"]))
+    mock_search = AsyncMock(return_value=(0.7, ["core/state.py"], [""]))
     mock_deep_parse = AsyncMock(
         return_value=MagicMock(
             context_block="STUB_BLOCK",

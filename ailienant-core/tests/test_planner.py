@@ -17,10 +17,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.runnables import RunnableConfig
 
+from agents.recency import session_heatmap
 from brain.state import MissionSpecification, WBSStep
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_heatmap() -> Any:
+    """Keep the process-singleton recency heatmap isolated between tests."""
+    session_heatmap.reset()
+    yield
+    session_heatmap.reset()
 
 
 def _valid_mission_json() -> str:
@@ -100,7 +109,7 @@ async def test_planner_retries_on_malformed_json_then_succeeds() -> None:
     good_response = _make_response(_valid_mission_json())
 
     mock_ainvoke = AsyncMock(side_effect=[bad_response, good_response])
-    mock_search = AsyncMock(return_value=(0.8, ["test/scope.py"]))
+    mock_search = AsyncMock(return_value=(0.8, ["test/scope.py"], [""]))
     mock_deep_parse = AsyncMock(
         return_value=MagicMock(
             coverage_ratio=0.6,
@@ -172,7 +181,7 @@ async def test_planner_narrates_critic_cycle_on_handoff_brief() -> None:
     bad_response = _make_response("{ not json ")
     good_response = _make_response(_valid_mission_json())
     mock_ainvoke = AsyncMock(side_effect=[bad_response, good_response])
-    mock_search = AsyncMock(return_value=(0.8, ["test/scope.py"]))
+    mock_search = AsyncMock(return_value=(0.8, ["test/scope.py"], [""]))
     mock_deep_parse = AsyncMock(
         return_value=MagicMock(
             coverage_ratio=0.6, context_block="",
@@ -235,7 +244,7 @@ async def test_planner_returns_errors_when_retries_exhausted() -> None:
 
     garbage = _make_response("definitely not json")
     mock_ainvoke = AsyncMock(side_effect=[garbage, garbage, garbage])
-    mock_search = AsyncMock(return_value=(0.8, []))
+    mock_search = AsyncMock(return_value=(0.8, [], []))
     mock_deep_parse = AsyncMock(
         return_value=MagicMock(
             coverage_ratio=0.0, context_block="", parsed_files=[], target_files=[]
@@ -292,7 +301,7 @@ async def test_planner_consumes_researcher_skeleton() -> None:
     good_response = _make_response(_valid_mission_json())
 
     mock_ainvoke = AsyncMock(return_value=good_response)
-    mock_search = AsyncMock(return_value=(0.8, []))
+    mock_search = AsyncMock(return_value=(0.8, [], []))
     mock_deep_parse = AsyncMock(
         return_value=MagicMock(
             coverage_ratio=0.0, context_block="", parsed_files=[], target_files=[]
