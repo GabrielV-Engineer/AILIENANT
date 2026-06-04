@@ -2,6 +2,26 @@
 
 ---
 
+## Hito 7.18 (autoría WBS): Six-Technique Enterprise Hardening Sweep — 2026-06-03
+
+- **Status:** DOCUMENTADO — autoría del blueprint + WBS de un nuevo track backend, **sin código** (como 7.14/7.16 se documentaron antes de ejecutar). Esta entrada registra la decisión de fase; las entradas de cierre por sub-fase aterrizan conforme cada slice se implemente con su propia valla y bloque git.
+
+- **Origen:** revisión de Arquitecto (CLAUDE.md §3) preguntando si AILIENANT aplica de verdad las 6 técnicas que distinguen a Cursor/Claude-Code/Codex (System Prompt, RAG, Chain-of-Thought, Few-Shot, Tool Use, Feedback Loop) y si procede una fase nueva antes de 7.16.1. Auditoría (3 sweeps de exploración + lecturas directas): **5 de 6 técnicas ya son STRONG y están cableadas** — el proyecto no es un MVP. System Prompt (personas + sandbox de inyección XML-UUID + constantes de directiva + SOUL), RAG (LanceDB + dep-graph PPR + CSS híbrido + slicing semántico), Chain-of-Thought (Actor-Critic ideation→synthesis→planner, narración critic_*), Tool Use (Pydantic + `response_format` + reparación JSON de 3 capas + Tool RAG) — sin trabajo.
+
+- **Hueco de cabecera (Feedback Loop):** el self-heal por excepción está completo (`reflexion_guard`→`error_correction`→HITL→re-inject, breaker, DLQ), y el sandbox (`core/sandbox.py`) + las herramientas execute-tier (`tools/execution_tools.py`) **ya existen y enrutan al adaptador activo** — pero el bucle agéntico nunca los consume: un paso `run_command` muere como `EXECUTE_TIER_DEFERRED` ([`agents/coder.py:133-160`](../ailienant-core/agents/coder.py)). No hay bucle cerrado de *escribir → correr tests/typecheck en el sandbox → capturar → re-inyectar → re-draftar*. Cerrar esto es **integración, no reconstrucción** — es lo que separa a AILIENANT de Cursor/Claude-Code.
+
+- **Decisión:** nuevo track backend **Fase 7.18** (no 7.15.1 — ya tomado por el branch cerrado `feat/phase-7.15.1-mode-rbac`), sentado **antes de 7.16.1**, ortogonal al track frontend 7.16/7.17. WBS 7.18.0–7.18.6, ADR **740..746**. Gobierna **reuse-over-rebuild**: net-new sólo en el cableado.
+
+- **Upgrades del Arquitecto (5) — verificados contra el código:** (1) parsing de errores **estructurado** `[file,line,code,msg]` en vez de stdout crudo → reusa `ValidationResult`/`lsp_filter` (ya parcial); (2) recency **heatmap** `0.7·time_decay + 0.3·access_frequency` → net-new (7.18.1); (3) few-shot **AST-skeleton** (firma+typehints+docstring, cuerpo→`...`) → reusa `core/ast_engine.py` tree-sitter, **no** `ast` de stdlib (7.18.3); (4) **caché semántica AST-hash** → extiende el cache de árboles blake2b ya en `ASTEngine` a cachear respuestas LLM (7.18.4); (5) **OCC version-vectors en el state dict** → ⚠️ **conflicto §3**: OCC ya existe (`document_version_id`) y los reducers *fusionan* el fan-out concurrente que un modelo reject-retry *abortaría* (estrategias opuestas). Elevado con opciones A/B/C; **resolución Option A** — la fila de gate **OCC1** *aserta* la garantía existente en vez de añadir un mecanismo paralelo. Registrado en `TECH_DEBT_BACKLOG.md` (DEBT-010).
+
+- **Defer:** MCTS-into-live-loop (DEBT-009): offline-only hoy; su recompensa natural es el veredicto estructurado de 7.18.0 → mejor **después** de que 7.18.0 estabilice. Fila de gate **MCTS-DEFER** ancla el límite offline.
+
+- **Riesgo de integración mayor (7.18.0):** `candidate_files_from_traceback` sólo parsea tracebacks de CPython; la salida de pytest/mypy no produce candidato → hilar el `target_file` del paso por el seam `extra_candidates` ([`error_correction.py:289`](../ailienant-core/agents/error_correction.py)) o el bucle "corre pero nunca re-draftea". Cada test de 7.18.0 debe asertar que un intento de corrección **dispara** ante un exit≠0 capturado, no sólo que el comando corrió.
+
+- **Files changed (docs-only):** NUEVO `docs/PHASE_7_18_BLUEPRINT.md`. EDIT `docs/PROJECT_MANIFEST.md` (mapa Quick Reference + bloque WBS 7.18 + Estado Actual/Próximo Objetivo), `docs/TECH_DEBT_BACKLOG.md` (DEBT-009 defer MCTS, DEBT-010 decisión OCC), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito). Cero cambio de fuente Python en este turno.
+
+---
+
 ## Hito 7.14.7: Checkpoint Gate Fase 7.14 — 2026-06-03
 
 - **Status:** OK — valla de cierre de la Fase 7.14 (Zero-Bubble + Elite Diff Engine UI/UX Transformation). **FASE 7.14 CERRADA.** §1 LOCK-IN del blueprint expirado. Gates: `npm run compile` 0 errores · `npm run lint` 0 errores · `mypy .` **235 archivos** 0 errores · `pytest` **834 passed** (sin regresión) · smoke manual verde.
