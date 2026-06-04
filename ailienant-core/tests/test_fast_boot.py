@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agents.recency import session_heatmap
 from brain.state import ContextMeter, MissionSpecification, WBSStep
 from core.state_manager import (
     CachedAgentState,
@@ -20,6 +21,14 @@ from core.state_manager import (
     load_state_from_markdown,
     record_merge_event,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_heatmap() -> Any:
+    """Keep the process-singleton recency heatmap isolated between tests."""
+    session_heatmap.reset()
+    yield
+    session_heatmap.reset()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -227,7 +236,7 @@ async def test_planner_skips_lancedb_when_cache_fresh() -> None:
         "ide_context": "",
     }
 
-    mock_search = AsyncMock(return_value=(0.8, ["brain/state.py"]))
+    mock_search = AsyncMock(return_value=(0.8, ["brain/state.py"], [""]))
     mock_deep_parse = AsyncMock(
         return_value=MagicMock(
             coverage_ratio=0.6,

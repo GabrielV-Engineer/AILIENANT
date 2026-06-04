@@ -297,8 +297,12 @@ class SemanticMemoryManager:
         vector: List[float],
         workspace_hash: str,
         k: int,
-    ) -> List[Tuple[str, float]]:
-        """Like _query_records but returns (file_path, distance) pairs."""
+    ) -> List[Tuple[str, float, str]]:
+        """Like _query_records but returns (file_path, distance, indexed_at) triples.
+
+        ``indexed_at`` rides out of this single query (it is already a column on
+        every row) so the recency meter never needs a second DB round-trip.
+        """
         db = lancedb.connect(self._lancedb_path)
         if _TABLE_NAME not in db.table_names():
             return []
@@ -316,7 +320,11 @@ class SemanticMemoryManager:
 
         rows: List[Any] = query.to_list()
         return [
-            (str(r.get("file_path", "")), float(r.get("_distance", 1.0)))
+            (
+                str(r.get("file_path", "")),
+                float(r.get("_distance", 1.0)),
+                str(r.get("indexed_at", "")),
+            )
             for r in rows
             if r.get("file_path")
         ]
@@ -328,14 +336,17 @@ class SemanticMemoryManager:
         user_input: str,
         workspace_hash: str = "",
         k: int = _TOP_K,
-    ) -> Tuple[float, List[str]]:
-        """Single embedding call returns (aggregated_score, top_k_file_paths).
+    ) -> Tuple[float, List[str], List[str]]:
+        """Single embedding call returns (aggregated_score, top_k_file_paths, indexed_at).
 
         Avoids the double embedding call that separate search() + search_files()
-        would require. Returns (0.0, []) on empty input or any failure.
+        would require. The third element carries each retrieved file's ISO
+        ``indexed_at`` (parallel to file_paths) so the recency meter gets a
+        time signal without a second query. Returns (0.0, [], []) on empty input
+        or any failure.
         """
         if not user_input.strip():
-            return 0.0, []
+            return 0.0, [], []
 
         try:
             vector = await _get_embedding(user_input)
@@ -343,25 +354,26 @@ class SemanticMemoryManager:
             logger.warning(
                 "SemanticMemory.search_with_paths: embed failed (non-fatal): %s", embed_err
             )
-            return 0.0, []
+            return 0.0, [], []
 
         try:
-            pairs: List[Tuple[str, float]] = await asyncio.to_thread(
+            triples: List[Tuple[str, float, str]] = await asyncio.to_thread(
                 self._query_records_with_paths, vector, workspace_hash, k
             )
         except Exception as query_err:
             logger.warning(
                 "SemanticMemory.search_with_paths: query failed (non-fatal): %s", query_err
             )
-            return 0.0, []
+            return 0.0, [], []
 
-        if not pairs:
-            return 0.0, []
+        if not triples:
+            return 0.0, [], []
 
-        avg = sum(max(0.0, 1.0 - d) for _, d in pairs) / len(pairs)
+        avg = sum(max(0.0, 1.0 - d) for _, d, _ in triples) / len(triples)
         score = min(1.0, max(0.0, avg))
-        file_paths = [fp for fp, _ in pairs]
-        return score, file_paths
+        file_paths = [fp for fp, _, _ in triples]
+        indexed_at = [ts for _, _, ts in triples]
+        return score, file_paths, indexed_at
 
     # ── Phase 7.9.B.15: snippet retrieval for live-chat GraphRAG injection ─────
 

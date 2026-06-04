@@ -9,7 +9,9 @@ Cross-subsystem E2E + stress suite that exercises Phase 3 as a single contract:
     - Phase 3.6  Cognitive Fast-Boot (.ailienant/AGENTS.md)
 
 Scope decisions (locked at planning):
-    - RecencyBoost time-decay is NOT in production code — only AGENTS.md TTL is time-mocked.
+    - RecencyBoost time-decay now ships in production (planner.py recency term);
+      it is unit-tested in test_recency.py. This gate keeps the recency input
+      deterministic (empty indexed_at + heatmap reset) so CSS routing stays stable.
     - Latency SLA is soft: median < 25 ms, p95 < 100 ms, hard signal = no aiosqlite locks.
     - LanceDB stays mocked per existing project convention; WAL-mode SQLite is real where
       concurrency is the actual claim under test.
@@ -37,6 +39,7 @@ from agents.mcts_coder import (
     local_fix_with_retry,
     surgeon_escalation,
 )
+from agents.recency import session_heatmap
 from brain.episodic.checkpointing import MCTSCheckpointer
 from brain.mcts.tree import MCTSTree
 from brain.state import ContextMeter, MissionSpecification, WBSStep
@@ -151,7 +154,9 @@ def _planner_patches(
     risk: RiskLevel,
 ) -> Tuple[AsyncMock, AsyncMock, AsyncMock]:
     """Build the canonical mock trio for run_planner_node tests."""
-    mock_search = AsyncMock(return_value=(sem_score, top_k))
+    # search_with_paths returns (score, paths, indexed_at[]); empty ISO strings
+    # make the recency time-decay term deterministic (skipped → falls to 0).
+    mock_search = AsyncMock(return_value=(sem_score, top_k, [""] * len(top_k)))
     mock_deep = AsyncMock(
         return_value=MagicMock(
             coverage_ratio=coverage,
@@ -179,6 +184,15 @@ def _reset_ram_vfs() -> Any:
     vfs._ram_vfs.clear()
     yield
     vfs._ram_vfs.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_heatmap() -> Any:
+    """SessionAccessHeatmap is a process-singleton — reset so the recency
+    access-frequency term is deterministic across tests."""
+    session_heatmap.reset()
+    yield
+    session_heatmap.reset()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

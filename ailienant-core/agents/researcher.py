@@ -1,6 +1,6 @@
 # ailienant-core/agents/researcher.py
 #
-# Phase 4.1.1 — ResearcherAgent (The Context Hound).
+# ResearcherAgent (The Context Hound).
 #
 # Read-only LangGraph node that produces a Skeleton Map (signatures + relations +
 # file paths) for the PlannerAgent. Follows the planner pattern: deterministic
@@ -91,7 +91,7 @@ async def run_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as err:  # noqa: BLE001 — fail-soft on any I/O issue
                 logger.warning("Researcher: VFS read failed for '%s': %s", path, err)
                 continue
-            # Phase 7.11.4 (ADR-706 §4.5d) — hard-context envelope. The
+            # hard-context envelope. The
             # `[HARD CONTEXT: SOURCE FILE …]` prefix signals to the LLM that
             # this material is authoritative user-supplied content and must
             # NOT be filtered/summarised; the surrounding RAG bypass at the
@@ -108,7 +108,7 @@ async def run_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
             from core.memory.semantic_memory import SemanticMemoryManager
 
             sem = SemanticMemoryManager()
-            _score, top_k = await sem.search_with_paths(
+            _score, top_k, _indexed_at = await sem.search_with_paths(
                 user_input=user_input,
                 workspace_hash=project_id,
             )
