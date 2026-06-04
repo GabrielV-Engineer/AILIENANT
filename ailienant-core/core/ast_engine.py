@@ -91,6 +91,16 @@ _lang_cache: Dict[str, Language] = {}
 _lang_cache_lock = threading.Lock()
 
 
+def ast_content_hash(content: str) -> str:
+    """blake2b content digest — the shared key primitive.
+
+    Both the AST tree cache (re-parse only on content change) and the semantic
+    response cache key off this exact digest, so a single function owns the
+    "did the bytes change?" decision across both subsystems.
+    """
+    return hashlib.blake2b(content.encode(), digest_size=16).hexdigest()
+
+
 def _get_language(lang_key: str) -> Optional[Language]:
     with _lang_cache_lock:
         if lang_key in _lang_cache:
@@ -126,7 +136,7 @@ class ASTEngine:
         lang_key = _LANG_MAP.get(language_id)
         if lang_key is None:
             return None
-        content_hash = hashlib.blake2b(content.encode(), digest_size=16).hexdigest()
+        content_hash = ast_content_hash(content)
         with self._lock:
             cached = self._cache.get(path)
             if cached and cached[0] == content_hash:

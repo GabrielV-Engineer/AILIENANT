@@ -349,18 +349,42 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
     ]
 
     # 2. Generate edits (BYOM-aware ainvoke → active preset, JSON mode).
+    # Semantic response cache: an identical step over unchanged context returns
+    # the prior model output with no network round-trip. The live (RAM-VFS)
+    # current_content and RAG snippets fold into the key, so an unsaved edit
+    # naturally produces a fresh key — no separate dirty-buffer bypass needed.
     from tools.llm_gateway import LLMGateway
     from shared.config import MODEL_BIG
+    from core.response_cache import response_cache
+
+    cache_context = [(target_file, current_content or "")] + [
+        (p, s) for p, s in rag_snippets if s
+    ]
+    cache_key = response_cache.build_key(
+        intent=f"{target_step.action}|{target_file}|{target_step.description}",
+        context=cache_context,
+        project_id=project_id,
+        model=MODEL_BIG,
+    )
+    cache_paths = [target_file] + [p for p, _ in rag_snippets]
     try:
-        resp = await LLMGateway.ainvoke(
-            messages=messages,
-            model=MODEL_BIG,
-            temperature=0.0,
-            response_format={"type": "json_object"},
-            session_id=session_id,
-            state=state,
-        )
-        raw = LLMGateway._sanitize_json_response(resp.choices[0].message.content or "")
+        # Probe (lock released before inference); on miss, run then store. The
+        # gateway await never sits inside the cache lock.
+        cached = response_cache.probe(cache_key)
+        if cached is not None:
+            content = cached
+        else:
+            resp = await LLMGateway.ainvoke(
+                messages=messages,
+                model=MODEL_BIG,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                session_id=session_id,
+                state=state,
+            )
+            content = resp.choices[0].message.content or ""
+            response_cache.store(cache_key, content, cache_paths)
+        raw = LLMGateway._sanitize_json_response(content)
         parsed = json.loads(raw)
         raw_edits = parsed.get("edits", []) if isinstance(parsed, dict) else []
     except Exception as exc:  # noqa: BLE001 — a generation failure becomes a soft error
