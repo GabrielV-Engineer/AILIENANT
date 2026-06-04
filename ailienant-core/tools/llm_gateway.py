@@ -82,7 +82,30 @@ def _find_superset_node(node: Any, required: "set[str]") -> Optional[Dict[str, A
                 return found
     return None
 
-# ── Phase 6.3 — OOM Cascade & Inference Resilience ──────────────────────────
+
+# ── response_format graceful degradation ────────────────────────────────────
+# Some local backends 400 on the json-mode param. We don't guess by is_local —
+# we learn: a model that rejects response_format is memoed here, and subsequent
+# calls strip the param pre-emptively so an incompatible backend pays the failed
+# round-trip at most once per session. Capable backends never error → never
+# memoed → keep native JSON mode. Bounded so a churn of model names can't grow
+# the set without limit.
+_RESPONSE_FORMAT_UNSUPPORTED: set[str] = set()
+_RESPONSE_FORMAT_MEMO_CAP: int = 128
+
+
+def _is_response_format_error(exc: Exception) -> bool:
+    """True when the backend's error text names the json-mode param it rejected."""
+    return "response_format" in str(exc).lower()
+
+
+def _remember_rf_unsupported(model: str) -> None:
+    """Memo a model that rejected response_format (bounded; skip add when full)."""
+    if model and len(_RESPONSE_FORMAT_UNSUPPORTED) < _RESPONSE_FORMAT_MEMO_CAP:
+        _RESPONSE_FORMAT_UNSUPPORTED.add(model)
+
+
+# ─ OOM Cascade & Inference Resilience ──────────────────────────
 # ainvoke() is the single LLM chokepoint. When a local model exhausts its
 # context window or VRAM, the OOM-class exception is trapped at the
 # litellm.acompletion call site, the local KV cache is purged, the message
@@ -130,16 +153,16 @@ async def _oom_cascade(
 ) -> ModelResponse:
     """OOM rescue: purge VRAM → mark state → trim context → re-emit to cloud.
 
-    Single-turn recovery (Blueprint §4.2). Sequential, NOT recursive: a second
+    Single-turn recovery. Sequential, NOT recursive: a second
     OOM on the cloud model propagates out of ainvoke() naturally — the
-    double-fault → DLQ path is Phase 6.4 scope.
+    double-fault → DLQ path.
     """
     logger.warning(
         "OOM cascade engaged [trace=%s] failed_model=%s reason=%s",
         trace_id, failed_model, reason,
     )
 
-    # 1. Purge the local KV cache / VRAM (Phase 4.4 hook — argless signature).
+    # 1. Purge the local KV cache / VRAM (argless signature).
     from core.lifecycle_manager import lifecycle_manager
     await lifecycle_manager.release_vram_on_mode_switch()
 
@@ -228,7 +251,7 @@ _PRIORITY_MODEL_MAP: dict[TaskPriority, str] = {
     TaskPriority.CLOUD: MODEL_BIG,
 }
 
-# Phase 3.4.8 — protocol-friendly alias for the routing tiers.
+# protocol-friendly alias for the routing tiers.
 Tier = TaskPriority
 
 
@@ -239,7 +262,7 @@ def _classify_model_as_tier(model_name: str) -> TaskPriority:
     return TaskPriority.LOCAL
 
 
-# Phase 9 (ADR-707) — Native Thinking capability gate.
+# Native Thinking capability gate.
 # Substrings (lower-cased) that identify a model exposing native reasoning
 # tokens. Anthropic Extended Thinking surfaces them via LiteLLM's normalized
 # ``delta.reasoning_content``; open reasoning models (DeepSeek-R1, QwQ) do the
@@ -308,7 +331,7 @@ class LLMGateway:
     def _extract_nested_schema_target(
         raw_str: str, schema_class: Type[BaseModel]
     ) -> Dict[str, Any]:
-        """Phase 7.10.4 (ADR-704 / G5) — AST-aware recursive envelope unwrapper.
+        """ AST-aware recursive envelope unwrapper.
 
         Local/BYOM models routinely wrap structured output: a markdown fence,
         conversational prose around the object, or a top-level envelope key such as
@@ -359,22 +382,30 @@ class LLMGateway:
         logger.debug(
             "LLM invoke — model=%s base_url=%s trace=%s", model, cfg["base_url"], trace_id
         )
+        kwargs: dict[str, Any] = dict(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            max_retries=LLM_MAX_TRANSPORT_RETRIES,
+            metadata={"session_id": trace_id},
+            extra_headers={"X-Ailienant-Trace-ID": trace_id},
+            **cfg,
+        )
+        if response_format and kwargs["model"] not in _RESPONSE_FORMAT_UNSUPPORTED:
+            kwargs["response_format"] = response_format
         try:
-            kwargs: dict[str, Any] = dict(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout,
-                max_retries=LLM_MAX_TRANSPORT_RETRIES,
-                metadata={"session_id": trace_id},
-                extra_headers={"X-Ailienant-Trace-ID": trace_id},
-                **cfg,
-            )
-            if response_format:
-                kwargs["response_format"] = response_format
             return litellm.completion(**kwargs)
         except Exception as e:
+            if "response_format" in kwargs and _is_response_format_error(e):
+                logger.warning(
+                    "Backend rejected response_format; stripping + retrying once [trace=%s]",
+                    trace_id,
+                )
+                _remember_rf_unsupported(kwargs["model"])
+                kwargs.pop("response_format", None)
+                return litellm.completion(**kwargs)
             logger.error("LLM invoke failed [trace=%s]: %s", trace_id, e)
             raise
 
@@ -392,11 +423,11 @@ class LLMGateway:
     ) -> ModelResponse:
         """Async LLM call — non-blocking on the FastAPI event loop.
 
-        Phase 3.4.8 — pass `tier=Tier.LOCAL` or `tier=Tier.CLOUD` to route via
+        — pass `tier=Tier.LOCAL` or `tier=Tier.CLOUD` to route via
         the priority map (overrides `model`). If `tier` is None, `model` is used
         directly and the tier is inferred from the model name for accounting.
 
-        Phase 6.3 — `state` is the optional LangGraph state dict. When supplied,
+        — `state` is the optional LangGraph state dict. When supplied,
         an OOM-class failure mutates it (`oom_fallback_active`, `security_flags`)
         before re-emitting to the cloud fallback model; see `_oom_cascade`.
         """
@@ -405,7 +436,7 @@ class LLMGateway:
             _PRIORITY_MODEL_MAP[tier] if tier is not None else model
         )
 
-        # Phase 7.9.B.16 — BYOM-aware routing. Resolve `ailienant/*` tier aliases to
+        # — BYOM-aware routing. Resolve `ailienant/*` tier aliases to
         # the active preset's concrete model and call it directly (no proxy). Falls
         # back to the LiteLLM proxy when no preset is active (back-compat). This is
         # the single chokepoint that un-stubs the planner + mini-judge + coder.
@@ -456,7 +487,7 @@ class LLMGateway:
                 extra_headers={"X-Ailienant-Trace-ID": trace_id},
                 **cfg,
             )
-        if response_format:
+        if response_format and kwargs["model"] not in _RESPONSE_FORMAT_UNSUPPORTED:
             kwargs["response_format"] = response_format
         try:
             response: ModelResponse = await litellm.acompletion(**kwargs)
@@ -476,10 +507,19 @@ class LLMGateway:
             logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, exc)
             raise
         except Exception as e:
-            logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
-            raise
+            if "response_format" in kwargs and _is_response_format_error(e):
+                logger.warning(
+                    "Backend rejected response_format; stripping + retrying once [trace=%s]",
+                    trace_id,
+                )
+                _remember_rf_unsupported(kwargs["model"])
+                kwargs.pop("response_format", None)
+                response = await litellm.acompletion(**kwargs)
+            else:
+                logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
+                raise
 
-        # Phase 3.4.8 — record token usage to the global ledger by tier.
+        # — record token usage to the global ledger by tier.
         try:
             from core.token_ledger import token_ledger
             usage = getattr(response, "usage", None)
@@ -541,7 +581,7 @@ class LLMGateway:
             raise
 
     # -------------------------------------------------------------------------
-    # Phase 7.9.B.13 — Direct BYOM calls (proxy-free)
+    # Direct BYOM calls (proxy-free)
     # -------------------------------------------------------------------------
     # These bypass get_litellm_config() / the LiteLLM proxy and call the active
     # BYOM preset's model directly via its resolved api_base/api_key. Used by the
@@ -594,7 +634,7 @@ class LLMGateway:
         Yields non-empty token-delta strings for WebSocket broadcast. Raises
         NoAvailableProviderError when no BYOM preset is active.
 
-        Phase 7.11.3 (ADR-706 §4.5b FinOps integrity) — opt into LiteLLM's
+        (FinOps integrity) — opt into LiteLLM's
         ``stream_options={"include_usage": True}`` so the final chunk carries
         a ``usage`` object with prompt/completion token counts. The accounting
         block lives in a ``finally`` so it ALWAYS runs — completion path AND
@@ -650,7 +690,7 @@ class LLMGateway:
                 logger.debug("Stream token accounting failed (non-fatal): %s", exc)
 
     # -------------------------------------------------------------------------
-    # Phase 9 (ADR-707) — Native Thinking streaming (proxy-free BYOM)
+    # — Native Thinking streaming (proxy-free BYOM)
     # -------------------------------------------------------------------------
 
     @staticmethod
