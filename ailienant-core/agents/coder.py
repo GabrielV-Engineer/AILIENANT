@@ -116,6 +116,16 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
 
     from api.websocket_manager import vfs_manager  # deferred — avoids circular import
 
+    # Granular sub-step narration. task_service injects an async emitter on
+    # config.configurable["narrate"] (kept off graph state so the checkpointer never
+    # serializes a callable); the coder stays decoupled from the transport layer
+    # (never imports the WS manager for this) — the cognitive-isolation fence holds.
+    _narrate = (config or {}).get("configurable", {}).get("narrate")
+
+    async def _emit(node_name: str) -> None:
+        if _narrate is not None:
+            await _narrate(node_name)
+
     # read_file produces nothing to patch — the context it gathers is already
     # folded into the running state, so the step genuinely completed.
     if target_step.action == "read_file":
@@ -126,48 +136,140 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
             **({"security_flags": new_security_flags} if new_security_flags else {}),
         }
 
-    # run_command is an execute-tier action with no live dispatch edge: the coder
-    # has no sandbox to spawn into. Marking it "completed" would lie to the
-    # operator that a command ran. Surface it honestly as failed-and-deferred so
-    # the step chip and the review notes both reflect that nothing executed.
+    # run_command closes the feedback loop: dispatch the step's command into the
+    # resolved sandbox tier and convert a non-zero exit into the same self-healing
+    # signal an in-node exception would raise, so the existing route_after_coder →
+    # error_correction path re-drafts. For a run_command step the command lives in
+    # target_file (the WBS schema overloads it: "ruta ... o comando a ejecutar").
     if target_step.action == "run_command":
-        target_step.status = "failed"
-        new_security_flags.append(
-            f"EXECUTE_TIER_DEFERRED:{target_step.target_role}:{target_step.target_file}"
-        )
-        # The synchronous status write above is atomic w.r.t. the loop (no await
-        # between read and write); the IDE notify is fire-and-forget so it never
-        # blocks the node, and the returned dict is the authoritative transition
-        # the reducer applies serially on node exit.
-        _t = asyncio.create_task(
-            vfs_manager.emit_graph_mutation(
-                session_id=session_id,
-                step_number=target_step.step_number,
-                new_status="failed",
-                agent_name="CoderAgent",
+
+        def _notify_status(new_status: str) -> None:
+            # Fire-and-forget IDE chip update. The synchronous step status write is
+            # atomic w.r.t. the loop (no await between read and write); the returned
+            # dict is the authoritative transition the reducer applies on node exit.
+            _t = asyncio.create_task(
+                vfs_manager.emit_graph_mutation(
+                    session_id=session_id,
+                    step_number=target_step.step_number,
+                    new_status=new_status,
+                    agent_name="CoderAgent",
+                )
             )
+            _background_tasks.add(_t)
+            _t.add_done_callback(_background_tasks.discard)
+
+        from core.sandbox import get_active_adapter
+
+        adapter = get_active_adapter()
+
+        # No resolved tier → nothing to spawn into. Marking it "completed" would lie
+        # that a command ran; surface it honestly as failed-and-deferred. This is the
+        # operator-honesty contract — it holds ONLY when no adapter exists.
+        if adapter is None:
+            target_step.status = "failed"
+            new_security_flags.append(
+                f"EXECUTE_TIER_DEFERRED:{target_step.target_role}:{target_step.target_file}"
+            )
+            _notify_status("failed")
+            return {
+                "current_step_id": target_step.step_number,
+                "target_role": target_step.target_role,
+                "errors": [
+                    f"CoderAgent step #{target_step.step_number}: run_command was NOT "
+                    "executed — no sandbox adapter is active."
+                ],
+                "security_flags": new_security_flags,
+            }
+
+        command = target_step.target_file
+        await _emit(f"running {command}")
+
+        # Execute-tier gate, consulted before any spawn — the same choke point
+        # SandboxBashTool uses (imported, not duplicated). PLAN denies outright.
+        from core.permissions import (
+            PermissionDecision,
+            gate_execute_action,
+            session_mode_from_channel,
         )
-        _background_tasks.add(_t)
-        _t.add_done_callback(_background_tasks.discard)
+
+        session_mode = session_mode_from_channel(state.get("session_permission_mode"))
+        if gate_execute_action(session_mode) is PermissionDecision.DENY:
+            target_step.status = "failed"
+            _notify_status("failed")
+            return {
+                "current_step_id": target_step.step_number,
+                "target_role": target_step.target_role,
+                "errors": [
+                    f"CoderAgent step #{target_step.step_number}: run_command DENIED "
+                    "— plan mode is read-only; command not executed."
+                ],
+                **({"security_flags": new_security_flags} if new_security_flags else {}),
+            }
+
+        from tools.execution_tools import _sandbox_env
+
+        # Read the verdict from the typed SandboxResult.exit_code (an int) — never
+        # re-parse it from rendered text, where a stdout containing the literal
+        # "exit=" could corrupt extraction.
+        verify_result = await adapter.execute(
+            command,
+            timeout_s=120.0,
+            cwd=workspace_root,
+            env_whitelist=_sandbox_env(),
+            session_id=session_id,
+        )
+
+        if verify_result.exit_code == 0:
+            target_step.status = "completed"
+            _notify_status("completed")
+            await _emit(f"verified {command}")
+            return {
+                "current_step_id": target_step.step_number,
+                "target_role": target_step.target_role,
+                **({"security_flags": new_security_flags} if new_security_flags else {}),
+            }
+
+        # Non-zero exit → distil structured diagnostics (NOT raw stdout) and re-enter
+        # the self-heal path. Mirror the reflexion_guard delta so the existing edge
+        # routes to error_correction, which threads this step's target_file as the
+        # correction candidate (pytest/mypy output yields no traceback frame).
+        from brain.failure_breaker import normalize_signature
+        from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
+        from tools.validation.diagnostics import format_diagnostics, select_parser
+
+        parser = select_parser(command)
+        diagnostics = format_diagnostics(parser(verify_result.stdout, verify_result.stderr))
+        attempts = int(state.get("correction_attempts", 0))
+
+        target_step.status = "failed"
+        _notify_status("failed")
+
+        # Budget exhausted → concede gracefully instead of looping forever (mirrors
+        # reflexion_guard re-raising to the DLQ at the budget edge, without raising).
+        if attempts >= CORRECTION_MAX_ATTEMPTS:
+            await _emit(f"giving up on {command} after {attempts} attempts")
+            return {
+                "current_step_id": target_step.step_number,
+                "target_role": target_step.target_role,
+                "errors": [
+                    f"CoderAgent step #{target_step.step_number}: '{command}' still "
+                    f"failing after {attempts} correction attempts:\n{diagnostics}"
+                ],
+                **({"security_flags": new_security_flags} if new_security_flags else {}),
+            }
+
         return {
+            "healing_required": True,
+            "correction_attempts": attempts + 1,
+            "last_error_trace": diagnostics,
+            "failed_node": "coder_agent",
+            "failure_signature": normalize_signature(
+                "coder_agent", "VerifyFailure", command
+            ),
             "current_step_id": target_step.step_number,
             "target_role": target_step.target_role,
-            "errors": [
-                f"CoderAgent step #{target_step.step_number}: run_command was NOT "
-                "executed — execute-tier actions are out-of-scope by design."
-            ],
-            "security_flags": new_security_flags,
+            **({"security_flags": new_security_flags} if new_security_flags else {}),
         }
-
-    # Granular sub-step narration. task_service injects an async emitter on
-    # config.configurable["narrate"] (kept off graph state so the checkpointer never
-    # serializes a callable); the coder stays decoupled from the transport layer
-    # (never imports the WS manager for this) — the cognitive-isolation fence holds.
-    _narrate = (config or {}).get("configurable", {}).get("narrate")
-
-    async def _emit(node_name: str) -> None:
-        if _narrate is not None:
-            await _narrate(node_name)
 
     # Surface the file the coder is about to inspect so the IDE action-log shows
     # live read activity; basename keeps the workspace path private and the
