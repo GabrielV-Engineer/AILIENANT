@@ -2,6 +2,20 @@
 
 ---
 
+## Hito 7.18.3: AST-Skeleton Code-STYLE Few-Shot (Few-Shot · upgrade #3) — 2026-06-04
+
+- **Status:** OK — cuarta sub-fase de la Fase 7.18 (ADR-743). Cierra la única técnica que la auditoría marcó como PARCIAL: el coder ya recibía exemplars de *formato* (formas JSON) y RAG de *topología* (GraphRAG), pero ningún exemplar de *estilo de código* — nada que diga "escríbelo como las funciones que ya existen en este proyecto". Ahora, antes de generar una edición, el prompt del coder lleva 2-3 **esqueletos** de funciones reales del mismo lenguaje: firma + type hints + docstring, con el cuerpo elidido a `...`. Enseña convención (cómo se escribe una función aquí) sin filtrar lógica (que invitaría a copy-paste). DoD verde: `mypy .` **Success: no issues found in 242 source files** (0 errores); `test_style_exemplars.py` 8 passed; pyright 0/0 en los archivos mutados.
+
+- **Naturaleza (reuso del motor, no `ast` de stdlib):** net-new `extract_skeleton(content, language_id)` en `core/ast_engine.py` — el motor tree-sitter políglota (20+ lenguajes, cacheado por content-hash) que ya posee `_LANG_MAP`. La elisión de cuerpo se apoya en un único idioma transversal: el cuerpo de la función cuelga del nodo función bajo el field name **`body`** (`child_by_field_name("body")`) en python, JS/TS, Rust, Go, Java, C… — sin tabla por-gramática. Detección de lenguaje vía `detect_language` (`shared/contracts.py`), la misma que alimenta el ingest.
+
+- **Una sola retrieval para dos bloques (sin segunda llamada de embedding):** se separó el *fetch* del *format* en `coder.py`. `_fetch_rag_snippets` hace la única llamada a `search_snippets`; los pares `(file_path, snippet)` alimentan tanto `_build_rag_block` (topología, ahora puro-formato) como el nuevo `_build_style_block` (estilo). El bloque de estilo filtra a los pares del mismo lenguaje que el target, destila cada uno y los enmarca bajo `STYLE_EXEMPLAR_HEADER` (constante en `agents/prompts.py`), distinto del header GraphRAG. Best-effort en cada capa: `""` ante cualquier fallo.
+
+- **Defensivo ante el corte a 500-char (riesgos del Arquitecto):** los `content_snippet` se truncan a `content[:500]` en el ingest, así que tree-sitter ve código sintácticamente roto (nodos `ERROR`/`MISSING`). El recorrido es ultra-defensivo: todo acceso a `child_by_field_name`/índices está guardado, los nodos sin `body` se omiten, y el walk completo está envuelto en `try/except → ""` — un tail truncado nunca lanza. La distillación opera sobre texto **decodificado** (`func.text[:offset].decode`), nunca concatena byte-pointers desnudos entre decodes separados, preservando la indentación del docstring. Output acotado a `_SKELETON_MAX_BYTES` por seguridad de tokens.
+
+- **Files changed:** EDIT `ailienant-core/core/ast_engine.py` (`extract_skeleton` + helpers + `_SKELETON_MAX_BYTES`), `ailienant-core/agents/prompts.py` (`STYLE_EXEMPLAR_HEADER`), `ailienant-core/agents/coder.py` (split fetch/format + `_build_style_block` + cableado al prompt). NUEVO `ailienant-core/tests/test_style_exemplars.py` (8 tests: skeleton python, happy path, filtro mismo-lenguaje, vacío/exótico, lenguaje exótico, truncado sin lanzar, distinción vs topología, byte cap). Docs EDIT: `PROJECT_MANIFEST.md` (7.18.3 → `[x]`, Próximo Objetivo → 7.18.4), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.18.2: `response_format` Graceful Degradation (Tool Use) — 2026-06-04
 
 - **Status:** OK — tercera sub-fase de la Fase 7.18 (ADR-742). Varios agentes pasan `response_format={"type":"json_object"}` al gateway (planner, coder, ideation, analyst×3, contract_guard, error_correction, task_service). Muchos backends locales (builds viejos de Ollama/llama.cpp, algunos endpoints BYOM) rechazan ese parámetro con un 400 que hoy mata el turno del agente — aunque el modelo podría responder bien en texto plano y todos los callers **ya** corren una capa robusta de reparación JSON. DoD verde: `mypy .` **Success: no issues found in 241 source files** (0 errores); `test_response_format_degradation.py` 7 passed; regresiones OOM cascade + timeout 20 passed sin regresión.

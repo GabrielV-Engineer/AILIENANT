@@ -151,3 +151,148 @@ class ASTEngine:
     def invalidate(self, path: str) -> None:
         with self._lock:
             self._cache.pop(path, None)
+
+
+# --- Code-STYLE skeleton distillation (Few-Shot exemplars) ---
+# Why: feeding the coder whole functions as style exemplars leaks logic (invites
+# copy-paste) and burns tokens. A skeleton keeps the part that teaches house
+# convention — signature, type hints, docstring — and elides the body to '...'.
+# The function body hangs off the function node under the field name "body" across
+# every tree-sitter grammar (python, JS/TS, Rust, Go, Java, C, …), so a single
+# polyglot idiom drives the elision — no per-grammar body-type table.
+
+_SKELETON_MAX_BYTES: int = 1500
+_FUNCTION_NODE_HINTS: Tuple[str, ...] = ("function", "method", "constructor")
+_SKELETON_PARSE_KEY: str = "<skeleton-distill>"
+
+# Dedicated cache so transient snippet parses never pollute the ingest engine.
+_skeleton_engine = ASTEngine()
+
+
+def _is_function_like(node: Any) -> bool:
+    """A node that names a callable and exposes a 'body' field is a function."""
+    type_name = getattr(node, "type", "") or ""
+    if not any(hint in type_name for hint in _FUNCTION_NODE_HINTS):
+        return False
+    try:
+        return node.child_by_field_name("body") is not None
+    except Exception:
+        return False
+
+
+def _collect_function_nodes(root: Any) -> list[Any]:
+    """Pre-order walk yielding function-like nodes in source order.
+
+    Function bodies are NOT descended into, so nested closures are not listed
+    separately (their enclosing skeleton already elides them).
+    """
+    found: list[Any] = []
+    stack: list[Any] = [root]
+    while stack:
+        node = stack.pop()
+        if node is None:
+            continue
+        if _is_function_like(node):
+            found.append(node)
+            continue  # do not descend into the body we are about to elide
+        children = getattr(node, "children", None) or []
+        stack.extend(reversed(children))
+    return found
+
+
+def _leading_comment(func: Any) -> str:
+    """Contiguous doc-comment sibling(s) immediately above the function (JSDoc, ///).
+
+    Bounded to comments that sit directly above (≤1 newline gap) so module-level
+    license headers are never swept in.
+    """
+    try:
+        comments: list[str] = []
+        prev = func.prev_sibling
+        anchor_start = func.start_byte
+        while prev is not None and prev.type == "comment":
+            if anchor_start - prev.end_byte > 2:  # blank-line gap → unrelated comment
+                break
+            comments.append(prev.text.decode("utf-8", "replace"))
+            anchor_start = prev.start_byte
+            prev = prev.prev_sibling
+        return "\n".join(reversed(comments))
+    except Exception:
+        return ""
+
+
+def _python_docstring(body: Any) -> str:
+    """The body's leading string literal, if any (Python docstring)."""
+    try:
+        named = [c for c in body.named_children if c.type != "comment"]
+        if not named:
+            return ""
+        first = named[0]
+        if (
+            first.type == "expression_statement"
+            and first.named_children
+            and first.named_children[0].type == "string"
+        ):
+            return str(first.named_children[0].text.decode("utf-8", "replace"))
+    except Exception:
+        return ""
+    return ""
+
+
+def _function_skeleton(func: Any, language_id: str) -> str:
+    """Signature (+ Python docstring) with the body elided to '...'.
+
+    Operates on the decoded function text so indentation is never corrupted by
+    bare byte-pointer arithmetic. Returns '' for any malformed/body-less node.
+    """
+    try:
+        body = func.child_by_field_name("body")
+        if body is None:
+            return ""
+        sig_len = body.start_byte - func.start_byte
+        if sig_len <= 0:
+            return ""
+        signature = func.text[:sig_len].decode("utf-8", "replace").rstrip()
+        if not signature:
+            return ""
+    except Exception:
+        return ""
+
+    if language_id == "python":
+        doc = _python_docstring(body)
+        skeleton = f"{signature}\n    {doc}\n    ..." if doc else f"{signature}\n    ..."
+    else:
+        skeleton = f"{signature} {{ ... }}"
+
+    comment = _leading_comment(func)
+    return f"{comment}\n{skeleton}" if comment else skeleton
+
+
+def extract_skeleton(content: str, language_id: str) -> str:
+    """Distill source into function skeletons (signature + docstring, body → '...').
+
+    Reuses the polyglot tree-sitter engine. Best-effort: returns '' on empty
+    input, unsupported language, parse failure, or any unexpected node shape —
+    never raises. Output is hard-capped at _SKELETON_MAX_BYTES for token safety.
+    """
+    if not content.strip():
+        return ""
+    try:
+        tree = _skeleton_engine.parse(_SKELETON_PARSE_KEY, content, language_id)
+        if tree is None:
+            return ""
+        skeletons = [
+            skel
+            for func in _collect_function_nodes(tree.root_node)
+            if (skel := _function_skeleton(func, language_id))
+        ]
+        if not skeletons:
+            return ""
+        joined = "\n\n".join(skeletons)
+        encoded = joined.encode("utf-8")
+        if len(encoded) > _SKELETON_MAX_BYTES:
+            joined = encoded[:_SKELETON_MAX_BYTES].decode("utf-8", "ignore").rstrip()
+        return joined
+    except Exception as exc:
+        logger.debug("extract_skeleton failed (non-fatal): %s", exc)
+        return ""

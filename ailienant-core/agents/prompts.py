@@ -49,6 +49,17 @@ ROLE_CONSTRAINTS = {
     ),
 }
 
+# Few-Shot style header: frames AST skeletons of real same-language project
+# functions so the coder matches house convention WITHOUT copying logic. Kept
+# distinct from the topology GraphRAG block (which supplies relevant context, not
+# a style template). Bodies arrive elided to '...' from extract_skeleton.
+STYLE_EXEMPLAR_HEADER = (
+    "\n\n# House style exemplars (same-language, project code)\n"
+    "Match the conventions of these existing functions — naming, type-hint "
+    "density, docstring style, structure. Do NOT copy their logic; bodies are "
+    "intentionally elided.\n\n"
+)
+
 # =====================================================================
 # SHIELDED SYSTEM PROMPTS ENGINE (XML DYNAMIC SANDBOXING)
 # =====================================================================

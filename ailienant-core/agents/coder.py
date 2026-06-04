@@ -38,18 +38,28 @@ def _make_vfs_reader(project_id: str, workspace_root: str, session_id: str):
     return make_safe_reader(project_id, workspace_root, session_id)
 
 
-async def _build_rag_block(target_file: str, description: str, project_id: str) -> str:
-    """GraphRAG snippet block for the coder system prompt (best-effort)."""
+async def _fetch_rag_snippets(
+    target_file: str, description: str, project_id: str
+) -> list[tuple[str, str]]:
+    """Single GraphRAG retrieval shared by the topology and style blocks.
+
+    Fetching once (vs. once per block) avoids a redundant embedding call against
+    the vector store. Best-effort: returns [] on missing project or any failure.
+    """
     if not project_id:
-        return ""
+        return []
     try:
         from core.memory.semantic_memory import SemanticMemoryManager
-        snippets = await SemanticMemoryManager().search_snippets(
+        return await SemanticMemoryManager().search_snippets(
             f"{target_file} {description}", workspace_hash=project_id, k=3
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("Coder RAG fetch failed (non-fatal): %s", exc)
-        return ""
+        return []
+
+
+def _build_rag_block(snippets: list[tuple[str, str]]) -> str:
+    """GraphRAG topology block for the coder system prompt (best-effort)."""
     blocks = "\n\n".join(f"### {p}\n{s}" for p, s in snippets if s)
     if not blocks:
         return ""
@@ -57,6 +67,33 @@ async def _build_rag_block(target_file: str, description: str, project_id: str) 
         "\n\n# Relevant workspace context (GraphRAG)\n"
         "Excerpts from the project that may help you write a correct edit.\n\n" + blocks
     )
+
+
+def _build_style_block(target_file: str, snippets: list[tuple[str, str]]) -> str:
+    """Few-Shot code-STYLE block: AST skeletons of same-language project functions.
+
+    Distinct from the topology block — this teaches house convention (signatures,
+    type hints, docstrings) with bodies elided, never logic. Filters the shared
+    snippets to the target file's language, distills each to a skeleton, and frames
+    them under STYLE_EXEMPLAR_HEADER. Best-effort: returns '' when nothing usable.
+    """
+    from shared.contracts import detect_language
+    from core.ast_engine import extract_skeleton
+    from agents.prompts import STYLE_EXEMPLAR_HEADER
+
+    lang = detect_language(target_file)
+    if not lang:
+        return ""
+    skeletons = [
+        skel
+        for path, snippet in snippets
+        if snippet and detect_language(path) == lang
+        for skel in (extract_skeleton(snippet, lang),)
+        if skel
+    ][:3]
+    if not skeletons:
+        return ""
+    return STYLE_EXEMPLAR_HEADER + "\n\n".join(skeletons)
 
 
 async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -> dict:
@@ -276,10 +313,14 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
     # narration-gate charge small.
     await _emit(f"reading {os.path.basename(target_file)}")
 
-    # 1. Context assembly: current file + GraphRAG snippets.
+    # 1. Context assembly: current file + GraphRAG snippets. One retrieval feeds
+    # both the topology block (relevant context) and the style block (house
+    # convention exemplars) so the vector store is hit only once.
     _read_vfs = _make_vfs_reader(project_id, workspace_root, session_id)
     current_content = _read_vfs(target_file)
-    rag_block = await _build_rag_block(target_file, target_step.description, project_id)
+    rag_snippets = await _fetch_rag_snippets(target_file, target_step.description, project_id)
+    rag_block = _build_rag_block(rag_snippets)
+    style_block = _build_style_block(target_file, rag_snippets)
 
     boundary = uuid.uuid4().hex
     if current_content is not None:
@@ -303,7 +344,7 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
     )
 
     messages = [
-        {"role": "system", "content": system_prompt + rag_block},
+        {"role": "system", "content": system_prompt + rag_block + style_block},
         {"role": "user", "content": instruction},
     ]
 
