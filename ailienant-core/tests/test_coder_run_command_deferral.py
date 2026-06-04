@@ -1,20 +1,24 @@
-"""CoderAgent run_command honesty — execute-tier steps must not lie as completed.
+"""CoderAgent run_command honesty — no sandbox means no false "completed".
 
-The coder has no live execute edge: it generates patches, it never spawns a
-shell. A planned ``run_command`` step therefore cannot run. Reporting it as
+The coder now dispatches a ``run_command`` step into the resolved sandbox tier
+(see ``test_phase7_18_executor`` for the closed-loop behaviour). But when no
+adapter is resolved there is nothing to spawn into, and reporting the step as
 ``completed`` would deceive the operator into believing a command executed.
-These tests pin the honest contract: ``run_command`` is surfaced as a failed,
-deferred step (chip flips, review notes explain it), while ``read_file`` — which
-genuinely has nothing to apply — still completes silently.
+These tests pin that honesty contract at the boundary that still governs it:
+with ``ACTIVE_ADAPTER is None`` the step is surfaced as a failed, deferred step
+(chip flips, review notes explain it, ``EXECUTE_TIER_DEFERRED`` flag raised),
+while ``read_file`` — which genuinely has nothing to apply — still completes
+silently.
 """
 from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List
-from unittest.mock import AsyncMock, patch
 
 import pytest
+from unittest.mock import AsyncMock, patch
 
+import core.sandbox as sb
 from agents.coder import run_coder_node
 from brain.state import MissionSpecification, WBSStep
 
@@ -51,6 +55,13 @@ def _make_state(step: WBSStep) -> Dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
+def _no_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the honest-deferral boundary: no resolved sandbox tier. Overrides
+    conftest's autouse _DirectAdapter, which would otherwise run a subprocess."""
+    monkeypatch.setattr(sb, "ACTIVE_ADAPTER", None)
+
+
+@pytest.fixture(autouse=True)
 def _mock_emit() -> Any:
     """The skip branches return before any LLM/VFS/RAG I/O; only the WS notify
     is reached, so isolating emit_graph_mutation is sufficient."""
@@ -76,7 +87,7 @@ async def test_run_command_step_emits_deferral_error() -> None:
     assert errors, "expected a deferral note in errors"
     joined = " ".join(errors)
     assert "NOT" in joined and "executed" in joined
-    assert "out-of-scope" in joined
+    assert "no sandbox adapter" in joined
 
 
 @pytest.mark.anyio
@@ -85,6 +96,15 @@ async def test_run_command_step_emits_security_flag() -> None:
     result = await run_coder_node(_make_state(step))
     flags: List[str] = result.get("security_flags", [])
     assert any(f.startswith("EXECUTE_TIER_DEFERRED:") for f in flags)
+
+
+@pytest.mark.anyio
+async def test_run_command_does_not_request_healing() -> None:
+    """A deferred step concedes — it must NOT enter the self-heal loop (there was
+    no failure to correct, only an absent sandbox)."""
+    step = _make_step("run_command")
+    result = await run_coder_node(_make_state(step))
+    assert not result.get("healing_required")
 
 
 @pytest.mark.anyio

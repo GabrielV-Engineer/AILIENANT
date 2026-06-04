@@ -2,6 +2,24 @@
 
 ---
 
+## Hito 7.18.0: Closed-Loop Sandboxed Executor (Feedback Loop · cabecera) — 2026-06-04
+
+- **Status:** OK — primera sub-fase de ejecución de la Fase 7.18 (ADR-740). Cierra el bucle agéntico de verificación: un paso `run_command` ahora **se despacha al tier de sandbox resuelto**, y un exit≠0 se convierte en la misma señal `healing_required` que levantaría una excepción de nodo, re-entrando al path `route_after_coder → error_correction` existente. DoD verde: `mypy .` **Success: no issues found in 238 source files** (0 errores); suite nueva 25 passed (`test_phase7_18_executor.py` + `test_diagnostics_parser.py`); `test_coder_run_command_deferral.py` revisado al nuevo contrato; suite completa sin regresión.
+
+- **Naturaleza (integración, no reconstrucción):** las partes difíciles ya existían y se reusaron enteras — `get_active_adapter()`/`SandboxResult` (Fase 6.1), el gate execute-tier (`gate_execute_action`/`session_mode_from_channel`, los mismos helpers que `SandboxBashTool`, importados, **no** duplicados), `route_after_coder` (que ya enruta `healing_required → error_correction`), `run_error_correction_node` (que **ya** hila el `target_file` del paso como candidato), la forma de delta de `reflexion_guard`, `normalize_signature`, `CORRECTION_MAX_ATTEMPTS`/`failure_breaker`, y los tipos `ValidationError`/`ValidationResult`. **Net-new** confinado a: un parser puro + la reescritura de la rama `run_command` + dos archivos de test.
+
+- **Parsing estructurado, no stdout crudo (upgrade #1 del Arquitecto):** nuevo módulo `tools/validation/diagnostics.py` destila la salida del sandbox a una lista compacta `ValidationError [file,line,code,msg]` en vez de re-inyectar el trace crudo (que trunca contexto y dispara coste de atención O(T²)). Parsers `parse_mypy`/`parse_pytest`/`parse_generic` + `select_parser` (por substring del comando) + `format_diagnostics` (con cap reusando el `_TRACE_CAP=4000`). **Contrato de totalidad (event-loop safety):** todo parser es total — degrada a `parse_generic` ante cualquier excepción y nunca lanza; un crash aquí mataría el hilo worker de FastAPI/LangGraph. Test dedicado alimenta basura binaria/malformada y asevera que ninguno lanza.
+
+- **Integridad del veredicto (riesgo proactivo del Arquitecto):** la rama lee `SandboxResult.exit_code` (un `int` tipado) directamente del `.execute()` del adaptador — **nunca** re-parsea el código de un string renderizado. Se llama deliberadamente `.execute()` (resultado tipado) y no `SandboxBashTool._arun()` (que renderiza `[sandbox_bash] exit=N\n<body>`, donde un `<body>` conteniendo el literal `exit=` corrompería una extracción por regex). Test dedicado: un `stdout` con el texto `exit=0` mientras `exit_code=1` → la rama lee `1` y enruta a heal.
+
+- **Contrato de honestidad preservado (continuidad con EX2/7.15.7):** la fila EX2 de la valla 7.15 pinó que `run_command` nunca miente como `completed`. Eso se mantiene **exactamente** cuando `get_active_adapter() is None` — `status="failed"` + flag `EXECUTE_TIER_DEFERRED`, sin entrar al self-heal (no hubo fallo que corregir, sólo sandbox ausente). El descubrimiento clave fue que `tests/conftest.py` cablea un `_DirectAdapter` autouse para toda la suite, así que el test de deferral debe forzar `ACTIVE_ADAPTER=None` para asertar ese límite; su premisa anterior ("el coder nunca spawnea un shell") quedó obsoleta y se revisó.
+
+- **Presupuesto:** al alcanzar `CORRECTION_MAX_ATTEMPTS` la rama concede con gracia (sin `healing_required`, error explicativo) en vez de loopear — espejo de `reflexion_guard` re-lanzando al DLQ en el borde del presupuesto, sin lanzar. PLAN deniega antes de cualquier despacho (gate).
+
+- **Files changed:** NUEVO `ailienant-core/tools/validation/diagnostics.py`, `ailienant-core/tests/test_phase7_18_executor.py`, `ailienant-core/tests/test_diagnostics_parser.py`. EDIT `ailienant-core/agents/coder.py` (rama `run_command` reescrita + helper de narración subido sobre las ramas tempranas), `ailienant-core/tests/test_coder_run_command_deferral.py` (revisado al contrato de no-adaptador). Docs EDIT: `PROJECT_MANIFEST.md` (7.18.0 → `[x]`), `TECH_DEBT_BACKLOG.md` (precondición de DEBT-009 ahora satisfacible), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+---
+
 ## Hito 7.18 (autoría WBS): Six-Technique Enterprise Hardening Sweep — 2026-06-03
 
 - **Status:** DOCUMENTADO — autoría del blueprint + WBS de un nuevo track backend, **sin código** (como 7.14/7.16 se documentaron antes de ejecutar). Esta entrada registra la decisión de fase; las entradas de cierre por sub-fase aterrizan conforme cada slice se implemente con su propia valla y bloque git.
