@@ -464,6 +464,12 @@ class ReactiveIndexer:
             logger.debug("ReactiveIndexer: unchanged %s — skip (idempotent).", filepath)
             return
 
+        # Confirmed change → evict any LLM responses cached against the old bytes.
+        # The same save event that refreshes RAG deterministically drops the stale
+        # plan/edit, so a hit can never serve a spec written for outdated content.
+        from core.response_cache import response_cache  # deferred — avoid import cycle
+        response_cache.invalidate_path(filepath)
+
         try:
             req = IndexingRequest(file_path=filepath, content=resolved, language_id=lang)
             result: IndexingResult = await compute_pool.run(index_file_sync, req)
@@ -495,6 +501,8 @@ class ReactiveIndexer:
         await purge_file_nodes(filepath, project_id)
         await self._semantic_delete(filepath, project_id)
         self._breaker.clear(f"{project_id}\x00{filepath}")
+        from core.response_cache import response_cache  # deferred — avoid import cycle
+        response_cache.invalidate_path(filepath)
         logger.info("ReactiveIndexer: purged %s (graph + vector)", filepath)
 
     # ── Side-effect helpers (deferred imports isolate optional subsystems) ─────

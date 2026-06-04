@@ -287,6 +287,9 @@ async def run_planner_node(
     # Single embedding call returns Top-K file paths + similarity score.
     # deep_parse: 1-degree SQLite neighbor expansion → VFS read → Tree-sitter (in thread).
     # CSS is fully recomputed here; block is subsumed.
+    # Captured boundary-free for the response-cache key (the assembled prompt
+    # embeds a random per-turn nonce, so it can never key a stable cache).
+    _deep_context_block: str = ""
     if updated_context_metrics is not None:
         try:
             # ── Fast-Boot: skip LanceDB embedding when AGENTS.md is fresh ─
@@ -359,6 +362,7 @@ async def run_planner_node(
             )
             css = _new_css
             if _deep_result.context_block:
+                _deep_context_block = _deep_result.context_block
                 system_prompt_text += f"\n\n{_deep_result.context_block}"
             logger.info(
                 "Phase 3.2: sem=%.4f graph=%.3f css=%.1f files_parsed=%d/%d",
@@ -523,93 +527,153 @@ async def run_planner_node(
         {"role": "user", "content": instruction},
     ]
 
+    # Semantic response cache identity. A deterministic planner draft over an
+    # unchanged context is served from memory; the whole assembled prompt folds
+    # into the key, so any edit to the active file (or retrieved context) misses.
+    # Bypass entirely when the user has unsaved buffers — a dirty turn must always
+    # re-plan against the live edits, never a stale cached spec.
+    from core.response_cache import response_cache
+
+    # Build the response-cache key from boundary-free, stable inputs only.
+    # system_prompt_text and instruction both embed an ephemeral uuid4 boundary
+    # nonce that changes every call, so they can never produce a repeatable key.
+    # Instead key off: user_input, active file content, and the deep-context block
+    # (all deterministic for identical turns over unchanged files).
+    cache_enabled: bool = not dirty_buffers
+    planner_cache_key: str = ""
+    planner_cache_paths: list[str] = []
+    if cache_enabled:
+        _tk_for_cache: list[str] = locals().get("_top_k_files", []) or []  # type: ignore[assignment]
+        cache_ctx: list[tuple[str, str]] = [("<user_input>", user_input)]
+        if _active_path and _active_content:
+            cache_ctx.append((_active_path, _active_content))
+        if _deep_context_block:
+            cache_ctx.append(("<deep_context>", _deep_context_block))
+        planner_cache_key = response_cache.build_key(
+            intent=user_input,
+            context=cache_ctx,
+            project_id=state.get("project_id") or "",
+            model=MODEL_BIG,
+        )
+        planner_cache_paths = ([_active_path] if _active_path else []) + [
+            str(p) for p in _tk_for_cache
+        ]
+
     # =====================================================================
     # 4. INVOCATION OF THE LLM ENGINE (With Forced Pydantic Validation)
     # =====================================================================
     logger.info("⏳ Esperando Especificación Técnica (SDD) del LLM...")
     await _emit("drafting_spec")  # about to draft the MissionSpecification.
 
-    # mandates Big/cloud model for the Planner.
-    # ResourceBroker still arbitrates the VRAM lock; we just request BIG by default.
-    decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_BIG)
-    if decision.cancelled:
-        return {"errors": ["Planner cancelled by user during VRAM contention."]}
-
-    # Actor-Critic reflection loop: the Pydantic schema IS the critic. Each draft is
-    # validated against MissionSpecification; on rejection the exact errors are fed
-    # back and the actor re-drafts. Bounded by MAX_PLANNER_RETRIES, this drives the
-    # single-shot error rate P(E) down to ~P(E)^n. The narration below frames the
-    # cycle (review → rejected → replanning → validated) so it is legible in the log.
-    await _emit("critic_review")
     retry_count: int = 0
-    last_validation_err: str = ""
     mission_plan: Optional[MissionSpecification] = None
 
-    try:
-        while retry_count <= MAX_PLANNER_RETRIES:
-            if retry_count > 0 and last_validation_err:
-                # The critic rejected the prior draft — narrate the re-plan attempt.
-                await _emit(f"critic_rejected → replanning ({retry_count}/{MAX_PLANNER_RETRIES})")
-                corrective: str = (
-                    f"\n\nYour previous attempt failed schema validation with these errors:\n"
-                    f"{last_validation_err}\n"
-                    f"Fix them and emit ONLY the raw JSON object for MissionSpecification. "
-                    f"DO NOT wrap it in any top-level key (e.g. 'response', 'mission', "
-                    f"'MissionSpecification'), do not add prose or markdown fences, and do "
-                    f"not omit required fields."
-                )
-                messages[-1] = {
-                    **messages[-1],
-                    "content": messages[-1]["content"] + corrective,
-                }
-
+    # Probe the response cache BEFORE acquiring the VRAM lock, so a hit pays no
+    # GPU/lock cost. A poisoned or stale entry can never block planning — it falls
+    # straight through to the live LLM path below.
+    if cache_enabled:
+        cached_plan = response_cache.probe(planner_cache_key)
+        if cached_plan is not None:
             try:
-                response = await LLMGateway.ainvoke(
-                    messages=messages,
-                    model=decision.effective_model,
-                    temperature=0.0,
-                    response_format={"type": "json_object"},
-                    session_id=session_id,
+                _cached_extracted = LLMGateway._extract_nested_schema_target(
+                    cached_plan, MissionSpecification
                 )
-                raw_content = response.choices[0].message.content or ""
-                # unwrap envelopes (markdown / prose /
-                # top-level key) before validation so a wrapped-but-valid plan no longer
-                # burns a retry. No-match returns the base dict → Pydantic still fails loudly.
-                await _emit("unwrapping_schema")
-                extracted = LLMGateway._extract_nested_schema_target(
-                    raw_content, MissionSpecification
-                )
-                mission_plan = MissionSpecification.model_validate(extracted)
+                mission_plan = MissionSpecification.model_validate(_cached_extracted)
                 mission_plan = mission_plan.model_copy(update={
                     "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
                 })
-                await _emit("plan_validated")  # the critic accepted the draft.
-                break
-            except Exception as parse_err:  # noqa: BLE001 — Pydantic ValidationError + sanitiser errors
-                last_validation_err = str(parse_err)
-                logger.warning(
-                    "Planner retry %d/%d — schema validation failed: %s",
-                    retry_count + 1,
-                    MAX_PLANNER_RETRIES + 1,
-                    last_validation_err,
+                logger.info(
+                    "PlannerAgent: served MissionSpecification from semantic response cache."
                 )
-                retry_count += 1
+            except Exception as _cache_err:  # noqa: BLE001 — a poisoned entry must not block planning
+                logger.debug("Planner cache entry unusable, re-planning live: %s", _cache_err)
+                mission_plan = None
 
-        if mission_plan is None:
-            logger.error(
-                "Planner: exhausted %d attempts on schema validation.",
-                MAX_PLANNER_RETRIES + 1,
-            )
-            return {
-                "errors": [
-                    f"Planner Error - schema validation exhausted "
-                    f"{MAX_PLANNER_RETRIES + 1} attempts: {last_validation_err}"
-                ],
-                "planner_retry_count": retry_count,
-            }
-    finally:
-        if decision.holds_lock:
-            await ResourceBroker.release(state.get("task_id", ""))
+    if mission_plan is None:
+        # mandates Big/cloud model for the Planner.
+        # ResourceBroker still arbitrates the VRAM lock; we just request BIG by default.
+        decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_BIG)
+        if decision.cancelled:
+            return {"errors": ["Planner cancelled by user during VRAM contention."]}
+
+        # Actor-Critic reflection loop: the Pydantic schema IS the critic. Each draft is
+        # validated against MissionSpecification; on rejection the exact errors are fed
+        # back and the actor re-drafts. Bounded by MAX_PLANNER_RETRIES, this drives the
+        # single-shot error rate P(E) down to ~P(E)^n. The narration below frames the
+        # cycle (review → rejected → replanning → validated) so it is legible in the log.
+        await _emit("critic_review")
+        last_validation_err: str = ""
+
+        try:
+            while retry_count <= MAX_PLANNER_RETRIES:
+                if retry_count > 0 and last_validation_err:
+                    # The critic rejected the prior draft — narrate the re-plan attempt.
+                    await _emit(f"critic_rejected → replanning ({retry_count}/{MAX_PLANNER_RETRIES})")
+                    corrective: str = (
+                        f"\n\nYour previous attempt failed schema validation with these errors:\n"
+                        f"{last_validation_err}\n"
+                        f"Fix them and emit ONLY the raw JSON object for MissionSpecification. "
+                        f"DO NOT wrap it in any top-level key (e.g. 'response', 'mission', "
+                        f"'MissionSpecification'), do not add prose or markdown fences, and do "
+                        f"not omit required fields."
+                    )
+                    messages[-1] = {
+                        **messages[-1],
+                        "content": messages[-1]["content"] + corrective,
+                    }
+
+                try:
+                    response = await LLMGateway.ainvoke(
+                        messages=messages,
+                        model=decision.effective_model,
+                        temperature=0.0,
+                        response_format={"type": "json_object"},
+                        session_id=session_id,
+                    )
+                    raw_content = response.choices[0].message.content or ""
+                    # unwrap envelopes (markdown / prose /
+                    # top-level key) before validation so a wrapped-but-valid plan no longer
+                    # burns a retry. No-match returns the base dict → Pydantic still fails loudly.
+                    await _emit("unwrapping_schema")
+                    extracted = LLMGateway._extract_nested_schema_target(
+                        raw_content, MissionSpecification
+                    )
+                    mission_plan = MissionSpecification.model_validate(extracted)
+                    mission_plan = mission_plan.model_copy(update={
+                        "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
+                    })
+                    await _emit("plan_validated")  # the critic accepted the draft.
+                    # Cache the validated raw draft for future identical turns.
+                    if cache_enabled and raw_content:
+                        response_cache.store(
+                            planner_cache_key, raw_content, planner_cache_paths
+                        )
+                    break
+                except Exception as parse_err:  # noqa: BLE001 — Pydantic ValidationError + sanitiser errors
+                    last_validation_err = str(parse_err)
+                    logger.warning(
+                        "Planner retry %d/%d — schema validation failed: %s",
+                        retry_count + 1,
+                        MAX_PLANNER_RETRIES + 1,
+                        last_validation_err,
+                    )
+                    retry_count += 1
+
+            if mission_plan is None:
+                logger.error(
+                    "Planner: exhausted %d attempts on schema validation.",
+                    MAX_PLANNER_RETRIES + 1,
+                )
+                return {
+                    "errors": [
+                        f"Planner Error - schema validation exhausted "
+                        f"{MAX_PLANNER_RETRIES + 1} attempts: {last_validation_err}"
+                    ],
+                    "planner_retry_count": retry_count,
+                }
+        finally:
+            if decision.holds_lock:
+                await ResourceBroker.release(state.get("task_id", ""))
 
     # =====================================================================
     # 5. AUDIT AND UPDATE OF THE GLOBAL STATUS

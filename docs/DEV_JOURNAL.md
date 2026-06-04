@@ -2,6 +2,32 @@
 
 ---
 
+## Hito 7.18.4: AST-Hashed Semantic Response Cache (Caché Semántica · upgrade #4) — 2026-06-04
+
+**Estado:** ✅ COMPLETO | **ADR:** 744 | **Resultado de gates:** `mypy .` 0/244 · pyright 0/0 · `test_response_cache.py` 8 passed
+
+### Problema resuelto
+Cada turno del planner/coder pagaba un round-trip de red completo (O(N), ~3-8 s) aunque el intent y el contexto fueran idénticos a un turno anterior. El `ASTEngine` ya era una caché de *árboles* keyed por blake2b, pero no existía un equivalente para *respuestas*. Esta brecha era la única parte "half-built" identificada en la auditoría de 6 técnicas.
+
+### Decisiones arquitectónicas
+- **Primitivo compartido extraído:** la línea `hashlib.blake2b(content.encode(), digest_size=16)` que vivía inline en `ASTEngine.parse` se elevó a función pública `ast_content_hash(content)`. Ambas cachés (árboles y respuestas) la consumen; la decisión "¿cambiaron los bytes?" tiene un único dueño.
+- **`SemanticResponseCache` (`core/response_cache.py`):** LRU con `OrderedDict`, TTL inyectable, y un índice inverso `_paths` (path → set[keys]) + `_key_paths` (key → set[paths]) para evicción activa O(1). `_drop_locked` es el **único punto de GC**: lo llaman tanto el evictador LRU como `invalidate_path`, garantizando que ningún key LRU-evictado deje entradas huérfanas en `_paths` (el OOM que señaló el Arquitecto). El lock protege **sólo mutaciones de dict** — jamás se sostiene sobre una llamada `await LLMGateway.ainvoke`.
+- **Coder:** el `current_content` (buffer RAM-VFS, puede ser dirty) y los snippets RAG se pliegan a la clave → una edición no guardada produce una clave distinta automáticamente, sin bypass separado.
+- **Planner:** bypass explícito cuando `dirty_buffers` (leído de `ide_context`) está poblado; la clave usa únicamente entradas estables (user_input, active file content, deep-context block) — `system_prompt_text` e `instruction` contienen un nonce `uuid4` que cambia cada llamada y no pueden keying un hit. El probe ocurre **antes** de adquirir la cerradura VRAM del ResourceBroker.
+- **Evicción activa:** `ReactiveIndexer.index` (en el camino confirmado de cambio, post content-hash gate) y `ReactiveIndexer.purge` llaman `response_cache.invalidate_path(filepath)` con import diferido — mismo patrón que los demás subsistemas opcionales del indexer.
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `core/ast_engine.py` | EDIT | `ast_content_hash()` extraída; `parse()` la reutiliza |
+| `core/response_cache.py` | NEW | `SemanticResponseCache` + singleton `response_cache` |
+| `agents/coder.py` | EDIT | probe/store alrededor del `ainvoke`; dirty-content en la clave |
+| `agents/planner.py` | EDIT | `_deep_context_block` capturado; clave estable; bypass dirty; probe antes del lock VRAM |
+| `core/indexer.py` | EDIT | `invalidate_path` en `index` (cambio confirmado) + `purge` |
+| `tests/test_response_cache.py` | NEW | 8 tests (6 unit + 2 integration) |
+
+---
+
 ## Hito 7.18.3: AST-Skeleton Code-STYLE Few-Shot (Few-Shot · upgrade #3) — 2026-06-04
 
 - **Status:** OK — cuarta sub-fase de la Fase 7.18 (ADR-743). Cierra la única técnica que la auditoría marcó como PARCIAL: el coder ya recibía exemplars de *formato* (formas JSON) y RAG de *topología* (GraphRAG), pero ningún exemplar de *estilo de código* — nada que diga "escríbelo como las funciones que ya existen en este proyecto". Ahora, antes de generar una edición, el prompt del coder lleva 2-3 **esqueletos** de funciones reales del mismo lenguaje: firma + type hints + docstring, con el cuerpo elidido a `...`. Enseña convención (cómo se escribe una función aquí) sin filtrar lógica (que invitaría a copy-paste). DoD verde: `mypy .` **Success: no issues found in 242 source files** (0 errores); `test_style_exemplars.py` 8 passed; pyright 0/0 en los archivos mutados.

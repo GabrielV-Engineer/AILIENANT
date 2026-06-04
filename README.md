@@ -147,6 +147,7 @@ Proyect_Ailienant/
 │   ├── core/                   # Infrastructure
 │   │   ├── db.py               #   SQLite catalog (dependency_graph, ppr_scores, indexed_files)
 │   │   ├── memory/             #   semantic, trajectory, graphrag_extractor, context_auditor
+│   │   ├── response_cache.py   #   AST-hashed semantic response cache (bounded LRU + TTL + active eviction via ReactiveIndexer)
 │   │   ├── vfs_middleware.py   #   in-memory VFS proxy with 3-layer firewall
 │   │   ├── state_manager.py    #   AGENTS.md fast-boot serializer
 │   │   ├── janitor.py          #   orphan-vector GC + MCTS purge
