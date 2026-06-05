@@ -191,13 +191,42 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Blocked by:** Nothing technical — it is a **deliberate scope cut** of the Re-Spine to keep that
   change foundational and low-risk, and to avoid touching every agent + the gateway in the same PR
   (event-loop / regression risk).
-- **Phase:** Owned by **Phase 7.17** (WBS **7.17.0-B**, ADR-739): refactor Planner/Coder to emit
-  incremental token deltas through the graph (`stream_mode="messages"` or a dedicated token channel),
-  reusing the chat path's `_stream_with_thinking` / `astream_byom` + `batch_tokens` pattern. **Distinct
-  from DEBT-006**, which is the *frontend syntax-highlighting* deferral (host-side tokenization); this
-  entry is the *backend token-emission* deferral. This entry moves to **Closed** when 7.17.0-B ships.
-- **Notes:** The `NarrationGate` (narration ≤ 15% of streamed volume) and FastAPI event-loop protection
-  (no one WS frame per token — coalesce via `batch_tokens`) must be honored by the eventual stream.
+- **Phase:** Owned by **Phase 7.17** (WBS **7.17.0-B**, ADR-739). **CLOSED 2026-06-05** — but the
+  resolution is *thinking*, not the answer tokens: `stream_mode="messages"` was rejected (the nodes use
+  the LiteLLM gateway directly, not a LangChain chat model, so that mode captures nothing). Instead the
+  nodes stream the model's **native reasoning** to the Thought Box during inference via a dedicated
+  `config.configurable["stream_thinking"]` sink (twin of the `narrate` seam), through the new
+  `LLMGateway.acomplete_with_thinking`; the structured JSON answer is still buffered → parsed → diffed.
+  So the *freeze* is gone (reasoning fills the gap) while the answer diff remains a single block by
+  design — structured JSON can't be shown token-by-token usefully. **Distinct from DEBT-006** (frontend
+  syntax-highlighting). The residual (true answer-token streaming, blocked by the `response_format`
+  drop) is tracked as **DEBT-013**.
+- **Notes:** The `NarrationGate` is honored trivially — thinking rides `server_thinking_chunk`, a
+  different channel than `server_pipeline_step`, so it never charges the gate. FastAPI event-loop
+  protection is honored by the `_ThinkingStreamer` 60 ms coalescer (no WS frame per token).
+
+### DEBT-013 — Thinking-stream coding turns drop hard JSON-mode (`response_format`)
+
+- **Date:** 2026-06-05
+- **Reproduce:** N/A (reliability trade-off, not an error). On a reasoning-capable model with native
+  thinking ON, `acomplete_with_thinking` takes the streaming branch, which **cannot** pass
+  `response_format={"type":"json_object"}` (no `astream*` gateway method supports it). The planner/coder
+  answer is therefore prompt-enforced JSON recovered via `_sanitize_json_response`, not provider-enforced
+  JSON-mode.
+- **File(s):** `ailienant-core/tools/llm_gateway.py` (`acomplete_with_thinking` streaming branch),
+  `ailienant-core/agents/coder.py` / `agents/planner.py` (callers).
+- **Error:** Not a defect — a **declared trade-off per CLAUDE.md §7.** Blast-radius is bounded: only
+  thinking-capable + thinking-ON turns take this path; every other turn keeps the exact
+  `ainvoke(response_format=json)` call (zero regression). Residual risk: marginally higher parse-failure
+  odds on those turns, already absorbed as **soft errors** (planner actor-critic retry; coder
+  step-failed → `error_correction`), and the fence-strip + the 7.18.2/ADR-742 adaptive sanitizer
+  recover the JSON.
+- **Blocked by:** Nothing technical — a deliberate scope cut to keep 7.17.0-B low-risk.
+- **Phase:** Spawned by **7.17.0-B (ADR-739)**. Enterprise refactor candidate: a gateway path that
+  streams reasoning **and** keeps `response_format` for providers that support streaming structured
+  outputs (e.g. OpenAI), falling back to the sanitizer only where unsupported.
+- **Notes:** Re-open if telemetry shows a material rise in planner/coder parse failures on reasoning
+  models; otherwise the soft-error handling makes this low-priority.
 
 ### DEBT-009 — MCTS variant-search is offline-only (not wired into the live coder loop)
 

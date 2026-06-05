@@ -158,6 +158,10 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
     # serializes a callable); the coder stays decoupled from the transport layer
     # (never imports the WS manager for this) — the cognitive-isolation fence holds.
     _narrate = (config or {}).get("configurable", {}).get("narrate")
+    # Reasoning sink (Thought Box) + native-thinking prefs, same off-state seam.
+    _on_thinking = (config or {}).get("configurable", {}).get("stream_thinking")
+    _thinking_on = bool((config or {}).get("configurable", {}).get("enable_native_thinking"))
+    _thinking_budget = int((config or {}).get("configurable", {}).get("thinking_budget_tokens") or 4096)
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:
@@ -374,15 +378,21 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
         if cached is not None:
             content = cached
         else:
-            resp = await LLMGateway.ainvoke(
+            # Streams native reasoning to the Thought Box while generating; the
+            # structured JSON answer is buffered and returned exactly as before.
+            # On a non-reasoning model (or thinking off) this is a plain JSON-mode
+            # ainvoke with zero behaviour change.
+            content = await LLMGateway.acomplete_with_thinking(
                 messages=messages,
                 model=MODEL_BIG,
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 session_id=session_id,
                 state=state,
+                on_thinking=_on_thinking,
+                enable_thinking=_thinking_on,
+                thinking_budget_tokens=_thinking_budget,
             )
-            content = resp.choices[0].message.content or ""
             response_cache.store(cache_key, content, cache_paths)
         raw = LLMGateway._sanitize_json_response(content)
         parsed = json.loads(raw)

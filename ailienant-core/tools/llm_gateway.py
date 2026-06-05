@@ -1,5 +1,6 @@
 # ailienant-core/tools/llm_gateway.py
 
+import asyncio
 import json
 import logging
 import os
@@ -7,7 +8,9 @@ import re
 import time
 import uuid
 from enum import Enum
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Type
+from typing import (
+    TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Type,
+)
 
 if TYPE_CHECKING:
     from tools.stream_delta import StreamDelta
@@ -537,6 +540,104 @@ class LLMGateway:
             logger.debug("Token accounting failed (non-fatal): %s", exc)
 
         return response
+
+    @staticmethod
+    async def acomplete_with_thinking(
+        messages: list[dict[str, Any]],
+        model: str = MODEL_MEDIUM,
+        temperature: float = 0.0,
+        response_format: Optional[dict[str, Any]] = None,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+        state: Optional[Dict[str, Any]] = None,
+        *,
+        on_thinking: Optional[Callable[[str], Awaitable[None]]] = None,
+        enable_thinking: bool = False,
+        thinking_budget_tokens: int = 4096,
+    ) -> str:
+        """Structured completion that streams native reasoning while it works.
+
+        A single entry point with two branches so the caller's code is identical
+        regardless of model:
+
+        - **Streaming branch** (taken only when a reasoning sink is wired AND the
+          active model emits native reasoning tokens): consume the thinking-aware
+          stream, push each reasoning delta to ``on_thinking`` (best-effort), and
+          accumulate the answer tokens into an in-memory buffer that is returned.
+        - **Fallback branch** (every other case — no sink, thinking disabled, or a
+          non-reasoning model): delegate to :meth:`ainvoke`, preserving
+          ``response_format``, the OOM cascade, and response-cache compatibility.
+          Behaviour here is byte-identical to a direct ``ainvoke`` call.
+
+        Streaming is *best-effort*; generation is *mission-critical*. A failure in
+        the reasoning sink (e.g. a closed WebSocket) is swallowed and the sink is
+        latched off for the rest of the call — the answer buffer keeps filling, so
+        the structured result is always returned intact. ``CancelledError`` (a real
+        abort) is never swallowed.
+
+        Because the streaming branch cannot pass ``response_format`` (the streaming
+        APIs don't support it), a reasoning model may wrap its JSON in markdown
+        fences; when the caller asked for JSON the buffered answer is run through
+        :meth:`_sanitize_json_response` before returning so the downstream parser
+        never trips on a fence.
+        """
+        # Derive the BYOM tier from the alias, mirroring ainvoke's resolution.
+        _alias_tier = model.split("/", 1)[1] if model.startswith("ailienant/") else "medium"
+        tier = _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
+
+        want_stream = on_thinking is not None and enable_thinking
+        if want_stream:
+            from core.config.model_resolver import get_chat_target
+            target = get_chat_target(tier)
+            want_stream = target is not None and _supports_native_thinking(target.model)
+
+        if not want_stream:
+            resp = await LLMGateway.ainvoke(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                response_format=response_format,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                session_id=session_id,
+                state=state,
+            )
+            return resp.choices[0].message.content or ""
+
+        # Streaming branch. on_thinking is guaranteed non-None by want_stream.
+        sink: Callable[[str], Awaitable[None]] = on_thinking  # type: ignore[assignment]
+        buffer: List[str] = []
+        sink_live = True
+        async for delta in LLMGateway.astream_byom_thinking(
+            messages,
+            tier=tier,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            session_id=session_id,
+            enable_thinking=True,
+            thinking_budget_tokens=thinking_budget_tokens,
+        ):
+            if delta.kind == "thinking":
+                # Best-effort: a dead sink must never abort generation.
+                if sink_live:
+                    try:
+                        await sink(delta.text)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — streaming is best-effort
+                        logger.debug("thinking sink failed; latching off: %s", exc)
+                        sink_live = False
+            else:  # "text" — the answer channel (mission-critical)
+                buffer.append(delta.text)
+
+        answer = "".join(buffer)
+        # Dropping response_format reintroduces ```json fences on reasoning models;
+        # strip them so the downstream parser sees clean JSON.
+        if response_format:
+            answer = LLMGateway._sanitize_json_response(answer)
+        return answer
 
     @staticmethod
     async def astream(

@@ -135,6 +135,50 @@ class TaskPayload(BaseModel):
     thinking_budget_tokens: int = 4096
 
 
+class _ThinkingStreamer:
+    """Coalesces reasoning deltas from the coding graph into the Thought Box.
+
+    The planner/coder nodes can't import the transport layer (cognitive-isolation
+    fence), so they push reasoning text through a callback handed to them on the
+    run config. This object IS that callback's home: it buffers deltas and flushes
+    them to ``broadcast_thinking_chunk`` on the same 60 ms / 4096-char window the
+    live-chat streamer uses, so a token flood never becomes one WS frame per token.
+    """
+
+    _WINDOW_S = 0.060
+    _MAX_BUF = 4096
+
+    def __init__(self, session_id: str) -> None:
+        self._session_id = session_id
+        self._buf: List[str] = []
+        self._buf_chars = 0
+        self._chars_total = 0
+        self._window_start = asyncio.get_running_loop().time()
+
+    async def feed(self, text: str) -> None:
+        if not text:
+            return
+        self._buf.append(text)
+        self._buf_chars += len(text)
+        self._chars_total += len(text)
+        elapsed = asyncio.get_running_loop().time() - self._window_start
+        if elapsed >= self._WINDOW_S or self._buf_chars >= self._MAX_BUF:
+            await self.flush()
+            self._window_start = asyncio.get_running_loop().time()
+
+    async def flush(self) -> None:
+        if not self._buf:
+            return
+        chunk = "".join(self._buf)
+        self._buf = []
+        self._buf_chars = 0
+        # ~4 chars/token heuristic for the live "N tokens" telemetry; the billed
+        # count flows through the gateway's usage accounting (display-only here).
+        await vfs_manager.broadcast_thinking_chunk(
+            self._session_id, chunk, max(1, self._chars_total // 4)
+        )
+
+
 class TaskService:
     """
     Capa de orquestación intermedia.
@@ -461,6 +505,14 @@ class TaskService:
             if gate.allow(len(node_name.encode())):
                 await vfs_manager.broadcast_pipeline_step(session_id, node_name, step_id)
 
+        # Stream the planner/coder native reasoning to the Thought Box while they
+        # generate, so the long structured-output call no longer reads as a freeze.
+        # Rides the same `configurable` seam as `narrate` (off graph state); the
+        # nodes hand `feed` to the gateway as a best-effort reasoning sink. Thinking
+        # uses its own `server_thinking_chunk` channel, so it never touches the
+        # NarrationGate budget (which governs `server_pipeline_step` only).
+        thinking_streamer = _ThinkingStreamer(session_id)
+
         # Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh. CancelledError
         # may surface from ANY await in this coroutine (planner, coder steps,
         # HITL approval, write pipeline). The single outer except catches it,
@@ -470,15 +522,22 @@ class TaskService:
         try:
             await _narrate("context_gather")
             cfg: RunnableConfig = {
-                "configurable": {"thread_id": session_id, "narrate": _narrate}
+                "configurable": {
+                    "thread_id": session_id,
+                    "narrate": _narrate,
+                    "stream_thinking": thinking_streamer.feed,
+                    "enable_native_thinking": payload.enable_native_thinking,
+                    "thinking_budget_tokens": payload.thinking_budget_tokens,
+                }
             }
             final_state: Dict[str, Any] = {}
             try:
                 # stream_mode="values" yields the full accumulated state after
                 # each node; the last snapshot is the complete final state. The
-                # graph does NOT stream LLM tokens (planner/coder invoke the model
-                # and return whole results), so live sub-step progress comes from
-                # the narrate emitter on config.configurable, not from here.
+                # graph snapshot does NOT carry LLM tokens — node sub-step progress
+                # comes from the narrate emitter, and the planner/coder reasoning
+                # streams to the Thought Box via the stream_thinking sink, both on
+                # config.configurable rather than from this loop.
                 # cast satisfies the astream() overload (the seed carries a few
                 # transient keys beyond the AIlienantGraphState TypedDict — the
                 # graph drops them, the same way ainvoke() is cast at resume).
@@ -486,6 +545,8 @@ class TaskService:
                     cast(AIlienantGraphState, state), config=cfg, stream_mode="values"
                 ):
                     final_state = snapshot
+                # Drain any reasoning still buffered from the final node.
+                await thinking_streamer.flush()
             except asyncio.CancelledError:
                 raise  # propagate to the outer abort handler — don't swallow here
             except Exception as exc:  # noqa: BLE001 — a graph failure must not crash the task

@@ -2,6 +2,42 @@
 
 ---
 
+## Hito 7.17.0-B: Streaming de native thinking desde planner/coder (el camino de código deja de congelarse) — 2026-06-05
+
+**Estado:** ✅ COMPLETO | **ADR:** 739 | **Resultado de gates:** `mypy .` 0/246 · **918 pytest passed** · gate hermano `test_phase7_17_0b_streaming.py` 10/10
+
+### Problema resuelto
+El pipeline de código se **congelaba** durante la inferencia: `run_planner_node`/`run_coder_node` hacían `ainvoke(response_format=json)` y devolvían el resultado completo; el usuario veía narración de nodos y luego aterrizaba un diff, con un hueco silencioso durante la generación real. 7.17.0/7.17.1 hicieron streaming del código de **chat**; el camino de **código** seguía congelar-y-volcar.
+
+### Decisiones arquitectónicas
+- **Qué se transmite (decisión usuario):** el **native thinking** del modelo → Thought Box durante la inferencia de planner+coder, reutilizando la pila de Fase 9 (`astream_byom_thinking` → `broadcast_thinking_chunk`). La respuesta JSON estructurada se bufferea→parsea→difunde como diff exactamente igual que hoy. Ambos nodos.
+- **`stream_mode="messages"` descartado:** los nodos llaman al gateway LiteLLM directo, no a un chat model de LangChain, así que ese modo no captura los tokens. Se usa un **canal dedicado vía `config.configurable`**, gemelo del seam `narrate` ya probado (callable fuera del graph state → nunca lo serializa el checkpointer; la valla de aislamiento cognitivo se mantiene).
+- **Conflicto duro declarado (CLAUDE.md §3):** streaming ⊥ `response_format` — ningún método `astream*` del gateway soporta JSON-mode. La rama de thinking **suelta `response_format`** y recupera el JSON con `_sanitize_json_response` (ya robusto por 7.18.2/ADR-742). **Acotado por gating:** sólo modelos con reasoning + thinking ON toman la ruta de streaming; todo lo demás conserva la llamada `ainvoke(response_format=json)` exacta → cero regresión para el caso común.
+- **Un punto de entrada, dos ramas:** `LLMGateway.acomplete_with_thinking` — rama de streaming (empuja reasoning al `on_thinking`, bufferea la respuesta, devuelve el texto) vs rama de fallback (delega en `ainvoke`, preservando `response_format`, la cascada OOM y la compatibilidad de caché). El código de los nodos es idéntico independientemente del modelo.
+- **Dos endurecimientos (auditoría usuario):**
+  1. **Aislamiento de socket:** `await on_thinking(...)` envuelto en try/except que traga errores de transporte (`ConnectionError`/`RuntimeError`/`Exception`) y **enclava el sink off** para el resto del turno (un socket muerto no se recupera a mitad de stream), pero **re-lanza `asyncio.CancelledError`** (abort real). El buffer de texto sigue acumulando pase lo que pase con el socket → el nodo siempre recibe un resultado completo y el estado de LangGraph nunca se corrompe por un navegador cerrado.
+  2. **Strip de fences:** soltar `response_format` hace que los reasoning models (Claude 3.7 / o1 / deepseek-r1) envuelvan el JSON en ```json…```; cuando el caller pidió JSON, el buffer pasa por `_sanitize_json_response` **dentro** del gateway antes de devolver, para que el parser aguas abajo nunca tropiece con una fence.
+- **`NarrationGate` intacta (DoD):** el thinking viaja por `server_thinking_chunk` (`broadcast_thinking_chunk`), un canal distinto a `server_pipeline_step` — el presupuesto del gate nunca se carga.
+- **`_ThinkingStreamer` (task_service):** coalescedor con ventana 60 ms / 4096 chars que espeja `_flush_think`; `feed` bufferea+vuelca, `flush` drena la cola. Se inyecta `stream_thinking`/`enable_native_thinking`/`thinking_budget_tokens` en el run config; `flush()` tras el bucle del grafo.
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `ailienant-core/tools/llm_gateway.py` | EDIT | nuevo `acomplete_with_thinking` (rama streaming + fallback `ainvoke`; aislamiento de socket; strip de fences); imports `asyncio`/`Awaitable`/`Callable` |
+| `ailienant-core/core/task_service.py` | EDIT | `_ThinkingStreamer` (ventana 60 ms); inyección de `stream_thinking`/flags en `config.configurable`; `flush()` tras el grafo |
+| `ailienant-core/agents/coder.py` | EDIT | swap del LLM call (cache-miss) a `acomplete_with_thinking`; lectura del seam de config |
+| `ailienant-core/agents/planner.py` | EDIT | swap del LLM call (actor-crítico) a `acomplete_with_thinking`; lectura del seam de config |
+| `ailienant-core/tests/test_phase7_17_0b_streaming.py` | NEW | gate hermano (G1-G6 gateway, TS1 coalescer, N1-N3 nodos), 10 tests |
+| `docs/TECH_DEBT_BACKLOG.md` | EDIT | DEBT-013 (streaming + `response_format` para providers capaces) |
+
+### Nota de regresión
+El gate OBS1 de 7.15 fija el substring exacto `.get("configurable", {}).get("narrate")` en `coder.py` para certificar la valla de aislamiento. El seam de thinking conserva ese idioma encadenado (sin intermedio `_cfgable`) para no tocar un gate de fase previa — los tests existentes de coder/planner siguen verdes porque la rama de fallback delega en `ainvoke` cuando `on_thinking is None`.
+
+### Trade-off declarado (CLAUDE.md §7) → DEBT-013
+Los turnos con modelo de reasoning pierden la imposición dura de JSON-mode, recuperada por el sanitizer + degradación adaptativa (7.18.2/ADR-742). Residual: probabilidad marginalmente mayor de fallo de parseo en esos turnos, ya manejada como **errores suaves** (retry actor-crítico del planner; coder step-failed → ruta `error_correction`). DEBT-013 propone un refactor futuro "streaming + `response_format` para providers que lo soporten".
+
+---
+
 ## Hito 7.17.1: Hidratación & Debounce Buffer (anti-flicker del highlighting progresivo) — 2026-06-05
 
 **Estado:** ✅ COMPLETO | **ADR:** 738 | **Resultado de gates:** `compile`/`lint` 0 · ceiling prod `dist/workspace.js` 549.7 KB < 550 KB · gate hidratación 10/10 (`streamingHydration.test.ts`) · gate 7.16 sin regresión 10/10

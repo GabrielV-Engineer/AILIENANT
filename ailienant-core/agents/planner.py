@@ -110,6 +110,10 @@ async def run_planner_node(
     # never tries to serialize a callable); the planner stays decoupled from the
     # transport layer (never imports vfs_manager) — cognitive-isolation fence intact.
     _narrate = (config or {}).get("configurable", {}).get("narrate")
+    # Reasoning sink (Thought Box) + native-thinking prefs, same off-state seam.
+    _on_thinking = (config or {}).get("configurable", {}).get("stream_thinking")
+    _thinking_on = bool((config or {}).get("configurable", {}).get("enable_native_thinking"))
+    _thinking_budget = int((config or {}).get("configurable", {}).get("thinking_budget_tokens") or 4096)
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:
@@ -623,14 +627,20 @@ async def run_planner_node(
                     }
 
                 try:
-                    response = await LLMGateway.ainvoke(
+                    # Streams native reasoning to the Thought Box while drafting;
+                    # the structured plan JSON is buffered and validated as before.
+                    # Falls back to a plain JSON-mode ainvoke on non-reasoning
+                    # models (or when thinking is off) with zero behaviour change.
+                    raw_content = await LLMGateway.acomplete_with_thinking(
                         messages=messages,
                         model=decision.effective_model,
                         temperature=0.0,
                         response_format={"type": "json_object"},
                         session_id=session_id,
+                        on_thinking=_on_thinking,
+                        enable_thinking=_thinking_on,
+                        thinking_budget_tokens=_thinking_budget,
                     )
-                    raw_content = response.choices[0].message.content or ""
                     # unwrap envelopes (markdown / prose /
                     # top-level key) before validation so a wrapped-but-valid plan no longer
                     # burns a retry. No-match returns the base dict → Pydantic still fails loudly.
