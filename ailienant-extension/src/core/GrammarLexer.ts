@@ -39,6 +39,31 @@ const THEME = 'github-dark';
 const MAX_LEX_CHARS = 200_000;
 const MAX_LEX_LINES = 5_000;
 
+// Fenced-code info-string hint (```lang) → the grammar id the engine registers. Keyed
+// by the language word the model writes after the fence; anything absent renders plain.
+const LANG_HINT_TO_GRAMMAR: Readonly<Record<string, string>> = {
+    ts: 'typescript',
+    typescript: 'typescript',
+    tsx: 'tsx',
+    js: 'javascript',
+    javascript: 'javascript',
+    mjs: 'javascript',
+    cjs: 'javascript',
+    jsx: 'jsx',
+    py: 'python',
+    python: 'python',
+    json: 'json',
+    sh: 'bash',
+    bash: 'bash',
+    shell: 'bash',
+    zsh: 'bash',
+    css: 'css',
+    html: 'html',
+    htm: 'html',
+    md: 'markdown',
+    markdown: 'markdown',
+};
+
 // File extension → the grammar id the engine registers. Anything absent resolves to a
 // monospace fallback rather than an error.
 const EXT_TO_LANG: Readonly<Record<string, string>> = {
@@ -115,13 +140,13 @@ function lineToAst(line: ThemedToken[]): ASTToken[] {
 }
 
 /**
- * Tokenize `content` into one ASTToken array per source line, row-aligned to the input.
- * Returns undefined when the language is unsupported, the input is empty or over the
- * size bounds, or the engine faults — every such case degrades to monospace rendering.
+ * Tokenize `content` against an already-resolved grammar id. Returns undefined when the
+ * input is empty or over the size bounds, or the engine faults — every such case degrades
+ * to monospace rendering. The bounds guard the host main thread against a pathological
+ * multi-thousand-line payload.
  */
-async function tokenizeToAstLines(content: string, filePath: string): Promise<ASTToken[][] | undefined> {
-    const lang = langForPath(filePath);
-    if (!lang || content.length === 0 || content.length > MAX_LEX_CHARS) {
+async function tokenizeWithGrammar(content: string, lang: string): Promise<ASTToken[][] | undefined> {
+    if (content.length === 0 || content.length > MAX_LEX_CHARS) {
         return undefined;
     }
     try {
@@ -138,6 +163,33 @@ async function tokenizeToAstLines(content: string, filePath: string): Promise<AS
     } catch {
         return undefined;
     }
+}
+
+/**
+ * Tokenize `content` into one ASTToken array per source line, row-aligned to the input.
+ * Returns undefined when the file extension maps to no supported grammar, the input is
+ * empty or over the size bounds, or the engine faults — every such case degrades to
+ * monospace rendering.
+ */
+async function tokenizeToAstLines(content: string, filePath: string): Promise<ASTToken[][] | undefined> {
+    const lang = langForPath(filePath);
+    if (!lang) {
+        return undefined;
+    }
+    return tokenizeWithGrammar(content, lang);
+}
+
+/**
+ * Tokenize a fenced chat code block by its info-string hint (e.g. "python", "tsx").
+ * Returns undefined for an unknown/empty hint or any fault, so the renderer keeps the
+ * plain-text fallback. Never throws — safe to await on the IPC reply path.
+ */
+async function tokenizeByLang(code: string, langHint: string): Promise<ASTToken[][] | undefined> {
+    const lang = LANG_HINT_TO_GRAMMAR[langHint.trim().toLowerCase()];
+    if (!lang) {
+        return undefined;
+    }
+    return tokenizeWithGrammar(code, lang);
 }
 
 /**
@@ -158,4 +210,4 @@ async function enrich(diffs: PatchedFileDiff[]): Promise<void> {
     );
 }
 
-export const GrammarLexer = { enrich, tokenizeToAstLines };
+export const GrammarLexer = { enrich, tokenizeToAstLines, tokenizeByLang };

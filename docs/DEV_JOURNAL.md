@@ -2,6 +2,35 @@
 
 ---
 
+## Hito 7.16.2: Renderer AST en el Webview (cierre de la capa de tokens DEBT-006) — 2026-06-05
+
+**Estado:** ✅ COMPLETO | **ADR:** 735 | **Resultado de gates:** `npm run compile`/`lint` 0 · `dist/workspace.js` 548.2 KB < 550 KB · shiki ausente del webview, motor presente en `extension.js` · `scopeColor` 8/8 scopes representativos correctos
+
+### Problema resuelto
+El código se renderizaba sin resaltado en dos superficies: los bloques de código del chat (`MarkdownRenderer` emitía `<pre><code>` plano → la queja del "texto blanco") y los diffs aplicados (`DiffBlock` en monospace temático). 7.16.1 ya poblaba `old_ast_lines`/`new_ast_lines` en cada diff host-side; 7.16.2 es el lado consumidor — pintar esos tokens y extender el mismo motor host a los bloques de chat — manteniendo el webview "tonto" (cero deps de gramática/parsing).
+
+### Decisiones arquitectónicas
+- **scopeColor (scope→CSS var):** VS Code **no** expone colores por-scope TextMate como variables CSS en el webview (sólo inyecta claves de color del workbench, no las token rules). Por eso "estilar sólo con `--vscode-*`" se satisface mapeando familias de scope a las paletas curadas `--vscode-symbolIcon-*Foreground` / `--vscode-debugTokenExpression-*` (gana el scope más específico), con fallback hex. Theme-reactivo sin re-tokenizar.
+- **Diffs vía `renderContent`:** `react-diff-viewer-continued` invoca `renderContent(source)` por línea/columna con un string crudo (sin índice). Se construye un mapa contenido→tokens (mergeando old+new): una línea tokeniza igual donde aparezca, las añadidas sólo existen en new y las borradas en old → sin colisión dañina; clavar por contenido (no por índice) sobrevive el rebuild de `truncate()`. **Tradeoff declarado (§7.2):** `disableWordDiff` — si no, el viewer parte una línea en fragmentos y llamaría `renderContent` por fragmento, rompiendo el mapeo por línea; se cambia el sombreado word-diff intra-línea por color de sintaxis de línea completa (los fondos add/remove de línea quedan intactos). Registrado como DEBT-012.
+- **Chat por round-trip en stream-end:** el host relaya los frames de chat **sin estado**, así que el código de chat no traía tokens. Decisión del usuario: round-trip — en `server_stream_end` el webview pide al host tokenizar cada fence por su lang hint (nuevo IPC `TOKENIZE_CODE`), el host corre `GrammarLexer.tokenizeByLang` y responde `CODE_TOKENS`, el webview repinta. Tokeniza una vez (al completar), sin flicker de streaming; el host queda sin estado (el webview ya tiene el texto final).
+- **Identidad de bloque compartida:** `extractCodeBlocks` + `hashCodeBlock` (FNV-1a) viven en `StreamingMarkdownParser` y los usan TANTO el requester de stream-end como el renderer, garantizando un `hash` idéntico para correlacionar la respuesta IPC con el bloque pintado.
+- **Endurecimiento (auditoría anti-bias del usuario):** (1) **circuit-breaker pre-IPC** `MAX_IPC_CODE_CHARS` (50 KB) — un bloque enorme nunca se serializa cruzando el límite del isolate (evita la copia O(N)); el host conserva sus cotas `MAX_LEX_CHARS`/`MAX_LEX_LINES` como defensa en profundidad. (2) **Guard anti-zombie** `turn_id`+`hash`: el handler `CODE_TOKENS` resuelve el turno dentro de un updater funcional y devuelve `prev` si el turno se borró/reemplazó — sin escritura de closure obsoleta, sin setState sobre desmontado; el listener se limpia en el cleanup del `useEffect`. (3) **Lexer tolerante a fallos:** `tokenizeByLang` en try/catch → `undefined`; el handler host aísla cada bloque (→ `ast_lines: null`) y envuelve todo el batch — el host nunca crashea por código de sintaxis inválida.
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `ailienant-extension/src/workspace/utils/scopeColor.ts` | NEW | resolutor scope→`--vscode-*` + tabla de fallback |
+| `ailienant-extension/src/workspace/components/DiffBlock.tsx` | EDIT | mapa contenido→tokens, `renderContent`+spans, `disableWordDiff`, memo extendido, comentario obsoleto eliminado |
+| `ailienant-extension/src/workspace/components/MarkdownRenderer.tsx` | EDIT | prop `codeTokens`; pinta fences como spans con `scopeColor`; fallback plano |
+| `ailienant-extension/src/workspace/utils/StreamingMarkdownParser.ts` | EDIT | `extractCodeBlocks` + `hashCodeBlock` + regexes de fence exportadas |
+| `ailienant-extension/src/core/GrammarLexer.ts` | EDIT | `tokenizeByLang` + `LANG_HINT_TO_GRAMMAR`; núcleo `tokenizeWithGrammar` compartido |
+| `ailienant-extension/src/shared/config.ts` | EDIT | mensaje `TOKENIZE_CODE` + `MAX_IPC_CODE_CHARS` + doc de respuesta `CODE_TOKENS` |
+| `ailienant-extension/src/providers/workspace_panel.ts` | EDIT | handler `TOKENIZE_CODE` → `tokenizeByLang` → `CODE_TOKENS` (aislado por bloque) |
+| `ailienant-extension/src/workspace/Workspace.tsx` | EDIT | `Message.codeTokens`; requester en stream-end (circuit-breaker); case `CODE_TOKENS` (guard `turn_id`); `messagesRef`; pasa `codeTokens` |
+| `docs/PROJECT_MANIFEST.md` · `docs/DEV_JOURNAL.md` · `README.md` · `docs/TECH_DEBT_BACKLOG.md` | EDIT | cierre 7.16.2; DEBT-006 capa-tokens enviada; DEBT-012 nueva |
+
+---
+
 ## Hito 7.16.1: Grammar Lexer on the Host (Host-Delegated Tokenization) — 2026-06-04
 
 **Estado:** ✅ COMPLETO | **ADR:** 734 | **Resultado de gates:** `mypy .` 0/245 · `npm run compile`/`lint` 0 · 908 pytest passed · `dist/workspace.js` 544 KB < 550 KB · shiki ausente en webview bundle

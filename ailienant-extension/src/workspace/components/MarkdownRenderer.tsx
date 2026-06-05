@@ -26,9 +26,14 @@
  * Out of scope for this milestone (renderer documents as known): headings,
  * lists, blockquotes, tables, images, reference links, HTML blocks.
  */
-import { memo } from 'react';
+import { memo, Fragment } from 'react';
 import type { ReactNode } from 'react';
-import type { ParserState } from '../utils/StreamingMarkdownParser';
+import type { ASTToken } from '../../shared/config';
+import {
+    FENCE_OPEN_RE, FENCE_CLOSE_RE, hashCodeBlock,
+    type ParserState,
+} from '../utils/StreamingMarkdownParser';
+import { scopeColor } from '../utils/scopeColor';
 
 interface Props {
     content: string;
@@ -39,20 +44,35 @@ interface Props {
      *  emits the same JSX shape either way, but `streaming` is part of the
      *  prop bundle so a stream-end re-render reliably invalidates `memo`. */
     streaming: boolean;
+    /** Host-tokenized syntax spans for this turn's fenced code blocks, keyed by
+     *  `hashCodeBlock(lang, code)`. Populated on stream-end via the round-trip to
+     *  the host grammar engine; absent keys fall back to plain text. The renderer
+     *  carries no grammar dependency of its own — it only paints precomputed tokens. */
+    codeTokens?: Record<string, ASTToken[][]>;
 }
 
 export const MarkdownRenderer = memo(function MarkdownRenderer(
-    { content }: Props,
+    { content, codeTokens }: Props,
 ): JSX.Element {
-    return <>{renderBlocks(content)}</>;
+    return <>{renderBlocks(content, codeTokens)}</>;
 });
+
+// Paint a host-tokenized code block: one row per source line, each a run of
+// scope-colored spans. Styled only with VS Code CSS vars so a theme flip repaints.
+function renderTokenLines(lines: ASTToken[][]): ReactNode {
+    return lines.map((line, li) => (
+        <Fragment key={li}>
+            {li > 0 && '\n'}
+            {line.map((t, ti) => (
+                <span key={ti} style={{ color: scopeColor(t.type) }}>{t.content}</span>
+            ))}
+        </Fragment>
+    ));
+}
 
 // ── Block-level scan: fenced code vs prose ──────────────────────────────────
 
-const FENCE_OPEN_RE = /^(`{3,}|~{3,})\s*([^\s`~]*)\s*$/;
-const FENCE_CLOSE_RE = /^(`{3,}|~{3,})\s*$/;
-
-function renderBlocks(text: string): ReactNode[] {
+function renderBlocks(text: string, codeTokens?: Record<string, ASTToken[][]>): ReactNode[] {
     const out: ReactNode[] = [];
     const lines = text.split('\n');
     let i = 0;
@@ -81,10 +101,14 @@ function renderBlocks(text: string): ReactNode[] {
             // If the loop exited because we reached EOF without a closer
             // (streaming mid-fence), we still render the partial block —
             // the JSX </code></pre> is the virtual closure.
+            const codeText = codeLines.join('\n');
+            // Host tokens arrive on stream-end keyed by (lang, code); until then
+            // (or for an unsupported/oversized block) we render plain text.
+            const tokens = codeTokens?.[hashCodeBlock(lang, codeText)];
             out.push(
                 <pre key={`f-${key++}`} className="ws-md-pre">
                     <code className={lang ? `language-${lang}` : undefined}>
-                        {codeLines.join('\n')}
+                        {tokens ? renderTokenLines(tokens) : codeText}
                     </code>
                 </pre>,
             );

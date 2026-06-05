@@ -936,6 +936,37 @@ export class WorkspacePanelManager {
                     }
                     break;
                 }
+                case 'TOKENIZE_CODE': {
+                    // Syntax-highlight chat code blocks host-side: the dumb webview
+                    // has no grammar engine, so it ships each fenced block here for
+                    // tokenization. Each block is fault-isolated (an invalid-syntax
+                    // block yields a null result, not a failed batch), and the whole
+                    // handler is guarded so a lexer fault never crashes the host. The
+                    // reply echoes turn_id/request_id so the webview can drop a stale
+                    // reply (cleared/replaced turn).
+                    const turn_id = typeof data.turn_id === 'string' ? data.turn_id : '';
+                    const request_id = typeof data.request_id === 'string' ? data.request_id : '';
+                    const blocks = Array.isArray(data.blocks)
+                        ? (data.blocks as { hash: string; lang: string; code: string }[])
+                        : [];
+                    try {
+                        const results = await Promise.all(blocks.map(async (b) => {
+                            try {
+                                const ast_lines = await GrammarLexer.tokenizeByLang(b.code, b.lang);
+                                return { hash: b.hash, ast_lines: ast_lines ?? null };
+                            } catch {
+                                return { hash: b.hash, ast_lines: null };
+                            }
+                        }));
+                        panel.webview.postMessage({
+                            type: 'CODE_TOKENS',
+                            payload: { turn_id, request_id, results },
+                        });
+                    } catch {
+                        // Whole-batch fault: keep the plain-text fallback, never crash.
+                    }
+                    break;
+                }
                 case 'CLEAR_CONVERSATION': {
                     // Phase 7.9.B.15 — also drop the backend's short-term memory.
                     WSClient.getInstance().send({ event_type: 'client_clear_conversation', data: {} });

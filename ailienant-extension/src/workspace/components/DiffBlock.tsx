@@ -1,7 +1,8 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import ReactDiffViewer, { type ReactDiffViewerStylesOverride } from 'react-diff-viewer-continued';
 import { diffLines } from 'diff';
-import type { DiffBlockShape } from '../../shared/config';
+import type { ASTToken, DiffBlockShape } from '../../shared/config';
+import { scopeColor } from '../utils/scopeColor';
 import type { HitlRespond } from '../utils/useHitlResponder';
 import { DiffHitlActions } from './DiffHitlActions';
 
@@ -121,6 +122,29 @@ const DIFF_STYLES: ReactDiffViewerStylesOverride = {
     lineNumber: { color: 'var(--vscode-editorLineNumber-foreground, #6E7681)' },
 };
 
+// Map each source line's text to its host-tokenized scope spans. The diff viewer
+// hands `renderContent` a raw line string with no index, so we key by content: a
+// line tokenizes identically wherever it appears, added lines exist only on the new
+// side and removed only on the old, so a single merged map has no harmful collision.
+// Keying by content (not row index) also survives truncate()'s string rebuild —
+// every rendered line is still a verbatim source line, so its key resolves.
+function buildTokenMap(block: DiffBlockShape): Map<string, ASTToken[]> | undefined {
+    const { old_content, new_content, old_ast_lines, new_ast_lines } = block;
+    if (!old_ast_lines && !new_ast_lines) { return undefined; }
+    const map = new Map<string, ASTToken[]>();
+    const add = (content: string, ast: ASTToken[][] | undefined): void => {
+        if (!ast) { return; }
+        const lines = content.split('\n');
+        const n = Math.min(lines.length, ast.length);
+        for (let i = 0; i < n; i++) {
+            if (!map.has(lines[i])) { map.set(lines[i], ast[i]); }
+        }
+    };
+    add(old_content, old_ast_lines);
+    add(new_content, new_ast_lines);
+    return map;
+}
+
 function DiffBlockInner({ block, hitlActive, onRespond }: DiffBlockProps): JSX.Element {
     const { file_path, old_content, new_content, status } = block;
     const [showFull, setShowFull] = useState(false);
@@ -151,11 +175,31 @@ function DiffBlockInner({ block, hitlActive, onRespond }: DiffBlockProps): JSX.E
 
     const badge = status === 'create' ? 'Create' : 'Edit';
 
-    // Syntax tokenization is intentionally omitted here (the diff renders as
-    // themed monospace over the split grid). A shiki-based highlighter does not
-    // fit the webview bundle ceiling without runtime asset externalization;
-    // tokenized diffs are tracked as future tech debt rather than shipped at the
-    // cost of Time-to-Interactive.
+    // Host-tokenized syntax spans (filled by the grammar engine before the diff is
+    // posted). The webview only paints them — it carries no grammar dependency.
+    const tokenMap = useMemo(
+        () => buildTokenMap(block),
+        [block.old_content, block.new_content, block.old_ast_lines, block.new_ast_lines],
+    );
+    // Per-line renderer for the split grid: look up the line's scope spans and paint
+    // them with VS Code CSS vars (theme-reactive); fall back to the raw line when a
+    // file wasn't tokenized. Undefined when there are no tokens, so an untokenized
+    // diff renders exactly as before.
+    const renderContent = useMemo(() => {
+        if (!tokenMap) { return undefined; }
+        return (source: string): JSX.Element => {
+            const tokens = tokenMap.get(source);
+            if (!tokens || tokens.length === 0) { return <>{source}</>; }
+            return (
+                <>
+                    {tokens.map((t, i) => (
+                        <span key={i} style={{ color: scopeColor(t.type) }}>{t.content}</span>
+                    ))}
+                </>
+            );
+        };
+    }, [tokenMap]);
+
     return (
         <div
             className="ws-diff"
@@ -178,6 +222,13 @@ function DiffBlockInner({ block, hitlActive, onRespond }: DiffBlockProps): JSX.E
                     extraLinesSurroundingDiff={TRUNCATION_CONTEXT_LINES}
                     hideLineNumbers={false}
                     styles={DIFF_STYLES}
+                    // Paint host-tokenized syntax spans per line. Word-level diffing
+                    // is disabled because it would split a line into fragments and
+                    // call renderContent per fragment, breaking the per-line token
+                    // mapping; we trade intra-line word shading for full syntax color.
+                    // Line-level add/remove backgrounds are unaffected.
+                    renderContent={renderContent}
+                    disableWordDiff={true}
                     // The library defaults to a Web Worker for diff math, whose
                     // blob: worker URL is blocked by this webview's CSP. Force the
                     // synchronous fallback so the diff actually computes.
@@ -208,6 +259,10 @@ export const DiffBlock = memo(DiffBlockInner, (a, b) =>
     a.block.old_content === b.block.old_content &&
     a.block.new_content === b.block.new_content &&
     a.block.status === b.block.status &&
+    // Token arrays are populated host-side before the block is posted; compare by
+    // reference so a (re)enriched block repaints its highlighting.
+    a.block.old_ast_lines === b.block.old_ast_lines &&
+    a.block.new_ast_lines === b.block.new_ast_lines &&
     // Compare only the stable HITL primitive; `onRespond` is a stable useCallback
     // from the parent, so a composer keystroke that re-renders Workspace never
     // reconciles a read-only diff (M3 — preserved from 7.14.2).

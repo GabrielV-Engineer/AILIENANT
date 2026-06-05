@@ -454,6 +454,73 @@ export function finalize(state: ParserState): ParserState {
     return state;
 }
 
+// ── Fenced code-block extraction ────────────────────────────────────────────
+// Shared by the renderer and the host-tokenize request path so a block's identity
+// (its `hash`) is computed identically on both sides — the IPC reply can then be
+// matched back to the exact block the renderer is painting.
+
+/** Opening fence: a run of ≥3 backticks or tildes plus an optional info string. */
+export const FENCE_OPEN_RE = /^(`{3,}|~{3,})\s*([^\s`~]*)\s*$/;
+/** Closing fence: a bare run of the same char (length checked against the opener). */
+export const FENCE_CLOSE_RE = /^(`{3,}|~{3,})\s*$/;
+
+export interface CodeBlock {
+    /** Stable identity of (lang, code) — the IPC/render correlation key. */
+    hash: string;
+    /** Info-string language hint (may be empty). */
+    lang: string;
+    /** Block body, newline-joined exactly as the renderer emits it. */
+    code: string;
+}
+
+/**
+ * FNV-1a (32-bit) hex digest of `lang\ncode`. Deterministic and dependency-free so
+ * the renderer and the stream-end requester derive the same key for a block.
+ */
+export function hashCodeBlock(lang: string, code: string): string {
+    const s = `${lang}\n${code}`;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16);
+}
+
+/**
+ * Extract every fenced code block from a finalized message. Mirrors the renderer's
+ * fence scan exactly (same regexes, same symmetry rule, same `\n` join) so the
+ * resulting `hash` matches what the renderer looks up.
+ */
+export function extractCodeBlocks(text: string): CodeBlock[] {
+    const out: CodeBlock[] = [];
+    const lines = text.split('\n');
+    let i = 0;
+    while (i < lines.length) {
+        const open = FENCE_OPEN_RE.exec(lines[i]);
+        if (open) {
+            const opener = open[1];
+            const lang = open[2] ?? '';
+            i += 1;
+            const codeLines: string[] = [];
+            while (i < lines.length) {
+                const close = FENCE_CLOSE_RE.exec(lines[i]);
+                if (close && close[1][0] === opener[0] && close[1].length >= opener.length) {
+                    i += 1;
+                    break;
+                }
+                codeLines.push(lines[i]);
+                i += 1;
+            }
+            const code = codeLines.join('\n');
+            out.push({ hash: hashCodeBlock(lang, code), lang, code });
+            continue;
+        }
+        i += 1;
+    }
+    return out;
+}
+
 /** Count how many top-level formatting flags differ between two states.
  *  Used by the O(1) audit test (W1) — every `pushToken` must flip ≤ 3. */
 export function flagDelta(a: ParserState, b: ParserState): number {

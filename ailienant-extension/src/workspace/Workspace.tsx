@@ -6,7 +6,8 @@ import { useWorkspaceStore } from './workspaceStore';
 import {
     BudgetLimitMode, ReasoningPreset, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
-    ToolCallShape, DiffBlockShape, PlanDocumentShape,
+    ToolCallShape, DiffBlockShape, PlanDocumentShape, MAX_IPC_CODE_CHARS,
+    type ASTToken,
 } from '../shared/config';
 import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
@@ -27,6 +28,7 @@ import { CheckpointPicker, type CheckpointEntry } from './components/CheckpointP
 import {
     INITIAL_STATE as MD_INITIAL_STATE,
     pushToken as mdPushToken,
+    extractCodeBlocks,
     type ParserState as MdParserState,
 } from './utils/StreamingMarkdownParser';
 import { IndexingStatus } from './components/IndexingStatus';
@@ -94,6 +96,24 @@ function authorLabelFor(role: 'user' | 'assistant', agentName: string): string {
     return role === 'user' ? 'You' : agentName;
 }
 
+// On stream-end, ask the host to syntax-highlight this turn's fenced code blocks.
+// The webview holds no grammar engine, so it ships each block (lang + code) to the
+// host lexer and later paints the returned tokens. A pre-IPC circuit breaker skips
+// oversized blocks (never serialized — protects the isolate boundary from an O(N)
+// copy); blocks with no language hint can't be tokenized and are skipped too.
+function requestCodeTokens(turnId: string, content: string): void {
+    const blocks = extractCodeBlocks(content).filter(
+        (b) => b.lang.length > 0 && b.code.length > 0 && b.code.length <= MAX_IPC_CODE_CHARS,
+    );
+    if (blocks.length === 0) { return; }
+    vscode.postMessage({
+        type: 'TOKENIZE_CODE',
+        turn_id: turnId,
+        request_id: mkId(),
+        blocks: blocks.map((b) => ({ hash: b.hash, lang: b.lang, code: b.code })),
+    });
+}
+
 /**
  * Phase 7.12 — id-keyed transcript merge for REHYDRATE_TRANSCRIPT. The host
  * transcript is the authoritative COMPLETED history; `local` may hold an
@@ -129,6 +149,11 @@ export interface Message {
     // stable fast path takes over. Transient — explicitly stripped before
     // PERSIST_TRANSCRIPT (see destructure below).
     parserState?: MdParserState;
+    // Host-tokenized syntax spans for this turn's fenced code blocks, keyed by
+    // hashCodeBlock(lang, code). Requested on stream-end via the round-trip to the
+    // host grammar engine and merged in on the CODE_TOKENS reply. Ephemeral and
+    // re-derivable — deliberately excluded from PERSIST_TRANSCRIPT.
+    codeTokens?: Record<string, ASTToken[][]>;
     // Phase 7.11.6 (ADR-706 §4.5f) — tool-chip artifacts attached to this turn.
     // Each entry is built incrementally from server_tool_start, _stream_chunk
     // and _result events keyed by tool_call_id.
@@ -267,6 +292,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
 
     // Chat — Phase 7.9.B.20: restored from the persisted per-session transcript.
     const [messages, setMessages] = useState<Message[]>(initial.initialMessages ?? []);
+    // Latest committed turns, mirrored for the WS handler (which closes over state
+    // once). Synced in the render body so it is always current when an event fires.
+    const messagesRef = useRef(messages);
+    messagesRef.current = messages;
     const [isStreaming, setIsStreaming] = useState(false);
     // Phase 7.11.3 — Stop-button optimistic flag (Zustand, transient).
     const isAborting    = useWorkspaceStore((s) => s.isAborting);
@@ -614,6 +643,41 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 checkpoint_id: _cid ?? m.checkpoint_id,
                             }
                             : m));
+                    // Round-trip the just-finalized turn's code blocks to the host
+                    // grammar engine. Content is already fully accumulated (the
+                    // finalize above only flips flags), so read it from the mirror.
+                    const finalized = messagesRef.current[messagesRef.current.length - 1];
+                    if (finalized?.role === 'assistant' && finalized.id && finalized.content) {
+                        requestCodeTokens(finalized.id, finalized.content);
+                    }
+                    break;
+                }
+                case 'CODE_TOKENS': {
+                    // Host grammar engine answered the stream-end tokenize request.
+                    // Merge the spans into the originating turn — but only if it
+                    // still exists (cleared/replaced history drops the zombie reply,
+                    // so an async reply for a gone turn is a safe no-op). Null
+                    // results (unsupported lang / lexer fault) keep the plain fallback.
+                    const d = msg.payload as {
+                        turn_id?: string;
+                        results?: { hash: string; ast_lines: ASTToken[][] | null }[];
+                    };
+                    if (!d?.turn_id || !Array.isArray(d.results) || d.results.length === 0) { break; }
+                    setMessages(prev => {
+                        const idx = prev.findIndex(m => m.id === d.turn_id);
+                        if (idx < 0) { return prev; }   // zombie reply — turn is gone
+                        const merged: Record<string, ASTToken[][]> = { ...(prev[idx].codeTokens ?? {}) };
+                        let changed = false;
+                        for (const r of d.results!) {
+                            if (r.ast_lines) { merged[r.hash] = r.ast_lines; changed = true; }
+                        }
+                        if (!changed) { return prev; }
+                        return [
+                            ...prev.slice(0, idx),
+                            { ...prev[idx], codeTokens: merged },
+                            ...prev.slice(idx + 1),
+                        ];
+                    });
                     break;
                 }
                 // ── Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips ──────
@@ -1274,6 +1338,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                                         content={m.content}
                                                         parserState={m.parserState}
                                                         streaming={!!m.streaming}
+                                                        codeTokens={m.codeTokens}
                                                     />
                                                 ) : (
                                                     m.content

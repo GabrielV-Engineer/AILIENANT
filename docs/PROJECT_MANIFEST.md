@@ -1899,72 +1899,6 @@ the blueprint freeze lifts.
 
 ---
 
-## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
-
-> Calibración del rendimiento y simulación de fallos para robustez Enterprise.
-
-### ⚙️ División 8.0 — Eradicación de Tipado Estricto (`mypy --strict`) 🟡
-
-> Bloque previo al ciclo de pruebas/refinamiento. Objetivo: `mypy --strict main.py` → **exit 0**, cero entradas `follow_imports = silent` en `mypy.ini`. WBS completo en [`docs/PHASE_8_BLUEPRINT.md`](PHASE_8_BLUEPRINT.md); deuda técnica continua en [`docs/TECH_DEBT_BACKLOG.md`](TECH_DEBT_BACKLOG.md). Baseline: **32 errores** en 12 archivos, **9 módulos silenciados**. El gate `mypy .` (220 archivos) permanece verde durante toda la campaña.
-
-- [x] **8.0.A — Auditoría baseline (docs-only).** `PHASE_8_BLUEPRINT.md` + `TECH_DEBT_BACKLOG.md` creados. 5 entradas DEBT pre-registradas. Mapa topológico Tier 0 → Tier 7 documentado.
-- [ ] **8.0.0 — Correcciones mecánicas de superficie** — 26 × `dict`→`Dict[str,Any]`, 3 × `unused-ignore`, 2 × `no-untyped-def` en 13 archivos. Anotación-only, cero cambios de lógica. **DoD:** `mypy --strict main.py` → exit 0.
-- [ ] **8.0.1 — Liberar hojas de bajo fan-in** — `shared.hardware`, `agents.analyst`, `tools.patch_tool`. Corregir errores strict de cada una, luego eliminar su entrada `follow_imports = silent` de `mypy.ini`. **DoD:** `mypy --strict <file>` → 0 para las tres; DEBT-001 resuelto o confirmado bloqueado externamente.
-- [ ] **8.0.2 — Liberar `tools.llm_gateway`** — desbloquea summarizer, contract_guard, coder, rutas BYOM. Resolver DEBT-002 (`MODEL_MEDIUM` no exportado). **DoD:** `mypy --strict tools/llm_gateway.py` → 0; entrada eliminada.
-- [ ] **8.0.3 — Liberar `core.vfs_middleware` + `core.compute_pool`** — desbloquea `agents/coder.py` y `core/indexer.py`. **DoD:** `mypy --strict <file>` → 0 para cada una; entradas eliminadas.
-- [ ] **8.0.4 — Nodos Tier 2/3 desbloqueados** — summarizer, coder, trajectory_memory, ideation, swarms (resuelve DEBT-003/004), intent_router. Ejecutar en orden topológico. **DoD:** `mypy --strict <file>` → 0 para cada nodo.
-- [ ] **8.0.5 — Liberar `brain.memory` + `core.db`** (muro de infra más denso). Exploración previa con `mypy --strict <file> 2>&1 | head -60` antes de comprometer fixes. **DoD:** `mypy --strict brain/memory.py` → 0; `mypy --strict core/db.py` → 0.
-- [ ] **8.0.6 — Liberar `api.websocket_manager` + infra core** — dead_letter, telemetry_log, supervisor. Último muro de infraestructura. **DoD:** `mypy --strict <file>` → 0 para cada uno; entradas `follow_imports = silent` eliminadas.
-- [ ] **8.0.7 — `brain/engine.py`** (orquestador central — 15 dependencias internas directas). Todos los ítems anteriores deben estar verdes antes de iniciar. **DoD:** `mypy --strict brain/engine.py` → exit 0.
-- [ ] **8.0.8 — `main.py` — Puerta final de la campaña.** Todas las importaciones tipadas; cero `follow_imports = silent` (salvo DEBT-001 si aún bloqueado por stubs externos). **DoD:** `mypy --strict main.py` → **exit 0** ✅; `mypy .` sigue limpio.
-
-> **Ley del Registro Continuo:** todo error strict-mode descubierto fuera del alcance del ítem activo se registra inmediatamente en `TECH_DEBT_BACKLOG.md` y **no** se corrige en sitio. Ver `PHASE_8_BLUEPRINT.md §Continuous Registry Protocol`.
-
----
-
-### 🔬 Subfase 8.1–8.5 — Pruebas, Refinamiento y Degradación Elegante
-
-- [ ] **8.1. Pruebas End-to-End (`tests/e2e/`)**
-  - Validar SSoT completo: Prompt → GraphRAG → LangGraph → MCP → WebSocket Response.
-
-- [ ] **8.2. Fast Track y Observabilidad (`core/telemetry.py`)**
-  - Ruta baja-latencia para saltar GraphRAG en consultas banales.
-  - Trazas LangSmith (tokens, costo, CSS).
-
-- [ ] **8.3. Fallbacks de Hardware (Degradación Elegante)**
-  - Lógica para detectar VRAM insuficiente (<16GB) y bypassear modelo local hacia Cloud de emergencia.
-  - [ ] **8.3.1. Calculadora de Peso de Grafo (Context OOM Predictor)**
-    - Algoritmo en el profilador calcula tamaño del State (Tokens × Modelo) *antes* de ejecutar el prompt — alimenta el semáforo de hardware de Fase 7.5.3.
-
-- [ ] **8.4. Simulador de Hardware bajo Estrés (Chaos Engineering)**
-  - Script interno consume RAM/VRAM artificialmente para llevar la máquina a zona de riesgo. Valida que el `hardware_profiler` dispare fallbacks reales (pausar indexación, switch a Cloud).
-
-- [ ] **8.5. Checkpoint Gate Fase 8**
-  - Informe final de resiliencia ante fallos de hardware (Chaos Testing).
-
----
-
-## 🧠 FASE 9 — Native Thinking (Real-Time Reasoning Stream) — ✅ COMPLETADA (2026-05-29)
-
-> Exposición en tiempo real del razonamiento nativo del modelo (Claude Extended Thinking / modelos de razonamiento abiertos vía `reasoning_content`) en un "Thought Box" colapsable estilo Claude Code. Evolución aprobada de ADR-702 registrada como **ADR-707** ([`docs/PHASE_7_BLUEPRINT.md`](PHASE_7_BLUEPRINT.md)). Estrictamente capas de transporte / orquestación / UI — `agents/` intacto.
-
-- [x] **9.1. Bifurcación del gateway (transporte)**
-  - `tools/stream_delta.py` (`StreamDelta{kind,text}`) + `tools/llm_gateway.py::astream_byom_thinking` (aditivo; `astream_byom` legacy intacto como fallback flat-text) + `_supports_native_thinking` (gate de capacidad: Anthropic / DeepSeek-R1 / QwQ). Acumulación de tokens de razonamiento billada vía el bloque `finally` existente.
-
-- [x] **9.2. Contrato WS dedicado + payload**
-  - `api/ws_contracts.py`: `ThinkingChunkPayload` + `ServerThinkingChunkEvent` (registrado en la unión `WebSocketMessage`); `TaskPayload.enable_native_thinking` (default True) + `thinking_budget_tokens` (4096). `api/websocket_manager.py::broadcast_thinking_chunk`. Coexiste con `server_pipeline_step` (narración ADR-702) — no lo modifica.
-
-- [x] **9.3. Demux de orquestación**
-  - `core/task_service.py::_stream_with_thinking` enruta razonamiento → Thought Box (`chunk_ms=60`) y respuesta → burbuja (`chunk_ms=40`); rama en `_stream_chat_answer` (flag false → ruta flat-text sin cambios). Razonamiento exento del NarrationGate 15 %, sujeto a `throttled_stream`.
-
-- [x] **9.4. UI + estado (React/Zustand)**
-  - Toggle **Native Thinking** persistido (Command Palette → `/models`, ON por defecto, en el whitelist `pick` de `workspaceStore.ts`); `components/ThoughtBox.tsx` (acordeón colapsable + cronometría live); `utils/thinkingReducer.ts` (reducers puros inmutables); `Workspace.tsx` (campos `thinking` en `Message`, handler `server_thinking_chunk`, freeze al primer token de respuesta). Razonamiento excluido de `PERSIST_TRANSCRIPT` — display-only, nunca re-entra al loop de agentes.
-
-- [x] **9.5. Checkpoint Gate Fase 9 (Native Thinking)**
-  - `tests/test_native_thinking.py` (7) + `src/test/nativeThinking.test.ts` (7). DoD verificado: backend `pytest` 665 passed, `mypy .` limpio (202 archivos, namespace packages), `ruff` limpio; frontend `npm run compile` 0 errores, suite Mocha **50 passing**. Gate rows: NT1 bifurcación ordenada · NT2 fallback sin razonamiento · NT3 persistencia del toggle · NT4 cronometría/auto-collapse · NT5 budget+abort · ISO1 `agents/` sin diff · REG regresión verde.
-
----
-
 ## 🩹 FASE 7.12 — UX/State Stabilization & Context Injection Pathing — ✅ COMPLETADA (2026-05-29)
 
 > Patch de estabilización de regresiones post-7.11/Phase 9. Cuatro causas raíz: spam de pop-ups host-side, alucinación de esquema del Planner, volatilidad de estado del WebView, y starvation de contexto (los agentes no veían la *forma* del workspace). Sin alterar `AIlienantGraphState`, `ContextMeter`, ni el set de campos de `MissionSpecification` (contratos inmutables) — solo coercers `mode="before"` aditivos y texto de prompt.
@@ -2201,9 +2135,10 @@ the blueprint freeze lifts.
   - **DoD:** el Host emite tipos de token idénticos a VS Code; el bundle `iife` del workspace queda intacto (sin shiki en `dist/workspace.js`); `npm run compile`/`lint` 0.
   - **Cierre:** `shiki@4.2.0` (MIT) añadido sólo a las deps del host; nuevo [`src/core/GrammarLexer.ts`](../ailienant-extension/src/core/GrammarLexer.ts) = highlighter lazy `createHighlighterCore` + **motor JS-regex (sin WASM)**, allow-list de 10 gramáticas con imports explícitos, mapa extensión→lang, emisión de **scopes TextMate crudos** (no colores → render theme-reactivo sin re-tokenizar), best-effort (cualquier fallo/lengua desconocida/over-cap → monospace) y cota de tamaño. `PatchActuator` ya entrega texto limpio EOL-normalizado → **no hay doble-despojado**. Cableado en el seam `RENDER_DIFF` tras el ack (`enrich(result.diffs)` puebla `old_ast_lines`/`new_ast_lines`). Guarda en [`esbuild.js`](../ailienant-extension/esbuild.js) que **rompe el build** si shiki entra a `dist/workspace.js`. Verificado: `compile`/`lint` 0 · shiki en `extension.js`, ausente en `workspace.js` (544 KB < techo 550 KB) · `mypy .` 0/245 · 908 pytest passed sin regresión. Renderer host-only: los tokens viajan inertes hasta que **7.16.2** los pinte.
 
-- [ ] **7.16.2 — Renderer AST en el Webview (cierra DEBT-006)** — **[ADR-735]**
-  - Renderizar el AST de tokens como `<span>`s en [`MarkdownRenderer.tsx`](../ailienant-extension/src/workspace/components/MarkdownRenderer.tsx) y en las celdas de diff de [`DiffBlock.tsx`](../ailienant-extension/src/workspace/components/DiffBlock.tsx), estilados **sólo** con variables CSS nativas de VS Code (`--vscode-editor-*Foreground`, `--vscode-diffEditor-*Background`). El renderer permanece "tonto" — `.map()` puro, sin parsing. Reemplaza el `<pre><code>` plano actual (la queja del "texto blanco"). **Cierra la capa de tokens de DEBT-006.**
+- [x] **7.16.2 — Renderer AST en el Webview (cierra la capa de tokens de DEBT-006)** — **[ADR-735]** — **cerrado 2026-06-05**
+  - Renderizar el AST de tokens como `<span>`s en [`MarkdownRenderer.tsx`](../ailienant-extension/src/workspace/components/MarkdownRenderer.tsx) y en las celdas de diff de [`DiffBlock.tsx`](../ailienant-extension/src/workspace/components/DiffBlock.tsx), estilados **sólo** con variables CSS nativas de VS Code. El renderer permanece "tonto" — `.map()` puro, sin parsing. Reemplaza el `<pre><code>` plano actual (la queja del "texto blanco"). **Cierra la capa de tokens de DEBT-006.**
   - **DoD:** los bloques de código del chat y los diffs salen con syntax highlighting; el theme-flip repinta vía las CSS vars; `npm run compile`/`lint` 0.
+  - **Cierre:** nuevo [`src/workspace/utils/scopeColor.ts`](../ailienant-extension/src/workspace/components/) resuelve cada scope TextMate a una CSS var de VS Code — como VS Code **no** expone colores por-scope como variables en el webview, se mapean las familias de scope a las paletas curadas `--vscode-symbolIcon-*Foreground` / `--vscode-debugTokenExpression-*` (theme-reactivo, sin re-tokenizar). **Diffs:** mapa contenido→tokens + `renderContent` por línea del viewer; `disableWordDiff` **(tradeoff declarado §7.2 → nueva fila DEBT-012:** se cambia el sombreado word-diff intra-línea por color de sintaxis de línea completa; los fondos add/remove de línea quedan intactos). **Chat:** como el host relaya los frames de chat sin estado, el código de chat no traía tokens — se añadió un **round-trip en stream-end**: nuevo IPC `TOKENIZE_CODE`/`CODE_TOKENS` (con `turn_id`+`hash` por bloque), host `GrammarLexer.tokenizeByLang` + `LANG_HINT_TO_GRAMMAR`, y `extractCodeBlocks`/`hashCodeBlock` (FNV-1a) compartidos por requester y renderer para identidad idéntica. **Endurecimiento (auditoría anti-bias):** (1) circuit-breaker pre-IPC `MAX_IPC_CODE_CHARS` (50 KB) — un bloque enorme nunca cruza el límite del isolate; (2) guard anti-zombie por `turn_id` (el updater funcional devuelve `prev` si el turno se borró/reemplazó — no hay setState sobre desmontado); (3) lexer tolerante a fallos (cada bloque aislado en try/catch → `null`; el host nunca crashea). Verificado: `compile`/`lint` 0 · `workspace.js` 548.2 KB < techo 550 KB · shiki ausente del webview, motor presente en `extension.js` · `scopeColor` 8/8 scopes representativos correctos. Falta sólo el gate **7.16.3** para virar DEBT-006 a Closed.
 
 - [ ] **7.16.3 — Checkpoint Gate Fase 7.16** — **[ADR-736]**
   - Aseverar que el techo de bundle se mantuvo (que la tokenización se movió host-side y las deps del webview no cambiaron es **el punto entero** de la fase), que el highlighting renderiza y que el theme-flip funciona. Sólo render **estático** (sin streaming todavía). Al pasar en verde, **DEBT-006 pasa a Closed**.
@@ -2265,6 +2200,73 @@ the blueprint freeze lifts.
 - [x] **7.18.6 — Checkpoint Gate Fase 7.18** — **[ADR-746]** ✅ *(2026-06-04: gate de cierre de la Fase 7.18. Nuevo `tests/test_phase7_18_checkpoint_gate.py` (9 tests) re-certifica una aserción de carga por pilar contra los entry points enviados: EXLOOP1/EXLOOP2/DIAG1 (ejecutor de bucle cerrado vía `_StubAdapter` + `route_after_coder`), REC1 (`compute_recency_score`), RF1 (`LLMGateway.ainvoke` strip+repair+memo), FS1 (`_build_style_block` con esqueleto elidido), CACHE1 (`SemanticResponseCache` hit/miss por content-hash), OCC1 (`_merge_generated_code` fusiona sin pérdida + ancla `content_hash` viva), MCTS-DEFER (escaneo `ast`: ni `engine.py` ni `coder.py` importan `brain.mcts`). El rechazo host-side del `base_hash` stale queda host-certificado (write_pipeline delega al bridge applyEdit), por la convención de filas frontend. `mypy .` 0/245 · gate 9 passed · suite completa sin regresión. **No modifica lógica de producción.** La corrida de suite completa del gate destapó y resolvió una fuga de aislamiento latente del singleton `response_cache` (7.18.4) en `tests/test_planner.py` — fix sólo-test (fixture autouse `_reset_response_cache`, espejo de `_reset_heatmap`). La valla LOCK-IN §1 del blueprint 7.18 expira con esta fila → Fase 7.18 CERRADA.)*
   - Net-new (test-only): `tests/test_phase7_18_checkpoint_gate.py`, convención de archivo-hermano (importa e invoca puntos de entrada reales; una aserción de carga por fila; async vía `asyncio.run`; aserciones de fence/estructura vía `ast`; **no modifica lógica**). Filas: **EXLOOP1** (despacho + healing), **EXLOOP2** (budget + deferred honesto), **DIAG1** (diagnósticos estructurados acotados), **REC1** (heatmap: caliente-viejo > frío-viejo), **RF1** (degradación `response_format`), **FS1** (esqueleto de estilo en el prompt), **CACHE1** (hit/miss por AST-hash), **OCC1** (§3 Option A — los reducers *fusionan* el fan-out sin pérdida; `base_hash` stale se *rechaza*), **MCTS-DEFER** (sin edge de import al bucle vivo desde `brain/mcts`).
   - **DoD:** `pytest` verde + `mypy .` 0 + gate verde. El LOCK-IN §1 del blueprint expira al marcar esta fila `[x]`.
+
+---
+
+## 🧪 FASE 8 — Pruebas, Refinamiento y Degradación Elegante
+
+> Calibración del rendimiento y simulación de fallos para robustez Enterprise.
+
+### ⚙️ División 8.0 — Eradicación de Tipado Estricto (`mypy --strict`) 🟡
+
+> Bloque previo al ciclo de pruebas/refinamiento. Objetivo: `mypy --strict main.py` → **exit 0**, cero entradas `follow_imports = silent` en `mypy.ini`. WBS completo en [`docs/PHASE_8_BLUEPRINT.md`](PHASE_8_BLUEPRINT.md); deuda técnica continua en [`docs/TECH_DEBT_BACKLOG.md`](TECH_DEBT_BACKLOG.md). Baseline: **32 errores** en 12 archivos, **9 módulos silenciados**. El gate `mypy .` (220 archivos) permanece verde durante toda la campaña.
+
+- [x] **8.0.A — Auditoría baseline (docs-only).** `PHASE_8_BLUEPRINT.md` + `TECH_DEBT_BACKLOG.md` creados. 5 entradas DEBT pre-registradas. Mapa topológico Tier 0 → Tier 7 documentado.
+- [ ] **8.0.0 — Correcciones mecánicas de superficie** — 26 × `dict`→`Dict[str,Any]`, 3 × `unused-ignore`, 2 × `no-untyped-def` en 13 archivos. Anotación-only, cero cambios de lógica. **DoD:** `mypy --strict main.py` → exit 0.
+- [ ] **8.0.1 — Liberar hojas de bajo fan-in** — `shared.hardware`, `agents.analyst`, `tools.patch_tool`. Corregir errores strict de cada una, luego eliminar su entrada `follow_imports = silent` de `mypy.ini`. **DoD:** `mypy --strict <file>` → 0 para las tres; DEBT-001 resuelto o confirmado bloqueado externamente.
+- [ ] **8.0.2 — Liberar `tools.llm_gateway`** — desbloquea summarizer, contract_guard, coder, rutas BYOM. Resolver DEBT-002 (`MODEL_MEDIUM` no exportado). **DoD:** `mypy --strict tools/llm_gateway.py` → 0; entrada eliminada.
+- [ ] **8.0.3 — Liberar `core.vfs_middleware` + `core.compute_pool`** — desbloquea `agents/coder.py` y `core/indexer.py`. **DoD:** `mypy --strict <file>` → 0 para cada una; entradas eliminadas.
+- [ ] **8.0.4 — Nodos Tier 2/3 desbloqueados** — summarizer, coder, trajectory_memory, ideation, swarms (resuelve DEBT-003/004), intent_router. Ejecutar en orden topológico. **DoD:** `mypy --strict <file>` → 0 para cada nodo.
+- [ ] **8.0.5 — Liberar `brain.memory` + `core.db`** (muro de infra más denso). Exploración previa con `mypy --strict <file> 2>&1 | head -60` antes de comprometer fixes. **DoD:** `mypy --strict brain/memory.py` → 0; `mypy --strict core/db.py` → 0.
+- [ ] **8.0.6 — Liberar `api.websocket_manager` + infra core** — dead_letter, telemetry_log, supervisor. Último muro de infraestructura. **DoD:** `mypy --strict <file>` → 0 para cada uno; entradas `follow_imports = silent` eliminadas.
+- [ ] **8.0.7 — `brain/engine.py`** (orquestador central — 15 dependencias internas directas). Todos los ítems anteriores deben estar verdes antes de iniciar. **DoD:** `mypy --strict brain/engine.py` → exit 0.
+- [ ] **8.0.8 — `main.py` — Puerta final de la campaña.** Todas las importaciones tipadas; cero `follow_imports = silent` (salvo DEBT-001 si aún bloqueado por stubs externos). **DoD:** `mypy --strict main.py` → **exit 0** ✅; `mypy .` sigue limpio.
+
+> **Ley del Registro Continuo:** todo error strict-mode descubierto fuera del alcance del ítem activo se registra inmediatamente en `TECH_DEBT_BACKLOG.md` y **no** se corrige en sitio. Ver `PHASE_8_BLUEPRINT.md §Continuous Registry Protocol`.
+
+---
+
+### 🔬 Subfase 8.1–8.5 — Pruebas, Refinamiento y Degradación Elegante
+
+- [ ] **8.1. Pruebas End-to-End (`tests/e2e/`)**
+  - Validar SSoT completo: Prompt → GraphRAG → LangGraph → MCP → WebSocket Response.
+
+- [ ] **8.2. Fast Track y Observabilidad (`core/telemetry.py`)**
+  - Ruta baja-latencia para saltar GraphRAG en consultas banales.
+  - Trazas LangSmith (tokens, costo, CSS).
+
+- [ ] **8.3. Fallbacks de Hardware (Degradación Elegante)**
+  - Lógica para detectar VRAM insuficiente (<16GB) y bypassear modelo local hacia Cloud de emergencia.
+  - [ ] **8.3.1. Calculadora de Peso de Grafo (Context OOM Predictor)**
+    - Algoritmo en el profilador calcula tamaño del State (Tokens × Modelo) *antes* de ejecutar el prompt — alimenta el semáforo de hardware de Fase 7.5.3.
+
+- [ ] **8.4. Simulador de Hardware bajo Estrés (Chaos Engineering)**
+  - Script interno consume RAM/VRAM artificialmente para llevar la máquina a zona de riesgo. Valida que el `hardware_profiler` dispare fallbacks reales (pausar indexación, switch a Cloud).
+
+- [ ] **8.5. Checkpoint Gate Fase 8**
+  - Informe final de resiliencia ante fallos de hardware (Chaos Testing).
+
+---
+
+## 🧠 FASE 9 — Native Thinking (Real-Time Reasoning Stream) — ✅ COMPLETADA (2026-05-29)
+
+> Exposición en tiempo real del razonamiento nativo del modelo (Claude Extended Thinking / modelos de razonamiento abiertos vía `reasoning_content`) en un "Thought Box" colapsable estilo Claude Code. Evolución aprobada de ADR-702 registrada como **ADR-707** ([`docs/PHASE_7_BLUEPRINT.md`](PHASE_7_BLUEPRINT.md)). Estrictamente capas de transporte / orquestación / UI — `agents/` intacto.
+
+- [x] **9.1. Bifurcación del gateway (transporte)**
+  - `tools/stream_delta.py` (`StreamDelta{kind,text}`) + `tools/llm_gateway.py::astream_byom_thinking` (aditivo; `astream_byom` legacy intacto como fallback flat-text) + `_supports_native_thinking` (gate de capacidad: Anthropic / DeepSeek-R1 / QwQ). Acumulación de tokens de razonamiento billada vía el bloque `finally` existente.
+
+- [x] **9.2. Contrato WS dedicado + payload**
+  - `api/ws_contracts.py`: `ThinkingChunkPayload` + `ServerThinkingChunkEvent` (registrado en la unión `WebSocketMessage`); `TaskPayload.enable_native_thinking` (default True) + `thinking_budget_tokens` (4096). `api/websocket_manager.py::broadcast_thinking_chunk`. Coexiste con `server_pipeline_step` (narración ADR-702) — no lo modifica.
+
+- [x] **9.3. Demux de orquestación**
+  - `core/task_service.py::_stream_with_thinking` enruta razonamiento → Thought Box (`chunk_ms=60`) y respuesta → burbuja (`chunk_ms=40`); rama en `_stream_chat_answer` (flag false → ruta flat-text sin cambios). Razonamiento exento del NarrationGate 15 %, sujeto a `throttled_stream`.
+
+- [x] **9.4. UI + estado (React/Zustand)**
+  - Toggle **Native Thinking** persistido (Command Palette → `/models`, ON por defecto, en el whitelist `pick` de `workspaceStore.ts`); `components/ThoughtBox.tsx` (acordeón colapsable + cronometría live); `utils/thinkingReducer.ts` (reducers puros inmutables); `Workspace.tsx` (campos `thinking` en `Message`, handler `server_thinking_chunk`, freeze al primer token de respuesta). Razonamiento excluido de `PERSIST_TRANSCRIPT` — display-only, nunca re-entra al loop de agentes.
+
+- [x] **9.5. Checkpoint Gate Fase 9 (Native Thinking)**
+  - `tests/test_native_thinking.py` (7) + `src/test/nativeThinking.test.ts` (7). DoD verificado: backend `pytest` 665 passed, `mypy .` limpio (202 archivos, namespace packages), `ruff` limpio; frontend `npm run compile` 0 errores, suite Mocha **50 passing**. Gate rows: NT1 bifurcación ordenada · NT2 fallback sin razonamiento · NT3 persistencia del toggle · NT4 cronometría/auto-collapse · NT5 budget+abort · ISO1 `agents/` sin diff · REG regresión verde.
+
 
 ---
 

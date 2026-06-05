@@ -131,6 +131,13 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   `external:[shiki]` + ship assets to `media/` + `webview.asWebviewUri` loader) or a worker — both
   deferred as out-of-scope CSP/plumbing risk for 7.14.2.
 - **Phase:** A future 7.14.x or Phase 11 polish slice.
+- **Resolution (2026-06-05):** **token layer shipped.** Phase 7.16 moved the grammar engine to the
+  host (7.16.1) and the webview now paints the host AST as scope-colored `<span>`s — diffs
+  (`DiffBlock.tsx` per-line `renderContent`) and chat code blocks (`MarkdownRenderer.tsx` via the
+  stream-end tokenize round-trip), styled only with `--vscode-*` CSS vars (`scopeColor.ts`). The
+  webview gained **zero** grammar deps and `dist/workspace.js` stayed under the 550 KB ceiling
+  (548.2 KB). **Formally moves to Closed when the 7.16.3 checkpoint gate is green** (asserts the
+  ceiling held + highlighting/theme-flip). Spawned **DEBT-012** (the `disableWordDiff` trade-off).
 - **Notes:** The dormant shiki contract (no-WASM JS engine, fine-grained core, lazy-load) is preserved
   in `docs/PHASE_7_14_0_STACK_CONTRACT.md` §3 for whenever this is picked up. ADR-722's *theming*
   half is already honored — diff colors bind to `--vscode-diffEditor-*` CSS vars today; only the
@@ -233,6 +240,27 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   `MCTSTree`/RAM-VFS delta via `snapshot.filter_traces` on `brain/mcts/tree.py` + `core/vfs_middleware.py`
   rather than the whole-process `"filename"` sum. Option (b)+(c) together best preserve the original
   intent (heap-leak guard on the MCTS lifecycle) without the brittle near-zero baseline.
+
+### DEBT-012 — diff highlighting disables word-level diff (no intra-line token slicing)
+
+- **Date:** 2026-06-05
+- **Reproduce:** Apply an edit that changes part of a line; the line shows full-line syntax color but
+  no word-level add/remove shading (the per-word green/red highlight).
+- **File(s):** `src/workspace/components/DiffBlock.tsx` (`disableWordDiff={true}` + the per-line
+  `renderContent` content→tokens map).
+- **Error:** Not a defect — a **declared trade-off (CLAUDE.md §7.2)** taken to ship 7.16.2 syntax
+  highlighting. `react-diff-viewer-continued` calls `renderContent(source)` per *word fragment* when
+  word-diff is on, which would break the per-line token mapping (the host emits tokens row-aligned to
+  full lines, not fragments). Disabling word-diff yields clean full-line syntax color at the cost of
+  intra-line word shading. Line-level add/remove backgrounds (the `--vscode-diffEditor-*` palette) are
+  unaffected, so the diff still reads correctly.
+- **Blocked by:** None — needs a word-diff-aware token slicer: intersect the viewer's per-fragment
+  `DiffInformation` offsets with the line's `ASTToken` runs so each fragment carries only its slice of
+  scopes. Non-trivial offset math; out of scope for 7.16.2 (static highlight first).
+- **Phase:** A future 7.16.x / 7.17 polish slice (best folded into the 7.17 streaming-render work,
+  which already owns the token-reconciliation path).
+- **Notes:** Alternative: keep word-diff and run a second, fragment-level tokenization pass keyed by
+  `(line, fragmentRange)` — heavier; the offset-intersection approach reuses the existing host AST.
 
 ---
 

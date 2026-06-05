@@ -175,7 +175,23 @@ export type WebviewToHostMessage =
     | { type: "LIST_CHECKPOINTS"; session_id: string }
     // Rich Plan panel: a file-link click asks the host to open the file in the
     // editor. The path is workspace-relative and host-validated before opening.
-    | { type: "OPEN_FILE"; path: string };
+    | { type: "OPEN_FILE"; path: string }
+    // Syntax-highlight chat code blocks: the dumb webview can't host a grammar
+    // engine, so on stream-end it asks the host to tokenize each fenced block by
+    // its language hint. `turn_id` correlates the async reply to a still-live turn
+    // (a reply for a cleared/replaced turn is dropped); each block's `hash`
+    // identifies it within that turn. The host answers with `CODE_TOKENS`:
+    //   { type: "CODE_TOKENS"; payload: {
+    //       turn_id: string; request_id: string;
+    //       results: { hash: string; ast_lines: ASTToken[][] | null }[] } }
+    // `ast_lines: null` (unsupported lang or a lexer fault) → plain-text fallback.
+    | { type: "TOKENIZE_CODE"; turn_id: string; request_id: string; blocks: { hash: string; lang: string; code: string }[] };
+
+// Pre-IPC circuit breaker for chat-code tokenization. A block larger than this is
+// never serialized across the webview↔host boundary (the structured clone would
+// duplicate the whole payload) — it renders as plain monospace instead. The host
+// keeps its own larger lexer bounds as defense-in-depth.
+export const MAX_IPC_CODE_CHARS = 50_000;
 
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",
