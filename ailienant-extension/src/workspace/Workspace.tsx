@@ -154,6 +154,11 @@ export interface Message {
     // host grammar engine and merged in on the CODE_TOKENS reply. Ephemeral and
     // re-derivable — deliberately excluded from PERSIST_TRANSCRIPT.
     codeTokens?: Record<string, ASTToken[][]>;
+    // Streaming partial AST keyed by fence ordinal (0, 1, 2…) and line index.
+    // The host pushes per-line token spans as each code line completes. This is
+    // the during-stream overlay; the final hash-keyed codeTokens supersedes it
+    // on stream-end. Ephemeral — excluded from PERSIST_TRANSCRIPT.
+    streamingCodeTokens?: Record<number, ASTToken[][]>;
     // Phase 7.11.6 (ADR-706 §4.5f) — tool-chip artifacts attached to this turn.
     // Each entry is built incrementally from server_tool_start, _stream_chunk
     // and _result events keyed by tool_call_id.
@@ -676,6 +681,30 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             ...prev.slice(0, idx),
                             { ...prev[idx], codeTokens: merged },
                             ...prev.slice(idx + 1),
+                        ];
+                    });
+                    break;
+                }
+                case 'STREAM_CODE_TOKENS': {
+                    // Host pushed a tokenized code line for the active streaming turn.
+                    // Merge into streamingCodeTokens[block_seq][line_index]. Only the
+                    // last streaming assistant turn is the target — if no streaming turn
+                    // exists (e.g. the message arrived after stream-end), drop it.
+                    const st = msg.payload as { block_seq?: number; line_index?: number; ast?: ASTToken[] };
+                    if (
+                        typeof st?.block_seq !== 'number' ||
+                        typeof st.line_index !== 'number' ||
+                        !Array.isArray(st.ast)
+                    ) { break; }
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (!last || last.role !== 'assistant' || !last.streaming) { return prev; }
+                        const existing = last.streamingCodeTokens ?? {};
+                        const block = existing[st.block_seq!] ? [...existing[st.block_seq!]] : [];
+                        block[st.line_index!] = st.ast!;
+                        return [
+                            ...prev.slice(0, -1),
+                            { ...last, streamingCodeTokens: { ...existing, [st.block_seq!]: block } },
                         ];
                     });
                     break;
@@ -1339,6 +1368,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                                         parserState={m.parserState}
                                                         streaming={!!m.streaming}
                                                         codeTokens={m.codeTokens}
+                                                        streamingCodeTokens={m.streamingCodeTokens}
                                                     />
                                                 ) : (
                                                     m.content

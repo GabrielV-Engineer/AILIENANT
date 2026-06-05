@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { createHighlighterCore, type HighlighterCore, type ThemedToken } from 'shiki/core';
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
+import type { GrammarState } from '@shikijs/types';
 import langTypescript from 'shiki/langs/typescript.mjs';
 import langTsx from 'shiki/langs/tsx.mjs';
 import langJavascript from 'shiki/langs/javascript.mjs';
@@ -210,4 +211,60 @@ async function enrich(diffs: PatchedFileDiff[]): Promise<void> {
     );
 }
 
-export const GrammarLexer = { enrich, tokenizeToAstLines, tokenizeByLang };
+/**
+ * A stateful per-code-block tokenizer that carries TextMate grammar state from
+ * one completed line to the next. `tokenizeLine` is O(line length) — it never
+ * re-lexes previously tokenized lines. Dispose after the block's closing fence.
+ */
+export interface LineTokenizer {
+    tokenizeLine(line: string): ASTToken[] | undefined;
+}
+
+// Per-line char cap: skip tokenizing an exceptionally long line (a minified
+// bundle pasted inline) rather than pegging the host event loop.
+const MAX_LEX_LINE_CHARS = 4_000;
+
+/**
+ * Create a `LineTokenizer` for the given lang hint. Resolves `undefined` for an
+ * unsupported language (unknown hint → caller keeps the plain-text fallback).
+ * The returned tokenizer carries grammar state internally; calling `tokenizeLine`
+ * in order is equivalent to tokenizing the whole block at once, without O(N²)
+ * re-lex cost.
+ */
+async function createLineTokenizer(langHint: string): Promise<LineTokenizer | undefined> {
+    const lang = LANG_HINT_TO_GRAMMAR[langHint.trim().toLowerCase()];
+    if (!lang) { return undefined; }
+
+    let highlighter: HighlighterCore;
+    try {
+        highlighter = await getHighlighter();
+    } catch {
+        return undefined;
+    }
+
+    let grammarState: GrammarState | undefined = undefined;
+    let faulted = false;
+
+    return {
+        tokenizeLine(line: string): ASTToken[] | undefined {
+            if (faulted || line.length > MAX_LEX_LINE_CHARS) { return undefined; }
+            try {
+                const rows = highlighter.codeToTokensBase(line, {
+                    lang,
+                    theme: THEME,
+                    includeExplanation: 'scopeName',
+                    grammarState,
+                });
+                // Advance grammar state using the sync overload (token-array input).
+                const next = highlighter.getLastGrammarState(rows);
+                if (next) { grammarState = next; }
+                return lineToAst(rows[0] ?? []);
+            } catch {
+                faulted = true;
+                return undefined;
+            }
+        },
+    };
+}
+
+export const GrammarLexer = { enrich, tokenizeToAstLines, tokenizeByLang, createLineTokenizer };

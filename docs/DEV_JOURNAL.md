@@ -2,6 +2,37 @@
 
 ---
 
+## Hito 7.17.0: Streaming AST a través del canal de tokens (Progressive Code Highlighting) — 2026-06-05
+
+**Estado:** ✅ COMPLETO | **ADR:** 737 | **Resultado de gates:** `compile`/`lint` 0 · `StreamingCodeTokenizer` 10/10 · esbuild ceiling sentinel verde (shiki host-only, sin nuevas deps en webview)
+
+### Problema resuelto
+Los bloques de código del chat sólo ganaban color al final del stream (el round-trip `TOKENIZE_CODE`/`CODE_TOKENS` de 7.16.2). Durante el streaming el bloque se mostraba como `<pre><code>` plano. 7.17.0 hace que cada línea de código se ilumine en el momento en que se completa — el host tokeniza la línea con estado TextMate llevado (O(longitud de línea), sin re-lex del buffer completo) y el webview la pinta de inmediato.
+
+### Decisiones arquitectónicas
+- **Host-push:** el host acumula el texto streameado, detecta fences, y empuja líneas tokenizadas. El estado grammar (TextMate `StateStack`) vive en el host; el webview sólo recibe `ASTToken[]` ya calculados.
+- **O(línea) por línea:** `GrammarLexer.createLineTokenizer` usa la API incremental de shiki — `codeToTokensBase(line, { grammarState })` + `getLastGrammarState(tokens)` → lleva el estado de línea en línea. Tokenizar N líneas es O(suma de longitudes), no O(N²).
+- **Overlay final + streaming:** el 7.16.2 `CODE_TOKENS` round-trip sigue siendo la fuente autoritativa (se ejecuta al final y cubre el bloque completo). El overlay de streaming (`streamingCodeTokens[ordinal]`) queda inerte en cuanto `codeTokens[hash]` llega. Un bloque no soportado o muy corto que ya tenga `codeTokens` no genera trabajo extra en el host.
+- **Alineación de ordinales:** `StreamingCodeTokenizer` usa las mismas `FENCE_OPEN_RE`/`FENCE_CLOSE_RE` exportadas de `StreamingMarkdownParser` y la misma regla de simetría que `extractCodeBlocks`, garantizando que `block_seq` del host coincide con el `fenceOrdinal` del renderer.
+- **Precedencia en el renderer:** final `codeTokens[hash]` → streaming `streamingCodeTokens[ordinal]` → texto plano. `renderZippedLines` pinta linea-a-linea: si hay tokens usa spans con `scopeColor`, si no usa el texto plano — lineas completadas iluminadas, la cola en-progreso plana.
+- **Tres endurecimientoss (auditoría pre-aprobación):**
+  1. **Buffer FIFO (race de init async):** `drainBuf` = referencia capturada a `this.pendingLinesBuffer` en el momento del registro de `.then()`. El close handler asigna un nuevo array a `this.pendingLinesBuffer`, pero la referencia capturada en el closure retiene las líneas pendientes y el drain las procesa en FIFO al resolver.
+  2. **Seguridad de chunk-boundary:** acumulación char-a-char normaliza `\r\n` (CR descartado) y la detección de fence sólo dispara cuando `\n` completa la línea — una fence partida en múltiples `push()` nunca genera falsos positivos.
+  3. **Guarda de zombies por generación:** `reset()` incrementa `generation`; cada closure `.then()` captura `myGen` y retorna si `this.generation !== myGen`. El check `blockSeq !== seq` se eliminó del drain (era demasiado agresivo: bloques múltiples en el mismo turno comparten la misma generation pero tienen seq distintos; necesitamos el drain de ambos). La correctitud del emit multi-bloque se asegura usando `seq` capturado (no `this.blockSeq`) en el loop de drain.
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `ailienant-extension/src/core/StreamingCodeTokenizer.ts` | NEW | máquina de estados por turno (fence detection, FIFO drain, generation guard) |
+| `ailienant-extension/src/core/GrammarLexer.ts` | EDIT | `LineTokenizer` interface + `createLineTokenizer` (shiki incremental via GrammarState) |
+| `ailienant-extension/src/providers/workspace_panel.ts` | EDIT | `_streamTokenizers` map + feed en `server_token_chunk` + reset en disconnect/stream-end |
+| `ailienant-extension/src/workspace/Workspace.tsx` | EDIT | `Message.streamingCodeTokens`; dispatcher `STREAM_CODE_TOKENS`; pass a MarkdownRenderer |
+| `ailienant-extension/src/workspace/components/MarkdownRenderer.tsx` | EDIT | prop `streamingCodeTokens`; fence ordinal; precedencia; `renderZippedLines` |
+| `ailienant-extension/src/test/streamingCodeTokenizer.test.ts` | NEW | 10 tests (T1-T5 correctness, H1-H3b hardening) |
+| `docs/PROJECT_MANIFEST.md` · `docs/DEV_JOURNAL.md` · `README.md` | EDIT | cierre 7.17.0 |
+
+---
+
 ## Hito 7.16.3: Checkpoint Gate Fase 7.16 (CIERRE de Host-Delegated Tokenization · DEBT-006 → Closed) — 2026-06-05
 
 **Estado:** ✅ COMPLETO | **ADR:** 736 | **Resultado de gates:** gate 10/10 passing · `npm run compile`/`lint` 0 · `dist/workspace.js` 548.2 KB < 550 KB

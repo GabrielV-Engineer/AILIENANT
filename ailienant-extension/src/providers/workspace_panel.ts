@@ -9,6 +9,7 @@ import { IntentRouter } from '../core/IntentRouter';
 import { PatchActuator, type ApplyWorkspaceEditPayload } from '../core/PatchActuator';
 import { InlineMutationManager } from '../core/InlineMutationManager';
 import { GrammarLexer } from '../core/GrammarLexer';
+import { StreamingCodeTokenizer } from '../core/StreamingCodeTokenizer';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
 import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS } from '../shared/config';
 import { APIClient } from '../api/api_client';
@@ -222,6 +223,9 @@ export class WorkspacePanelManager {
     // setState) so a large MissionSpecification can never blow the webview's
     // persistent-state quota. Re-posted when a torn-down panel becomes visible.
     private _latestPlan: Map<string, PlanDocumentShape> = new Map();
+    // Per-session streaming code tokenizer (host-push incremental AST).
+    // Keyed by session.id; reset on stream-end and on WS disconnect.
+    private _streamTokenizers: Map<string, StreamingCodeTokenizer> = new Map();
     private readonly _configLoader: ConfigLoader;
     private readonly _disposables: vscode.Disposable[] = [];
     private _onTitleUpdate: TitleUpdater | undefined;
@@ -493,6 +497,12 @@ export class WorkspacePanelManager {
         let _historyRestored = false;
         const wsStatusHandler: WSStatusCallback = (status) => {
             panel.webview.postMessage({ type: 'WS_STATUS', payload: status });
+            // Memory-leak guard: if the WS drops without a stream-end event,
+            // the tokenizer's pending buffer and in-flight promise must be
+            // abandoned — otherwise they accumulate as zombie state.
+            if (status === 'disconnected') {
+                this._streamTokenizers.get(session.id)?.reset();
+            }
             if (status === 'connected' && !_historyRestored) {
                 const stored = this._getTranscript(session.id).messages;
                 if (stored.length > 0) {
@@ -547,6 +557,27 @@ export class WorkspacePanelManager {
                 this._latestPlan.set(session.id, msg.data as unknown as PlanDocumentShape);
             }
 
+            // Streaming code tokenizer: feed chat token chunks to the host-side
+            // fence state machine. When it completes a code line it posts
+            // STREAM_CODE_TOKENS to the webview, which paints it immediately —
+            // before stream-end and before the full-block CODE_TOKENS round-trip.
+            if (msg.event_type === 'server_token_chunk') {
+                const chunk = (msg.data as { token?: string } | undefined)?.token ?? '';
+                if (chunk) {
+                    let tokenizer = this._streamTokenizers.get(session.id);
+                    if (!tokenizer) {
+                        tokenizer = new StreamingCodeTokenizer(
+                            (langHint) => GrammarLexer.createLineTokenizer(langHint),
+                            (emit) => {
+                                panel.webview.postMessage({ type: 'STREAM_CODE_TOKENS', payload: emit });
+                            },
+                        );
+                        this._streamTokenizers.set(session.id, tokenizer);
+                    }
+                    tokenizer.push(chunk);
+                }
+            }
+
             panel.webview.postMessage({ type: msg.event_type, payload: msg.data });
             this._maybeFireCriticalNotif(msg, session.id, panel);
             // Phase 7.11.7 — surface HITL approvals as a native OS toast when
@@ -570,12 +601,15 @@ export class WorkspacePanelManager {
                     this._handleSessionBranched(session, d.new_session_id, d.from_checkpoint_id);
                 }
             }
-            // Clear running-task marker on stream/task completion
+            // Clear running-task marker and streaming tokenizer on stream/task completion.
+            // Resetting the tokenizer on stream-end is the normal-path cleanup;
+            // the disconnect path handles abrupt drops (see wsStatusHandler above).
             if (
                 msg.event_type === 'server_stream_end' ||
                 msg.event_type === 'server_task_complete'
             ) {
                 this._runningTasks.delete(session.id);
+                this._streamTokenizers.get(session.id)?.reset();
                 // Refresh the context-budget meter once the turn settles: the
                 // window has stopped growing, so this is the cheapest moment to
                 // read its true occupancy. Fire-and-forget — a failed/empty read

@@ -49,16 +49,48 @@ interface Props {
      *  the host grammar engine; absent keys fall back to plain text. The renderer
      *  carries no grammar dependency of its own — it only paints precomputed tokens. */
     codeTokens?: Record<string, ASTToken[][]>;
+    /** Streaming partial AST keyed by fence ordinal. The host pushes one entry per
+     *  completed code line during streaming; `codeTokens` supersedes this once the
+     *  full block is tokenized on stream-end. Ordinals match the fence-counter the
+     *  host's `StreamingCodeTokenizer` maintains (same fence rules as this renderer). */
+    streamingCodeTokens?: Record<number, ASTToken[][]>;
 }
 
 export const MarkdownRenderer = memo(function MarkdownRenderer(
-    { content, codeTokens }: Props,
+    { content, codeTokens, streamingCodeTokens }: Props,
 ): JSX.Element {
-    return <>{renderBlocks(content, codeTokens)}</>;
+    return <>{renderBlocks(content, codeTokens, streamingCodeTokens)}</>;
 });
 
-// Paint a host-tokenized code block: one row per source line, each a run of
-// scope-colored spans. Styled only with VS Code CSS vars so a theme flip repaints.
+// Paint one scope-colored token span.
+function TokenSpan({ token, i }: { token: ASTToken; i: number }): JSX.Element {
+    return <span key={i} style={{ color: scopeColor(token.type) }}>{token.content}</span>;
+}
+
+/**
+ * Render a code block whose lines may be partially tokenized.
+ *
+ * `tokenLines[i]` = the host-tokenized spans for source line i. If a line has
+ * no entry (streaming not yet delivered it, or the block was unsupported) the
+ * raw plaintext line is rendered instead — so the block always displays something
+ * and progressively lights up as lines arrive during streaming.
+ */
+function renderZippedLines(codeLines: string[], tokenLines: ASTToken[][]): ReactNode {
+    return codeLines.map((line, li) => {
+        const toks = tokenLines[li];
+        return (
+            <Fragment key={li}>
+                {li > 0 && '\n'}
+                {toks && toks.length > 0
+                    ? toks.map((t, ti) => <TokenSpan key={ti} token={t} i={ti} />)
+                    : line}
+            </Fragment>
+        );
+    });
+}
+
+// Paint a fully-tokenized code block (every line present). Used for the
+// final stream-end token arrays where no plain-text fallback is needed.
 function renderTokenLines(lines: ASTToken[][]): ReactNode {
     return lines.map((line, li) => (
         <Fragment key={li}>
@@ -72,17 +104,25 @@ function renderTokenLines(lines: ASTToken[][]): ReactNode {
 
 // ── Block-level scan: fenced code vs prose ──────────────────────────────────
 
-function renderBlocks(text: string, codeTokens?: Record<string, ASTToken[][]>): ReactNode[] {
+function renderBlocks(
+    text: string,
+    codeTokens?: Record<string, ASTToken[][]>,
+    streamingCodeTokens?: Record<number, ASTToken[][]>,
+): ReactNode[] {
     const out: ReactNode[] = [];
     const lines = text.split('\n');
     let i = 0;
     let key = 0;
+    // Fence ordinal: incremented for each fenced block, mirrors the host's
+    // block_seq counter so streamingCodeTokens keys resolve correctly.
+    let fenceOrdinal = -1;
 
     while (i < lines.length) {
         const openMatch = FENCE_OPEN_RE.exec(lines[i]);
         if (openMatch) {
             const opener = openMatch[1];
             const lang = openMatch[2] ?? '';
+            fenceOrdinal++;
             i += 1;
             const codeLines: string[] = [];
             while (i < lines.length) {
@@ -102,13 +142,28 @@ function renderBlocks(text: string, codeTokens?: Record<string, ASTToken[][]>): 
             // (streaming mid-fence), we still render the partial block —
             // the JSX </code></pre> is the virtual closure.
             const codeText = codeLines.join('\n');
-            // Host tokens arrive on stream-end keyed by (lang, code); until then
-            // (or for an unsupported/oversized block) we render plain text.
-            const tokens = codeTokens?.[hashCodeBlock(lang, codeText)];
+
+            // Token precedence:
+            //   1. Final hash-keyed tokens (stream-end CODE_TOKENS round-trip) — full block
+            //   2. Streaming ordinal tokens (STREAM_CODE_TOKENS per-line pushes) — partial
+            //   3. Plain text fallback
+            const finalTokens = codeTokens?.[hashCodeBlock(lang, codeText)];
+            const streamTokens = streamingCodeTokens?.[fenceOrdinal];
+
+            let content: ReactNode;
+            if (finalTokens) {
+                content = renderTokenLines(finalTokens);
+            } else if (streamTokens) {
+                // Progressive: lines with tokens are lit; the in-progress tail is plain.
+                content = renderZippedLines(codeLines, streamTokens);
+            } else {
+                content = codeText;
+            }
+
             out.push(
                 <pre key={`f-${key++}`} className="ws-md-pre">
                     <code className={lang ? `language-${lang}` : undefined}>
-                        {tokens ? renderTokenLines(tokens) : codeText}
+                        {content}
                     </code>
                 </pre>,
             );
