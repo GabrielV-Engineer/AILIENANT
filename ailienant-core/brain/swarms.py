@@ -152,7 +152,7 @@ def build_micro_swarm() -> Any:
     from validators.gates import style_gate_node, syntax_gate_node
 
     g = StateGraph(AIlienantGraphState)
-    g.add_node("tool_rag_select", tool_rag_select_node)
+    g.add_node("tool_rag_select", tool_rag_select_node)    # type: ignore[type-var]
     g.add_node("coder_agent", run_coder_node)              # type: ignore[type-var]
     g.add_node("syntax_gate", syntax_gate_node)
     g.add_node("style_gate", style_gate_node)

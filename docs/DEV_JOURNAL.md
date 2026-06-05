@@ -3359,3 +3359,19 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: `shared/hardware.py`, `agents/analyst.py`, `tools/patch_tool.py`, `brain/ideation.py`, `brain/swarms.py`, `mypy.ini`.
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.1/8.0.1 → CLOSED, tabla de fixes, residuales 15→7, silenciados 9→6), `PROJECT_MANIFEST.md` (8.0.1 → `[x]`), `TECH_DEBT_BACKLOG.md` (DEBT-001 cerrado, DEBT-016 reducido), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.2: Liberar `tools.llm_gateway` — Consumidores reparados — 2026-06-05
+
+- **Status:** OK — pared `tools.llm_gateway` derribada. El archivo mismo ya era strict-clean; el silenciado ocultaba errores en sus consumidores. Correcciones solo de anotación: cero cambio de lógica. DoD verde: `mypy --strict tools/llm_gateway.py` → 0; `mypy .` → 0/247; `pytest` → 924/0; `mypy --strict main.py` baja de 7 → **1 error residual** (swarms:155, ver abajo).
+
+- **Motivación:** Unsilenciar `tools.llm_gateway` desbloquea los consumidores de nivel 2 (`summarizer`, `contract_guard`, `coder`) que acumulaban deuda de tipo invisible. `MODEL_MEDIUM` no era re-exportado desde `llm_gateway` (DEBT-015); `contract_guard` lo importaba desde el módulo incorrecto. `summarizer` y `coder` tenían bare `dict`/`set` en sus firmas de nodo.
+
+- **Correcciones en consumidores:** `contract_guard.py` (import `MODEL_MEDIUM` → `shared.config` directamente, DEBT-015 cerrado); `summarizer.py` (`Dict[str, Any]` en la firma del nodo, DEBT-016 cerrado); `coder.py` (5 errores: `Set[asyncio.Task[Any]]`, retorno de `_make_vfs_reader: Callable[[str], Optional[str]]`, 3 × `Dict[str, Any]` en nodo/locales; imports `Any, Callable, Dict, Set`).
+
+- **Hallazgo de foresight (DEBT-014 actualizado):** al unsilenciar `tools.llm_gateway`, el contexto de inferencia de mypy para los overloads de `StateGraph.add_node` cambió. El `# type: ignore[type-var]` que 8.0.1 eliminó de `swarms.py:155` volvió a ser necesario bajo `mypy .` (el overload real resurge), pero bajo `mypy --strict` el mismo ignore aparece como `unused-ignore`. La discrepancia es inherente al modo de tipado: `mypy .` vs `--strict` resuelven `NodeInputT` de forma diferente para `Dict[str, Any]`. Se restauró el ignore en `:155`; DEBT-014 actualizado con la nota de discrepancia. Esto deja 1 residual en `mypy --strict main.py` (el `unused-ignore` en `:155`), que resolverá en 8.0.4 al reparar las 4 firmas de nodo en `swarms.py`.
+
+- **`mypy.ini`:** eliminado `[mypy-tools.llm_gateway] follow_imports = silent` (6 → 5 módulos silenciados).
+
+- **Files changed:**
+  - Core: `agents/contract_guard.py`, `brain/summarizer.py`, `agents/coder.py`, `brain/swarms.py`, `mypy.ini`.
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.2/8.0.2 → CLOSED, tabla de fixes, residuales 7→1, silenciados 6→5), `PROJECT_MANIFEST.md` (8.0.2 → `[x]`), `TECH_DEBT_BACKLOG.md` (DEBT-014 actualizado, DEBT-015 cerrado, DEBT-016 cerrado), `DEV_JOURNAL.md` (este hito).

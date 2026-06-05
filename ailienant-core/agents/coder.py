@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import uuid
-from typing import Optional
+from typing import Any, Callable, Dict, Optional, Set
 
 from langchain_core.runnables import RunnableConfig
 
@@ -18,7 +18,7 @@ from agents.roles import build_coder_system_prompt, get_role_config
 logger = logging.getLogger("CODER_NODE")
 
 # Strong reference set: prevents GC from destroying broadcast tasks mid-flight.
-_background_tasks: set = set()
+_background_tasks: Set[asyncio.Task[Any]] = set()
 
 
 def content_hash(s: str) -> str:
@@ -32,7 +32,7 @@ def content_hash(s: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _make_vfs_reader(project_id: str, workspace_root: str, session_id: str):
+def _make_vfs_reader(project_id: str, workspace_root: str, session_id: str) -> Callable[[str], Optional[str]]:
     """Return a callable(path) -> Optional[str] backed by the VFS firewall."""
     from core.vfs_middleware import make_safe_reader
     return make_safe_reader(project_id, workspace_root, session_id)
@@ -96,7 +96,7 @@ def _build_style_block(target_file: str, snippets: list[tuple[str, str]]) -> str
     return STYLE_EXEMPLAR_HEADER + "\n\n".join(skeletons)
 
 
-async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -> dict:
+async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
     """
     LangGraph node: El Ejecutor (CoderAgent)
 
@@ -400,7 +400,7 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
     except Exception as exc:  # noqa: BLE001 — a generation failure becomes a soft error
         logger.warning("CoderAgent: generation failed on step #%s: %s", step_id, exc)
         target_step.status = "failed"
-        fail: dict = {
+        fail: Dict[str, Any] = {
             "errors": [f"CoderAgent step #{target_step.step_number}: generation failed: {exc}"],
             "current_step_id": target_step.step_number,
             "target_role": target_step.target_role,
@@ -478,7 +478,7 @@ async def run_coder_node(state: dict, config: Optional[RunnableConfig] = None) -
     _background_tasks.add(_t)
     _t.add_done_callback(_background_tasks.discard)
 
-    result: dict = {
+    result: Dict[str, Any] = {
         "pending_patches": patches,
         "pending_contents": contents,
         "pending_base_hash": base_hash,

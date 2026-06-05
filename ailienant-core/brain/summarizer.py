@@ -12,7 +12,7 @@ Resilience: on LLM failure, logs warning and truncates (keeps last KEEP_LAST_N).
 from __future__ import annotations
 
 import logging
-from typing import List, Dict
+from typing import Any, Dict, List
 
 from tools.llm_gateway import LLMGateway
 from tools.token_counter import PrecisionTokenCounter
@@ -31,7 +31,7 @@ _PROMPT = (
 )
 
 
-async def run_summarize_node(state: dict) -> dict:
+async def run_summarize_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """LangGraph node: compress message history if token budget is exceeded.
 
     Returns {} (no-op) when history is within budget or too short to compress.

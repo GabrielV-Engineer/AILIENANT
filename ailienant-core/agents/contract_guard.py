@@ -97,7 +97,8 @@ class ContractGuardNode:
         circular dependencies at module load (same idiom as drift_monitor/finops)."""
         import json
 
-        from tools.llm_gateway import LLMGateway, MODEL_MEDIUM
+        from tools.llm_gateway import LLMGateway
+        from shared.config import MODEL_MEDIUM
 
         messages = [
             {"role": "system", "content": system},

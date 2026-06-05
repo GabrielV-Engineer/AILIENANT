@@ -220,51 +220,49 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Notes:** Re-open if telemetry shows a material rise in planner/coder parse failures on reasoning
   models; otherwise the soft-error handling makes this low-priority.
 
-### DEBT-014 — agents/coder.py: 4 strict-mode errors gated behind tools.llm_gateway silencing
+### DEBT-014 — brain/swarms.py: NodeInputT add_node strict/non-strict discrepancy — ⚠️ PARTIALLY OPEN
 
 - **Date:** 2026-06-05
-- **Reproduce:** `cd ailienant-core && python -m mypy --strict agents/coder.py`
-- **File(s):** `agents/coder.py:21` (`set` missing type args), `:35` (`no-untyped-def` on `content_hash`),
-  `:99` / `:403` / `:481` (bare `dict` return/param types).
-- **Error:** `type-arg` × 3, `no-untyped-def` × 1. Invisible under `mypy .` because
-  `[mypy-tools.llm_gateway] follow_imports = silent` masks transitive errors. Surfaced during Phase
-  8.0.0 re-baseline run (June 2026).
-- **Blocked by:** `tools.llm_gateway` silencing (Phase 8.2 target).
-- **Phase:** 8.4 — fix together with the other Tier 2 nodes after `tools.llm_gateway` is unsilenced.
-- **Notes:** `content_hash` on line 35 needs `-> str` annotation. Bare `dict` params/returns on
-  `run_coder_node` should become `Dict[str, Any]` once the silenced gateway is unblocked.
+- **Reproduce (mypy .):** `cd ailienant-core && python -m mypy . 2>&1 | grep swarms`
+- **Reproduce (strict):** `cd ailienant-core && python -m mypy --strict brain/swarms.py`
+- **File(s):** `brain/swarms.py:155` (`tool_rag_select_node`), `:156` (`run_coder_node`),
+  `:218` (`run_planner_node`), `:227` (`run_analyst_node`).
+- **Error:** `Value of type variable "NodeInputT" of "add_node" of "StateGraph" cannot be
+  "dict[str, Any]"`. All four `add_node` calls use state-function signatures of `Dict[str, Any]`
+  where LangGraph expects a TypedDict-constrained input.
+- **Mode discrepancy (surfaced 8.0.2):** `swarms.py:155` (`tool_rag_select_node`) shows as
+  `unused-ignore[type-var]` under `mypy --strict` but the error IS real under `mypy .`
+  (non-strict). The `# type: ignore[type-var]` must remain to keep the enforced gate green.
+  Lines :156/:218/:227 behave consistently across both modes.
+- **Phase:** 8.0.4 — fix all four by changing node signatures to `AIlienantGraphState` input type,
+  or by upgrading LangGraph stubs to accept `Dict[str, Any]` (whichever the stubs support first).
+- **Notes:** The enforced gate (`mypy .`) is the controlling gate; it remains clean with the ignores
+  in place. `mypy --strict main.py` shows 1 residual (the :155 unused-ignore) until 8.0.4.
 
 ---
 
-### DEBT-015 — agents/contract_guard.py: attr-defined for MODEL_MEDIUM (same root as DEBT-002)
+### DEBT-015 — agents/contract_guard.py: MODEL_MEDIUM import — ✅ CLOSED 2026-06-05
 
 - **Date:** 2026-06-05
-- **Reproduce:** `cd ailienant-core && python -m mypy --strict agents/contract_guard.py`
 - **File(s):** `agents/contract_guard.py:100`
 - **Error:** `attr-defined` — `Module "tools.llm_gateway" does not explicitly export attribute
-  "MODEL_MEDIUM"`. Same root cause as DEBT-002; both resolve when `tools.llm_gateway` is unsilenced
-  in Phase 8.2.
-- **Blocked by:** `tools.llm_gateway` silencing.
-- **Phase:** 8.2 (resolves automatically alongside DEBT-002).
-- **Notes:** Pre-registered as DEBT-002 from the prior agent's perspective; this entry records that it
-  was confirmed still present after the Phase 8.0.0 sweep (June 2026).
+  "MODEL_MEDIUM"`. `MODEL_MEDIUM` is defined in `shared.config` and imported into `llm_gateway`
+  without an explicit re-export; `contract_guard` was pulling it from `llm_gateway` instead of
+  the canonical source.
+- **Resolution (2026-06-05, Phase 8.0.2):** Changed the deferred import in `contract_guard.py:100`
+  to `from shared.config import MODEL_MEDIUM` directly. `mypy --strict agents/contract_guard.py` → 0.
 
 ---
 
-### DEBT-016 — brain/summarizer.py: strict-mode type-arg behind `tools.llm_gateway`
+### DEBT-016 — brain/summarizer.py: strict-mode type-arg — ✅ CLOSED 2026-06-05
 
 - **Date:** 2026-06-05
-- **Reproduce:** `cd ailienant-core && python -m mypy --strict brain/summarizer.py`
 - **File(s):** `brain/summarizer.py:34` (bare `dict`).
-- **Error:** `type-arg` × 1.
-- **Blocked by:** `tools.llm_gateway` silencing (Phase 8.0.2).
-- **Phase:** 8.0.4 — fix `summarizer.py` after `tools.llm_gateway` is unsilenced.
-- **Notes:** Annotation-only (`dict` → `Dict[str, Any]`).
-- **Partial resolution (2026-06-05, Phase 8.0.1):** the `brain/ideation.py` portion (8 × `type-arg`,
-  lines 57/92/93/102/139/178/196 + `:214` `StateGraph[AIlienantGraphState]`) was **NOT** gated by
-  `agents.analyst` — those errors were self-contained (`ideation.py:212` imports the
-  `run_analyst_node` *function*, not a bare-typed symbol). They were fixed in 8.0.1 and the blueprint
-  attribution corrected. Only `summarizer.py` remains here.
+- **Error:** `type-arg` × 1 (`run_summarize_node` signature: `state: dict`).
+- **Partial resolution (2026-06-05, Phase 8.0.1):** `brain/ideation.py` portion (8 × type-arg) was
+  self-contained (not gated by `agents.analyst`) — fixed in 8.0.1. Only `summarizer.py` remained.
+- **Resolution (2026-06-05, Phase 8.0.2):** **CLOSED.** `run_summarize_node(state: Dict[str, Any])
+  -> Dict[str, Any]` + added `Any` to the `typing` import. `mypy --strict brain/summarizer.py` → 0.
 
 ---
 

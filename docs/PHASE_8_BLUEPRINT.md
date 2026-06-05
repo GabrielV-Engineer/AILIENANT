@@ -15,27 +15,24 @@ one.
 | Gate | Result |
 |---|---|
 | `mypy .` | ✅ Success — 247 files, 0 errors |
-| `mypy --strict main.py` | ❌ 7 errors in 3 files (all gated behind `tools.llm_gateway` — see below) |
-| Silenced modules (`follow_imports = silent` in mypy.ini) | 6 modules (was 9 — 8.0.1 removed 3) |
+| `mypy --strict main.py` | ❌ 1 error in 1 file (`swarms.py:155` unused-ignore discrepancy, DEBT-014) |
+| Silenced modules (`follow_imports = silent` in mypy.ini) | 5 modules (was 9 → 8.0.1 removed 3, 8.0.2 removed 1) |
 
 The original May 2026 baseline had 32 errors / 12 files. By June 2026 (after Phases 7.15–7.18 work that
 kept `mypy .` green but accumulated strict-mode debt), the count had grown to 79 errors / 25 files. The
 Phase 8.0.0 sweep closed the 64 surface-fixable errors; the remaining 15 are structurally gated behind
 silenced dependencies and cannot be fixed until Phase 8.1–8.4 unblocks their transitive imports.
 
-### Residual errors (`mypy --strict main.py`) — 7 remaining — all behind `tools.llm_gateway`
+### Residual errors (`mypy --strict main.py`) — 1 remaining
 
-| File | Count | Error codes | Blocked by |
+| File | Count | Error codes | Root cause |
 |---|---|---|---|
-| `agents/coder.py` | 5 | `type-arg` × 4, `no-untyped-def` × 1 | `tools.llm_gateway` (Phase 8.0.2) |
-| `agents/contract_guard.py` | 1 | `attr-defined` (`MODEL_MEDIUM`) | `tools.llm_gateway` (Phase 8.0.2) |
-| `brain/summarizer.py` | 1 | `type-arg` × 1 | `tools.llm_gateway` (Phase 8.0.2) |
+| `brain/swarms.py` | 1 | `unused-ignore` on `:155` | `tool_rag_select_node` add_node `NodeInputT` discrepancy between `mypy .` and `--strict` modes (DEBT-014) |
 
-Registered as DEBT-014, DEBT-015, DEBT-016 in `TECH_DEBT_BACKLOG.md`.
-
-> **8.0.1 update (2026-06-05):** `brain/ideation.py`'s 8 `type-arg` errors were *not* gated by
-> `agents.analyst` (the prior table mis-attributed them) — they were self-contained and are now fixed.
-> `coder.py` carries 5 (not 4) — the earlier count under-reported `type-arg` by one.
+> **8.0.1 (2026-06-05):** closed 19 errors (leaves + ideation); 15 → 7 residual. Attribution of
+> ideation.py corrected (was not gated by analyst).
+> **8.0.2 (2026-06-05):** closed 7 consumer errors (contract_guard, summarizer, coder); 7 → 1
+> residual. DEBT-015 and DEBT-016 closed. DEBT-014 updated with strict/non-strict discrepancy note.
 
 ### Historical baseline (2026-05-31) — for reference only
 
@@ -65,6 +62,7 @@ for `pyarrow` (stubs now present; `lancedb` remains untyped).
 | `api.websocket_manager` | write_pipeline, finops, main.py | Critical |
 
 *(Unsilenced in 8.0.1: `shared.hardware`, `agents.analyst`, `tools.patch_tool` — DEBT-001 closed.)*
+*(Unsilenced in 8.0.2: `tools.llm_gateway` — DEBT-015, DEBT-016 closed.)*
 
 ---
 
@@ -190,16 +188,23 @@ topological order. All fixes annotation-only — zero logic changes. `brain/idea
 
 ---
 
-### 8.2 — Unsilence `tools.llm_gateway`
+### 8.2 / 8.0.2 — Unsilence `tools.llm_gateway` — ✅ CLOSED 2026-06-05
 
-**Scope:** `tools/llm_gateway.py` is imported by `brain/summarizer.py`, `agents/contract_guard.py`,
-`agents/coder.py`, and BYOM paths. Unsilencing it unlocks a cascading improvement.
+**Scope:** `tools/llm_gateway.py` was already strict-clean internally (0 errors); the `follow_imports
+= silent` block was shielding its *consumers*. Once the block was removed, the 7 consumer errors
+became visible and were fixed. `MODEL_MEDIUM` was not re-exported by `llm_gateway`; the fix was to
+import it from `shared.config` directly in `contract_guard.py` (proper canonical source).
 
-- Fix errors in `tools/llm_gateway.py` until `mypy --strict tools/llm_gateway.py` → 0.
-- Ensure `MODEL_MEDIUM` (and `MODEL_SMALL`, `MODEL_BIG`) are exported from `__all__` or moved
-  to `shared/config.py` (resolves DEBT-002).
-- Remove `[mypy-tools.llm_gateway] follow_imports = silent` from `mypy.ini`.
-- **DoD:** `mypy --strict tools/llm_gateway.py` → 0; `mypy --strict agents/contract_guard.py` → 0.
+| File | Fix |
+|---|---|
+| `agents/contract_guard.py` | `from tools.llm_gateway import LLMGateway, MODEL_MEDIUM` → import `MODEL_MEDIUM` from `shared.config` |
+| `brain/summarizer.py` | `state: dict` → `Dict[str, Any]`; added `Any` to imports |
+| `agents/coder.py` | `Set[asyncio.Task[Any]]` + `_make_vfs_reader -> Callable[[str], Optional[str]]` + 3 × `Dict[str, Any]`; added `Any, Callable, Dict, Set` |
+| `brain/swarms.py` | restored `# type: ignore[type-var]` on `:155` (needed by `mypy .`; `--strict` mode sees it as unused — DEBT-014 discrepancy) |
+| `mypy.ini` | removed `[mypy-tools.llm_gateway] follow_imports = silent` (6 → 5) |
+
+**DoD met:** `mypy --strict tools/llm_gateway.py` → 0; `mypy .` → 0/247; `mypy --strict main.py`
+7 → 1 (swarms.py:155, DEBT-014); `pytest` → 924/0. DEBT-015 closed, DEBT-016 closed.
 
 ---
 
