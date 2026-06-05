@@ -2,6 +2,40 @@
 
 ---
 
+## Hito 7.17.2: Checkpoint Gate FASE 7.17 (cierre de Streaming Progressive Highlight) — 2026-06-05
+
+**Estado:** ✅ COMPLETO | **Gates:** frontend 5/5 · backend 6/6 · `mypy .` 0/246 · 918 pytest passed · FASE 7.17 CERRADA
+
+### Problema resuelto
+Cierra formalmente FASE 7.17 certificando que todos los contratos arquitectónicos de los cuatro sub-hitos (7.17.0, 7.17.1, 7.17.0-B) se mantienen de forma permanente a través de dos gates hermanos.
+
+### Gate frontend — `src/test/phase7_17_checkpoint_gate.test.ts` (5 rows)
+| Row | Invariant certificado |
+|---|---|
+| STREAM1 | `StreamingCodeTokenizer` expone `push` y `reset` (seam host-side intacto) |
+| COW1 | `mergeStreamEmits`: al actualizar la línea N, las líneas 0..N-1 conservan su referencia exacta (precondición del memo `CodeLine` — si esto se rompe, vuelve el flicker) |
+| COW2 | Dos emits al mismo bloque en un batch: el array de bloque se clona **una sola vez** (guard de clone-once-per-batch) |
+| NOOP1 | Batch vacío devuelve la misma referencia de record (sin setMessages spurious ni re-render) |
+| MEMO1 | `codeLineEqual` usa igualdad de referencia para `tokens`, no de contenido: misma ref → React salta la fila; nueva ref → reconcilia, incluso si el contenido es byte-idéntico |
+
+### Gate backend — `tests/test_phase7_17_checkpoint_gate.py` (6 rows)
+| Row | Invariant certificado |
+|---|---|
+| GATEWAY1 | Rama de fallback (thinking off) llama `ainvoke` CON `response_format` — guarda de no-regresión para JSON-mode en modelos no-reasoning |
+| GATEWAY2 | Rama de streaming: el sink recibe los deltas de reasoning; `ainvoke` no se llama nunca |
+| ISOLATE1 | Un socket muerto (ConnectionError desde el sink) nunca aborta la generación — el buffer de respuesta sigue acumulando |
+| FENCE1 | `_ThinkingStreamer` sólo llama `broadcast_thinking_chunk`; `broadcast_pipeline_step` (canal NarrationGate) nunca se toca |
+| INJECT1 | Verificación de source: task_service inyecta `stream_thinking`, `enable_native_thinking` y `thinking_budget_tokens` en el run config |
+| NODE1 | `run_coder_node` reenvía `stream_thinking` como `on_thinking` al gateway; los edits parsean correctamente |
+
+### Archivos añadidos
+| Archivo | Tipo |
+|---|---|
+| `ailienant-extension/src/test/phase7_17_checkpoint_gate.test.ts` | NEW — frontend gate |
+| `ailienant-core/tests/test_phase7_17_checkpoint_gate.py` | NEW — backend gate |
+
+---
+
 ## Hito 7.17.0-B: Streaming de native thinking desde planner/coder (el camino de código deja de congelarse) — 2026-06-05
 
 **Estado:** ✅ COMPLETO | **ADR:** 739 | **Resultado de gates:** `mypy .` 0/246 · **918 pytest passed** · gate hermano `test_phase7_17_0b_streaming.py` 10/10
