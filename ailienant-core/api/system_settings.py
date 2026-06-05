@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 from pathlib import Path
+from typing import Any, Dict
 
 from fastapi import APIRouter
 
@@ -14,7 +15,7 @@ _SETTINGS_PATH = Path.home() / ".ailienant" / "settings.json"
 # Phase 7.9.A.7 — scalar-only store. Entity lists (skills/mcp/hooks/role overrides)
 # live in the WAL-mode catalog DB, not here, to avoid lost-update races. Scalars are
 # still read-modify-write on one file, so a module-level lock serializes mutations.
-_DEFAULTS: dict = {
+_DEFAULTS: Dict[str, Any] = {
     "analyst_name": "Natt",
     "output_style": "default",       # default | concise | explanatory | code_only
     "permission_mode": "default",    # default | plan | auto  (SessionPermissionMode)
@@ -31,7 +32,7 @@ def _soul_path() -> Path:
     return Path(env) if env else Path.home() / ".ailienant" / "SOUL.md"
 
 
-def _read_settings() -> dict:
+def _read_settings() -> Dict[str, Any]:
     try:
         data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -42,20 +43,20 @@ def _read_settings() -> dict:
     return merged
 
 
-def _write_settings(data: dict) -> None:
+def _write_settings(data: Dict[str, Any]) -> None:
     _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     _SETTINGS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 @router.get("/soul")
-async def get_soul() -> dict:
+async def get_soul() -> Dict[str, Any]:
     path = _soul_path()
     content = path.read_text(encoding="utf-8") if path.is_file() else ""
     return {"content": content}
 
 
 @router.post("/soul")
-async def save_soul(body: dict) -> dict:
+async def save_soul(body: Dict[str, Any]) -> Dict[str, Any]:
     content = str(body.get("content", ""))
     path = _soul_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,13 +65,13 @@ async def save_soul(body: dict) -> dict:
 
 
 @router.get("/settings")
-async def get_settings() -> dict:
+async def get_settings() -> Dict[str, Any]:
     async with _settings_lock:
         return _read_settings()
 
 
 @router.post("/settings")
-async def save_settings(body: dict) -> dict:
+async def save_settings(body: Dict[str, Any]) -> Dict[str, Any]:
     async with _settings_lock:
         settings = _read_settings()
         if "analyst_name" in body:
@@ -89,12 +90,12 @@ async def save_settings(body: dict) -> dict:
 
 
 @router.get("/hooks")
-async def get_hooks() -> dict:
+async def get_hooks() -> Dict[str, Any]:
     return {"hooks": await catalog_db.list_hooks()}
 
 
 @router.post("/hooks")
-async def save_hook(body: dict) -> dict:
+async def save_hook(body: Dict[str, Any]) -> Dict[str, Any]:
     event = str(body.get("event", "")).strip()
     command = str(body.get("command", "")).strip()
     if event not in _HOOK_EVENTS or not command:
@@ -106,6 +107,6 @@ async def save_hook(body: dict) -> dict:
 
 
 @router.delete("/hooks/{hook_id}")
-async def remove_hook(hook_id: str) -> dict:
+async def remove_hook(hook_id: str) -> Dict[str, Any]:
     await catalog_db.delete_hook(hook_id)
     return {"ok": True, "hooks": await catalog_db.list_hooks()}

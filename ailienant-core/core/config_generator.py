@@ -9,7 +9,7 @@
 
 import logging
 import os
-from typing import List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 import httpx
 import yaml
@@ -139,7 +139,7 @@ async def discover_models() -> List[DiscoveredModel]:
     return models
 
 
-async def write_config(output_path: str = CONFIG_YAML_PATH) -> dict:
+async def write_config(output_path: str = CONFIG_YAML_PATH) -> Dict[str, Any]:
     """
     Discover available models and write a LiteLLM proxy config.yaml.
 
@@ -199,7 +199,7 @@ async def write_config(output_path: str = CONFIG_YAML_PATH) -> dict:
 
 def write_config_with_overrides(
     output_path: str,
-    tier_overrides: dict,
+    tier_overrides: Dict[str, Any],
 ) -> None:
     """Phase 7.9.B.2 — Write config.yaml synchronously with user-defined tier overrides.
 
@@ -222,11 +222,11 @@ def write_config_with_overrides(
     except FileNotFoundError:
         existing = {}
 
-    model_list: List[dict] = list(existing.get("model_list", []))
+    model_list: List[Dict[str, Any]] = list(existing.get("model_list", []))
 
     if tier_overrides:
         # Build an index of existing entries by model_name for fast lookup.
-        by_alias: dict = {entry["model_name"]: entry for entry in model_list}
+        by_alias: Dict[str, Any] = {entry["model_name"]: entry for entry in model_list}
 
         for alias, model_id in tier_overrides.items():
             if not model_id:
@@ -240,7 +240,7 @@ def write_config_with_overrides(
                     by_alias[alias]["litellm_params"]["api_base"] = OLLAMA_API_BASE
             else:
                 # Alias not yet in the file — add a new entry.
-                params: dict = {"model": model_id}
+                params: Dict[str, Any] = {"model": model_id}
                 if model_id.startswith("ollama/"):
                     params["api_base"] = OLLAMA_API_BASE
                 by_alias[alias] = {"model_name": alias, "litellm_params": params}

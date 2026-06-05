@@ -15,10 +15,10 @@ import logging
 import ntpath
 import uuid
 from contextlib import AsyncExitStack
-from typing import FrozenSet, Sized, cast
+from typing import Any, Dict, FrozenSet, Sized, cast
 
 from fastapi import APIRouter
-from mcp import ClientSession  # type: ignore[attr-defined]  # mcp ships partial stubs
+from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
 import core.db as catalog_db
@@ -63,12 +63,12 @@ def _validate_mcp_command(uri: str) -> None:
 
 
 @router.get("/servers")
-async def list_servers() -> dict:
+async def list_servers() -> Dict[str, Any]:
     return {"servers": await catalog_db.list_mcp_servers()}
 
 
 @router.post("/servers")
-async def save_server(body: dict) -> dict:
+async def save_server(body: Dict[str, Any]) -> Dict[str, Any]:
     name = str(body.get("name", "")).strip()
     uri = str(body.get("uri", "")).strip()
     if not name or not uri:
@@ -86,13 +86,13 @@ async def save_server(body: dict) -> dict:
 
 
 @router.delete("/servers/{server_id}")
-async def remove_server(server_id: str) -> dict:
+async def remove_server(server_id: str) -> Dict[str, Any]:
     await catalog_db.delete_mcp_server(server_id)
     return {"ok": True, "servers": await catalog_db.list_mcp_servers()}
 
 
 @router.post("/test")
-async def test_server(body: dict) -> dict:
+async def test_server(body: Dict[str, Any]) -> Dict[str, Any]:
     """Probe an MCP server: connect, list tools, report count. Always reaps.
 
     Zombie-safety: the whole probe runs inside `async with stack`, so the

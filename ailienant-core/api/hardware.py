@@ -1,5 +1,6 @@
 import asyncio
 import time
+from typing import Any, Dict
 
 from fastapi import APIRouter
 from shared.hardware import HardwareDetector, HardwareProfile
@@ -30,14 +31,14 @@ async def get_hardware_profile() -> HardwareProfile:
 
 
 @router.get("/mode")
-async def get_execution_mode() -> dict:
+async def get_execution_mode() -> Dict[str, Any]:
     profile = await _get_profile()
     return {"mode": get_mode(), "suggested": profile.suggested_mode}
 
 
 @router.post("/mode")
-async def set_execution_mode(body: dict) -> dict:
+async def set_execution_mode(body: Dict[str, Any]) -> Dict[str, Any]:
     mode = body.get("mode", "AUTO")
-    set_mode(mode)  # type: ignore[arg-type]
+    set_mode(mode)
     profile = await _get_profile()
     return {"mode": get_mode(), "suggested": profile.suggested_mode}

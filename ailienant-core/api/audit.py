@@ -1,5 +1,6 @@
 import aiosqlite
 from fastapi import APIRouter
+from typing import Any, Dict, List
 
 from core.audit import AuditChainBrokenError, verify_chain
 from shared.config import DB_CATALOG_PATH
@@ -16,7 +17,7 @@ def _resolution_to_bool(r: str) -> bool | None:
 
 
 @router.get("/log")
-async def get_audit_log(offset: int = 0, limit: int = 20) -> list[dict]:
+async def get_audit_log(offset: int = 0, limit: int = 20) -> List[Dict[str, Any]]:
     limit = min(limit, 100)
     async with aiosqlite.connect(f"file:{DB_CATALOG_PATH}?mode=ro", uri=True) as db:
         async with db.execute(
@@ -41,7 +42,7 @@ async def get_audit_log(offset: int = 0, limit: int = 20) -> list[dict]:
 
 
 @router.get("/stats")
-async def get_audit_stats() -> dict:
+async def get_audit_stats() -> Dict[str, Any]:
     async with aiosqlite.connect(f"file:{DB_CATALOG_PATH}?mode=ro", uri=True) as db:
         async with db.execute("SELECT COUNT(*) FROM hitl_audit_log") as cur:
             row = await cur.fetchone()
@@ -68,7 +69,7 @@ async def get_audit_stats() -> dict:
 
 
 @router.get("/verify")
-async def verify_audit_chain() -> dict:
+async def verify_audit_chain() -> Dict[str, Any]:
     async with aiosqlite.connect(f"file:{DB_CATALOG_PATH}?mode=ro", uri=True) as db:
         async with db.execute(
             "SELECT DISTINCT session_id FROM hitl_audit_log"

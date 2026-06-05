@@ -104,7 +104,7 @@ async def _probe_docker(force: bool = False) -> bool:
     global _docker_cache
     now = time.monotonic()
     if not force:
-        cached_ts: float = _docker_cache.get("ts", 0.0)  # type: ignore[assignment]
+        cached_ts: float = _docker_cache.get("ts", 0.0)
         if cached_ts and (now - cached_ts) < _CACHE_TTL_S:
             return bool(_docker_cache["reachable"])
     try:

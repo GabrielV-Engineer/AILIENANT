@@ -12,7 +12,7 @@ disk writes, no headless fallback. If no client is connected we refuse the apply
 from __future__ import annotations
 
 import uuid
-from typing import Dict
+from typing import Any, Dict
 
 from api.ws_contracts import ApplyWorkspaceEditPayload, WorkspaceEditItem
 from api.websocket_manager import vfs_manager
@@ -25,7 +25,7 @@ async def apply_patch_set(
     contents: Dict[str, str],
     base_hash: Dict[str, str],
     save: bool = True,
-) -> dict:
+) -> Dict[str, Any]:
     """Dispatch an approved patch set to the VS Code host and await the apply ack.
 
     Returns the host's ack dict ({ok, applied_files, stale_files, error}) or an

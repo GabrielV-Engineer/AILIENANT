@@ -9,6 +9,7 @@ This is the lightweight Phase-7 template feature; the Phase 9.4 Skills-as-Tools
 marketplace is a future superset.
 """
 import uuid
+from typing import Any, Dict
 
 from fastapi import APIRouter
 
@@ -18,12 +19,12 @@ router = APIRouter(prefix="/api/v1/skills", tags=["skills"])
 
 
 @router.get("")
-async def list_skills() -> dict:
+async def list_skills() -> Dict[str, Any]:
     return {"skills": await catalog_db.list_skills()}
 
 
 @router.post("")
-async def save_skill(body: dict) -> dict:
+async def save_skill(body: Dict[str, Any]) -> Dict[str, Any]:
     name = str(body.get("name", "")).strip()
     skill_body = str(body.get("body", "")).strip()
     if not name or not skill_body:
@@ -34,6 +35,6 @@ async def save_skill(body: dict) -> dict:
 
 
 @router.delete("/{skill_id}")
-async def delete_skill(skill_id: str) -> dict:
+async def delete_skill(skill_id: str) -> Dict[str, Any]:
     await catalog_db.delete_skill(skill_id)
     return {"ok": True, "skills": await catalog_db.list_skills()}

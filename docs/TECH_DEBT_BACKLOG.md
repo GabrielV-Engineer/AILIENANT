@@ -66,31 +66,27 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ---
 
-### DEBT-003 — brain/swarms.py: BaseCheckpointSaver missing type args
+### DEBT-003 — brain/swarms.py: BaseCheckpointSaver missing type args — ✅ CLOSED 2026-06-05
 
 - **Date:** 2026-05-31
 - **Reproduce:** `cd ailienant-core && .\venv\Scripts\python -m mypy --strict brain/swarms.py`
 - **File:** `brain/swarms.py:189`
 - **Error:** `type-arg` — `Missing type arguments for generic type "BaseCheckpointSaver"`
-- **Blocked by:** None (fixable now, but out of scope for Phase 8.0)
-- **Phase:** 8.4
-- **Notes:** `BaseCheckpointSaver` is a LangGraph generic. The fix is likely
-  `BaseCheckpointSaver[Any]` (import `Any` from `typing`). Verify by checking the LangGraph type
-  stub for `BaseCheckpointSaver.__class_getitem__` support.
+- **Resolution:** Fixed in Phase 8.0.0. Changed `Optional[BaseCheckpointSaver]` to
+  `Optional[BaseCheckpointSaver[Any]]` in `brain/swarms.py:189`.
 
 ---
 
-### DEBT-004 — brain/swarms.py: stale unused-ignore comment
+### DEBT-004 — brain/swarms.py: stale unused-ignore comments — ✅ CLOSED 2026-06-05
 
 - **Date:** 2026-05-31
 - **Reproduce:** `cd ailienant-core && .\venv\Scripts\python -m mypy --strict brain/swarms.py`
-- **File:** `brain/swarms.py:226`
-- **Error:** `unused-ignore` — `# type: ignore` comment no longer needed (stubs improved or code
-  changed to not trigger the original error)
-- **Blocked by:** None
-- **Phase:** 8.4 (fix together with DEBT-003 in the same atomic commit for swarms.py)
-- **Notes:** Always remove stale ignores together with the associated type-arg fix to keep the
-  diff atomic and the intent clear.
+- **File:** `brain/swarms.py:226` (and 7 other lines)
+- **Error:** `unused-ignore` — stale `# type: ignore[type-var]` / `# type: ignore[arg-type]`
+  comments removed (stubs improved). 4 targeted node registration ignores retained where the
+  underlying `NodeInputT` constraint is a real Tier 2/3 issue (DEBT-014 will fix those).
+- **Resolution:** Fixed in Phase 8.0.0. Removed 8 stale ignores; 4 minimal targeted ignores
+  retained for coder/planner/analyst/tool_rag_select node registrations (Tier 2/3 root cause).
 
 ---
 
@@ -227,6 +223,52 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   outputs (e.g. OpenAI), falling back to the sanitizer only where unsupported.
 - **Notes:** Re-open if telemetry shows a material rise in planner/coder parse failures on reasoning
   models; otherwise the soft-error handling makes this low-priority.
+
+### DEBT-014 — agents/coder.py: 4 strict-mode errors gated behind tools.llm_gateway silencing
+
+- **Date:** 2026-06-05
+- **Reproduce:** `cd ailienant-core && python -m mypy --strict agents/coder.py`
+- **File(s):** `agents/coder.py:21` (`set` missing type args), `:35` (`no-untyped-def` on `content_hash`),
+  `:99` / `:403` / `:481` (bare `dict` return/param types).
+- **Error:** `type-arg` × 3, `no-untyped-def` × 1. Invisible under `mypy .` because
+  `[mypy-tools.llm_gateway] follow_imports = silent` masks transitive errors. Surfaced during Phase
+  8.0.0 re-baseline run (June 2026).
+- **Blocked by:** `tools.llm_gateway` silencing (Phase 8.2 target).
+- **Phase:** 8.4 — fix together with the other Tier 2 nodes after `tools.llm_gateway` is unsilenced.
+- **Notes:** `content_hash` on line 35 needs `-> str` annotation. Bare `dict` params/returns on
+  `run_coder_node` should become `Dict[str, Any]` once the silenced gateway is unblocked.
+
+---
+
+### DEBT-015 — agents/contract_guard.py: attr-defined for MODEL_MEDIUM (same root as DEBT-002)
+
+- **Date:** 2026-06-05
+- **Reproduce:** `cd ailienant-core && python -m mypy --strict agents/contract_guard.py`
+- **File(s):** `agents/contract_guard.py:100`
+- **Error:** `attr-defined` — `Module "tools.llm_gateway" does not explicitly export attribute
+  "MODEL_MEDIUM"`. Same root cause as DEBT-002; both resolve when `tools.llm_gateway` is unsilenced
+  in Phase 8.2.
+- **Blocked by:** `tools.llm_gateway` silencing.
+- **Phase:** 8.2 (resolves automatically alongside DEBT-002).
+- **Notes:** Pre-registered as DEBT-002 from the prior agent's perspective; this entry records that it
+  was confirmed still present after the Phase 8.0.0 sweep (June 2026).
+
+---
+
+### DEBT-016 — brain/ideation.py + brain/summarizer.py: strict-mode errors behind silenced deps
+
+- **Date:** 2026-06-05
+- **Reproduce:** `cd ailienant-core && python -m mypy --strict brain/ideation.py brain/summarizer.py`
+- **File(s):** `brain/ideation.py:57,92,93,102,139,178,196` (bare `dict` params/returns),
+  `:214` (`StateGraph` missing type args); `brain/summarizer.py:34` (bare `dict`).
+- **Error:** `type-arg` × 9. Ideation is additionally gated by `agents.analyst` silencing;
+  summarizer by `tools.llm_gateway` silencing.
+- **Blocked by:** `agents.analyst` (Phase 8.1.B) and `tools.llm_gateway` (Phase 8.2).
+- **Phase:** 8.4 — fix both files after their upstream silenced deps are cleared.
+- **Notes:** `StateGraph` in ideation.py should become `StateGraph[AIlienantGraphState]`; bare `dict`
+  params should become `Dict[str, Any]`. All annotation-only changes.
+
+---
 
 ### DEBT-009 — MCTS variant-search is offline-only (not wired into the live coder loop)
 

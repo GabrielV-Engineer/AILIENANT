@@ -34,16 +34,17 @@ class CoderOutput(BaseModel):
     target_role: Optional[str] = None
 
 
-def _extract_json(text: str) -> Optional[dict]:
+def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     """Regex fallback: extract JSON from fenced code blocks before Pydantic."""
     m = _JSON_FENCE_RE.search(text)
     try:
-        return json.loads(m.group(1) if m else text)
+        result = json.loads(m.group(1) if m else text)
+        return dict(result) if isinstance(result, dict) else None
     except (json.JSONDecodeError, AttributeError):
         return None
 
 
-async def run_validate_output_node(state: dict) -> dict:
+async def run_validate_output_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """LangGraph node: validate CoderAgent output against CoderOutput schema.
 
     Returns {} (pass) when validation succeeds.
@@ -90,7 +91,7 @@ async def run_validate_output_node(state: dict) -> dict:
         }
 
 
-def route_after_validation(state: dict) -> str:
+def route_after_validation(state: Dict[str, Any]) -> str:
     """Conditional edge: retry CoderAgent or proceed to END."""
     from core.telemetry import log_routing_decision
     if state.get("guardrail_failed"):

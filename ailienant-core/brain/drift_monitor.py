@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import difflib
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from brain.state import MissionSpecification
 
@@ -68,7 +68,7 @@ def _plan_similarity(a: MissionSpecification, b: MissionSpecification) -> float:
     return combined
 
 
-async def run_drift_monitor_node(state: dict) -> dict:
+async def run_drift_monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """LangGraph node: compare current plan against the frozen baseline.
 
     Pass-through on first turn (immutable_wbs not yet set) or when plans

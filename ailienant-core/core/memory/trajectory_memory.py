@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import lancedb  # type: ignore[import-untyped]
-import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow as pa
 
 import litellm
 

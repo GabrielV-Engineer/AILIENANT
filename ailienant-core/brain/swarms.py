@@ -154,9 +154,9 @@ def build_micro_swarm() -> Any:
     g = StateGraph(AIlienantGraphState)
     g.add_node("tool_rag_select", tool_rag_select_node)    # type: ignore[type-var]
     g.add_node("coder_agent", run_coder_node)              # type: ignore[type-var]
-    g.add_node("syntax_gate", syntax_gate_node)            # type: ignore[type-var]
-    g.add_node("style_gate", style_gate_node)              # type: ignore[type-var]
-    g.add_node("circuit_breaker_check", _circuit_breaker_node)  # type: ignore[type-var]
+    g.add_node("syntax_gate", syntax_gate_node)
+    g.add_node("style_gate", style_gate_node)
+    g.add_node("circuit_breaker_check", _circuit_breaker_node)
 
     # Phase 5.2 — Tool RAG runs once on entry. Retries from circuit_breaker
     # bypass tool_rag_select (selection is intent-based, not error-based).
@@ -186,7 +186,7 @@ _MICRO_SWARM_APP = build_micro_swarm()
 
 
 def build_full_swarm(
-    checkpointer: Optional[BaseCheckpointSaver] = None,
+    checkpointer: Optional[BaseCheckpointSaver[Any]] = None,
     interrupt_before: Optional[List[str]] = None,
 ) -> Any:
     """Compile FULL_SWARM with a caller-supplied checkpointer.
@@ -213,18 +213,18 @@ def build_full_swarm(
     from validators.environment import verify_environment_node
 
     g = StateGraph(AIlienantGraphState)
-    g.add_node("verify_environment", verify_environment_node)  # type: ignore[type-var]
-    g.add_node("researcher_agent", run_researcher_node)        # type: ignore[type-var]
-    g.add_node("planner_agent", run_planner_node)              # type: ignore[type-var]
-    g.add_node("orchestrator_agent", run_orchestrator_node)    # type: ignore[type-var]
+    g.add_node("verify_environment", verify_environment_node)
+    g.add_node("researcher_agent", run_researcher_node)
+    g.add_node("planner_agent", run_planner_node)               # type: ignore[type-var]
+    g.add_node("orchestrator_agent", run_orchestrator_node)
     # Pass the compiled MICRO_SWARM directly as a sub-graph node. LangGraph
     # natively routes state between parent and child without re-applying the
     # parent's reducers on the returned dict — this avoids the O(2^N)
     # ``messages`` duplication that a wrapper function returning
     # ``await _APP.ainvoke(state)`` would trigger (the parent's operator.add
     # reducer would re-append the entire child history on every iteration).
-    g.add_node("micro_swarm", _MICRO_SWARM_APP)                # type: ignore[arg-type]
-    g.add_node("analyst_agent", run_analyst_node)              # type: ignore[type-var]
+    g.add_node("micro_swarm", _MICRO_SWARM_APP)
+    g.add_node("analyst_agent", run_analyst_node)               # type: ignore[type-var]
 
     g.add_edge(START, "verify_environment")
     g.add_edge("verify_environment", "researcher_agent")

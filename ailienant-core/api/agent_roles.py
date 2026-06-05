@@ -11,6 +11,7 @@ tracked follow-up. The orchestrator persona (SOUL.md) + Analyst name remain
 editable via /api/v1/system/soul and /api/v1/system/settings.
 """
 from fastapi import APIRouter
+from typing import Any, Dict
 
 import core.db as catalog_db
 from agents.roles import ROLE_REGISTRY, _BASE_CODER_PROMPT
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 
 @router.get("/roles")
-async def get_roles() -> dict:
+async def get_roles() -> Dict[str, Any]:
     overrides = await catalog_db.list_agent_overrides()
     roles = [
         {
@@ -34,7 +35,7 @@ async def get_roles() -> dict:
 
 
 @router.post("/roles/{role}")
-async def save_role(role: str, body: dict) -> dict:
+async def save_role(role: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if role not in ROLE_REGISTRY:
         return {"ok": False, "error": f"unknown role {role!r}"}
     prompt = str(body.get("system_prompt", "")).strip()

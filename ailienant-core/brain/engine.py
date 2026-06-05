@@ -39,7 +39,7 @@ from core.supervisor import run_supervisor_node, route_after_supervisor  # noqa:
 from agents.error_correction import run_error_correction_node  # noqa: E402 — self-healing reflexion node
 
 
-async def run_apply_patch_node(state: dict) -> dict:
+async def run_apply_patch_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """applies pending_patches via blob_storage.
 
     reads state["pending_patches"] (filepath → unified diff written by
@@ -52,7 +52,7 @@ async def run_apply_patch_node(state: dict) -> dict:
 from brain.ideation import ideation_graph  # noqa: E402 — deferred to avoid circular import
 
 
-def route_after_summarize(state: dict) -> str:
+def route_after_summarize(state: Dict[str, Any]) -> str:
     """Conditional edge: autonomous planner vs interactive ideation loop.
 
     planner_mode_active=True  → ideation_loop (Phase 2.21 interactive HITL)
@@ -75,7 +75,7 @@ def route_after_summarize(state: dict) -> str:
     return target
 
 
-def route_after_ideation(state: dict) -> str:
+def route_after_ideation(state: Dict[str, Any]) -> str:
     """Conditional edge after the Socratic ideation sub-graph.
 
     The ideation loop either suspended mid-dialogue (analyst still grilling) or
@@ -201,7 +201,7 @@ def route_after_coder(state: Dict[str, Any]) -> str:
     return target
 
 
-workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))  # type: ignore[type-var]
+workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))
 # DLQ-wrapped node entrypoints. An unhandled exception promotes
 # L1→L2 and persists a dead_letter_tasks row before re-raising (see
 # core/dead_letter.py). The 4 wrapped nodes are the state-bearing entrypoints;

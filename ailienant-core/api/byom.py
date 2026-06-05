@@ -14,7 +14,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import httpx
 from fastapi import APIRouter, Request
@@ -196,7 +196,7 @@ def _mask_endpoints(endpoints: list[EndpointConfig]) -> list[EndpointConfigOut]:
     ]
 
 
-def _merge_patch(existing: BYOMConfig, raw_body: dict) -> BYOMConfig:
+def _merge_patch(existing: BYOMConfig, raw_body: Dict[str, Any]) -> BYOMConfig:
     """Apply only the fields present in raw_body onto existing config.
 
     Prevents data-loss: a partial payload (e.g. {active_preset_id: "X"})
@@ -492,7 +492,7 @@ async def get_config() -> BYOMConfigResponse:
 @router.put("/config", response_model=BYOMConfigResponse)
 async def put_config(request: Request) -> BYOMConfigResponse:
     """Merge-save BYOM config and apply the active preset if set."""
-    raw_body: dict = await request.json()
+    raw_body: Dict[str, Any] = await request.json()
     existing = await asyncio.to_thread(load_byom_config)
     merged = _merge_patch(existing, raw_body)
     await asyncio.to_thread(save_byom_config, merged)

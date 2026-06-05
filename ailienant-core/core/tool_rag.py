@@ -35,7 +35,7 @@ from typing import (
 )
 
 import lancedb  # type: ignore[import-untyped]
-import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow as pa
 
 from core.permissions import SessionPermissionMode, ToolPrivilegeTier
 

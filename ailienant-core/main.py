@@ -974,7 +974,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # A live file lifecycle event invalidates an in-flight snapshot.
                 _abort_dreaming(_tel_proj)
                 _dispatch_ide_telemetry(
-                    cast(IdeTelemetryPayload, valid_event.data),
+                    valid_event.data,
                     _tel_proj,
                 )
 
@@ -983,7 +983,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # frame — never rate-limited; runs one pass per project at a time.
                 _trigger_dreaming(
                     client_id,
-                    cast(DreamingRunPayload, valid_event.data).focus_area,
+                    valid_event.data.focus_area,
                 )
 
             elif valid_event.event_type == "client_planner_mode_toggle":

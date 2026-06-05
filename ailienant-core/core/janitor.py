@@ -17,7 +17,7 @@ from typing import List
 
 import aiosqlite
 import lancedb  # type: ignore[import-untyped]
-import pyarrow.compute as pc  # type: ignore[import-untyped]
+import pyarrow.compute as pc
 from pydantic import BaseModel
 
 from shared.config import LANCEDB_PATH

@@ -547,7 +547,7 @@ async def run_planner_node(
     planner_cache_key: str = ""
     planner_cache_paths: list[str] = []
     if cache_enabled:
-        _tk_for_cache: list[str] = locals().get("_top_k_files", []) or []  # type: ignore[assignment]
+        _tk_for_cache: list[str] = locals().get("_top_k_files", []) or []
         cache_ctx: list[tuple[str, str]] = [("<user_input>", user_input)]
         if _active_path and _active_content:
             cache_ctx.append((_active_path, _active_content))

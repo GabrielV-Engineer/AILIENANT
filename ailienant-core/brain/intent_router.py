@@ -13,7 +13,7 @@ keeps KV-cache invalidations to a single transition per run.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 logger = logging.getLogger("INTENT_ROUTER")
 
@@ -73,7 +73,7 @@ async def process_user_intent(
             "syntax_gate_status": "pending",
             "style_gate_status": "pending",
         }
-        return await _MICRO_SWARM_APP.ainvoke(initial)
+        return cast(Dict[str, Any], await _MICRO_SWARM_APP.ainvoke(initial))
 
     if mode == "FULL_SWARM":
         from brain.checkpoint import checkpoint_manager
@@ -90,6 +90,6 @@ async def process_user_intent(
             "error_streak": 0,
         }
         config = {"configurable": {"thread_id": task_id}} if task_id else None
-        return await app.ainvoke(initial, config=config)
+        return cast(Dict[str, Any], await app.ainvoke(initial, config=config))
 
     raise NotImplementedError(f"Execution mode '{mode}' is not recognised.")

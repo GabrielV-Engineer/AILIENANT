@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("FINOPS_GATE")
 
@@ -26,7 +26,7 @@ logger = logging.getLogger("FINOPS_GATE")
 _FINOPS_HITL_TIMEOUT_S: float = 120.0
 
 
-async def run_finops_node(state: dict) -> dict:
+async def run_finops_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """LangGraph node: enforce the FinOps budget ceiling.
 
     Reads current_cost_usd and max_budget_usd from state. If within budget,
@@ -62,7 +62,7 @@ async def run_finops_node(state: dict) -> dict:
     # Deferred import mirrors drift_monitor.py pattern (avoids circular import at module init).
     from api.websocket_manager import vfs_manager
 
-    response: Optional[dict] = await vfs_manager.request_human_approval(
+    response: Optional[Dict[str, Any]] = await vfs_manager.request_human_approval(
         session_id=state.get("task_id", ""),
         action_description=(
             f"Budget ceiling exceeded: ${current_cost:.4f} USD spent, "
@@ -111,7 +111,7 @@ async def run_finops_node(state: dict) -> dict:
     }
 
 
-def route_after_finops(state: dict) -> str:
+def route_after_finops(state: Dict[str, Any]) -> str:
     """Synchronous conditional edge: route to apply_patch or END.
 
     LangGraph conditional edge functions must be synchronous even when the
