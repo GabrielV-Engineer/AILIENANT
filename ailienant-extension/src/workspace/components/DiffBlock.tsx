@@ -128,7 +128,8 @@ const DIFF_STYLES: ReactDiffViewerStylesOverride = {
 // side and removed only on the old, so a single merged map has no harmful collision.
 // Keying by content (not row index) also survives truncate()'s string rebuild —
 // every rendered line is still a verbatim source line, so its key resolves.
-function buildTokenMap(block: DiffBlockShape): Map<string, ASTToken[]> | undefined {
+// Exported for the phase checkpoint gate (the diff highlighting contract).
+export function buildTokenMap(block: DiffBlockShape): Map<string, ASTToken[]> | undefined {
     const { old_content, new_content, old_ast_lines, new_ast_lines } = block;
     if (!old_ast_lines && !new_ast_lines) { return undefined; }
     const map = new Map<string, ASTToken[]>();

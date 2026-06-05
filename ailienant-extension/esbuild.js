@@ -103,6 +103,7 @@ async function main() {
 		await sidebarCtx.rebuild();  await sidebarCtx.dispose();
 		await workspaceCtx.rebuild(); await workspaceCtx.dispose();
 		assertGrammarEngineOffWebview();
+		assertWebviewBundleUnderCeiling();
 		await dashboardCtx.rebuild(); await dashboardCtx.dispose();
 	}
 }
@@ -117,6 +118,26 @@ function assertGrammarEngineOffWebview() {
 	const leaks = ['@shikijs', 'createHighlighterCore', 'engine-javascript'].filter(s => src.includes(s));
 	if (leaks.length > 0) {
 		throw new Error(`Grammar engine leaked into ${bundle} (${leaks.join(', ')}); it must stay host-only.`);
+	}
+}
+
+// Hard build-time guard: the workspace webview is a single non-splittable IIFE,
+// so its byte size is the load-time cost of the chat surface. Moving the grammar
+// engine host-side is what keeps this bundle small; assert the ceiling on
+// production builds so a regression that pulls a heavy dep back into the webview
+// breaks the build instead of silently regressing Time-to-Interactive. Dev builds
+// are unminified and expected to be larger, so the check is production-only.
+const WEBVIEW_BUNDLE_CEILING_BYTES = 550 * 1024;
+function assertWebviewBundleUnderCeiling() {
+	if (!production) { return; }
+	const bundle = 'dist/workspace.js';
+	if (!fs.existsSync(bundle)) { return; }
+	const bytes = fs.statSync(bundle).size;
+	if (bytes > WEBVIEW_BUNDLE_CEILING_BYTES) {
+		throw new Error(
+			`Webview bundle ${bundle} is ${(bytes / 1024).toFixed(1)} KB, over the ` +
+			`${(WEBVIEW_BUNDLE_CEILING_BYTES / 1024).toFixed(0)} KB ceiling.`,
+		);
 	}
 }
 

@@ -131,13 +131,15 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   `external:[shiki]` + ship assets to `media/` + `webview.asWebviewUri` loader) or a worker — both
   deferred as out-of-scope CSP/plumbing risk for 7.14.2.
 - **Phase:** A future 7.14.x or Phase 11 polish slice.
-- **Resolution (2026-06-05):** **token layer shipped.** Phase 7.16 moved the grammar engine to the
-  host (7.16.1) and the webview now paints the host AST as scope-colored `<span>`s — diffs
-  (`DiffBlock.tsx` per-line `renderContent`) and chat code blocks (`MarkdownRenderer.tsx` via the
+- **Resolution (2026-06-05):** **CLOSED — token layer shipped & gated.** Phase 7.16 moved the grammar
+  engine to the host (7.16.1) and the webview now paints the host AST as scope-colored `<span>`s —
+  diffs (`DiffBlock.tsx` per-line `renderContent`) and chat code blocks (`MarkdownRenderer.tsx` via the
   stream-end tokenize round-trip), styled only with `--vscode-*` CSS vars (`scopeColor.ts`). The
   webview gained **zero** grammar deps and `dist/workspace.js` stayed under the 550 KB ceiling
-  (548.2 KB). **Formally moves to Closed when the 7.16.3 checkpoint gate is green** (asserts the
-  ceiling held + highlighting/theme-flip). Spawned **DEBT-012** (the `disableWordDiff` trade-off).
+  (548.2 KB). The **7.16.3 checkpoint gate** (`src/test/phase7_16_checkpoint_gate.test.ts`, 10/10)
+  asserts the ceiling held + no webview leak + engine host-side + scope→CSS-var theme-flip +
+  highlighting renders; `esbuild.js::assertWebviewBundleUnderCeiling()` makes the ceiling a permanent
+  build gate. Spawned **DEBT-012** (the `disableWordDiff` trade-off).
 - **Notes:** The dormant shiki contract (no-WASM JS engine, fine-grained core, lazy-load) is preserved
   in `docs/PHASE_7_14_0_STACK_CONTRACT.md` §3 for whenever this is picked up. ADR-722's *theming*
   half is already honored — diff colors bind to `--vscode-diffEditor-*` CSS vars today; only the
@@ -267,6 +269,12 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 ## Closed Entries
 
 *(Move entries here when their Phase has been executed and verified.)*
+
+- **DEBT-006 — Inline diff / chat code had no syntax highlighting (shiki deferred)** — **CLOSED 2026-06-05**
+  by Phase 7.16 (host-delegated tokenization). Engine moved to the host; webview paints scope-colored
+  spans with `--vscode-*` CSS vars and zero grammar deps; `dist/workspace.js` 548.2 KB < 550 KB ceiling.
+  Verified by the 7.16.3 checkpoint gate (10/10) + a permanent esbuild ceiling guard. Full record under
+  the DEBT-006 entry above. Spawned DEBT-012 (`disableWordDiff` trade-off, still open).
 
 ---
 

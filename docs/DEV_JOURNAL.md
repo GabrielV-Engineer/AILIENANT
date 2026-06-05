@@ -2,6 +2,35 @@
 
 ---
 
+## Hito 7.16.3: Checkpoint Gate Fase 7.16 (CIERRE de Host-Delegated Tokenization · DEBT-006 → Closed) — 2026-06-05
+
+**Estado:** ✅ COMPLETO | **ADR:** 736 | **Resultado de gates:** gate 10/10 passing · `npm run compile`/`lint` 0 · `dist/workspace.js` 548.2 KB < 550 KB
+
+### Problema resuelto
+El punto entero de la Fase 7.16 es que el syntax highlighting se añadió SIN crecer el bundle del webview (el motor de gramática corre host-side; el webview sólo pinta spans pre-computados). Faltaba una certificación reproducible de ese contrato contra el artefacto enviado y el camino de render.
+
+### Decisiones arquitectónicas
+- **Gate hermano host-agnóstico:** `phase7_16_checkpoint_gate.test.ts` (convención de archivo-hermano). Las filas de render usan `react-dom/server` (sin DOM vivo) y un seam jsdom para que importar la librería de diff no tropiece con `document` ausente al cargar.
+- **Mide el artefacto de producción real:** el `suiteSetup` corre `node esbuild.js --production` y luego mide `dist/workspace.js` — el build dev es sin-minificar e intencionalmente mayor, así que la fila de techo debe correr contra producción.
+- **Guarda de build permanente:** `assertWebviewBundleUnderCeiling()` en `esbuild.js` (sólo producción, junto al sentinel anti-shiki) rompe el build si `workspace.js` rebasa 550 KB — convierte "techo mantenido" en una condición de CI reproducible, no una verificación de una sola vez.
+- **BC3 sobrevive minify:** el motor host se prueba presente vía data de gramática (`source.python`) — las claves de object-literal de las gramáticas sobreviven la minificación (esbuild conserva nombres de propiedad), a diferencia de los símbolos de función que se manglan.
+
+### Filas del gate (10/10)
+- **BUNDLE** — BC1 `workspace.js` producción ≤ 550 KB · BC2 sin `@shikijs`/`createHighlighterCore`/`engine-javascript` en el webview · BC3 motor presente en `extension.js`.
+- **THEME** — THEME1 scopes representativos → `var(--vscode-*)` (nunca hex, lo que hace el repintado theme-flip) · THEME2 desconocido/vacío → editor-foreground.
+- **CHAT** — CHAT1 identidad por hash idéntica entre extractor y renderer · CHAT2 con tokens → spans con color de scope · CHAT3 sin tokens → texto plano.
+- **DIFF** — DIFF1 mapa contenido→tokens resuelve cada lado · DIFF2 sin ast → undefined (fallback monospace).
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `ailienant-extension/src/test/phase7_16_checkpoint_gate.test.ts` | NEW | gate de 10 filas (BUNDLE/THEME/CHAT/DIFF) |
+| `ailienant-extension/esbuild.js` | EDIT | `assertWebviewBundleUnderCeiling()` (production-gated) |
+| `ailienant-extension/src/workspace/components/DiffBlock.tsx` | EDIT | `export buildTokenMap` (consumido por el gate) |
+| `docs/PROJECT_MANIFEST.md` · `docs/DEV_JOURNAL.md` · `docs/TECH_DEBT_BACKLOG.md` · `README.md` | EDIT | 7.16.3 `[x]`, FASE 7.16 COMPLETADA, DEBT-006 → Closed, gate en árbol |
+
+---
+
 ## Hito 7.16.2: Renderer AST en el Webview (cierre de la capa de tokens DEBT-006) — 2026-06-05
 
 **Estado:** ✅ COMPLETO | **ADR:** 735 | **Resultado de gates:** `npm run compile`/`lint` 0 · `dist/workspace.js` 548.2 KB < 550 KB · shiki ausente del webview, motor presente en `extension.js` · `scopeColor` 8/8 scopes representativos correctos
