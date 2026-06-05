@@ -102,7 +102,21 @@ async function main() {
 		await ctx.rebuild();        await ctx.dispose();
 		await sidebarCtx.rebuild();  await sidebarCtx.dispose();
 		await workspaceCtx.rebuild(); await workspaceCtx.dispose();
+		assertGrammarEngineOffWebview();
 		await dashboardCtx.rebuild(); await dashboardCtx.dispose();
+	}
+}
+
+// Hard build-time guard: shiki must stay in the host bundle only.
+// The webview iife has a 550 KB ceiling and cannot code-split — any grammar
+// engine import there would blow the ceiling and break DEBT-006 resolution.
+function assertGrammarEngineOffWebview() {
+	const bundle = 'dist/workspace.js';
+	if (!fs.existsSync(bundle)) { return; }
+	const src = fs.readFileSync(bundle, 'utf8');
+	const leaks = ['@shikijs', 'createHighlighterCore', 'engine-javascript'].filter(s => src.includes(s));
+	if (leaks.length > 0) {
+		throw new Error(`Grammar engine leaked into ${bundle} (${leaks.join(', ')}); it must stay host-only.`);
 	}
 }
 

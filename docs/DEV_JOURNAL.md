@@ -2,6 +2,34 @@
 
 ---
 
+## Hito 7.16.1: Grammar Lexer on the Host (Host-Delegated Tokenization) — 2026-06-04
+
+**Estado:** ✅ COMPLETO | **ADR:** 734 | **Resultado de gates:** `mypy .` 0/245 · `npm run compile`/`lint` 0 · 908 pytest passed · `dist/workspace.js` 544 KB < 550 KB · shiki ausente en webview bundle
+
+### Problema resuelto
+DEBT-006 (diferido en 7.14.2): shiki medía ~332 KB (motor JS + gramática mínima) y rebasaba el techo de ~550 KB del bundle `iife` del webview — un `iife` de esbuild no puede code-split, por lo que imports lazy no resuelven el problema. La solución es mover el motor de gramática **al host de la extensión (Node, CJS)** donde no hay techo de bundle, emitir un AST de tokens por IPC al webview "tonto" que recibe spans pre-computados y los renderiza con `.map()` puro, sin parsers.
+
+### Decisiones arquitectónicas
+- **Motor JS-regex (sin WASM):** `createHighlighterCore` + `createJavaScriptRegexEngine` de `shiki@4.2.0` (MIT). Sin WASM → sin worker-thread overhead, sin problemas de carga asíncrona en el entorno CJS del host.
+- **Scopes TextMate crudos como token type:** la API de shiki emite stacks de scopes (`source.python keyword.control.import.python` etc.). El webview recibe el scope string tal cual → la resolución de color ocurre en el renderer en 7.16.2 vía CSS vars de VS Code, haciendo el render theme-reactivo sin re-tokenizar en el host.
+- **Flattening por segmento:** un token de shiki puede cubrir múltiples scopes (e.g. `"(x):"` se divide en paren/parameter/colon). El `lineToAst()` itera los `explanation` segments en lugar del token completo → granularidad idéntica a la del Language Server de VS Code.
+- **Best-effort + cota de tamaño:** toda tokenización está envuelta en try/catch; extensión desconocida o contenido >200k chars / >5000 líneas → devuelve `undefined`, el webview cae al monospace. Un fallo de gramática nunca bloquea el render del diff ni el ack del patch.
+- **Guarda de bundle en esbuild:** `assertGrammarEngineOffWebview()` corre después de cada build de producción y lanza error si `@shikijs`, `createHighlighterCore` o `engine-javascript` aparecen en `dist/workspace.js`. Convierte el aislamiento host-only en una condición de CI reproducible.
+- **Seam `RENDER_DIFF` (sin drift de contrato):** el ack al backend se emite primero (`client_patch_applied`), luego el enrich corre best-effort, luego el postMessage. El contrato `ASTToken` y los campos `old_ast_lines`/`new_ast_lines` ya estaban en `DiffBlockShape` y `PatchedFileDiff` desde 7.16.0 — 7.16.1 sólo los puebla.
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `ailienant-extension/src/core/GrammarLexer.ts` | NEW | lazy singleton shiki-core; motor JS-regex; allow-list 10 gramáticas; `tokenizeToAstLines`; `enrich` |
+| `ailienant-extension/src/providers/workspace_panel.ts` | EDIT | import GrammarLexer; `.then` → async; `enrich(result.diffs)` antes del postMessage |
+| `ailienant-extension/esbuild.js` | EDIT | `assertGrammarEngineOffWebview()` post-build workspace |
+| `ailienant-extension/package.json` | EDIT | `"shiki": "^4.2.0"` en dependencies |
+| `docs/PROJECT_MANIFEST.md` | EDIT | 7.16.1 → `[x]` con nota de cierre |
+| `docs/DEV_JOURNAL.md` | EDIT | este hito |
+| `README.md` | EDIT | GrammarLexer.ts añadido al árbol Repository Layout |
+
+---
+
 ## Hito 7.18.6: Checkpoint Gate Fase 7.18 (CIERRE del Sweep de Endurecimiento) — 2026-06-04
 
 **Estado:** ✅ COMPLETO | **ADR:** 746 | **Resultado de gates:** `mypy .` 0/245 · gate 9 passed · suite completa sin regresión

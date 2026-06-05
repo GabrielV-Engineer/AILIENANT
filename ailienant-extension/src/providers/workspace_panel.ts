@@ -8,6 +8,7 @@ import { SessionManager } from '../brain/session';
 import { IntentRouter } from '../core/IntentRouter';
 import { PatchActuator, type ApplyWorkspaceEditPayload } from '../core/PatchActuator';
 import { InlineMutationManager } from '../core/InlineMutationManager';
+import { GrammarLexer } from '../core/GrammarLexer';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
 import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS } from '../shared/config';
 import { APIClient } from '../api/api_client';
@@ -513,15 +514,13 @@ export class WorkspacePanelManager {
             const data = msg.data as Record<string, unknown> | undefined;
             if (data?.session_id && data.session_id !== session.id) { return; }
 
-            // Phase 7.9.B.18 — Enterprise Write Pipeline: the host (not the webview)
+            // Enterprise Write Pipeline: the host (not the webview)
             // actuates approved patches via vscode.workspace.applyEdit, then acks.
             if (msg.event_type === 'server_apply_workspace_edit') {
-                void PatchActuator.apply(msg.data as ApplyWorkspaceEditPayload).then((result) => {
+                void PatchActuator.apply(msg.data as ApplyWorkspaceEditPayload).then(async (result) => {
                     WSClient.getInstance().send({ event_type: 'client_patch_applied', data: result });
-                    // Enrich the seam for the inline Elite Diff Engine: the host already
-                    // holds both sides of the edit, so surface them to the webview as a
-                    // pure host→webview message. No backend/contract change involved.
                     if (result.ok && result.diffs && result.diffs.length > 0) {
+                        await GrammarLexer.enrich(result.diffs);  // best-effort; never throws
                         panel.webview.postMessage({
                             type: 'RENDER_DIFF',
                             payload: { patch_id: result.patch_id, files: result.diffs },
