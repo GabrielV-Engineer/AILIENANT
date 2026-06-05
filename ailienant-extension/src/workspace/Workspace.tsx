@@ -21,6 +21,7 @@ import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ThoughtBox } from './components/ThoughtBox';
 import { accumulateThinking, newThinkingTurn, freezeThinkingOnText, bumpLiveTokens } from './utils/thinkingReducer';
+import { mergeStreamEmits, type StreamLineEmit } from './utils/streamTokenBuffer';
 import { ToolChip } from './components/ToolChip';
 import { DiffBlock } from './components/DiffBlock';
 import { MessageActions } from './components/MessageActions';
@@ -302,6 +303,31 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const messagesRef = useRef(messages);
     messagesRef.current = messages;
     const [isStreaming, setIsStreaming] = useState(false);
+
+    // Phase 7.17.1 — streaming-AST hydration buffer. Per-line STREAM_CODE_TOKENS
+    // pushes are coalesced into a single setMessages per animation frame, so the
+    // progressive highlighting doesn't fire one full-transcript reconciliation per
+    // code line. The buffer is stamped with its target turn id; a frame that lands
+    // after a turn boundary is dropped rather than merged into the wrong turn.
+    const streamTokenBufferRef = useRef<{ turnId: string; emits: StreamLineEmit[] } | null>(null);
+    const streamTokenRafRef = useRef<number | null>(null);
+    const flushStreamTokens = useCallback(() => {
+        streamTokenRafRef.current = null;
+        const buffered = streamTokenBufferRef.current;
+        streamTokenBufferRef.current = null;
+        if (!buffered || buffered.emits.length === 0) { return; }
+        setMessages(prev => {
+            const last = prev[prev.length - 1];
+            // Only the still-active streaming turn we buffered for is a valid target.
+            if (!last || last.role !== 'assistant' || !last.streaming || last.id !== buffered.turnId) {
+                return prev;
+            }
+            return [
+                ...prev.slice(0, -1),
+                { ...last, streamingCodeTokens: mergeStreamEmits(last.streamingCodeTokens, buffered.emits) },
+            ];
+        });
+    }, []);
     // Phase 7.11.3 — Stop-button optimistic flag (Zustand, transient).
     const isAborting    = useWorkspaceStore((s) => s.isAborting);
     const setIsAborting = useWorkspaceStore((s) => s.setIsAborting);
@@ -619,6 +645,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'server_stream_end': {
                     setIsStreaming(false);
+                    // Paint any tokens still buffered for this turn before it finalizes,
+                    // so the block doesn't flash back to plain in the gap between
+                    // stream-end and the CODE_TOKENS round-trip that supersedes the
+                    // overlay. Runs while the turn is still streaming, so the flush
+                    // guard accepts it; the finalize below preserves streamingCodeTokens.
+                    if (streamTokenRafRef.current !== null) {
+                        cancelAnimationFrame(streamTokenRafRef.current);
+                        streamTokenRafRef.current = null;
+                    }
+                    flushStreamTokens();
                     // Disarm the stall watchdog — the stream ended cleanly.
                     lastStreamActivityRef.current = 0;
                     // Phase 7.11.3 — back to idle whether the stream ended
@@ -687,26 +723,31 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 }
                 case 'STREAM_CODE_TOKENS': {
                     // Host pushed a tokenized code line for the active streaming turn.
-                    // Merge into streamingCodeTokens[block_seq][line_index]. Only the
-                    // last streaming assistant turn is the target — if no streaming turn
-                    // exists (e.g. the message arrived after stream-end), drop it.
+                    // Rather than reconcile per line, append to a per-turn buffer and
+                    // coalesce all pushes that land in one animation frame into a single
+                    // setMessages (see flushStreamTokens). Only the last streaming
+                    // assistant turn is a valid target; a push with no streaming turn
+                    // (e.g. arriving after stream-end) is dropped.
                     const st = msg.payload as { block_seq?: number; line_index?: number; ast?: ASTToken[] };
                     if (
                         typeof st?.block_seq !== 'number' ||
                         typeof st.line_index !== 'number' ||
                         !Array.isArray(st.ast)
                     ) { break; }
-                    setMessages(prev => {
-                        const last = prev[prev.length - 1];
-                        if (!last || last.role !== 'assistant' || !last.streaming) { return prev; }
-                        const existing = last.streamingCodeTokens ?? {};
-                        const block = existing[st.block_seq!] ? [...existing[st.block_seq!]] : [];
-                        block[st.line_index!] = st.ast!;
-                        return [
-                            ...prev.slice(0, -1),
-                            { ...last, streamingCodeTokens: { ...existing, [st.block_seq!]: block } },
-                        ];
+                    const last = messagesRef.current[messagesRef.current.length - 1];
+                    if (!last || last.role !== 'assistant' || !last.streaming || !last.id) { break; }
+                    // Stamp the buffer with this turn; a new turn starts a fresh batch.
+                    let buf = streamTokenBufferRef.current;
+                    if (!buf || buf.turnId !== last.id) {
+                        buf = { turnId: last.id, emits: [] };
+                        streamTokenBufferRef.current = buf;
+                    }
+                    buf.emits.push({
+                        block_seq: st.block_seq, line_index: st.line_index, ast: st.ast,
                     });
+                    if (streamTokenRafRef.current === null) {
+                        streamTokenRafRef.current = requestAnimationFrame(flushStreamTokens);
+                    }
                     break;
                 }
                 // ── Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips ──────
@@ -1029,7 +1070,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         };
         window.addEventListener('message', handler);
         return () => window.removeEventListener('message', handler);
-    }, [addToast, recordChunk, telemetry, nattName]);
+    }, [addToast, recordChunk, telemetry, nattName, flushStreamTokens]);
+
+    // Phase 7.17.1 — cancel any pending coalesce frame on unmount so a queued flush
+    // can't fire against a torn-down component.
+    useEffect(() => () => {
+        if (streamTokenRafRef.current !== null) {
+            cancelAnimationFrame(streamTokenRafRef.current);
+            streamTokenRafRef.current = null;
+        }
+    }, []);
 
     useEffect(() => {
         // Instant while streaming — a smooth animation can't keep pace with a token

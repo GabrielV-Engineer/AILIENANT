@@ -26,7 +26,7 @@
  * Out of scope for this milestone (renderer documents as known): headings,
  * lists, blockquotes, tables, images, reference links, HTML blocks.
  */
-import { memo, Fragment } from 'react';
+import { memo } from 'react';
 import type { ReactNode } from 'react';
 import type { ASTToken } from '../../shared/config';
 import {
@@ -67,38 +67,60 @@ function TokenSpan({ token, i }: { token: ASTToken; i: number }): JSX.Element {
     return <span key={i} style={{ color: scopeColor(token.type) }}>{token.content}</span>;
 }
 
-/**
- * Render a code block whose lines may be partially tokenized.
- *
- * `tokenLines[i]` = the host-tokenized spans for source line i. If a line has
- * no entry (streaming not yet delivered it, or the block was unsupported) the
- * raw plaintext line is rendered instead — so the block always displays something
- * and progressively lights up as lines arrive during streaming.
- */
-function renderZippedLines(codeLines: string[], tokenLines: ASTToken[][]): ReactNode {
-    return codeLines.map((line, li) => {
-        const toks = tokenLines[li];
-        return (
-            <Fragment key={li}>
-                {li > 0 && '\n'}
-                {toks && toks.length > 0
-                    ? toks.map((t, ti) => <TokenSpan key={ti} token={t} i={ti} />)
-                    : line}
-            </Fragment>
-        );
-    });
+export interface CodeLineProps {
+    /** Raw source text for this line — the fallback when no tokens are present. */
+    text: string;
+    /** Host-tokenized scope spans for this line, or undefined (renders plain). */
+    tokens?: ASTToken[];
+    /** A separating newline precedes every line except the first. */
+    leadingNewline: boolean;
 }
 
-// Paint a fully-tokenized code block (every line present). Used for the
-// final stream-end token arrays where no plain-text fallback is needed.
-function renderTokenLines(lines: ASTToken[][]): ReactNode {
-    return lines.map((line, li) => (
-        <Fragment key={li}>
-            {li > 0 && '\n'}
-            {line.map((t, ti) => (
-                <span key={ti} style={{ color: scopeColor(t.type) }}>{t.content}</span>
-            ))}
-        </Fragment>
+/**
+ * Memo equality for a single code line. The `tokens` comparison is by REFERENCE,
+ * which is the whole point: the streaming dispatcher injects one line into a
+ * shallow-cloned block array (`block[i] = ast`), so an already-painted line keeps
+ * its exact `ASTToken[]` reference across re-renders. That reference equality lets
+ * React skip every line except the one that changed and the growing plain tail —
+ * the difference between a stable block and the "Christmas tree" flicker.
+ */
+export function codeLineEqual(a: CodeLineProps, b: CodeLineProps): boolean {
+    return a.leadingNewline === b.leadingNewline
+        && a.text === b.text
+        && a.tokens === b.tokens;
+}
+
+/**
+ * One rendered code line: scope-colored spans when host tokens exist for it, else
+ * the raw plaintext line. Memoized so a re-render of the enclosing block only
+ * reconciles lines whose `(text, tokens)` actually changed.
+ */
+const CodeLine = memo(function CodeLine({ text, tokens, leadingNewline }: CodeLineProps): JSX.Element {
+    return (
+        <>
+            {leadingNewline && '\n'}
+            {tokens && tokens.length > 0
+                ? tokens.map((t, ti) => <TokenSpan key={ti} token={t} i={ti} />)
+                : text}
+        </>
+    );
+}, codeLineEqual);
+
+/**
+ * Render a code block by zipping its source lines with whatever host tokens are
+ * available. `tokenLines[i]` is the spans for source line i; a missing entry
+ * (streaming hasn't delivered it yet, or the block is unsupported) falls back to
+ * the raw `codeLines[i]` text. This single path covers both the streaming partial
+ * state (tail lines plain, completed lines lit) and the final full-block state
+ * (every line tokenized).
+ *
+ * Line index is a stable, append-only key here: streamed code lines are strictly
+ * cumulative — never reordered, inserted mid-list, or deleted — so each line keeps
+ * its component identity for its whole lifetime.
+ */
+function renderCodeLines(codeLines: string[], tokenLines: ASTToken[][]): ReactNode {
+    return codeLines.map((line, li) => (
+        <CodeLine key={li} leadingNewline={li > 0} text={line} tokens={tokenLines[li]} />
     ));
 }
 
@@ -143,27 +165,19 @@ function renderBlocks(
             // the JSX </code></pre> is the virtual closure.
             const codeText = codeLines.join('\n');
 
-            // Token precedence:
+            // Token precedence (all flow through the same zip — missing per-line
+            // entries fall back to the plain `codeLines` text):
             //   1. Final hash-keyed tokens (stream-end CODE_TOKENS round-trip) — full block
             //   2. Streaming ordinal tokens (STREAM_CODE_TOKENS per-line pushes) — partial
-            //   3. Plain text fallback
+            //   3. Plain text (empty token array → every line falls back)
             const finalTokens = codeTokens?.[hashCodeBlock(lang, codeText)];
             const streamTokens = streamingCodeTokens?.[fenceOrdinal];
-
-            let content: ReactNode;
-            if (finalTokens) {
-                content = renderTokenLines(finalTokens);
-            } else if (streamTokens) {
-                // Progressive: lines with tokens are lit; the in-progress tail is plain.
-                content = renderZippedLines(codeLines, streamTokens);
-            } else {
-                content = codeText;
-            }
+            const tokenLines = finalTokens ?? streamTokens ?? [];
 
             out.push(
                 <pre key={`f-${key++}`} className="ws-md-pre">
                     <code className={lang ? `language-${lang}` : undefined}>
-                        {content}
+                        {renderCodeLines(codeLines, tokenLines)}
                     </code>
                 </pre>,
             );

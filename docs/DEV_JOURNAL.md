@@ -2,6 +2,35 @@
 
 ---
 
+## Hito 7.17.1: Hidratación & Debounce Buffer (anti-flicker del highlighting progresivo) — 2026-06-05
+
+**Estado:** ✅ COMPLETO | **ADR:** 738 | **Resultado de gates:** `compile`/`lint` 0 · ceiling prod `dist/workspace.js` 549.7 KB < 550 KB · gate hidratación 10/10 (`streamingHydration.test.ts`) · gate 7.16 sin regresión 10/10
+
+### Problema resuelto
+7.17.0 entregó la *capacidad* de iluminar líneas progresivamente, pero no la *fluidez*. Dos costos de render quedaban y juntos producían el flicker "árbol de navidad": (1) cada `STREAM_CODE_TOKENS` es su propio mensaje host→webview (macrotask separado), así que React no los batchea — un bloque de 40 líneas dispara ~40 reconciliaciones de transcript completo; (2) los helpers de render reconstruían los nodos JSX de **todas** las líneas en cada pasada, así que las líneas ya pintadas repintaban al llegar una nueva debajo.
+
+### Decisiones arquitectónicas
+- **Solo webview, protocolo intacto.** `StreamingCodeTokenizer`, `GrammarLexer.createLineTokenizer` y el payload `STREAM_CODE_TOKENS` quedan sin tocar. Cero Python. El camino final `CODE_TOKENS` de 7.16.2 sigue siendo autoritativo.
+- **Filas memoizadas (la cura primaria):** nuevo `CodeLine` (`React.memo` + comparador `codeLineEqual`) en `MarkdownRenderer.tsx`. La igualdad de `tokens` es **por referencia**, y ése es exactamente el punto: el despacho inyecta una línea sobre un array de bloque clonado en superficie (`block[i] = ast`), así que toda línea ya pintada conserva su referencia exacta entre renders → React la salta. Solo reconcilian la cola en crecimiento (texto plano que cambia por token) y la línea recién tokenizada. Se unificaron `renderZippedLines`/`renderTokenLines` en un único `renderCodeLines` y la precedencia colapsó a `finalTokens ?? streamTokens ?? []`.
+- **`key={índice}` deliberado y seguro:** las líneas de código en streaming son estrictamente acumulativas (append-only) — sin reordenado, inserción intermedia ni borrado — así que el índice es identidad estable. El antipatrón usual de "índice como key" no aplica aquí.
+- **Buffer de debounce/coalescencia:** los eventos `STREAM_CODE_TOKENS` se acumulan en un ref estampado con el `turnId` y se vacían en un **único** `setMessages` por `requestAnimationFrame` (`flushStreamTokens`), alineando la coalescencia al ciclo de repintado del navegador (cadencia confirmada con el usuario). No hay `setMessages` en el handler del evento.
+- **Reductor puro Copy-on-Write:** nuevo `src/workspace/utils/streamTokenBuffer.ts` — `mergeStreamEmits` clona solo la espina que cambió (diccionario + array de bloque tocado, una vez por batch vía `Set<number>`) e inyecta por índice. Las líneas intactas conservan su referencia exacta (`===`), que es la precondición literal del memo de `CodeLine`. Extraído a módulo propio (sin React/host) para test host-agnóstico — importar `Workspace.tsx` dispararía `acquireVsCodeApi()` al cargar.
+- **Flush en frontera + limpieza:** flush sincrónico en `server_stream_end` **antes** del round-trip `CODE_TOKENS` (evita el parpadeo a plano en la ventana entre stream-end y la respuesta autoritativa); guarda cross-turn por `turnId` (un frame que aterriza tras una frontera de turno se descarta, no se mezcla en el turno equivocado — espeja la guarda de generación host-side de 7.17.0); `cancelAnimationFrame` en cleanup de unmount.
+
+### Archivos modificados
+| Archivo | Tipo | Cambio |
+|---|---|---|
+| `ailienant-extension/src/workspace/components/MarkdownRenderer.tsx` | EDIT | `CodeLine` memoizado + `codeLineEqual`; unifica helpers en `renderCodeLines`; precedencia colapsada |
+| `ailienant-extension/src/workspace/utils/streamTokenBuffer.ts` | NEW | reductor puro `mergeStreamEmits` (Copy-on-Write) + tipo `StreamLineEmit` |
+| `ailienant-extension/src/workspace/Workspace.tsx` | EDIT | buffer rAF (`streamTokenBufferRef`/`streamTokenRafRef`); `flushStreamTokens`; `STREAM_CODE_TOKENS` coalescido; flush en stream-end; cleanup |
+| `ailienant-extension/src/test/streamingHydration.test.ts` | NEW | 10 tests (M1-M5 merge/CoW, C1-C5 comparador) |
+| `docs/PROJECT_MANIFEST.md` · `docs/DEV_JOURNAL.md` · `README.md` | EDIT | cierre 7.17.1 |
+
+### Nota de techo
+El bundle de producción quedó en **549.7 KB / 550 KB** — headroom mínimo (~0.3 KB). Cualquier dep nueva en el webview lo rebasaría; el siguiente cambio que toque el bundle del webview debe vigilar el sentinel.
+
+---
+
 ## Hito 7.17.0: Streaming AST a través del canal de tokens (Progressive Code Highlighting) — 2026-06-05
 
 **Estado:** ✅ COMPLETO | **ADR:** 737 | **Resultado de gates:** `compile`/`lint` 0 · `StreamingCodeTokenizer` 10/10 · esbuild ceiling sentinel verde (shiki host-only, sin nuevas deps en webview)
