@@ -3375,3 +3375,21 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: `agents/contract_guard.py`, `brain/summarizer.py`, `agents/coder.py`, `brain/swarms.py`, `mypy.ini`.
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.2/8.0.2 → CLOSED, tabla de fixes, residuales 7→1, silenciados 6→5), `PROJECT_MANIFEST.md` (8.0.2 → `[x]`), `TECH_DEBT_BACKLOG.md` (DEBT-014 actualizado, DEBT-015 cerrado, DEBT-016 cerrado), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.3: Liberar `core.vfs_middleware` + `core.compute_pool` — 2026-06-05
+
+- **Status:** OK — dos paredes derribadas de una vez. `compute_pool.py` y `core/indexer.py` ya eran strict-clean (0 errores; las paredes solo escudaban consumidores); `vfs_middleware.py` tenía 8 errores reales, todos de anotación. DoD verde: `mypy --strict` → 0 en `vfs_middleware.py` / `compute_pool.py` / `indexer.py`; `mypy .` → 0/247; `pytest` → 924/0; `mypy --strict main.py` → **1 residual** (swarms:155, DEBT-014).
+
+- **Motivación:** `core.vfs_middleware` y `core.compute_pool` eran las dos últimas paredes de nivel medio antes de la infraestructura densa (`core.db`, `api.websocket_manager`, `brain.memory`). Desbloquearlas deja a `coder` e `indexer` completamente tipados.
+
+- **Correcciones en `vfs_middleware.py`:** `metadata`/`size_meta` → `Dict[str, Any]`; `_BINARY_EXTENSIONS` → `FrozenSet[str]`; `_ignore_specs` y el retorno de `_load_ignore_spec` → `pathspec.PathSpec[Any]` (PathSpec es `Generic[TPattern_co]`); `lines` → `List[str]`; `__new__(cls) -> "VFSMiddleware"` (el singleton no tenía anotación de retorno, lo que volvía untyped cada llamada `VFSMiddleware()`).
+
+- **Barrido de ignores muertos (consecuencia directa del cambio in-scope):** tipar `VFSMiddleware.__new__` volvió obsoletos 5 `# type: ignore[no-untyped-call]` sobre `VFSMiddleware()` repartidos en `core/indexer.py` (×2), `agents/researcher.py`, `core/task_service.py` y `core/memory/graphrag_extractor.py`. El comentario en `task_service.py` incluso explicaba textualmente que el ignore existía *porque* `vfs_middleware` estaba silenciado — al unsilenciarlo, la justificación desaparece. Como `no-untyped-call` es un chequeo solo de `--strict`, estos ignores eran inertes bajo `mypy .`; removerlos es de riesgo cero (verificado). No son deuda independiente sino litter que el propio fix creó, por lo que se limpian en sitio (no van al Registro).
+
+- **`swarms.py:155` permanece (DEBT-014):** es el único caso de la discrepancia genuina `NodeInputT` strict/non-strict (real bajo `mypy .`, `unused-ignore` bajo `--strict`); requiere rediseño de la firma del nodo en 8.0.4, no un simple borrado.
+
+- **`mypy.ini`:** eliminados `[mypy-core.vfs_middleware]` y `[mypy-core.compute_pool]` (5 → 3 módulos silenciados: quedan `core.db`, `api.websocket_manager`, `brain.memory`).
+
+- **Files changed:**
+  - Core: `core/vfs_middleware.py`, `core/indexer.py`, `agents/researcher.py`, `core/task_service.py`, `core/memory/graphrag_extractor.py`, `mypy.ini`.
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.3/8.0.3 → CLOSED, silenciados 5→3), `PROJECT_MANIFEST.md` (8.0.3 → `[x]`, baseline actualizado), `DEV_JOURNAL.md` (este hito).

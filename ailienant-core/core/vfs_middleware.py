@@ -1,6 +1,6 @@
 import os
 import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, FrozenSet, List, Optional
 
 import pathspec
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ class DirtyBuffer(BaseModel):
 class VFSReadResult(BaseModel):
     content: Optional[str] = None
     error: Optional[str] = None      # "FILE_EXCLUDED" | "FILE_IGNORED" | "BINARY_FILE" | "FILE_TOO_LARGE" | "MINIFIED" | "READ_ERROR"
-    metadata: Optional[dict] = None
+    metadata: Optional[Dict[str, Any]] = None
 
     @property
     def ok(self) -> bool:
@@ -41,7 +41,7 @@ class VFSReadResult(BaseModel):
 _MAX_FILE_BYTES: int = 500 * 1024   # 500 KB hard ceiling
 _MAX_LINE_CHARS: int = 1000         # minification detection threshold
 
-_BINARY_EXTENSIONS: frozenset = frozenset({
+_BINARY_EXTENSIONS: FrozenSet[str] = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
     ".svg", ".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
     ".exe", ".dll", ".so", ".dylib", ".wasm",
@@ -51,7 +51,7 @@ _BINARY_EXTENSIONS: frozenset = frozenset({
 })
 
 # Per-project_id cache: {project_id: PathSpec}  — populated once per project on first read
-_ignore_specs: Dict[str, "pathspec.PathSpec"] = {}
+_ignore_specs: Dict[str, "pathspec.PathSpec[Any]"] = {}
 _ignore_specs_lock = threading.Lock()
 
 
@@ -74,7 +74,7 @@ class VFSMiddleware:
     _lock = threading.Lock()
     _ram_vfs: Dict[str, str]
 
-    def __new__(cls):
+    def __new__(cls) -> "VFSMiddleware":
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super(VFSMiddleware, cls).__new__(cls)
@@ -150,7 +150,7 @@ class VFSMiddleware:
         """
         normalized = os.path.normpath(filepath)
         ext = os.path.splitext(normalized)[1].lower()
-        size_meta: dict = {"path": normalized, "extension": ext}
+        size_meta: Dict[str, Any] = {"path": normalized, "extension": ext}
 
         # Layer 0 — Dual-rules exclude (exclude_patterns from .ailienant.json)
         if project_root:
@@ -225,7 +225,7 @@ class VFSMiddleware:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _load_ignore_spec(project_root: str, project_id: str) -> "pathspec.PathSpec":
+    def _load_ignore_spec(project_root: str, project_id: str) -> "pathspec.PathSpec[Any]":
         """
         Parse .gitignore and .ailienantignore from project_root and cache the
         compiled PathSpec under project_id. Thread-safe — concurrent callers
@@ -234,7 +234,7 @@ class VFSMiddleware:
         with _ignore_specs_lock:
             if project_id in _ignore_specs:
                 return _ignore_specs[project_id]
-            lines: list = []
+            lines: List[str] = []
             for fname in (".gitignore", ".ailienantignore"):
                 candidate = os.path.join(project_root, fname)
                 try:

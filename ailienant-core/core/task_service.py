@@ -186,10 +186,8 @@ class TaskService:
     """
 
     def __init__(self) -> None:
-        # Inyección de dependencias (Singleton)
-        # core.vfs_middleware is follow_imports=silent (pre-existing debt), so a
-        # strict invocation sees its constructor as untyped — scoped ignore.
-        self.vfs = VFSMiddleware()  # type: ignore[no-untyped-call]
+        # Dependency injection (singleton).
+        self.vfs = VFSMiddleware()
         # Phase 7.11.1 — in-flight inline edits, keyed by edit_id. Each entry
         # owns one cancel_event (the agent loop polls it between yields, plan
         # W2) and the asyncio.Task running the orchestrator (cancel() is the

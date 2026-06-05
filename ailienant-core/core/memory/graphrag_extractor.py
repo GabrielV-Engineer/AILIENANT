@@ -428,9 +428,9 @@ class GraphRAGDynamicExtractor:
         from core.ast_engine import ASTEngine
         from shared.contracts import detect_language
 
-        vfs = VFSMiddleware()  # type: ignore[no-untyped-call]
+        vfs = VFSMiddleware()
         ast_engine = ASTEngine()
-        lines: List[str] = ["## Code Context — Semantic Deep Parse (Phase 3.2):"]
+        lines: List[str] = ["## Code Context — Semantic Deep Parse:"]
         parsed: List[str] = []
 
         for file_path in target_files:

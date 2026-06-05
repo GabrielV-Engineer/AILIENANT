@@ -16,7 +16,7 @@ one.
 |---|---|
 | `mypy .` | ✅ Success — 247 files, 0 errors |
 | `mypy --strict main.py` | ❌ 1 error in 1 file (`swarms.py:155` unused-ignore discrepancy, DEBT-014) |
-| Silenced modules (`follow_imports = silent` in mypy.ini) | 5 modules (was 9 → 8.0.1 removed 3, 8.0.2 removed 1) |
+| Silenced modules (`follow_imports = silent` in mypy.ini) | 3 modules (was 9 → 8.0.1 −3, 8.0.2 −1, 8.0.3 −2) |
 
 The original May 2026 baseline had 32 errors / 12 files. By June 2026 (after Phases 7.15–7.18 work that
 kept `mypy .` green but accumulated strict-mode debt), the count had grown to 79 errors / 25 files. The
@@ -33,6 +33,10 @@ silenced dependencies and cannot be fixed until Phase 8.1–8.4 unblocks their t
 > ideation.py corrected (was not gated by analyst).
 > **8.0.2 (2026-06-05):** closed 7 consumer errors (contract_guard, summarizer, coder); 7 → 1
 > residual. DEBT-015 and DEBT-016 closed. DEBT-014 updated with strict/non-strict discrepancy note.
+> **8.0.3 (2026-06-05):** fixed `vfs_middleware.py` (8 errors); `compute_pool.py` + `indexer.py` were
+> already strict-clean. Removing the walls obsoleted 5 `[no-untyped-call]` ignores on `VFSMiddleware()`
+> (typed `__new__` made them dead) — swept across indexer/researcher/task_service/graphrag_extractor.
+> Residual still 1 (swarms:155, DEBT-014).
 
 ### Historical baseline (2026-05-31) — for reference only
 
@@ -63,6 +67,7 @@ for `pyarrow` (stubs now present; `lancedb` remains untyped).
 
 *(Unsilenced in 8.0.1: `shared.hardware`, `agents.analyst`, `tools.patch_tool` — DEBT-001 closed.)*
 *(Unsilenced in 8.0.2: `tools.llm_gateway` — DEBT-015, DEBT-016 closed.)*
+*(Unsilenced in 8.0.3: `core.vfs_middleware`, `core.compute_pool` — 5 dead VFSMiddleware ignores swept. Remaining: `core.db`, `api.websocket_manager`, `brain.memory`.)*
 
 ---
 
@@ -208,19 +213,23 @@ import it from `shared.config` directly in `contract_guard.py` (proper canonical
 
 ---
 
-### 8.3 — Unsilence `core.vfs_middleware` + `core.compute_pool`
+### 8.3 / 8.0.3 — Unsilence `core.vfs_middleware` + `core.compute_pool` — ✅ CLOSED 2026-06-05
 
-**Subfases:**
+**Scope:** `compute_pool.py` and `indexer.py` were already strict-clean (0 errors) — the walls only
+shielded consumers. `vfs_middleware.py` had 8 real errors, all annotation-only.
 
-#### 8.3.A — `core.vfs_middleware`
-- Fix errors in `core/vfs_middleware.py` until `mypy --strict core/vfs_middleware.py` → 0.
-- Remove silencing entry.
-- **DoD:** `mypy --strict core/vfs_middleware.py` → 0; `mypy --strict agents/coder.py` → 0.
+| File | Fix |
+|---|---|
+| `core/vfs_middleware.py` | `metadata`/`size_meta` → `Dict[str, Any]`; `_BINARY_EXTENSIONS` → `FrozenSet[str]`; `_ignore_specs`/`_load_ignore_spec` → `pathspec.PathSpec[Any]`; `lines` → `List[str]`; `__new__(cls) -> "VFSMiddleware"` (also clears the `no-untyped-call` at the call sites) |
+| `mypy.ini` | removed `[mypy-core.vfs_middleware]` and `[mypy-core.compute_pool]` (5 → 3) |
 
-#### 8.3.B — `core.compute_pool`
-- Fix errors in `core/compute_pool.py` until `mypy --strict core/compute_pool.py` → 0.
-- Remove silencing entry.
-- **DoD:** `mypy --strict core/compute_pool.py` → 0; `mypy --strict core/indexer.py` → 0.
+**Dead-ignore sweep:** typing `VFSMiddleware.__new__` made 5 `# type: ignore[no-untyped-call]`
+comments on `VFSMiddleware()` obsolete — removed across `core/indexer.py` (×2), `agents/researcher.py`,
+`core/task_service.py`, `core/memory/graphrag_extractor.py`. (`no-untyped-call` is a `--strict`-only
+check, so these ignores were inert under `mypy .` — removal is risk-free and verified.)
+
+**DoD met:** `mypy --strict core/vfs_middleware.py` / `core/compute_pool.py` / `core/indexer.py` → 0;
+`mypy .` → 0/247; `mypy --strict main.py` → 1 (swarms:155, DEBT-014); `pytest` → 924/0.
 
 ---
 

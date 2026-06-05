@@ -324,7 +324,7 @@ class LazyIndexer:
                         if not lang:
                             continue
                         from core.vfs_middleware import VFSMiddleware as _VFS  # deferred — avoid circular at module level
-                        _vfs_result = _VFS().read_safe(  # type: ignore[no-untyped-call]
+                        _vfs_result = _VFS().read_safe(
                             file_path,
                             project_id=project_id,
                             project_root=workspace_root,
@@ -511,7 +511,7 @@ class ReactiveIndexer:
         """Return the freshest bytes from the RAM-VFS buffer or disk; None if absent."""
         from core.vfs_middleware import VFSMiddleware  # deferred — avoid circular import
         try:
-            res = VFSMiddleware().read_safe(  # type: ignore[no-untyped-call]
+            res = VFSMiddleware().read_safe(
                 filepath, project_id=project_id, project_root=workspace_root
             )
         except Exception as exc:

@@ -81,7 +81,7 @@ async def run_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
         # Deferred import: VFSMiddleware is a singleton, instantiation is O(1).
         from core.vfs_middleware import VFSMiddleware
 
-        vfs = VFSMiddleware()  # type: ignore[no-untyped-call]
+        vfs = VFSMiddleware()
         for path in explicit_mentions:
             try:
                 content = vfs.read(path)
