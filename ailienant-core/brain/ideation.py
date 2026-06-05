@@ -54,7 +54,7 @@ _DISTILL_SYSTEM_PROMPT: str = (
 )
 
 
-def _dialogue_transcript(messages: List[dict]) -> str:
+def _dialogue_transcript(messages: List[Dict[str, Any]]) -> str:
     """Flatten the accumulated Q&A into a plain transcript for the distillation prompt."""
     lines: List[str] = []
     for m in messages:
@@ -89,8 +89,8 @@ def _compose_planner_brief(brief: Dict[str, Any], fallback: str) -> str:
 
 
 async def run_synthesis_node(
-    state: dict, config: Optional[RunnableConfig] = None
-) -> dict:
+    state: Dict[str, Any], config: Optional[RunnableConfig] = None
+) -> Dict[str, Any]:
     """LangGraph node: distill the Socratic dialogue, then hand off to the planner.
 
     This node does not produce a plan. It compresses the conversation into a soft
@@ -99,7 +99,7 @@ async def run_synthesis_node(
     draft→validate→re-draft loop produces the schema-valid WBS. ``mission_spec`` is
     intentionally left for the planner to own.
     """
-    messages: List[dict] = state.get("messages", [])
+    messages: List[Dict[str, Any]] = state.get("messages", [])
     _narrate = (config or {}).get("configurable", {}).get("narrate")
 
     async def _emit(node_name: str) -> None:
@@ -136,7 +136,7 @@ async def run_synthesis_node(
     }
 
 
-async def _distill_brief_llm(state: dict, messages: List[dict]) -> Dict[str, Any]:
+async def _distill_brief_llm(state: Dict[str, Any], messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Soft-schema distillation of the dialogue into an intent/constraints brief.
 
     Grounds the brief in the workspace (active file + GraphRAG, best-effort). Never
@@ -175,7 +175,7 @@ async def _distill_brief_llm(state: dict, messages: List[dict]) -> Dict[str, Any
         return {"intent": transcript}
 
 
-async def _assemble_synthesis_context(state: dict) -> str:
+async def _assemble_synthesis_context(state: Dict[str, Any]) -> str:
     """Best-effort workspace context block to ground the distilled brief."""
     active_path: str = state.get("active_file_path") or ""
     paths: List[str] = [active_path] if active_path else []
@@ -193,7 +193,7 @@ async def _assemble_synthesis_context(state: dict) -> str:
         return ""
 
 
-def route_after_analyst(state: dict) -> str:
+def route_after_analyst(state: Dict[str, Any]) -> str:
     """Conditional edge after analyst_grill.
 
     shared_understanding_reached=True  → synthesis_node (compress, hand off)
@@ -211,7 +211,7 @@ def route_after_analyst(state: dict) -> str:
 # ---------------------------------------------------------------------------
 from agents.analyst import run_analyst_node  # noqa: E402 — deferred for engine.py compat
 
-_ideation_workflow: StateGraph = StateGraph(AIlienantGraphState)
+_ideation_workflow: StateGraph[AIlienantGraphState] = StateGraph(AIlienantGraphState)
 _ideation_workflow.add_node("analyst_grill", run_analyst_node)  # type: ignore[type-var]
 _ideation_workflow.add_node("synthesis_node", run_synthesis_node)  # type: ignore[type-var]
 _ideation_workflow.add_edge(START, "analyst_grill")

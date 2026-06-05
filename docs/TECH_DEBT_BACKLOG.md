@@ -31,20 +31,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
-### DEBT-001 — tools.patch_tool: LangChain @tool decorator stub mismatch
+### DEBT-001 — tools.patch_tool: LangChain @tool decorator stub mismatch — ✅ CLOSED 2026-06-05
 
 - **Date:** 2026-05-31
-- **Reproduce:** `cd ailienant-core && .\venv\Scripts\python -m mypy --strict tools/patch_tool.py`
 - **File:** `tools/patch_tool.py:219`
 - **Error:** `unused-ignore[misc]` — `# type: ignore[misc]` was added when LangChain's `@tool`
-  decorator lacked stubs; the stubs may now be present, making the comment redundant under
-  `--strict` (which flags stale ignores).
-- **Blocked by:** LangChain / langchain-core stub completeness. Verify after
-  `pip install --upgrade langchain-core`.
-- **Phase:** 8.1.C
-- **Notes:** Currently suppressed via `[mypy-tools.patch_tool] follow_imports = silent` in
-  `mypy.ini`. If stubs are still absent, the entry must remain and the silencing block stays.
-  If stubs landed, remove the `# type: ignore[misc]` comment and the silencing block together.
+  decorator lacked stubs.
+- **Resolution (2026-06-05, Phase 8.0.1):** **CLOSED — stubs landed.** `mypy --strict
+  tools/patch_tool.py` confirmed the ignore is now *unused* (upstream langchain-core stubs caught
+  up). Removed the `# type: ignore[misc]` comment and the `[mypy-tools.patch_tool] follow_imports =
+  silent` block together. `mypy --strict tools/patch_tool.py` → 0; `mypy .` → 0/247.
 
 ---
 
@@ -255,18 +251,20 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ---
 
-### DEBT-016 — brain/ideation.py + brain/summarizer.py: strict-mode errors behind silenced deps
+### DEBT-016 — brain/summarizer.py: strict-mode type-arg behind `tools.llm_gateway`
 
 - **Date:** 2026-06-05
-- **Reproduce:** `cd ailienant-core && python -m mypy --strict brain/ideation.py brain/summarizer.py`
-- **File(s):** `brain/ideation.py:57,92,93,102,139,178,196` (bare `dict` params/returns),
-  `:214` (`StateGraph` missing type args); `brain/summarizer.py:34` (bare `dict`).
-- **Error:** `type-arg` × 9. Ideation is additionally gated by `agents.analyst` silencing;
-  summarizer by `tools.llm_gateway` silencing.
-- **Blocked by:** `agents.analyst` (Phase 8.1.B) and `tools.llm_gateway` (Phase 8.2).
-- **Phase:** 8.4 — fix both files after their upstream silenced deps are cleared.
-- **Notes:** `StateGraph` in ideation.py should become `StateGraph[AIlienantGraphState]`; bare `dict`
-  params should become `Dict[str, Any]`. All annotation-only changes.
+- **Reproduce:** `cd ailienant-core && python -m mypy --strict brain/summarizer.py`
+- **File(s):** `brain/summarizer.py:34` (bare `dict`).
+- **Error:** `type-arg` × 1.
+- **Blocked by:** `tools.llm_gateway` silencing (Phase 8.0.2).
+- **Phase:** 8.0.4 — fix `summarizer.py` after `tools.llm_gateway` is unsilenced.
+- **Notes:** Annotation-only (`dict` → `Dict[str, Any]`).
+- **Partial resolution (2026-06-05, Phase 8.0.1):** the `brain/ideation.py` portion (8 × `type-arg`,
+  lines 57/92/93/102/139/178/196 + `:214` `StateGraph[AIlienantGraphState]`) was **NOT** gated by
+  `agents.analyst` — those errors were self-contained (`ideation.py:212` imports the
+  `run_analyst_node` *function*, not a bare-typed symbol). They were fixed in 8.0.1 and the blueprint
+  attribution corrected. Only `summarizer.py` remains here.
 
 ---
 

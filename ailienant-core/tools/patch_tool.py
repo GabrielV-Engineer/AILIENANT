@@ -216,7 +216,7 @@ def make_patch_file_tool(
     """
     from core.exceptions import StaleFileException
 
-    @tool(args_schema=AtomicPatchInput)  # type: ignore[misc]
+    @tool(args_schema=AtomicPatchInput)
     def patch_file(
         file_path: str,
         search_block: str,

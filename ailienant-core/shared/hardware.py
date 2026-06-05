@@ -75,7 +75,7 @@ class HardwareDetector:
     @staticmethod
     def _detect_ram() -> tuple[float, float]:
         try:
-            import psutil  # type: ignore[import]
+            import psutil
             vm = psutil.virtual_memory()
             return vm.total / (1024 ** 3), vm.available / (1024 ** 3)
         except Exception:
@@ -84,7 +84,7 @@ class HardwareDetector:
     @staticmethod
     def _detect_vram() -> tuple[float, float, Optional[str]]:
         try:
-            import pynvml  # type: ignore[import]
+            import pynvml  # type: ignore[import-untyped]
             pynvml.nvmlInit()
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             info = pynvml.nvmlDeviceGetMemoryInfo(handle)
@@ -132,7 +132,7 @@ class HardwareDetector:
         cores: int = 0
         freq_mhz: float = 0.0
         try:
-            import psutil  # type: ignore[import]
+            import psutil
             cores = psutil.cpu_count(logical=False) or 0
             fi = psutil.cpu_freq()
             if fi:

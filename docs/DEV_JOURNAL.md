@@ -3341,3 +3341,21 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Docs NUEVO: `docs/PHASE_7_14_0_STACK_CONTRACT.md`.
   - Docs EDIT: `PROJECT_MANIFEST.md` (7.14.0 → `[x]`), `README.md` (Repository Layout), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.1: Liberar hojas de bajo fan-in (`shared.hardware`, `agents.analyst`, `tools.patch_tool`) — 2026-06-05
+
+- **Status:** OK — primer muro derribado de la campaña `mypy --strict`. Cambios solo de anotación: cero cambio de lógica. DoD verde: `mypy --strict` → 0 en los 4 archivos tocados; `mypy .` → 0/247; `pytest` → 924 passed / 0 failed; `mypy --strict main.py` baja de 15 → **7 errores residuales** (todos tras `tools.llm_gateway` → 8.0.2).
+
+- **Motivación:** 8.0.0 cerró los 64 errores de superficie y dejó 15 residuales tras 9 módulos con `follow_imports = silent`. 8.0.1 quita el silenciado de las tres hojas con ≤1 consumidor interno, en orden topológico, encogiendo el gate estricto sin romper nunca el gate exigido (`mypy .`). El diagnóstico mostró que la deuda oculta era mínima y mecánica.
+
+- **Correcciones:** `shared/hardware.py` (3 × unused-ignore: psutil ya cubierto por `[mypy-psutil.*]`, pynvml `[import]`→`[import-untyped]`); `agents/analyst.py` (8 × type-arg: `set`→`Set[asyncio.Task[Any]]`, `dict`/`Dict`→`Dict[str, Any]`, imports `Any, Set`); `tools/patch_tool.py` (1 × unused-ignore: el stub de `@tool` de LangChain ya llegó → **DEBT-001 cerrado**).
+
+- **Dos hallazgos de arquitectura (raíz: revisión de foresight):**
+  - **(1) Atribución errónea del blueprint corregida.** Los 8 errores `type-arg` de `brain/ideation.py` NO estaban bloqueados por `agents.analyst` (`ideation.py:212` importa la *función* `run_analyst_node`, no un símbolo de tipo bare). Eran auto-contenidos y se corrigieron en este mismo pase (bare `dict`→`Dict[str, Any]`, `StateGraph`→`StateGraph[AIlienantGraphState]`). DEBT-016 queda reducido a solo `summarizer.py`.
+  - **(2) Ignore muerto destapado por el cambio.** Al tiparse `run_analyst_node`, la resolución de overload de `StateGraph.add_node` se recalculó y dejó *unused* el `# type: ignore[type-var]` de `swarms.py:155`. Se removió (Zero-Degradation: el cambio no debe introducir un nuevo error estricto); verificado que `mypy .` sigue 0/247.
+
+- **`mypy.ini`:** eliminados los bloques `[mypy-shared.hardware]`, `[mypy-agents.analyst]`, `[mypy-tools.patch_tool]` (9 → 6 módulos silenciados).
+
+- **Files changed:**
+  - Core: `shared/hardware.py`, `agents/analyst.py`, `tools/patch_tool.py`, `brain/ideation.py`, `brain/swarms.py`, `mypy.ini`.
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.1/8.0.1 → CLOSED, tabla de fixes, residuales 15→7, silenciados 9→6), `PROJECT_MANIFEST.md` (8.0.1 → `[x]`), `TECH_DEBT_BACKLOG.md` (DEBT-001 cerrado, DEBT-016 reducido), `DEV_JOURNAL.md` (este hito).

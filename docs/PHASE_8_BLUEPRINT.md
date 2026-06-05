@@ -15,24 +15,27 @@ one.
 | Gate | Result |
 |---|---|
 | `mypy .` | ✅ Success — 247 files, 0 errors |
-| `mypy --strict main.py` | ❌ 15 errors in 4 files (all gated behind silenced deps — see below) |
-| Silenced modules (`follow_imports = silent` in mypy.ini) | 9 modules (unchanged) |
+| `mypy --strict main.py` | ❌ 7 errors in 3 files (all gated behind `tools.llm_gateway` — see below) |
+| Silenced modules (`follow_imports = silent` in mypy.ini) | 6 modules (was 9 — 8.0.1 removed 3) |
 
 The original May 2026 baseline had 32 errors / 12 files. By June 2026 (after Phases 7.15–7.18 work that
 kept `mypy .` green but accumulated strict-mode debt), the count had grown to 79 errors / 25 files. The
 Phase 8.0.0 sweep closed the 64 surface-fixable errors; the remaining 15 are structurally gated behind
 silenced dependencies and cannot be fixed until Phase 8.1–8.4 unblocks their transitive imports.
 
-### Residual errors (`mypy --strict main.py`) — 15 remaining — all behind silenced deps
+### Residual errors (`mypy --strict main.py`) — 7 remaining — all behind `tools.llm_gateway`
 
 | File | Count | Error codes | Blocked by |
 |---|---|---|---|
-| `agents/coder.py` | 4 | `type-arg` × 3, `no-untyped-def` × 1 | `tools.llm_gateway` (Phase 8.2) |
-| `agents/contract_guard.py` | 1 | `attr-defined` | `tools.llm_gateway` (Phase 8.2) |
-| `brain/ideation.py` | 8 | `type-arg` × 8 | `agents.analyst` (Phase 8.1.B) |
-| `brain/summarizer.py` | 1 | `type-arg` × 1 | `tools.llm_gateway` (Phase 8.2) |
+| `agents/coder.py` | 5 | `type-arg` × 4, `no-untyped-def` × 1 | `tools.llm_gateway` (Phase 8.0.2) |
+| `agents/contract_guard.py` | 1 | `attr-defined` (`MODEL_MEDIUM`) | `tools.llm_gateway` (Phase 8.0.2) |
+| `brain/summarizer.py` | 1 | `type-arg` × 1 | `tools.llm_gateway` (Phase 8.0.2) |
 
 Registered as DEBT-014, DEBT-015, DEBT-016 in `TECH_DEBT_BACKLOG.md`.
+
+> **8.0.1 update (2026-06-05):** `brain/ideation.py`'s 8 `type-arg` errors were *not* gated by
+> `agents.analyst` (the prior table mis-attributed them) — they were self-contained and are now fixed.
+> `coder.py` carries 5 (not 4) — the earlier count under-reported `type-arg` by one.
 
 ### Historical baseline (2026-05-31) — for reference only
 
@@ -54,15 +57,14 @@ for `pyarrow` (stubs now present; `lancedb` remains untyped).
 
 | Module | Consumers | Priority |
 |---|---|---|
-| `shared.hardware` | `brain/state.py` | Low |
-| `agents.analyst` | `brain/ideation.py` | Medium |
-| `tools.patch_tool` | `tools/mutation_tools.py` | Medium (LangChain stub blocker) |
 | `tools.llm_gateway` | summarizer, contract_guard, coder | High |
 | `core.vfs_middleware` | `agents/coder.py` | Medium |
 | `core.compute_pool` | `core/indexer.py` + others | High |
 | `brain.memory` | `brain/engine.py` | High |
 | `core.db` | widespread | Critical |
 | `api.websocket_manager` | write_pipeline, finops, main.py | Critical |
+
+*(Unsilenced in 8.0.1: `shared.hardware`, `agents.analyst`, `tools.patch_tool` — DEBT-001 closed.)*
 
 ---
 
@@ -167,28 +169,24 @@ by default in the tsconfig). The frontend track is "keep the green lights green"
 
 ---
 
-### 8.1 — Unsilence Low-Fan-In Leaves
+### 8.1 / 8.0.1 — Unsilence Low-Fan-In Leaves — ✅ CLOSED 2026-06-05
 
-**Scope:** Remove `follow_imports = silent` for the three modules with ≤1 internal consumer.
-Fix their strict errors, THEN remove the mypy.ini entry.
+**Scope:** Removed `follow_imports = silent` for the three modules with ≤1 internal consumer, in
+topological order. All fixes annotation-only — zero logic changes. `brain/ideation.py` was folded in
+(its 8 errors were self-contained, not gated by `analyst` — attribution corrected).
 
-**Subfases (execute in order):**
+| File | Strict errors fixed | Fix |
+|---|---|---|
+| `shared/hardware.py` | 3 × `unused-ignore` | drop 2 stale psutil ignores (config-silenced); pynvml `[import]`→`[import-untyped]` |
+| `agents/analyst.py` | 8 × `type-arg` | parameterize bare `set`→`Set[asyncio.Task[Any]]`, `dict`/`Dict`→`Dict[str, Any]`; add `Any, Set` imports |
+| `tools/patch_tool.py` | 1 × `unused-ignore` | drop stale `@tool` ignore — LangChain stubs caught up → **DEBT-001 closed** |
+| `brain/ideation.py` (folded in) | 8 × `type-arg` | bare `dict`→`Dict[str, Any]`; `StateGraph`→`StateGraph[AIlienantGraphState]` |
+| `brain/swarms.py` | 1 × `unused-ignore` | removed a `# type: ignore[type-var]` (line 155) that went dead once `analyst` became typed (`add_node` overload re-resolved) |
 
-#### 8.1.A — `shared.hardware`
-- Fix errors in `shared/hardware.py` until `mypy --strict shared/hardware.py` → 0.
-- Remove `[mypy-shared.hardware] follow_imports = silent` from `mypy.ini`.
-- **DoD:** `mypy --strict shared/hardware.py` → 0; `mypy .` clean.
+`mypy.ini`: removed `[mypy-shared.hardware]`, `[mypy-agents.analyst]`, `[mypy-tools.patch_tool]` (9 → 6).
 
-#### 8.1.B — `agents.analyst`
-- Fix errors in `agents/analyst.py` until `mypy --strict agents/analyst.py` → 0.
-- Remove `[mypy-agents.analyst] follow_imports = silent` from `mypy.ini`.
-- **DoD:** `mypy --strict agents/analyst.py` → 0; `mypy --strict brain/ideation.py` → 0; `mypy .` clean.
-
-#### 8.1.C — `tools.patch_tool`
-- Run `mypy --strict tools/patch_tool.py`. If the LangChain `@tool` decorator stub issue is resolved
-  (stubs updated upstream), fix and remove the silencing entry. If still blocked, register in
-  `TECH_DEBT_BACKLOG.md` as DEBT-001 (already pre-registered) and defer.
-- **DoD:** either `mypy --strict tools/patch_tool.py` → 0 + entry removed, or DEBT-001 updated.
+**DoD met:** `mypy --strict` → 0 on all four leaves; `mypy .` → 0/247; `mypy --strict main.py`
+15 → 7 (residual behind `tools.llm_gateway`); `pytest` → 924 passed, 0 failed.
 
 ---
 

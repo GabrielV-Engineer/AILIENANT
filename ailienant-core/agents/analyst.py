@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 import os as _os
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
@@ -44,7 +44,7 @@ _AGREEMENT_SIGNALS = frozenset([
 ])
 
 # Strong reference set: prevents GC from destroying broadcast tasks mid-flight.
-_background_tasks: set = set()
+_background_tasks: Set[asyncio.Task[Any]] = set()
 
 _CLOSE_HINT = (
     "\n> To summarize the plan, respond with 'OK', 'Proceed', or 'Go'."
@@ -72,7 +72,7 @@ _GRILL_DIRECTIVE: str = (
 )
 
 
-def _has_prior_socratic_exchange(messages: List[Dict]) -> bool:
+def _has_prior_socratic_exchange(messages: List[Dict[str, Any]]) -> bool:
     """Return True if the analyst has already asked at least one question."""
     return any(m.get("role") == "assistant" for m in messages)
 
@@ -110,8 +110,8 @@ async def generate_intent_summary_llm(user_messages: List[str], task_id: str = "
 
 
 async def run_analyst_node(
-    state: dict, config: Optional[RunnableConfig] = None
-) -> dict:
+    state: Dict[str, Any], config: Optional[RunnableConfig] = None
+) -> Dict[str, Any]:
     """LangGraph node: Socratic Grill Me AnalystAgent.
 
     Each invocation asks ONE context-aware question, streams it to the chat, and
@@ -125,14 +125,14 @@ async def run_analyst_node(
     """
     task_id: str = state.get("task_id", "")
     user_input: str = state.get("user_input", "")
-    messages: List[Dict] = list(state.get("messages", []))
+    messages: List[Dict[str, Any]] = list(state.get("messages", []))
 
     has_prior = _has_prior_socratic_exchange(messages)
 
     # If this is a response to a prior Socratic question, check for agreement.
     if has_prior and _is_agreement(user_input):
         logger.info("AnalystAgent: agreement detected — shared understanding reached.")
-        new_messages: List[Dict] = (
+        new_messages: List[Dict[str, Any]] = (
             [{"role": "user", "content": user_input}] if user_input else []
         )
         return {
@@ -222,7 +222,7 @@ async def run_analyst_node(
     }
 
 
-async def _assemble_socratic_context(state: dict) -> str:
+async def _assemble_socratic_context(state: Dict[str, Any]) -> str:
     """Build the read-only workspace context block for a Socratic question.
 
     Reuses the analyst context assembler (active file + workspace tree + GraphRAG)
@@ -247,7 +247,7 @@ async def _assemble_socratic_context(state: dict) -> str:
 
 
 async def _stream_question_llm(
-    messages: List[Dict],
+    messages: List[Dict[str, Any]],
     soul_prompt: str,
     context_block: str,
     session_id: str,
