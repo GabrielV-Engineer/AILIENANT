@@ -65,12 +65,21 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ---
 
-### DEBT-020 — tree-sitter stubs incomplete (6 × attr-defined, 1 × union-attr)
+### DEBT-020 — tree-sitter stubs incomplete (6 × attr-defined, 1 × union-attr) — ✅ RESOLVED (8.1.C)
 
+- **Resolution (8.1.C, 2026-06-08):** **7 ignores eliminated** with two complementary fixes. In
+  `brain/prompt_builder.py`: retyped `node: object` → `node: Any` in `_function_signature` (removes
+  4 `attr-defined` suppresses) and `tree: object` → `tree: Any` in `_extract_python_skeleton` (removes
+  2 `attr-defined` suppresses); added `Any` to the `typing` import; extracted `start: int =
+  node.start_point[0]` in the fallback branch to satisfy `--strict`'s `no-any-return` rule. In
+  `brain/memory.py`: replaced the `# type: ignore[union-attr]` on `_worker_ast.parse()` with a
+  local-variable guard (`ast_engine = _worker_ast; if ast_engine is None: return error_result`) so
+  mypy narrows the local to `Any` after the guard, consistent with the function's "never raises"
+  contract. `mypy --strict brain/prompt_builder.py brain/memory.py` → 0; `mypy .` → 0/248;
+  `pytest` green.
 - **Date:** 2026-06-08
 - **Files:** `brain/prompt_builder.py:67,69,70,74,93,130` (`attr-defined` — `child_by_field_name`, `start_point`, `root_node`); `brain/memory.py:76` (`union-attr` — `_worker_ast.parse()`).
 - **Error:** tree-sitter Python bindings (`tree-sitter`, `tree-sitter-languages`) ship no typed stubs for node attributes.
-- **Fix:** cast `node: object` to `Any` at the entry point of `_function_signature()` and `_extract_tree_node_names()` (removes 6 per-line ignores → 1 cast per function). For `memory.py:76`: add a `None` guard (`if _worker_ast is None: ...`) instead of relying on the suppression — `_worker_ast` is `Optional[ASTEngine]` and a guard is safer.
 - **Phase:** 8.1.C
 
 ---

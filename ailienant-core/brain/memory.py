@@ -81,8 +81,17 @@ def index_file_sync(req: IndexingRequest) -> IndexingResult:
     global _worker_ast
     if _worker_ast is None:
         _worker_init()  # lazy fallback if pool was created without initializer
+    ast_engine = _worker_ast
+    if ast_engine is None:
+        return IndexingResult(
+            file_path=req.file_path,
+            symbol_count=0,
+            language_id=req.language_id,
+            success=False,
+            error="AST engine unavailable",
+        )
     try:
-        tree = _worker_ast.parse(  # type: ignore[union-attr]
+        tree = ast_engine.parse(
             req.file_path, req.content, req.language_id
         )
         imports: list[str] = []

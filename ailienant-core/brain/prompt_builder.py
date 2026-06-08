@@ -18,7 +18,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from brain.state import AIlienantGraphState
@@ -61,20 +61,21 @@ class ContextBundle:
 
 # ── Python skeleton extraction ────────────────────────────────────────────────
 
-def _function_signature(node: object, lines: List[str]) -> str:
+def _function_signature(node: Any, lines: List[str]) -> str:
     """Return 'def name(args) -> ret: ...' for a function_definition AST node."""
     try:
-        body = node.child_by_field_name("body")  # type: ignore[attr-defined]
+        body = node.child_by_field_name("body")
         # sig_end is the last line before the body block starts
-        sig_end = body.start_point[0] - 1 if body else node.start_point[0]  # type: ignore[attr-defined]
-        sig = "".join(lines[node.start_point[0]: sig_end + 1]).rstrip().rstrip(":")  # type: ignore[attr-defined]
+        sig_end = body.start_point[0] - 1 if body else node.start_point[0]
+        sig = "".join(lines[node.start_point[0]: sig_end + 1]).rstrip().rstrip(":")
         return sig + ": ..."
     except Exception:
         # Fallback: just the def line, stripped of its colon
-        return lines[node.start_point[0]].rstrip().rstrip(":") + ": ..."  # type: ignore[attr-defined]
+        start: int = node.start_point[0]
+        return lines[start].rstrip().rstrip(":") + ": ..."
 
 
-def _extract_python_skeleton(content: str, tree: object) -> Optional[str]:
+def _extract_python_skeleton(content: str, tree: Any) -> Optional[str]:
     """Strip function/method bodies to '...', keep imports + class headers +
     docstrings + module-level constants.
 
@@ -90,7 +91,7 @@ def _extract_python_skeleton(content: str, tree: object) -> Optional[str]:
         lines = content.splitlines(keepends=True)
         out: List[str] = []
 
-        for node in tree.root_node.children:  # type: ignore[attr-defined]
+        for node in tree.root_node.children:
             nt = node.type
             sl = node.start_point[0]
             el = node.end_point[0]
@@ -127,7 +128,7 @@ def _extract_python_skeleton(content: str, tree: object) -> Optional[str]:
         if len(skeleton) > len(content) * _SKELETON_MAX_RATIO:
             # Aggressive fallback: imports + bare def/class header lines only
             out = []
-            for node in tree.root_node.children:  # type: ignore[attr-defined]
+            for node in tree.root_node.children:
                 nt = node.type
                 sl = node.start_point[0]
                 if nt in ("import_statement", "import_from_statement", "import_from"):

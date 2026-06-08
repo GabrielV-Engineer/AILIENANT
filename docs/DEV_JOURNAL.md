@@ -2,6 +2,28 @@
 
 ---
 
+## Hito 8.1.C: Eliminación de 7 supresiones de stubs tree-sitter (DEBT-020) — 2026-06-08
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy --strict brain/prompt_builder.py brain/memory.py` → 0 · `mypy .` 0/248 · `pytest` green
+
+### Problema resuelto
+`brain/prompt_builder.py` tipaba los helpers privados de walking de AST con `node: object` y `tree: object`. Como tree-sitter no distribuye stubs PEP-561, cada acceso a atributo sobre un valor de tipo `object` generaba un error `attr-defined` — cubierto con 6 `# type: ignore[attr-defined]` dispersos en dos funciones. `brain/memory.py` tenía un problema análogo: `_worker_ast: Optional[Any]` nunca se estrecha a no-None tras `_worker_init()` (efecto lateral sobre un global) → `# type: ignore[union-attr]` en la llamada `.parse()`. Total: 7 supresiones que el objetivo de `mypy --strict` exige eliminar.
+
+### Decisiones técnicas
+- **`Any` en la firma, no por cast:** retipar el parámetro a `Any` en el punto de entrada de cada función (`_function_signature(node: Any, ...)` y `_extract_python_skeleton(content, tree: Any)`) es menos verboso y más idiomático que insertar `cast(Any, ...)` en cada site de uso. Todos los accesos a atributos dentro de la función heredan `Any` por inferencia sin ningún cambio de lógica.
+- **`no-any-return` en el fallback de `_function_signature`:** bajo `--strict`, `lines[Any]` resuelve a `Any`, no a `str`, por lo que el `return lines[node.start_point[0]].rstrip(...)...` disparaba un `no-any-return`. Solución: `start: int = node.start_point[0]` extrae el índice a un local tipado; `lines[int]` resuelve a `str` y el error desaparece. Sin cambio de semántica.
+- **Guard de variable local en `index_file_sync`:** `ast_engine = _worker_ast; if ast_engine is None: return IndexingResult(..., success=False, error="AST engine unavailable")` da a mypy un local que puede estrechar a `Any` tras la guarda. El `IndexingResult` de error es la ruta correcta (función "never raises") y es alcanzable solo si `_worker_init()` falla en asignar el global — caso degenerado ya cubierto por el `try/except` externo pero ahora explícito y mypy-limpio.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/brain/prompt_builder.py` | `Any` en import; `node: Any` en `_function_signature`; `tree: Any` en `_extract_python_skeleton`; 6 `# type: ignore[attr-defined]` eliminados; `start: int` en fallback |
+| `ailienant-core/brain/memory.py` | Guard local-var `ast_engine` + early-return error; `# type: ignore[union-attr]` eliminado |
+| `docs/TECH_DEBT_BACKLOG.md` | DEBT-020 marcado ✅ RESOLVED |
+| `docs/PROJECT_MANIFEST.md` | 8.1.C `[x]` |
+
+---
+
 ## Hito 7.17.2: Checkpoint Gate FASE 7.17 (cierre de Streaming Progressive Highlight) — 2026-06-05
 
 **Estado:** ✅ COMPLETO | **Gates:** frontend 5/5 · backend 6/6 · `mypy .` 0/246 · 918 pytest passed · FASE 7.17 CERRADA
