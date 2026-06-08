@@ -15,8 +15,10 @@ one.
 | Gate | Result |
 |---|---|
 | `mypy .` | ✅ Success — 247 files, 0 errors |
-| `mypy --strict main.py` | ✅ Success — 0 errors (campaign primary objective met, 8.0.4) |
-| Silenced modules (`follow_imports = silent` in mypy.ini) | **0 modules** ✅ (campaign objective met, 8.0.6) |
+| `mypy --strict main.py` | ✅ Success — 0 errors |
+| Silenced modules (`follow_imports = silent` in mypy.ini) | **0 modules** ✅ |
+| Residual `# type: ignore` | **28** (all USED + tracked; DEBT-014/020/021/022/023) |
+| **Campaign status** | **✅ PHASE 8 COMPLETE** (8.0.8 closed 2026-06-08) |
 
 The original May 2026 baseline had 32 errors / 12 files. By June 2026 (after Phases 7.15–7.18 work that
 kept `mypy .` green but accumulated strict-mode debt), the count had grown to 79 errors / 25 files. The
@@ -331,16 +333,35 @@ is correct and intentional.
 
 ---
 
-### 8.8 — `main.py` (Final Entrypoint Gate)
+### 8.8 / 8.0.8 — `main.py` Final Entrypoint Gate — ✅ CLOSED 2026-06-08 — **CAMPAIGN COMPLETE**
 
-**Scope:** Final cleanup pass. All imported modules are now typed; this should reduce to
-cosmetic annotation work.
+**Certification + residual debt audit. No logic changes; 7 inline `[import-untyped]` → config blocks.**
 
-**DoD:**
-- `mypy --strict main.py` → **exit 0** — the full campaign target.
-- All `follow_imports = silent` entries removed from `mypy.ini` (or only `tools.patch_tool`
-  remains if DEBT-001 is still externally blocked).
-- `mypy .` still clean.
+**Residual `# type: ignore` audit (35 total, all USED under `mypy --strict`):**
+
+| Category | Count | Action |
+|---|---|---|
+| `lancedb` `[import-untyped]` (4 files) | 4 | Moved to `[mypy-lancedb,lancedb.*]` config block |
+| `docker` `[import-untyped]` (runtime + sandbox) | 2 | Moved to `[mypy-docker,docker.*]` config block |
+| `requests` `[import-untyped]` (runtime) | 1 | Moved to `[mypy-requests,requests.*]` config block |
+| DEBT-014 `type-var` (swarms/ideation) | 5 | Already tracked; 3 USED ignores remain |
+| tree-sitter `attr-defined`/`union-attr` | 7 | Registered DEBT-020 |
+| `io_coalescer` bare Callable `type-arg` | 5 | Registered DEBT-021 |
+| ws_manager `arg-type` enum literals | 4 | Registered DEBT-022 |
+| Misc single-site (main ×2, sessions, resource_manager, llm_gateway, pynvml, markdownify) | 7 | Registered DEBT-023 |
+
+After config promotion: **28 inline ignores remain** (all USED + tracked). `pynvml` and `markdownify` left inline (single-file deprecated pkg and rare lazy import respectively).
+
+**Phase 8.1 — Operational Stabilization declared** (DEBT-019 WS buffer leak + DEBT-018 networkx cap + DEBT-020/021/022/023 typing hardening). See `TECH_DEBT_BACKLOG.md` for WBS.
+
+**Campaign primary objectives:**
+- ✅ `mypy --strict main.py` → 0 (8.0.4)
+- ✅ Zero `follow_imports = silent` modules (8.0.6)
+- ✅ `mypy .` → 0/247 (maintained throughout)
+- ✅ `pytest` → 924/0 (regression-free throughout)
+
+**DoD met:** all three gates → 0. `mypy.ini` has zero `follow_imports = silent` entries. 28 remaining
+ignores are USED + registered. DEBT-020 through DEBT-023 added. **Phase 8 CLOSED.**
 
 ---
 

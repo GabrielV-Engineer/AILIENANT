@@ -19,7 +19,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-import lancedb  # type: ignore[import-untyped]
+import lancedb
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc

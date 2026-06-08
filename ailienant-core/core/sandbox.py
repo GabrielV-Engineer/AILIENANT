@@ -44,7 +44,7 @@ from abc import ABC, abstractmethod
 from io import BytesIO
 from typing import Any, Dict, Literal, Optional, Tuple
 
-import docker  # type: ignore[import-untyped]
+import docker
 import wasmtime
 from pydantic import BaseModel
 

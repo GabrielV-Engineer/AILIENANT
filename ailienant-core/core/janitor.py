@@ -16,7 +16,7 @@ import time
 from typing import List
 
 import aiosqlite
-import lancedb  # type: ignore[import-untyped]
+import lancedb
 import pyarrow.compute as pc
 from pydantic import BaseModel
 

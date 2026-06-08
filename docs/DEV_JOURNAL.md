@@ -3449,3 +3449,19 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: ninguno (engine.py sin tocar).
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.7/8.0.7 → CLOSED + rationale del decline), `PROJECT_MANIFEST.md` (8.0.7 → `[x]`), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.8: Puerta final — `main.py` certificada — **FASE 8 COMPLETA** — 2026-06-08
+
+- **Status:** OK — **FASE 8 DE LA CAMPAÑA DE TIPADO ESTRICTO CERRADA.** Los dos objetivos primarios se mantienen: `mypy --strict main.py` → 0 (alcanzado en 8.0.4) y cero módulos `follow_imports = silent` (alcanzado en 8.0.6). DoD certificado: `mypy .` → 0/247; `pytest` → 924/0.
+
+- **Auditoría completa de `# type: ignore` residuales:** 35 comentarios en código fuente (sin tests, sin venv). **Todos USADOS** — verificado: `mypy --strict main.py` activa `--warn-unused-ignores`, que detectaría cualquier ignore muerto. Cero ignores bare (sin código de error). Clasificación por categoría: lancedb ×4, docker ×2, requests ×1 (→ config); DEBT-014 ×5 (add_node NodeInputT, ya trackeado); tree-sitter ×7 (DEBT-020); io_coalescer Callable ×5 (DEBT-021); ws_manager arg-type ×4 (DEBT-022); misc ×7 (DEBT-023). Residuales tras config-cleanup: **35 → 28**.
+
+- **Config-level cleanup (patrón pyarrow/networkx):** 7 ignores `[import-untyped]` inline → 3 bloques en `mypy.ini` (`[mypy-lancedb,lancedb.*]`, `[mypy-docker,docker.*]`, `[mypy-requests,requests.*]`). La declaración dual `nombre,nombre.*` es obligatoria: `nombre.*` solo no captura el `import nombre` pelado. Dejados inline: `pynvml` (pkg deprecado, único archivo) y `markdownify` (import lazy local).
+
+- **Nuevas entradas de deuda:** DEBT-020 (tree-sitter stubs, 7 ignores), DEBT-021 (bare Callable en io_coalescer, 5 ignores), DEBT-022 (arg-type enum literals en ws_manager, 4 ignores), DEBT-023 (misceláneos, 5 ignores).
+
+- **Próximo: Fase 8.1 — Estabilización Operacional y Endurecimiento Enterprise:** DEBT-019 (fuga de buffer WS — sweep O(1) en disconnect con reverse-lookup index), DEBT-018 (cota máxima de grafo NetworkX + G.clear() explícito), y DEBT-020/021/022/023 (correcciones de tipado). Declarado en el proyecto; implementación en la sub-fase 8.1.
+
+- **Files changed:**
+  - Core: `mypy.ini` (3 bloques añadidos), `core/janitor.py`, `core/memory/semantic_memory.py`, `core/memory/trajectory_memory.py`, `core/tool_rag.py`, `api/runtime.py`, `core/sandbox.py` (inline ignores eliminados).
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.8/8.0.8 → CLOSED + campaign COMPLETE + tabla de auditoría), `PROJECT_MANIFEST.md` (8.0.8 → `[x]`, campaña declarada COMPLETA), `TECH_DEBT_BACKLOG.md` (DEBT-020/021/022/023 nuevos), `DEV_JOURNAL.md` (este hito).

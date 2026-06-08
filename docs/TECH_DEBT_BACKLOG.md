@@ -31,6 +31,50 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-023 — Miscellaneous single-site strict suppressions (5 ignores)
+
+- **Date:** 2026-06-08
+- **Files:**
+  - `main.py:221` `[no-untyped-def]` — `_require_token(request, call_next)` FastAPI middleware missing return type.
+  - `main.py:944` `[list-item]` — `DirtyBuffer` DTO duck-typed across transport/core boundary (commented as pre-existing structural duplication).
+  - `api/sessions.py:128` `[assignment]` — LangGraph `tup.checkpoint` typed as `Any` in stubs; cast to `Dict[str, Any]`.
+  - `core/resource_manager.py:214` `[return-value]` — return type should be `Literal["WAIT", "SWITCH_TO_CLOUD", "CANCEL"]` but `.upper()` chain is not narrowed by mypy.
+  - `tools/llm_gateway.py:609` `[assignment]` — `on_thinking` Callable reassigned to narrower alias.
+- **Phase:** 8.1.F — address during Phase 8.1 Operational Stabilization.
+- **Notes:** All five ignores are USED (verified by `mypy --strict main.py` → 0 with `--warn-unused-ignores`). None represent runtime risk; purely typing aesthetics.
+
+---
+
+### DEBT-022 — api/websocket_manager.py: 4 × arg-type on enum literals
+
+- **Date:** 2026-06-08
+- **File:** `api/websocket_manager.py:324,494,600,711`
+- **Error:** `[arg-type]` — keyword args (`tier=`, `kind=`, `status=`, `mode=`) pass `str` literals where event dataclass fields expect a narrower `Literal[...]` or `Enum` type.
+- **Phase:** 8.1.E — fix during Phase 8.1. Either use the exact enum member or broaden the field annotation to `str`. Requires reading each event dataclass before choosing.
+- **Notes:** Pre-existing before Phase 8.0.6. USED under `mypy --strict`.
+
+---
+
+### DEBT-021 — core/io_coalescer.py: bare `Callable` missing type parameters (5 × type-arg)
+
+- **Date:** 2026-06-08
+- **File:** `core/io_coalescer.py:48,49,50,52,56`
+- **Error:** `[type-arg]` — `Optional[Callable]` and `fn: Callable` without parameter types.
+- **Fix:** parameterize as `Callable[..., Any]` or `Callable[..., Awaitable[None]]` (the actual dispatch callback shape). Add `Any` to the `typing` import. Low-risk, 5 ignores removed.
+- **Phase:** 8.1.D
+
+---
+
+### DEBT-020 — tree-sitter stubs incomplete (6 × attr-defined, 1 × union-attr)
+
+- **Date:** 2026-06-08
+- **Files:** `brain/prompt_builder.py:67,69,70,74,93,130` (`attr-defined` — `child_by_field_name`, `start_point`, `root_node`); `brain/memory.py:76` (`union-attr` — `_worker_ast.parse()`).
+- **Error:** tree-sitter Python bindings (`tree-sitter`, `tree-sitter-languages`) ship no typed stubs for node attributes.
+- **Fix:** cast `node: object` to `Any` at the entry point of `_function_signature()` and `_extract_tree_node_names()` (removes 6 per-line ignores → 1 cast per function). For `memory.py:76`: add a `None` guard (`if _worker_ast is None: ...`) instead of relying on the suppression — `_worker_ast` is `Optional[ASTEngine]` and a guard is safer.
+- **Phase:** 8.1.C
+
+---
+
 ### DEBT-019 — api/websocket_manager.py: async request-buffer leak (orphaned late responses)
 
 - **Date:** 2026-06-08

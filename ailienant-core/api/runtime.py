@@ -22,8 +22,8 @@ import sys
 import time
 from typing import Any, Dict, Optional
 
-import docker  # type: ignore[import-untyped]
-import requests  # type: ignore[import-untyped]  # docker-py dependency (requirements.txt:49)
+import docker
+import requests  # docker-py dependency (requirements.txt:49)
 from fastapi import APIRouter, HTTPException, Request
 
 from core.sandbox import (

@@ -21,7 +21,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-import lancedb  # type: ignore[import-untyped]
+import lancedb
 import pyarrow as pa
 
 import litellm
