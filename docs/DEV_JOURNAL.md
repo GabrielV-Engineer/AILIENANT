@@ -2,6 +2,27 @@
 
 ---
 
+## Hito 8.1.D: Eliminación de 5 supresiones `type-arg` en io_coalescer (DEBT-021) — 2026-06-08
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy --strict core/io_coalescer.py` → 0 · `mypy .` 0/248 · `pytest` 932 passed
+
+### Problema resuelto
+`core/io_coalescer.py` usaba tres formas bare no parametrizadas en su clase `IOCoalescer`: `Optional[asyncio.Task]` (campo `_timer`), `Optional[Callable]` (campos `_dispatch_fn` y `_mass_handler_fn`), y `fn: Callable` en las dos funciones de registro. Bajo `mypy --strict`, los tipos genéricos sin argumentos emiten `[type-arg]` — cinco ocurrencias en total en líneas 48/49/50/52/56.
+
+### Decisiones técnicas
+- **`asyncio.Task[None]`:** la corutina `_flush_after_debounce` retorna `None` explícitamente, por lo que `Task[None]` es el tipo correcto (no `Task[Any]`).
+- **`Callable[..., Any]`:** los callbacks de dispatch son funciones async cuya firma concreta varía según el caller (`main.py`). `Callable[..., Any]` es el escape hatch correcto: arity abierta, retorno opaco. No se usó `Callable[..., Awaitable[None]]` para no introducir un import de `Awaitable` innecesario dado que el code path ya maneja excepciones internamente.
+- Sin cambio de lógica ni de tests — las firmas de los métodos son contratos internos usados exclusivamente desde `main.py` lifespan.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/core/io_coalescer.py` | `Any` añadido al import; 5 `# type: ignore[type-arg]` eliminados; `asyncio.Task[None]`, `Callable[..., Any]` |
+| `docs/TECH_DEBT_BACKLOG.md` | DEBT-021 marcado ✅ RESOLVED |
+| `docs/PROJECT_MANIFEST.md` | 8.1.D `[x]` |
+
+---
+
 ## Hito 8.1.C: Eliminación de 7 supresiones de stubs tree-sitter (DEBT-020) — 2026-06-08
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy --strict brain/prompt_builder.py brain/memory.py` → 0 · `mypy .` 0/248 · `pytest` green

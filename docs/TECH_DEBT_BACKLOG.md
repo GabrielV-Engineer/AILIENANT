@@ -55,13 +55,12 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ---
 
-### DEBT-021 — core/io_coalescer.py: bare `Callable` missing type parameters (5 × type-arg)
+### DEBT-021 — core/io_coalescer.py: bare `Callable` missing type parameters (5 × type-arg) — ✅ RESOLVED (8.1.D)
 
 - **Date:** 2026-06-08
 - **File:** `core/io_coalescer.py:48,49,50,52,56`
 - **Error:** `[type-arg]` — `Optional[Callable]` and `fn: Callable` without parameter types.
-- **Fix:** parameterize as `Callable[..., Any]` or `Callable[..., Awaitable[None]]` (the actual dispatch callback shape). Add `Any` to the `typing` import. Low-risk, 5 ignores removed.
-- **Phase:** 8.1.D
+- **Resolution (8.1.D, 2026-06-08):** `asyncio.Task` → `asyncio.Task[None]`; `Optional[Callable]` / `fn: Callable` → `Optional[Callable[..., Any]]` / `fn: Callable[..., Any]`; added `Any` to `typing` import. 5 `type-arg` ignores eliminated. `mypy --strict core/io_coalescer.py` → 0; `mypy .` 0/248; 932 pytest passed.
 
 ---
 

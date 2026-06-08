@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("IO_COALESCER")
 
@@ -45,15 +45,15 @@ class IOCoalescer:
 
     def __init__(self) -> None:
         self._pending: Dict[str, Tuple[str, str]] = {}  # filepath → (content, project_id)
-        self._timer: Optional[asyncio.Task] = None  # type: ignore[type-arg]
-        self._dispatch_fn: Optional[Callable] = None  # type: ignore[type-arg]
-        self._mass_handler_fn: Optional[Callable] = None  # type: ignore[type-arg]
+        self._timer: Optional[asyncio.Task[None]] = None
+        self._dispatch_fn: Optional[Callable[..., Any]] = None
+        self._mass_handler_fn: Optional[Callable[..., Any]] = None
 
-    def register_dispatch(self, fn: Callable) -> None:  # type: ignore[type-arg]
+    def register_dispatch(self, fn: Callable[..., Any]) -> None:
         """Wire in the indexing callback. Called once from lifespan startup."""
         self._dispatch_fn = fn
 
-    def register_mass_handler(self, fn: Callable) -> None:  # type: ignore[type-arg]
+    def register_mass_handler(self, fn: Callable[..., Any]) -> None:
         """Wire in the mass-change callback. Called once from lifespan startup."""
         self._mass_handler_fn = fn
 
