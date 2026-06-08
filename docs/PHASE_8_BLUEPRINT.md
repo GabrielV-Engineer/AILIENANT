@@ -16,7 +16,7 @@ one.
 |---|---|
 | `mypy .` | ✅ Success — 247 files, 0 errors |
 | `mypy --strict main.py` | ✅ Success — 0 errors (campaign primary objective met, 8.0.4) |
-| Silenced modules (`follow_imports = silent` in mypy.ini) | 1 module (`api.websocket_manager` → 8.6) |
+| Silenced modules (`follow_imports = silent` in mypy.ini) | **0 modules** ✅ (campaign objective met, 8.0.6) |
 
 The original May 2026 baseline had 32 errors / 12 files. By June 2026 (after Phases 7.15–7.18 work that
 kept `mypy .` green but accumulated strict-mode debt), the count had grown to 79 errors / 25 files. The
@@ -75,6 +75,7 @@ for `pyarrow` (stubs now present; `lancedb` remains untyped).
 *(Unsilenced in 8.0.2: `tools.llm_gateway` — DEBT-015, DEBT-016 closed.)*
 *(Unsilenced in 8.0.3: `core.vfs_middleware`, `core.compute_pool` — 5 dead VFSMiddleware ignores swept.)*
 *(Unsilenced in 8.0.5: `core.db` (already strict-clean), `brain.memory` (networkx via config-level `[mypy-networkx,networkx.*]`). DEBT-018 logged. Remaining: `api.websocket_manager`.)*
+*(Unsilenced in 8.0.6: `api.websocket_manager` (6 bare-dict fixes). DEBT-019 logged. **Zero silenced modules remain.**)*
 
 ---
 
@@ -287,16 +288,26 @@ future LRU/subgraph-cap/teardown phase (not a typing concern, not fixed here).
 
 ---
 
-### 8.6 — Unsilence `api.websocket_manager` + Core Infra
+### 8.6 / 8.0.6 — Unsilence `api.websocket_manager` + Core Infra — ✅ CLOSED 2026-06-08
 
-**Scope:** The last infrastructure wall. Fixes `core/dead_letter.py`, `core/telemetry_log.py`,
-`core/supervisor.py` (all needed by engine) and unsilences the WebSocket manager.
+**Scope:** The last infrastructure wall. `core/dead_letter.py`, `core/telemetry_log.py`,
+`core/supervisor.py` were already strict-clean (never silenced, only verified). The only work was
+6 bare `dict` → `type-arg` fixes in `api/websocket_manager.py`.
 
-**Order:**
-1. `core/dead_letter.py`, `core/telemetry_log.py`, `core/supervisor.py`
-2. `api/websocket_manager.py` — exploratory run first; fix; remove silencing.
+| File | State / Fix |
+|---|---|
+| `api/websocket_manager.py` | 6 × `dict` → `Dict[str, Any]`; the two async request-response buffers (`_hitl_responses`, `_patch_ack_results`, lines 107/110) → `Dict[str, Dict[str, Any]]` (nests the 2nd-level key to `str` for safe `json.dumps` over the socket). |
+| `core/dead_letter.py`, `core/telemetry_log.py`, `core/supervisor.py` | Already `mypy --strict` = 0. No change. |
+| `mypy.ini` | Removed `[mypy-api.websocket_manager]` — the **last** `follow_imports = silent` block. **Zero suppressed modules remain.** |
 
-**DoD:** each file `mypy --strict <file>` → 0; all three silencing entries removed.
+**Architectural foresight → DEBT-019:** the two request buffers leak on a race — a late-arriving
+response/ack (after the waiter times out / is cancelled / the IDE disconnects) is stored at lines
+840/745 with no consumer left to pop it; `disconnect()` (line 184) does not reap them → `O(H)` growth
+over a long flaky session. Deferred to a dedicated WebSocket-lifetime hardening phase (behavioral
+change, out of the typing pass's scope).
+
+**DoD met:** `mypy --strict` → 0 on all four files; `mypy .` → 0/247; `mypy --strict main.py` → 0;
+`pytest` → 924/0. `mypy.ini` has no `follow_imports = silent` lines.
 
 ---
 

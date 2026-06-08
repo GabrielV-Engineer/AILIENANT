@@ -31,6 +31,32 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-019 — api/websocket_manager.py: async request-buffer leak (orphaned late responses)
+
+- **Date:** 2026-06-08
+- **Reproduce:** N/A (lifecycle/concurrency gap, not a type or test error). Surfaced when Phase 8.0.6
+  typed the two buffers and brought their lifecycle under review.
+- **File(s):** `api/websocket_manager.py` — `self._hitl_responses: Dict[str, Dict[str, Any]]` (keyed
+  by `approval_id`) and `self._patch_ack_results: Dict[str, Dict[str, Any]]` (keyed by `patch_id`).
+- **Lifecycle:** populated when an inbound response/ack arrives (`_hitl_responses[approval_id] = {...}`
+  ~line 840; `_patch_ack_results[patch_id] = result` ~line 745); consumed/`pop`ped only by the waiter
+  (`wait_*` methods ~lines 796 / 736).
+- **Leak (race):** if the waiter has already torn down — `asyncio.wait_for` timeout, task
+  cancellation, or the IDE closing / network flicker mid-request — a *late-arriving* response/ack is
+  still stored with no consumer left to pop it. `disconnect(client_id)` (~line 184) reaps
+  `_inbound_tokens` / `_inbound_refill_at` but **not** these two buffers → orphaned entries accumulate
+  `O(H)` (H = interaction requests) over a long-running local IDE server session. Silent memory growth
+  that can eventually stall the event loop.
+- **Phase:** Dedicated WebSocket-lifetime hardening sub-phase (post-8.0.x). **Behavioral change — out
+  of scope for the typing campaign;** recorded per the Continuous Registry Protocol, not fixed in 8.0.6.
+- **Proposed fix:** (a) guard the store so a response/ack is only buffered when a waiter is still
+  pending (`approval_id in _hitl_pending` / `patch_id in _patch_acks`), dropping orphans; and/or
+  (b) maintain a `client_id → {pending approval_ids, patch_ids}` index and reap those buffers inside
+  `disconnect()`. Add a regression test that simulates a timed-out/cancelled waiter followed by a late
+  resolve and asserts the buffer is empty.
+
+---
+
 ### DEBT-018 — brain/memory.py: networkx GraphRAG has no memory bound (heap-overhead risk)
 
 - **Date:** 2026-06-08

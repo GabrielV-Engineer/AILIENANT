@@ -104,10 +104,10 @@ class ConnectionManager:
         self.active_tasks: Set[asyncio.Task[Any]] = set()
         # HITL state — keyed by approval_id (UUID4), NOT session_id
         self._hitl_pending: Dict[str, asyncio.Event] = {}
-        self._hitl_responses: Dict[str, dict] = {}
+        self._hitl_responses: Dict[str, Dict[str, Any]] = {}
         # write-pipeline acks, keyed by patch_id (UUID4 hex)
         self._patch_acks: Dict[str, asyncio.Event] = {}
-        self._patch_ack_results: Dict[str, dict] = {}
+        self._patch_ack_results: Dict[str, Dict[str, Any]] = {}
         # Inbound flood guard — per-client token bucket (tokens + last-refill clock)
         self._inbound_tokens: Dict[str, float] = {}
         self._inbound_refill_at: Dict[str, float] = {}
@@ -444,7 +444,7 @@ class ConnectionManager:
         ``None`` preserves the pre wire shape; all existing callers
         keep compiling unchanged.
         """
-        data: dict = {}
+        data: Dict[str, Any] = {}
         if checkpoint_id:
             data["checkpoint_id"] = checkpoint_id
         await self.send_personal_message(session_id, ServerStreamEndEvent(data=data))
@@ -727,7 +727,7 @@ class ConnectionManager:
 
     async def wait_patch_ack(
         self, patch_id: str, timeout: float = 30.0
-    ) -> Optional[dict]:
+    ) -> Optional[Dict[str, Any]]:
         """Suspend until the host acks patch_id (client_patch_applied) or timeout fires."""
         event = asyncio.Event()
         self._patch_acks[patch_id] = event
@@ -740,7 +740,7 @@ class ConnectionManager:
         finally:
             self._patch_acks.pop(patch_id, None)
 
-    def resolve_patch_ack(self, patch_id: str, result: dict) -> None:
+    def resolve_patch_ack(self, patch_id: str, result: Dict[str, Any]) -> None:
         """Called from the WS receive loop on client_patch_applied — unblocks the waiter."""
         self._patch_ack_results[patch_id] = result
         if patch_id in self._patch_acks:
@@ -759,7 +759,7 @@ class ConnectionManager:
         proposed_content: Optional[str] = None,
         timeout_s: float = 300.0,
         request_kind: Optional[str] = None,
-    ) -> Optional[dict]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Suspend the calling coroutine until the human responds or the timeout fires.
 

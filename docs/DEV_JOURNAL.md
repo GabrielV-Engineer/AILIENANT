@@ -3423,3 +3423,19 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: `mypy.ini`, `brain/memory.py` (2 ignores eliminados).
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.5/8.0.5 → CLOSED, silenciados 3→1), `PROJECT_MANIFEST.md` (8.0.5 → `[x]`, baseline actualizado), `TECH_DEBT_BACKLOG.md` (DEBT-018 nuevo), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.6: Liberar `api.websocket_manager` — último muro de infraestructura — 2026-06-08
+
+- **Status:** OK — **cero módulos `follow_imports = silent`** en `mypy.ini` (objetivo de la campaña alcanzado). `dead_letter`, `telemetry_log`, `supervisor` ya eran strict-clean (nunca silenciados, solo verificados). El único trabajo real fueron 6 `dict` pelados → `type-arg` en `api/websocket_manager.py`. DoD verde: `mypy --strict` → 0 en los 4 archivos; `mypy .` → 0/247; `mypy --strict main.py` → 0; `pytest` → 924/0.
+
+- **Decisión de tipo (invarianza de diccionarios):** los dos buffers async de request-response — `_hitl_responses` (aprobación HITL de diffs) y `_patch_ack_results` (ACK de patches) — se tiparon como `Dict[str, Dict[str, Any]]` (no `Dict[str, Any]`). Los diccionarios son invariantes en tipado estático; anidar el 2º nivel fija sus claves a `str`, garantizando que los payloads permanezcan serializables con `json.dumps` sobre el socket y bloqueando inserción accidental de objetos complejos / claves no-string que provocarían `TypeError` en el envío.
+
+- **Foresight de arquitectura → DEBT-019 (registrado, no corregido):** tipar esos buffers destapó una fuga real. Se poblan al llegar una respuesta/ack (líneas 840/745) y se vacían (`pop`) solo cuando el *waiter* las consume (796/736). Si el waiter ya hizo teardown (timeout de `asyncio.wait_for`, cancelación, o cierre del IDE / parpadeo de red a mitad de request), una respuesta/ack tardía se almacena sin consumidor → entrada huérfana. `disconnect()` (línea 184) recolecta `_inbound_tokens`/`_inbound_refill_at` pero NO estos dos buffers → acumulación O(H) en sesiones largas del servidor local del IDE (fuga silenciosa que puede bloquear el event loop). Per Ley del Registro Continuo se difiere a una sub-fase dedicada de endurecimiento del ciclo de vida WebSocket (cambio de comportamiento, fuera del alcance de esta pasada de tipado).
+
+- **`mypy.ini`:** eliminado el último bloque `[mypy-api.websocket_manager]`. No queda ningún `follow_imports = silent`; los bloques `ignore_missing_imports` de libs sin stubs (psutil/yaml/pyarrow/networkx) permanecen — son config legítima de terceros, no deuda de campaña.
+
+- **Estado de campaña:** `mypy --strict main.py` → 0 y cero módulos suprimidos. Restan solo 8.0.7 (engine.py) y 8.0.8 (puerta main.py) como verificación final, probablemente triviales.
+
+- **Files changed:**
+  - Core: `api/websocket_manager.py` (6 fixes), `mypy.ini` (último bloque eliminado).
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.6/8.0.6 → CLOSED, silenciados 1→0), `PROJECT_MANIFEST.md` (8.0.6 → `[x]`, baseline actualizado), `TECH_DEBT_BACKLOG.md` (DEBT-019 nuevo), `DEV_JOURNAL.md` (este hito).
