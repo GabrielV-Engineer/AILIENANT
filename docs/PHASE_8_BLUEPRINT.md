@@ -311,13 +311,23 @@ change, out of the typing pass's scope).
 
 ---
 
-### 8.7 — `brain/engine.py` (Central Orchestrator)
+### 8.7 / 8.0.7 — `brain/engine.py` (Central Orchestrator) — ✅ CLOSED 2026-06-08
 
-**Scope:** All 15 direct internal deps must be strict-clean before this phase starts.
-Re-assess E402 deferred imports: if unsilencing the transitive graph has resolved the circular-import
-risk, move deferred top-level imports back to module scope for full type coverage.
+**Certification only — no code change.** With every transitive dep cleaned in 8.0.1–8.0.6,
+`mypy --strict brain/engine.py` was already **0**. Closed by certification + docs.
 
-**DoD:** `mypy --strict brain/engine.py` → **exit 0**.
+**E402 re-assessment — DECLINED.** The original note assumed unsilencing might have "resolved the
+circular-import risk," letting the deferred imports move to module top. That premise is a category
+error: mypy `follow_imports = silent` is a *static error-reporting* setting with **no effect on the
+runtime import graph** — unsilencing cannot change whether `engine.py`'s imports cycle. The deferrals
+are load-bearing runtime cycle-avoidance (documented at `engine.py:52`; the `# noqa: E402` block at
+lines 30–39/397 and the four function-local `core.telemetry` imports at 61/89/192/250 share the
+rationale). Since the strict gate is already 0, moving them yields zero type-coverage gain and risks
+an `ImportError` at process start in the most central module. Left as-is; not tech debt — the pattern
+is correct and intentional.
+
+**DoD met:** `mypy --strict brain/engine.py` → 0; `mypy .` → 0/247; `mypy --strict main.py` → 0;
+`pytest` → 924/0.
 
 ---
 

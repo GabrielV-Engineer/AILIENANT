@@ -3439,3 +3439,13 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: `api/websocket_manager.py` (6 fixes), `mypy.ini` (último bloque eliminado).
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.6/8.0.6 → CLOSED, silenciados 1→0), `PROJECT_MANIFEST.md` (8.0.6 → `[x]`, baseline actualizado), `TECH_DEBT_BACKLOG.md` (DEBT-019 nuevo), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.7: Certificar `brain/engine.py` bajo `mypy --strict` — 2026-06-08
+
+- **Status:** OK — certificación, **sin cambio de código**. `mypy --strict brain/engine.py` → 0: el orquestador central (397 líneas, ~15 deps de nodos internos) quedó strict-clean de forma transitiva al limpiar todas sus dependencias en 8.0.1–8.0.6. DoD verde: `mypy --strict brain/engine.py` → 0; `mypy .` → 0/247; `mypy --strict main.py` → 0; `pytest` → 924/0.
+
+- **Decisión: refactor de imports E402 DECLINADO (hallazgo de arquitectura, §3).** El blueprint sugería "si el unsilenciado resolvió el riesgo de import circular, mover los imports E402 diferidos al tope del módulo". La premisa es un error de categoría: `follow_imports = silent` de mypy es puramente una opción de *reporte estático de errores*; **no tiene efecto sobre el grafo de imports en runtime**. Unsilenciar módulos en 8.0.1–8.0.6 no cambió (ni podía cambiar) si los imports de `engine.py` forman un ciclo. Las diferencias son cycle-avoidance deliberado en runtime (documentado en `engine.py:52`; el bloque `# noqa: E402` en 30–39/397 y los cuatro imports function-local de `core.telemetry` en 61/89/192/250 comparten el motivo). Como el gate ya es 0, moverlos no aporta cobertura de tipos y arriesga un `ImportError` al arranque en el módulo más central. Se dejan como están; **no es deuda técnica** — el patrón `# noqa: E402` es correcto e intencional.
+
+- **Files changed:**
+  - Core: ninguno (engine.py sin tocar).
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.7/8.0.7 → CLOSED + rationale del decline), `PROJECT_MANIFEST.md` (8.0.7 → `[x]`), `DEV_JOURNAL.md` (este hito).
