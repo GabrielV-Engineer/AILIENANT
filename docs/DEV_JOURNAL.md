@@ -2,6 +2,43 @@
 
 ---
 
+## Hito 8.2: Corrección del flujo de modos de ejecución (AUTO/ASK/PLAN) — 2026-06-08
+
+**Estado:** ✅ COMPLETO (3 de 4 bugs) | **Gates:** `npm run check-types` → 0 · `npm run lint` → 0 errores · `node esbuild.js` → bundle OK | **Pendiente:** Bug 3 (language leak)
+
+### Contexto
+Pruebas manuales de la extensión en modo AUTO revelaron 4 defectos. Esta entrada cubre los 3 corregidos (frontend-only); el Bug 3 (fuga de español en código generado) queda para una iteración separada.
+
+### Bug 1 — Plan panel aparecía en modo AUTO (CRÍTICO, corregido)
+El backend (`task_service.broadcast_plan_document`) emite el documento de plan en TODOS los modos. El frontend lo renderizaba sin filtro de modo. **Fix:** `Workspace.tsx` ahora condiciona el render a `mode === 'plan_mode'`. El plan solo se muestra en modo PLAN.
+
+### Bug 2 — Mensaje "Drafted a plan..." se repetía 3× (CRÍTICO, corregido)
+En el cambio de pestaña (visibility), `workspace_panel.ts` re-posteaba el `server_plan_document` cacheado además del transcript rehidratado, duplicando el summary. **Fix:** se chequea el transcript persistido antes de re-postear — si el summary ya está presente, no se re-emite.
+
+### Bug 4 — UI del plan: panel split con flujo de aceptación de 3 vías (corregido)
+El plan se mostraba en una caja angosta de 340px. **Rediseño:** nuevo `PlanAcceptancePanel.tsx` — surface split (chat 55% / plan 45%) con título "Accept this plan?", subtítulo "Select text in the preview to add comments", preview de WBS seleccionable, y tres botones de decisión + HUD de feedback "Tell AILIENANT what to do instead."
+
+**Decisión arquitectónica (PIVOT vs. plan aprobado):** el plan original proponía un nuevo tipo de mensaje `PLAN_DECISION` + handlers de backend. La investigación reveló que el backend YA implementa el flujo correcto: en modo PLAN los patches se producen pero el permission-gate los deniega con el mensaje *"Switch to Ask or Auto to apply edits"*. El diseño intencional es **cambiar de modo y re-submit**. Por lo tanto los 3 botones reutilizan el mecanismo existente `SUBMIT_TASK` + `execution_mode` (cero cambios de backend, cero deuda nueva):
+- **"Yes, and auto-accept"** → `submitWithMode(AGREEMENT_SIGNAL, 'automatic')` → el gate AUTO aplica las escrituras.
+- **"Yes, and manually approve edits"** → `submitWithMode(AGREEMENT_SIGNAL, 'ask_before_edits')` → gate DEFAULT enruta cada escritura por la HITL card.
+- **"No, keep planning"** → `submitWithMode(feedback, 'plan_mode')` → turno Socrático normal, permanece read-only.
+
+**Fix de race condition:** el nuevo `submitWithMode(text, executionMode)` recibe el modo explícito en lugar de leer el estado `mode` (que `setMode` actualiza de forma asíncrona). Esto elimina el bug latente donde aceptar un plan re-submitía bajo el modo `plan_mode` obsoleto y volvía a denegar las escrituras.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-extension/src/workspace/components/PlanAcceptancePanel.tsx` | **NUEVO** — surface de aceptación con preview markdown + 3 botones + feedback HUD |
+| `ailienant-extension/src/workspace/Workspace.tsx` | `submitWithMode` helper; 3 handlers de decisión; render gated a `plan_mode`; clase `plan-mode-active` en `<main>`; reemplazo de `PlanPanel` por `PlanAcceptancePanel` |
+| `ailienant-extension/src/workspace/workspace.css` | Layout split-panel (55/45), ocultar HUDs en plan-mode, estilos de botones y feedback input |
+| `ailienant-extension/src/providers/workspace_panel.ts` | Dedup del re-post de plan en visibility change (check transcript) |
+| `README.md` | Repository Layout: PlanAcceptancePanel añadido, PlanPanel marcado como legacy |
+
+### Bug 3 — Pendiente (fuga de español)
+El `LANGUAGE_MIRROR_DIRECTIVE` ya está presente y testeado en ambos skeletons de prompt. La fuga real proviene del contexto RAG: el workspace del usuario contiene archivos en español, y el bloque RAG inyecta esos ejemplos. La directiva dice "mirror the user's request" pero no desambigua explícitamente que el idioma del REQUEST gana sobre el idioma del contexto recuperado. El fix (fortalecer la directiva) queda para una iteración separada.
+
+---
+
 ## Hito 8.1.F: Eliminación de 5 supresiones single-site misceláneas (DEBT-023) — 2026-06-08
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy --strict` → 0 en 5 archivos · `mypy .` 0/248 · `pytest` green

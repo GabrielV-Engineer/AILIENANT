@@ -479,9 +479,17 @@ export class WorkspacePanelManager {
                 // Re-post the last finalized plan from host memory — the
                 // remounted webview holds it only in transient React state, so
                 // without this the Plan panel would be empty after a tab-switch.
+                // BUT: only re-post if the summary is not already in the persisted transcript
+                // (to avoid duplicating the "Drafted a plan..." message).
                 const plan = this._latestPlan.get(session.id);
                 if (plan) {
-                    e.webviewPanel.webview.postMessage({ type: 'server_plan_document', payload: plan });
+                    const t = this._getTranscript(session.id);
+                    const hasInTranscript = t.messages.some(m =>
+                        m.role === 'assistant' && m.content?.includes('Drafted a plan')
+                    );
+                    if (!hasInTranscript) {
+                        e.webviewPanel.webview.postMessage({ type: 'server_plan_document', payload: plan });
+                    }
                 }
             }
         });

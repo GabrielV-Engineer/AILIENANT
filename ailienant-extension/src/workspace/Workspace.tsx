@@ -34,7 +34,7 @@ import {
 } from './utils/StreamingMarkdownParser';
 import { IndexingStatus } from './components/IndexingStatus';
 import { PipelineProgress } from './components/PipelineProgress';
-import { PlanPanel } from './components/PlanPanel';
+import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
 import type { HITLIntervention } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
@@ -1118,7 +1118,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         return () => clearInterval(interval);
     }, [isStreaming, streamWatchdogMs, addToast, setIsAborting, setInflightTurn]);
 
-    const handleSubmit = useCallback((text: string) => {
+    // Submit a turn under an explicit execution mode. The mode is passed in
+    // rather than read from the `mode` state so callers that flip the mode in
+    // the same handler (plan acceptance) submit under the NEW mode immediately,
+    // instead of racing React's asynchronous state update (which would resubmit
+    // under the stale mode and re-deny the writes).
+    const submitWithMode = useCallback((text: string, executionMode: ExecutionMode) => {
         const presetConfig = getPresetConfig(preset);
         setMessages(prev => [...prev, { id: mkId(), role: 'user', content: text, authorLabel: authorLabelFor('user', nattName) }]);
         vscode.postMessage({
@@ -1126,25 +1131,46 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             value: text,
             preset,
             tier,
-            execution_mode: mode,
+            execution_mode: executionMode,
             ...presetConfig,
             session_id: initial.sessionId,
             // Phase 9 (ADR-707) — persisted Native Thinking toggle, read at
             // submit time so the latest value (survives reload) is injected.
             enable_native_thinking: useWorkspaceStore.getState().nativeThinking,
             // Plan mode → route the turn into the backend Socratic loop.
-            planner_mode_active: mode === 'plan_mode',
+            planner_mode_active: executionMode === 'plan_mode',
         });
-    }, [preset, tier, mode, initial.sessionId]);
+    }, [preset, tier, initial.sessionId]);
 
-    // Accept the plan from the plan card: signal agreement to the backend so the
-    // ideation loop synthesizes, then leave Plan mode. This is an explicit user
-    // act on the plan artifact — not an optimistic exit welded to the composer —
-    // so we never drop Plan mode before a plan actually exists.
-    const handleAcceptPlan = useCallback(() => {
-        handleSubmit(AGREEMENT_SIGNAL);
+    const handleSubmit = useCallback((text: string) => {
+        submitWithMode(text, mode);
+    }, [submitWithMode, mode]);
+
+    // Plan decision: accept and apply the plan with no further gating. The
+    // agreement signal lets the backend's ideation loop synthesize and hand off
+    // to the coder; submitting under Auto lifts the read-only plan gate so the
+    // patches actually land on disk. Clearing the plan collapses the split panel
+    // back to the chat composer as the agreement turn streams.
+    const handlePlanAutoAccept = useCallback(() => {
+        submitWithMode(AGREEMENT_SIGNAL, 'automatic');
         setMode('automatic');
-    }, [handleSubmit, setMode]);
+        setPlan(null);
+    }, [submitWithMode, setMode]);
+
+    // Plan decision: accept the plan but route every file write through the
+    // HITL approval card (Ask). Same agreement hand-off, stricter write gate.
+    const handlePlanManualApprove = useCallback(() => {
+        submitWithMode(AGREEMENT_SIGNAL, 'ask_before_edits');
+        setMode('ask_before_edits');
+        setPlan(null);
+    }, [submitWithMode, setMode]);
+
+    // Plan decision: reject the current plan and keep refining. The feedback is
+    // a normal Socratic turn — stay in Plan mode so the analyst keeps the
+    // read-only stance and the questioning loop continues.
+    const handlePlanKeepPlanning = useCallback((feedback: string) => {
+        submitWithMode(feedback, 'plan_mode');
+    }, [submitWithMode]);
 
     // Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh.
     // ABORT_TASK keeps the client-side HTTP AbortController (legacy, harmless).
@@ -1348,7 +1374,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 </div>
 
                 {/* Main split-grid */}
-                <main className="ws-main">
+                <main className={`ws-main${plan && mode === 'plan_mode' ? ' plan-mode-active' : ''}`}>
                     {/* LEFT: chat + bar */}
                     <section className="ws-main-left">
                         <CSSAlertBanner telemetry={telemetry} />
@@ -1577,16 +1603,20 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         />
                     )}
 
-                    {/* RIGHT: dedicated rich Plan surface (ADR-732). In Plan mode the
-                        card carries an "Accept plan" action — the agreement affordance
-                        lives on the artifact, not on the composer. */}
-                    {plan && (
-                        <PlanPanel
-                            plan={plan}
-                            onOpenFile={(path) => vscode.postMessage({ type: 'OPEN_FILE', path })}
-                            onClose={() => setPlan(null)}
-                            onAccept={mode === 'plan_mode' && !isStreaming ? handleAcceptPlan : undefined}
-                        />
+                    {/* RIGHT: dedicated plan-acceptance surface. In Plan mode the
+                        plan opens as a split panel carrying the three-way decision
+                        (auto-accept / manual-approve / keep-planning); the chat
+                        composer folds away so the acceptance controls own the input. */}
+                    {plan && mode === 'plan_mode' && (
+                        <aside className="plan-panel-container">
+                            <PlanAcceptancePanel
+                                plan={plan}
+                                onAutoAccept={handlePlanAutoAccept}
+                                onManualApprove={handlePlanManualApprove}
+                                onKeepPlanning={handlePlanKeepPlanning}
+                                isStreaming={isStreaming}
+                            />
+                        </aside>
                     )}
                 </main>
 

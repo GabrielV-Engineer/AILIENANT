@@ -2180,3 +2180,208 @@ html, body, #root { height: 100%; }
   line-height: 1.45;
   color: var(--text-secondary);
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Plan Acceptance Panel (Split-Layout with 3-Button Decision Flow)
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Split-panel workspace when the plan-acceptance surface is active (chat left,
+   plan right). The plan column is resizable down the line; for now it holds a
+   fixed 45% so the WBS has room to breathe without starving the chat. */
+.ws-main.plan-mode-active {
+  display: grid;
+  grid-template-columns: 55% 45%;
+  gap: 0;
+}
+
+.ws-main.plan-mode-active > .ws-main-left {
+  grid-column: 1;
+  border-right: 1px solid var(--border-subtle);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.ws-main.plan-mode-active > .plan-panel-container {
+  grid-column: 2;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  min-width: 0;
+}
+
+/* The plan-review surface owns the input — the chat composer and telemetry
+   HUD fold away so the acceptance controls are the single point of action. */
+.ws-main.plan-mode-active .ws-main-left .ws-bottom {
+  display: none;
+}
+
+/* Plan Acceptance Panel Core */
+.plan-acceptance-panel {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.plan-acceptance-header {
+  flex-shrink: 0;
+}
+
+.plan-acceptance-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.plan-acceptance-header .subtitle {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Plan preview area */
+.plan-preview {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 12px;
+  background: var(--bg-main);
+  user-select: text;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.plan-preview h1,
+.plan-preview h2,
+.plan-preview h3 {
+  margin-top: 12px;
+  margin-bottom: 6px;
+  color: var(--text-primary);
+}
+
+.plan-preview h1 {
+  font-size: 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 4px;
+}
+
+.plan-preview h2 {
+  font-size: 13px;
+}
+
+.plan-preview h3 {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.plan-preview ul,
+.plan-preview ol {
+  margin: 4px 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.plan-preview li {
+  margin: 2px 0;
+}
+
+.plan-preview code {
+  background: var(--bg-hover);
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+/* Acceptance buttons */
+.plan-acceptance-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.plan-acceptance-buttons button {
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 200ms ease;
+  font-weight: 500;
+  text-align: center;
+}
+
+.plan-acceptance-buttons button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.plan-acceptance-buttons button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.plan-acceptance-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plan-acceptance-buttons .btn-primary {
+  background: var(--accent-primary);
+  color: var(--bg-main);
+  border-color: var(--accent-primary);
+}
+
+.plan-acceptance-buttons .btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.plan-acceptance-buttons .btn-secondary,
+.plan-acceptance-buttons .btn-tertiary {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.plan-acceptance-buttons .btn-secondary:hover:not(:disabled),
+.plan-acceptance-buttons .btn-tertiary:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* Feedback HUD */
+.plan-feedback-hud {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.plan-feedback-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  transition: border-color 200ms;
+}
+
+.plan-feedback-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 25%, transparent);
+}
+
+.plan-feedback-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
