@@ -105,7 +105,7 @@ def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
     extensions for lightweight bundling.
     """
     try:
-        import networkx as nx  # type: ignore[import]
+        import networkx as nx
         G: Any = nx.DiGraph()
         G.add_edges_from(req.edges)
         if len(G) == 0:
@@ -155,7 +155,7 @@ def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
     batch path; the latter is retained for callers that only need scores.
     """
     try:
-        import networkx as nx  # type: ignore[import]
+        import networkx as nx
         G: Any = nx.DiGraph()
         G.add_edges_from(req.edges)
         if len(G) == 0:

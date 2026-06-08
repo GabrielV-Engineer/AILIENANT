@@ -3409,3 +3409,17 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: `brain/swarms.py` (tool_rag_select_node retipado, ignore :155 eliminado).
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.4/8.0.4 → CLOSED, residuales 1→0, gate strict main.py ✅), `PROJECT_MANIFEST.md` (8.0.4 → `[x]`, baseline actualizado), `TECH_DEBT_BACKLOG.md` (DEBT-014 reducido con rationale + refactor propuesto), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.5: Liberar `brain.memory` + `core.db` — 2026-06-08
+
+- **Status:** OK — el muro supuestamente "más denso" resultó casi vacío. El pre-scan (solicitado por el usuario) mostró que `core/db.py` ya era strict-clean (0 errores; el muro solo escudaba consumidores) y `brain/memory.py` solo tenía 2 `# type: ignore[import]` obsoletos sobre `import networkx`. DoD verde: `mypy --strict brain/memory.py` + `core/db.py` → 0; `mypy .` → 0/247; `mypy --strict main.py` → 0; `pytest` → 924/0.
+
+- **Fix de config (networkx):** `networkx` no trae stubs — se aplicó el patrón establecido del repo (igual que psutil/yaml/pyarrow): `[mypy-networkx,networkx.*] ignore_missing_imports = True` y se eliminaron ambos ignores inline. **Corrección del usuario incorporada:** el glob DEBE declarar el módulo top-level Y los submódulos (`networkx,networkx.*`); `networkx.*` solo no captura el `import networkx` pelado que usa memory.py, lo que dejaría un `import-untyped` residual y rompería el pipeline. Verificado: con la forma correcta los 5 gates quedan verdes.
+
+- **Foresight de arquitectura → DEBT-018 (registrado, no corregido):** abrir `brain.memory` expone el uso de networkx en GraphRAG. networkx es Python puro (dict-of-dict-of-dict): espacio `O(V+E)` pero overhead de heap alto por nodo/arista. Un grafo de sesión sin evicción ni teardown puede inflar la RAM y bloquear el event loop en sesiones largas de VS Code. Per Ley del Registro Continuo se registra como DEBT-018 (futura fase: LRU / cap de subgrafo / `G.clear()` en cierre de sesión), fuera del alcance de esta pasada de tipado.
+
+- **`mypy.ini`:** añadido el bloque networkx; eliminados `[mypy-core.db]` y `[mypy-brain.memory]` (3 → 1 módulo silenciado: solo queda `api.websocket_manager` para 8.0.6).
+
+- **Files changed:**
+  - Core: `mypy.ini`, `brain/memory.py` (2 ignores eliminados).
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.5/8.0.5 → CLOSED, silenciados 3→1), `PROJECT_MANIFEST.md` (8.0.5 → `[x]`, baseline actualizado), `TECH_DEBT_BACKLOG.md` (DEBT-018 nuevo), `DEV_JOURNAL.md` (este hito).

@@ -16,7 +16,7 @@ one.
 |---|---|
 | `mypy .` | ✅ Success — 247 files, 0 errors |
 | `mypy --strict main.py` | ✅ Success — 0 errors (campaign primary objective met, 8.0.4) |
-| Silenced modules (`follow_imports = silent` in mypy.ini) | 3 modules (`core.db`, `api.websocket_manager`, `brain.memory` → 8.5/8.6) |
+| Silenced modules (`follow_imports = silent` in mypy.ini) | 1 module (`api.websocket_manager` → 8.6) |
 
 The original May 2026 baseline had 32 errors / 12 files. By June 2026 (after Phases 7.15–7.18 work that
 kept `mypy .` green but accumulated strict-mode debt), the count had grown to 79 errors / 25 files. The
@@ -73,7 +73,8 @@ for `pyarrow` (stubs now present; `lancedb` remains untyped).
 
 *(Unsilenced in 8.0.1: `shared.hardware`, `agents.analyst`, `tools.patch_tool` — DEBT-001 closed.)*
 *(Unsilenced in 8.0.2: `tools.llm_gateway` — DEBT-015, DEBT-016 closed.)*
-*(Unsilenced in 8.0.3: `core.vfs_middleware`, `core.compute_pool` — 5 dead VFSMiddleware ignores swept. Remaining: `core.db`, `api.websocket_manager`, `brain.memory`.)*
+*(Unsilenced in 8.0.3: `core.vfs_middleware`, `core.compute_pool` — 5 dead VFSMiddleware ignores swept.)*
+*(Unsilenced in 8.0.5: `core.db` (already strict-clean), `brain.memory` (networkx via config-level `[mypy-networkx,networkx.*]`). DEBT-018 logged. Remaining: `api.websocket_manager`.)*
 
 ---
 
@@ -264,21 +265,25 @@ These ignores are USED (no `unused-ignore`); all gates stay green. See DEBT-014 
 
 ---
 
-### 8.5 — Unsilence `brain.memory` + `core.db`
+### 8.5 / 8.0.5 — Unsilence `brain.memory` + `core.db` — ✅ CLOSED 2026-06-08
 
-**Scope:** The two most pervasive silenced modules — unsilencing them is the hardest step and the
-highest-value unlock. Assess the hidden debt first with exploratory runs before committing to fixes.
+**Scope:** Expected to be the densest wall; the pre-scan proved otherwise — both modules carried
+near-zero internal debt; the walls only shielded consumers (the recurring pattern from
+`llm_gateway`/`compute_pool`).
 
-#### 8.5.A — `brain.memory`
-- Exploratory: `mypy --strict brain/memory.py 2>&1 | head -60` to count errors.
-- Fix errors. Remove silencing entry.
-- **DoD:** `mypy --strict brain/memory.py` → 0.
+| File | State / Fix |
+|---|---|
+| `core/db.py` | **Already strict-clean (0 errors).** Silencing block removed, no code change. |
+| `brain/memory.py` | 2 stale `# type: ignore[import]` on `import networkx` (lines 108, 158) — removed. |
+| `mypy.ini` | Added `[mypy-networkx,networkx.*] ignore_missing_imports = True` (networkx is untyped; the bare top-level name **and** the submodule glob are both required — `networkx.*` alone misses `import networkx`). Removed `[mypy-core.db]` + `[mypy-brain.memory]` (3 → 1 silenced). |
 
-#### 8.5.B — `core.db`
-- Exploratory: `mypy --strict core/db.py 2>&1 | head -60`.
-- Fix errors (this module has raw SQLite; likely `Optional` and `Any` typing work).
-- Remove silencing entry.
-- **DoD:** `mypy --strict core/db.py` → 0.
+**Architectural foresight → DEBT-018:** unsilencing `brain.memory` surfaced the GraphRAG networkx
+usage. networkx is pure-Python (dict-of-dict-of-dict); `O(V+E)` space but heavy per-node heap
+overhead. An unbounded session graph can exhaust RAM and stall the event loop. Logged as DEBT-018 — a
+future LRU/subgraph-cap/teardown phase (not a typing concern, not fixed here).
+
+**DoD met:** `mypy --strict brain/memory.py` → 0; `mypy --strict core/db.py` → 0; `mypy .` → 0/247;
+`mypy --strict main.py` → 0; `pytest` → 924/0.
 
 ---
 

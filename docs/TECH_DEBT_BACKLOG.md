@@ -31,6 +31,26 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-018 — brain/memory.py: networkx GraphRAG has no memory bound (heap-overhead risk)
+
+- **Date:** 2026-06-08
+- **Reproduce:** N/A (capability/scalability gap, not a type or runtime error). Surfaced when Phase
+  8.0.5 unsilenced `brain.memory` and brought the networkx usage under review.
+- **File(s):** `brain/memory.py` — the PPR / batch-PPR graph builders that do `import networkx as nx`
+  then `nx.DiGraph()` (around lines 108 and 158).
+- **Risk:** networkx is pure-Python with a dict-of-dict-of-dict backing store. Spatial complexity is
+  `O(V + E)`, but the per-node/per-edge heap overhead on the Python heap is large. In long-lived
+  VS Code sessions, a GraphRAG graph that accumulates a node per indexed file with **no eviction or
+  teardown** can balloon RAM and stall the asyncio event loop (the IT-director concern raised during
+  8.0.5 review).
+- **Phase:** Future dedicated phase (post-8.0.x). **Not in scope for the typing campaign** — recorded
+  per the Continuous Registry Protocol, not fixed in 8.0.5.
+- **Proposed fix:** bound the in-memory graph — e.g. an LRU eviction policy on the node set, a hard
+  cap on subgraph size, and/or explicit `G.clear()` / teardown on session end. Measure heap growth
+  across a long session first to size the cap.
+
+---
+
 ### DEBT-001 — tools.patch_tool: LangChain @tool decorator stub mismatch — ✅ CLOSED 2026-06-05
 
 - **Date:** 2026-05-31
