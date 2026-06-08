@@ -274,11 +274,15 @@ async def _run_coder_with(config: RunnableConfig) -> tuple[Dict[str, Any], Async
     from core.vfs_middleware import VFSReadResult
     from agents.coder import run_coder_node
 
-    edit_json = (
-        '{"edits": [{"file_path": "calc.py", '
-        '"search_block": "    return x + 1", "replace_block": "    return x + 2"}]}'
+    edit_blob = (
+        "### EDIT calc.py\n"
+        "<<<<<<< SEARCH\n"
+        "    return x + 1\n"
+        "=======\n"
+        "    return x + 2\n"
+        ">>>>>>> REPLACE\n"
     )
-    gw = AsyncMock(return_value=edit_json)
+    gw = AsyncMock(return_value=edit_blob)
     with patch("core.vfs_middleware.VFSMiddleware.read_safe",
                return_value=VFSReadResult(content="def calculate(x):\n    return x + 1\n")), \
          patch("core.memory.semantic_memory.SemanticMemoryManager.search_snippets",

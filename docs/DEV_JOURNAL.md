@@ -2,6 +2,41 @@
 
 ---
 
+## Hito 8.3: CoderAgent — formato SEARCH/REPLACE reemplaza el frágil code-in-JSON — 2026-06-08
+
+**Estado:** ✅ COMPLETO | **Gates:** `pytest test_coder_agent + test_response_cache` → 21 passed · `mypy .` 0/248 · suite completa green
+
+### Problema resuelto
+Probando el modo ASK, el coder falló con `generation failed: Expecting ',' delimiter: line 1 column 236 (char 235)`. **Causa raíz:** el coder pedía al LLM devolver `{"edits":[{"file_path","search_block","replace_block"}]}` donde `search_block`/`replace_block` contienen CÓDIGO (comillas, saltos de línea, backslashes) que debía ir JSON-escapado. Para un archivo nuevo, el archivo entero se escapaba en un solo string JSON. El modelo de `MODEL_BIG` (`ailienant/big`, probable BYOM/local que no respeta estrictamente `response_format={"type":"json_object"}`) fallaba al escapar → `json.loads()` rompía en una comilla sin escapar. Los helpers existentes (`_loads_or_slice`, `_sanitize_json_response`) NO arreglan esto — solo recortan prosa/markdown ALREDEDOR del JSON, no el escapado defectuoso DENTRO de los valores.
+
+### Decisión técnica (fix root-cause aprobado por el usuario)
+Dejar de embeber código en JSON. El coder ahora pide bloques SEARCH/REPLACE estilo git-conflict (el enfoque de Aider/Claude Code) donde el código vive verbatim entre marcadores y NUNCA se escapa. Elimina la clase entera de errores de escapado. Sin dependencia nueva, sin round-trip extra al LLM.
+
+Formato:
+```
+### EDIT <file_path>
+<<<<<<< SEARCH
+<código verbatim a reemplazar — vacío para archivo nuevo>
+=======
+<código nuevo>
+>>>>>>> REPLACE
+```
+
+### Refuerzo del auditor (border-hardening)
+`core/patcher.apply_search_replace` matchea en dos pasos: Pass 1 exact (`content.count(search)==1`) y Pass 2 normalized (CRLF→LF + `rstrip` por línea). **Ninguno de los dos limpia líneas en blanco en los bordes del bloque.** Un newline de borde dejado por el parser haría caer el patch al fuzzy-0.90 (riesgoso) o lo fallaría. `_clean_block` aplica `.strip("\n")` (NO `.strip()`, que comería la indentación de la primera línea) para quitar newlines de borde, y un check de fence preciso por línea (`^```[\w-]*$` opener + ``` closer) que pela una valla markdown accidental sin corromper código que contenga backticks internos.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/agents/coder.py` | `_parse_search_replace_blocks` + `_clean_block`; instruction reescrita a SEARCH/REPLACE; removido `response_format` json_object y `json.loads`; import `re` añadido, `json` removido |
+| `ailienant-core/tests/test_coder_agent.py` | mock de edit actualizado al nuevo formato; 8 tests nuevos del parser (single/multi/new-file/prose/border-blanks/fence-peel/internal-backticks/e2e-exact-match) |
+| `docs/DEV_JOURNAL.md` | este hito |
+
+### Nota new-file
+`_clean_block` también quita el newline EOF del contenido de un archivo nuevo (rama empty-SEARCH escribe `replace_block` verbatim). Es cosmético — la validación AST y el diff no se afectan — y queda declarado por si se desea re-añadir un trailing newline estricto.
+
+---
+
 ## Hito 8.2: Corrección del flujo de modos de ejecución (AUTO/ASK/PLAN) — 2026-06-08
 
 **Estado:** ✅ COMPLETO (3 de 4 bugs) | **Gates:** `npm run check-types` → 0 · `npm run lint` → 0 errores · `node esbuild.js` → bundle OK | **Pendiente:** Bug 3 (language leak)

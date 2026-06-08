@@ -214,11 +214,15 @@ async def test_node1_coder_forwards_stream_thinking_to_gateway_and_parses_edits(
         "enable_native_thinking": True,
         "thinking_budget_tokens": 2048,
     }}
-    edit_json = (
-        '{"edits": [{"file_path": "f.py", '
-        '"search_block": "    return 1", "replace_block": "    return 2"}]}'
+    edit_blob = (
+        "### EDIT f.py\n"
+        "<<<<<<< SEARCH\n"
+        "    return 1\n"
+        "=======\n"
+        "    return 2\n"
+        ">>>>>>> REPLACE\n"
     )
-    gw = AsyncMock(return_value=edit_json)
+    gw = AsyncMock(return_value=edit_blob)
     with patch("core.vfs_middleware.VFSMiddleware.read_safe",
                return_value=VFSReadResult(content="def f():\n    return 1\n")), \
          patch("core.memory.semantic_memory.SemanticMemoryManager.search_snippets",
