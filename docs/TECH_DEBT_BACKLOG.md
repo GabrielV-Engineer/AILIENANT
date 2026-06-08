@@ -220,24 +220,39 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Notes:** Re-open if telemetry shows a material rise in planner/coder parse failures on reasoning
   models; otherwise the soft-error handling makes this low-priority.
 
-### DEBT-014 — brain/swarms.py: NodeInputT add_node strict/non-strict discrepancy — ⚠️ PARTIALLY OPEN
+### DEBT-014 — brain/swarms.py: NodeInputT add_node type-var — ⚠️ REDUCED (3 residual ignores) 2026-06-08
 
 - **Date:** 2026-06-05
-- **Reproduce (mypy .):** `cd ailienant-core && python -m mypy . 2>&1 | grep swarms`
-- **Reproduce (strict):** `cd ailienant-core && python -m mypy --strict brain/swarms.py`
-- **File(s):** `brain/swarms.py:155` (`tool_rag_select_node`), `:156` (`run_coder_node`),
-  `:218` (`run_planner_node`), `:227` (`run_analyst_node`).
-- **Error:** `Value of type variable "NodeInputT" of "add_node" of "StateGraph" cannot be
-  "dict[str, Any]"`. All four `add_node` calls use state-function signatures of `Dict[str, Any]`
-  where LangGraph expects a TypedDict-constrained input.
-- **Mode discrepancy (surfaced 8.0.2):** `swarms.py:155` (`tool_rag_select_node`) shows as
-  `unused-ignore[type-var]` under `mypy --strict` but the error IS real under `mypy .`
-  (non-strict). The `# type: ignore[type-var]` must remain to keep the enforced gate green.
-  Lines :156/:218/:227 behave consistently across both modes.
-- **Phase:** 8.0.4 — fix all four by changing node signatures to `AIlienantGraphState` input type,
-  or by upgrading LangGraph stubs to accept `Dict[str, Any]` (whichever the stubs support first).
-- **Notes:** The enforced gate (`mypy .`) is the controlling gate; it remains clean with the ignores
-  in place. `mypy --strict main.py` shows 1 residual (the :155 unused-ignore) until 8.0.4.
+- **Root cause:** LangGraph's `add_node` binds `NodeInputT` with `bound=StateLike`
+  (`TypedDictLikeV1 | TypedDictLikeV2 | DataclassLike | BaseModel`, per
+  `langgraph/typing.py:45`). A node function typed `(state: Dict[str, Any]) -> ...` infers
+  `NodeInputT = dict[str, Any]`, which is **not** a TypedDict and violates the bound →
+  `type-var` error at the `add_node` call site.
+- **Partial resolution (2026-06-08, Phase 8.0.4):** `tool_rag_select_node` (the node defined
+  locally in `swarms.py`) was retyped `(state: AIlienantGraphState)`. `AIlienantGraphState` IS a
+  TypedDict → satisfies the bound → `swarms.py:155` no longer needs an ignore (removed). This
+  closed the strict/non-strict discrepancy that was the last `mypy --strict main.py` residual.
+  **`mypy --strict main.py` → 0 as of 8.0.4.**
+- **Residual (3 ignores still required):** `swarms.py:156` (`run_coder_node`), `:218`
+  (`run_planner_node`), `:227` (`run_analyst_node`), and `ideation.py:215` (`run_analyst_node`)
+  retain `# type: ignore[type-var]`. These are **USED** (suppress real errors) under both `mypy .`
+  and `mypy --strict` — they cause no `unused-ignore`, so all gates stay green.
+- **Why not fixed:** two approaches were tried and rejected in 8.0.4:
+  1. **Retype signatures to `AIlienantGraphState`** — cascades to **63 `arg-type` errors across 19
+     files**: every direct caller (production `agents/logic.py:27` + ~18 test files) passes a plain
+     `dict`, which is not assignable to a TypedDict param. Too invasive; churns the test suite.
+  2. **`input_schema=AIlienantGraphState` on the `add_node` call** — mypy reports `Cannot infer
+     value of type parameter "NodeInputT"` because it cannot reconcile a `Dict[str, Any]`-typed
+     action with `StateNode[AIlienantGraphState, ...]`. Does not work.
+- **Proposed enterprise refactor (deferred):** when the agent-node call sites are themselves
+  hardened (a dedicated phase), retype `run_coder_node` / `run_planner_node` / `run_analyst_node`
+  to `AIlienantGraphState` **and** migrate all ~19 direct callers (tests + `logic.py`) to construct
+  a typed state (or a small `cast` helper). Alternatively, adopt it when LangGraph ships a stub that
+  accepts `Mapping[str, Any]` for `NodeInputT`. Until then the 3 ignores are the correct, minimal,
+  gate-green suppression.
+- **Notes:** The enforced gate (`mypy .`) and the campaign gate (`mypy --strict main.py`) are both
+  **0** with these ignores in place. This is no longer a strict-gate blocker — only a code-cleanliness
+  residual.
 
 ---
 

@@ -33,7 +33,7 @@ MAX_RETRIES: int = 2
 # =====================================================================
 
 
-async def tool_rag_select_node(state: Dict[str, Any]) -> Dict[str, Any]:
+async def tool_rag_select_node(state: AIlienantGraphState) -> Dict[str, Any]:
     """Select ≤ TOOL_RAG_TOP_K tools by intent. Runs once per swarm invocation.
 
     Splices in before coder_agent in both MICRO_SWARM and FULL_SWARM (FULL_SWARM
@@ -152,7 +152,7 @@ def build_micro_swarm() -> Any:
     from validators.gates import style_gate_node, syntax_gate_node
 
     g = StateGraph(AIlienantGraphState)
-    g.add_node("tool_rag_select", tool_rag_select_node)    # type: ignore[type-var]
+    g.add_node("tool_rag_select", tool_rag_select_node)
     g.add_node("coder_agent", run_coder_node)              # type: ignore[type-var]
     g.add_node("syntax_gate", syntax_gate_node)
     g.add_node("style_gate", style_gate_node)

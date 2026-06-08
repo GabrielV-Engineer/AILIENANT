@@ -15,19 +15,20 @@ one.
 | Gate | Result |
 |---|---|
 | `mypy .` | ✅ Success — 247 files, 0 errors |
-| `mypy --strict main.py` | ❌ 1 error in 1 file (`swarms.py:155` unused-ignore discrepancy, DEBT-014) |
-| Silenced modules (`follow_imports = silent` in mypy.ini) | 3 modules (was 9 → 8.0.1 −3, 8.0.2 −1, 8.0.3 −2) |
+| `mypy --strict main.py` | ✅ Success — 0 errors (campaign primary objective met, 8.0.4) |
+| Silenced modules (`follow_imports = silent` in mypy.ini) | 3 modules (`core.db`, `api.websocket_manager`, `brain.memory` → 8.5/8.6) |
 
 The original May 2026 baseline had 32 errors / 12 files. By June 2026 (after Phases 7.15–7.18 work that
 kept `mypy .` green but accumulated strict-mode debt), the count had grown to 79 errors / 25 files. The
 Phase 8.0.0 sweep closed the 64 surface-fixable errors; the remaining 15 are structurally gated behind
 silenced dependencies and cannot be fixed until Phase 8.1–8.4 unblocks their transitive imports.
 
-### Residual errors (`mypy --strict main.py`) — 1 remaining
+### Residual errors (`mypy --strict main.py`) — 0 remaining ✅
 
-| File | Count | Error codes | Root cause |
-|---|---|---|---|
-| `brain/swarms.py` | 1 | `unused-ignore` on `:155` | `tool_rag_select_node` add_node `NodeInputT` discrepancy between `mypy .` and `--strict` modes (DEBT-014) |
+The campaign's primary objective — `mypy --strict main.py` → exit 0 — is met as of 8.0.4. Three
+`follow_imports = silent` modules remain (`core.db`, `api.websocket_manager`, `brain.memory`); their
+internal strict errors are still shielded and will be addressed in 8.5/8.6. Three inline
+`# type: ignore[type-var]` suppressions remain in `swarms.py`/`ideation.py` (DEBT-014, non-blocking).
 
 > **8.0.1 (2026-06-05):** closed 19 errors (leaves + ideation); 15 → 7 residual. Attribution of
 > ideation.py corrected (was not gated by analyst).
@@ -37,6 +38,11 @@ silenced dependencies and cannot be fixed until Phase 8.1–8.4 unblocks their t
 > already strict-clean. Removing the walls obsoleted 5 `[no-untyped-call]` ignores on `VFSMiddleware()`
 > (typed `__new__` made them dead) — swept across indexer/researcher/task_service/graphrag_extractor.
 > Residual still 1 (swarms:155, DEBT-014).
+> **8.0.4 (2026-06-08):** retyped `tool_rag_select_node(state: AIlienantGraphState)` → `swarms:155`
+> ignore removed, the last `--strict main.py` residual cleared → **0**. DEBT-014 reduced to 3 USED
+> ignores (full removal blocked: signature→TypedDict cascades to 63 caller errors across 19 files;
+> `input_schema` can't infer `NodeInputT`). `summarizer`/`coder`/`trajectory_memory`/`intent_router`
+> already strict-clean.
 
 ### Historical baseline (2026-05-31) — for reference only
 
@@ -233,20 +239,28 @@ check, so these ignores were inert under `mypy .` — removal is risk-free and v
 
 ---
 
-### 8.4 — Tier 2 + Tier 3 Nodes (unlocked by 8.1–8.3)
+### 8.4 / 8.0.4 — Tier 2 + Tier 3 Nodes — ✅ CLOSED 2026-06-08
 
-**Scope:** With llm_gateway, vfs_middleware, compute_pool, and analyst unsilenced, these modules
-can now be made strict-clean. Execute in dependency order (deps before consumers).
+**Scope:** With llm_gateway, vfs_middleware, compute_pool, and analyst unsilenced by 8.0.1–8.0.3,
+these nodes were already largely strict-clean. `summarizer`, `coder`, `trajectory_memory` → 0
+(fixed in 8.0.1/8.0.2); `intent_router` → no own errors. The only real work was `swarms.py:155`.
 
-**Order within this phase:**
-1. `brain/summarizer.py`
-2. `agents/coder.py`
-3. `core/memory/trajectory_memory.py`
-4. `brain/ideation.py`
-5. `brain/nodes/circuit_breaker.py` → `brain/swarms.py` (fixes DEBT-003, DEBT-004)
-6. `brain/intent_router.py`
+**Fix:** `tool_rag_select_node(state: AIlienantGraphState)` — the node is defined locally in
+`swarms.py` and has no direct callers, so retyping its `state` param to the graph's TypedDict (which
+satisfies LangGraph's `NodeInputT bound=StateLike`) was safe. The `# type: ignore[type-var]` on
+`:155` was removed. This cleared the last `mypy --strict main.py` residual → **0**.
 
-**DoD:** `mypy --strict <file>` → 0 for each, confirmed sequentially. `mypy .` stays clean.
+**DEBT-014 residual (3 ignores kept):** `swarms.py:156/:218/:227` + `ideation.py:215`
+(`run_coder_node` / `run_planner_node` / `run_analyst_node`) keep `# type: ignore[type-var]`.
+Full removal was attempted and rejected:
+- Retyping their signatures to `AIlienantGraphState` cascades to **63 `arg-type` errors in 19 files**
+  (production `logic.py` + ~18 test files pass plain dicts to the now-TypedDict params).
+- `input_schema=AIlienantGraphState` fails — mypy cannot infer `NodeInputT` from a `Dict[str, Any]`
+  action.
+These ignores are USED (no `unused-ignore`); all gates stay green. See DEBT-014 for the deferred refactor.
+
+**DoD met:** `mypy --strict` → 0 on `summarizer`/`coder`/`trajectory_memory`/`swarms`/`intent_router`;
+`mypy .` → 0/247; `mypy --strict main.py` → 0; `pytest` → 924/0.
 
 ---
 

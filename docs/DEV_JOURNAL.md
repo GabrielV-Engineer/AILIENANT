@@ -3393,3 +3393,19 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: `core/vfs_middleware.py`, `core/indexer.py`, `agents/researcher.py`, `core/task_service.py`, `core/memory/graphrag_extractor.py`, `mypy.ini`.
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.3/8.0.3 → CLOSED, silenciados 5→3), `PROJECT_MANIFEST.md` (8.0.3 → `[x]`, baseline actualizado), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.0.4: Nodos Tier 2/3 — `mypy --strict main.py` → 0 (objetivo primario alcanzado) — 2026-06-08
+
+- **Status:** OK — el objetivo primario de la campaña de tipado estricto está cumplido: **`mypy --strict main.py` → 0**. `summarizer`, `coder`, `trajectory_memory` ya eran strict-clean (cerrados en 8.0.1/8.0.2); `intent_router` sin errores propios. El único trabajo real fue `swarms.py:155`. DoD verde: `mypy --strict` → 0 en los 5 nodos; `mypy .` → 0/247; `pytest` → 924/0.
+
+- **Causa raíz (`NodeInputT`):** `add_node` de LangGraph liga `NodeInputT` con `bound=StateLike` (`TypedDictLikeV1 | TypedDictLikeV2 | DataclassLike | BaseModel`, en `langgraph/typing.py:45`). Una función de nodo tipada `(state: Dict[str, Any])` infiere `NodeInputT = dict[str, Any]`, que NO es un TypedDict → viola el bound → error `type-var` en el sitio de `add_node`.
+
+- **Fix (`tool_rag_select_node`):** este nodo se define localmente en `swarms.py` y no tiene llamadores directos, así que retipar su parámetro a `AIlienantGraphState` (un TypedDict que satisface el bound) fue seguro. Se eliminó el `# type: ignore[type-var]` de `:155`, cerrando la discrepancia strict/non-strict que era el último residual de `mypy --strict main.py`.
+
+- **DEBT-014 reducido (3 ignores retenidos):** `swarms.py:156/218/227` + `ideation.py:215` (coder/planner/analyst) conservan el ignore. Se intentaron y descartaron dos arreglos: (1) retipar sus firmas a `AIlienantGraphState` cascada a **63 errores `arg-type` en 19 archivos** (el caller de producción `agents/logic.py` + ~18 archivos de test pasan dicts planos, no asignables a un TypedDict); (2) `input_schema=AIlienantGraphState` falla porque mypy no infiere `NodeInputT` con una acción `Dict[str, Any]`. Los 3 ignores están USADOS (no causan unused-ignore) → todos los gates verdes. Refactor empresarial propuesto y registrado en DEBT-014 (migrar firmas + los ~19 llamadores en una fase dedicada, o esperar stubs de LangGraph que acepten `Mapping[str, Any]`).
+
+- **Pendiente de campaña:** quedan 3 módulos `follow_imports = silent` (`core.db`, `api.websocket_manager`, `brain.memory`) para 8.0.5/8.0.6 — la infraestructura más densa. `mypy --strict main.py` da 0 porque esos muros aún ocultan sus errores internos.
+
+- **Files changed:**
+  - Core: `brain/swarms.py` (tool_rag_select_node retipado, ignore :155 eliminado).
+  - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.4/8.0.4 → CLOSED, residuales 1→0, gate strict main.py ✅), `PROJECT_MANIFEST.md` (8.0.4 → `[x]`, baseline actualizado), `TECH_DEBT_BACKLOG.md` (DEBT-014 reducido con rationale + refactor propuesto), `DEV_JOURNAL.md` (este hito).
