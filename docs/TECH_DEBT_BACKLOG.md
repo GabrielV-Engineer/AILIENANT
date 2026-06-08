@@ -114,7 +114,20 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ---
 
-### DEBT-018 — brain/memory.py: networkx GraphRAG has no memory bound (heap-overhead risk)
+### DEBT-018 — brain/memory.py: networkx GraphRAG has no memory bound (heap-overhead risk) — ✅ RESOLVED (8.1.B)
+
+- **Resolution (8.1.B, 2026-06-08):** bounded with **cap-and-skip + deterministic teardown**. New
+  module constant `MAX_GRAPH_EDGES: int = 5000` gates both builders (`calculate_ppr_sync`,
+  `calculate_graph_analytics_sync`) with an early-return guard *before* any graph is built — an
+  over-cap request returns `PPRResult(scores={}, success=True)` (identical to the empty-graph branch,
+  so the caller degrades to no centrality/community data, not an error) plus a `logger.warning`. The
+  guard is on `len(req.edges)` (O(1), pre-build); the constant is named for edges, not nodes, to match
+  what it compares against. Each builder now binds `G = None` outside the `try` and clears it in a
+  `finally` so all return paths (empty / computed / exception) release the dict-of-dict structure
+  deterministically instead of waiting on GC in the reused pool worker; `calculate_graph_analytics_sync`
+  additionally binds the `G.to_undirected()` projection (which transiently doubles the graph) and clears
+  it in its own `finally`. Regression: `tests/test_graph_analytics.py` gains `test_oversized_graph_is_
+  skipped_gracefully` + `test_at_cap_boundary_still_computes`. `pytest` 932 passed; `mypy .` 0/248.
 
 - **Date:** 2026-06-08
 - **Reproduce:** N/A (capability/scalability gap, not a type or runtime error). Surfaced when Phase

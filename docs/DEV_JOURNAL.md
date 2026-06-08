@@ -3488,3 +3488,22 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Core: `api/websocket_manager.py` (guard-at-store en `resolve_*`, dos reverse indexes, `wait_patch_ack` con `session_id`, sweep+wake en `disconnect`), `core/write_pipeline.py` (llamador actualizado).
   - Tests: `tests/test_ws_buffer_lifecycle.py` (nuevo).
   - Docs EDIT: `TECH_DEBT_BACKLOG.md` (DEBT-019 → RESOLVED), `PROJECT_MANIFEST.md` (8.1.A → `[x]`), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.1.B: Cierre de DEBT-018 — cota de memoria para GraphRAG networkx — 2026-06-08
+
+- **Status:** OK — fuga de heap acotada con **cap-and-skip + teardown determinista**. DoD verde: `pytest` → 932/0; `mypy .` → 0/248.
+
+- **Riesgo (heap-overhead, no error de tipo/runtime):** los dos builders CPU-bound de `brain/memory.py` — `calculate_ppr_sync` y `calculate_graph_analytics_sync` — construían `nx.DiGraph()` desde `req.edges` **sin cota superior ni teardown explícito**. networkx es pure-Python (dict-of-dict-of-dict) con overhead de heap grande por nodo/arista; `calculate_graph_analytics_sync` además llama `G.to_undirected()`, que **duplica** transitoriamente la estructura. Corren en workers de `ProcessPoolExecutor` reutilizados entre tareas, así que un grafo dejado al GC ordinario (demorado para estructuras cíclicas de dicts) puede mantener heap fijado entre llamadas → en un workspace patológicamente grande, RAM inflada y posible stall del worker.
+
+- **Cota (cap-and-skip):** nueva constante módulo-level `MAX_GRAPH_EDGES: int = 5000` con guard early-return en ambas funciones, **antes** de construir cualquier grafo. Un request sobre la cota retorna `PPRResult(scores={}, success=True)` — idéntico a la rama de grafo vacío, de modo que el caller (`main.py:807` → ranking God-node del dashboard + término Graph_Centrality del CSS) ve "sin datos de centralidad/comunidad" para esa pasada, no un error. Es degradación elegante (cap-and-skip), no cap-and-truncate. Un `logger.warning` hace observable el skip.
+
+- **Nombre de la constante (alineación semántica, anti-bias):** se nombra `MAX_GRAPH_EDGES` (no `MAX_GRAPH_NODES` como decía el WBS borrador) para alinear con el valor que evalúa — `len(req.edges)`. Gatear sobre aristas mantiene el chequeo O(1) y pre-build (el conteo de nodos, del orden de las aristas en un grafo de dependencias disperso, solo se conoce tras construir). El WBS del manifest se corrigió para coincidir con el código.
+
+- **Teardown determinista (`finally`):** cada función liga `G = None` **fuera** del `try` y hace `G.clear()` en un `finally`, de modo que las tres rutas de retorno (vacío / computado / excepción) liberan el dict-of-dict sin esperar al GC y sin `NameError` si el `import networkx` fallara. `calculate_graph_analytics_sync` además liga el `G.to_undirected()` a un local `undirected` y lo limpia en su propio `finally` (guardado para el caso en que `to_undirected()` lance).
+
+- **Tests (`tests/test_graph_analytics.py`, ejercitan los builders directo, sin pool/DB):** `test_oversized_graph_is_skipped_gracefully` (lista de aristas > cota → ambos builders retornan éxito vacío sin error) y `test_at_cap_boundary_still_computes` (grafo exactamente en la cota se computa normal — guard off-by-one seguro). Los tests existentes `test_empty_graph_is_safe` / `test_louvain_*` ya cubren las formas de retorno post-`G.clear()`.
+
+- **Files changed:**
+  - Core: `brain/memory.py` (constante `MAX_GRAPH_EDGES`, guard + `finally` `G.clear()` en ambas funciones, limpieza del temporal undirected).
+  - Tests: `tests/test_graph_analytics.py` (2 tests nuevos + import de la constante).
+  - Docs EDIT: `TECH_DEBT_BACKLOG.md` (DEBT-018 → RESOLVED), `PROJECT_MANIFEST.md` (8.1.B → `[x]`, constante corregida a `MAX_GRAPH_EDGES`), `DEV_JOURNAL.md` (este hito).

@@ -15,6 +15,15 @@ from shared.contracts import IndexingRequest, IndexingResult, PPRRequest, PPRRes
 
 logger = logging.getLogger("MEMORY_WORKER")
 
+# Upper bound on the dependency-graph edge count a single PPR / analytics call
+# will build. networkx is pure-Python (dict-of-dict-of-dict) with large per-node
+# and per-edge heap overhead, and the undirected projection briefly doubles the
+# structure — refusing oversized graphs caps the transient heap spike per call so
+# a pathologically large workspace cannot stall the pooled worker. Gating on the
+# edge count keeps the check O(1) and pre-build (the node count, on the order of
+# the edge count for a sparse dependency graph, is only known after building).
+MAX_GRAPH_EDGES: int = 5000
+
 # Per-process singleton — initialized once by _worker_init(), never shared across processes.
 _worker_ast: Optional[Any] = None
 
@@ -104,9 +113,16 @@ def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
     degree centrality (no scipy) so the runtime stays free of native C/Fortran
     extensions for lightweight bundling.
     """
+    if len(req.edges) > MAX_GRAPH_EDGES:
+        logger.warning(
+            "Dependency graph exceeds the edge cap (%d > %d) — skipping centrality.",
+            len(req.edges), MAX_GRAPH_EDGES,
+        )
+        return PPRResult(scores={}, success=True)
+    G: Any = None
     try:
         import networkx as nx
-        G: Any = nx.DiGraph()
+        G = nx.DiGraph()
         G.add_edges_from(req.edges)
         if len(G) == 0:
             return PPRResult(scores={}, success=True)
@@ -114,6 +130,9 @@ def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
         return PPRResult(scores=scores, success=True)
     except Exception as exc:
         return PPRResult(scores={}, success=False, error=str(exc))
+    finally:
+        if G is not None:
+            G.clear()
 
 
 def _resolve_edge_confidence(
@@ -154,9 +173,16 @@ def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
     for stable colors), and per-edge confidence. Supersedes calculate_ppr_sync on the
     batch path; the latter is retained for callers that only need scores.
     """
+    if len(req.edges) > MAX_GRAPH_EDGES:
+        logger.warning(
+            "Dependency graph exceeds the edge cap (%d > %d) — skipping analytics.",
+            len(req.edges), MAX_GRAPH_EDGES,
+        )
+        return PPRResult(scores={}, success=True)
+    G: Any = None
     try:
         import networkx as nx
-        G: Any = nx.DiGraph()
+        G = nx.DiGraph()
         G.add_edges_from(req.edges)
         if len(G) == 0:
             return PPRResult(scores={}, success=True)
@@ -170,14 +196,22 @@ def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
         except Exception as exc:  # noqa: BLE001 — centrality is best-effort
             logger.warning("Degree centrality unavailable (non-fatal): %s", exc)
 
+        # Louvain runs on the undirected projection, which transiently doubles
+        # the graph in memory — bind it so it can be released deterministically
+        # rather than waiting on GC in the reused pool worker.
         communities: Dict[str, int] = {}
+        undirected: Any = None
         try:
-            partition = nx.community.louvain_communities(G.to_undirected(), seed=42)
+            undirected = G.to_undirected()
+            partition = nx.community.louvain_communities(undirected, seed=42)
             for idx, members in enumerate(partition):
                 for node in members:
                     communities[node] = idx
         except Exception as exc:  # noqa: BLE001 — community detection is best-effort
             logger.warning("Louvain community detection failed (non-fatal): %s", exc)
+        finally:
+            if undirected is not None:
+                undirected.clear()
 
         edge_confidence = _resolve_edge_confidence(req.edges, req.indexed_files)
         return PPRResult(
@@ -188,3 +222,6 @@ def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
         )
     except Exception as exc:
         return PPRResult(scores={}, success=False, error=str(exc))
+    finally:
+        if G is not None:
+            G.clear()

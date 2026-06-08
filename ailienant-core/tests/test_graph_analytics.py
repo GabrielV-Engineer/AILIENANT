@@ -10,6 +10,7 @@ from typing import Dict
 
 from shared.contracts import PPRRequest, PPRResult
 from brain.memory import (
+    MAX_GRAPH_EDGES,
     calculate_graph_analytics_sync,
     calculate_ppr_sync,
     _resolve_edge_confidence,
@@ -104,3 +105,28 @@ def test_pprresult_backward_compat_defaults() -> None:
 def test_empty_graph_is_safe() -> None:
     r = calculate_graph_analytics_sync(PPRRequest(edges=()))
     assert r.success and r.scores == {} and r.communities == {}
+
+
+def test_oversized_graph_is_skipped_gracefully() -> None:
+    """An edge list past the cap is refused before any graph is built.
+
+    Both builders degrade to an empty, successful result (cap-and-skip) so the
+    caller sees no centrality/community data, not an error.
+    """
+    edges = tuple((str(i), str(i + 1)) for i in range(MAX_GRAPH_EDGES + 1))
+    req = PPRRequest(edges=edges)
+
+    ppr = calculate_ppr_sync(req)
+    assert ppr.success and ppr.scores == {}
+
+    analytics = calculate_graph_analytics_sync(req)
+    assert analytics.success and analytics.scores == {} and analytics.communities == {}
+
+
+def test_at_cap_boundary_still_computes() -> None:
+    """A graph exactly at the cap is built normally — the guard is off-by-one safe."""
+    edges = tuple((str(i), str(i + 1)) for i in range(MAX_GRAPH_EDGES))
+    assert len(edges) == MAX_GRAPH_EDGES
+
+    ppr = calculate_ppr_sync(PPRRequest(edges=edges))
+    assert ppr.success and ppr.scores  # populated, not skipped
