@@ -2232,6 +2232,19 @@ the blueprint freeze lifts.
 
 ---
 
+### ⚙️ División 8.1 — Estabilización Operacional & Endurecimiento Enterprise 🔴
+
+> Registrado en 8.0.8. Corrige las deudas que amenazan estabilidad de producción (DEBT-019 + DEBT-018) y las deudas de tipado pendientes (DEBT-020/021/022/023). Ver `TECH_DEBT_BACKLOG.md` para diagnóstico completo y propuestas de fix.
+
+- [ ] **8.1.A — DEBT-019: Fuga de buffer WebSocket** (`api/websocket_manager.py`) — Agregar dos reverse-lookup indexes (`_client_pending_hitl: Dict[str, Set[str]]`, `_client_pending_acks: Dict[str, Set[str]]`) mantenidos en `wait_hitl_approval` / `wait_patch_ack` (entry + finally). En `disconnect(client_id)`: sweep O(1) de `_hitl_responses`, `_hitl_pending`, `_patch_ack_results`, `_patch_acks`. Agregar test de regresión: disconnect con HITL/ack pendiente → buffers vacíos. **DoD:** test verde; `mypy .` 0; `pytest` 0.
+- [ ] **8.1.B — DEBT-018: NetworkX subgrafo sin cota** (`brain/memory.py`) — Agregar `MAX_GRAPH_NODES: int = 5000` + guard early-return en las dos funciones PPR. Agregar `G.clear()` antes de cada `return` (incluyendo el `G.to_undirected()` temporal). **DoD:** sin regresión; `mypy .` 0; `pytest` 0.
+- [ ] **8.1.C — DEBT-020: Stubs tree-sitter incompletos** (`brain/prompt_builder.py` + `brain/memory.py`) — Castear `node: object` a `Any` en el entry point de `_function_signature()` y `_extract_tree_node_names()` (elimina 6 ignores `attr-defined` → 1 cast por función). Para `memory.py:76`: agregar guard `None` antes del `.parse()` (más seguro que cast). **DoD:** `mypy --strict` 0 en ambos archivos; 7 ignores eliminados.
+- [ ] **8.1.D — DEBT-021: `Callable` bare en `core/io_coalescer.py`** — Reemplazar `Optional[Callable]` / `fn: Callable` con `Optional[Callable[..., Any]]`. Agregar `Any` a imports. **DoD:** 5 ignores `type-arg` eliminados; `mypy --strict core/io_coalescer.py` → 0.
+- [ ] **8.1.E — DEBT-022: `arg-type` enum literals en `api/websocket_manager.py`** (líneas 324/494/600/711) — Leer cada event dataclass; usar el miembro enum exacto o ampliar la anotación del campo a `str`. **DoD:** 4 ignores `arg-type` eliminados; `mypy --strict api/websocket_manager.py` → 0.
+- [ ] **8.1.F — DEBT-023: Supresiones misceláneas single-site** — `main.py:221` (añadir `-> Awaitable[Response]`); `main.py:944` (cast o fix DTO boundary); `api/sessions.py:128` (guard/cast); `core/resource_manager.py:214` (Literal return type); `tools/llm_gateway.py:609` (widening o cast). **DoD:** 5 ignores eliminados; todos los archivos `mypy --strict` → 0.
+
+---
+
 ### 🔬 Subfase 8.1–8.5 — Pruebas, Refinamiento y Degradación Elegante
 
 - [ ] **8.1. Pruebas End-to-End (`tests/e2e/`)**
