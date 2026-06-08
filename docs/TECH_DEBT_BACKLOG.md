@@ -31,7 +31,7 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
-### DEBT-023 — Miscellaneous single-site strict suppressions (5 ignores)
+### DEBT-023 — Miscellaneous single-site strict suppressions (5 ignores) — ✅ RESOLVED (8.1.F)
 
 - **Date:** 2026-06-08
 - **Files:**
@@ -40,18 +40,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
   - `api/sessions.py:128` `[assignment]` — LangGraph `tup.checkpoint` typed as `Any` in stubs; cast to `Dict[str, Any]`.
   - `core/resource_manager.py:214` `[return-value]` — return type should be `Literal["WAIT", "SWITCH_TO_CLOUD", "CANCEL"]` but `.upper()` chain is not narrowed by mypy.
   - `tools/llm_gateway.py:609` `[assignment]` — `on_thinking` Callable reassigned to narrower alias.
-- **Phase:** 8.1.F — address during Phase 8.1 Operational Stabilization.
-- **Notes:** All five ignores are USED (verified by `mypy --strict main.py` → 0 with `--warn-unused-ignores`). None represent runtime risk; purely typing aesthetics.
+- **Resolution (8.1.F, 2026-06-08):** (1) `_require_token` fully typed: `call_next: Callable[[Request], Awaitable[Response]] -> Response`; added `Awaitable`, `Callable` to typing import; added `from starlette.responses import Response`. (2) `cast(List[VfsDirtyBuffer], [...])` with explicit target type import `from core.vfs_middleware import DirtyBuffer as VfsDirtyBuffer`. (3) `cast(Dict[str, Any], tup.checkpoint)`; added `cast` to sessions.py import. (4) `cast(Resolution, raw)` in resource_manager; added `cast` to import. (5) Explicit `if on_thinking is None: return ""` guard before the `sink` assignment in llm_gateway.py — no cast needed, mypy narrows directly. `mypy --strict` → 0 on all 5 files; `mypy .` 0/248; pytest green.
 
 ---
 
-### DEBT-022 — api/websocket_manager.py: 4 × arg-type on enum literals
+### DEBT-022 — api/websocket_manager.py: 4 × arg-type on enum literals — ✅ RESOLVED (8.1.E)
 
 - **Date:** 2026-06-08
 - **File:** `api/websocket_manager.py:324,494,600,711`
 - **Error:** `[arg-type]` — keyword args (`tier=`, `kind=`, `status=`, `mode=`) pass `str` literals where event dataclass fields expect a narrower `Literal[...]` or `Enum` type.
-- **Phase:** 8.1.E — fix during Phase 8.1. Either use the exact enum member or broaden the field annotation to `str`. Requires reading each event dataclass before choosing.
-- **Notes:** Pre-existing before Phase 8.0.6. USED under `mypy --strict`.
+- **Resolution (8.1.E, 2026-06-08):** Narrowed the 4 broadcast method parameters from `str` to `Literal[...]` matching the payload field (`tier: Literal["small","medium","big"]`; `kind: Literal["INSERT","DELETE","ABORT"]`; `status: Literal["success","error"]`; `mode: Literal["autonomous","supervision"]`). One cascading caller (`task_service.py:1326`) required `cast(Literal["success","error"], ...)` + `Literal` added to its import. `mypy --strict api/websocket_manager.py` → 0; `mypy .` 0/248; pytest green.
 
 ---
 

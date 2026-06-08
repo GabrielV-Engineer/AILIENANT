@@ -333,7 +333,7 @@ class ConnectionManager:
         session_id: str,
         model_name: str,
         is_local: bool,
-        tier: str,
+        tier: Literal["small", "medium", "big"],
     ) -> None:
         """Signal the IDE that a model is being loaded/warmed up before inference."""
         await self.send_personal_message(
@@ -342,7 +342,7 @@ class ConnectionManager:
                 data=ModelWarmupPayload(
                     model_name=model_name,
                     is_local=is_local,
-                    tier=tier,  # type: ignore[arg-type]
+                    tier=tier,
                 )
             ),
         )
@@ -500,7 +500,7 @@ class ConnectionManager:
         self,
         session_id: str,
         edit_id: str,
-        kind: str,
+        kind: Literal["INSERT", "DELETE", "ABORT"],
         offset: int,
         length: int = 0,
         text: str = "",
@@ -512,7 +512,7 @@ class ConnectionManager:
                 data=InlineEditDeltaPayload(
                     edit_id=edit_id,
                     session_id=session_id,
-                    kind=kind,  # type: ignore[arg-type]
+                    kind=kind,
                     offset=offset,
                     length=length,
                     text=text,
@@ -603,7 +603,7 @@ class ConnectionManager:
         self,
         session_id: str,
         tool_call_id: str,
-        status: str,
+        status: Literal["success", "error"],
         exit_code: Optional[int] = None,
         duration_ms: Optional[int] = None,
     ) -> None:
@@ -618,7 +618,7 @@ class ConnectionManager:
                 data=ToolResultPayload(
                     session_id=session_id,
                     tool_call_id=tool_call_id,
-                    status=status,  # type: ignore[arg-type]
+                    status=status,
                     exit_code=exit_code,
                     duration_ms=duration_ms,
                 )
@@ -720,7 +720,7 @@ class ConnectionManager:
         session_id: str,
         file_path: str,
         unified_diff: str,
-        mode: str,
+        mode: Literal["autonomous", "supervision"],
     ) -> None:
         """Notify the IDE that a patch was committed to the RAM-VFS."""
         await self.send_personal_message(
@@ -729,7 +729,7 @@ class ConnectionManager:
                 data=VfsPatchApprovedPayload(
                     file_path=file_path,
                     unified_diff=unified_diff,
-                    mode=mode,  # type: ignore[arg-type]
+                    mode=mode,
                 )
             ),
         )

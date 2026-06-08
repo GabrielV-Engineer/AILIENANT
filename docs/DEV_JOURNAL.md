@@ -2,6 +2,57 @@
 
 ---
 
+## Hito 8.1.F: Eliminación de 5 supresiones single-site misceláneas (DEBT-023) — 2026-06-08
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy --strict` → 0 en 5 archivos · `mypy .` 0/248 · `pytest` green
+
+### Problema resuelto
+Cinco supresiones dispersas con causas raíz distintas, ninguna relacionada entre sí:
+- `main.py:221` `[no-untyped-def]` — middleware FastAPI sin tipado en `call_next` y sin tipo de retorno.
+- `main.py:944` `[list-item]` — `api_contracts.DirtyBuffer` pasado a `ingest_dirty_buffers` que espera `List[vfs_middleware.DirtyBuffer]`; DTOs estructuralmente distintos, duck-typing documentado como pre-existente.
+- `api/sessions.py:128` `[assignment]` — `tup.checkpoint` (TypedDict de LangGraph) no asignable directamente a `Dict[str, Any]`.
+- `core/resource_manager.py:214` `[return-value]` — `raw.strip().upper()` retorna `str` incluso dentro del guard `if raw in {...}`; mypy no estrecha cadenas `.upper()` a `Literal`.
+- `tools/llm_gateway.py:609` `[assignment]` — `on_thinking: Optional[Callable]` no estrechado a no-None por mypy a través de la bandera booleana `want_stream`.
+
+### Decisiones técnicas
+- **`_require_token` tipado:** `call_next: Callable[[Request], Awaitable[Response]] -> Response`. Starlette `Response` importado directamente (las respuestas `JSONResponse`/`PlainTextResponse` son subclases, correctas en todos los `return`). `Awaitable` + `Callable` añadidos al import de `typing`.
+- **`DirtyBuffer` cast:** `cast(List[VfsDirtyBuffer], [...])` con el tipo objetivo explícito (`from core.vfs_middleware import DirtyBuffer as VfsDirtyBuffer`). Usar `List[Any]` habría sido anti-patrón: hubiera silenciado futuros cambios de firma en `ingest_dirty_buffers`.
+- **`tup.checkpoint` y `Resolution`:** `cast(Dict[str, Any], tup.checkpoint)` y `cast(Resolution, raw)` son los casts mínimos precisos — sin cambio de comportamiento en runtime, sin pérdida de contrato en la llamada a función.
+- **`on_thinking` guard:** `if on_thinking is None: return ""` antes de la asignación de `sink` — mypy estrecha `on_thinking` a no-None en el bloque restante. Sin `cast` requerido; la rama de retorno es inalcanzable por contrato de la función.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/main.py` | `Awaitable`, `Callable` al import de `typing`; `from starlette.responses import Response`; `from core.vfs_middleware import DirtyBuffer as VfsDirtyBuffer`; `_require_token` tipado completo; `cast(List[VfsDirtyBuffer], ...)` |
+| `ailienant-core/api/sessions.py` | `cast` al import; `cast(Dict[str, Any], tup.checkpoint)` |
+| `ailienant-core/core/resource_manager.py` | `cast` al import; `cast(Resolution, raw)` |
+| `ailienant-core/tools/llm_gateway.py` | Guard `if on_thinking is None: return ""` |
+| `docs/TECH_DEBT_BACKLOG.md` | DEBT-023 marcado ✅ RESOLVED |
+| `docs/PROJECT_MANIFEST.md` | 8.1.F `[x]` |
+
+---
+
+## Hito 8.1.E: Narrowing de 4 parámetros de broadcast a Literal (DEBT-022) — 2026-06-08
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy --strict api/websocket_manager.py` → 0 · `mypy .` 0/248 · `pytest` green
+
+### Problema resuelto
+Cuatro métodos de broadcast en `WebSocketManager` aceptaban parámetros tipados como `str` y los pasaban directamente a campos Pydantic tipados como `Literal[...]`. mypy rechazaba la asignación `str → Literal[...]` como `[arg-type]`. La solución correcta es narrowing del parámetro, no broadening del campo: preserva el esquema Pydantic y propaga el contrato hacia los callers.
+
+### Decisiones técnicas
+- **Narrowing del parámetro, no del campo:** Broadening el campo de `Literal` a `str` habría debilitado la validación Pydantic en runtime. El narrowing del parámetro fortalece el contrato hacia los callers sin cambio alguno en `ws_contracts.py`.
+- **Un caller afectado:** `task_service.py:1326` pasaba `spec.status if ... else "error"` (tipado como `str`). Fix: `cast(Literal["success","error"], ...)` + `Literal` añadido al import de `task_service.py`. El ternario ya garantiza que solo se pasan los valores válidos — el cast documenta esa garantía sin cambio de runtime.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/api/websocket_manager.py` | `tier`/`kind`/`status`/`mode` parámetros → `Literal[...]`; 4 `# type: ignore[arg-type]` eliminados |
+| `ailienant-core/core/task_service.py` | `Literal` al import; `cast(Literal["success","error"], ...)` en llamada a `broadcast_tool_result` |
+| `docs/TECH_DEBT_BACKLOG.md` | DEBT-022 marcado ✅ RESOLVED |
+| `docs/PROJECT_MANIFEST.md` | 8.1.E `[x]` |
+
+---
+
 ## Hito 8.1.D: Eliminación de 5 supresiones `type-arg` en io_coalescer (DEBT-021) — 2026-06-08
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy --strict core/io_coalescer.py` → 0 · `mypy .` 0/248 · `pytest` 932 passed

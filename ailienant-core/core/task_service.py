@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Tuple, cast, TYPE_CHECKING
+from typing import List, Dict, Any, Literal, Optional, Tuple, cast, TYPE_CHECKING
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager
@@ -1323,7 +1323,7 @@ class TaskService:
                 await vfs_manager.broadcast_tool_result(
                     session_id=session_id,
                     tool_call_id=tool_call_id,
-                    status=spec.status if spec.status in ("success", "error") else "error",
+                    status=cast(Literal["success", "error"], spec.status if spec.status in ("success", "error") else "error"),
                     exit_code=spec.exit_code,
                     duration_ms=spec.duration_ms,
                 )
