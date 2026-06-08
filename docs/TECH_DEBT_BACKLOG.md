@@ -75,7 +75,20 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ---
 
-### DEBT-019 — api/websocket_manager.py: async request-buffer leak (orphaned late responses)
+### DEBT-019 — api/websocket_manager.py: async request-buffer leak (orphaned late responses) — ✅ RESOLVED (8.1.A)
+
+- **Resolution (8.1.A, 2026-06-08):** closed with **guard-at-store + disconnect sweep**. `resolve_patch_ack` /
+  `resolve_human_approval` now store the result only when a waiter is still pending — the *primary* leak was the
+  late-arrival orphan, and since every key is a single-use UUID whose waiting coroutine has already returned,
+  dropping a late result is provably safe (no consumer can ever want it). Two `session_id`-keyed reverse indexes
+  (`_client_pending_hitl` / `_client_pending_acks`) are maintained in `request_human_approval` / `wait_patch_ack`
+  (entry + finally); `wait_patch_ack` now takes `session_id`. `disconnect(client_id)` sweeps the four maps **and
+  wakes** each suspended waiter (`event.set()` after emptying the result buffer) so its coroutine returns `None`
+  in O(1) instead of idling as a zombie task until its timeout. Note: the originally-listed proposed fix (b) alone
+  (a reverse index removed in `finally`) does **not** catch the late-arrival orphan — the index entry is already
+  gone by the time the late result lands — which is why guard-at-store (a) is the load-bearing half. Regression:
+  `tests/test_ws_buffer_lifecycle.py` (6 cases incl. the wake-on-disconnect no-zombie check). `pytest` 930 passed;
+  `mypy .` 0/248.
 
 - **Date:** 2026-06-08
 - **Reproduce:** N/A (lifecycle/concurrency gap, not a type or test error). Surfaced when Phase 8.0.6

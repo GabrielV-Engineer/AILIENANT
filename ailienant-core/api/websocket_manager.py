@@ -108,6 +108,11 @@ class ConnectionManager:
         # write-pipeline acks, keyed by patch_id (UUID4 hex)
         self._patch_acks: Dict[str, asyncio.Event] = {}
         self._patch_ack_results: Dict[str, Dict[str, Any]] = {}
+        # Reverse indexes (session_id -> in-flight request ids) so a disconnect
+        # can reap any suspended waiter's buffers in O(k); k = the client's open
+        # requests (normally tiny).
+        self._client_pending_hitl: Dict[str, Set[str]] = {}
+        self._client_pending_acks: Dict[str, Set[str]] = {}
         # Inbound flood guard — per-client token bucket (tokens + last-refill clock)
         self._inbound_tokens: Dict[str, float] = {}
         self._inbound_refill_at: Dict[str, float] = {}
@@ -189,6 +194,22 @@ class ConnectionManager:
         # reconnects (a fresh connection re-initializes a full bucket lazily).
         self._inbound_tokens.pop(client_id, None)
         self._inbound_refill_at.pop(client_id, None)
+        # Reap any in-flight request buffers owned by this client so a
+        # mid-request disconnect (network flicker, IDE close) never strands an
+        # event/result in the HITL or patch-ack maps. Wake each waiter first so
+        # its suspended coroutine returns immediately instead of idling until
+        # its own timeout fires. The result buffer is popped before set() so the
+        # woken coroutine resumes to an empty buffer and yields None.
+        for approval_id in self._client_pending_hitl.pop(client_id, set()):
+            self._hitl_responses.pop(approval_id, None)
+            hitl_event = self._hitl_pending.pop(approval_id, None)
+            if hitl_event is not None:
+                hitl_event.set()
+        for patch_id in self._client_pending_acks.pop(client_id, set()):
+            self._patch_ack_results.pop(patch_id, None)
+            patch_event = self._patch_acks.pop(patch_id, None)
+            if patch_event is not None:
+                patch_event.set()
         # fire every registered session-cleanup hook (e.g.,
         # TaskService.cleanup_session purges the tool-call registry). Hooks
         # are registered from main.py during startup; we never let a hook
@@ -726,11 +747,12 @@ class ConnectionManager:
         )
 
     async def wait_patch_ack(
-        self, patch_id: str, timeout: float = 30.0
+        self, patch_id: str, session_id: str, timeout: float = 30.0
     ) -> Optional[Dict[str, Any]]:
         """Suspend until the host acks patch_id (client_patch_applied) or timeout fires."""
         event = asyncio.Event()
         self._patch_acks[patch_id] = event
+        self._client_pending_acks.setdefault(session_id, set()).add(patch_id)
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return self._patch_ack_results.pop(patch_id, None)
@@ -739,14 +761,23 @@ class ConnectionManager:
             return None
         finally:
             self._patch_acks.pop(patch_id, None)
+            pending = self._client_pending_acks.get(session_id)
+            if pending is not None:
+                pending.discard(patch_id)
+                if not pending:
+                    self._client_pending_acks.pop(session_id, None)
 
     def resolve_patch_ack(self, patch_id: str, result: Dict[str, Any]) -> None:
         """Called from the WS receive loop on client_patch_applied — unblocks the waiter."""
-        self._patch_ack_results[patch_id] = result
-        if patch_id in self._patch_acks:
-            self._patch_acks[patch_id].set()
-        else:
+        event = self._patch_acks.get(patch_id)
+        if event is None:
+            # Late ack: the waiter already timed out or was cancelled. patch_id is
+            # single-use, so no future waiter can ever consume this — drop it
+            # rather than orphaning an entry in the result buffer.
             logger.warning("⚠️ patch ack for unknown patch_id: %s", patch_id)
+            return
+        self._patch_ack_results[patch_id] = result
+        event.set()
 
     # ------------------------------------------------------------------
     # HITL — Human-in-the-Loop suspension
@@ -778,6 +809,7 @@ class ConnectionManager:
         approval_id = str(uuid.uuid4())
         event = asyncio.Event()
         self._hitl_pending[approval_id] = event
+        self._client_pending_hitl.setdefault(session_id, set()).add(approval_id)
 
         try:
             await self.send_personal_message(
@@ -799,6 +831,11 @@ class ConnectionManager:
             decision = None
         finally:
             self._hitl_pending.pop(approval_id, None)
+            pending = self._client_pending_hitl.get(session_id)
+            if pending is not None:
+                pending.discard(approval_id)
+                if not pending:
+                    self._client_pending_hitl.pop(session_id, None)
 
         # append one immutable row to the HITL audit chain. Approved,
         # rejected and timeout are all logged (no gap-attack surface). Best-effort:
@@ -837,15 +874,19 @@ class ConnectionManager:
         modified_content carries an optional edited payload from the
         HITL card's edit mode — consumed by the write pipeline for single-file patches.
         """
+        event = self._hitl_pending.get(approval_id)
+        if event is None:
+            # Late response: the waiter already timed out or was cancelled.
+            # approval_id is single-use, so no future waiter can consume this —
+            # drop it rather than orphaning an entry in the response buffer.
+            logger.warning("⚠️ HITL response received for unknown approval_id: %s", approval_id)
+            return
         self._hitl_responses[approval_id] = {
             "approved": approved,
             "comment": comment,
             "modified_content": modified_content,
         }
-        if approval_id in self._hitl_pending:
-            self._hitl_pending[approval_id].set()
-        else:
-            logger.warning("⚠️ HITL response received for unknown approval_id: %s", approval_id)
+        event.set()
 
 
 # Global singleton

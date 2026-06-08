@@ -52,7 +52,7 @@ async def apply_patch_set(
     )
     await vfs_manager.emit_apply_workspace_edit(session_id, payload)
 
-    ack = await vfs_manager.wait_patch_ack(patch_id, timeout=_ACK_TIMEOUT_S)
+    ack = await vfs_manager.wait_patch_ack(patch_id, session_id, timeout=_ACK_TIMEOUT_S)
     if ack is None:
         return {"ok": False, "error": "Timed out waiting for the editor to apply the change."}
     return ack

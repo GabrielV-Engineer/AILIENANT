@@ -3465,3 +3465,26 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
 - **Files changed:**
   - Core: `mypy.ini` (3 bloques añadidos), `core/janitor.py`, `core/memory/semantic_memory.py`, `core/memory/trajectory_memory.py`, `core/tool_rag.py`, `api/runtime.py`, `core/sandbox.py` (inline ignores eliminados).
   - Docs EDIT: `PHASE_8_BLUEPRINT.md` (8.8/8.0.8 → CLOSED + campaign COMPLETE + tabla de auditoría), `PROJECT_MANIFEST.md` (8.0.8 → `[x]`, campaña declarada COMPLETA), `TECH_DEBT_BACKLOG.md` (DEBT-020/021/022/023 nuevos), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.1.A: Cierre de DEBT-019 — fuga de buffer de request WebSocket — 2026-06-08
+
+- **Status:** OK — fuga cerrada con **guard-at-store + sweep en disconnect**. DoD verde: `tests/test_ws_buffer_lifecycle.py` (6 casos) verde; `pytest` → 930/0; `mypy .` → 0/248.
+
+- **Dos fugas distintas, una causa raíz (almacenamiento incondicional):**
+  1. *Huérfano de llegada tardía (la fuga primaria).* `resolve_patch_ack` / `resolve_human_approval` guardaban el resultado **siempre**. Si el waiter ya hizo teardown (timeout de `asyncio.wait_for`, cancelación, cierre del IDE a mitad de request), un ack/respuesta tardío quedaba almacenado sin consumidor. Como cada clave es un UUID de un solo uso cuya corrutina ya retornó, ningún waiter futuro puede consumirlo → memoria muerta permanente, O(H) en sesiones largas.
+  2. *Disconnect a mitad de request.* `disconnect()` recolectaba `_inbound_tokens`/`_inbound_refill_at` pero no los buffers HITL/patch.
+
+- **Fix (decisión del usuario — guard-at-store + sweep, ambos):** `resolve_*` ahora almacenan **solo** si un waiter sigue pendiente (mata el huérfano en el origen, O(1), acota memoria en todo momento). El descarte es demostrablemente seguro: la corrutina que esperaba ya retornó. Se añaden dos reverse-lookup indexes (`_client_pending_hitl`, `_client_pending_acks`, keyed por `session_id`) mantenidos en `request_human_approval` / `wait_patch_ack` (entry + finally). Confirmado por investigación: `client_id` ≡ `session_id` (misma clave en `active_connections` / `has_client`), por lo que el índice es directamente barrible en `disconnect(client_id)`.
+
+- **Threading de `session_id` en `wait_patch_ack`:** el método no tenía contexto de sesión; se le añade un positional `session_id`. El único llamador de producción (`core/write_pipeline.py:55`) ya lo tiene; `test_write_pipeline.py` lo mockea como `AsyncMock`, así que el cambio de firma es transparente.
+
+- **Anti-zombie en el sweep (corrección de concurrencia, §3):** barrer el dict no basta — la corrutina suspendida sigue parada en `asyncio.wait_for(event.wait(), timeout)` y quedaría ociosa hasta agotar el timeout (tarea zombie consumiendo recursos del loop). El sweep **despierta** cada waiter (`event.set()` tras vaciar el result-buffer) para que retorne `None` en O(1) inmediatamente. El orden importa: se vacía el result-buffer **antes** del `set()`, de modo que la corrutina despierta a un buffer vacío y rinde `None`; su propio `finally` corre como no-op inofensivo.
+
+- **Nota sobre la propuesta original:** el fix (b) listado en el backlog (reverse index removido en `finally`) por sí solo **no** captura el huérfano de llegada tardía — la entrada del índice ya desapareció cuando llega el resultado tardío. Por eso el guard-at-store (a) es la mitad portante.
+
+- **Test (`tests/test_ws_buffer_lifecycle.py`, estilo `ConnectionManager()` directo sin socket):** (1–2) respuesta/ack tardío sin waiter → buffer vacío; (3–4) disconnect barre HITL/patch en vuelo; (5) waiter con timeout luego ack tardío → sin huérfano; (6) disconnect despierta un waiter vivo → retorna `None` bajo `wait_for(task, 1.0)`, probando que no queda zombie hasta el timeout de 30s.
+
+- **Files changed:**
+  - Core: `api/websocket_manager.py` (guard-at-store en `resolve_*`, dos reverse indexes, `wait_patch_ack` con `session_id`, sweep+wake en `disconnect`), `core/write_pipeline.py` (llamador actualizado).
+  - Tests: `tests/test_ws_buffer_lifecycle.py` (nuevo).
+  - Docs EDIT: `TECH_DEBT_BACKLOG.md` (DEBT-019 → RESOLVED), `PROJECT_MANIFEST.md` (8.1.A → `[x]`), `DEV_JOURNAL.md` (este hito).
