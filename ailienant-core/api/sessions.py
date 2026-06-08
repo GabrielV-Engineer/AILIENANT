@@ -22,7 +22,7 @@ serialized state, no model output. See plan W10 (cybersecurity posture).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter
 from langchain_core.runnables import RunnableConfig
@@ -125,7 +125,7 @@ def compute_context_occupancy(thread_id: str) -> ContextOccupancy:
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         tup = checkpoint_manager.get_tuple(config)
         if tup is not None:
-            checkpoint: Dict[str, Any] = tup.checkpoint  # type: ignore[assignment]
+            checkpoint: Dict[str, Any] = cast(Dict[str, Any], tup.checkpoint)
             values = checkpoint.get("channel_values", {}) if isinstance(checkpoint, dict) else {}
             if isinstance(values, dict):
                 profile = values.get("active_llm_profile")

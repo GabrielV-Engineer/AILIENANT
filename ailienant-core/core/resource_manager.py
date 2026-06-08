@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, cast
 
 logger = logging.getLogger("AILIENANT_RESOURCE_BROKER")
 
@@ -211,7 +211,7 @@ async def _emit_contention_and_await_resolution(
 
     raw = (response.get("comment") or "").strip().upper()
     if raw in {"WAIT", "SWITCH_TO_CLOUD", "CANCEL"}:
-        return raw  # type: ignore[return-value]
+        return cast(Resolution, raw)
     logger.warning(
         "Resource contention: unrecognised resolution %r for session=%s; defaulting to SWITCH_TO_CLOUD.",
         raw,

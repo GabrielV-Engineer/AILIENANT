@@ -8,7 +8,7 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, List, Optional, cast
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, cast
 
 # Phase 7.12.9 (Fix 4) — force UTF-8 on stdout/stderr BEFORE anything logs or prints.
 # On Windows the default cp1252 console raises 'charmap' codec errors on emoji (📋,
@@ -40,6 +40,7 @@ from core.config.byom_config import stream_watchdog_ms
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _JSONResponse, PlainTextResponse
+from starlette.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
@@ -109,6 +110,7 @@ from shared.contracts import (
     PPRRequest, PPRResult,
 )
 from api.api_contracts import DirtyBuffer
+from core.vfs_middleware import DirtyBuffer as VfsDirtyBuffer
 from api.ws_contracts import IdeTelemetryPayload, DreamingRunPayload
 
 # Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
@@ -218,7 +220,10 @@ app.add_middleware(
 # when AILIENANT_AUTH_TOKEN env var is set. Dev-mode bypass: if the var is absent,
 # all requests pass. Dashboard SPA (same-origin) is exempt: S7-D CSRF already guards it.
 @app.middleware("http")
-async def _require_token(request: Request, call_next):  # type: ignore[no-untyped-def]
+async def _require_token(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
     if not _AUTH_TOKEN:
         return await call_next(request)          # dev mode: no token configured
     if request.url.path == "/":
@@ -941,7 +946,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     # api_contracts.DirtyBuffer and vfs_middleware.DirtyBuffer are
                     # structurally-identical DTOs duplicated across the transport/core
                     # boundary (pre-existing); ingestion is duck-typed at runtime.
-                    [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)]  # type: ignore[list-item]
+                    cast(List[VfsDirtyBuffer], [DirtyBuffer(path=valid_event.data.filepath, content=valid_event.data.content)])
                 )
                 # 2. Critical files bypass debounce; normal files coalesced in 500ms window
                 _proj = _session_project_id.get(client_id, "")

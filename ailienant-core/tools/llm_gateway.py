@@ -606,7 +606,9 @@ class LLMGateway:
             return resp.choices[0].message.content or ""
 
         # Streaming branch. on_thinking is guaranteed non-None by want_stream.
-        sink: Callable[[str], Awaitable[None]] = on_thinking  # type: ignore[assignment]
+        if on_thinking is None:
+            return ""  # unreachable by construction
+        sink: Callable[[str], Awaitable[None]] = on_thinking
         buffer: List[str] = []
         sink_live = True
         async for delta in LLMGateway.astream_byom_thinking(
