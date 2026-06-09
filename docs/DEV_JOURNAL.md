@@ -2,6 +2,31 @@
 
 ---
 
+## Inducción de Fase 7.19 — Agentic Execution Cell & Persistent Audit Trail (planificación) — 2026-06-08
+
+**Estado:** 📋 DOCUMENTADA (WBS + blueprint creados; cero código aún) | **Gates:** N/A (docs-only)
+
+### Contexto y auditoría
+Tras cerrar el fix de SEARCH/REPLACE (Hito 8.3), una conversación de arquitectura (Director IT + Arquitecto de Sistemas) evaluó el bucle de debugging actual contra el patrón Claude-Code/Codex. La auditoría del código real (no del memory, que estaba desactualizado) reveló:
+- **El sandbox SÍ está construido y wired** (Phase 6.2 aterrizó): 3 tiers (Docker/Wasm/NativeHITL) + resolver + dispatch por `get_active_adapter().execute()` en `tools/execution_tools.py`.
+- **El bucle de 7.18.0 es estructurado y por lotes**, no agéntico: el planner emite un paso `run_command`, el coder lo ejecuta one-shot (output buffereado, `tty=False`, sin stdin/streaming/interrupt), y el grafo reintenta por aristas. `validate_output` solo valida el **schema** de salida, NO corre tests.
+- **Falta el bucle agéntico ReAct** con terminal continua bidireccional — lo que separa a un ingeniero autónomo de un chatbot.
+
+### Decisión arquitectónica
+No se reemplaza LangGraph+MCTS por un agente ReAct: se **integra** una "célula de ejecución agéntica" como nodo acotado DENTRO del grafo. Se conserva toda la espina; se añade el bucle vivo. Decisiones de Director (locked): (1) Native Direct = híbrido (allowlist + aprobación de sesión); (2) la célula **coexiste** con `run_command`; (3) PTY bidireccional desde el Día 1.
+
+### Conflicto §3 resuelto (numeración)
+"Phase 8.x" colisiona doblemente: con la FASE 8 del manifest (testing) y con `PHASE_8_BLUEPRINT.md` (campaña mypy --strict, cerrada). Resuelto registrando la capability como **FASE 7.19** (sucesor directo de 7.18, era de feature activa) por decisión del usuario. Otros §3 elevados al blueprint: determinismo vs. Rewind (checkpoint por iteración), caché 7.18.4 (bypass por iteración), DEBT-009 (MCTS-into-live-loop cierra en la célula).
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `docs/PROJECT_MANIFEST.md` | Fila 7.19 en el mapa; bullet Track 7.19 en Estado Actual; sección WBS completa FASE 7.19 (7.19.0–7.19.7, ADR-747..754) |
+| `docs/PHASE_7_19_BLUEPRINT.md` | **Nuevo** — contrato vinculante: rationale, decisiones locked, conflictos §3, WBS, función de costo FinOps, staging |
+| `docs/DEV_JOURNAL.md` | esta entrada de inducción |
+
+---
+
 ## Hito 8.3: CoderAgent — formato SEARCH/REPLACE reemplaza el frágil code-in-JSON — 2026-06-08
 
 **Estado:** ✅ COMPLETO | **Gates:** `pytest test_coder_agent + test_response_cache` → 21 passed · `mypy .` 0/248 · suite completa green

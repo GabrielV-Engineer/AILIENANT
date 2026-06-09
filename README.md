@@ -226,6 +226,7 @@ Proyect_Ailienant/
 │   ├── PHASE_7_14_BLUEPRINT.md # Master architectural contract for Phase 7.14 — Zero-Bubble & Diff Engine (ADR-720..726)
 │   ├── PHASE_7_14_0_STACK_CONTRACT.md # Ratified 7.14.0 stack/theming/bundle contract (pinned deps + 500KB ceiling + IIFE/large-diff directives)
 │   ├── PHASE_7_18_BLUEPRINT.md # Master architectural contract for Phase 7.18 — Six-Technique Hardening Sweep / Closed-Loop Executor (ADR-740..746)
+│   ├── PHASE_7_19_BLUEPRINT.md # Master architectural contract for Phase 7.19 — Agentic Execution Cell & Persistent Audit Trail (ADR-747..754)
 │   ├── TECH_DEBT_BACKLOG.md    # Continuous tech-debt registry (DEBT-001..010; mypy --strict + deferred capability gaps)
 │   ├── AILIENANT_CODEX.md      # Analyst self-knowledge source (Phase 7.10.3 — ADR-703; cached, budget-sliced into analyst context)
 │   ├── SCHEMA_EVOLUTION.MD     # State + agent contracts
