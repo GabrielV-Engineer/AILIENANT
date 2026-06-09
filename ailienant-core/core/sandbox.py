@@ -42,11 +42,18 @@ import shlex
 import tempfile
 from abc import ABC, abstractmethod
 from io import BytesIO
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import docker
 import wasmtime
 from pydantic import BaseModel
+
+from core.pty_session import (
+    PreSpawnGuard,
+    SandboxSession,
+    _PtyBackend,
+    _PtySession,
+)
 
 logger = logging.getLogger("AILIENANT_SANDBOX")
 
@@ -135,6 +142,33 @@ class SandboxAdapter(ABC):
         """
         ...
 
+    supports_sessions: bool = False
+    """Whether the tier can open a persistent interactive :class:`SandboxSession`.
+
+    ``False`` on the base so non-interactive tiers (pure-compute Wasm) need no
+    override; session-capable tiers set it ``True`` and override
+    :meth:`open_session`. A dispatcher branches on this flag rather than
+    catching ``NotImplementedError``.
+    """
+
+    async def open_session(
+        self,
+        *,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+        pre_spawn_guard: Optional[PreSpawnGuard] = None,
+    ) -> SandboxSession:
+        """Open a persistent interactive shell that survives across commands.
+
+        Default implementation refuses: tiers without interactive I/O do not
+        override it. Overriding tiers must also set
+        :attr:`supports_sessions` to ``True``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support interactive sessions."
+        )
+
 
 # ── Docker concrete adapter ──────────────────────────────────────────────────
 
@@ -154,6 +188,8 @@ class DockerSandboxAdapter(SandboxAdapter):
     worker thread because the synchronous SDK call cannot be interrupted from
     Python. The Phase 6.1.4 resolver will surface this via a startup probe.
     """
+
+    supports_sessions = True
 
     def __init__(self, *, host_workspace: Optional[str] = None) -> None:
         self._client: Optional[Any] = None
@@ -212,6 +248,41 @@ class DockerSandboxAdapter(SandboxAdapter):
             stderr = f"{timeout_note}\n{stderr}" if stderr else timeout_note
 
         return SandboxResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    async def open_session(
+        self,
+        *,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+        pre_spawn_guard: Optional[PreSpawnGuard] = None,
+    ) -> SandboxSession:
+        """Open a persistent ``sh`` inside the daemon container over an exec socket.
+
+        The exec is created with a TTY so the stream is raw (no 8-byte demux
+        header) and line discipline is real, matching the host PTY model.
+        """
+        del session_id  # session identity is the dispatcher's concern
+        await self._ensure_container_running()
+        assert self._container is not None and self._client is not None
+        client = self._client
+        container_id = self._container.id
+        container_cwd = self._translate_cwd(cwd)
+
+        def _factory(
+            argv: List[str], _cwd: str, env: Dict[str, str], _marker: bytes,
+        ) -> _PtyBackend:
+            return _DockerPtyBackend(client, container_id, container_cwd, env, argv)
+
+        session = _PtySession(
+            cwd=container_cwd,
+            env=dict(env_whitelist),
+            shell_kind="posix",
+            pre_spawn_guard=pre_spawn_guard,
+            backend_factory=_factory,
+        )
+        await session.start()
+        return session
 
     async def shutdown(self) -> None:
         """Stop + remove the named container and close the Docker client.
@@ -726,6 +797,149 @@ class WasmSandboxAdapter(SandboxAdapter):
                 return ""
 
         return _read(out_path), _read(err_path)
+
+
+# ── Native Direct interactive tier (persistent PTY) ──────────────────────────
+
+
+class _DockerPtyBackend(_PtyBackend):
+    """Persistent ``sh`` inside the sandbox daemon container over an exec socket.
+
+    The exec is created with ``tty=True`` so the attached socket carries a raw
+    stream (no Docker 8-byte stream-multiplexing header) and the container shell
+    has real line discipline. Blocking ``recv`` runs in the session's reader
+    thread, exactly like the host PTY master read.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        container_id: str,
+        cwd: str,
+        env: Dict[str, str],
+        argv: List[str],
+    ) -> None:
+        self._api = client.api
+        created = self._api.exec_create(
+            container_id,
+            argv,
+            workdir=cwd or _CONTAINER_WORKDIR,
+            environment=dict(env),
+            stdin=True,
+            tty=True,
+        )
+        self._exec_id = created["Id"]
+        sock = self._api.exec_start(self._exec_id, socket=True, tty=True)
+        # docker-py wraps the raw socket; the OS socket is exposed at ``_sock``.
+        self._sock = getattr(sock, "_sock", sock)
+        try:
+            self._sock.setblocking(True)
+        except OSError:
+            pass
+
+    @property
+    def pid(self) -> Optional[int]:
+        return None
+
+    def read(self, size: int) -> bytes:
+        try:
+            return bytes(self._sock.recv(size))
+        except OSError:
+            return b""
+
+    def write(self, data: bytes) -> None:
+        self._sock.sendall(data)
+
+    def send_interrupt(self) -> None:
+        try:
+            self._sock.sendall(b"\x03")
+        except OSError:
+            pass
+
+    def terminate_tree(self) -> None:
+        # Closing the exec socket ends the in-container shell; the container
+        # itself is reaped by DockerSandboxAdapter.shutdown.
+        self.close()
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+    def wait(self, timeout: Optional[float] = None) -> Optional[int]:
+        try:
+            info = self._api.exec_inspect(self._exec_id)
+            code = info.get("ExitCode")
+            return int(code) if code is not None else None
+        except Exception:  # noqa: BLE001 — inspect best-effort during teardown
+            return None
+
+
+async def _collect_stream(session: SandboxSession, sink: List[bytes]) -> None:
+    """Drain a session's output stream into ``sink`` until it closes."""
+    async for chunk in session.stream():
+        sink.append(chunk)
+
+
+class NativeDirectSandboxAdapter(SandboxAdapter):
+    """Host-native tier with a persistent interactive shell (no per-command HITL).
+
+    Unlike :class:`NativeHITLSandboxAdapter` — which suspends every call on a
+    human approval and returns a single buffered result — this tier owns a
+    long-lived PTY: output streams incrementally, ``stdin`` is writable, and the
+    process tree can be interrupted or killed. Governance (allowlist plus
+    session-level approval) is applied by the dispatcher above this layer, not
+    per command here. Defined for the session machinery; the startup resolver
+    does not yet select it.
+    """
+
+    supports_sessions = True
+
+    async def open_session(
+        self,
+        *,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+        pre_spawn_guard: Optional[PreSpawnGuard] = None,
+    ) -> SandboxSession:
+        del session_id  # session identity is the dispatcher's concern
+        session = _PtySession(
+            cwd=cwd,
+            env=dict(env_whitelist),
+            pre_spawn_guard=pre_spawn_guard,
+        )
+        await session.start()
+        return session
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+    ) -> SandboxResult:
+        """One-shot convenience over a transient session: open → run → drain → close."""
+        session = await self.open_session(
+            cwd=cwd, env_whitelist=env_whitelist, session_id=session_id,
+        )
+        chunks: List[bytes] = []
+        collector = asyncio.ensure_future(_collect_stream(session, chunks))
+        try:
+            exit_code = await session.run(command, timeout_s=timeout_s)
+        except asyncio.TimeoutError:
+            await session.kill()
+            await asyncio.gather(collector, return_exceptions=True)
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[native_direct_timeout]",
+            )
+        await session.close()
+        await asyncio.gather(collector, return_exceptions=True)
+        body = b"".join(chunks).decode("utf-8", errors="replace")
+        return SandboxResult(exit_code=exit_code, stdout=body, stderr="")
 
 
 # ── Phase 6.1.4 — startup tier resolution ────────────────────────────────────

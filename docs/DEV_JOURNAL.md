@@ -2,9 +2,38 @@
 
 ---
 
+## Fase 7.19.0: Contrato `SandboxSession` + Multiplexor PTY de Backend — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/252 · pytest dirigido 11 passed (+2 Unix-only skip en Windows) · suite completa 968 passed, 2 skipped
+
+### Contexto
+Primera subfase de la Fase 7.19 (Agentic Execution Cell). Pone la **base mecánica** del bucle ReAct vivo: una terminal persistente, bidireccional y no-bloqueante. Solo mecánica — la célula ReAct (7.19.2), la gobernanza allowlist/aprobación-de-sesión (7.19.2) y la telemetría Glass-Box (7.19.4) se construyen encima. **Sin cambio de comportamiento en el sistema corriendo:** el nuevo tier queda definido pero dormido.
+
+### Decisión arquitectónica
+**Un shell persistente por sesión** (no spawns por-comando): es el único modelo que preserva `cwd`/`env` honestamente, porque `export`/`cd` viven dentro del shell. Las fronteras de comando se detectan con un **sentinela UUID** prefijado por bytes de control que hace echo de `$?`; con echo de terminal deshabilitado y un regex de frontera anclado, el comando ecoado nunca se mal-parsea como fin-de-comando. La extensión del contrato usa un default `NotImplementedError` + flag `supports_sessions` → **cero ediciones** a los 3 adaptadores existentes; Wasm (compute puro) no se ve forzado a fingir una sesión interactiva. Calibración de Director (en planificación): `interrupt()` = Ctrl-C/SIGINT (la shell sobrevive) y `kill()` = teardown del árbol + reap; el reap sin-zombies del DoD se asserta sobre `kill()`.
+
+### Correcciones de riesgo incorporadas (perspectiva Director IT)
+1. **Echo del PTY (determinismo del sentinela):** un PTY ecoa stdin a stdout; sin deshabilitarlo, el shell ecoaría el sentinela antes de ejecutar y el parser cerraría el comando prematuramente. Fix: `termios` limpia `ECHO`/`ECHONL` en el master fd inmediatamente tras `os.openpty()`; el regex de frontera (marcador + dígitos) tampoco colisiona con el comando ecoado (que lleva el `%d` sin resolver).
+2. **Backpressure sin pérdida:** como `asyncio.Queue` no es thread-safe, el reader thread entrega bytes vía `run_coroutine_threadsafe(q.put(...)).result()` — un `.result()` bloqueante propaga la presión a los buffers del OS y pausa el hijo, **sin descartar bytes** (descartar partiría una secuencia UTF-8 y rompería el decoder incremental del consumidor).
+3. **Sin leak de threads:** `kill()`/`close()` cierran explícitamente el master fd/handle, lo que fuerza el EOF/`OSError` que desbloquea `backend.read()`, y luego hacen `join(timeout)` del reader thread (el `daemon=True` queda solo de respaldo).
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `core/pty_session.py` | **Nuevo** — `SandboxSession` ABC + `_PtySession` (bridge reader-thread→`asyncio.Queue` uniforme cross-plataforma, demux con sentinela UUID, backpressure lossless, teardown fd-close+join) + backends Unix-`openpty` (echo-off), `pywinpty`-ConPTY, y pipe-degradado |
+| `core/sandbox.py` | `supports_sessions` + `open_session` (default-NotImplemented) en la ABC; `NativeDirectSandboxAdapter` (nuevo tier, **no en el resolver**); `_DockerPtyBackend` + override `open_session` de Docker (exec socket `tty=True`) |
+| `requirements.txt` | `pywinpty>=2.0.0; sys_platform == "win32"` (preservando UTF-16-LE) |
+| `mypy.ini` | stanza `[mypy-winpty,winpty.*] ignore_missing_imports` |
+| `tests/test_phase7_19_0_pty_session.py` | **Nuevo** — emulador de shell in-memory (stub PTY) + casos dirigidos: preserve cwd/env, deltas streameados, stdin continúa, kill sin zombie, event-loop no-bloqueado bajo cuelgue (`asyncio.wait_for`), echo no-frontera, backpressure lossless, reader joineado, UTF-8 partido reensambla; + variantes Unix-only con `openpty` real |
+
+### Deuda declarada (CLAUDE.md §7)
+**DEBT-025** — el `_DockerPtyBackend` está implementado pero no tiene test de integración contra un daemon Docker vivo (la suite dirigida usa stub + `openpty` real Unix). La ruta host-PTY (Native Direct, la que el dispatcher de 7.19.2 conducirá primero) sí está cubierta. Tratar el primer uso vivo del backend Docker como gated por integración.
+
+---
+
 ## Hito 8.7: Disciplina de scope del Planner + aprobación secuencial por-archivo + diffs colapsables — 2026-06-09
 
-**Estado:** ✅ COMPLETO | **Gates:** `npm run compile` 0 · `npm run lint` 0 · `mypy .` 0/250 · `pytest` 956 passed (+3 nuevos)
+**Estado:** ✅ COMPLETO | **Gates:** `npm run compile` 0 · `npm run lint` 0 · `mypy .` 0/250 · `pytest` 957 passed (+3 nuevos)
 
 ### Problema resuelto
 Un pedido de UN archivo ("escribe Fibonacci en `calculadora_fibo.py`, propón el cambio") en un folder lleno de docs inconexos destapó tres defectos: (1) el Planner alucinó un SEGUNDO cambio — un edit sin sentido de un `GDD.md` ("Goblin Mall") cosido de otros docs del folder, gastando tokens y disparando un note de self-heal antes de las tarjetas; (2) los dos archivos viajaban en UN solo `approval_id` con resolución first-click-wins → rechazar el bogus descartaba también el válido; (3) un diff largo inunda el chat.
