@@ -68,7 +68,7 @@ binaries erodes trust. We stream granular WebSocket events (`tool_call_start`, `
 
 ---
 
-## WBS — Subfases (ADRs 747–754)
+## WBS — Subfases (ADRs 747–755)
 
 | Sub | Title | ADR | Net-new |
 |---|---|---|---|
@@ -78,8 +78,9 @@ binaries erodes trust. We stream granular WebSocket events (`tool_call_start`, `
 | 7.19.3 | Multi-Axis Iteration Governor (circuit breaker) | 750 | steps ∧ tokens ∧ time bounds |
 | 7.19.4 | WebSocket Telemetry API & Event Dispatcher | 751 | typed granular deltas, O(1) routing, GC |
 | 7.19.5 | Frontend: Shadow-DOM Audit Widgets | 752 | collapsible accordions, virtualized >1000 lines |
-| 7.19.6 | Frontend: Interactive Chat PTY (xterm.js) | 753 | live stream + stdin injection |
-| 7.19.7 | Checkpoint Gate Phase 7.19 | 754 | sibling test-only gate |
+| 7.19.6 | Frontend: Interactive Chat PTY (xterm.js) + Composer Send/Stop Toggle | 753 | live stream + stdin injection + send-button mutates to stop (same button) |
+| 7.19.7 | Structured Agent Output: Execution Checklist & Rich Explanatory Rendering | 754 | progressive ☐→✅ checklist (reuses emit_graph_mutation) + cross-mode WBS-seed + scenario-driven GFM tables/lists |
+| 7.19.8 | Checkpoint Gate Phase 7.19 | 755 | sibling test-only gate |
 
 Detailed per-subfase scope, DoD, and risk notes live in the manifest WBS
 (`PROJECT_MANIFEST.md → FASE 7.19`). This blueprint is the binding contract; any deviation requires a
@@ -121,4 +122,4 @@ cd ..\ailienant-extension
 npm run compile                                 # tsc --noEmit + eslint + esbuild → 0
 ```
 
-Phase closes when `tests/test_phase7_19_checkpoint_gate.py` is green (7.19.7).
+Phase closes when `tests/test_phase7_19_checkpoint_gate.py` is green (7.19.8).
