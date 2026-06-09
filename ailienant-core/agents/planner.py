@@ -545,7 +545,11 @@ async def run_planner_node(
         "plain string. NEVER an object/dict — write a sentence, not '{\"file\": \"x\"}'.\n"
         "- Each task's 'target_role' MUST be exactly ONE of: core_dev, architect_refactor, "
         "devops_infra, secops, qa_tester, doc_manager, vcs_manager, data_ml_engineer.\n"
-        "- Each task's 'action' MUST be one of: read_file, write_file, edit_file, run_command.\n\n"
+        "- Each task's 'action' MUST be one of: read_file, write_file, edit_file, run_command.\n"
+        "- Set 'requires_iteration': true on a task ONLY when it needs an autonomous "
+        "run-read-edit-rerun loop to converge — e.g. fix failing tests, debug a stack trace, "
+        "or iterate a build until it passes. Leave it false (or omit it) for trivial "
+        "single-shot edits and one-off commands; those take the faster, cheaper path.\n\n"
         # flat-JSON contract to stop envelope wrapping.
         "CRITICAL FORMATTING RULE: Return ONLY the raw JSON object. DO NOT wrap it in any "
         "top-level key such as 'response', 'mission', 'result', or 'MissionSpecification'. "

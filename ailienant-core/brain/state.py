@@ -103,6 +103,16 @@ class WBSStep(BaseModel):
         default="pending",
         description="Estado actual de la tarea. El Orchestrator muta esto durante la ejecución.",
     )
+    requires_iteration: bool = Field(
+        default=False,
+        description=(
+            "Routes this step to the autonomous ReAct execution cell (continuous "
+            "run-read-edit-rerun loop over a live terminal) instead of the one-shot "
+            "coder path. Set for multi-step debugging / test-fix / iterate-until-green "
+            "work; leave False for trivial single-shot edits and commands. Additive and "
+            "backward-compatible: older plans without the field default to the one-shot path."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -593,3 +603,14 @@ class AIlienantGraphState(TypedDict):
     last_error_trace: Optional[str]
     failed_node: Optional[str]
     failure_signature: Optional[str]
+
+    # --- Agentic Execution Cell (ReAct sub-loop) channels ---
+    # agentic_iteration: in-turn counter for the autonomous cell; bounds the loop
+    #   against AGENTIC_CELL_MAX_ITERATIONS so a non-converging task concedes
+    #   gracefully instead of spinning. Scalar overwrite; the cell owns it.
+    # agentic_trajectory: append-only ledger of one record per ReAct iteration
+    #   (the structured verdict, applied edits, and any OCC-collision diagnostic).
+    #   It rides the LangGraph checkpoint, so each loop-back leaves a Rewind-able
+    #   record. operator.add reducer keeps parallel/resumed writes additive.
+    agentic_iteration: int
+    agentic_trajectory: Annotated[List[Dict[str, Any]], operator.add]

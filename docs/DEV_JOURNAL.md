@@ -2,6 +2,43 @@
 
 ---
 
+## Fase 7.19.2: Agentic Execution Cell (ReAct Sub-loop) — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/256 · pytest dirigido 16 passed · gate 7.18 9 passed · suite completa 999 passed, 2 skipped
+
+### Contexto
+7.18.0 cerró el bucle de feedback, pero **por lotes y mediado por el grafo**: el planner emite un paso `run_command`, el coder despacha UN comando one-shot, y el grafo reintenta por aristas. `validate_output` solo valida el esquema de salida — nunca corre tests. Esta sub-fase añade el **bucle ReAct** donde el LLM conduce `corre → lee veredicto estructurado → razona → edita → re-corre` hasta verde o budget, en el mismo turno, sobre la terminal persistente (7.19.0) + sync bidireccional (7.19.1). Construido encima de infraestructura ya enviada — lo net-new es el nodo, las 3 tools y la gobernanza de ramas.
+
+### Decisiones arquitectónicas
+**Una visita = una iteración ReAct (loop-back, no while in-node):** el nodo `run_agentic_cell_node` ejecuta una iteración; `route_after_cell` hace loop-back al mismo nodo mientras el último veredicto diga `continue`. Cada loop-back es un super-step de LangGraph → un checkpoint Rewind-able nativo, sin plumbing de checkpoint a medida (mismo mecanismo que el MICRO_SWARM coder→gate→loop). La trayectoria (`agentic_trajectory`, reducer append-only) lleva un registro por iteración.
+
+**Router planner-flagged:** `WBSStep.requires_iteration` (aditivo, default `False`) — `route_to_coders` despacha `Send("agentic_cell")` para pasos marcados y `coder_agent` para el resto. El planner setea el flag solo para debugging/test-fix iterativo; el camino trivial sigue intacto.
+
+**MCTS contenida (cierra DEBT-009):** `select_candidate_via_mcts` usa `MCTSTree` (UCB1) **solo** cuando hay ≥2 candidatos de fix compitiendo por el mismo archivo; el camino lineal de un solo edit no paga overhead. La recompensa es el **veredicto estructurado de la propia célula** (exit code + severidad de diagnósticos), NO `evaluate_node_reward` (que re-corre fix+surgeon+judge y multiplicaría costo). Única arista viva a `brain.mcts.tree` — confinada al módulo de la célula.
+
+**bypass_cache por iteración:** la célula nunca llama `response_cache.probe`; el cache single-shot del planner/coder queda intacto.
+
+### Correcciones de riesgo incorporadas (perspectiva Director IT)
+1. **Contaminación de superficie en MCTS:** `run_terminal` muta la superficie física compartida, así que un VFS-view in-memory no basta. La evaluación de candidatos es **transaccional**: push candidato → verify → rollback de la superficie a la base limpia (deshace el candidato i antes de evaluar i+1) → al final restaura la superficie al ganador. La recompensa son las corridas ya realizadas; cero llamadas LLM/judge extra.
+2. **Livelock por conflicto OCC:** un conflicto (de `pull_surface_to_vfs` o `StaleFileException` en `apply_patch_to_vfs`) inyecta un registro `{"role":"system", ...OCC conflict...}` en la trayectoria/contexto, para que el LLM RE-LEA y cambie de estrategia en vez de re-emitir el patch idéntico hasta agotar el budget.
+3. **Fuga de sesión:** `try/finally` a nivel de turno cierra la sesión en cualquier salida terminal (verde, budget, excepción) y la des-registra; `sweep_orphaned_sessions` es la red de seguridad para runs abortados. El cableo del sweep al lifecycle del Run (botón Stop) se difiere a 7.19.6 con un TODO marcado — la garantía `try/finally` existe ya.
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `brain/agentic_cell.py` | **Nuevo** — `run_agentic_cell_node` + `route_after_cell`; 3 tools (`RunTerminalArgs`/`ReadFileAstArgs`/`ApplyGranularEditArgs`) + `bind_cell_tools`; `audit_tool_args` (interceptor DANGEROUS + scrub de secretos); `_verdict_reward`; `select_candidate_via_mcts` transaccional; registro de sesión leak-safe + `sweep_orphaned_sessions` |
+| `brain/state.py` | `WBSStep.requires_iteration: bool = False`; canales `agentic_iteration: int` + `agentic_trajectory: Annotated[List[Dict], operator.add]` |
+| `brain/engine.py` | nodo `agentic_cell` (stack DLQ + instrumentación); arista loop-back `route_after_cell`; `_coder_target` selecciona célula vs coder por `requires_iteration` en SWARM/RELAY. Importa `brain.agentic_cell` (no `brain.mcts`) → el spine queda MCTS-free |
+| `brain/retry_policy.py` | `AGENTIC_CELL_MAX_ITERATIONS = 6` (bound MVP de un eje; el governor multi-eje es 7.19.3) |
+| `agents/planner.py` | directiva de prompt para setear `requires_iteration` (solo texto) |
+| `tests/test_phase7_18_checkpoint_gate.py` | gate MCTS-DEFER retargeteado: el spine single-shot sigue MCTS-free; la célula es el hogar sancionado (DEBT-009 cerrada) |
+| `tests/test_phase7_19_2_agentic_cell.py` | **Nuevo** — 16 casos: run-until-green, trayectoria por iteración, router trivial/cell, diagnóstico estructurado, OCC expected_hash + diagnóstico anti-livelock, AST skeleton, cache bypass, auditoría de inyección + scrub, selección MCTS por veredicto, rollback de superficie entre candidatos, bound de budget, sin fuga de sesión |
+
+### Deuda declarada (CLAUDE.md §7)
+**DEBT-009 cerrada** (MCTS ahora vive en la célula, gobernada por el veredicto estructurado). El bound de un eje (`AGENTIC_CELL_MAX_ITERATIONS`) es un MVP explícito — el governor multi-eje (pasos ∧ tokens ∧ tiempo) es **7.19.3 (ADR-750)**, ya en el WBS. El cableo de `sweep_orphaned_sessions` al lifecycle es **7.19.6**, ya en el WBS. DEBT-025 (Docker sin daemon CI) sigue abierta desde 7.19.0. Cero deuda nueva sin rastrear.
+
+---
+
 ## Fase 7.19.1: Workspace Synchronization Engine (VFS ↔ Sandbox · OCC) — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/254 · pytest dirigido 15 passed · suite completa 983 passed, 2 skipped

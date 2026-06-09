@@ -31,6 +31,12 @@ CORRECTION_MAX_ATTEMPTS: int = 3
 # spending LLM calls on a known-unfixable error and routes straight to the DLQ.
 FAILURE_SIGNATURE_THRESHOLD: int = 3
 
+# Autonomous ReAct cell: maximum run-read-edit-rerun iterations in a single turn
+# before the loop concedes gracefully (no infinite loop). A single-axis bound — the
+# full multi-axis governor (steps AND tokens AND elapsed time) supersedes this with a
+# richer envelope; until then this ceiling guarantees in-turn termination.
+AGENTIC_CELL_MAX_ITERATIONS: int = 6
+
 # Transport-layer retries handed to litellm for a single LLM call (connection
 # blips / transient 5xx). Distinct from the cognitive retry budgets above — this
 # is the network envelope, applied uniformly across every gateway invocation.

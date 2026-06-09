@@ -37,6 +37,10 @@ from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noq
 from agents.contract_guard import run_contract_guard_node  # noqa: E402 — Phase 2.23
 from core.supervisor import run_supervisor_node, route_after_supervisor  # noqa: E402 — Phase 6.5
 from agents.error_correction import run_error_correction_node  # noqa: E402 — self-healing reflexion node
+# Autonomous ReAct execution cell. engine.py imports the node only — the MCTS edge it uses
+# for branch governance lives entirely inside brain.agentic_cell, so the live graph spine
+# never imports the offline tree directly.
+from brain.agentic_cell import run_agentic_cell_node, route_after_cell  # noqa: E402
 
 
 async def run_apply_patch_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -228,10 +232,23 @@ workflow.add_node(
     "supervisor_node",
     _instrument_node("supervisor_node", dead_letter_decorator("supervisor_node")(run_supervisor_node)),
 )
+# Autonomous ReAct cell — same wrapper stack as coder_agent (DLQ + instrumentation).
+# A non-converging loop concedes gracefully inside the node, so it does not need the
+# reflexion guard; an unexpected fault still promotes to the DLQ.
+workflow.add_node(
+    "agentic_cell",
+    _instrument_node("agentic_cell", dead_letter_decorator("agentic_cell")(run_agentic_cell_node)),
+)
 
 # =====================================================================
 # 3. ROUTING LOGIC (MapReduce Fan-Out)
 # =====================================================================
+
+
+def _coder_target(step: Any) -> str:
+    """Pick the execution surface for a WBS step: the autonomous ReAct cell when the
+    planner flagged it as needing iteration, else the one-shot coder (trivial path)."""
+    return "agentic_cell" if step is not None and getattr(step, "requires_iteration", False) else "coder_agent"
 
 
 def route_to_coders(state: AIlienantGraphState) -> list[Send]:
@@ -266,7 +283,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
             tci=state.get("tci"),
         )
         return [
-            Send("coder_agent", {**state, "current_step_id": step.step_number})
+            Send(_coder_target(step), {**state, "current_step_id": step.step_number})
             for step in parallel_tasks
         ]
 
@@ -276,20 +293,22 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         if mission_spec
         else None
     )
+    target = _coder_target(first_pending)
     logger.info(
-        "➡️  RELAY: provider=%s, ejecución secuencial → paso #%s.",
+        "➡️  RELAY: provider=%s, ejecución secuencial → paso #%s (%s).",
         provider,
         first_pending.step_number if first_pending else "None",
+        target,
     )
     log_routing_decision(
         session_id=state.get("task_id", ""),
         source="drift_monitor",
-        target="coder_agent",
+        target=target,
         reason=f"RELAY: provider={provider}, sequential execution",
         css=state.get("css"),
         tci=state.get("tci"),
     )
-    return [Send("coder_agent", {**state, "current_step_id": first_pending.step_number if first_pending else None})]
+    return [Send(target, {**state, "current_step_id": first_pending.step_number if first_pending else None})]
 
 
 # =====================================================================
@@ -308,7 +327,14 @@ workflow.add_conditional_edges(
     "ideation_loop", route_after_ideation, ["planner_agent", END]
 )
 workflow.add_edge("planner_agent", "drift_monitor")
-workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent"])
+workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent", "agentic_cell"])
+# The ReAct cell loops back onto itself while its latest verdict says "continue" (each
+# loop-back is a graph super-step → a Rewind-able checkpoint), and rejoins the normal
+# downstream at contract_guard once it goes green or the iteration budget is spent.
+workflow.add_conditional_edges(
+    "agentic_cell", route_after_cell,
+    {"agentic_cell": "agentic_cell", "contract_guard": "contract_guard"},
+)
 # ContractGuardNode is inserted as transparent middleware between
 # CoderAgent and FinOpsGate. The node short-circuits internally (returns {} on
 # quiet turns), so a routing callback would be cognitive noise. The node also

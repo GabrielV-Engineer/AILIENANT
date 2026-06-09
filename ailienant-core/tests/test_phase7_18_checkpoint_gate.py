@@ -14,7 +14,7 @@ Gate rows certified here (backend-assertable):
   DIAG1   structured, capped diagnostics           REC1    hybrid recency ordering
   RF1     response_format strip+repair+memo         FS1    elided style skeleton in the prompt
   CACHE1  AST-hash cache hit/miss                    OCC1    reducers merge w/o loss + live anchor
-  MCTS-DEFER  no live-loop import edge into brain/mcts
+  MCTS-DEFER  MCTS confined to the ReAct cell, not the single-shot spine (DEBT-009 closed)
 
 Host-certified (out of pytest scope, per the 7.15 §5.2 precedent): the stale
 ``base_hash`` **rejection** itself runs in the VS Code ``applyEdit`` bridge — the
@@ -206,23 +206,31 @@ def test_occ1_reducers_merge_without_loss_and_anchor_is_edit_sensitive() -> None
     assert content_hash("def f(): pass") != content_hash("def f(): passX")
 
 
-# ── MCTS-DEFER — no live-loop import edge into brain/mcts ──────────────────────
+# ── MCTS-DEFER — MCTS confined to the ReAct cell, not the single-shot spine ────
+
+
+def _module_imports(rel: str) -> List[str]:
+    tree = ast.parse((_PKG_ROOT / rel).read_text(encoding="utf-8"))
+    imported: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.append(node.module or "")
+    return imported
 
 
 def test_mcts_defer_no_live_loop_import_into_brain_mcts() -> None:
-    # The MCTS tree is offline-only (dreaming daemon). The live loop must not import
-    # it — judged on the AST, so a comment mentioning mcts_coder never trips the gate.
+    # DEBT-009 closed: the agentic ReAct cell (brain/agentic_cell.py) is MCTS's sanctioned
+    # live home, where it governs competing fix candidates using the structured verdict as
+    # the reward. The enduring invariant is that the *cheap single-shot spine* — the
+    # planner-mediated coder and the graph wiring — stays MCTS-free, so a trivial step never
+    # pays tree-search cost. Judged on the AST, so a comment never trips the gate.
     for rel in ("brain/engine.py", "agents/coder.py"):
-        tree = ast.parse((_PKG_ROOT / rel).read_text(encoding="utf-8"))
-        imported: List[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                imported.append(node.module or "")
+        imported = _module_imports(rel)
         assert not any(
             name.startswith("brain.mcts") or "mcts_coder" in name for name in imported
-        ), f"{rel} wires the offline MCTS tree into the live loop"
+        ), f"{rel} wires the offline MCTS tree into the single-shot spine"
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
