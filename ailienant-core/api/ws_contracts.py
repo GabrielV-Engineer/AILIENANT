@@ -194,6 +194,21 @@ class ClientHITLResponseEvent(BaseModel):
     data: HITLResponsePayload
 
 
+class RegisterSessionPayload(BaseModel):
+    """One panel announcing its session id on the shared connection."""
+
+    session_id: str
+
+
+class ClientRegisterSessionEvent(BaseModel):
+    """Multiplexing handshake: the client announces a session id so the backend
+    aliases it onto this physical socket. One socket serves many sessions; the
+    client re-sends this for every active session on each (re)connect."""
+
+    event_type: Literal["client_register_session"] = "client_register_session"
+    data: RegisterSessionPayload
+
+
 # =====================================================================
 # 5. OCC — OPTIMISTIC CONCURRENCY CONTROL
 # =====================================================================
@@ -924,6 +939,7 @@ WebSocketMessage = Union[
     ServerHITLApprovalRequestEvent,
     ClientPlannerModeToggleEvent,
     ClientHITLResponseEvent,
+    ClientRegisterSessionEvent,      # multiplexing handshake — alias session→socket
     ClientConcurrencyConflictEvent,
     ServerModelWarmupEvent,
     ServerOomEngagedEvent,           # OOM rescue swap surfaced to the IDE

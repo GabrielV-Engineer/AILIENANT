@@ -842,7 +842,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     break;
                 }
                 case 'server_hitl_approval_request': {
-                    const req = msg.payload as HITLIntervention & { files?: DiffBlockShape[] };
+                    const req = msg.payload as HITLIntervention & {
+                        files?: DiffBlockShape[];
+                        proposed_files?: Array<{ file_path: string; new_content: string; base_hash?: string | null }>;
+                    };
                     // Soft-permission fast path: when the user enabled auto-accept
                     // and every risk metric is low (or none was attached), approve
                     // without ever mounting the card. Read the flag non-reactively
@@ -867,10 +870,23 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     // batches into a single React commit, so the buttons never
                     // appear without their code. The diff attaches to the awaiting
                     // assistant turn; patch_id = approval_id correlates them exactly.
-                    if (req.files && req.files.length > 0) {
-                        const blocks: DiffBlockShape[] = req.files.map(f => ({
-                            ...f, patch_id: req.approval_id,
+                    //
+                    // `files` is the host's syntax-highlighted both-sides preview.
+                    // If it's absent (host preview faulted), fall back to the
+                    // `proposed_files` that ride in this same payload and synthesize
+                    // a diff from them — base_hash tells edit (existing) from create
+                    // (new file). Either way the diff comes from ONE message, never a
+                    // second broadcast, so the buttons can't mount without their code.
+                    const blocks: DiffBlockShape[] = (req.files && req.files.length > 0)
+                        ? req.files.map(f => ({ ...f, patch_id: req.approval_id }))
+                        : (req.proposed_files ?? []).map(f => ({
+                            patch_id: req.approval_id,
+                            file_path: f.file_path,
+                            old_content: '',
+                            new_content: f.new_content,
+                            status: (f.base_hash ? 'edit' : 'create') as 'edit' | 'create',
                         }));
+                    if (blocks.length > 0) {
                         setMessages(prev => {
                             const last = prev[prev.length - 1];
                             if (last?.role === 'assistant') {

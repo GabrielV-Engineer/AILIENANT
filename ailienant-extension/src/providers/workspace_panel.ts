@@ -6,7 +6,7 @@ import * as net from 'net';
 import * as crypto from 'crypto';
 import { SessionManager } from '../brain/session';
 import { IntentRouter } from '../core/IntentRouter';
-import { PatchActuator, type ApplyWorkspaceEditPayload } from '../core/PatchActuator';
+import { PatchActuator, type ApplyWorkspaceEditPayload, type PatchedFileDiff } from '../core/PatchActuator';
 import { InlineMutationManager } from '../core/InlineMutationManager';
 import { GrammarLexer } from '../core/GrammarLexer';
 import { StreamingCodeTokenizer } from '../core/StreamingCodeTokenizer';
@@ -264,6 +264,28 @@ export class WorkspacePanelManager {
                 }
             })
         );
+
+        // Connection-level events are not owned by any single session (the backend
+        // addresses them to the physical connection, not a panel): Cmd+K inline
+        // edits run in the host editor via InlineMutationManager (handled once),
+        // and other workspace-global events (e.g. indexing progress) are mirrored
+        // to every open panel. Session-tagged events bypass this entirely — they
+        // are demultiplexed straight to their owning panel's per-session handler.
+        WSClient.getInstance().onMessageGlobal((raw) => {
+            const m = raw as { event_type?: string; data?: unknown };
+            if (!m.event_type) { return; }
+            if (
+                m.event_type === 'server_inline_edit_start' ||
+                m.event_type === 'server_inline_edit_delta' ||
+                m.event_type === 'server_inline_edit_end'
+            ) {
+                InlineMutationManager.instance.handle(m.event_type, m.data);
+                return;
+            }
+            for (const panel of this._panels.values()) {
+                panel.webview.postMessage({ type: m.event_type, payload: m.data });
+            }
+        });
     }
 
     public setTitleUpdater(updater: TitleUpdater): void {
@@ -398,17 +420,17 @@ export class WorkspacePanelManager {
      * CoreProcessManager starts it (~30 s budget). Falls back gracefully if no
      * manager is configured (e.g. manual external backend).
      */
-    private async _ensureBackend(): Promise<void> {
+    private async _ensureBackend(sessionId: string): Promise<void> {
         const api = APIClient.getInstance();
         if (await api.checkHealth()) {
-            SessionManager.getInstance().ensureConnected();
+            SessionManager.forSession(sessionId).ensureConnected();
             return;
         }
         if (!this._coreManager) { return; }
         for (let i = 0; i < 30; i++) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
             if (await api.checkHealth()) {
-                SessionManager.getInstance().ensureConnected();
+                SessionManager.forSession(sessionId).ensureConnected();
                 return;
             }
         }
@@ -471,7 +493,7 @@ export class WorkspacePanelManager {
                 // teardown, but a remounted webview boots with a stale status and
                 // the socket may have dropped while hidden. Re-assert the tunnel
                 // and mirror the *actual* socket state back to the indicator.
-                SessionManager.getInstance().ensureConnected();
+                SessionManager.forSession(session.id).ensureConnected();
                 e.webviewPanel.webview.postMessage({
                     type: 'WS_STATUS',
                     payload: WSClient.getInstance().getStatus(),
@@ -548,17 +570,6 @@ export class WorkspacePanelManager {
                 return;
             }
 
-            // Phase 7.11.1 (ADR-706 §4.5a) — Cmd+K inline edits: the host renders
-            // typed deltas directly into the active editor; the webview never sees them.
-            if (
-                msg.event_type === 'server_inline_edit_start' ||
-                msg.event_type === 'server_inline_edit_delta' ||
-                msg.event_type === 'server_inline_edit_end'
-            ) {
-                InlineMutationManager.instance.handle(msg.event_type, msg.data);
-                return;
-            }
-
             // Cache the finalized plan in host memory so it survives a webview
             // teardown without ever touching the webview's persistent-state quota.
             if (msg.event_type === 'server_plan_document' && msg.data) {
@@ -601,17 +612,30 @@ export class WorkspacePanelManager {
                 const proposed = reqData.proposed_files;
                 if (proposed && proposed.length > 0) {
                     void (async () => {
-                        const diffs = await PatchActuator.preview(
-                            proposed.map(f => ({
-                                file_path: f.file_path,
-                                new_content: f.new_content,
-                                base_hash: f.base_hash,
-                            })),
-                        );
-                        await GrammarLexer.enrich(diffs);  // best-effort; never throws
+                        // The approval MUST reach the webview even if the preview
+                        // fails — losing it here strands the backend on its 300 s
+                        // wait. So build the diff best-effort, but always post
+                        // exactly one message: with `files` when the preview
+                        // succeeds, bare otherwise (reqData still carries
+                        // proposed_files, from which the webview synthesizes a
+                        // degraded diff). One message either way — no race.
+                        let diffs: PatchedFileDiff[] = [];
+                        try {
+                            diffs = await PatchActuator.preview(
+                                proposed.map(f => ({
+                                    file_path: f.file_path,
+                                    new_content: f.new_content,
+                                    base_hash: f.base_hash,
+                                })),
+                            );
+                            await GrammarLexer.enrich(diffs);  // best-effort; never throws
+                        } catch (err) {
+                            console.error('[AILIENANT] HITL preview failed — forwarding bare approval', err);
+                            diffs = [];
+                        }
                         panel.webview.postMessage({
                             type: 'server_hitl_approval_request',
-                            payload: { ...reqData, files: diffs },
+                            payload: diffs.length > 0 ? { ...reqData, files: diffs } : reqData,
                         });
                     })();
                     return;
@@ -654,10 +678,10 @@ export class WorkspacePanelManager {
                 });
             }
         };
-        WSClient.getInstance().onMessage(wsMsgHandler);
+        WSClient.getInstance().onMessage(session.id, wsMsgHandler);
 
         // ── Health-aware activation: connect now or auto-start the Core ──────
-        void this._ensureBackend();
+        void this._ensureBackend(session.id);
 
         // ── Panel → extension host messages ────────────────────────────────
         panel.webview.onDidReceiveMessage(async (data) => {
@@ -706,7 +730,7 @@ export class WorkspacePanelManager {
                                 }
                             }
                         }
-                        const watchdogMs = await SessionManager.getInstance().startAITask(taskText, {
+                        const watchdogMs = await SessionManager.forSession(session.id).startAITask(taskText, {
                             explicit_mentions,
                             // Phase 9 (ADR-707) — forwarded from the Webview's
                             // persisted Native Thinking toggle (default true).
@@ -743,7 +767,7 @@ export class WorkspacePanelManager {
                 }
                 case 'ABORT_TASK':
                     this._runningTasks.delete(session.id);
-                    SessionManager.getInstance().abortCurrentTask();
+                    SessionManager.forSession(session.id).abortCurrentTask();
                     break;
                 case 'ABORT_MESH': {
                     // Phase 7.11.3 (ADR-706 §4.5b) — priority WS event that the
@@ -1218,8 +1242,11 @@ export class WorkspacePanelManager {
 
         // ── Cleanup on tab close ────────────────────────────────────────────
         panel.onDidDispose(() => {
-            WSClient.getInstance().removeMessageHandler(wsMsgHandler);
+            WSClient.getInstance().removeMessageHandler(session.id, wsMsgHandler);
             WSClient.getInstance().removeStatusHandler(wsStatusHandler);
+            // Stop announcing this session so a later reconnect doesn't re-alias a
+            // closed panel onto the socket.
+            WSClient.getInstance().unregisterSession(session.id);
             this._panels.delete(session.id);
             this._sessions.delete(session.id);
             this._runningTasks.delete(session.id);

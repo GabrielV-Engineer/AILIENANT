@@ -95,15 +95,32 @@ export class PatchActuator {
     static async preview(edits: WorkspaceEditItem[]): Promise<PatchedFileDiff[]> {
         const diffs: PatchedFileDiff[] = [];
         for (const item of edits) {
-            const uri = PatchActuator._resolveUri(item.file_path);
-            const doc = await PatchActuator._openExisting(uri);
-            const oldContent = doc ? doc.getText() : '';
-            diffs.push({
-                file_path: item.file_path,
-                old_content: PatchActuator._normalizeEol(oldContent),
-                new_content: PatchActuator._normalizeEol(item.new_content),
-                status: doc ? 'edit' : 'create',
-            });
+            // Defensive per file: a single unreadable target (or a malformed
+            // payload field) must not sink the whole preview — that would strand
+            // the pending approval. Coerce to strings up front and degrade a read
+            // failure to an empty old side rather than throwing.
+            const filePath = typeof item.file_path === 'string' ? item.file_path : String(item.file_path ?? '');
+            const newContent = typeof item.new_content === 'string' ? item.new_content : String(item.new_content ?? '');
+            try {
+                const uri = PatchActuator._resolveUri(filePath);
+                const doc = await PatchActuator._openExisting(uri);
+                const oldContent = doc ? doc.getText() : '';
+                diffs.push({
+                    file_path: filePath,
+                    old_content: PatchActuator._normalizeEol(oldContent),
+                    new_content: PatchActuator._normalizeEol(newContent),
+                    status: doc ? 'edit' : 'create',
+                });
+            } catch {
+                // Could not resolve/read the file — show it as a create against an
+                // empty base so the user still sees (and can authorize) the change.
+                diffs.push({
+                    file_path: filePath,
+                    old_content: '',
+                    new_content: PatchActuator._normalizeEol(newContent),
+                    status: 'create',
+                });
+            }
         }
         return diffs;
     }

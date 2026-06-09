@@ -2,6 +2,54 @@
 
 ---
 
+## Hito 8.5: WebSocket Multiplexing — sesión única por panel, un socket O(1), fix root cause HITL desync — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `npm run compile` 0 errores · `mypy .` 0/248 · `pytest` 947 passed (+5 nuevos)
+
+### Problema resuelto
+El modo ASK completaba su HITL timeout silenciosamente ("Changes discarded") porque el evento `server_hitl_approval_request` nunca llegaba al webview. La consola del Extension Host reveló el root cause:
+
+```
+WS evt=server_hitl_approval_request  evtSession=823db599…  panel=0a84cc74…  match=false  (×3 paneles)
+```
+
+**Causa raíz — session-id drift:** cada panel/chat tenía su propio `id = makeSessionId()` (0a84cc74…), pero `SessionManager` era un singleton que minteaba su propio `sessionId` independiente (823db599) y lo usaba tanto para `wsClient.connect()` como para cada `submitTask()`. El backend solo conocía 823db599; los eventos HITL venían taggeados con ese id → no matcheaba ningún panel → el filtro de la línea 533 lo dropeaba. Los eventos de streaming eran emitidos **sin tag** (broadcast a todos los paneles), lo que había enmascarado el drift por meses y producía cross-talk entre conversaciones de paneles distintos.
+
+### Solución — WebSocket Multiplexing (decisión arquitectónica del Director)
+
+**Rechazada** la alternativa de pool O(N) (un socket por panel: múltiples heartbeats, buffers TCP, route global frágil). **Implementado** el patrón correcto: **un único socket resiliente O(1)** con multiplexing lógico.
+
+1. **Backend — tagging en el chokepoint único** (`websocket_manager.py:send_personal_message`): se construye el dict ONCE con `model_dump(mode="json")`, se inyecta `data.session_id` en memoria con `setdefault`, se serializa ONCE con `json.dumps`. Sin triple-conversión (dump→parse→re-dump que disparía el CPU en streams de 5k tokens). Garantiza que TODOS los eventos — tokens, stream_end, thinking, plan, tool, HITL — lleven el routing id sin editar cada emisor.
+
+2. **Backend — handshake de registro de sesión** (`ws_contracts.py` + `websocket_manager.py` + `main.py`): nuevo contrato `ClientRegisterSessionEvent`; `register_alias(session_id, conn_id)` apunta el session_id al socket físico en `active_connections` y lo registra en `_aliases[conn_id]` para reaping. Un socket físico sirve múltiples sesiones. `disconnect` reap todos los aliases + guard de identidad para reconexión (un socket nuevo no es teardown por el close tardío del viejo).
+
+3. **Frontend — demultiplexer en WSClient** (`ws_client.ts`): `_connId` estable por ventana (el socket conecta con este id); `onMessage(sessionId, cb)` registra listeners por sesión; `onmessage` lee `data.session_id` y dispara SOLO los listeners de esa sesión; eventos sin tag (globales/connection-level) van al fallback `onGlobalHandlers`. `_registeredSessions: Set<string>` se re-anuncia en cada `'open'` (guard de reconexión: el backend borra aliases en disconnect, sin este re-announce un flicker dejaría los paneles huérfanos). `unregisterSession` en panel dispose.
+
+4. **Frontend — SessionManager como factory-cache** (`session.ts`): `SessionManager.forSession(sessionId)` reemplaza el singleton. Cada instancia inyecta su propio id en submit/abort y registra su handler OCC en `WSClient.onMessage(this.sessionId, …)`. Todas comparten el mismo WSClient.
+
+5. **Frontend — workspace_panel** (`workspace_panel.ts`): todo wired por `session.id`; handler global registrado en el constructor de `WorkspacePanelManager` para eventos connection-level (inline edits → `InlineMutationManager` una sola vez; indexing/otros → todos los paneles); diagnostics de investigación removidos; `unregisterSession` en `onDidDispose`.
+
+### Auditoría de performance incorporada (Director)
+- **Anti-patrón doble-serialización:** `dump_json → json.loads → json.dumps` triplicaría el CPU en streams largos. Fix: `model_dump(mode="json")` + inject en memoria + `json.dumps` ONCE.
+- **Vulnerabilidad de reconexión:** el backend borra aliases en disconnect. Sin re-announce en `'open'`, un flicker de red dejaría todos los paneles huérfanos. Fix: `_registeredSessions` iterada en el handler `'open'`, post-auth, en cada (re)conexión.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/api/ws_contracts.py` | `RegisterSessionPayload` + `ClientRegisterSessionEvent` + union |
+| `ailienant-core/api/websocket_manager.py` | `_aliases`, `register_alias`, `_reap_client_state`, `disconnect` (alias reaping + reconect guard), `send_personal_message` (single-pass tagging) |
+| `ailienant-core/main.py` | handler `client_register_session`; `disconnect(client_id, websocket)` |
+| `ailienant-extension/src/api/ws_client.ts` | demultiplexer; `_connId`; `_registeredSessions` + re-announce; `onMessage`/`removeMessageHandler` por sesión; `onMessageGlobal`/`onMessageGlobal`; `registerSession`/`unregisterSession`; `connect`/`ensureConnected`/`_handleReconnection` sin param |
+| `ailienant-extension/src/brain/session.ts` | `SessionManager.forSession(id)` factory-cache; `ensureConnected()` → `wsClient.ensureConnected()` + `registerSession` |
+| `ailienant-extension/src/providers/workspace_panel.ts` | wiring per-session; global handler en constructor; `unregisterSession` en dispose; diagnostics removidos |
+| `ailienant-extension/src/extension.ts` | `runTaskCmd` → `forSession(s.id)` con panel propio |
+| `ailienant-core/tests/test_ws_buffer_lifecycle.py` | 5 tests nuevos: alias routing, alias reaping, reconect guard, stamping session_id, setdefault preservation |
+
+### Resultado
+**Un único socket O(1).** Cada panel recibe exclusivamente los eventos de su propia sesión backend. El HITL timeout silencioso desaparece: `send_personal_message(session_id)` resuelve al socket real vía el alias. Cross-talk entre paneles eliminado.
+
+---
+
 ## Hito 8.4: Modo ASK — aprobación de diff inline en el chat (fix "Changes discarded — nada accionable") — 2026-06-08
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/248 · `npm run compile` 0 (2 warnings `semi` pre-existentes, DEBT-017) · backend tests tocados verdes · suite completa (pendiente confirmación)

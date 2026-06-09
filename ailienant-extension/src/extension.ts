@@ -132,7 +132,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const doc = vscode.window.activeTextEditor?.document;
             const intercepted = await IntentRouter.intercept(prompt, doc);
             if (!intercepted) {
-                await SessionManager.getInstance().startAITask(prompt);
+                // Open a session panel to host the stream, then submit under that
+                // panel's id — events route exclusively to it (per-session demux).
+                const s = await onNewSession();
+                sessionBrowser.persistSession(s);
+                workspaceManager.openSession(s);
+                await SessionManager.forSession(s.id).startAITask(prompt);
             }
         },
     );

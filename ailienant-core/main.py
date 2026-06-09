@@ -932,7 +932,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 "📥 Evento válido de %s: %s", client_id, valid_event.event_type
             )
 
-            if valid_event.event_type == "client_file_update":
+            if valid_event.event_type == "client_register_session":
+                # Multiplexing handshake: alias this session id onto the physical
+                # socket (connected under client_id) so send_personal_message routes
+                # the session's events here. Re-sent by the client on every
+                # reconnect, so it must be idempotent.
+                vfs_manager.register_alias(valid_event.data.session_id, client_id)
+
+            elif valid_event.event_type == "client_file_update":
                 # Inbound flood guard: shed save storms past the per-client token
                 # bucket so a runaway watcher cannot starve the loop. Only this
                 # telemetry-class event is gated; interactive events below never
@@ -1295,7 +1302,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
     except WebSocketDisconnect:
         # 4. Limpieza O(1) para evitar Fugas de Memoria
         logger.warning(f"⚠️ Conexión perdida abruptamente con {client_id}")
-        vfs_manager.disconnect(client_id)
+        vfs_manager.disconnect(client_id, websocket)
         # Evict per-session maps so a reconnect storm cannot grow them unboundedly
         # (one entry per historical connection would otherwise leak for process life).
         _disc_proj = _session_project_id.pop(client_id, None)

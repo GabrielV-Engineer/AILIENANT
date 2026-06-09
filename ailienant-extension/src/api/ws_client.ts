@@ -14,16 +14,33 @@ export class WSClient {
     private _wsUrl: string;
     private _token: string = '';
 
-    // Callbacks suscritos (Patrón Observer)
-    private onMessageHandlers: Set<WSMessageCallback> = new Set();
+    // Multiplexer (Observer pattern, demuxed by session): server events are
+    // tagged with data.session_id at the backend egress, so an event is fired
+    // ONLY to the listeners registered for its session. Untagged events (none
+    // today, but reserved for genuinely global pushes) fall back to the global
+    // set. Per-session demux is what keeps one physical socket serving many
+    // panels without cross-talk.
+    private onMessageHandlers: Map<string, Set<WSMessageCallback>> = new Map();
+    private onGlobalHandlers: Set<WSMessageCallback> = new Set();
     private onErrorHandlers: Set<WSErrorCallback> = new Set();
     private onStatusHandlers: Set<WSStatusCallback> = new Set();
+
+    // Sessions announced over this connection. Re-sent on every (re)connect so a
+    // network flicker — which makes the backend reap its aliases — never orphans
+    // a panel (the backend re-aliases each on the re-announce).
+    private _registeredSessions: Set<string> = new Set();
 
     // Estado de reconexión (Exponential Backoff)
     private reconnectAttempts: number = 0;
     private maxReconnectAttempts: number = 10;
     private isConnecting: boolean = false;
-    private _clientId: string = '';
+    // Stable per-window connection id. The socket is keyed by this; individual
+    // session ids are multiplexed over it via registerSession(). It is NOT a
+    // session id — sessions register their own ids as routing aliases.
+    private readonly _connId: string =
+        (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+            ? crypto.randomUUID()
+            : `conn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 
     // Current connection status — replayed to new subscribers so a panel opened
     // after the tunnel is already up still learns it is connected.
@@ -83,13 +100,12 @@ export class WSClient {
      * Inicia el túnel de red.
      * Protegido contra llamadas concurrentes.
      */
-    public connect(clientId: string): void {
+    public connect(): void {
         if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) {
             return;
         }
-        this._clientId = clientId;
         this.isConnecting = true;
-        const urlWithAuth = `${this._wsUrl}/${clientId}`;
+        const urlWithAuth = `${this._wsUrl}/${this._connId}`;
 
         try {
             const wsInstance = new WebSocket(urlWithAuth);
@@ -102,6 +118,16 @@ export class WSClient {
                 if (this._token) {
                     wsInstance.send(JSON.stringify({ event_type: 'auth', token: this._token }));
                 }
+                // Re-announce every active session so the backend re-aliases them
+                // onto this socket. Critical on RECONNECT: the prior disconnect
+                // reaped the aliases server-side, so without this every panel would
+                // be orphaned (its events would route to a dead connection).
+                for (const sid of this._registeredSessions) {
+                    wsInstance.send(JSON.stringify({
+                        event_type: 'client_register_session',
+                        data: { session_id: sid },
+                    }));
+                }
                 this._emitStatus('connected');
                 this._flushPending();
                 this._seedActiveFileVersion();
@@ -109,8 +135,21 @@ export class WSClient {
 
             wsInstance.on('message', (data: WebSocket.RawData) => {
                 try {
-                    const parsedData = JSON.parse(data.toString()) as { event_type?: string; data?: unknown };
-                    this.onMessageHandlers.forEach(handler => handler(parsedData));
+                    const parsedData = JSON.parse(data.toString()) as { event_type?: string; data?: { session_id?: string } };
+                    // Demultiplex: a tagged event fires ONLY its session's listeners
+                    // (no cross-talk between panels on the shared socket); an
+                    // untagged event falls back to the global listeners.
+                    const sid = parsedData.data?.session_id;
+                    const sessionSet = sid ? this.onMessageHandlers.get(sid) : undefined;
+                    if (sessionSet && sessionSet.size > 0) {
+                        // Session-routed: deliver only to the owning panel.
+                        sessionSet.forEach(handler => handler(parsedData));
+                    } else {
+                        // Untagged or connection-level (tagged with the connection
+                        // id, e.g. indexing / inline edits) — no panel owns it, so
+                        // hand it to the global consumers.
+                        this.onGlobalHandlers.forEach(handler => handler(parsedData));
+                    }
 
                     // Delta sync: track file version changes and flag stale Dashboard patches
                     if (parsedData.event_type === 'client_file_update') {
@@ -148,7 +187,7 @@ export class WSClient {
                     return;
                 }
                 this._emitStatus('reconnecting');
-                this._handleReconnection(clientId);
+                this._handleReconnection();
             });
 
             wsInstance.on('error', (err: Error) => {
@@ -196,15 +235,13 @@ export class WSClient {
      * forever. Reset the backoff counter and reconnect when not OPEN; the
      * existing connect() guards make an already-open socket a no-op.
      */
-    public ensureConnected(clientId?: string): void {
-        const id = clientId || this._clientId;
-        if (!id) { return; }
+    public ensureConnected(): void {
         if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) { return; }
         this.reconnectAttempts = 0;
-        this.connect(id);
+        this.connect();
     }
 
-    private _handleReconnection(clientId: string): void {
+    private _handleReconnection(): void {
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
             this._emitStatus('disconnected');
             return;
@@ -212,13 +249,46 @@ export class WSClient {
         this.reconnectAttempts++;
         // Exponential backoff: 2^n * 1000ms + jitter, capped at 30s
         const backoffTime = Math.min(Math.pow(2, this.reconnectAttempts) * 1000 + Math.random() * 500, 30000);
-        console.log(`[WSClient] Reconecting in ${Math.round(backoffTime)}ms (attempt ${this.reconnectAttempts})`);
-        setTimeout(() => this.connect(clientId), backoffTime);
+        console.log(`[WSClient] Reconnecting in ${Math.round(backoffTime)}ms (attempt ${this.reconnectAttempts})`);
+        setTimeout(() => this.connect(), backoffTime);
     }
 
     // ── Subscription methods ─────────────────────────────────────────────────
-    public onMessage(callback: WSMessageCallback): void      { this.onMessageHandlers.add(callback); }
-    public removeMessageHandler(callback: WSMessageCallback): void { this.onMessageHandlers.delete(callback); }
+    /**
+     * Subscribe to events for a specific session. The socket demultiplexes by
+     * data.session_id, so this handler only fires for THIS session's events —
+     * the basis for multiple panels sharing one connection without cross-talk.
+     */
+    public onMessage(sessionId: string, callback: WSMessageCallback): void {
+        let set = this.onMessageHandlers.get(sessionId);
+        if (!set) { set = new Set(); this.onMessageHandlers.set(sessionId, set); }
+        set.add(callback);
+    }
+    public removeMessageHandler(sessionId: string, callback: WSMessageCallback): void {
+        const set = this.onMessageHandlers.get(sessionId);
+        if (set) {
+            set.delete(callback);
+            if (set.size === 0) { this.onMessageHandlers.delete(sessionId); }
+        }
+    }
+    /** Subscribe to untagged/global events (no session_id on the payload). */
+    public onMessageGlobal(callback: WSMessageCallback): void { this.onGlobalHandlers.add(callback); }
+    public removeMessageGlobalHandler(callback: WSMessageCallback): void { this.onGlobalHandlers.delete(callback); }
+
+    /**
+     * Announce a session on this connection (multiplexing handshake). Records it
+     * so it is re-announced on every reconnect, and sends the registration now if
+     * the socket is open (queued otherwise). Idempotent.
+     */
+    public registerSession(sessionId: string): void {
+        this._registeredSessions.add(sessionId);
+        this.sendWhenReady({ event_type: 'client_register_session', data: { session_id: sessionId } });
+    }
+    /** Stop announcing a session (panel closed) so it isn't re-aliased on reconnect. */
+    public unregisterSession(sessionId: string): void {
+        this._registeredSessions.delete(sessionId);
+    }
+
     public onStatus(callback: WSStatusCallback): void {
         this.onStatusHandlers.add(callback);
         // Replay the latest status so subscribers registering after connect are accurate.

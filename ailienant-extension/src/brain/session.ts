@@ -10,29 +10,35 @@ import { WSClient } from '../api/ws_client';
 const ACTIVE_FILE_CHAR_CAP = 10_000;
 
 export class SessionManager {
-    private static instance: SessionManager;
+    // One instance per session id — each panel drives its own session over the
+    // shared WSClient singleton. (Was a process-wide singleton, which collapsed
+    // every panel onto one backend session and broke per-session routing.)
+    private static readonly _instances = new Map<string, SessionManager>();
     private readonly sessionId: string;
 
     // OCC — version snapshot captured at task submission (Phase 1.5).
     // Keyed by absolute file path; cleared on new task submission.
     private versionSnapshot: Map<string, number> = new Map();
 
-    private constructor() {
-        // vscode.env.sessionId returns a non-standard concatenated string in some VS Code builds.
-        // NOTE: Backend also requires `pip install 'uvicorn[standard]'` for WS support.
-        this.sessionId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
-            ? crypto.randomUUID()
-            : `ailienant_${Date.now().toString(36)}`;
-
-        // Register OCC handler once — checks file version on every incoming graph mutation.
-        WSClient.getInstance().onMessage(this._onWSMessage.bind(this));
+    private constructor(sessionId: string) {
+        this.sessionId = sessionId;
+        // React to THIS session's graph mutations only — the WSClient demuxes by
+        // session id, so the OCC check fires for this session's writes alone.
+        WSClient.getInstance().onMessage(this.sessionId, this._onWSMessage.bind(this));
     }
 
-    public static getInstance(): SessionManager {
-        if (!SessionManager.instance) {
-            SessionManager.instance = new SessionManager();
+    /**
+     * Factory cache: returns the SessionManager for ``sessionId`` (creating it on
+     * first use). All instances share the single WSClient connection; each injects
+     * its own session id into submit/abort so the backend inherits the panel's id.
+     */
+    public static forSession(sessionId: string): SessionManager {
+        let inst = SessionManager._instances.get(sessionId);
+        if (!inst) {
+            inst = new SessionManager(sessionId);
+            SessionManager._instances.set(sessionId, inst);
         }
-        return SessionManager.instance;
+        return inst;
     }
 
     /**
@@ -42,7 +48,10 @@ export class SessionManager {
      */
     public ensureConnected(): void {
         const wsClient = WSClient.getInstance();
-        wsClient.connect(this.sessionId);
+        wsClient.ensureConnected();
+        // Announce this session on the shared socket so the backend aliases it and
+        // routes its events here (re-announced automatically on every reconnect).
+        wsClient.registerSession(this.sessionId);
 
         const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (workspaceRoot) {

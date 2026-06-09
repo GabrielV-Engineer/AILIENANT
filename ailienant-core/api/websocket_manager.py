@@ -98,6 +98,11 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self.active_connections: Dict[str, WebSocket] = {}
+        # Multiplexing: one physical socket (keyed by its connection id) can serve
+        # several sessions. register_alias points each session_id at that socket in
+        # active_connections; this reverse index (connection id -> aliased session
+        # ids) lets disconnect reap every alias the socket owned in O(k).
+        self._aliases: Dict[str, Set[str]] = {}
         # Shutdown guard — set True by lifespan; gates new connect() calls
         self.shutting_down: bool = False
         # In-flight agent asyncio.Tasks; drained during graceful shutdown
@@ -186,26 +191,43 @@ class ConnectionManager:
         )
         return True
 
-    def disconnect(self, client_id: str) -> None:
-        if client_id in self.active_connections:
-            del self.active_connections[client_id]
-            logger.info("🔴 IDE Desconectado: %s", client_id)
-        # Drop the client's inbound rate-limit state so it cannot leak across
-        # reconnects (a fresh connection re-initializes a full bucket lazily).
-        self._inbound_tokens.pop(client_id, None)
-        self._inbound_refill_at.pop(client_id, None)
-        # Reap any in-flight request buffers owned by this client so a
-        # mid-request disconnect (network flicker, IDE close) never strands an
-        # event/result in the HITL or patch-ack maps. Wake each waiter first so
-        # its suspended coroutine returns immediately instead of idling until
-        # its own timeout fires. The result buffer is popped before set() so the
-        # woken coroutine resumes to an empty buffer and yields None.
-        for approval_id in self._client_pending_hitl.pop(client_id, set()):
+    def register_alias(self, session_id: str, client_id: str) -> None:
+        """Point ``session_id`` at the physical socket connected under ``client_id``.
+
+        Multiplexing handshake: one socket (the per-window connection ``client_id``)
+        serves many sessions. Each panel announces its ``session_id``; we alias it
+        into ``active_connections`` so ``send_personal_message(session_id)`` reaches
+        the socket, and record it under ``_aliases[client_id]`` so disconnect can
+        reap it. Idempotent — a reconnect re-announce simply re-points the alias.
+        """
+        socket = self.active_connections.get(client_id)
+        if socket is None:
+            logger.warning(
+                "register_alias: no live connection for client_id=%s (session=%s)",
+                client_id, session_id,
+            )
+            return
+        self.active_connections[session_id] = socket
+        self._aliases.setdefault(client_id, set()).add(session_id)
+        logger.info("🔗 Session %s registered on connection %s", session_id, client_id)
+
+    def _reap_client_state(self, cid: str) -> None:
+        """Drop all per-id buffers for ``cid`` and wake any suspended waiters.
+
+        Used for the connection id and every session id aliased onto it: a
+        mid-request disconnect (network flicker, IDE close) must never strand an
+        event/result in the HITL or patch-ack maps. The result buffer is popped
+        before set() so the woken coroutine resumes to an empty buffer and yields
+        None.
+        """
+        self._inbound_tokens.pop(cid, None)
+        self._inbound_refill_at.pop(cid, None)
+        for approval_id in self._client_pending_hitl.pop(cid, set()):
             self._hitl_responses.pop(approval_id, None)
             hitl_event = self._hitl_pending.pop(approval_id, None)
             if hitl_event is not None:
                 hitl_event.set()
-        for patch_id in self._client_pending_acks.pop(client_id, set()):
+        for patch_id in self._client_pending_acks.pop(cid, set()):
             self._patch_ack_results.pop(patch_id, None)
             patch_event = self._patch_acks.pop(patch_id, None)
             if patch_event is not None:
@@ -216,9 +238,27 @@ class ConnectionManager:
         # exception derail the disconnect path.
         for hook in list(_SESSION_CLEANUP_HOOKS):
             try:
-                hook(client_id)
+                hook(cid)
             except Exception as exc:  # noqa: BLE001 — defensive
                 logger.debug("session-cleanup hook swallowed: %s", exc)
+
+    def disconnect(self, client_id: str, websocket: Optional[WebSocket] = None) -> None:
+        # Reconnect guard: if a fresh socket has already taken over this
+        # connection id (reconnect under the same id), this is a stale close for
+        # the dead socket — do nothing, or we would tear down the live
+        # connection's aliases and in-flight waiters.
+        current = self.active_connections.get(client_id)
+        if websocket is not None and current is not None and current is not websocket:
+            return
+        # Every id this physical socket owned: its connection id + all aliased
+        # session ids. Reap each so multiplexed sessions don't leak on close.
+        owned = {client_id} | self._aliases.pop(client_id, set())
+        for cid in owned:
+            self.active_connections.pop(cid, None)
+            self._reap_client_state(cid)
+        logger.info(
+            "🔴 IDE disconnected: %s (+%d session alias(es))", client_id, len(owned) - 1
+        )
 
     # ------------------------------------------------------------------
     # Low-level send
@@ -227,7 +267,18 @@ class ConnectionManager:
     async def send_personal_message(self, client_id: str, event: WebSocketMessage) -> None:
         if client_id not in self.active_connections:
             return
-        payload = ws_adapter.dump_json(event).decode("utf-8")
+        # Multiplexing: one physical socket carries every session's traffic, so
+        # the client demultiplexes by data.session_id. Stamp the routing id (the
+        # client_id this event is addressed to) into the payload here — the single
+        # egress chokepoint — so EVERY event type is tagged without editing each
+        # emitter. Single serialization pass: dump the model to a dict ONCE,
+        # inject in memory, then encode ONCE (never dump→parse→re-dump, which
+        # would triple-convert and spike CPU on long token streams).
+        obj = event.model_dump(mode="json")
+        data = obj.get("data")
+        if isinstance(data, dict):
+            data.setdefault("session_id", client_id)
+        payload = json.dumps(obj, separators=(",", ":"))
         # Mirror to the live telemetry sink (O(1) enqueue, off-loop disk write).
         log_ws_payload("out", getattr(event, "event_type", "?"), client_id, payload[:_TELEMETRY_LINE_CAP])
         await self.active_connections[client_id].send_text(payload)

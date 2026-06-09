@@ -15,9 +15,20 @@ disconnect reaps the buffers while waking any live waiter so it returns at once.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
+import json
+from typing import Any, Dict, List
 
 from api.websocket_manager import ConnectionManager
+
+
+class _FakeWS:
+    """Minimal stand-in for a Starlette WebSocket — captures sent frames."""
+
+    def __init__(self) -> None:
+        self.sent: List[str] = []
+
+    async def send_text(self, payload: str) -> None:
+        self.sent.append(payload)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -115,5 +126,106 @@ def test_disconnect_wakes_live_patch_waiter() -> None:
         assert mgr._patch_acks == {}
         assert mgr._patch_ack_results == {}
         assert mgr._client_pending_acks == {}
+
+    asyncio.run(_scenario())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7–10. Multiplexing: one socket serves many sessions via register_alias, and
+# every outbound event is tagged with the session id it is routed to.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_register_alias_routes_session_to_connection_socket() -> None:
+    """A session aliased onto a connection resolves to that connection's socket."""
+    mgr = ConnectionManager()
+    sock = _FakeWS()
+    mgr.active_connections["conn"] = sock  # type: ignore[assignment]
+    mgr.register_alias("sessA", "conn")
+    assert mgr.active_connections["sessA"] is sock
+    assert mgr._aliases["conn"] == {"sessA"}
+
+
+def test_disconnect_reaps_all_aliases_and_their_buffers() -> None:
+    """Closing the socket evicts the connection id AND every aliased session."""
+    mgr = ConnectionManager()
+    sock = _FakeWS()
+    mgr.active_connections["conn"] = sock  # type: ignore[assignment]
+    mgr.register_alias("sessA", "conn")
+    mgr.register_alias("sessB", "conn")
+    # An in-flight HITL on an aliased session must be reaped too.
+    mgr._client_pending_hitl["sessA"] = {"ap1"}
+    mgr._hitl_pending["ap1"] = asyncio.Event()
+
+    mgr.disconnect("conn")
+
+    assert "conn" not in mgr.active_connections
+    assert "sessA" not in mgr.active_connections
+    assert "sessB" not in mgr.active_connections
+    assert mgr._aliases == {}
+    assert mgr._client_pending_hitl == {}
+    assert mgr._hitl_pending == {}
+
+
+def test_stale_close_after_reconnect_is_noop() -> None:
+    """A reconnect re-points the id to a fresh socket; the dead socket's close
+    must not tear down the live connection or its aliases."""
+    mgr = ConnectionManager()
+    old, new = _FakeWS(), _FakeWS()
+    mgr.active_connections["conn"] = old  # type: ignore[assignment]
+    mgr.register_alias("sessA", "conn")
+    # Reconnect under the same id: a new socket takes over and re-announces.
+    mgr.active_connections["conn"] = new  # type: ignore[assignment]
+    mgr.register_alias("sessA", "conn")
+
+    # The OLD socket's belated close fires — identity guard must make it a no-op.
+    mgr.disconnect("conn", old)  # type: ignore[arg-type]
+
+    assert mgr.active_connections.get("conn") is new
+    assert mgr.active_connections.get("sessA") is new
+
+
+def test_send_personal_message_stamps_session_id() -> None:
+    """The egress chokepoint injects data.session_id so the client can demux."""
+    async def _scenario() -> None:
+        from api.ws_contracts import ServerTokenChunkEvent, TokenChunkPayload
+        mgr = ConnectionManager()
+        sock = _FakeWS()
+        mgr.active_connections["sessZ"] = sock  # type: ignore[assignment]
+
+        await mgr.send_personal_message(
+            "sessZ", ServerTokenChunkEvent(data=TokenChunkPayload(token="hi"))
+        )
+
+        assert len(sock.sent) == 1
+        obj = json.loads(sock.sent[0])
+        assert obj["event_type"] == "server_token_chunk"
+        assert obj["data"]["session_id"] == "sessZ"   # stamped — was not on the model
+        assert obj["data"]["token"] == "hi"
+
+    asyncio.run(_scenario())
+
+
+def test_send_personal_message_preserves_existing_session_id() -> None:
+    """An event whose payload already names a session is not clobbered (setdefault)."""
+    async def _scenario() -> None:
+        from api.ws_contracts import (
+            ServerHITLApprovalRequestEvent,
+            HITLApprovalRequestPayload,
+        )
+        mgr = ConnectionManager()
+        sock = _FakeWS()
+        mgr.active_connections["connX"] = sock  # type: ignore[assignment]
+
+        evt = ServerHITLApprovalRequestEvent(
+            data=HITLApprovalRequestPayload(
+                session_id="real-session",
+                approval_id="ap",
+                action_description="x",
+            )
+        )
+        await mgr.send_personal_message("connX", evt)
+
+        obj = json.loads(sock.sent[0])
+        assert obj["data"]["session_id"] == "real-session"
 
     asyncio.run(_scenario())
