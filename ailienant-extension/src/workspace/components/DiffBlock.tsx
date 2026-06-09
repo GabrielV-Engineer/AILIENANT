@@ -152,6 +152,9 @@ export function buildTokenMap(block: DiffBlockShape): Map<string, ASTToken[]> | 
 function DiffBlockInner({ block, hitlActive, onRespond, onRequestChanges }: DiffBlockProps): JSX.Element {
     const { file_path, old_content, new_content, status } = block;
     const [showFull, setShowFull] = useState(false);
+    // Collapsed by default so a long diff doesn't flood the chat — the body is
+    // clamped to a few lines and the user expands on demand (and can re-collapse).
+    const [collapsed, setCollapsed] = useState(true);
     const dark = isDarkTheme();
 
     // Scoped keyboard: only fires when this diff has focus AND an approval is
@@ -216,30 +219,41 @@ function DiffBlockInner({ block, hitlActive, onRespond, onRequestChanges }: Diff
                 <span className="ws-diff-badge" data-status={status}>{badge}</span>
                 <span className="ws-diff-path">{file_path}</span>
             </div>
-            <div className="ws-diff-body">
-                <ReactDiffViewer
-                    oldValue={view.oldValue}
-                    newValue={view.newValue}
-                    splitView={true}
-                    useDarkTheme={dark}
-                    showDiffOnly={true}
-                    extraLinesSurroundingDiff={TRUNCATION_CONTEXT_LINES}
-                    hideLineNumbers={false}
-                    styles={DIFF_STYLES}
-                    // Paint host-tokenized syntax spans per line. Word-level diffing
-                    // is disabled because it would split a line into fragments and
-                    // call renderContent per fragment, breaking the per-line token
-                    // mapping; we trade intra-line word shading for full syntax color.
-                    // Line-level add/remove backgrounds are unaffected.
-                    renderContent={renderContent}
-                    disableWordDiff={true}
-                    // The library defaults to a Web Worker for diff math, whose
-                    // blob: worker URL is blocked by this webview's CSP. Force the
-                    // synchronous fallback so the diff actually computes.
-                    disableWorker={true}
-                />
+            <div className="ws-diff-body-wrap" data-collapsed={collapsed ? 'true' : 'false'}>
+                <div className="ws-diff-body">
+                    <ReactDiffViewer
+                        oldValue={view.oldValue}
+                        newValue={view.newValue}
+                        splitView={true}
+                        useDarkTheme={dark}
+                        showDiffOnly={true}
+                        extraLinesSurroundingDiff={TRUNCATION_CONTEXT_LINES}
+                        hideLineNumbers={false}
+                        styles={DIFF_STYLES}
+                        // Paint host-tokenized syntax spans per line. Word-level diffing
+                        // is disabled because it would split a line into fragments and
+                        // call renderContent per fragment, breaking the per-line token
+                        // mapping; we trade intra-line word shading for full syntax color.
+                        // Line-level add/remove backgrounds are unaffected.
+                        renderContent={renderContent}
+                        disableWordDiff={true}
+                        // The library defaults to a Web Worker for diff math, whose
+                        // blob: worker URL is blocked by this webview's CSP. Force the
+                        // synchronous fallback so the diff actually computes.
+                        disableWorker={true}
+                    />
+                </div>
+                <button
+                    type="button"
+                    className="ws-diff-collapse-toggle"
+                    onClick={() => setCollapsed(c => !c)}
+                    aria-label={collapsed ? 'Expand diff' : 'Collapse diff'}
+                    aria-expanded={!collapsed}
+                >
+                    {collapsed ? 'Expand ▾' : 'Collapse ▴'}
+                </button>
             </div>
-            {view.truncated && !showFull && (
+            {!collapsed && view.truncated && !showFull && (
                 <button
                     type="button"
                     className="ws-diff-loadfull"

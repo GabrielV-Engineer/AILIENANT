@@ -2,6 +2,39 @@
 
 ---
 
+## Hito 8.7: Disciplina de scope del Planner + aprobación secuencial por-archivo + diffs colapsables — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `npm run compile` 0 · `npm run lint` 0 · `mypy .` 0/250 · `pytest` 956 passed (+3 nuevos)
+
+### Problema resuelto
+Un pedido de UN archivo ("escribe Fibonacci en `calculadora_fibo.py`, propón el cambio") en un folder lleno de docs inconexos destapó tres defectos: (1) el Planner alucinó un SEGUNDO cambio — un edit sin sentido de un `GDD.md` ("Goblin Mall") cosido de otros docs del folder, gastando tokens y disparando un note de self-heal antes de las tarjetas; (2) los dos archivos viajaban en UN solo `approval_id` con resolución first-click-wins → rechazar el bogus descartaba también el válido; (3) un diff largo inunda el chat.
+
+### Cluster A — Disciplina de scope del Planner
+- **Causa raíz:** el bloque *Semantic-Guided Deep Context* embebía el input, buscaba Top-K archivos "cercanos" e inyectaba su contenido completo; en un folder disperso la similitud es ruido y metía el `GDD.md`/docs de whisper al prompt. Y la instrucción del Planner pedía "una especificación completa" SIN disciplina de scope — nada le decía que el contexto inyectado es referencia read-only, no un backlog de archivos a editar.
+- **Fix:** (1) `_SCOPE_DISCIPLINE_DIRECTIVE` en la instrucción: proponer cambios SOLO a archivos que el usuario nombró o estrictamente necesarios; el contexto inyectado es READ-ONLY; prohibido inventar docs/refactors/tests no pedidos; si el pedido nombra un solo archivo nuevo, el WBS toca SOLO ese. (2) `_DEEP_CONTEXT_MIN_SIM=0.20`: gate de relevancia — el bloque deep-context se inyecta solo si `_sem_score` supera el piso (la métrica CSS no cambia, solo la inyección al prompt). (3) Los notes internos de self-heal ("self-heal could not correct …") se filtran del summary visible (siguen en errors para logs/audit).
+
+### Cluster B — Aprobación estrictamente secuencial por-archivo
+- **Causa raíz:** `_run_coding_task` hacía UN `request_human_approval` con TODOS los `proposed_files`; el front montaba todas las filas a la vez compartiendo un `approval_id` que resolvía el lote entero al primer click.
+- **Fix (sin cambio de contrato):** loop por-archivo en el backend — un `request_human_approval` con un solo `proposed_files` a la vez, espera la decisión, sigue al próximo. Solo una aprobación en vuelo → el chat muestra una tarjeta a la vez, cada `approval_id` es independiente; **rechazar uno NO descarta los demás**. Accept acumula (honrando `modified_content` por-archivo) y al final se aplica el subconjunto aceptado de una; request-changes corta el loop y el host re-submitea el turno. Frontend: la fila de acciones se gatea por-bloque con `db.patch_id === hitlPending.approval_id` (los archivos ya decididos quedan como diffs estáticos arriba del pendiente).
+
+### Cluster C — Diff colapsable
+Cada `DiffBlock` arranca colapsado (`collapsed=true`): el cuerpo se clampa a ~12 líneas vía CSS `max-height`+`overflow` con un fade inferior, y un botón pequeño abajo-derecha ("Expand ▾"/"Collapse ▴") alterna; expandido restaura el comportamiento actual (incl. "Load full diff" para diffs enormes).
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/agents/planner.py` | `_SCOPE_DISCIPLINE_DIRECTIVE` en la instrucción; `_DEEP_CONTEXT_MIN_SIM` gate de inyección deep-context (A) |
+| `ailienant-core/core/task_service.py` | loop de aprobación secuencial por-archivo + apply del subconjunto (B); filtro de notes self-heal en el summary (A) |
+| `ailienant-extension/src/workspace/Workspace.tsx` | gate `hitlActive` por-bloque sobre `approval_id` (B) |
+| `ailienant-extension/src/workspace/components/DiffBlock.tsx` | estado `collapsed` por defecto + botón expand/collapse (C) |
+| `ailienant-extension/src/workspace/workspace.css` | clamp/fade del cuerpo colapsado + estilos del toggle (C) |
+| tests | `test_task_service_apply.py` (+3: accept#1/reject#2 aplica solo #1, all-rejected no aplica, modified_content por-archivo); `test_planner_scope.py` (nuevo: directiva + piso de relevancia) |
+
+### Resultado
+El pedido de Fibonacci propone solo `calculadora_fibo.py`; cambios multi-archivo se aprueban uno a uno e independientes; los diffs largos quedan compactos por defecto.
+
+---
+
 ## Hito 8.6: Saneo post-MUX — superficie HITL en el chat principal + corrección del flujo Plan mode (6 defectos) — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `npm run compile` 0 · `npm run lint` 0 · `mypy .` 0/249 · `pytest` 952 passed (+5 nuevos)

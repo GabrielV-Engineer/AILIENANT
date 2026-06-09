@@ -651,52 +651,59 @@ class TaskService:
             if verdict is PermissionDecision.HITL:
                 from api.ws_contracts import ProposedFile
 
-                combined_diff = "\n".join(patches[p] for p in patches)
-                # Ride the proposed post-edit content inside the approval request
-                # itself so the host can render the inline diff in-chat before
-                # apply — one atomic event, the diff can never desync from the
-                # authorization request.
-                proposed_files = [
-                    ProposedFile(
-                        file_path=p,
-                        new_content=contents[p],
-                        base_hash=base_hashes.get(p),
+                # Strictly sequential approval: one file at a time. Only a single
+                # approval is ever in flight, so the chat shows one card; each file
+                # gets its own approval_id and an independent decision — rejecting
+                # one never discards the others. The proposed diff and post-edit
+                # content ride inside each request so the inline card can never
+                # desync from its authorization. The accepted subset is applied once
+                # after the loop. No wall-clock deadline (the wait is bounded by the
+                # connection: a disconnect wakes the waiter).
+                ordered_paths = list(patches_to_apply)
+                total = len(ordered_paths)
+                accepted: Dict[str, str] = {}
+                revise_comment: Optional[str] = None
+                for idx, path in enumerate(ordered_paths, start=1):
+                    approval = await vfs_manager.request_human_approval(
+                        session_id=session_id,
+                        action_description=f"Apply change to {path} ({idx} of {total})",
+                        proposed_content=patches[path],
+                        request_kind="FILE_WRITE",
+                        proposed_files=[
+                            ProposedFile(
+                                file_path=path,
+                                new_content=patches_to_apply[path],
+                                base_hash=base_hashes.get(path),
+                            )
+                        ],
+                        timeout_s=None,
                     )
-                    for p in patches_to_apply
-                ]
-                # No wall-clock deadline on an interactive edit approval: a forgotten
-                # card must wait for the operator, not expire into a dead Accept. The
-                # wait is bounded by the connection (disconnect wakes the waiter).
-                approval = await vfs_manager.request_human_approval(
-                    session_id=session_id,
-                    action_description=(
-                        f"Apply {len(patches_to_apply)} file change(s): "
-                        + ", ".join(patches_to_apply)
-                    ),
-                    proposed_content=combined_diff,
-                    request_kind="FILE_WRITE",
-                    proposed_files=proposed_files,
-                    timeout_s=None,
-                )
-                if not approval or not approval.get("approved"):
-                    # A rejection carrying a note is a request to revise, not a
-                    # dead-end: the host re-submits the note as a fresh turn, so
-                    # acknowledge the hand-off rather than declaring the work lost.
+                    if approval and approval.get("approved"):
+                        # Honor an edit-before-apply payload from the card's edit mode.
+                        modified = approval.get("modified_content")
+                        accepted[path] = modified if modified else patches_to_apply[path]
+                        continue
+                    # Not approved. A note → request to revise: stop and let the host
+                    # re-submit the feedback as a fresh turn. A plain reject (or a
+                    # disconnect/None) drops only this file and the loop continues.
                     comment = (approval or {}).get("comment")
-                    msg = (
-                        "Revising based on your feedback…"
-                        if comment
-                        else "Changes discarded — no files were modified."
-                    )
+                    if comment:
+                        revise_comment = comment
+                        break
+
+                if revise_comment is not None:
+                    msg = "Revising based on your feedback…"
                     gate.record_answer(len(msg.encode()))
                     await vfs_manager.broadcast_token(session_id, msg)
                     await self._finalize_stream(session_id)
                     return
-                # Single-file edit-before-apply: honor the card's edited payload.
-                modified = approval.get("modified_content")
-                if modified and len(patches_to_apply) == 1:
-                    only_path = next(iter(patches_to_apply))
-                    patches_to_apply[only_path] = modified
+                if not accepted:
+                    discarded = "Changes discarded — no files were modified."
+                    gate.record_answer(len(discarded.encode()))
+                    await vfs_manager.broadcast_token(session_id, discarded)
+                    await self._finalize_stream(session_id)
+                    return
+                patches_to_apply = accepted
             else:
                 # ALLOW (Auto): announce the write BEFORE touching disk so the live
                 # action log never shows a silent mutation — apply_patch_set's I/O
@@ -765,8 +772,12 @@ class TaskService:
                 "Drafted a plan but produced no concrete edits for this request."
                 + (" See the Plan panel." if plan_surface else "")
             )
-        if errors:
-            lines.append("_Notes:_ " + "; ".join(errors[:5]))
+        # Internal self-heal plumbing ("self-heal could not correct …") is a
+        # diagnostic event, not actionable user feedback — keep it in the errors
+        # list for logs/audit but never surface it as a chat note.
+        user_notes = [e for e in errors if not e.startswith("self-heal could not correct")]
+        if user_notes:
+            lines.append("_Notes:_ " + "; ".join(user_notes[:5]))
         return "\n".join(lines)
 
     @staticmethod

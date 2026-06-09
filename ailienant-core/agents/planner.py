@@ -34,6 +34,29 @@ from brain.retry_policy import PLANNER_MAX_RETRIES
 # are sourced from the central retry policy.
 MAX_PLANNER_RETRIES: int = PLANNER_MAX_RETRIES
 
+# Minimum semantic similarity (0–1) for the deep-context block to be injected into
+# the planner prompt. Below this floor no retrieved file is genuinely relevant, so
+# injecting their bodies is pure noise — it both wastes tokens and tempts the model
+# to "integrate" unrelated files into the plan. The CSS metric is computed
+# regardless; only the prompt injection is gated.
+_DEEP_CONTEXT_MIN_SIM: float = 0.20
+
+# Scope discipline injected into the planner instruction. Without it the model
+# treats every file it sees in the injected context as a backlog to edit and
+# sprawls into unrelated documents.
+_SCOPE_DISCIPLINE_DIRECTIVE: str = (
+    "SCOPE DISCIPLINE (MANDATORY):\n"
+    "- Propose changes ONLY to files the user explicitly named, or that are strictly "
+    "necessary to fulfill the literal request. If the request names a single new file, "
+    "the WBS must touch ONLY that file.\n"
+    "- The injected IDE/workspace/deep context is READ-ONLY reference to help you "
+    "understand the project. It is NOT a list of files to modify. Seeing a file in "
+    "context is NEVER a reason to edit it.\n"
+    "- Do NOT invent documentation updates, refactors, READMEs, tests, or edits to any "
+    "file the user did not ask about. Stay minimal: the smallest WBS that satisfies the "
+    "request is the correct one.\n\n"
+)
+
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
 
@@ -365,9 +388,16 @@ async def run_planner_node(
                 }
             )
             css = _new_css
-            if _deep_result.context_block:
+            # Gate the injection on relevance: a block built from low-similarity
+            # retrievals is noise that derails scope. The metric above is unaffected.
+            if _deep_result.context_block and _sem_score >= _DEEP_CONTEXT_MIN_SIM:
                 _deep_context_block = _deep_result.context_block
                 system_prompt_text += f"\n\n{_deep_result.context_block}"
+            elif _deep_result.context_block:
+                logger.info(
+                    "Deep-context suppressed: sem=%.4f < floor=%.2f (low relevance).",
+                    _sem_score, _DEEP_CONTEXT_MIN_SIM,
+                )
             logger.info(
                 "Phase 3.2: sem=%.4f graph=%.3f css=%.1f files_parsed=%d/%d",
                 _sem_score, _deep_result.coverage_ratio, _new_css,
@@ -507,6 +537,7 @@ async def run_planner_node(
         "Your only task is to generate a complete and logical technical specification (MissionSpecification)."
         "Strictly define the Outcome, Scope, Constraints, Decisions, and sequential Tasks (WBS)"
         "assigning a valid target_role to each task, and the QA validation checks.\n\n"
+        + _SCOPE_DISCIPLINE_DIRECTIVE +
         # explicit type discipline. The LLM intermittently emits objects
         # where strings belong, and arbitrary role strings; spell out the contract.
         "STRICT TYPE RULES:\n"

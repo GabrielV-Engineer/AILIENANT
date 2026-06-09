@@ -1460,18 +1460,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 </div>
                             )}
                             {(() => {
-                                // ADR-724 — while an approval is pending, the inline HITL
-                                // actions attach to the latest assistant turn (the one awaiting
-                                // authorization). No wire id correlates approval_id↔patch_id, so
-                                // this is a deliberate best-effort heuristic, documented as such.
-                                let awaitingTurnIdx = -1;
-                                if (hitlPending) {
-                                    for (let k = messages.length - 1; k >= 0; k--) {
-                                        if (messages[k].role === 'assistant') { awaitingTurnIdx = k; break; }
-                                    }
-                                }
                                 return messages.map((m, i) => {
-                                    const diffHitlActive = i === awaitingTurnIdx;
                                     return (
                                 <Fragment key={i}>
                                     {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
@@ -1553,21 +1542,26 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             ))}
                                         </div>
                                     )}
-                                    {/* Inline Elite Diff Engine — split diffs for edits applied during this turn.
-                                        ADR-724 — while this is the turn awaiting authorization, every
-                                        DiffBlock of the patch carries the inline Accept/Reject/Comment row
-                                        and the focused-diff keyboard (one approval_id, mirrored per file). */}
+                                    {/* Inline Elite Diff Engine — split diffs for the edits in this turn.
+                                        Approval is strictly sequential: a DiffBlock carries the inline
+                                        Accept/Reject/Request-changes row and focused-diff keyboard ONLY
+                                        while it is the file currently awaiting authorization, matched by
+                                        patch_id === the live approval_id. Decided files stay as static
+                                        diffs above the current pending one. */}
                                     {m.role === 'assistant' && m.diffBlocks && m.diffBlocks.length > 0 && (
                                         <div className="ws-diff-stack">
-                                            {m.diffBlocks.map(db => (
-                                                <DiffBlock
-                                                    key={`${db.patch_id}:${db.file_path}`}
-                                                    block={db}
-                                                    hitlActive={diffHitlActive}
-                                                    onRespond={diffHitlActive ? respondInlineHitl : undefined}
-                                                    onRequestChanges={diffHitlActive ? handleRequestChanges : undefined}
-                                                />
-                                            ))}
+                                            {m.diffBlocks.map(db => {
+                                                const blockHitlActive = !!hitlPending && db.patch_id === hitlPending.approval_id;
+                                                return (
+                                                    <DiffBlock
+                                                        key={`${db.patch_id}:${db.file_path}`}
+                                                        block={db}
+                                                        hitlActive={blockHitlActive}
+                                                        onRespond={blockHitlActive ? respondInlineHitl : undefined}
+                                                        onRequestChanges={blockHitlActive ? handleRequestChanges : undefined}
+                                                    />
+                                                );
+                                            })}
                                         </div>
                                     )}
                                     {/* Phase 7.11.8 (ADR-706 §4.5g) — per-message

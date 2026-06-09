@@ -151,3 +151,107 @@ async def test_rejected_does_not_apply() -> None:
             c.stop()
 
     apply_mock.assert_not_awaited()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Strictly sequential multi-file approval: each file is its own decision.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_TWO_FILE_STATE: Dict[str, Any] = {
+    "mission_spec": _mission(),
+    "pending_patches": {
+        "a.py": "--- a/a.py\n+++ b/a.py\n",
+        "b.py": "--- a/b.py\n+++ b/b.py\n",
+    },
+    "pending_contents": {"a.py": "A\n", "b.py": "B\n"},
+    "pending_base_hash": {"a.py": "h1", "b.py": "h2"},
+    "errors": [],
+    "hitl_pending": False,
+}
+
+
+def _fake_astream_two(*_a: Any, **_k: Any) -> AsyncIterator[Dict[str, Any]]:
+    async def _gen() -> AsyncIterator[Dict[str, Any]]:
+        yield _TWO_FILE_STATE
+    return _gen()
+
+
+def _multi_patches(approval_mock: AsyncMock, apply_mock: AsyncMock):
+    return [
+        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream_two),
+        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
+        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
+    ]
+
+
+@pytest.mark.anyio
+async def test_sequential_accept_first_reject_second_applies_only_first() -> None:
+    """The P3 regression: rejecting file #2 must NOT discard the accepted file #1."""
+    # One approval per file, in order: accept a.py, reject b.py.
+    approval_mock = AsyncMock(side_effect=[
+        {"approved": True, "comment": None, "modified_content": None},
+        {"approved": False, "comment": None, "modified_content": None},
+    ])
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["a.py"], "stale_files": []})
+    ctxs = _multi_patches(approval_mock, apply_mock)
+    for c in ctxs:
+        c.start()
+    try:
+        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
+    finally:
+        for c in ctxs:
+            c.stop()
+
+    # One approval per file (strictly sequential).
+    assert approval_mock.await_count == 2
+    # Only the accepted file reaches the write pipeline.
+    apply_mock.assert_awaited_once()
+    assert apply_mock.await_args is not None
+    _sid, contents, _bh = apply_mock.await_args.args[:3]
+    assert contents == {"a.py": "A\n"}
+
+
+@pytest.mark.anyio
+async def test_sequential_all_rejected_applies_nothing() -> None:
+    approval_mock = AsyncMock(side_effect=[
+        {"approved": False, "comment": None, "modified_content": None},
+        {"approved": False, "comment": None, "modified_content": None},
+    ])
+    apply_mock = AsyncMock()
+    ctxs = _multi_patches(approval_mock, apply_mock)
+    for c in ctxs:
+        c.start()
+    try:
+        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
+    finally:
+        for c in ctxs:
+            c.stop()
+
+    assert approval_mock.await_count == 2
+    apply_mock.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_sequential_per_file_modified_content_honored() -> None:
+    """Edit-before-apply on a single file overrides only that file's content."""
+    approval_mock = AsyncMock(side_effect=[
+        {"approved": True, "comment": None, "modified_content": "EDITED-A\n"},
+        {"approved": True, "comment": None, "modified_content": None},
+    ])
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["a.py", "b.py"], "stale_files": []})
+    ctxs = _multi_patches(approval_mock, apply_mock)
+    for c in ctxs:
+        c.start()
+    try:
+        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
+    finally:
+        for c in ctxs:
+            c.stop()
+
+    apply_mock.assert_awaited_once()
+    assert apply_mock.await_args is not None
+    _sid, contents, _bh = apply_mock.await_args.args[:3]
+    assert contents == {"a.py": "EDITED-A\n", "b.py": "B\n"}
