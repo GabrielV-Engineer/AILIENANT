@@ -84,6 +84,30 @@ export class PatchActuator {
         }
     }
 
+    /**
+     * Build the both-sides diff for a set of proposed edits WITHOUT touching the
+     * workspace — used to render the inline diff in-chat while a HITL approval is
+     * pending. Reads each file's current text (the old side) and pairs it with the
+     * incoming new_content; a file that does not exist yet is a 'create'. No
+     * WorkspaceEdit, no save: this is read-only. The actual write still goes
+     * through `apply` once the user authorizes.
+     */
+    static async preview(edits: WorkspaceEditItem[]): Promise<PatchedFileDiff[]> {
+        const diffs: PatchedFileDiff[] = [];
+        for (const item of edits) {
+            const uri = PatchActuator._resolveUri(item.file_path);
+            const doc = await PatchActuator._openExisting(uri);
+            const oldContent = doc ? doc.getText() : '';
+            diffs.push({
+                file_path: item.file_path,
+                old_content: PatchActuator._normalizeEol(oldContent),
+                new_content: PatchActuator._normalizeEol(item.new_content),
+                status: doc ? 'edit' : 'create',
+            });
+        }
+        return diffs;
+    }
+
     static async apply(payload: ApplyWorkspaceEditPayload): Promise<PatchAppliedResult> {
         const result: PatchAppliedResult = {
             patch_id: payload.patch_id,

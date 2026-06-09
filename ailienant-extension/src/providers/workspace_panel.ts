@@ -586,15 +586,40 @@ export class WorkspacePanelManager {
                 }
             }
 
+            // A FILE_WRITE approval rides its proposed diff in the same payload so
+            // the inline diff and the Accept/Reject row mount atomically on the
+            // client — never two racing messages. Enrich here (the grammar engine
+            // is host-only) and forward ONE combined message; the native toast
+            // still fires for the hidden-panel case. Non-write approvals (e.g.
+            // BUDGET_OVERFLOW) carry no proposed_files and fall through to the
+            // plain forward below.
+            if (msg.event_type === 'server_hitl_approval_request') {
+                const reqData = msg.data as HITLApprovalRequestPayload & {
+                    proposed_files?: Array<{ file_path: string; new_content: string; base_hash?: string | null }>;
+                };
+                hitlNotifier.onApprovalRequest(reqData);
+                const proposed = reqData.proposed_files;
+                if (proposed && proposed.length > 0) {
+                    void (async () => {
+                        const diffs = await PatchActuator.preview(
+                            proposed.map(f => ({
+                                file_path: f.file_path,
+                                new_content: f.new_content,
+                                base_hash: f.base_hash,
+                            })),
+                        );
+                        await GrammarLexer.enrich(diffs);  // best-effort; never throws
+                        panel.webview.postMessage({
+                            type: 'server_hitl_approval_request',
+                            payload: { ...reqData, files: diffs },
+                        });
+                    })();
+                    return;
+                }
+            }
+
             panel.webview.postMessage({ type: msg.event_type, payload: msg.data });
             this._maybeFireCriticalNotif(msg, session.id, panel);
-            // Phase 7.11.7 — surface HITL approvals as a native OS toast when
-            // the chat panel is hidden. Runs alongside the in-chat card; the
-            // notifier internally dedupes via approval_id so the user can't
-            // double-resolve from two surfaces.
-            if (msg.event_type === 'server_hitl_approval_request') {
-                hitlNotifier.onApprovalRequest(msg.data as HITLApprovalRequestPayload);
-            }
             // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: a new session was
             // minted from a branch op. The backend broadcasts to BOTH the
             // parent thread AND the new thread; we process only when this

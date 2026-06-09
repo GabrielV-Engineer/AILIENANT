@@ -20,23 +20,33 @@ def _mission() -> SimpleNamespace:
 
 def test_summary_does_not_claim_apply_disabled() -> None:
     summary = TaskService._format_coding_summary(
-        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, []
+        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [], plan_surface=False
     )
     assert "not yet enabled" not in summary
 
 
 def test_summary_points_to_the_plan_panel_without_embedding_diffs() -> None:
-    # The chat bubble is now a pointer to the rich Plan surface — the diffs (and
-    # the full WBS) render there, not flattened into chat prose. This keeps the
-    # bubble small regardless of plan size; the honesty guarantee above is
-    # unchanged (the copy still never claims apply is disabled).
+    # In plan mode the chat bubble is a pointer to the rich Plan surface — the
+    # diffs (and the full WBS) render there, not flattened into chat prose. This
+    # keeps the bubble small regardless of plan size; the honesty guarantee above
+    # is unchanged (the copy still never claims apply is disabled).
     summary = TaskService._format_coding_summary(
-        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, []
+        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [], plan_surface=True
     )
     assert "Plan panel" in summary
     assert "```diff" not in summary
 
 
+def test_summary_ask_mode_points_to_the_inline_diff_not_the_panel() -> None:
+    # In Ask/Auto the Plan panel does not render — the diff is shown inline in the
+    # chat — so the pointer must NOT send the user to a non-existent panel.
+    summary = TaskService._format_coding_summary(
+        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [], plan_surface=False
+    )
+    assert "Plan panel" not in summary
+    assert "review the diff" in summary
+
+
 def test_summary_empty_patches_branch_unchanged() -> None:
-    summary = TaskService._format_coding_summary(_mission(), {}, [])
+    summary = TaskService._format_coding_summary(_mission(), {}, [], plan_surface=True)
     assert "no concrete edits" in summary

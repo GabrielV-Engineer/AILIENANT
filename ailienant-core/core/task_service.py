@@ -592,7 +592,11 @@ class TaskService:
             # broadcasts could arrive out of order and flash the pointer against
             # an empty panel. The proposed diffs keep their own DiffBlock render
             # path on apply, so they are not re-flattened into chat prose here.
-            summary = self._format_coding_summary(mission, patches, errors)
+            # Plan mode is the only surface where the rich Plan panel renders; in
+            # Ask/Auto the diff is shown inline in the chat, so the pointer text
+            # must not send the user to a panel that won't appear.
+            _is_plan = str(final_state.get("session_permission_mode") or "DEFAULT").lower() == "plan"
+            summary = self._format_coding_summary(mission, patches, errors, plan_surface=_is_plan)
             gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
             await vfs_manager.broadcast_plan_document(
                 session_id, self._build_plan_payload(mission, summary)
@@ -645,7 +649,21 @@ class TaskService:
             patches_to_apply: Dict[str, str] = dict(contents)
 
             if verdict is PermissionDecision.HITL:
+                from api.ws_contracts import ProposedFile
+
                 combined_diff = "\n".join(patches[p] for p in patches)
+                # Ride the proposed post-edit content inside the approval request
+                # itself so the host can render the inline diff in-chat before
+                # apply — one atomic event, the diff can never desync from the
+                # authorization request.
+                proposed_files = [
+                    ProposedFile(
+                        file_path=p,
+                        new_content=contents[p],
+                        base_hash=base_hashes.get(p),
+                    )
+                    for p in patches_to_apply
+                ]
                 approval = await vfs_manager.request_human_approval(
                     session_id=session_id,
                     action_description=(
@@ -654,6 +672,7 @@ class TaskService:
                     ),
                     proposed_content=combined_diff,
                     request_kind="FILE_WRITE",
+                    proposed_files=proposed_files,
                 )
                 if not approval or not approval.get("approved"):
                     discarded = "Changes discarded — no files were modified."
@@ -708,21 +727,31 @@ class TaskService:
 
     @staticmethod
     def _format_coding_summary(
-        mission: Any, patches: Dict[str, str], errors: List[str]
+        mission: Any, patches: Dict[str, str], errors: List[str], *, plan_surface: bool
     ) -> str:
-        """Render the one-line chat pointer to the rich Plan surface. The full
-        outcome, scope, WBS and proposed diffs live in the Plan panel; the chat
-        bubble only orients the user toward it (and carries any planner notes)."""
+        """Render the one-line chat pointer for the proposed edits.
+
+        In plan mode the rich Plan panel holds the full breakdown + diffs, so the
+        bubble points there. In Ask/Auto that panel does not render — the diff is
+        shown inline in the chat — so the pointer must orient the user to the
+        in-chat surface instead of a panel that won't appear.
+        """
         lines: List[str] = []
         if patches:
-            lines.append(
-                f"Drafted a plan with {len(patches)} proposed file change(s) — "
-                "see the Plan panel for the full breakdown and diffs."
-            )
+            if plan_surface:
+                lines.append(
+                    f"Drafted a plan with {len(patches)} proposed file change(s) — "
+                    "see the Plan panel for the full breakdown and diffs."
+                )
+            else:
+                lines.append(
+                    f"Proposed {len(patches)} file change(s) — review the diff below "
+                    "and authorize."
+                )
         else:
             lines.append(
-                "Drafted a plan but produced no concrete edits for this request — "
-                "see the Plan panel."
+                "Drafted a plan but produced no concrete edits for this request."
+                + (" See the Plan panel." if plan_surface else "")
             )
         if errors:
             lines.append("_Notes:_ " + "; ".join(errors[:5]))

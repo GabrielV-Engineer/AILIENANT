@@ -17,7 +17,7 @@ from api.ws_contracts import (
     ServerThinkingChunkEvent, ThinkingChunkPayload,   # Native Thinking
     ServerTelemetryEvent, TelemetryPayload,
     ServerGraphMutationEvent, GraphMutationPayload,
-    ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload,
+    ServerHITLApprovalRequestEvent, HITLApprovalRequestPayload, ProposedFile,
     ServerModelWarmupEvent, ModelWarmupPayload,
     ServerOomEngagedEvent, OomEngagedPayload,
     ServerIndexingProgressEvent, IndexingProgressPayload,
@@ -790,6 +790,7 @@ class ConnectionManager:
         proposed_content: Optional[str] = None,
         timeout_s: float = 300.0,
         request_kind: Optional[str] = None,
+        proposed_files: Optional[List[ProposedFile]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Suspend the calling coroutine until the human responds or the timeout fires.
@@ -821,6 +822,7 @@ class ConnectionManager:
                         action_description=action_description,
                         proposed_content=proposed_content,
                         request_kind=request_kind,
+                        proposed_files=proposed_files,
                     )
                 ),
             )

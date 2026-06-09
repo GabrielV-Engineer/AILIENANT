@@ -842,7 +842,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     break;
                 }
                 case 'server_hitl_approval_request': {
-                    const req = msg.payload as HITLIntervention;
+                    const req = msg.payload as HITLIntervention & { files?: DiffBlockShape[] };
                     // Soft-permission fast path: when the user enabled auto-accept
                     // and every risk metric is low (or none was attached), approve
                     // without ever mounting the card. Read the flag non-reactively
@@ -860,6 +860,27 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         });
                         addToast('info', 'Auto-accepted low-risk edit');
                         break;
+                    }
+                    // The proposed diff rides in this same message (FILE_WRITE), so
+                    // the inline diff and the Accept/Reject row mount together —
+                    // attaching the blocks and setting hitlPending in one handler
+                    // batches into a single React commit, so the buttons never
+                    // appear without their code. The diff attaches to the awaiting
+                    // assistant turn; patch_id = approval_id correlates them exactly.
+                    if (req.files && req.files.length > 0) {
+                        const blocks: DiffBlockShape[] = req.files.map(f => ({
+                            ...f, patch_id: req.approval_id,
+                        }));
+                        setMessages(prev => {
+                            const last = prev[prev.length - 1];
+                            if (last?.role === 'assistant') {
+                                return [...prev.slice(0, -1), {
+                                    ...last,
+                                    diffBlocks: [...(last.diffBlocks ?? []), ...blocks],
+                                }];
+                            }
+                            return [...prev, { id: mkId(), role: 'assistant', content: '', diffBlocks: blocks }];
+                        });
                     }
                     setHitlPending(req);
                     setNattOpen(true);

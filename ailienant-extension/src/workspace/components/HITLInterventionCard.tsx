@@ -5,7 +5,7 @@ import { useHitlResponder } from '../utils/useHitlResponder';
 
 export interface HITLIntervention {
     approval_id: string;
-    action_proposed: string;
+    action_description: string;
     risk_metrics?: Array<{ label: string; level: 'low' | 'medium' | 'high' }>;
     proposed_content?: string;
 }
@@ -53,7 +53,7 @@ export function HITLInterventionCard({ intervention, nattName, onResolved }: Pro
 
             <div className="ws-hitl-section">
                 <div className="ws-hitl-label">Action proposed</div>
-                <div className="ws-hitl-action">{intervention.action_proposed}</div>
+                <div className="ws-hitl-action">{intervention.action_description}</div>
             </div>
 
             {intervention.risk_metrics && intervention.risk_metrics.length > 0 && (

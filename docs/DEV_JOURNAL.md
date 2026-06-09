@@ -2,6 +2,36 @@
 
 ---
 
+## Hito 8.4: Modo ASK — aprobación de diff inline en el chat (fix "Changes discarded — nada accionable") — 2026-06-08
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/248 · `npm run compile` 0 (2 warnings `semi` pre-existentes, DEBT-017) · backend tests tocados verdes · suite completa (pendiente confirmación)
+
+### Problema resuelto
+Tras el fix de SEARCH/REPLACE, el coder ya producía un edit válido, pero en modo ASK la corrida terminaba con dos bubbles — "Drafted a plan… see the Plan panel" → "Changes discarded — no files were modified." — sin nada accionable en medio. **Causa raíz (verificada en código):** el flujo de tarea es plan-céntrico; en ASK el Plan panel NO renderiza (gateado a `plan_mode` por el fix Bug-1) y el diff no se muestra inline (los `diffBlocks` solo se pueblan post-apply vía `RENDER_DIFF`). La única superficie de aprobación era la tarjeta del Natt side-pane, con su título "Action proposed" **en blanco** por un mismatch de campo (`action_proposed` en la tarjeta vs `action_description` en el wire). Sin superficie accionable en el chat, la aprobación hacía timeout (300s) o Escape → rama no-aprobada → "Changes discarded".
+
+### Solución (aprobada: aprobación inline en el chat)
+El diff propuesto ahora se renderiza **inline en el chat** con la fila Accept/Reject (ADR-724) ANTES de aplicar. Reutiliza toda la plumbing inline existente; la única pieza faltante era alimentar `diffBlocks` pre-apply.
+
+### Auditoría incorporada (anti-patrón de consistencia eventual)
+Una revisión del Director detectó que un evento de preview SEPARADO compitiendo con el approval request es un anti-patrón: si el preview se pierde o React no reconcilia antes del approval, se reproduce el bug (botones sin código). **Corrección:** el diff viaja DENTRO del payload de `server_hitl_approval_request` (campo `proposed_files`). El host enriquece (GrammarLexer) y reenvía UN solo mensaje combinado; el webview monta diff + botones en un único commit batcheado de React. Atomicidad total, sin race.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/api/ws_contracts.py` | nuevo `ProposedFile` + `proposed_files` en `HITLApprovalRequestPayload` |
+| `ailienant-core/api/websocket_manager.py` | `request_human_approval` acepta y reenvía `proposed_files` |
+| `ailienant-core/core/task_service.py` | construye `proposed_files` en la rama HITL; texto de summary mode-aware (ASK/Auto no apuntan al Plan panel) |
+| `ailienant-extension/src/core/PatchActuator.ts` | nuevo `preview()` — construye el diff both-sides sin commitear |
+| `ailienant-extension/src/providers/workspace_panel.ts` | branch propio para `server_hitl_approval_request`: preview → enrich → un solo mensaje combinado |
+| `ailienant-extension/src/workspace/Workspace.tsx` | el handler adjunta `diffBlocks` + setea `hitlPending` atómicamente |
+| `ailienant-extension/src/workspace/components/HITLInterventionCard.tsx` | fix mismatch `action_proposed` → `action_description` |
+| tests | `test_task_service_apply.py` (proposed_files), `test_coding_summary_honesty.py` (path ASK), + call sites de summary actualizados |
+
+### Trade-off declarado (CLAUDE.md §7) → DEBT-024
+`proposed_files` lleva contenido completo (O(N)) — consistente con la convención existente (post-apply ya manda contenido completo). Registrado **DEBT-024**: refactor futuro a transporte de unified-diff O(Δ) (difflib server-side + `applyPatch` en el host), convirtiendo ambos paths (pre y post-apply) juntos.
+
+---
+
 ## Inducción de Fase 7.19 — Agentic Execution Cell & Persistent Audit Trail (planificación) — 2026-06-08
 
 **Estado:** 📋 DOCUMENTADA (WBS + blueprint creados; cero código aún) | **Gates:** N/A (docs-only)

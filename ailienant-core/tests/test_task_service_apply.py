@@ -104,6 +104,41 @@ async def test_approved_invokes_write_pipeline() -> None:
 
 
 @pytest.mark.anyio
+async def test_hitl_request_carries_proposed_files() -> None:
+    # The FILE_WRITE approval must ride the proposed post-edit content so the host
+    # can render the inline diff atomically with the Accept/Reject row — one event,
+    # no separate preview broadcast that could desync.
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
+    approval_mock = AsyncMock(return_value={"approved": True, "comment": None, "modified_content": None})
+    ctxs = [
+        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
+        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
+        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
+    ]
+    for c in ctxs:
+        c.start()
+    try:
+        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
+    finally:
+        for c in ctxs:
+            c.stop()
+
+    approval_mock.assert_awaited_once()
+    assert approval_mock.await_args is not None
+    kwargs = approval_mock.await_args.kwargs
+    assert kwargs["request_kind"] == "FILE_WRITE"
+    proposed = kwargs["proposed_files"]
+    assert proposed is not None and len(proposed) == 1
+    pf = proposed[0]
+    assert pf.file_path == "calc.py"
+    assert pf.new_content == _FINAL_STATE["pending_contents"]["calc.py"]
+    assert pf.base_hash == _FINAL_STATE["pending_base_hash"]["calc.py"]
+
+
+@pytest.mark.anyio
 async def test_rejected_does_not_apply() -> None:
     apply_mock = AsyncMock()
     ctxs = _common_patches(approved=False, apply_mock=apply_mock)

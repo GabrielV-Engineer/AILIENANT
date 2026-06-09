@@ -157,7 +157,7 @@ def test_i18n1_language_mirror_reaches_the_coder_prompt() -> None:
 
 def test_hon1_summary_does_not_claim_apply_disabled() -> None:
     mission = _mission(outcome="ship it")
-    summary = TaskService._format_coding_summary(mission, {"src/x.py": "patch"}, [])
+    summary = TaskService._format_coding_summary(mission, {"src/x.py": "patch"}, [], plan_surface=True)
     assert "not yet enabled" not in summary       # the old contradictory lie is gone
     assert "Plan panel" in summary                # points to the rich surface
     assert "```diff" not in summary               # diffs live in the panel, not chat

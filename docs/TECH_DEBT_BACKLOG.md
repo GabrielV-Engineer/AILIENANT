@@ -31,6 +31,18 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-024 — HITL inline-diff transport ships full file content (O(N)) instead of a unified diff (O(Δ))
+
+- **Date:** 2026-06-08
+- **Files:**
+  - `ailienant-core/api/ws_contracts.py` — `ProposedFile.new_content` (full post-edit content).
+  - `ailienant-core/core/task_service.py` — HITL branch builds `proposed_files` from `pending_contents`.
+  - `ailienant-extension/src/core/PatchActuator.ts` — `preview()` / `apply()` build `PatchedFileDiff` with full `old_content` + `new_content`.
+- **Error:** not a type error — a space/latency trade-off. The pre-apply inline-diff approval (and the existing post-apply `RENDER_DIFF`) transport **full file content per file** over the WebSocket. For a large file this is O(N) on the wire and the client-side `diffLines(old, new)` is O(N) work; a multi-thousand-line file risks WS-buffer pressure and a main-thread/event-loop stall during diffing.
+- **Blocked by:** nothing — but it must convert **both** the pre-apply (this fix) and the post-apply (`PatchActuator.apply` → `RENDER_DIFF`) paths together, since they share `PatchedFileDiff`/`DiffBlockShape`.
+- **Phase:** future performance/transport sub-phase (own ticket — do not smuggle into a feature fix).
+- **Notes:** declared MVP during the ASK-mode inline-approval fix (one-atomic-event design). Bounded by the existing `DIFF_RENDER_LINE_CAP=400` *mount* cap in `DiffBlock.tsx`, but the **wire payload** is still uncapped. Target design: compute the unified diff server-side with `difflib`, transport unified diffs only (O(Δ)), and reconstruct both sides in the host via the already-present `diff` lib (`applyPatch`). Safe to defer under the bounded-file-size assumption.
+
 ### DEBT-023 — Miscellaneous single-site strict suppressions (5 ignores) — ✅ RESOLVED (8.1.F)
 
 - **Date:** 2026-06-08

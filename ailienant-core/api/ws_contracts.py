@@ -109,6 +109,19 @@ class PlannerModeTogglePayload(BaseModel):
     active: bool
 
 
+class ProposedFile(BaseModel):
+    """One file's proposed post-edit state, ridden inside a FILE_WRITE approval.
+
+    Carried in the approval request itself (not a separate broadcast) so the
+    diff and the authorization can never desync on the client: a dropped or
+    late preview can no longer leave the Accept/Reject row without a diff.
+    """
+
+    file_path: str
+    new_content: str
+    base_hash: Optional[str] = None
+
+
 class HITLApprovalRequestPayload(BaseModel):
     """Backend suspends and asks the human to approve a proposed action."""
 
@@ -116,6 +129,9 @@ class HITLApprovalRequestPayload(BaseModel):
     approval_id: str                    # UUID4 — unique per request; client must echo this back
     action_description: str
     proposed_content: Optional[str] = None
+    # FILE_WRITE only: the proposed post-edit content per file, so the host can
+    # render the inline diff in-chat before apply. None for non-write kinds.
+    proposed_files: Optional[List[ProposedFile]] = None
     # additive classifier so the native-toast
     # surface can choose severity (info vs warning) and emit a short title.
     # Backward-compatible: pre - payloads omit this field and pydantic

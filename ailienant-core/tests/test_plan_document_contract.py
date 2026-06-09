@@ -77,7 +77,7 @@ def test_summary_is_a_pointer_not_an_embedded_wbs() -> None:
     mission = _mission(n_steps=50)
     patches = {f"src/module_{i}.py": f"@@ diff {i} @@" for i in range(1, 51)}
 
-    summary = TaskService._format_coding_summary(mission, patches, errors=[])
+    summary = TaskService._format_coding_summary(mission, patches, errors=[], plan_surface=True)
 
     assert "Plan panel" in summary
     assert "```diff" not in summary  # diffs are not re-flattened into chat prose
