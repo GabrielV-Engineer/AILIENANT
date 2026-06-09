@@ -2,6 +2,41 @@
 
 ---
 
+## Fase 7.19.1: Workspace Synchronization Engine (VFS ↔ Sandbox · OCC) — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/254 · pytest dirigido 15 passed · suite completa 983 passed, 2 skipped
+
+### Contexto
+7.19.0 entregó la terminal persistente (`SandboxSession`) pero era file-blind: los archivos editados en el VFS in-memory nunca llegaban al sandbox antes de un comando, y los archivos producidos por los comandos no volvían al VFS. Este sub-fase cierra esa brecha con un motor de sincronización bidireccional construido sobre la infraestructura OCC ya enviada (`document_version_id`, `content_hash()`, `ContentAddressableStorage`) — cero mecanismos de concurrencia nuevos.
+
+### Decisiones arquitectónicas
+**Separación de espacios de hash (intencional):** El hash de cambio en `SurfaceFile.chash` es SHA-256 de bytes crudos (mismo que `sha256sum`), no `content_hash()` (que normaliza EOL). Esto hace que la detección de cambios sea exacta a nivel de bytes, mientras que los tokens OCC (`document_version_id`) permanecen tolerantes a EOL: si el sandbox produce un archivo CRLF contra el LF del VFS, el cambio se detecta y se tira, pero sin disparar un falso conflicto OCC.
+
+**O(1) latencia Docker:** En lugar de hacer un `get_archive` por archivo para calcular hashes, `DockerSyncSurface.get_file_hashes()` hace UNA sola llamada `exec_run("find /work -exec sha256sum +")` que retorna todos los hashes en un solo round-trip. `read_file()` solo se llama para el subconjunto modificado.
+
+**O(1) memoria en push:** `push_vfs_to_surface` recibe `vfs_files + blob_store` (no contenido pre-cargado). Recupera el contenido de `blob_store.get(blob_hash)` archivo por archivo y lo escribe inmediatamente, liberando la referencia. Pico de memoria = O(1 archivo) independiente del tamaño del workspace.
+
+**Ghost-deletion detection:** El diff de `pull_surface_to_vfs` calcula `before.files.keys() - after_hashes.keys()` para detectar archivos eliminados por el sandbox. Los eliminados están sujetos al mismo guard OCC — si el usuario editó concurrentemente, la eliminación no se propaga (va a `conflicts`); si no, va a `deleted_paths` para que el caller actualice `vfs_buffer`.
+
+**Host read-only garantizado:** Docker monta `/workspace` en modo `ro`; el `DockerSyncSurface` escribe solo en `/work` (tmpfs). Para NativeDirect, el `LocalFsSyncSurface` rechaza traversal via `resolve()` + prefix check — los path separadores `..` no pueden escapar del `root`.
+
+### Correcciones de riesgo incorporadas (perspectiva Director IT)
+1. **Desastre O(N) en Docker:** `list_files()` eliminado del ABC; reemplazado por `get_file_hashes() → Dict[str, str]`. Para Docker: un `exec_run` con `sha256sum` da todos los hashes en una sola llamada de red. `read_file()` solo para el subconjunto que cambió.
+2. **OOM en push:** la firma cambió de `vfs_snapshot: Dict[str, str]` a `vfs_files + blob_store`. El contenido se recupera on-demand, archivo por archivo — footprint plano.
+3. **Efecto fantasma en eliminaciones:** `pull_surface_to_vfs` detecta explícitamente `before.files.keys() - after_hashes.keys()` y los retorna en `deleted_paths` (con guard OCC). El caller es responsable de remover las keys del `vfs_buffer`.
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `core/workspace_sync.py` | **Nuevo** — `SurfaceFile` + `WorkspaceSnapshot` + `SyncSurface` ABC + `LocalFsSyncSurface` (rglob+sha256 local, `_safe_path` anti-traversal) + `DockerSyncSurface` (O(1) latencia: single exec_run, put_archive/get_archive) + `push_vfs_to_surface` (O(1) memoria, skip-on-evicted-blob) + `pull_surface_to_vfs` (three-way diff: changed/deleted/unchanged, OCC guard completo) |
+| `core/sandbox.py` | `get_sync_surface(cwd)` default-NotImplementedError en `SandboxAdapter` ABC; override `DockerSandboxAdapter → DockerSyncSurface("/work")`; override `NativeDirectSandboxAdapter → LocalFsSyncSurface(cwd)`; import `TYPE_CHECKING + SyncSurface` |
+| `tests/test_phase7_19_1_workspace_sync.py` | **Nuevo** — `StubSyncSurface` in-memory + `MockDockerContainer`; 15 casos dirigidos cubriendo todos los DoDs + los tres riesgos corregidos + bonus (new file creado por sandbox, blob eviccionado) |
+
+### Deuda declarada (CLAUDE.md §7)
+No hay nueva deuda técnica en esta sub-fase. La arquitectura no tiene compromisos MVP — todas las correcciones del Director IT se incorporaron en el diseño inicial. DEBT-025 (Docker sin daemon CI) sigue abierta desde 7.19.0.
+
+---
+
 ## Fase 7.19.0: Contrato `SandboxSession` + Multiplexor PTY de Backend — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/252 · pytest dirigido 11 passed (+2 Unix-only skip en Windows) · suite completa 968 passed, 2 skipped

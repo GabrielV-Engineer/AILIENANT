@@ -42,7 +42,10 @@ import shlex
 import tempfile
 from abc import ABC, abstractmethod
 from io import BytesIO
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+
+if TYPE_CHECKING:
+    from core.workspace_sync import SyncSurface
 
 import docker
 import wasmtime
@@ -169,6 +172,17 @@ class SandboxAdapter(ABC):
             f"{type(self).__name__} does not support interactive sessions."
         )
 
+    def get_sync_surface(self, cwd: str) -> "SyncSurface":
+        """Return the writable SyncSurface for this adapter.
+
+        Session-capable tiers (Docker, NativeDirect) override this. Tiers
+        without an interactive work surface (Wasm, HITL) inherit the default
+        which raises, consistent with the open_session pattern.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not expose a sync surface."
+        )
+
 
 # ── Docker concrete adapter ──────────────────────────────────────────────────
 
@@ -283,6 +297,16 @@ class DockerSandboxAdapter(SandboxAdapter):
         )
         await session.start()
         return session
+
+    def get_sync_surface(self, cwd: str) -> "SyncSurface":
+        """Return a DockerSyncSurface targeting /work (the container's tmpfs)."""
+        if self._container is None:
+            raise RuntimeError(
+                "DockerSandboxAdapter: container is not running; "
+                "call _ensure_container_running() first."
+            )
+        from core.workspace_sync import DockerSyncSurface
+        return DockerSyncSurface(self._container, _CONTAINER_TMPFS_PATH)
 
     async def shutdown(self) -> None:
         """Stop + remove the named container and close the Docker client.
@@ -912,6 +936,11 @@ class NativeDirectSandboxAdapter(SandboxAdapter):
         )
         await session.start()
         return session
+
+    def get_sync_surface(self, cwd: str) -> "SyncSurface":
+        """Return a LocalFsSyncSurface rooted at the session's cwd."""
+        from core.workspace_sync import LocalFsSyncSurface
+        return LocalFsSyncSurface(cwd)
 
     async def execute(
         self,
