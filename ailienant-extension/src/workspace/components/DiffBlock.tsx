@@ -13,6 +13,9 @@ interface DiffBlockProps {
     // focused diff Accept/Reject. Absent on already-applied (read-only) diffs.
     hitlActive?: boolean;
     onRespond?: HitlRespond;
+    // Decline + re-submit the feedback so the agent re-proposes. Required
+    // alongside `onRespond` whenever the inline action row is live.
+    onRequestChanges?: (feedback: string) => void;
 }
 
 // Beyond this many changed lines we stop handing the full file to the viewer.
@@ -146,7 +149,7 @@ export function buildTokenMap(block: DiffBlockShape): Map<string, ASTToken[]> | 
     return map;
 }
 
-function DiffBlockInner({ block, hitlActive, onRespond }: DiffBlockProps): JSX.Element {
+function DiffBlockInner({ block, hitlActive, onRespond, onRequestChanges }: DiffBlockProps): JSX.Element {
     const { file_path, old_content, new_content, status } = block;
     const [showFull, setShowFull] = useState(false);
     const dark = isDarkTheme();
@@ -245,7 +248,9 @@ function DiffBlockInner({ block, hitlActive, onRespond }: DiffBlockProps): JSX.E
                     Load full diff ({view.changedLineCount} changed lines)
                 </button>
             )}
-            {hitlActive && onRespond && <DiffHitlActions onRespond={onRespond} />}
+            {hitlActive && onRespond && onRequestChanges && (
+                <DiffHitlActions onRespond={onRespond} onRequestChanges={onRequestChanges} />
+            )}
         </div>
     );
 }

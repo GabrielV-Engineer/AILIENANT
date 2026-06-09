@@ -839,7 +839,7 @@ class ConnectionManager:
         session_id: str,
         action_description: str,
         proposed_content: Optional[str] = None,
-        timeout_s: float = 300.0,
+        timeout_s: Optional[float] = 300.0,
         request_kind: Optional[str] = None,
         proposed_files: Optional[List[ProposedFile]] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -855,6 +855,13 @@ class ConnectionManager:
         ``"BUDGET_OVERFLOW"``, ``"FILE_WRITE"``) that the native-HITL toast bridge
         uses to choose severity and title. Default None preserves the pre
         wire shape; unknown kinds fall back to info-level on the frontend.
+
+        ``timeout_s`` of None waits indefinitely — used for an interactive edit
+        approval, where a wall-clock deadline would leave the operator returning
+        to a dead card. The wait is still bounded by the connection: a disconnect
+        reaps the pending event (see ``_reap_client_state``) and wakes the waiter,
+        which then resolves to None. Bounded callers (FinOps, sandbox tiers) keep
+        passing a float.
 
         Returns {"approved": bool, "comment": str|None} or None on timeout.
         """
@@ -877,7 +884,10 @@ class ConnectionManager:
                     )
                 ),
             )
-            await asyncio.wait_for(event.wait(), timeout=timeout_s)
+            if timeout_s is None:
+                await event.wait()
+            else:
+                await asyncio.wait_for(event.wait(), timeout=timeout_s)
             decision: Optional[Dict[str, Any]] = self._hitl_responses.pop(approval_id, None)
         except asyncio.TimeoutError:
             logger.warning("⏱️ HITL timeout for session %s (approval_id=%s)", session_id, approval_id)

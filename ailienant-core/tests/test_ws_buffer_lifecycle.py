@@ -229,3 +229,64 @@ def test_send_personal_message_preserves_existing_session_id() -> None:
         assert obj["data"]["session_id"] == "real-session"
 
     asyncio.run(_scenario())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 11–12. Unbounded interactive approval: timeout_s=None waits with no wall clock,
+# resolving only when the human answers or the connection drops.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_request_human_approval_unbounded_blocks_until_resolved() -> None:
+    """timeout_s=None suspends indefinitely, then returns the human's decision."""
+    async def _scenario() -> None:
+        mgr = ConnectionManager()
+        sock = _FakeWS()
+        mgr.active_connections["sessU"] = sock  # type: ignore[assignment]
+
+        task: "asyncio.Task[Dict[str, Any] | None]" = asyncio.ensure_future(
+            mgr.request_human_approval(
+                session_id="sessU", action_description="edit", timeout_s=None
+            )
+        )
+        # Yield so the waiter reaches its suspension point and the request frame
+        # is sent; the approval_id is the one minted for this pending request.
+        await asyncio.sleep(0)
+        assert len(mgr._client_pending_hitl.get("sessU", set())) == 1
+        approval_id = next(iter(mgr._client_pending_hitl["sessU"]))
+
+        # The waiter must still be parked — no wall-clock deadline elapsed.
+        assert not task.done()
+
+        mgr.resolve_human_approval(approval_id, approved=True, comment="ship it")
+        decision = await asyncio.wait_for(task, timeout=1.0)
+        assert decision is not None
+        assert decision["approved"] is True
+        assert decision["comment"] == "ship it"
+
+    asyncio.run(_scenario())
+
+
+def test_disconnect_wakes_unbounded_hitl_waiter() -> None:
+    """A disconnect wakes an indefinitely-suspended approval → returns None."""
+    async def _scenario() -> None:
+        mgr = ConnectionManager()
+        sock = _FakeWS()
+        mgr.active_connections["sessU"] = sock  # type: ignore[assignment]
+
+        task: "asyncio.Task[Dict[str, Any] | None]" = asyncio.ensure_future(
+            mgr.request_human_approval(
+                session_id="sessU", action_description="edit", timeout_s=None
+            )
+        )
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        mgr.disconnect("sessU")
+
+        # No 5-minute hang: the reaped event wakes the waiter at once → None.
+        decision = await asyncio.wait_for(task, timeout=1.0)
+        assert decision is None
+        assert mgr._hitl_pending == {}
+        assert mgr._client_pending_hitl == {}
+
+    asyncio.run(_scenario())

@@ -664,6 +664,9 @@ class TaskService:
                     )
                     for p in patches_to_apply
                 ]
+                # No wall-clock deadline on an interactive edit approval: a forgotten
+                # card must wait for the operator, not expire into a dead Accept. The
+                # wait is bounded by the connection (disconnect wakes the waiter).
                 approval = await vfs_manager.request_human_approval(
                     session_id=session_id,
                     action_description=(
@@ -673,11 +676,20 @@ class TaskService:
                     proposed_content=combined_diff,
                     request_kind="FILE_WRITE",
                     proposed_files=proposed_files,
+                    timeout_s=None,
                 )
                 if not approval or not approval.get("approved"):
-                    discarded = "Changes discarded — no files were modified."
-                    gate.record_answer(len(discarded.encode()))
-                    await vfs_manager.broadcast_token(session_id, discarded)
+                    # A rejection carrying a note is a request to revise, not a
+                    # dead-end: the host re-submits the note as a fresh turn, so
+                    # acknowledge the hand-off rather than declaring the work lost.
+                    comment = (approval or {}).get("comment")
+                    msg = (
+                        "Revising based on your feedback…"
+                        if comment
+                        else "Changes discarded — no files were modified."
+                    )
+                    gate.record_answer(len(msg.encode()))
+                    await vfs_manager.broadcast_token(session_id, msg)
                     await self._finalize_stream(session_id)
                     return
                 # Single-file edit-before-apply: honor the card's edited payload.

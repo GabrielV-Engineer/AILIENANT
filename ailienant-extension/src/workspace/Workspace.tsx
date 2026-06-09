@@ -36,7 +36,7 @@ import { IndexingStatus } from './components/IndexingStatus';
 import { PipelineProgress } from './components/PipelineProgress';
 import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
-import type { HITLIntervention } from './components/HITLInterventionCard';
+import { HITLInterventionCard, type HITLIntervention } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 
@@ -899,7 +899,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         });
                     }
                     setHitlPending(req);
-                    setNattOpen(true);
                     addToast('warn', `${nattName} requires your authorization`);
                     break;
                 }
@@ -1183,6 +1182,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         submitWithMode(text, mode);
     }, [submitWithMode, mode]);
 
+    // A manual mode switch clears any plan left over from a prior turn so it can
+    // never resurface as a stale acceptance panel (e.g. an Ask-turn plan popping
+    // up the instant the user enters Plan mode). A plan re-appears only when a
+    // fresh server_plan_document arrives while already in Plan mode.
+    const handleModeChange = useCallback((next: ExecutionMode) => {
+        setPlan(null);
+        setMode(next);
+    }, [setMode]);
+
     // Plan decision: accept and apply the plan with no further gating. The
     // agreement signal lets the backend's ideation loop synthesize and hand off
     // to the coder; submitting under Auto lifts the read-only plan gate so the
@@ -1202,11 +1210,17 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         setPlan(null);
     }, [submitWithMode, setMode]);
 
-    // Plan decision: reject the current plan and keep refining. The feedback is
-    // a normal Socratic turn — stay in Plan mode so the analyst keeps the
-    // read-only stance and the questioning loop continues.
+    // Plan decision: reject the current plan and keep refining. With feedback,
+    // it is a normal Socratic turn — stay in Plan mode so the analyst keeps the
+    // read-only stance and the questioning loop continues. With no feedback, just
+    // dismiss the acceptance panel back to the composer so the user can type the
+    // next instruction (the plan panel must never trap the input).
     const handlePlanKeepPlanning = useCallback((feedback: string) => {
-        submitWithMode(feedback, 'plan_mode');
+        const trimmed = feedback.trim();
+        if (trimmed) {
+            submitWithMode(trimmed, 'plan_mode');
+        }
+        setPlan(null);
     }, [submitWithMode]);
 
     // Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh.
@@ -1267,6 +1281,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         inlineHitlResolved.current = false;
     }, [hitlActiveApprovalId, inlineHitlResolved]);
 
+    // "Request changes" — decline the pending edit AND re-submit the note as a
+    // fresh turn so the agent re-proposes against the feedback. The reject carries
+    // the comment so the backend acknowledges the hand-off ("Revising…") rather
+    // than declaring the work discarded; the re-submit rides the same session id,
+    // so the checkpointed thread carries prior context into the new proposal.
+    const handleRequestChanges = useCallback((feedback: string) => {
+        respondInlineHitl(false, { comment: feedback });
+        submitWithMode(feedback, mode);
+    }, [respondInlineHitl, submitWithMode, mode]);
+
     const handleBudgetChange = useCallback((
         mode: BudgetLimitMode, weeklyUsd: number, monthlyUsd: number,
     ) => {
@@ -1283,6 +1307,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         'data-hitl':     hitlPending ? 'true' : 'false',
         'data-natt':     nattOpen ? 'true' : 'false',
     };
+
+    // A FILE_WRITE approval renders inline as the diff + action row in the main
+    // chat (its blocks carry patch_id === approval_id). A diff-less approval
+    // (e.g. budget overflow, degraded-sandbox exec) has no inline surface, so it
+    // falls back to the authorization card — also in the main column, never the
+    // analyst pane.
+    const hitlHasDiff = !!hitlPending && messages.some(
+        m => (m.diffBlocks ?? []).some(db => db.patch_id === hitlPending.approval_id),
+    );
 
     const wsLabel =
         wsStatus === 'connected' ? 'AILIENANT Core · Connected' :
@@ -1532,6 +1565,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                                     block={db}
                                                     hitlActive={diffHitlActive}
                                                     onRespond={diffHitlActive ? respondInlineHitl : undefined}
+                                                    onRequestChanges={diffHitlActive ? handleRequestChanges : undefined}
                                                 />
                                             ))}
                                         </div>
@@ -1553,6 +1587,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     );
                                 });
                             })()}
+                            {/* Diff-less approval (budget / degraded exec) — the
+                                authorization card lives in the main chat, not the
+                                analyst pane. FILE_WRITE uses the inline diff row above. */}
+                            {hitlPending && !hitlHasDiff && (
+                                <HITLInterventionCard
+                                    intervention={hitlPending}
+                                    nattName={nattName}
+                                    onResolved={handleResolveHitl}
+                                />
+                            )}
                             <div ref={messagesEndRef} />
                         </div>
 
@@ -1598,7 +1642,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 config={config}
                                 mode={mode}
                                 preset={preset}
-                                onModeChange={setMode}
+                                onModeChange={handleModeChange}
                                 onPresetChange={setPreset}
                                 dreamingActive={dreamingActive}
                                 dreamingProfile={dreamingProfile}
@@ -1630,12 +1674,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         <NattCanvas
                             nattName={nattName}
                             messages={nattMessages}
-                            pendingIntervention={hitlPending}
                             disabled={Boolean(hitlPending)}
                             nattAttachedItems={nattAttachedItems}
                             onNattRemoveAttached={(id) => setNattAttachedItems(prev => prev.filter(i => i.id !== id))}
                             onClose={() => setNattOpen(false)}
-                            onResolveIntervention={handleResolveHitl}
                             onSendMessage={handleNattSubmit}
                         />
                     )}

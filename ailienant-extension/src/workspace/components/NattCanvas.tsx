@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
-import { HITLInterventionCard, type HITLIntervention } from './HITLInterventionCard';
 import { NattPromptBar } from './NattPromptBar';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import type { ParserState as MdParserState } from '../utils/StreamingMarkdownParser';
@@ -20,25 +19,23 @@ interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 interface Props {
     nattName: string;
     messages: NattMessage[];
-    pendingIntervention?: HITLIntervention;
     disabled?: boolean;
     nattAttachedItems: AttachedItem[];
     onNattRemoveAttached: (id: string) => void;
     onClose: () => void;
-    onResolveIntervention: (approvalId: string) => void;
     onSendMessage: (text: string) => void;
 }
 
 export function NattCanvas({
-    nattName, messages, pendingIntervention, disabled,
+    nattName, messages, disabled,
     nattAttachedItems, onNattRemoveAttached,
-    onClose, onResolveIntervention, onSendMessage,
+    onClose, onSendMessage,
 }: Props): JSX.Element {
     const bodyRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' });
-    }, [messages, pendingIntervention]);
+    }, [messages]);
 
     return (
         <aside className="ws-natt">
@@ -60,15 +57,7 @@ export function NattCanvas({
             </header>
 
             <div className="ws-natt-body" ref={bodyRef}>
-                {pendingIntervention && (
-                    <HITLInterventionCard
-                        intervention={pendingIntervention}
-                        nattName={nattName}
-                        onResolved={onResolveIntervention}
-                    />
-                )}
-
-                {messages.length === 0 && !pendingIntervention && (
+                {messages.length === 0 && (
                     <div className="ws-natt-empty">
                         <Icon name="sparkles" size={20} color="var(--accent-primary)" />
                         <div>

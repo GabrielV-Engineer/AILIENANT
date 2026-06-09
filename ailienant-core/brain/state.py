@@ -318,6 +318,16 @@ def _resolve_step_id(left: Optional[int], right: Optional[int]) -> Optional[int]
     return max(left, right)
 
 
+def _resolve_target_role(left: Optional[str], right: Optional[str]) -> Optional[str]:
+    """Reducer for target_role under SWARM fan-out. The MapReduce router sends one
+    CoderAgent per WBS task in the same super-step, and each writes back the role of
+    the step it handled; with no reducer LangGraph cannot merge the concurrent scalar
+    writes and raises INVALID_CONCURRENT_GRAPH_UPDATE. Keep the latest non-None write
+    — None is the 'no opinion' sentinel (e.g. the orchestrator's all-complete reset)
+    and never clobbers a concurrent real role."""
+    return right if right is not None else left
+
+
 class AIlienantGraphState(TypedDict):
     """
     El cerebro compartido del flujo de LangGraph.
@@ -345,9 +355,11 @@ class AIlienantGraphState(TypedDict):
 
     # --- Control de Flujo (Prompt Swapping) ---
     is_manual_override: bool
-    target_role: Optional[
-        str
-    ]  # Sustituye a 'target_agent'. Define el rol actual del CoderAgent.
+    # Reducer-guarded: SWARM fan-out makes multiple CoderAgents write their own
+    # step's role in one super-step; _resolve_target_role merges them (see docstring).
+    target_role: Annotated[
+        Optional[str], _resolve_target_role
+    ]  # Replaces 'target_agent'. The active CoderAgent role.
     # Reducer-guarded: SWARM fan-out makes multiple CoderAgents write their own
     # step_number in one super-step; _resolve_step_id merges them (see its docstring).
     current_step_id: Annotated[

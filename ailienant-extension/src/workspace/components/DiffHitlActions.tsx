@@ -8,10 +8,11 @@
  * approval_id (and the same shared responder) as the Natt-pane card, so the two
  * surfaces resolve as one.
  *
- * Comment = reject-with-note: a decline that carries actionable feedback so the
- * agent can re-propose. The note input is LOCAL component state — it never
- * touches the composer draft (`draftMessages`), so opening it mid-task cannot
- * clobber what the user was typing.
+ * Request changes = revise: a decline that carries actionable feedback. The
+ * feedback releases the pending approval AND is re-submitted as a fresh turn, so
+ * the agent re-proposes against it. The note input is LOCAL component state — it
+ * never touches the composer draft (`draftMessages`), so opening it mid-task
+ * cannot clobber what the user was typing.
  */
 import { useCallback, useRef, useState } from 'react';
 import { Icon } from '../../shared/Icon';
@@ -20,9 +21,11 @@ import type { HitlRespond } from '../utils/useHitlResponder';
 
 interface Props {
     onRespond: HitlRespond;
+    /** Decline + re-submit the note so the agent re-proposes against it. */
+    onRequestChanges: (feedback: string) => void;
 }
 
-export function DiffHitlActions({ onRespond }: Props): JSX.Element {
+export function DiffHitlActions({ onRespond, onRequestChanges }: Props): JSX.Element {
     const [commenting, setCommenting] = useState(false);
     const [note, setNote] = useState('');
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -36,12 +39,14 @@ export function DiffHitlActions({ onRespond }: Props): JSX.Element {
         window.setTimeout(() => inputRef.current?.focus(), 0);
     }, []);
 
-    // Submitting a note is a reject-with-note; an empty note degrades to a plain
-    // reject so the button never sends a meaningless decision.
+    // A note is a request to revise (decline + re-propose against the feedback);
+    // an empty note degrades to a plain reject so the button never sends a
+    // meaningless decision.
     const submitNote = useCallback(() => {
         const trimmed = note.trim();
-        onRespond(false, trimmed ? { comment: trimmed } : undefined);
-    }, [note, onRespond]);
+        if (trimmed) { onRequestChanges(trimmed); }
+        else { onRespond(false); }
+    }, [note, onRespond, onRequestChanges]);
 
     const onNoteKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -68,9 +73,9 @@ export function DiffHitlActions({ onRespond }: Props): JSX.Element {
                         <Icon name="x" size={13} /><span>Reject</span>
                     </button>
                 </Tooltip>
-                <Tooltip content="Reject with a note so the agent can re-propose">
-                    <button className="ai-btn" type="button" onClick={openComment} aria-label="Reject with comment" aria-expanded={commenting}>
-                        <Icon name="pencil" size={13} /><span>Comment</span>
+                <Tooltip content="Add a note so the agent revises and re-proposes">
+                    <button className="ai-btn" type="button" onClick={openComment} aria-label="Request changes" aria-expanded={commenting}>
+                        <Icon name="pencil" size={13} /><span>Request changes</span>
                     </button>
                 </Tooltip>
             </div>

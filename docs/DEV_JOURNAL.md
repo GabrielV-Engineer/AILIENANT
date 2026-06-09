@@ -2,6 +2,41 @@
 
 ---
 
+## Hito 8.6: Saneo post-MUX — superficie HITL en el chat principal + corrección del flujo Plan mode (6 defectos) — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `npm run compile` 0 · `npm run lint` 0 · `mypy .` 0/249 · `pytest` 952 passed (+5 nuevos)
+
+### Problema resuelto
+Con el multiplexing ya en producción (Hito 8.5) la tarjeta HITL por fin aparecía, pero las pruebas en vivo destaparon seis defectos en dos clusters: la **UX de aprobación HITL** y el **flujo de Plan mode**. Ninguno requería volver a tocar el transporte MUX.
+
+### Cluster A — UX de aprobación HITL
+- **A1 — la aprobación salía en el panel del analista (Natt), no en el chat principal.** El handler `server_hitl_approval_request` hacía `setNattOpen(true)` y la `HITLInterventionCard` se renderizaba DENTRO de `NattCanvas`, duplicando la fila inline (`DiffBlock` + `DiffHitlActions`) que ya vivía correctamente en el chat. **Fix:** se quitó el auto-open del panel Natt y la tarjeta del `NattCanvas`; la fila inline en el chat principal queda como superficie canónica para FILE_WRITE. Las aprobaciones sin diff (budget / exec degradada) caen a la tarjeta, pero ahora montada en la columna principal (`hitlPending && !hitlHasDiff`).
+- **A2 — faltaba "comentar → revisar" (que el LLM re-proponga con feedback).** El botón existía pero era reject-with-note: cualquier `approved===false` era un callejón sin salida (`Changes discarded`). **Fix:** el botón pasa a **"Request changes"** → resuelve la aprobación con el comentario (el backend acusa "Revising based on your feedback…" en vez de "discarded") y re-submitea la nota como turno nuevo sobre el mismo `session_id`; el thread checkpointeado arrastra el contexto previo y el coder re-propone. Reutiliza el pipeline de tareas probado (sin re-entrada del grafo en la corrutina).
+- **A3 — la aprobación interactiva expiraba (tarjeta olvidada → Accept muerto).** Usaba el `timeout_s=300` por defecto; tras 5 min el waiter borraba el `approval_id` y un Accept tardío caía en "unknown approval_id". **Fix:** `request_human_approval(timeout_s: Optional[float])`; `None` ⇒ `await event.wait()` sin reloj de pared para la aprobación interactiva. La espera sigue acotada por la conexión: `_reap_client_state` despierta al waiter en disconnect → resuelve a `None`. Los gates no interactivos (FinOps 120s, sandbox/execute-tier) mantienen su timeout acotado. **Trade-off declarado (§7):** una tarjeta olvidada retiene el slot de tarea de esa sesión hasta que el operador actúe o cierre la ventana — correcto para una aprobación de edición y estrictamente mejor que volver a una tarjeta muerta.
+
+### Cluster B — Plan mode
+- **B4 — entrar a Plan mode mostraba un plan rancio al instante.** `broadcast_plan_document` corre en todos los modos (también lleva el bubble de summary), así que un turno ASK seteaba el estado `plan`; el panel de aceptación gateado solo a `plan && mode==='plan_mode'` y `plan` nunca se limpiaba al cambiar de modo. **Fix:** `handleModeChange` limpia el plan rancio en cualquier cambio manual de modo; el plan reaparece solo cuando llega un `server_plan_document` nuevo estando ya en Plan mode.
+- **B5 — "No, keep planning" salía restringido.** `disabled={isStreaming || !feedback.trim()}` lo deshabilitaba sin texto. **Fix:** se deshabilita solo durante streaming; feedback vacío → descarta el panel y vuelve al composer; con nota → submitea el turno de refinamiento.
+- **B6 — aceptar un plan crasheaba con `INVALID_CONCURRENT_GRAPH_UPDATE` en `target_role`.** `target_role` era `Optional[str]` sin reducer, pero cada `CoderAgent` lo escribe; aceptar un plan multi-paso corre MICRO_SWARM/FULL_SWARM → escrituras concurrentes en un super-step → LangGraph lanzaba el error (que el catch-all genérico disfrazaba de "make sure a BYOM preset is active"). **Fix:** `_resolve_target_role` (último no-None gana, espejo de `_resolve_step_id`) + `Annotated[Optional[str], _resolve_target_role]`. Sin tocar emisores. Auditado: `target_role` era el ÚNICO escalar sin reducer que los coders escriben en paralelo.
+
+### Archivos modificados
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/brain/state.py` | `_resolve_target_role` + `Annotated` en `target_role` (B6) |
+| `ailienant-core/api/websocket_manager.py` | `timeout_s: Optional[float]`; `None` ⇒ `event.wait()` sin reloj (A3) |
+| `ailienant-core/core/task_service.py` | callsite FILE_WRITE `timeout_s=None`; reject-con-comentario → "Revising…" (A2/A3) |
+| `ailienant-extension/src/workspace/Workspace.tsx` | sin auto-open Natt; tarjeta sin-diff en chat principal; `handleRequestChanges`; `handleModeChange` limpia plan rancio; `handlePlanKeepPlanning` rama vacío (A1/A2/B4/B5) |
+| `ailienant-extension/src/workspace/components/NattCanvas.tsx` | removida la `HITLInterventionCard` del panel analista |
+| `ailienant-extension/src/workspace/components/DiffHitlActions.tsx` | "Comment" → "Request changes" vía `onRequestChanges` (A2) |
+| `ailienant-extension/src/workspace/components/DiffBlock.tsx` | thread `onRequestChanges` a la fila de acciones (A2) |
+| `ailienant-extension/src/workspace/components/PlanAcceptancePanel.tsx` | `disabled={isStreaming}` + descarte con feedback vacío (B5) |
+| tests | `test_state_reducers.py` (nuevo: reducer + canal anotado); `test_ws_buffer_lifecycle.py` (+2: espera indefinida + wake en disconnect) |
+
+### Resultado
+La aprobación vive en el chat principal con Accept / Reject / Request-changes; el operador puede ausentarse sin perder la edición; "Request changes" cierra el lazo de revisión; entrar a Plan mode parte limpio; y aceptar un plan multi-paso ejecuta el swarm sin crashear.
+
+---
+
 ## Hito 8.5: WebSocket Multiplexing — sesión única por panel, un socket O(1), fix root cause HITL desync — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `npm run compile` 0 errores · `mypy .` 0/248 · `pytest` 947 passed (+5 nuevos)

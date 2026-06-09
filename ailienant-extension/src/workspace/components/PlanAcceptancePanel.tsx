@@ -93,14 +93,12 @@ export function PlanAcceptancePanel({
                 </button>
                 <button
                     onClick={() => {
-                        if (feedback.trim()) {
-                            onKeepPlanning(feedback);
-                            setFeedback('');
-                        }
+                        onKeepPlanning(feedback);
+                        setFeedback('');
                     }}
                     className="btn-tertiary"
-                    disabled={isStreaming || !feedback.trim()}
-                    title="Provide feedback and refine the plan further"
+                    disabled={isStreaming}
+                    title="Refine the plan with a note, or dismiss to keep editing in the composer"
                 >
                     No, keep planning
                 </button>
