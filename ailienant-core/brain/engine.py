@@ -205,7 +205,7 @@ def route_after_coder(state: Dict[str, Any]) -> str:
     return target
 
 
-workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))
+workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))  # type: ignore[type-var]
 # DLQ-wrapped node entrypoints. An unhandled exception promotes
 # L1→L2 and persists a dead_letter_tasks row before re-raising (see
 # core/dead_letter.py). The 4 wrapped nodes are the state-bearing entrypoints;

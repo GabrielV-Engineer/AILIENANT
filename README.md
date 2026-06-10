@@ -134,7 +134,8 @@ Proyect_Ailienant/
 │   ├── brain/                  # State machine + MCTS + checkpointing
 │   │   ├── engine.py           #   legacy `alienant_app` graph + re-export of process_user_intent + reflexion_guard (self-healing) + error_correction node + agentic_cell node/loop-back wiring
 │   │   ├── agentic_cell.py      #   autonomous ReAct cell: run_agentic_cell_node (one visit = one iteration; route_after_cell loop-back = per-iteration Rewind-able checkpoint) + 3 strict-schema tools (run_terminal/read_file_ast/apply_granular_edit) + audit_tool_args (DANGEROUS + secret scrub) + contained MCTS (select_candidate_via_mcts: transactional push→verify→rollback, verdict-as-reward; only live brain.mcts edge) + leak-safe session registry
-│   │   ├── retry_policy.py      #   centralized retry/correction budgets (guardrail, planner, circuit breaker, ErrorCorrectionAgent, failure-signature, agentic-cell iterations)
+│   │   ├── iteration_governor.py #   multi-axis circuit breaker (ADR-750): AxisExhausted enum + check_governor (pure, O(1)) + estimate_iteration_cost (C_in·T_in + C_out·T_out full billing formula)
+│   │   ├── retry_policy.py      #   centralized retry/correction budgets (guardrail, planner, circuit breaker, ErrorCorrectionAgent, failure-signature, agentic-cell steps/cost/elapsed axes)
 │   │   ├── failure_breaker.py   #   cross-turn failure-signature circuit breaker (GAP8) — normalize_signature + singleton failure_breaker
 │   │   ├── intent_router.py    #   process_user_intent() — dispatches SEQUENTIAL / MICRO_SWARM / FULL_SWARM
 │   │   ├── swarms.py           #   build_micro_swarm() + build_full_swarm(checkpointer)

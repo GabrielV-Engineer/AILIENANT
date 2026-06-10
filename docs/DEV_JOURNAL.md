@@ -2,6 +2,42 @@
 
 ---
 
+## Fase 7.19.3: Multi-Axis Iteration Governor (Circuit Breaker) — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/258 · pytest dirigido 9 passed · 7.19.2 suite 16 passed · suite completa 1008 passed (2 skipped)
+
+### Contexto
+7.19.2 entregó `run_agentic_cell_node` con un bound de **un solo eje**: `budget_spent = (iteration + 1) >= AGENTIC_CELL_MAX_ITERATIONS`, declarado MVP explícito en la resolución de DEBT-009. Un bucle que itera 6 veces sobre mensajes de 4.000 tokens puede gastar ~$0,70 en tokens de cloud sin ninguna conciencia del eje de costo; un bucle que se acerca a un deadline duro no tiene válvula de escape por tiempo. Este sub-fase formaliza el governor multi-eje completo (pasos ∧ tokens ∧ tiempo) y cablea el costo por iteración al pipeline de `finops_gate` existente via la fórmula del blueprint: `Cost_total = Σ(C_in·T_in + C_out·T_out)`.
+
+### Decisiones arquitectónicas
+**Governor puro sin estado (`check_governor`):** función O(1) que recibe los tres valores acumulados y retorna el `AxisExhausted` del primer eje agotado (o `None`). Sin clase, sin mutable state — testeable en aislamiento puro sin stubs de sesión/adaptador.
+
+**Billing completo (C_in·T_in + C_out·T_out):** `estimate_iteration_cost` recibe `input_messages` (contexto completo de la llamada — las APIs LLM son stateless, cobran todos los tokens del call) y `output_tool_calls` (serializado a JSON). Se usan constantes separadas `_USD_PER_K_CLOUD = 0.030` (C_in) y `_USD_PER_K_CLOUD_OUT = 0.150` (C_out, ~5× input) — modelando la realidad de facturación donde los tokens de salida cuestan significativamente más.
+
+**Cableado a finops_gate sin cambio de topología:** La célula emite `"current_cost_usd": cost_delta` en su delta. El reducer `operator.add` en `AIlienantGraphState` acumula estos deltas across iteraciones. Cuando el bucle sale por `contract_guard → finops_gate`, el nodo finops lee el `current_cost_usd` acumulado vs `max_budget_usd` y abre HITL si aplica. El chequeo del eje de tokens en la célula es un pre-check de fast-fail que evita quemar más iteraciones antes de que finops pueda intervenir — los dos mecanismos son aditivos, no se reemplazan.
+
+**Orden de chequeo: STEPS → TIME → TOKENS.** Pasos es gratis (comparación de enteros). Tiempo es barato (una llamada a `time.monotonic()` ya hecha por el caller). Tokens es el último (lectura de float del estado + cálculo de delta acumulado).
+
+**Compatibilidad backward total:** `AGENTIC_CELL_MAX_ITERATIONS = 6` se mantiene igual. El chequeo de eje de pasos usa `step = iteration + 1` (mismo semántico que el `(iteration + 1) >= MAX` anterior). `route_after_cell` sigue chequeando `status == "continue"`. El campo `"axis"` es aditivo en el record.
+
+### Corrección de riesgo incorporada (perspectiva Director IT)
+**Costo de tokens de salida ignorado:** El plan inicial calculaba solo tokens de entrada (`count_tokens(messages) * C_in / 1000`). Los tokens de salida (las tool-calls emitidas por el modelo) cuestan ~5× más en modelos Claude Sonnet tier. `estimate_iteration_cost` ahora recibe `output_tool_calls` por separado y aplica `_USD_PER_K_CLOUD_OUT` — implementando fielmente la fórmula del blueprint.
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `brain/iteration_governor.py` | **Nuevo** — `AxisExhausted` enum + `check_governor` (pura) + `estimate_iteration_cost` (C_in·T_in + C_out·T_out) |
+| `core/token_ledger.py` | Constante `_USD_PER_K_CLOUD_OUT = 0.150` (C_out) añadida junto a `_USD_PER_K_CLOUD` |
+| `brain/retry_policy.py` | `AGENTIC_CELL_MAX_COST_USD = 2.0` + `AGENTIC_CELL_MAX_ELAPSED_S = 300.0` |
+| `brain/agentic_cell.py` | `_CellSession.start_time`; bloque terminal reemplazado por `check_governor`; `record["axis"]` en budget records; delta `"current_cost_usd"` |
+| `brain/engine.py` | Boy Scout: `# type: ignore[type-var]` en line 208 (error latente pre-existente en `add_node("summarize_history", ...)`) |
+| `tests/test_phase7_19_3_iteration_governor.py` | **Nuevo** — 9 casos: 3 pure-governor + 3 integración por eje + happy path + axis field + cost delta |
+
+### Deuda declarada (CLAUDE.md §7)
+MVP `AGENTIC_CELL_MAX_COST_USD = 2.0` y `AGENTIC_CELL_MAX_ELAPSED_S = 300.0` son valores conservadores — la calibración env-aware (variable por tier/modelo/usuario) es un refinamiento de mayor granularidad. No se crea nueva deuda sin rastrear: el governor está completo según la spec de ADR-750. DEBT-025 (Docker sin daemon CI) sigue abierta desde 7.19.0.
+
+---
+
 ## Fase 7.19.2: Agentic Execution Cell (ReAct Sub-loop) — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/256 · pytest dirigido 16 passed · gate 7.18 9 passed · suite completa 999 passed, 2 skipped

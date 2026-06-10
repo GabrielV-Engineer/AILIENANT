@@ -14,7 +14,8 @@ from typing import Dict
 
 # Default USD per 1k tokens. Conservative defaults; env override deferred to a later phase.
 _USD_PER_K_LOCAL: float = 0.001
-_USD_PER_K_CLOUD: float = 0.030
+_USD_PER_K_CLOUD: float = 0.030      # C_in  — input (prompt) token cost
+_USD_PER_K_CLOUD_OUT: float = 0.150  # C_out — output (completion) token cost (~5× input)
 
 
 class TokenLedger:

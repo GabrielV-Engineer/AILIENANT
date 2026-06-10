@@ -26,12 +26,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
-from brain.retry_policy import AGENTIC_CELL_MAX_ITERATIONS
+from brain.iteration_governor import AxisExhausted, check_governor, estimate_iteration_cost
+from brain.retry_policy import (
+    AGENTIC_CELL_MAX_COST_USD,
+    AGENTIC_CELL_MAX_ELAPSED_S,
+    AGENTIC_CELL_MAX_ITERATIONS,
+)
 from brain.state import VFSFile
 
 logger = logging.getLogger("AGENTIC_CELL")
@@ -223,6 +229,7 @@ class _CellSession:
     buffer: bytearray = field(default_factory=bytearray)
     collector: Optional["asyncio.Task[None]"] = None
     last_snapshot: Any = None  # WorkspaceSnapshot of the most recent push
+    start_time: float = field(default_factory=time.monotonic)  # monotonic clock at session open
 
 
 _session_registry: Dict[str, _CellSession] = {}
@@ -563,17 +570,39 @@ async def run_agentic_cell_node(
             version_ids[path] = vfs_files[path].document_version_id
             pending_contents[path] = winner[path]
 
-        # ── Decide terminal condition ────────────────────────────────────────────
+        # ── Decide terminal condition (three-axis governor) ──────────────────────
         success = last_exit == 0
-        budget_spent = (iteration + 1) >= AGENTIC_CELL_MAX_ITERATIONS
-        terminal = success or budget_spent
-        record["status"] = (
-            "green" if success else ("budget" if budget_spent else "continue")
-        )
+        cost_delta = estimate_iteration_cost(messages, tool_calls)
+        axis: Optional[AxisExhausted] = None
+        if not success:
+            axis = check_governor(
+                step=iteration + 1,
+                cost_usd=float(state.get("current_cost_usd", 0.0)) + cost_delta,
+                elapsed_s=time.monotonic() - cell.start_time,
+                max_steps=int(configurable.get("cell_max_steps", AGENTIC_CELL_MAX_ITERATIONS)),
+                max_cost_usd=float(
+                    configurable.get(
+                        "cell_max_cost_usd",
+                        state.get("max_budget_usd", AGENTIC_CELL_MAX_COST_USD),
+                    )
+                ),
+                max_elapsed_s=float(
+                    configurable.get("cell_max_elapsed_s", AGENTIC_CELL_MAX_ELAPSED_S)
+                ),
+            )
+        terminal = success or (axis is not None)
+        if success:
+            record["status"] = "green"
+        elif axis is not None:
+            record["status"] = "budget"
+            record["axis"] = axis.value
+        else:
+            record["status"] = "continue"
 
         delta: Dict[str, Any] = {
             "agentic_iteration": iteration + 1,
             "agentic_trajectory": [record, *occ_messages],
+            "current_cost_usd": cost_delta,
         }
         # Carry edits forward: vfs_buffer keeps the loop-back iteration consistent;
         # pending_contents feeds the write pipeline once the loop exits to apply_patch.

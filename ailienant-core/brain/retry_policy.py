@@ -31,11 +31,12 @@ CORRECTION_MAX_ATTEMPTS: int = 3
 # spending LLM calls on a known-unfixable error and routes straight to the DLQ.
 FAILURE_SIGNATURE_THRESHOLD: int = 3
 
-# Autonomous ReAct cell: maximum run-read-edit-rerun iterations in a single turn
-# before the loop concedes gracefully (no infinite loop). A single-axis bound — the
-# full multi-axis governor (steps AND tokens AND elapsed time) supersedes this with a
-# richer envelope; until then this ceiling guarantees in-turn termination.
-AGENTIC_CELL_MAX_ITERATIONS: int = 6
+# Autonomous ReAct cell — three-axis circuit-breaker constants (brain/iteration_governor.py).
+# AGENTIC_CELL_MAX_ITERATIONS is the steps axis and is kept by its original name so existing
+# call sites remain byte-stable.
+AGENTIC_CELL_MAX_ITERATIONS: int = 6        # max run-read-edit-rerun steps per turn
+AGENTIC_CELL_MAX_COST_USD: float = 2.0      # per-turn token-spend ceiling (USD)
+AGENTIC_CELL_MAX_ELAPSED_S: float = 300.0   # per-turn wall-clock ceiling (5 min)
 
 # Transport-layer retries handed to litellm for a single LLM call (connection
 # blips / transient 5xx). Distinct from the cognitive retry budgets above — this
