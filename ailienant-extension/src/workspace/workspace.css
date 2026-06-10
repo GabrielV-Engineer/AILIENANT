@@ -2094,6 +2094,159 @@ html, body, #root { height: 100%; }
   align-self: flex-end;
 }
 
+/* ── Glass-box agentic-cell audit log ───────────────────────── */
+
+.ws-cell-audit {
+  margin: 4px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ws-cell-iter {
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.ws-cell-iter-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ws-cell-iter-header:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+}
+.ws-cell-iter-chevron {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+.ws-cell-iter-num {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ws-cell-iter-tools {
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-cell-iter-meta {
+  margin-left: auto;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+.ws-cell-iter-axis {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-warn, #d18616) 18%, transparent);
+  color: var(--accent-warn, #d18616);
+  font-weight: 600;
+}
+.ws-cell-iter-body {
+  border-top: 1px solid var(--border-subtle);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-cell-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ws-cell-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ws-cell-tool-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ws-cell-tool-arg {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Terminal output panel — locally scrolled (the row virtualizer reads scrollTop
+   and clientHeight from this element, never the window). Fixed line height keeps
+   the windowing math exact. */
+.ws-cell-pty-scroll {
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--vscode-editor-background, #1e1e1e);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 4px 6px;
+}
+.ws-cell-pty-line {
+  height: 16px;
+  line-height: 16px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  color: var(--vscode-editor-foreground, var(--text-primary));
+  white-space: pre;
+  overflow: hidden;
+}
+
+.ws-cell-diffs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-cell-diff-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.ws-cell-diff-search,
+.ws-cell-diff-replace {
+  margin: 0;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ws-cell-diff-search {
+  background: color-mix(in srgb, var(--accent-error, #f14c4c) 12%, transparent);
+  color: var(--text-secondary);
+}
+.ws-cell-diff-replace {
+  background: color-mix(in srgb, var(--accent-ok, #3fb950) 12%, transparent);
+  color: var(--text-primary);
+}
+
 /* ── Rich Plan side-panel (ADR-732) ─────────────────────────── */
 .ws-plan-panel {
   display: flex;

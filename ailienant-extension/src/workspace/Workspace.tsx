@@ -7,7 +7,7 @@ import {
     BudgetLimitMode, ReasoningPreset, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
     ToolCallShape, DiffBlockShape, PlanDocumentShape, MAX_IPC_CODE_CHARS,
-    type ASTToken,
+    type ASTToken, type CellRunShape, type CellIterationShape,
 } from '../shared/config';
 import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
@@ -36,6 +36,8 @@ import { IndexingStatus } from './components/IndexingStatus';
 import { PipelineProgress } from './components/PipelineProgress';
 import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
+import { CellAuditWidget } from './components/CellAuditWidget';
+import { sanitizePtyChunk } from './utils/sanitizePty';
 import { HITLInterventionCard, type HITLIntervention } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
@@ -66,7 +68,14 @@ const STREAM_ACTIVITY_EVENTS = new Set<string>([
     'server_token_chunk', 'server_thinking_chunk', 'server_pipeline_step',
     'server_tool_start', 'server_tool_stream_chunk', 'server_tool_result',
     'server_natt_token',
+    'server_cell_tool_start', 'server_cell_pty_chunk', 'server_cell_ast_diff',
+    'server_cell_governor_tick',
 ]);
+// Hard cap on retained PTY lines per cell iteration. On overflow the buffer stops
+// appending and writes a single truncation sentinel, so the virtualized list's base
+// indices never shift under the user's scroll.
+const MAX_CELL_PTY_LINES = 5000;
+const CELL_PTY_TRUNCATED = '[… Output truncated due to length …]';
 
 /**
  * Flip any still-`pending` tool chip on a NON-streaming turn to `error`. A chip
@@ -164,6 +173,11 @@ export interface Message {
     // Each entry is built incrementally from server_tool_start, _stream_chunk
     // and _result events keyed by tool_call_id.
     toolCalls?: ToolCallShape[];
+    // Glass-box telemetry for the autonomous agentic cell, built incrementally from
+    // the four server_cell_* deltas and keyed by iteration. Display-only forensic
+    // data (the durable audit ledger lives in the core) — explicitly stripped before
+    // PERSIST_TRANSCRIPT.
+    cellRun?: CellRunShape;
     // Inline diffs for edits applied during this turn — one entry per file,
     // surfaced by the host (RENDER_DIFF) after PatchActuator applies. Attached to
     // the turn that explained the edit and persisted so a teardown mid-render
@@ -244,6 +258,56 @@ function attachOrUpdateToolCall(
         toolCalls: [update(undefined)],
         authorLabel: authorLabelFor('assistant', agentName),
     }];
+}
+
+/**
+ * Update the cell-audit iteration for `iteration` on the LAST assistant message
+ * (creating a placeholder turn if none exists yet). The updater receives the prior
+ * iteration record (or a fresh empty one) and returns the next shape. Pure on the
+ * previous `messages` array — no mutations.
+ */
+function attachOrUpdateCellRun(
+    prev: Message[],
+    iteration: number,
+    update: (prior: CellIterationShape) => CellIterationShape,
+    agentName: string,
+): Message[] {
+    const empty = (): CellIterationShape => ({ iteration, tools: [], pty: [], diffs: [] });
+    const applyTo = (run: CellRunShape | undefined): CellRunShape => {
+        const iters = run?.iterations ?? [];
+        const idx = iters.findIndex((it) => it.iteration === iteration);
+        const nextIter = update(idx >= 0 ? iters[idx] : empty());
+        const nextIters = idx >= 0
+            ? [...iters.slice(0, idx), nextIter, ...iters.slice(idx + 1)]
+            : [...iters, nextIter].sort((a, b) => a.iteration - b.iteration);
+        return { iterations: nextIters };
+    };
+    const lastIdx = prev.length - 1;
+    const last = lastIdx >= 0 ? prev[lastIdx] : undefined;
+    if (last?.role === 'assistant') {
+        return [...prev.slice(0, lastIdx), { ...last, cellRun: applyTo(last.cellRun) }];
+    }
+    return [...prev, {
+        id: mkId(),
+        role: 'assistant',
+        content: '',
+        cellRun: applyTo(undefined),
+        authorLabel: authorLabelFor('assistant', agentName),
+    }];
+}
+
+/**
+ * Append sanitized PTY lines to an iteration's buffer with a stop-at-cap policy.
+ * Once the cap is hit the buffer is frozen (apart from a one-time truncation
+ * sentinel) so the virtualized list's indices never shift mid-scroll.
+ */
+function appendPtyLines(it: CellIterationShape, lines: string[]): CellIterationShape {
+    if (it._truncated) { return it; }
+    if (it.pty.length + lines.length <= MAX_CELL_PTY_LINES) {
+        return { ...it, pty: [...it.pty, ...lines] };
+    }
+    const room = Math.max(0, MAX_CELL_PTY_LINES - it.pty.length);
+    return { ...it, pty: [...it.pty, ...lines.slice(0, room), CELL_PTY_TRUNCATED], _truncated: true };
 }
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
@@ -328,6 +392,25 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             ];
         });
     }, []);
+    // Cell PTY coalescing. server_cell_pty_chunk can fire at terminal speed; the
+    // sanitized lines are buffered per iteration and flushed into one setMessages per
+    // animation frame (mirrors the streaming-AST buffer). The pending frame is
+    // cancelled on unmount so no callback fires on a torn-down panel.
+    const cellPtyBufferRef = useRef<Map<number, string[]> | null>(null);
+    const cellPtyRafRef = useRef<number | null>(null);
+    const flushCellPty = useCallback(() => {
+        cellPtyRafRef.current = null;
+        const buffered = cellPtyBufferRef.current;
+        cellPtyBufferRef.current = null;
+        if (!buffered || buffered.size === 0) { return; }
+        setMessages(prev => {
+            let next = prev;
+            for (const [iter, lines] of buffered) {
+                next = attachOrUpdateCellRun(next, iter, (it) => appendPtyLines(it, lines), nattName);
+            }
+            return next;
+        });
+    }, [nattName]);
     // Phase 7.11.3 — Stop-button optimistic flag (Zustand, transient).
     const isAborting    = useWorkspaceStore((s) => s.isAborting);
     const setIsAborting = useWorkspaceStore((s) => s.setIsAborting);
@@ -833,6 +916,65 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     }), nattName));
                     break;
                 }
+                case 'server_cell_tool_start': {
+                    const d = msg.payload as {
+                        iteration: number;
+                        tool_name: string;
+                        args_scrubbed: Record<string, string>;
+                    };
+                    setMessages(prev => attachOrUpdateCellRun(prev, d.iteration, it => ({
+                        ...it,
+                        tools: [...it.tools, { tool_name: d.tool_name, args_scrubbed: d.args_scrubbed }],
+                    }), nattName));
+                    break;
+                }
+                case 'server_cell_pty_chunk': {
+                    const d = msg.payload as { iteration: number; text: string };
+                    const cleaned = sanitizePtyChunk(d.text);
+                    if (cleaned.length === 0) { break; }
+                    // Split into lines, dropping the empty fragment a trailing newline
+                    // produces. Buffer per iteration; the rAF flush appends them.
+                    const lines = cleaned.split('\n');
+                    if (lines.length > 0 && lines[lines.length - 1] === '') { lines.pop(); }
+                    if (lines.length === 0) { break; }
+                    const buf = cellPtyBufferRef.current ?? new Map<number, string[]>();
+                    buf.set(d.iteration, [...(buf.get(d.iteration) ?? []), ...lines]);
+                    cellPtyBufferRef.current = buf;
+                    if (cellPtyRafRef.current === null) {
+                        cellPtyRafRef.current = requestAnimationFrame(flushCellPty);
+                    }
+                    break;
+                }
+                case 'server_cell_ast_diff': {
+                    const d = msg.payload as {
+                        iteration: number;
+                        path: string;
+                        search: string;
+                        replace: string;
+                    };
+                    setMessages(prev => attachOrUpdateCellRun(prev, d.iteration, it => ({
+                        ...it,
+                        diffs: [...it.diffs, { path: d.path, search: d.search, replace: d.replace }],
+                    }), nattName));
+                    break;
+                }
+                case 'server_cell_governor_tick': {
+                    const d = msg.payload as {
+                        iteration?: number;
+                        step: number;
+                        cost_usd: number;
+                        elapsed_s: number;
+                        axis: string | null;
+                    };
+                    // The governor tick keys off step (1-based); the iteration it
+                    // belongs to is step - 1.
+                    const iter = d.iteration ?? Math.max(0, d.step - 1);
+                    setMessages(prev => attachOrUpdateCellRun(prev, iter, it => ({
+                        ...it,
+                        governor: { step: d.step, cost_usd: d.cost_usd, elapsed_s: d.elapsed_s, axis: d.axis },
+                    }), nattName));
+                    break;
+                }
                 case 'server_telemetry': {
                     const frame = msg.payload as TelemetryFrame;
                     setTelemetry(frame);
@@ -1106,7 +1248,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         };
         window.addEventListener('message', handler);
         return () => window.removeEventListener('message', handler);
-    }, [addToast, recordChunk, telemetry, nattName, flushStreamTokens]);
+    }, [addToast, recordChunk, telemetry, nattName, flushStreamTokens, flushCellPty]);
 
     // Phase 7.17.1 — cancel any pending coalesce frame on unmount so a queued flush
     // can't fire against a torn-down component.
@@ -1115,6 +1257,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             cancelAnimationFrame(streamTokenRafRef.current);
             streamTokenRafRef.current = null;
         }
+        if (cellPtyRafRef.current !== null) {
+            cancelAnimationFrame(cellPtyRafRef.current);
+            cellPtyRafRef.current = null;
+        }
+        cellPtyBufferRef.current = null;
     }, []);
 
     useEffect(() => {
@@ -1485,6 +1632,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         canonical record, so this while-you-wait view drops out. */}
                                     {m.role === 'assistant' && m.streaming && m.toolCalls && m.toolCalls.length > 0 && (
                                         <ActionLog toolCalls={m.toolCalls} />
+                                    )}
+                                    {/* Glass-box audit log for the autonomous agentic
+                                        cell: per-iteration tool calls → terminal output →
+                                        AST edits, with a budget-governor footer. */}
+                                    {m.role === 'assistant' && m.cellRun && m.cellRun.iterations.length > 0 && (
+                                        <CellAuditWidget run={m.cellRun} streaming={!!m.streaming} />
                                     )}
                                     {(m.role === 'user' || m.content) && (
                                         <div

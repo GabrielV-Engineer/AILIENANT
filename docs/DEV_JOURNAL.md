@@ -2,6 +2,44 @@
 
 ---
 
+## Fase 7.19.5: Frontend — Glass-Box Cell Audit Widgets — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `tsc --noEmit` 0 · `eslint` 0 (2 warnings pre-existentes en archivos ajenos) · production bundle ceiling sentinel verde (517.1 KB / techo 550 KB)
+
+### Contexto
+7.19.4 hizo de la célula agéntica una caja de cristal en el **backend**: cada iteración emite cuatro deltas WS tipados (`server_cell_tool_start`, `server_cell_pty_chunk`, `server_cell_ast_diff`, `server_cell_governor_tick`). Esos eventos llegaban al webview y caían por el reenviador genérico **sin renderizador** — el usuario no veía nada mientras una iteración corría 30-60 s. 7.19.5 añade la mitad **frontend**: un acordeón colapsable de auditoría por turno que renderiza cada iteración como `tool_call → output PTY → diff AST`, con footer del governor de presupuesto. Solo frontend + IPC de host — sin cambio de contrato Python (los eventos ya existen y ya se enrutan).
+
+### Decisiones arquitectónicas
+**Ingesta reutilizada (sin cambio de host):** `ws_client.ts` demuxa por `session_id`; `workspace_panel.ts` reenvía eventos desconocidos genéricamente como `{ type, payload }`. Los 4 eventos ya llegaban al webview — solo se añadieron los handlers en `Workspace.tsx`, espejo del patrón `attachOrUpdateToolCall` pero keyed por `iteration`.
+
+**Estado display-only:** `Message.cellRun` (`CellRunShape` con `CellIterationShape[]`) se construye incrementalmente y se **excluye** de `PERSIST_TRANSCRIPT` (igual trato que el slice de thinking) — el ledger de auditoría durable vive en el core; esto es forense re-derivable.
+
+**Virtualización propia, sin dependencia:** `useWindowedRows` — filas de altura fija (16 px), monta solo la ventana visible + overscan con divs espaciadores que preservan la geometría del scrollbar. El scroll se lee del **contenedor local** (`.ws-cell-pty-scroll`, `max-height: 40vh; overflow-y: auto`) vía `scrollRef`/`ResizeObserver`, nunca de `window` — la matemática sería incorrecta contra el scrollbar del chat. Se activa solo sobre ~1000 líneas.
+
+**Correcciones del Director IT incorporadas:**
+1. **Sanitización ANSI/CR en vuelo:** `sanitizePty.ts` quita secuencias ANSI (SGR/cursor) y colapsa overwrites `\r` (barras de progreso) a su frame final antes de almacenar — sin basura `[32m…[0m` ni filas fantasma. Es un log estático; el terminal interactivo (xterm.js) llega en 7.19.6.
+2. **Sin frames rAF huérfanos:** el coalescing de PTY usa `cellPtyRafRef`/`cellPtyBufferRef` dedicados; el `useEffect` de unmount cancela el frame pendiente y anula el buffer — ningún `setMessages` se dispara sobre un componente desmontado.
+3. **Ring buffer stop-at-cap (no drop-oldest):** al llegar al tope (~5000 líneas) el buffer deja de añadir y escribe un centinela de truncación una sola vez; los índices base del virtualizador nunca se desplazan bajo el scroll del usuario.
+
+**Optimización de bundle (Pivot §3, no inflar el techo):** el baseline ya rodaba a 211 bytes del techo de 550 KB; cualquier feature lo rebasaba. Análisis del metafile: `react-diff-viewer-continued` arrastra `js-yaml` (~39 KB) únicamente para su modo de diff YAML estructural (`compareMethod === DiffMethod.YAML`), que el chat **nunca** usa (diffea código con el compare char/word por defecto). Se aliasa `js-yaml` a `src/shims/js-yaml-stub.ts` (fail-fast) en el contexto esbuild del webview → bundle 549.8 KB→**517.1 KB**. Es la pista correcta (satisface la tarea actual y mejora la escalabilidad) en lugar del parche táctico de subir el techo.
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `src/shared/config.ts` | **Nuevo** `CellIterationShape` + `CellRunShape` |
+| `src/workspace/utils/sanitizePty.ts` | **Nuevo** — strip ANSI + colapso de overwrites `\r` |
+| `src/workspace/utils/useWindowedRows.ts` | **Nuevo** — virtualización de filas fijas, scroll de contenedor local |
+| `src/workspace/components/CellAuditWidget.tsx` | **Nuevo** — acordeón por iteración + panel PTY virtualizado + diffs AST |
+| `src/workspace/Workspace.tsx` | Campo `Message.cellRun`; helper `attachOrUpdateCellRun` + `appendPtyLines` (stop-at-cap); 4 handlers (`pty_chunk` sanitizado + rAF-coalesced); refs `cellPtyRafRef`/`cellPtyBufferRef` + cancel en unmount; 4 eventos en `STREAM_ACTIVITY_EVENTS`; inserción de render tras `ActionLog` |
+| `src/workspace/workspace.css` | Estilos del widget + panel PTY (solo theme vars `--vscode-*`, sin fondos custom) |
+| `src/shims/js-yaml-stub.ts` | **Nuevo** — stub fail-fast de js-yaml para el webview |
+| `esbuild.js` | `WEBVIEW_ALIAS` (js-yaml→stub) en el contexto del workspace |
+
+### Deuda declarada (CLAUDE.md §7)
+Sin deuda nueva no rastreada. El stub de `js-yaml` es una eliminación de peso muerto (no un parche): si una futura ruta enviara un diff YAML real al webview, falla en voz alta — señal para empaquetar el parser real o code-split en ese momento. El estilado per-línea de `is_stderr` se omitió porque el tee de la célula emite un stream de PTY unificado (stdout+stderr interleaved, `is_stderr` por defecto False).
+
+---
+
 ## Fase 7.19.4: WebSocket Telemetry API & Event Dispatcher (Glass-Box) — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/260 · pytest dirigido 10 passed · suite completa 1018 passed (2 skipped)

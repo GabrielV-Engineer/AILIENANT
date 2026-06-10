@@ -81,6 +81,25 @@ export interface ToolCallShape {
     };
 }
 
+// Glass-box telemetry for one iteration of the autonomous agentic cell. Built up
+// incrementally in the webview from the four `server_cell_*` deltas, all keyed by
+// `iteration`. Display-only forensic data — the durable audit ledger lives in the
+// core; this is stripped before the transcript is persisted.
+export interface CellIterationShape {
+    iteration: number;
+    tools: { tool_name: string; args_scrubbed: Record<string, string> }[];
+    pty: string[];                  // sanitized terminal lines, in arrival order
+    diffs: { path: string; search: string; replace: string }[];
+    governor?: { step: number; cost_usd: number; elapsed_s: number; axis: string | null };
+    // Latched once the PTY buffer hits its cap. Subsequent chunks are dropped and a
+    // single truncation sentinel is written, so the windowed-list base indices never
+    // shift under the user's scroll.
+    _truncated?: boolean;
+}
+export interface CellRunShape {
+    iterations: CellIterationShape[];   // ordered by iteration
+}
+
 // A finalized plan, delivered as one structured `server_plan_document` message.
 // Mirrors the backend PlanDocumentPayload — `summary` is the one-line chat pointer
 // that travels WITH the structure so the bubble and the rich Plan panel render on

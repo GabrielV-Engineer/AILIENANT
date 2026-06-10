@@ -1,5 +1,14 @@
 const esbuild = require("esbuild");
 const fs = require("fs");
+const path = require("path");
+
+// react-diff-viewer-continued imports the full js-yaml parser only for its
+// structural YAML diff mode, which the chat surface never uses (it diffs source
+// code with the default char/word compare). Alias it to a fail-fast stub so the
+// dead ~39 KB parser stays off the non-splittable webview IIFE.
+const WEBVIEW_ALIAS = {
+	'js-yaml': path.resolve(__dirname, 'src/shims/js-yaml-stub.ts'),
+};
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -69,6 +78,7 @@ async function main() {
 		platform: 'browser',
 		outfile: 'dist/workspace.js',
 		external: ['jsdom'],
+		alias: WEBVIEW_ALIAS,
 		logLevel: 'silent',
 		plugins: [esbuildProblemMatcherPlugin],
 	});
