@@ -2,6 +2,40 @@
 
 ---
 
+## Fase 7.19.8: Checkpoint Gate Fase 7.19 — 2026-06-10
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/263 · pytest 12 passed · `npm run compile` 0 · blueprint 7.19 LOCK-IN expirado
+
+### Contexto
+Cierre del ciclo Phase 7.19: test-only `tests/test_phase7_19_checkpoint_gate.py` siguiendo la convención de archivo-hermano (7.13, 7.18). Cada fila invoca el punto de entrada real y aserta la única invariante de carga por fila — sin re-ejecutar las suites dedicadas, sin modificar lógica. 12 filas backend + 4 filas frontend (scope `npm run compile` + smoke).
+
+### Filas certificadas
+
+| Fila | Invariante |
+|------|-----------|
+| SESS1 | Session creada en `_session_registry` mientras es no-terminal; eliminada en `_close_cell` al exit terminal |
+| PTY1 | `write_session_stdin` entrega bytes; `interrupt_session` señala; ambas `False` para id desconocido |
+| SYNC1 | `_compute_edit`: creación de archivo nuevo (anchor vacío) OK; anchor ausente lanza `PatchError` (node outer handler concede de forma elegante) |
+| CELL1 | Exit verde (exit_code=0) → `route_after_cell == "contract_guard"` |
+| CELL2 | `delta["agentic_iteration"]` incrementa desde el input; record de trayectoria lleva `iteration` matching |
+| GOV1 | step≥max_steps → `AxisExhausted.STEPS`; step<max_steps → None |
+| GOV2 | elapsed_s≥max_elapsed_s → `AxisExhausted.TIME` |
+| GOV3 | cost_usd≥max_cost_usd → `AxisExhausted.TOKENS` |
+| WS1 | Los 4 `ServerCell*Event` validan a través del TypeAdapter de `WebSocketMessage` |
+| MCTS-LIVE | `select_candidate_via_mcts` importable de `brain.agentic_cell` (evidencia positiva); spine (`engine.py`, `coder.py`) sin imports `brain.mcts` (DEBT-009 re-certificado) |
+| CHECKLIST1 | `emit_graph_mutation("s", 3, "completed")` produce JSON que valida como `ServerGraphMutationEvent` con `step_number=3` y `new_status="completed"` |
+| SEED1 | `_WBS_SEED_DIRECTIVE` no vacío y contiene `"EXISTING PLAN AS SEED"` |
+
+### Corrección de diseño (SYNC1)
+El plan original asertaba `_StaleEdit` para un anchor ausente. `_StaleEdit` envuelve `StaleFileException` del check de hash en `apply_patch_to_vfs` — pero `_compute_edit` siempre pasa `expected_hash=content_hash(base)`, que siempre coincide con el contenido del buffer local, por lo que `StaleFileException` es inalcanzable en ese path. El anchor ausente lanza `PatchError` (capturado por el handler outer del nodo como concede). La fila se corrigió para testear el contrato real: create-file OK + anchor-miss lanza `PatchError`.
+
+### Archivos creados
+| Archivo | Cambio |
+|---|---|
+| `tests/test_phase7_19_checkpoint_gate.py` | **Nuevo** — 12 filas de gate, stubs copiados del patrón 7.19.4 |
+
+---
+
 ## Fase 7.19.7: Structured Agent Output — Execution Checklist + WBS Seeding + GFM Tables — 2026-06-10
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/262 · pytest 3 passed (test_phase7_19_7_structured_output.py) · `npm run compile` 0 · production ceiling sentinel verde (517.x KB / techo 550 KB)
