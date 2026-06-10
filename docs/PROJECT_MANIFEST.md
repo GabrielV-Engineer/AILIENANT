@@ -2349,13 +2349,13 @@ the blueprint freeze lifts.
   - Mapa de tier por-tool + metadata de instalación one-click. **DoD:** los 4 servers regulados resuelven a su tier correcto (override sobre la heurística).
 - [ ] **8.4.3 — Import/export `.ailienant/config.json`**
   - Upsert idempotente keyed por nombre de server; **secretos jamás en el JSON** (`key_ref: vscode_secret:...` → SecretStorage); import en máquina fresca promptea el secreto (no viaja). **DoD:** round-trip export→import sin duplicar servers ni filtrar secretos.
-- [ ] **8.4.4 — Auto-connect MCP al lanzar tarea** (cierra DEBT-027)
-  - **DoD:** los servers `enabled` se conectan automáticamente al inicio de un task.
+- [ ] **8.4.4 — Auto-connect MCP al lanzar tarea + wiring del dispatch guard** (cierra DEBT-027, cierra DEBT-029 parcial)
+  - Auto-connect: los servers `enabled` se conectan automáticamente al inicio de un task. Dispatch guard: `McpToolAdapter._arun` plumba `session_id`/`session_permission_mode` y consulta `evaluate_action` antes de llamar a `_call_mcp_tool` — mismo patrón que `SandboxBashTool._arun` en `execution_tools.py`. La válvula de sesión "confiar-una-vez" (trust-once, DEBT-029 restante) puede aterrizar aquí o en 8.4.7. **🔒 Prerrequisito obligatorio de 8.4.7** — sin el wiring del dispatch, el gate 8.4.7 siempre falla aunque la clasificación y el catálogo sean perfectos. **DoD:** los servers `enabled` se conectan automáticamente; un tool WRITE/EXECUTE/DANGEROUS MCP pasa por `evaluate_action` antes de ejecutarse.
 - [ ] **8.4.5 — Wiring de ejecución de Skills** (cierra DEBT-028)
   - **DoD:** un skill guardado efectivamente se ejecuta.
 - [ ] **8.4.6 — UX VS Code "Browse Registry"**
   - Cards curadas + botón install + guard de permisos. **DoD:** instalar un server desde el registry sin salir del IDE.
-- [ ] **8.4.7 — DoD-check** — todo tool descubierto lleva tier no-`READ_ONLY`-por-defecto; el HITL dispara ante un tool WRITE.
+- [ ] **8.4.7 — DoD-check** 🔒 *(requiere 8.4.4 completo)* — todo tool descubierto lleva tier no-`READ_ONLY`-por-defecto; el HITL dispara ante un tool WRITE sobre un MCP tool real (no solo en sandbox_bash/task_service). Orden topológico obligatorio: **8.4.1 → 8.4.2 → 8.4.4 → 8.4.7**; 8.4.3/8.4.5/8.4.6 son independientes y pueden ir en cualquier orden entre sí.
 
 ---
 

@@ -35,6 +35,8 @@ D = ToolPrivilegeTier.DANGEROUS
         ("create_pr", W),
         ("update_record", W),
         ("run_job", E),
+        ("execute_command", E),
+        ("execute_query", E),
         ("invoke_lambda", E),
         ("delete_repo", D),
         ("drop_table", D),

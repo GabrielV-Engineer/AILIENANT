@@ -106,7 +106,7 @@ _VERB_SETS: Dict[ToolPrivilegeTier, frozenset[str]] = {
     ToolPrivilegeTier.WRITE: frozenset(
         {"create", "update", "write", "push", "add", "set"}
     ),
-    ToolPrivilegeTier.EXECUTE: frozenset({"exec", "run", "invoke", "spawn"}),
+    ToolPrivilegeTier.EXECUTE: frozenset({"exec", "execute", "run", "invoke", "spawn"}),
     ToolPrivilegeTier.DANGEROUS: frozenset(
         {"delete", "drop", "force", "merge", "reset", "purge"}
     ),

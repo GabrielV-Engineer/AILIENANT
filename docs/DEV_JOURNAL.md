@@ -16,6 +16,10 @@
 - **Catálogo `_PRIVILEGE_CATALOG`** ship como seam vacío pero load-bearing (autoritativo, puede degradar; lookup `<server>.<tool>` con guarda contra `None` stringificado, luego `<tool>` pelado). Lo puebla 8.4.2.
 - `mcp_adapter.py` ahora llama a la función; comentario y docstring de la clase scrubbed de referencias de fase (§6).
 
+### Adenda (mismo día): `execute` añadido al verb set de EXECUTE
+
+La implementación inicial descubrió que `execute` no estaba en el verb set (solo `exec`), lo que hacía que `execute_command`, `execute_query`, `execute_script` — nombres canónicos para herramientas de base de datos y runners — cayeran al default DANGEROUS. Seguro pero impracticable para el long tail de Marketplace: docenas de servidores futuros (División 10.4) con nombres `execute_*` habrían llegado como DANGEROUS sin ninguna entrada de catálogo, causando exactamente la fatiga de alarma que DEBT-029 busca mitigar. `"execute"` añadido al EXECUTE frozenset en la misma sesión. Dos casos de test nuevos: `execute_command → EXECUTE`, `execute_query → EXECUTE`. Suite: 26 passed.
+
 ### Calibración: `RemotePing → DANGEROUS`
 El test de handshake antes aseraba que los 3 tools demo caían en READ_ONLY. Bajo el clasificador, `RemoteSearch`/`RemoteFetch` llevan verbo de lectura → READ_ONLY, pero **`RemotePing` no tiene verbo reconocido en su nombre ni en su descripción → cae a DANGEROUS por el default fail-closed**, que es el comportamiento correcto. Nota deliberada: `ping` *parece* benigno, pero la decisión segura es tratarlo como hostil hasta que el catálogo curado (8.4.2) diga lo contrario — no "corregir" esto de vuelta a READ_ONLY.
 
