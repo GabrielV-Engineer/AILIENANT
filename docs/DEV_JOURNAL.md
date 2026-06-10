@@ -2,6 +2,36 @@
 
 ---
 
+## Fase 8.4.0 / 8.4.1: `classify_tool_privilege()` — cierre del fail-open de privilegios MCP (DEBT-026) — 2026-06-10
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/264 · pytest 1063 passed / 2 skipped · `npx pyright` 0 errores nuevos (2 preexistentes en `BaseTool` override, sin tocar)
+
+### Contexto
+`tools/mcp_adapter.py:344` registraba **todo** tool descubierto de un servidor MCP externo con `privilege_tier=READ_ONLY` de forma incondicional — un agujero **fail-open** en una frontera de seguridad: un tool mutante remoto (`github.merge_pull_request`, `docker.run`) entraba como READ_ONLY, `evaluate_action` devolvía ALLOW y el HITL de Asymmetric Friction nunca disparaba. El motor de permisos (`core/permissions.py`) ya era correcto; solo la clasificación en el registro estaba mal.
+
+### Implementación
+- **`classify_tool_privilege(tool_name, description, server_name)`** añadida a `core/permissions.py` junto a `evaluate_action`/`rbwe_guard` (sin forkear el motor). Precedencia **catálogo curado > heurística de verbo > DANGEROUS** (fail-closed).
+- **Tokenizer fijado** (`_TOKEN_SPLIT`): split en fronteras camelCase (`lower→Upper`, `Upper→Upper+lower`) y separadores `- _ . espacio`, así `mergePullRequest` → `{merge, pull, request}`. Match por **igualdad de token completo**, nunca substring (`asset` no matchea `set`).
+- **Severidad `READ_ONLY < WRITE < EXECUTE < DANGEROUS`** vía `_TIER_SEVERITY`; el tier final es el `max` de los tiers que matchean en nombre **o** descripción — la descripción solo puede **elevar** hacia DANGEROUS, nunca degradar (cierra el vector de downgrade).
+- **Catálogo `_PRIVILEGE_CATALOG`** ship como seam vacío pero load-bearing (autoritativo, puede degradar; lookup `<server>.<tool>` con guarda contra `None` stringificado, luego `<tool>` pelado). Lo puebla 8.4.2.
+- `mcp_adapter.py` ahora llama a la función; comentario y docstring de la clase scrubbed de referencias de fase (§6).
+
+### Calibración: `RemotePing → DANGEROUS`
+El test de handshake antes aseraba que los 3 tools demo caían en READ_ONLY. Bajo el clasificador, `RemoteSearch`/`RemoteFetch` llevan verbo de lectura → READ_ONLY, pero **`RemotePing` no tiene verbo reconocido en su nombre ni en su descripción → cae a DANGEROUS por el default fail-closed**, que es el comportamiento correcto. Nota deliberada: `ping` *parece* benigno, pero la decisión segura es tratarlo como hostil hasta que el catálogo curado (8.4.2) diga lo contrario — no "corregir" esto de vuelta a READ_ONLY.
+
+### Alcance diferido (DEBT-029)
+La válvula de sesión "confiar-una-vez" y el wiring del guard en el *dispatch* MCP (`_call_mcp_tool` hoy no consulta `evaluate_action` ni recibe `session_id`/`session_permission_mode`) se difieren a **8.4.4** (wiring) / **8.4.7** (gate "el HITL dispara ante un tool WRITE"). El DoD de 8.4.1 es clasificación-only y queda cumplido.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/core/permissions.py` | + `classify_tool_privilege`, `_tokenize`, `_TIER_SEVERITY`, `_VERB_SETS`, `_PRIVILEGE_CATALOG`, `_TOKEN_SPLIT`; `import re` |
+| `ailienant-core/tools/mcp_adapter.py` | hardcode `READ_ONLY` → `classify_tool_privilege(name, description)`; import ajustado; docstring scrubbed |
+| `ailienant-core/tests/test_classify_tool_privilege.py` | **nuevo** — 24 casos (tabla de verbos, fail-closed, multi-tier, camelCase, no-substring, catálogo, elevación-only) |
+| `ailienant-core/tests/test_mcp_handshake.py` | asserts por-tool: Search/Fetch READ_ONLY, Ping DANGEROUS |
+
+---
+
 ## Fase 7.19.8: Checkpoint Gate Fase 7.19 — 2026-06-10
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/263 · pytest 12 passed · `npm run compile` 0 · blueprint 7.19 LOCK-IN expirado

@@ -152,8 +152,14 @@ async def test_bootstrap_with_valid_uri_populates_store(tmp_path: Path) -> None:
     schemas = isolated_store.all_schemas()
     names = {s.name for s in schemas}
     assert names == {"RemoteSearch", "RemoteFetch", "RemotePing"}
-    # All defaulted to READ_ONLY (Phase 5.2 tech-debt item 4).
-    assert all(s.privilege_tier is ToolPrivilegeTier.READ_ONLY for s in schemas)
+    # Tiers are classified fail-closed from the descriptor verb. "Search" and
+    # "Fetch" carry a read verb and land READ_ONLY; "Ping" has no recognized
+    # verb in its name or description, so it correctly falls to DANGEROUS
+    # rather than being trusted as read-only.
+    tiers = {s.name: s.privilege_tier for s in schemas}
+    assert tiers["RemoteSearch"] is ToolPrivilegeTier.READ_ONLY
+    assert tiers["RemoteFetch"] is ToolPrivilegeTier.READ_ONLY
+    assert tiers["RemotePing"] is ToolPrivilegeTier.DANGEROUS
     # SQLite catalog received the same writes.
     assert register_tool_mock.await_count == 3
     # Audit log has the success event.

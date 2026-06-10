@@ -2342,9 +2342,9 @@ the blueprint freeze lifts.
 
 > Acoplarse al estándar Anthropic (JSON-RPC, `list_tools()`) sin reinventar — la infraestructura MCP ya existe (`bootstrap_mcp_session`, `ToolRAGStore`, REST `/api/v1/mcp/*`, UI VS Code). El trabajo es endurecer + curar + cerrar el fail-open de seguridad.
 
-- [ ] **8.4.0 — Blueprint**
-- [ ] **8.4.1 — `classify_tool_privilege()` — 🔴 fix de seguridad (cierra DEBT-026)**
-  - Reemplaza el hardcode `READ_ONLY` de `mcp_adapter.py:344`. Precedencia **catálogo > heurística de verbo > DANGEROUS** (fail-closed); alimenta `rbwe_guard`/`evaluate_action` para que el Asymmetric Friction HITL por fin dispare. + válvula de sesión "confiar-una-vez" contra fatiga de alarma. **Bloquea 8.5 (tools EXECUTE-tier). DoD:** un tool con verbo de mutación entra como WRITE/EXECUTE/DANGEROUS, nunca READ_ONLY por omisión.
+- [x] **8.4.0 — Blueprint** (cubierto por ADR-757 en `docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`).
+- [x] **8.4.1 — `classify_tool_privilege()` — 🔴 fix de seguridad (cierra DEBT-026)**
+  - Reemplaza el hardcode `READ_ONLY` de `mcp_adapter.py:344`. Precedencia **catálogo > heurística de verbo > DANGEROUS** (fail-closed); alimenta `rbwe_guard`/`evaluate_action` para que el Asymmetric Friction HITL por fin dispare. **Bloquea 8.5 (tools EXECUTE-tier). DoD:** un tool con verbo de mutación entra como WRITE/EXECUTE/DANGEROUS, nunca READ_ONLY por omisión. ✅ La válvula de sesión "confiar-una-vez" + el wiring del guard en el dispatch MCP se difieren (DEBT-029 → 8.4.4/8.4.7); el HITL disparando ante un tool WRITE es el DoD del gate 8.4.7.
 - [ ] **8.4.2 — Catálogo curado de registry** (github / brave-search / docker / postgres)
   - Mapa de tier por-tool + metadata de instalación one-click. **DoD:** los 4 servers regulados resuelven a su tier correcto (override sobre la heurística).
 - [ ] **8.4.3 — Import/export `.ailienant/config.json`**

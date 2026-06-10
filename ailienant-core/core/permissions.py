@@ -14,9 +14,10 @@ Read-Before-Write by consulting state["read_files_state"] (existing channel).
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
 
 from shared.rbac import PermissionMode
 
@@ -71,6 +72,96 @@ def session_mode_from_frontend(mode: Optional[str]) -> Optional[SessionPermissio
     per-session settings-file seed rather than silently forcing a policy.
     """
     return _FRONTEND_MODE_TO_SESSION.get((mode or "").strip().lower())
+
+
+# =====================================================================
+# 1b. Tool privilege classification — fail-closed
+# =====================================================================
+#
+# Tools discovered from an external MCP server arrive with only a name,
+# a free-text description, and a JSON input schema — no trustworthy
+# privilege annotation. Trusting that input would let a mutating remote
+# tool register as READ_ONLY and slip past evaluate_action()/rbwe_guard()
+# without ever surfacing an approval prompt. Classification is therefore
+# fail-closed: an unrecognized verb resolves to the most-restricted tier
+# (DANGEROUS), never the least. Do not relax this default to READ_ONLY
+# for convenience — the whole point is that an unknown remote capability
+# is treated as hostile until a curated entry says otherwise.
+
+# Severity ordering for "most restrictive wins" comparisons. The integer
+# value is meaningless on its own; only the relative order matters.
+_TIER_SEVERITY: Dict[ToolPrivilegeTier, int] = {
+    ToolPrivilegeTier.READ_ONLY: 0,
+    ToolPrivilegeTier.WRITE: 1,
+    ToolPrivilegeTier.EXECUTE: 2,
+    ToolPrivilegeTier.DANGEROUS: 3,
+}
+
+# Verb tokens that signal each tier, matched by whole-token equality (never
+# substring) against the tokenized name and description.
+_VERB_SETS: Dict[ToolPrivilegeTier, frozenset[str]] = {
+    ToolPrivilegeTier.READ_ONLY: frozenset(
+        {"get", "list", "read", "search", "fetch", "describe"}
+    ),
+    ToolPrivilegeTier.WRITE: frozenset(
+        {"create", "update", "write", "push", "add", "set"}
+    ),
+    ToolPrivilegeTier.EXECUTE: frozenset({"exec", "run", "invoke", "spawn"}),
+    ToolPrivilegeTier.DANGEROUS: frozenset(
+        {"delete", "drop", "force", "merge", "reset", "purge"}
+    ),
+}
+
+# Curated, authoritative tier overrides keyed by "<server>.<tool>" or bare
+# "<tool>" (both lowercased). Trusted source — may downgrade as well as
+# elevate the heuristic. Intentionally empty here; populated by the
+# regulated-server catalog work.
+_PRIVILEGE_CATALOG: Dict[str, ToolPrivilegeTier] = {}
+
+# Split on camelCase boundaries (lower→Upper, Upper→Upper+lower) and on any
+# run of separator characters, so "mergePullRequest" and "merge_pull_request"
+# both yield {"merge", "pull", "request"}.
+_TOKEN_SPLIT = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|[-_.\s]+")
+
+
+def _tokenize(text: str) -> set[str]:
+    """Break an identifier or description into lowercased word tokens."""
+    return {tok for tok in _TOKEN_SPLIT.sub("_", text).lower().split("_") if tok}
+
+
+def classify_tool_privilege(
+    tool_name: str,
+    description: str = "",
+    server_name: Optional[str] = None,
+) -> ToolPrivilegeTier:
+    """Resolve a tool's privilege tier from untrusted descriptor metadata.
+
+    Precedence, highest authority first:
+
+    1. Curated catalog — an explicit, trusted override for a known tool.
+    2. Verb heuristic — the most restrictive tier whose verb set matches a
+       token in the name or the description. The description can only raise
+       the tier toward DANGEROUS, never lower it below what the name implies.
+    3. Fail-closed default — DANGEROUS when no verb matches anywhere.
+    """
+    lname = tool_name.lower()
+    catalog_keys = ([f"{server_name.lower()}.{lname}"] if server_name else []) + [lname]
+    for key in catalog_keys:
+        catalogued = _PRIVILEGE_CATALOG.get(key)
+        if catalogued is not None:
+            return catalogued
+
+    name_tokens = _tokenize(tool_name)
+    desc_tokens = _tokenize(description)
+    matched: List[ToolPrivilegeTier] = []
+    for tier, verbs in _VERB_SETS.items():
+        if (name_tokens & verbs) or (desc_tokens & verbs):
+            matched.append(tier)
+
+    if matched:
+        return max(matched, key=_TIER_SEVERITY.__getitem__)
+
+    return ToolPrivilegeTier.DANGEROUS
 
 
 # =====================================================================

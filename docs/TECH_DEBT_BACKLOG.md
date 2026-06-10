@@ -31,7 +31,7 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
-### DEBT-026 — 🔴 SECURITY: MCP-discovered tools hardcoded to READ_ONLY (privilege fail-open)
+### DEBT-026 — 🔴 SECURITY: MCP-discovered tools hardcoded to READ_ONLY (privilege fail-open) — ✅ RESOLVED (8.4.1)
 
 - **Date:** 2026-06-10
 - **Reproduce:** inspect `ailienant-core/tools/mcp_adapter.py:344` — every tool harvested from an external MCP server is registered with `privilege_tier=ToolPrivilegeTier.READ_ONLY`, unconditionally.
@@ -39,7 +39,18 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Error:** not a type error — a **fail-open security hole**. A mutating external tool (e.g. `github.create_pull_request`, `github.merge_pull_request`, `docker.run`) is classified READ_ONLY, so `evaluate_action`/`rbwe_guard` grant it ALLOW and the Asymmetric Friction HITL gate **never fires**. The permission engine itself (`core/permissions.py`) is sound; only the classification at registration is wrong.
 - **Blocked by:** nothing — fixable now; the fix is `classify_tool_privilege(tool_name, description, server_name)` with precedence curated-catalog > verb-heuristic > DANGEROUS default (fail-closed).
 - **Phase:** **8.4.1** (closes this debt). Also the LOCK anchor for every EXECUTE-tier tool in División 8.5.
+- **Resolution (8.4.1, 2026-06-10):** `classify_tool_privilege(tool_name, description, server_name)` added to `core/permissions.py` (precedence catalog > verb heuristic > DANGEROUS; description elevates only via `max` severity, never downgrades; whole-token match with a camelCase-aware tokenizer). The `mcp_adapter.py` hardcode now calls it. Curated catalog ships as an empty, load-bearing seam (populated by 8.4.2). Proof: `test_mcp_handshake.py` now asserts `RemotePing → DANGEROUS` (no read verb → fail-closed) where it previously defaulted READ_ONLY; new `tests/test_classify_tool_privilege.py` (24 cases). `mypy .` 0/264, full pytest 1063 passed. **Deferred to DEBT-029:** the dispatch-time guard + session "trust-once" valve (the HITL *firing* path).
 - **Notes:** highest-urgency entry in this backlog — a known, live fail-open at a security boundary. Registered today regardless of close date per the Continuous Registry Protocol. Verb map + catalog overrides specified in ADR-757 (`docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`).
+
+### DEBT-029 — MCP tool dispatch consults no permission guard + no session "trust-once" valve
+
+- **Date:** 2026-06-10
+- **Reproduce:** inspect `ailienant-core/tools/mcp_adapter.py::McpToolAdapter._call_mcp_tool` — it calls `session.call_tool(...)` directly. No `evaluate_action`/`rbwe_guard` consultation, no `session_permission_mode`/`session_id` plumbed in (unlike `SandboxBashTool._arun` in `tools/execution_tools.py`, which gates EXECUTE before spawning).
+- **File(s):** `ailienant-core/tools/mcp_adapter.py` (`_arun`/`_call_mcp_tool` — no guard, no session context); `ailienant-core/api/websocket_manager.py` (`request_human_approval` is per-request only — no session-scoped "approve this tool once" memo).
+- **Error:** wiring + UX gap. After 8.4.1 a WRITE/EXECUTE/DANGEROUS MCP tool is *classified* correctly, but nothing consults that tier at dispatch, so the Asymmetric Friction HITL still does not fire for MCP tools. A pure DANGEROUS-default also risks alarm fatigue on a fresh, uncatalogued server until the user can consciously elevate-once.
+- **Blocked by:** none (8.4.1 classification is the prerequisite and is now done).
+- **Phase:** **8.4.4** (dispatch guard wiring, alongside auto-connect) / **8.4.7** (the gate DoD: "HITL fires on a WRITE tool"). The session valve lands with the dispatch wiring.
+- **Notes:** carved out of 8.4.1 by explicit scope decision — 8.4.1's DoD is classification-only. The permission engine and `request_human_approval` infrastructure already exist; this is integration, not a rebuild.
 
 ### DEBT-027 — MCP servers testable but not auto-connected at task launch
 

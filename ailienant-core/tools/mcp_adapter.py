@@ -24,7 +24,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from pydantic import BaseModel, Field
 
-from core.permissions import ToolPrivilegeTier
+from core.permissions import classify_tool_privilege
 from core.tool_rag import MCP_HANDSHAKE_TIMEOUT_SEC, ToolSchema, tool_rag_store
 
 if TYPE_CHECKING:
@@ -71,11 +71,8 @@ class _McpToolInput(BaseModel):
 class McpToolAdapter(BaseTool):
     """LangChain BaseTool wrapper around a single MCP tool endpoint.
 
-    Lifecycle:
-        Phase 2.18 — Registry infrastructure; _call_mcp_tool() was a stub.
-        Phase 5.2 — _call_mcp_tool() is now a real mcp.ClientSession.call_tool()
-                    invocation backed by the process-singleton session opened
-                    by bootstrap_mcp_session().
+    _call_mcp_tool() dispatches a real mcp.ClientSession.call_tool() over the
+    process-singleton session opened by bootstrap_mcp_session().
 
     Timeout:
         asyncio.wait_for wraps _call_mcp_tool() with a configurable deadline (default 30s)
@@ -335,13 +332,15 @@ async def bootstrap_mcp_session(
         except (TypeError, ValueError):
             json_schema = "{}"
 
-        # Phase 5.2 default: all MCP-discovered tools are READ_ONLY until a
-        # descriptor-side privilege annotation lands (tech debt item 4).
+        # The tool name and description come from an untrusted external
+        # server, so the tier is classified fail-closed: an unrecognized
+        # verb resolves to the most-restricted tier rather than READ_ONLY,
+        # ensuring a mutating remote tool cannot slip past the approval gate.
         schema_obj = ToolSchema(
             name=name,
             description=description,
             json_schema=json_schema,
-            privilege_tier=ToolPrivilegeTier.READ_ONLY,
+            privilege_tier=classify_tool_privilege(name, description),
             allowed_roles=frozenset({"core_dev"}),  # safe default
         )
         try:
