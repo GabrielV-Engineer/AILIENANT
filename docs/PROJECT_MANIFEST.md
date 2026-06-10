@@ -2300,25 +2300,89 @@ the blueprint freeze lifts.
 
 ---
 
-### 🔬 Subfase 8.1–8.5 — Pruebas, Refinamiento y Degradación Elegante
+### 🔬 División 8.2 — Resilience & Observability 🔴
 
-- [ ] **8.1. Pruebas End-to-End (`tests/e2e/`)**
-  - Validar SSoT completo: Prompt → GraphRAG → LangGraph → MCP → WebSocket Response.
+> Renumeración de la antigua "Subfase 8.1–8.5" (colisionaba con la División 8.1 cerrada). Resiliencia operacional y observabilidad. **Convención de gates:** los cierres por-división son DoD-checks; el gate real único de la fase es **8.6** (espejo de 7.13.12/7.19.8).
 
-- [ ] **8.2. Fast Track y Observabilidad (`core/telemetry.py`)**
-  - Ruta baja-latencia para saltar GraphRAG en consultas banales.
-  - Trazas LangSmith (tokens, costo, CSS).
+- [ ] **8.2.1 — Pruebas End-to-End (`tests/e2e/`)**
+  - Validar el SSoT completo: Prompt → GraphRAG → LangGraph → MCP → WebSocket Response. **DoD:** un caso E2E atraviesa el grafo compilado sobre el surface HTTP/WS real y retorna un patch aplicado.
+- [ ] **8.2.2 — Fast Track + Observabilidad**
+  - **Construye sobre el canal de telemetría de 7.13.3 (`telemetry_log` / `.ailienant_telemetry.log`); NO crea sink nuevo** (honra la absorción 7.13→Fase 8). El "Fast Track" es la ruta **TCI-0 pre-RAG** que vive **dentro** de `resolve_provider`/`derive_routing_decision` — no un bypass paralelo. Trazas LangSmith sobre el canal existente. **DoD:** una consulta trivial salta GraphRAG vía el motor de ruteo existente; cero sinks nuevos.
+- [ ] **8.2.3 — Fallbacks de Hardware (Degradación Elegante)**
+  - El umbral de VRAM es **config, no constante** (reconciliar el `<16GB` con el `<1GB` de Fase 10.3); bypass a Cloud ante VRAM insuficiente. **DoD:** VRAM bajo el umbral configurado enruta a Cloud sin crash.
+  - [ ] **8.2.3.1 — Calculadora de Peso de Grafo (Context OOM Predictor)**
+    - Algoritmo que calcula el tamaño del State (Tokens × Modelo) *antes* de ejecutar el prompt — alimenta el semáforo de hardware de 7.5.3.
+- [ ] **8.2.4 — Simulador de Hardware bajo Estrés (Chaos Engineering)**
+  - Script que consume RAM/VRAM artificialmente y valida que el `hardware_profiler` dispare fallbacks reales (pausar indexación, switch a Cloud). **DoD:** la presión sintética dispara el fallback observado en telemetría.
+- [ ] **8.2.5 — DoD-check** *(no gate)* — smoke de resiliencia verde.
 
-- [ ] **8.3. Fallbacks de Hardware (Degradación Elegante)**
-  - Lógica para detectar VRAM insuficiente (<16GB) y bypassear modelo local hacia Cloud de emergencia.
-  - [ ] **8.3.1. Calculadora de Peso de Grafo (Context OOM Predictor)**
-    - Algoritmo en el profilador calcula tamaño del State (Tokens × Modelo) *antes* de ejecutar el prompt — alimenta el semáforo de hardware de Fase 7.5.3.
+---
 
-- [ ] **8.4. Simulador de Hardware bajo Estrés (Chaos Engineering)**
-  - Script interno consume RAM/VRAM artificialmente para llevar la máquina a zona de riesgo. Valida que el `hardware_profiler` dispare fallbacks reales (pausar indexación, switch a Cloud).
+### 🔬 División 8.3 — Precision Benchmarking & Ablation Study — **[ADR-756]** 🔴
 
-- [ ] **8.5. Checkpoint Gate Fase 8**
-  - Informe final de resiliencia ante fallos de hardware (Chaos Testing).
+> Prueba empírica del moat: ¿cuánto sube la precisión un modelo usando Ailienant vs. solo? ¿Cuánto ahorra el ruteo TCI? Diseño factorial 2×2: **H₁** fija el modelo y varía el pipeline (uplift arquitectónico); **H₂** fija el pipeline y varía el ruteo (eficiencia de costo). Métricas distintas y explícitas: **Pass@1** (muestral, HumanEval/MultiPL-E) vs **Resolve@k** (k≤3 ciclos dependientes de auto-corrección ReAct, válido a temp=0). Rigor: n≥30 problemas distintos por grupo, Wilson CI, `seed=42`/`temp=0` (con caveat de no-determinismo). Ejecución híbrida: ablación in-process sobre `process_task()`; gate E2E sobre HTTP/WS real.
+
+- [ ] **8.3.0 — Blueprint + scaffold del harness (`tests/benchmark/`)**
+  - Runner in-process sobre `process_task()`, `seed=42`/`temp=0`, registra vía `token_ledger`+`telemetry`; verifica que los 4 toggles de ablación existan o escopea el faltante (G2 net-new confirmado, G3 vía `requires_iteration`). **DoD:** el runner corre un problema dummy en los 4 grupos y emite métricas crudas.
+- [ ] **8.3.1 — Adaptador de codegen — HumanEval (Python) + MultiPL-E (TypeScript)**
+  - HumanEval es canónicamente solo Python; TS usa MultiPL-E. Pass@1 de regresión de codegen plano. **DoD:** Pass@1 reproducible sobre el subset.
+- [ ] **8.3.2 — Benchmark multi-archivo custom — corpus congelado + BenchmarkOracle**
+  - **Snapshot a un commit pinneado** + golden patches + el test suite del snapshot como oráculo (`run_oracle(snapshot, patch) -> Verdict`) — **nunca la codebase viva**. Mide el valor de `get_dependents`/GraphRAG vía **Resolve@k**. **DoD:** Resolve@k reproducible al SHA pinneado.
+- [ ] **8.3.3 — Harness de ablación — G1–G4 + G4-force-cloud**
+  - G1 Control (zero-shot) · G2 RAG-only (**retriever vector-only net-new como Strategy en `tests/benchmark/`, sin tocar el hot path de prod**) · G3 Core (ReAct off vía `requires_iteration=False`) · G4 Full · **G4-force-cloud** (baseline de H₂, override del output de `resolve_provider` a nivel de harness, no prod). **DoD:** los 5 brazos corren el mismo problema y producen veredictos comparables.
+- [ ] **8.3.4 — Routing study**
+  - Ahorro de tokens estratificado por bucket de TCI vs. retención de Resolve@3 contra G4-force-cloud (operacionaliza H₂). **DoD:** tabla TCI-bucket × tokens × Resolve@3.
+- [ ] **8.3.5 — Generador de reporte**
+  - Emite un **`report.json`** machine-readable (Verdict por-test + agregados por grupo + Wilson CI + veredictos H₁/H₂ + Token Efficiency Ratio estratificado + deltas de ablación); el eval surface del gateway (8.5.5) lo consume. **DoD:** `report.json` válido contra su schema.
+- [ ] **8.3.6 — DoD-check** — harness reproducible al SHA pinneado.
+
+---
+
+### 🔬 División 8.4 — MCP Ecosystem Hardening — **[ADR-757]** 🔴
+
+> Acoplarse al estándar Anthropic (JSON-RPC, `list_tools()`) sin reinventar — la infraestructura MCP ya existe (`bootstrap_mcp_session`, `ToolRAGStore`, REST `/api/v1/mcp/*`, UI VS Code). El trabajo es endurecer + curar + cerrar el fail-open de seguridad.
+
+- [ ] **8.4.0 — Blueprint**
+- [ ] **8.4.1 — `classify_tool_privilege()` — 🔴 fix de seguridad (cierra DEBT-026)**
+  - Reemplaza el hardcode `READ_ONLY` de `mcp_adapter.py:344`. Precedencia **catálogo > heurística de verbo > DANGEROUS** (fail-closed); alimenta `rbwe_guard`/`evaluate_action` para que el Asymmetric Friction HITL por fin dispare. + válvula de sesión "confiar-una-vez" contra fatiga de alarma. **Bloquea 8.5 (tools EXECUTE-tier). DoD:** un tool con verbo de mutación entra como WRITE/EXECUTE/DANGEROUS, nunca READ_ONLY por omisión.
+- [ ] **8.4.2 — Catálogo curado de registry** (github / brave-search / docker / postgres)
+  - Mapa de tier por-tool + metadata de instalación one-click. **DoD:** los 4 servers regulados resuelven a su tier correcto (override sobre la heurística).
+- [ ] **8.4.3 — Import/export `.ailienant/config.json`**
+  - Upsert idempotente keyed por nombre de server; **secretos jamás en el JSON** (`key_ref: vscode_secret:...` → SecretStorage); import en máquina fresca promptea el secreto (no viaja). **DoD:** round-trip export→import sin duplicar servers ni filtrar secretos.
+- [ ] **8.4.4 — Auto-connect MCP al lanzar tarea** (cierra DEBT-027)
+  - **DoD:** los servers `enabled` se conectan automáticamente al inicio de un task.
+- [ ] **8.4.5 — Wiring de ejecución de Skills** (cierra DEBT-028)
+  - **DoD:** un skill guardado efectivamente se ejecuta.
+- [ ] **8.4.6 — UX VS Code "Browse Registry"**
+  - Cards curadas + botón install + guard de permisos. **DoD:** instalar un server desde el registry sin salir del IDE.
+- [ ] **8.4.7 — DoD-check** — todo tool descubierto lleva tier no-`READ_ONLY`-por-defecto; el HITL dispara ante un tool WRITE.
+
+---
+
+### 🔬 División 8.5 — External Capability Gateway — **[ADR-759]** 🔴 🔒 *(todo tool EXECUTE-tier hard-blocked por 8.4.1)*
+
+> Que agentes externos (Claude Code, Codex) ejecuten Ailienant de forma segura, y que el benchmark se corra/analice automáticamente. Gateway = **MCP server multi-tool stdio** en `ailienant-core/`, **adaptador** sobre el substrato `/api/v1/task/submit` + WS + token. **No altera `AIlienantGraphState`/`ContextMeter`/`MissionSpecification`** (SCHEMA_EVOLUTION.MD). Modelo de permisos **simétrico** (consumer 8.4 == provider): reusa `classify_tool_privilege`/`evaluate_action`/`rbwe_guard` — forking del motor de permisos PROHIBIDO.
+
+- [ ] **8.5.0 — Blueprint (rescoped, [ADR-759])**
+- [ ] **8.5.1 — Framework del gateway**
+  - MCP server multi-tool stdio: catálogo de capacidades, `list_tools()`, schema JSON por-tool, async 202+poll/stream para verbos long-running, sobre submit+WS+token existente. **DoD:** un caller externo lista el catálogo y obtiene schemas válidos.
+- [ ] **8.5.2 — Tier governance**
+  - Tools propios del gateway ruteados por `classify_tool_privilege`/`evaluate_action` (reusa 8.4.1); modo de permiso conservador para callers externos (sin AUTO silencioso, sin auto-escalación); **budget + rate ceiling por-caller** (DoS guard). **DoD:** un caller externo no puede auto-escalar a AUTO; excede su ceiling → rechazado.
+- [ ] **8.5.3 — HITL-degrade**
+  - Acción DANGEROUS/HITL → deny + reporte estructurado, nunca cuelga. **DoD:** un verbo DANGEROUS retorna deny-report sin colgar.
+- [ ] **8.5.4 — Capability Catalog v1** (starter, READ-heavy)
+  - `run_task` (EXECUTE, conservador), `query_memory` / `get_dependents` / `get_workspace_graph` (READ_ONLY). **DoD:** los verbos READ_ONLY responden; `run_task` corre bajo modo conservador.
+- [ ] **8.5.5 — Eval surface tools**
+  - `run_benchmark` (EXECUTE, budget-gated, async) + `get_report` (READ_ONLY) consumiendo el `report.json` de 8.3.5 (el benchmark es **consumidor**, no el propósito). **DoD:** un agente externo dispara un benchmark y recupera el reporte.
+- [ ] **8.5.6 — Versioning + auth ergonomics + docs de integración**
+  - Semver + política de deprecación (contrato público permanente), ergonomía de token, ceiling por-caller. **DoD:** el surface declara su versión; doc de integración para un agente externo.
+- [ ] **8.5.7 — DoD-check** — un caller externo lista el catálogo, corre un verbo READ_ONLY, y es denegado+reportado en un verbo DANGEROUS sin colgar.
+
+---
+
+### 🔬 División 8.6 — Checkpoint Gate Fase 8 — **[ADR-760]**
+
+> Gate único de la fase (convención de archivo-hermano): re-certifica resiliencia + precisión (corridas del harness H₁/H₂) + privilegio MCP fail-closed + HITL-degrade externo. **DoD:** `pytest` verde + `mypy .` 0 + gate verde + `npm run compile` 0.
 
 ---
 

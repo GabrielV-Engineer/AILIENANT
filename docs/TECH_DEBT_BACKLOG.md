@@ -31,6 +31,36 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-026 — 🔴 SECURITY: MCP-discovered tools hardcoded to READ_ONLY (privilege fail-open)
+
+- **Date:** 2026-06-10
+- **Reproduce:** inspect `ailienant-core/tools/mcp_adapter.py:344` — every tool harvested from an external MCP server is registered with `privilege_tier=ToolPrivilegeTier.READ_ONLY`, unconditionally.
+- **File(s):** `ailienant-core/tools/mcp_adapter.py:344` (the hardcoded tier at registration).
+- **Error:** not a type error — a **fail-open security hole**. A mutating external tool (e.g. `github.create_pull_request`, `github.merge_pull_request`, `docker.run`) is classified READ_ONLY, so `evaluate_action`/`rbwe_guard` grant it ALLOW and the Asymmetric Friction HITL gate **never fires**. The permission engine itself (`core/permissions.py`) is sound; only the classification at registration is wrong.
+- **Blocked by:** nothing — fixable now; the fix is `classify_tool_privilege(tool_name, description, server_name)` with precedence curated-catalog > verb-heuristic > DANGEROUS default (fail-closed).
+- **Phase:** **8.4.1** (closes this debt). Also the LOCK anchor for every EXECUTE-tier tool in División 8.5.
+- **Notes:** highest-urgency entry in this backlog — a known, live fail-open at a security boundary. Registered today regardless of close date per the Continuous Registry Protocol. Verb map + catalog overrides specified in ADR-757 (`docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`).
+
+### DEBT-027 — MCP servers testable but not auto-connected at task launch
+
+- **Date:** 2026-06-10
+- **Reproduce:** `POST /api/v1/mcp/test` probes a server successfully, but starting a new task does not open sessions to `enabled` servers — their tools are absent from the task's `ToolRAGStore` selection.
+- **File(s):** `ailienant-core/api/mcp_servers.py` (test endpoint exists, no auto-connect hook); `ailienant-core/tools/mcp_adapter.py::bootstrap_mcp_session` (not invoked at task launch); `ailienant-core/core/task_service.py` (task entry, no MCP bootstrap pass).
+- **Error:** coverage/wiring gap — a configured-and-enabled MCP server contributes no tools until manually bootstrapped. The user configures a server, expects its tools live, gets nothing.
+- **Blocked by:** none.
+- **Phase:** **8.4.4** (closes this debt).
+- **Notes:** surfaced during the Phase 8 MCP-ecosystem exploration. The bootstrap function is complete; only the auto-invocation at task start is missing.
+
+### DEBT-028 — Skills/hooks persisted but never executed
+
+- **Date:** 2026-06-10
+- **Reproduce:** create a skill via `POST /api/v1/skills` (or a hook); it is stored in the catalog DB (`skills`/`hooks` tables) and listed back, but is never run during a task.
+- **File(s):** `ailienant-core/core/db.py` (skills/hooks tables + CRUD — storage only); `ailienant-core/api/customizers.py` (~line 215 — hooks saved, not executed); no execution wiring in the task pipeline.
+- **Error:** wiring gap — the persistence + UI half exists; the runtime application half does not. A saved skill/hook is dead metadata.
+- **Blocked by:** none.
+- **Phase:** **8.4.5** (closes this debt).
+- **Notes:** surfaced during the Phase 8 MCP-ecosystem exploration; complements DEBT-027 (both are "configured-but-inert" gaps in the customization surface).
+
 ### DEBT-025 — Docker persistent-PTY backend has no daemon integration test
 
 - **Date:** 2026-06-09
