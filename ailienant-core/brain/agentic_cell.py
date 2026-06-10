@@ -32,6 +32,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tup
 
 from pydantic import BaseModel, Field
 
+from brain.cell_dispatcher import CellEventDispatcher, NullCellDispatcher
 from brain.iteration_governor import AxisExhausted, check_governor, estimate_iteration_cost
 from brain.retry_policy import (
     AGENTIC_CELL_MAX_COST_USD,
@@ -230,6 +231,7 @@ class _CellSession:
     collector: Optional["asyncio.Task[None]"] = None
     last_snapshot: Any = None  # WorkspaceSnapshot of the most recent push
     start_time: float = field(default_factory=time.monotonic)  # monotonic clock at session open
+    _chunk_hook: Optional[Callable[[bytes], Awaitable[None]]] = field(default=None)
 
 
 _session_registry: Dict[str, _CellSession] = {}
@@ -240,6 +242,12 @@ async def _collect_into(cell: _CellSession) -> None:
     try:
         async for chunk in cell.session.stream():
             cell.buffer.extend(chunk)
+            hook = cell._chunk_hook
+            if hook is not None:
+                try:
+                    await hook(chunk)
+                except Exception:  # noqa: BLE001 — hook errors must never crash the collector
+                    pass
     except Exception as exc:  # noqa: BLE001 — collector death must not crash the loop
         logger.debug("AgenticCell stream collector ended: %s", exc)
 
@@ -423,6 +431,7 @@ async def run_agentic_cell_node(
     cwd: str = str(state.get("workspace_root") or os.getcwd())
     configurable: Dict[str, Any] = (config or {}).get("configurable", {}) if config else {}
     reasoner: CellReasoner = configurable.get("cell_reasoner") or _default_reasoner
+    dispatcher: CellEventDispatcher = configurable.get("cell_dispatcher") or NullCellDispatcher()
 
     terminal = False
     cell: Optional[_CellSession] = None
@@ -493,6 +502,11 @@ async def run_agentic_cell_node(
         for call in tool_calls:
             audit = audit_tool_args(call.name, call.args)
             audit_entries.append(audit.entry)
+            await dispatcher.emit_tool_call_start(
+                iteration=iteration,
+                tool_name=call.name,
+                args_scrubbed={k: str(v) for k, v in audit.entry.get("args", {}).items()},
+            )
             if not audit.allowed:
                 security_flags.append("SECURITY_TOOL_ARG_REJECTED")
                 continue
@@ -505,9 +519,17 @@ async def run_agentic_cell_node(
                     cell.surface, vfs_files, blob_storage, version_ids
                 )
                 command = str(call.args.get("command", ""))
-                exit_code, output = await _run_on_surface(
-                    cell, command, _RUN_TERMINAL_TIMEOUT_S
+                _iter = iteration  # capture for the lambda closure
+                cell._chunk_hook = lambda chunk, _i=_iter: dispatcher.emit_pty_chunk(
+                    iteration=_i,
+                    text=chunk.decode("utf-8", errors="replace"),
                 )
+                try:
+                    exit_code, output = await _run_on_surface(
+                        cell, command, _RUN_TERMINAL_TIMEOUT_S
+                    )
+                finally:
+                    cell._chunk_hook = None
                 last_exit = exit_code
                 record["exit_code"] = exit_code
                 record["diagnostics"] = _structured_verdict(command, output)
@@ -541,6 +563,9 @@ async def run_agentic_cell_node(
                     record["occ_conflicts"].append(path)
                     occ_messages.append(_occ_diagnostic(path))
                     continue
+                await dispatcher.emit_ast_diff(
+                    iteration=iteration, path=path, search=search, replace=replace
+                )
                 candidate_edits.setdefault(path, []).append(new_content)
                 if path not in edited_paths:
                     edited_paths.append(path)
@@ -591,6 +616,12 @@ async def run_agentic_cell_node(
                 ),
             )
         terminal = success or (axis is not None)
+        await dispatcher.emit_governor_tick(
+            step=iteration + 1,
+            cost_usd=float(state.get("current_cost_usd", 0.0)) + cost_delta,
+            elapsed_s=time.monotonic() - cell.start_time,
+            axis=axis.value if axis is not None else None,
+        )
         if success:
             record["status"] = "green"
         elif axis is not None:

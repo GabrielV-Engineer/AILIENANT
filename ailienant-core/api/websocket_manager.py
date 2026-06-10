@@ -38,6 +38,10 @@ from api.ws_contracts import (
     ServerToolStreamChunkEvent, ToolStreamChunkPayload,
     ServerToolResultEvent, ToolResultPayload,
     ServerToolDepGraphEvent, ToolDepGraphPayload,
+    ServerCellToolStartEvent, CellToolStartPayload,
+    ServerCellPtyChunkEvent, CellPtyChunkPayload,
+    ServerCellAstDiffEvent, CellAstDiffPayload,
+    ServerCellGovernorTickEvent, CellGovernorTickPayload,
 )
 
 from core.telemetry_log import log_ws_payload
@@ -740,6 +744,90 @@ class ConnectionManager:
     # Delivery acknowledgements (Stop / HITL)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Agentic Cell Glass-Box Telemetry
+    # ------------------------------------------------------------------
+
+    async def broadcast_cell_tool_start(
+        self,
+        session_id: str,
+        iteration: int,
+        tool_name: str,
+        args_scrubbed: Dict[str, str],
+    ) -> None:
+        await self.send_personal_message(
+            session_id,
+            ServerCellToolStartEvent(
+                data=CellToolStartPayload(
+                    session_id=session_id,
+                    iteration=iteration,
+                    tool_name=tool_name,
+                    args_scrubbed=args_scrubbed,
+                )
+            ),
+        )
+
+    async def broadcast_cell_pty_chunk(
+        self,
+        session_id: str,
+        iteration: int,
+        text: str,
+        is_stderr: bool = False,
+    ) -> None:
+        await self.send_personal_message(
+            session_id,
+            ServerCellPtyChunkEvent(
+                data=CellPtyChunkPayload(
+                    session_id=session_id,
+                    iteration=iteration,
+                    text=text,
+                    is_stderr=is_stderr,
+                )
+            ),
+        )
+
+    async def broadcast_cell_ast_diff(
+        self,
+        session_id: str,
+        iteration: int,
+        path: str,
+        search: str,
+        replace: str,
+    ) -> None:
+        await self.send_personal_message(
+            session_id,
+            ServerCellAstDiffEvent(
+                data=CellAstDiffPayload(
+                    session_id=session_id,
+                    iteration=iteration,
+                    path=path,
+                    search=search,
+                    replace=replace,
+                )
+            ),
+        )
+
+    async def broadcast_cell_governor_tick(
+        self,
+        session_id: str,
+        step: int,
+        cost_usd: float,
+        elapsed_s: float,
+        axis: Optional[str],
+    ) -> None:
+        await self.send_personal_message(
+            session_id,
+            ServerCellGovernorTickEvent(
+                data=CellGovernorTickPayload(
+                    session_id=session_id,
+                    step=step,
+                    cost_usd=cost_usd,
+                    elapsed_s=elapsed_s,
+                    axis=axis,
+                )
+            ),
+        )
+
     async def broadcast_abort_ack(self, session_id: str, signalled: bool) -> None:
         """Confirm a client_abort_mesh was resolved (signalled = a task was cancelled)."""
         from api.ws_contracts import AbortAckPayload, ServerAbortAckEvent
@@ -950,6 +1038,48 @@ class ConnectionManager:
             "modified_content": modified_content,
         }
         event.set()
+
+
+class LiveCellDispatcher:
+    """Real-time agentic cell event dispatcher backed by the global ConnectionManager.
+
+    Holds only a session_id string — no WebSocket reference, no asyncio.Event.
+    Dispatch is always live-or-skip: if the session is absent from active_connections
+    send_personal_message silently returns, so no teardown logic is needed.
+    """
+
+    __slots__ = ("_session_id",)
+
+    def __init__(self, session_id: str) -> None:
+        self._session_id = session_id
+
+    async def emit_tool_call_start(
+        self, *, iteration: int, tool_name: str, args_scrubbed: Dict[str, str]
+    ) -> None:
+        await vfs_manager.broadcast_cell_tool_start(
+            self._session_id, iteration, tool_name, args_scrubbed
+        )
+
+    async def emit_pty_chunk(
+        self, *, iteration: int, text: str, is_stderr: bool = False
+    ) -> None:
+        await vfs_manager.broadcast_cell_pty_chunk(
+            self._session_id, iteration, text, is_stderr
+        )
+
+    async def emit_ast_diff(
+        self, *, iteration: int, path: str, search: str, replace: str
+    ) -> None:
+        await vfs_manager.broadcast_cell_ast_diff(
+            self._session_id, iteration, path, search, replace
+        )
+
+    async def emit_governor_tick(
+        self, *, step: int, cost_usd: float, elapsed_s: float, axis: Optional[str]
+    ) -> None:
+        await vfs_manager.broadcast_cell_governor_tick(
+            self._session_id, step, cost_usd, elapsed_s, axis
+        )
 
 
 # Global singleton

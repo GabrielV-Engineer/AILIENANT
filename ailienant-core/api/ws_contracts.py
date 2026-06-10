@@ -922,7 +922,61 @@ class ServerSessionBranchedEvent(BaseModel):
 
 
 # =====================================================================
-# 17. THE MASTER CONTRACT O(1)
+# 17. Agentic Cell Glass-Box Telemetry Events
+# =====================================================================
+
+class CellToolStartPayload(BaseModel):
+    session_id: str
+    iteration: int
+    tool_name: str
+    args_scrubbed: Dict[str, str]
+
+
+class ServerCellToolStartEvent(BaseModel):
+    event_type: Literal["server_cell_tool_start"] = "server_cell_tool_start"
+    data: CellToolStartPayload
+
+
+class CellPtyChunkPayload(BaseModel):
+    session_id: str
+    iteration: int
+    text: str
+    is_stderr: bool = False
+
+
+class ServerCellPtyChunkEvent(BaseModel):
+    event_type: Literal["server_cell_pty_chunk"] = "server_cell_pty_chunk"
+    data: CellPtyChunkPayload
+
+
+class CellAstDiffPayload(BaseModel):
+    session_id: str
+    iteration: int
+    path: str
+    search: str
+    replace: str
+
+
+class ServerCellAstDiffEvent(BaseModel):
+    event_type: Literal["server_cell_ast_diff"] = "server_cell_ast_diff"
+    data: CellAstDiffPayload
+
+
+class CellGovernorTickPayload(BaseModel):
+    session_id: str
+    step: int
+    cost_usd: float
+    elapsed_s: float
+    axis: Optional[str] = None
+
+
+class ServerCellGovernorTickEvent(BaseModel):
+    event_type: Literal["server_cell_governor_tick"] = "server_cell_governor_tick"
+    data: CellGovernorTickPayload
+
+
+# =====================================================================
+# 18. THE MASTER CONTRACT O(1)
 # =====================================================================
 
 # FastAPI will use this type to validate ANY incoming message.
@@ -981,4 +1035,8 @@ WebSocketMessage = Union[
     ClientInvokeTrackedBashEvent,    # Rich Tool Chips: dev smoke command
     ClientBranchFromCheckpointEvent, # time-travel: fork from a checkpoint
     ServerSessionBranchedEvent,      # time-travel: new session minted from fork
+    ServerCellToolStartEvent,        # cell glass-box: tool call started
+    ServerCellPtyChunkEvent,         # cell glass-box: PTY output chunk (streaming)
+    ServerCellAstDiffEvent,          # cell glass-box: AST mutation applied
+    ServerCellGovernorTickEvent,     # cell glass-box: budget governor tick
 ]

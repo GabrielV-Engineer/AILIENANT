@@ -2,6 +2,43 @@
 
 ---
 
+## Fase 7.19.4: WebSocket Telemetry API & Event Dispatcher (Glass-Box) — 2026-06-09
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/260 · pytest dirigido 10 passed · suite completa 1018 passed (2 skipped)
+
+### Contexto
+El bucle de la célula agéntica era una caja negra: el frontend solo recibía el dict delta tras una iteración completa. Ningún tipo de visibilidad en tiempo real de qué herramienta se estaba ejecutando, qué salida PTY estaba llegando, qué archivo se estaba mutando, o cuál es el estado del governor de presupuesto. Una sola iteración puede tardar 30-60 segundos e involucra múltiples despachos de herramientas.
+
+7.19.4 añade una capa de transparencia **glass-box** que emite cuatro eventos WS tipados y granulares desde dentro del bucle de la célula a medida que ocurre cada sub-evento: `server_cell_tool_start`, `server_cell_pty_chunk`, `server_cell_ast_diff`, `server_cell_governor_tick`. El path de despacho usa el dict `active_connections` existente (O(1)), el path de envío `send_personal_message()` existente, y el seam `config["configurable"]` existente — sin registro nuevo, sin buffer nuevo, sin sink nuevo.
+
+Los sinks forenses existentes de 7.13.3 (`.ailienant_telemetry.log`, `telemetry.sqlite`, wrappers `_instrument_node`) se mantienen **completamente sin cambios** — esto es un path de despacho en tiempo real paralelo, no un reemplazo.
+
+### Decisiones arquitectónicas
+**Separación de capas sin import circular:** `brain/cell_dispatcher.py` define únicamente el Protocol `CellEventDispatcher` y `NullCellDispatcher` (sin imports de `api/`). `LiveCellDispatcher` vive en `api/websocket_manager.py` junto a los 4 métodos `broadcast_cell_*` de `ConnectionManager`. La inyección ocurre en `core/task_service.py:_run_coding_task` (que ya importa `api/websocket_manager`). `brain/agentic_cell.py` solo conoce el Protocol abstracto.
+
+**Herencia de la disciplina de buffers DEBT-019 por construcción:** `LiveCellDispatcher` retiene únicamente `session_id: str` — sin referencia a WebSocket, sin asyncio.Event. Al desconectarse, `active_connections[session_id]` ya es saneado por la cadena `disconnect()` / `_reap_client_state()` existente. Un `emit_*()` post-desconexión se convierte en un no-op silencioso porque `send_personal_message()` ya hace `if ws is None: return`. Cero lógica nueva de teardown necesaria.
+
+**Patrón tee de PTY (no batch):** El interceptor de `pty_chunk` NO espera al retorno de `_run_on_surface()` — eso sería buffering, no streaming. El colector de fondo `_collect_into` es el único consumidor de `session.stream()`. Se le añade un campo `_chunk_hook: Optional[Callable[[bytes], Awaitable[None]]]` a `_CellSession`. En el bloque `run_terminal`, antes de `_run_on_surface`, se instala el hook (lambda que llama `dispatcher.emit_pty_chunk`); el `finally` lo limpia después del retorno o del timeout. El colector llama al hook por cada chunk crudo — verdadero streaming con backpressure correcto. El buffer sigue recibiendo todos los bytes para que el LLM vea el output completo.
+
+**Corrección del riesgo arquitectónico (Director IT):** El plan inicial ubicaba la emisión de `pty_chunk` después de `exit_code, output = await _run_on_surface(...)`. Esto es buffering: para comandos de 45 segundos el frontend se congela y luego recibe un bloque masivo. La corrección fue el patrón tee dentro de `_collect_into`.
+
+**Routing O(1) sin registro nuevo:** El dispatcher no añade ningún dict, set, ni evento asyncio. La resolución de sesión es siempre `active_connections.get(session_id)` — el mismo dict que ya existe.
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `brain/cell_dispatcher.py` | **Nuevo** — `CellEventDispatcher` Protocol + `NullCellDispatcher` |
+| `api/ws_contracts.py` | 4 nuevos payload+event pairs: `ServerCellToolStart/PtyChunk/AstDiff/GovernorTickEvent`; extendida la unión `WebSocketMessage` |
+| `api/websocket_manager.py` | 4 métodos `broadcast_cell_*` en `ConnectionManager`; clase `LiveCellDispatcher` (solo `_session_id: str`, `__slots__`) |
+| `brain/agentic_cell.py` | Import del Protocol; campo `_chunk_hook` en `_CellSession`; hook tee en `_collect_into`; read del dispatcher del configurable; 4 puntos `await dispatcher.emit_*()`: tool_call_start (post-audit), tee en run_terminal (hook install/clear con `finally`), ast_diff (post-`_compute_edit`), governor_tick (post-governor check) |
+| `core/task_service.py` | `"cell_dispatcher": LiveCellDispatcher(session_id)` inyectado en el dict configurable de `_run_coding_task` |
+| `tests/test_phase7_19_4_cell_dispatcher.py` | **Nuevo** — 10 casos: secuencia ordenada, streaming real (≥2 chunks), ast_diff con payload, tool_call_start con args_scrubbed, governor_tick con axis, multi-tool ordering, null dispatcher sin crash, conexión cerrada purgada, dispatch stale no-op, routing O(1) dict |
+
+### Deuda declarada (CLAUDE.md §7)
+Sin deuda nueva no rastreada. La implementación de referencia de `CapturingCellDispatcher` en el test es suficiente para los DoD tests; el frontend (7.19.5) consumirá los 4 eventos nuevos. DEBT-025 (Docker sin daemon CI) continúa desde 7.19.0.
+
+---
+
 ## Fase 7.19.3: Multi-Axis Iteration Governor (Circuit Breaker) — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/258 · pytest dirigido 9 passed · 7.19.2 suite 16 passed · suite completa 1008 passed (2 skipped)

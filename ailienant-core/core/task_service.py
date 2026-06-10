@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Literal, Optional, Tuple, cast, TYPE_CHECKING
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
-from api.websocket_manager import vfs_manager
+from api.websocket_manager import vfs_manager, LiveCellDispatcher
 from tools.llm_gateway import LLMGateway
 import logging
 
@@ -526,6 +526,7 @@ class TaskService:
                     "stream_thinking": thinking_streamer.feed,
                     "enable_native_thinking": payload.enable_native_thinking,
                     "thinking_budget_tokens": payload.thinking_budget_tokens,
+                    "cell_dispatcher": LiveCellDispatcher(session_id),
                 }
             }
             final_state: Dict[str, Any] = {}
