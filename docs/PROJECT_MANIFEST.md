@@ -2323,11 +2323,15 @@ the blueprint freeze lifts.
 > Prueba empírica del moat: ¿cuánto sube la precisión un modelo usando Ailienant vs. solo? ¿Cuánto ahorra el ruteo TCI? Diseño factorial 2×2: **H₁** fija el modelo y varía el pipeline (uplift arquitectónico); **H₂** fija el pipeline y varía el ruteo (eficiencia de costo). Métricas distintas y explícitas: **Pass@1** (muestral, HumanEval/MultiPL-E) vs **Resolve@k** (k≤3 ciclos dependientes de auto-corrección ReAct, válido a temp=0). Rigor: n≥30 problemas distintos por grupo, Wilson CI, `seed=42`/`temp=0` (con caveat de no-determinismo). Ejecución híbrida: ablación in-process sobre `process_task()`; gate E2E sobre HTTP/WS real.
 
 - [ ] **8.3.0 — Blueprint + scaffold del harness (`tests/benchmark/`)**
-  - Runner in-process sobre `process_task()`, `seed=42`/`temp=0`, registra vía `token_ledger`+`telemetry`; verifica que los 4 toggles de ablación existan o escopea el faltante (G2 net-new confirmado, G3 vía `requires_iteration`). **DoD:** el runner corre un problema dummy en los 4 grupos y emite métricas crudas.
+  - Runner in-process sobre `process_task()`, `seed=42`/`temp=0`, registra vía `token_ledger`+`telemetry`; verifica que los 4 toggles de ablación existan o escopea el faltante (G2 net-new confirmado, G3 vía `requires_iteration`).
+  - **🔴 Higiene de medición (no-negociable):** (a) **pre-flight de embeddings** — abortar el run si el backend de embeddings no está vivo (sin él no hay capa semántica ni CSS); (b) **caché de respuestas desactivada** durante todo el benchmark (`response_cache` off) — una respuesta cacheada falsea el conteo de tokens y la eficiencia; (c) la telemetría (`routing_decisions`) es la fuente de verdad de TCI/CSS por-problema para la estratificación.
+  - **DoD:** el runner corre un problema dummy en los 4 grupos y emite métricas crudas; con embeddings caídos aborta con error claro; el `response_cache` está probadamente off (un problema repetido recomputa tokens).
 - [ ] **8.3.1 — Adaptador de codegen — HumanEval (Python) + MultiPL-E (TypeScript)**
   - HumanEval es canónicamente solo Python; TS usa MultiPL-E. Pass@1 de regresión de codegen plano. **DoD:** Pass@1 reproducible sobre el subset.
 - [ ] **8.3.2 — Benchmark multi-archivo custom — corpus congelado + BenchmarkOracle**
-  - **Snapshot a un commit pinneado** + golden patches + el test suite del snapshot como oráculo (`run_oracle(snapshot, patch) -> Verdict`) — **nunca la codebase viva**. Mide el valor de `get_dependents`/GraphRAG vía **Resolve@k**. **DoD:** Resolve@k reproducible al SHA pinneado.
+  - **Snapshot a un commit pinneado** + golden patches + el test suite del snapshot como oráculo (`run_oracle(snapshot, patch) -> Verdict`) — **nunca la codebase viva**. Mide el valor de `get_dependents`/GraphRAG vía **Resolve@k**.
+  - **🔴 Pre-indexación obligatoria (sin esto GraphRAG mide cero):** indexar el snapshot congelado **UNA vez** vía `LazyIndexer` y **bloquear hasta `is_complete`** antes del primer problema (un grafo a medio construir → `get_dependents=[]`, `coverage_ratio=0`, CSS colapsa, G3/G4 pierden su ventaja). El índice se **reusa** entre los n problemas y entre G3/G4 (no reindexar por-problema). El **tiempo de indexación se mide y reporta por separado** — es costo one-time, NO entra en la latencia por-problema.
+  - **DoD:** Resolve@k reproducible al SHA pinneado; el harness espera `is_complete` antes de medir; `report.json` lleva el `indexing_time_s` como campo separado; un assert prueba que `get_dependents(seed)` es no-vacío sobre el corpus indexado.
 - [ ] **8.3.3 — Harness de ablación — G1–G4 + G4-force-cloud**
   - G1 Control (zero-shot) · G2 RAG-only (**retriever vector-only net-new como Strategy en `tests/benchmark/`, sin tocar el hot path de prod**) · G3 Core (ReAct off vía `requires_iteration=False`) · G4 Full · **G4-force-cloud** (baseline de H₂, override del output de `resolve_provider` a nivel de harness, no prod). **DoD:** los 5 brazos corren el mismo problema y producen veredictos comparables.
 - [ ] **8.3.4 — Routing study**
@@ -2338,9 +2342,9 @@ the blueprint freeze lifts.
 
 ---
 
-### 🔬 División 8.4 — MCP Ecosystem Hardening — **[ADR-757]** 🔴
+### 🔬 División 8.4 — MCP & Model-Provider Ecosystem Hardening — **[ADR-757]** 🔴
 
-> Acoplarse al estándar Anthropic (JSON-RPC, `list_tools()`) sin reinventar — la infraestructura MCP ya existe (`bootstrap_mcp_session`, `ToolRAGStore`, REST `/api/v1/mcp/*`, UI VS Code). El trabajo es endurecer + curar + cerrar el fail-open de seguridad.
+> Acoplarse al estándar Anthropic (JSON-RPC, `list_tools()`) sin reinventar — la infraestructura MCP ya existe (`bootstrap_mcp_session`, `ToolRAGStore`, REST `/api/v1/mcp/*`, UI VS Code). El trabajo es endurecer + curar + cerrar el fail-open de seguridad. Incluye también el **ecosistema de model-providers BYOM** (8.4.8): registro único de providers + config de endpoint intuitiva.
 
 - [x] **8.4.0 — Blueprint** (cubierto por ADR-757 en `docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`).
 - [x] **8.4.1 — `classify_tool_privilege()` — 🔴 fix de seguridad (cierra DEBT-026)**
@@ -2356,6 +2360,8 @@ the blueprint freeze lifts.
 - [ ] **8.4.6 — UX VS Code "Browse Registry"**
   - Cards curadas + botón install + guard de permisos. **DoD:** instalar un server desde el registry sin salir del IDE.
 - [ ] **8.4.7 — DoD-check** 🔒 *(requiere 8.4.4 completo)* — todo tool descubierto lleva tier no-`READ_ONLY`-por-defecto; el HITL dispara ante un tool WRITE sobre un MCP tool real (no solo en sandbox_bash/task_service). Orden topológico obligatorio: **8.4.1 → 8.4.2 → 8.4.4 → 8.4.7**; 8.4.3/8.4.5/8.4.6 son independientes y pueden ir en cualquier orden entre sí.
+- [x] **8.4.8 — BYOM Provider Registry & Intuitive Config (cierra DEBT-030)** — ✅ 2026-06-10
+  - Registro único `core/config/provider_registry.py` (SSoT) que declara por-provider routing (nativo litellm vs OpenAI-compat), base URL, env key, hint, modelos sugeridos. `api/byom.py` consume el registro (resolvers + `GET /providers` + probe de test); el frontend (`BYOMPanel.tsx`) renderiza dropdown/defaults/hide-base-URL/datalist desde `/providers` → agregar un provider futuro = 1 edit backend. Agrega **6 providers**: Google Gemini, DeepSeek, Mistral (nativos), Qwen/Moonshot/Zhipu (OpenAI-compat). El routing nativo **evita el trap `_ensure_v1`** que rompía el endpoint de Google. Enabler del tier cloud para 8.3. **DoD cumplido:** `pytest` 12 (test_provider_registry) + 27 BYOM sin regresión · `mypy .` 0/266 · `pyright` 0 · `npm run compile` 0. Secretos siguen plaintext-`0600`+mask (migración a SecretStorage = 8.4.3).
 
 ---
 

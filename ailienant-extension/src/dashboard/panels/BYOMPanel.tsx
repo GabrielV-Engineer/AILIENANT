@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     type BYOMConfigResponse,
     type BYOMConfigPayload,
@@ -7,25 +7,56 @@ import {
     type EngineStatus,
     type ModelPreset,
     type Provider,
+    type ProviderSpec,
     type TestConnectionResponse,
     fetchBYOMConfig,
     fetchEngineStatus,
+    fetchProviders,
     saveBYOMConfig,
     testEndpoint,
 } from './byom/api';
 
 // ---------------------------------------------------------------------------
-// Provider defaults — auto-fill Base URL and guidance per provider
+// Provider presentation — normalized shape the card renders from. Sourced from
+// the backend registry (GET /providers); a small static fallback covers the
+// first paint and the offline case so the dropdown is never empty.
 // ---------------------------------------------------------------------------
 
-const PROVIDER_DEFAULTS: Record<Provider, { url: string; needsKey: boolean; keyHint: string; description: string }> = {
-    ollama:     { url: 'http://localhost:11434',    needsKey: false, keyHint: '',          description: 'Local AI runtime — no key needed' },
-    lmstudio:   { url: 'http://localhost:1234',     needsKey: false, keyHint: '',          description: 'LM Studio local server — no key needed' },
-    vllm:       { url: 'http://localhost:8000',     needsKey: false, keyHint: '',          description: 'vLLM OpenAI-compatible server' },
-    openai:     { url: 'https://api.openai.com',    needsKey: true,  keyHint: 'sk-…',     description: 'OpenAI official API' },
-    openrouter: { url: 'https://openrouter.ai/api', needsKey: true,  keyHint: 'sk-or-…',  description: 'Multi-provider routing' },
-    anthropic:  { url: 'https://api.anthropic.com', needsKey: true,  keyHint: 'sk-ant-…', description: 'Anthropic Claude API' },
-    custom:     { url: '',                          needsKey: false, keyHint: '',          description: 'Any OpenAI-compatible API (/v1/models + /v1/chat/completions). Works with LocalAI, kobold.cpp, TabbyAPI.' },
+interface ProviderUi {
+    label: string;
+    url: string;            // default base URL (placeholder + auto-fill)
+    needsKey: boolean;
+    keyHint: string;
+    description: string;
+    helpUrl: string;
+    hidesBaseUrl: boolean;  // cloud providers: endpoint is fixed/known → hide the field
+    suggestedModels: string[];
+}
+
+function uiFromSpec(s: ProviderSpec): ProviderUi {
+    return {
+        label: s.label,
+        url: s.default_base_url ?? '',
+        needsKey: s.needs_key,
+        keyHint: s.key_hint,
+        description: s.is_local
+            ? 'Local engine — point at your server URL'
+            : (s.needs_key ? `${s.label} — paste your API key` : s.label),
+        helpUrl: s.help_url,
+        hidesBaseUrl: s.hides_base_url,
+        suggestedModels: s.suggested_models,
+    };
+}
+
+// Static fallback (original 7) — only used until GET /providers resolves.
+const FALLBACK_DEFAULTS: Record<string, ProviderUi> = {
+    ollama:     { label: 'Ollama',     url: 'http://localhost:11434',    needsKey: false, keyHint: '',          description: 'Local AI runtime — no key needed', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
+    lmstudio:   { label: 'LM Studio',  url: 'http://localhost:1234',     needsKey: false, keyHint: '',          description: 'LM Studio local server — no key needed', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
+    vllm:       { label: 'vLLM',       url: 'http://localhost:8000',     needsKey: false, keyHint: '',          description: 'vLLM OpenAI-compatible server', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
+    openai:     { label: 'OpenAI',     url: 'https://api.openai.com',    needsKey: true,  keyHint: 'sk-…',     description: 'OpenAI official API', helpUrl: '', hidesBaseUrl: true, suggestedModels: [] },
+    openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1', needsKey: true, keyHint: 'sk-or-…', description: 'Multi-provider routing', helpUrl: '', hidesBaseUrl: true, suggestedModels: [] },
+    anthropic:  { label: 'Anthropic',  url: 'https://api.anthropic.com', needsKey: true,  keyHint: 'sk-ant-…', description: 'Anthropic Claude API', helpUrl: '', hidesBaseUrl: true, suggestedModels: [] },
+    custom:     { label: 'Custom (OpenAI-compatible)', url: '',          needsKey: false, keyHint: '',          description: 'Any OpenAI-compatible API (/v1/models + /v1/chat/completions).', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +109,7 @@ export function BYOMPanel(): JSX.Element {
     const [presets, setPresets] = useState<ModelPreset[]>([]);
     const [activePresetId, setActivePresetId] = useState<string | null>(null);
     const [discovered, setDiscovered] = useState<DiscoveredModel[]>([]);
+    const [providers, setProviders] = useState<ProviderSpec[]>([]);
 
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -120,7 +152,38 @@ export function BYOMPanel(): JSX.Element {
             .then(setEngines)
             .catch(() => setEngines([]))
             .finally(() => setEnginesLoading(false));
+
+        fetchProviders()
+            .then(setProviders)
+            .catch(() => setProviders([]));  // fall back to FALLBACK_DEFAULTS
     }, []);
+
+    // Normalized provider presentation, registry-first with a static fallback.
+    const providerMap = useMemo<Record<string, ProviderUi>>(() => {
+        if (providers.length === 0) return FALLBACK_DEFAULTS;
+        const m: Record<string, ProviderUi> = {};
+        for (const s of providers) m[s.id] = uiFromSpec(s);
+        return m;
+    }, [providers]);
+    const specFor = useCallback(
+        (p: string): ProviderUi => providerMap[p] ?? FALLBACK_DEFAULTS[p] ?? {
+            label: p, url: '', needsKey: true, keyHint: '', description: '',
+            helpUrl: '', hidesBaseUrl: false, suggestedModels: [],
+        },
+        [providerMap],
+    );
+    const providerOptions = useMemo(
+        () => (providers.length > 0
+            ? providers.map(s => ({ id: s.id, label: s.label }))
+            : Object.keys(FALLBACK_DEFAULTS).map(id => ({ id, label: FALLBACK_DEFAULTS[id].label }))),
+        [providers],
+    );
+    // Registry model suggestions ("google/gemini-2.0-flash", …) merged into the
+    // preset-tier datalist so cloud models are pickable without guessing the string.
+    const suggestedModelIds = useMemo(
+        () => providers.flatMap(s => s.suggested_models),
+        [providers],
+    );
 
     // ---- Endpoint helpers ----
     const updateEndpoint = useCallback((id: string, patch: Partial<EndpointUi>): void => {
@@ -128,19 +191,21 @@ export function BYOMPanel(): JSX.Element {
     }, []);
 
     const handleProviderChange = useCallback((ep: EndpointUi, provider: Provider): void => {
-        const def = PROVIDER_DEFAULTS[provider];
+        const def = specFor(provider);
         const shouldFill = !ep.url || ep.urlAutoFilled;
         updateEndpoint(ep.id, {
             provider,
             url: shouldFill ? def.url : ep.url,
             urlAutoFilled: shouldFill,
         });
-    }, [updateEndpoint]);
+    }, [updateEndpoint, specFor]);
 
     const handleTest = useCallback(async (ep: EndpointUi): Promise<void> => {
         const errs: EndpointUi['fieldErrors'] = {};
         if (!ep.name.trim()) errs.name = 'Name is required';
-        if (!ep.url.trim())  errs.url  = 'URL is required';
+        // Cloud providers hide the Base URL (the backend probes the registry's fixed
+        // endpoint), so only local providers require a user-supplied URL.
+        if (!specFor(ep.provider).hidesBaseUrl && !ep.url.trim()) errs.url = 'URL is required';
         if (Object.keys(errs).length) {
             updateEndpoint(ep.id, { fieldErrors: errs });
             return;
@@ -158,7 +223,7 @@ export function BYOMPanel(): JSX.Element {
         } else {
             updateEndpoint(ep.id, { status: 'error', testError: result.error ?? 'Connection failed' });
         }
-    }, [updateEndpoint]);
+    }, [updateEndpoint, specFor]);
 
     const handleSave = useCallback(async (): Promise<void> => {
         setSaving(true);
@@ -342,7 +407,7 @@ export function BYOMPanel(): JSX.Element {
             {endpoints.map(ep => {
                 const warn = urlWarning(ep.url);
                 const dotColor = ep.status === 'ok' ? '#63a583' : ep.status === 'error' ? '#F85149' : ep.status === 'testing' ? '#E3B341' : '#484F58';
-                const def = PROVIDER_DEFAULTS[ep.provider];
+                const def = specFor(ep.provider);
                 return (
                     <div key={ep.id} className="db-card" style={{ marginBottom: 12 }}>
                         {/* Name row */}
@@ -373,33 +438,43 @@ export function BYOMPanel(): JSX.Element {
                             </button>
                         </div>
 
-                        {/* Provider + URL */}
-                        <div className="db-grid-2" style={{ marginBottom: 10 }}>
+                        {/* Provider + (conditional) Base URL */}
+                        <div className={def.hidesBaseUrl ? '' : 'db-grid-2'} style={{ marginBottom: 10 }}>
                             <div>
                                 <label className="db-label">Provider</label>
                                 <select className="db-input" value={ep.provider}
                                     onChange={e => handleProviderChange(ep, e.target.value as Provider)}>
-                                    <option value="ollama">Ollama</option>
-                                    <option value="lmstudio">LM Studio</option>
-                                    <option value="vllm">vLLM</option>
-                                    <option value="openai">OpenAI</option>
-                                    <option value="openrouter">OpenRouter</option>
-                                    <option value="anthropic">Anthropic</option>
-                                    <option value="custom">Custom</option>
+                                    {providerOptions.map(o => (
+                                        <option key={o.id} value={o.id}>{o.label}</option>
+                                    ))}
                                 </select>
-                                <div className="byom-provider-hint">{def.description}</div>
+                                <div className="byom-provider-hint">
+                                    {def.description}
+                                    {def.helpUrl && (
+                                        <>
+                                            {' '}
+                                            <a href={def.helpUrl} target="_blank" rel="noreferrer" className="byom-provider-help-link">
+                                                Get your key →
+                                            </a>
+                                        </>
+                                    )}
+                                </div>
                             </div>
-                            <div>
-                                <label className="db-label">Base URL</label>
-                                <input
-                                    className={`db-input${ep.fieldErrors.url ? ' byom-input-error' : ''}`}
-                                    value={ep.url}
-                                    onChange={e => updateEndpoint(ep.id, { url: e.target.value, urlAutoFilled: false, fieldErrors: { ...ep.fieldErrors, url: undefined } })}
-                                    placeholder={def.url || 'https://…'}
-                                />
-                                {ep.fieldErrors.url && <div className="byom-field-error">{ep.fieldErrors.url}</div>}
-                                {!ep.fieldErrors.url && warn && <div className="byom-field-warn">{warn}</div>}
-                            </div>
+                            {/* Cloud providers have a fixed, known endpoint — litellm owns it,
+                                so the Base URL field is hidden to keep the form intuitive. */}
+                            {!def.hidesBaseUrl && (
+                                <div>
+                                    <label className="db-label">Base URL</label>
+                                    <input
+                                        className={`db-input${ep.fieldErrors.url ? ' byom-input-error' : ''}`}
+                                        value={ep.url}
+                                        onChange={e => updateEndpoint(ep.id, { url: e.target.value, urlAutoFilled: false, fieldErrors: { ...ep.fieldErrors, url: undefined } })}
+                                        placeholder={def.url || 'https://…'}
+                                    />
+                                    {ep.fieldErrors.url && <div className="byom-field-error">{ep.fieldErrors.url}</div>}
+                                    {!ep.fieldErrors.url && warn && <div className="byom-field-warn">{warn}</div>}
+                                </div>
+                            )}
                         </div>
 
                         {/* API Key */}
@@ -501,6 +576,13 @@ export function BYOMPanel(): JSX.Element {
                 {discovered.map(m => (
                     <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
+                {/* Registry suggestions ("google/gemini-2.0-flash", …) so cloud-tier
+                    models are pickable without discovering them first. */}
+                {suggestedModelIds
+                    .filter(id => !discovered.some(d => d.id === id))
+                    .map(id => (
+                        <option key={`sug-${id}`} value={id}>{id}</option>
+                    ))}
             </datalist>
 
             <div className="byom-preset-grid">

@@ -20,7 +20,25 @@ async function _json<T>(path: string, init?: RequestInit): Promise<T> {
 // Types
 // ---------------------------------------------------------------------------
 
-export type Provider = 'ollama' | 'lmstudio' | 'vllm' | 'openai' | 'openrouter' | 'anthropic' | 'custom';
+export type Provider =
+    | 'ollama' | 'lmstudio' | 'vllm' | 'openai' | 'openrouter' | 'anthropic' | 'custom'
+    | 'google' | 'deepseek' | 'mistral' | 'qwen' | 'moonshot' | 'zhipu';
+
+// Registry provider metadata served by GET /providers — drives the dashboard's
+// provider dropdown, defaults, hints, key links, and base-URL visibility. Adding
+// a provider is a backend-only change; the UI renders whatever this returns.
+export interface ProviderSpec {
+    id: Provider;
+    label: string;
+    is_local: boolean;
+    needs_key: boolean;
+    hides_base_url: boolean;
+    default_base_url: string | null;
+    key_hint: string;
+    help_url: string;
+    suggested_models: string[];
+    env_key: string | null;
+}
 
 export interface EndpointConfig {
     id: string;
@@ -103,4 +121,8 @@ export function testEndpoint(req: TestConnectionRequest): Promise<TestConnection
 
 export function fetchEngineStatus(): Promise<EngineStatus[]> {
     return _json<EngineStatus[]>('/engines');
+}
+
+export function fetchProviders(): Promise<ProviderSpec[]> {
+    return _json<ProviderSpec[]>('/providers');
 }

@@ -31,6 +31,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-030 — BYOM dashboard has no Google preset + `_ensure_v1` mangles native cloud endpoints — ✅ RESOLVED (8.4.8)
+
+- **Date:** 2026-06-10
+- **Reproduce:** dashboard → BYOM → add endpoint: the provider dropdown offered only `ollama/lmstudio/vllm/openai/openrouter/anthropic/custom` — no Google. Putting Google's OpenAI-compat endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/`) under `custom` triggered `api/byom.py::_ensure_v1`, appending `/v1` → `…/v1beta/openai/v1` (invalid).
+- **File(s):** `ailienant-core/api/byom.py` (`_ensure_v1`, `_connection_for_provider`, `_normalize_chat_model`, `_KNOWN_PROVIDERS`), `core/config/byom_config.py` (`Provider` Literal), `ailienant-extension/src/dashboard/panels/BYOMPanel.tsx` (`PROVIDER_DEFAULTS` + hardcoded dropdown). Per-provider knowledge was scattered across 6 sites.
+- **Error:** UX + correctness gap — users with a Google AI Studio key (or any Chinese-provider key) could not configure a cloud tier from the UI; also blocked the Division 8.3 benchmark cloud tier.
+- **Blocked by:** none.
+- **Phase:** **8.4.8** (closes this debt).
+- **Resolution (8.4.8, 2026-06-10):** new `core/config/provider_registry.py` (single source of truth: routing/base-url/env-key/hints/suggested-models per provider). `api/byom.py` resolvers consult it; native cloud providers (Gemini/DeepSeek/Mistral) route via litellm prefix with **no api_base** (bypassing `_ensure_v1`), OpenAI-compatible providers (Qwen/Moonshot/Zhipu) use the registry base verbatim, generic `custom` keeps `_ensure_v1`. New `GET /api/v1/byom/providers` (no secrets) drives a data-driven dashboard (hide base URL for cloud, per-provider model datalist, "get your key" link). 6 providers added. Proof: `tests/test_provider_registry.py` (12 cases, incl. the Google no-`/v1` guard); `mypy .` 0/266, `pyright` 0, `npm run compile` 0, 27 BYOM tests unregressed. **Note:** API keys remain plaintext-`0600` + masked — the `key_ref`→VS Code SecretStorage migration stays scoped to ADR-757 / Division 8.4.3.
+
 ### DEBT-026 — 🔴 SECURITY: MCP-discovered tools hardcoded to READ_ONLY (privilege fail-open) — ✅ RESOLVED (8.4.1)
 
 - **Date:** 2026-06-10

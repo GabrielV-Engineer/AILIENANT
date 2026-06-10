@@ -33,9 +33,12 @@ _BIG_PATTERNS = ("70b", "72b", "8x7b", "mixtral:8x", "deepseek-r1", "llama3.3", 
 _CLOUD_PROVIDERS = [
     ("ANTHROPIC_API_KEY", "ailienant/big", "claude-3-5-sonnet-20241022", "anthropic"),
     ("OPENAI_API_KEY", "ailienant/big", "gpt-4o", "openai"),
-    ("GOOGLE_API_KEY", "ailienant/big", "gemini/gemini-1.5-pro", "google"),
+    ("GOOGLE_API_KEY", "ailienant/big", "gemini/gemini-2.0-flash", "google"),
     ("DEEPSEEK_API_KEY", "ailienant/medium", "deepseek/deepseek-chat", "deepseek"),
     ("MISTRAL_API_KEY", "ailienant/small", "mistral/mistral-small-latest", "mistral"),
+    ("DASHSCOPE_API_KEY", "ailienant/medium", "openai/qwen-max", "qwen"),
+    ("MOONSHOT_API_KEY", "ailienant/medium", "openai/moonshot-v1-128k", "moonshot"),
+    ("ZHIPU_API_KEY", "ailienant/big", "openai/glm-4-plus", "zhipu"),
 ]
 
 

@@ -33,12 +33,18 @@ def get_litellm_config() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)
 # ---------------------------------------------------------------------------
+# Mirrors the cloud env keys declared in core/config/provider_registry.py
+# (kept as a flat list here to avoid an import cycle in this foundational module).
 CLOUD_PROVIDER_KEYS = [
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
     "GOOGLE_API_KEY",
     "DEEPSEEK_API_KEY",
     "MISTRAL_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "MOONSHOT_API_KEY",
+    "ZHIPU_API_KEY",
     "AILIENANT_CUSTOM_CLOUD_ENDPOINT",
 ]
 

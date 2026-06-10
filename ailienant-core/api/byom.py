@@ -3,6 +3,7 @@
 BYOM (Bring Your Own Model) REST surface for the Web Dashboard.
 
 Endpoints (prefix /api/v1/byom):
+  GET  /providers   — provider registry projected for the UI (no secrets).
   GET  /engines     — probe local AI engines (Ollama, LM Studio); return health status.
   POST /test        — probe a specific model endpoint; returns discovered models.
   GET  /config      — load BYOM config + 3 built-in presets + currently discovered models.
@@ -32,6 +33,14 @@ from core.config.byom_config import (
     save_byom_config,
 )
 from core.config import embedding_resolver, model_resolver
+from core.config.provider_registry import (
+    CLOUD_PROVIDER_IDS,
+    PROVIDER_IDS,
+    PROVIDER_REGISTRY,
+    ProviderSpec,
+    get_provider,
+    normalize_model_string,
+)
 from core.config_generator import (
     CONFIG_YAML_PATH,
     LM_STUDIO_API_BASE,
@@ -55,9 +64,15 @@ _LMSTUDIO_EMBED_MODEL = os.getenv("AILIENANT_LMSTUDIO_EMBED_MODEL", "text-embedd
 _CUSTOM_EMBED_MODEL = os.getenv("AILIENANT_CUSTOM_EMBED_MODEL", "text-embedding-3-small")
 _OPENAI_EMBED_MODEL = os.getenv("AILIENANT_OPENAI_EMBED_MODEL", "text-embedding-3-small")
 
-_KNOWN_PROVIDERS = {"ollama", "lmstudio", "vllm", "openai", "openrouter", "anthropic", "custom"}
+# Provider identity + routing is owned by the provider registry (single source of
+# truth); these projections keep the rest of this module declarative.
+_KNOWN_PROVIDERS = set(PROVIDER_IDS)
 # Local-first selection: cheap local embeddings preferred, cloud as fallback.
-_EMBED_PROVIDER_PRIORITY = ["ollama", "lmstudio", "vllm", "custom", "openai", "openrouter", "anthropic"]
+# Locals (in registry order) first, then cloud providers.
+_EMBED_PROVIDER_PRIORITY = (
+    [p for p in PROVIDER_IDS if PROVIDER_REGISTRY[p].is_local]
+    + [p for p in PROVIDER_IDS if not PROVIDER_REGISTRY[p].is_local]
+)
 _DIM_OLLAMA = 768
 _DIM_OPENAI = 1536
 
@@ -112,6 +127,21 @@ class EngineStatusItem(BaseModel):
     running: bool
     model_count: int
     models: list[str]
+
+
+class ProviderSpecOut(BaseModel):
+    """Registry provider metadata projected for the dashboard. Carries NO secrets —
+    only the env-key *name* (so the UI can hint where a key may already be set)."""
+    id: str
+    label: str
+    is_local: bool
+    needs_key: bool
+    hides_base_url: bool
+    default_base_url: Optional[str] = None
+    key_hint: str = ""
+    help_url: str = ""
+    suggested_models: list[str] = []
+    env_key: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +287,7 @@ def _provider_of_model(model_id: str, endpoints: list[EndpointConfig]) -> Option
             return prefix
     cloud_eps = [
         e for e in endpoints
-        if e.provider in ("openai", "openrouter", "anthropic", "custom", "vllm")
+        if e.provider in CLOUD_PROVIDER_IDS or e.provider in ("custom", "vllm")
     ]
     if len(cloud_eps) == 1:
         return cloud_eps[0].provider
@@ -323,6 +353,35 @@ def _build_embedding_target(
             model="(none)", provider="anthropic",
             api_base=None, api_key="", dim=_DIM_OPENAI, is_local=False,
         )
+    # Registry cloud providers (Gemini / DeepSeek / Mistral / Qwen / Moonshot / Zhipu):
+    # use the provider's own embedding model when it offers one + has a key; otherwise
+    # fall back to OpenAI embeddings, then local Ollama, then "(none)" (preflight surfaces it).
+    spec = get_provider(provider)
+    if spec is not None and not spec.is_local:
+        ep = _endpoint_for(provider, endpoints)
+        key = _provider_key(spec, ep)
+        if spec.embedding_model and key:
+            return EmbeddingTarget(
+                model=spec.embedding_model, provider=provider,
+                api_base=spec.default_base_url if spec.uses_api_base else None,
+                api_key=key, dim=_DIM_OPENAI, is_local=False,
+            )
+        openai_key = os.getenv("OPENAI_API_KEY", "")
+        if openai_key:
+            return EmbeddingTarget(
+                model=_OPENAI_EMBED_MODEL, provider="openai",
+                api_base=None, api_key=openai_key, dim=_DIM_OPENAI, is_local=False,
+            )
+        if has_ollama:
+            return EmbeddingTarget(
+                model=_OLLAMA_EMBED_MODEL, provider="ollama",
+                api_base=OLLAMA_API_BASE, api_key="", dim=_DIM_OLLAMA, is_local=True,
+            )
+        return EmbeddingTarget(
+            model="(none)", provider=provider,
+            api_base=None, api_key="", dim=_DIM_OPENAI, is_local=False,
+        )
+
     # Unknown provider → default to local Ollama.
     return EmbeddingTarget(
         model=_OLLAMA_EMBED_MODEL, provider="ollama",
@@ -348,50 +407,51 @@ def _derive_embedding_target(
     return _build_embedding_target(chosen, endpoints, has_ollama)
 
 
+def _provider_key(spec: ProviderSpec, ep: Optional[EndpointConfig]) -> str:
+    """Resolve a provider's api key: stored endpoint key first, then env fallback."""
+    if ep and ep.api_key:
+        return ep.api_key
+    if spec.env_key:
+        return os.getenv(spec.env_key, "")
+    return ""
+
+
 def _connection_for_provider(
     provider: str, endpoints: list[EndpointConfig]
 ) -> tuple[Optional[str], str, bool]:
-    """Resolve (api_base, api_key, is_local) for a chat provider from BYOM config.
+    """Resolve (api_base, api_key, is_local) for a chat provider from the registry.
 
-    Local engines carry an api_base; cloud providers carry a key (endpoint or env).
+    `native` cloud providers (Gemini/DeepSeek/Mistral, OpenAI/Anthropic) carry NO
+    api_base — litellm owns the endpoint, which is precisely what keeps a fixed
+    cloud URL from being mangled. OpenAI-compatible + local engines carry a base.
     """
+    spec = get_provider(provider)
     ep = _endpoint_for(provider, endpoints)
-    if provider == "ollama":
-        return (ep.url if ep and ep.url else OLLAMA_API_BASE), "", True
-    if provider == "lmstudio":
-        return _ensure_v1(ep.url if ep and ep.url else LM_STUDIO_API_BASE), (
-            ep.api_key if ep and ep.api_key else "sk-noauth"
-        ), True
-    if provider in ("vllm", "custom"):
-        base = _ensure_v1(ep.url) if ep and ep.url else None
-        return base, (ep.api_key if ep and ep.api_key else "sk-noauth"), True
-    if provider == "openai":
-        return None, (ep.api_key if ep and ep.api_key else os.getenv("OPENAI_API_KEY", "")), False
-    if provider == "openrouter":
-        return "https://openrouter.ai/api/v1", (
-            ep.api_key if ep and ep.api_key else os.getenv("OPENROUTER_API_KEY", "")
-        ), False
-    if provider == "anthropic":
-        return None, (ep.api_key if ep and ep.api_key else os.getenv("ANTHROPIC_API_KEY", "")), False
-    return None, (ep.api_key if ep and ep.api_key else ""), False
+    if spec is None:
+        return None, (ep.api_key if ep and ep.api_key else ""), False
+
+    api_base: Optional[str] = None
+    if spec.uses_api_base:
+        raw = ep.url if ep and ep.url else spec.default_base_url
+        if raw:
+            api_base = _ensure_v1(raw) if spec.ensure_v1 else raw
+
+    key = _provider_key(spec, ep)
+    if not key and spec.is_local and spec.model_style == "openai_compat":
+        key = "sk-noauth"  # OpenAI-compatible local servers want a non-empty token
+    return api_base, key, spec.is_local
 
 
 def _normalize_chat_model(model_id: str, provider: str) -> str:
-    """Make a tier model id litellm-routable for its provider.
+    """Make a tier model id litellm-routable for its provider (registry-driven).
 
-    OpenAI-compatible local servers (LM Studio / vLLM / custom) must be addressed
-    via the `openai/<model>` provider with a custom api_base. Ollama chat models
-    must use `ollama_chat/<model>` (litellm's `/api/chat` route) so the model's
-    chat template is applied — `ollama/<model>` hits `/api/generate` and leaks raw
-    template tokens.
+    See `provider_registry.normalize_model_string` for the per-style rules. An
+    unknown provider passes the id through unchanged.
     """
-    if provider in ("lmstudio", "vllm", "custom"):
-        base_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
-        return f"openai/{base_name}"
-    if provider == "ollama":
-        base_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
-        return f"ollama_chat/{base_name}"
-    return model_id
+    spec = get_provider(provider)
+    if spec is None:
+        return model_id
+    return normalize_model_string(model_id, spec)
 
 
 def _build_chat_target(model_id: str, endpoints: list[EndpointConfig]) -> ModelTarget:
@@ -435,26 +495,49 @@ async def _apply_preset(preset: ModelPreset) -> None:
 
 @router.post("/test", response_model=TestConnectionResponse)
 async def test_connection(req: TestConnectionRequest) -> TestConnectionResponse:
-    """Probe a specific model endpoint and return the list of models it exposes."""
-    url = _normalize_url(req.url)
-    if not url:
+    """Probe a specific model endpoint and return the list of models it exposes.
+
+    Cloud providers hide their base URL in the UI (it is fixed and known), so the
+    probe target comes from the registry's `test_models_url`; local engines probe
+    the user-supplied URL.
+    """
+    spec = get_provider(req.provider)
+
+    # Resolve the probe URL: registry-fixed for cloud, user-supplied for local.
+    probe_url: Optional[str]
+    probe_kind: str  # "ollama_tags" | "openai_models"
+    if spec is not None and not spec.is_local and spec.test_models_url:
+        probe_url = spec.test_models_url
+        probe_kind = "openai_models"
+    elif req.provider == "ollama":
+        base = _normalize_url(req.url)
+        probe_url = f"{base}/api/tags" if base else None
+        probe_kind = "ollama_tags"
+    else:
+        base = _normalize_url(req.url)
+        probe_url = f"{base}/v1/models" if base else None
+        probe_kind = "openai_models"
+
+    if not probe_url:
         return TestConnectionResponse(ok=False, models=[], latency_ms=0, error="URL is required")
 
     headers: dict[str, str] = {}
-    if req.api_key and not is_masked_key(req.api_key):
-        headers["Authorization"] = f"Bearer {req.api_key}"
+    key = req.api_key
+    if (not key or is_masked_key(key)) and spec is not None and spec.env_key:
+        key = os.getenv(spec.env_key, "")
+    if key and not is_masked_key(key):
+        headers["Authorization"] = f"Bearer {key}"
 
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            if req.provider == "ollama":
-                resp = await client.get(f"{url}/api/tags", headers=headers)
+            if probe_kind == "ollama_tags":
+                resp = await client.get(probe_url, headers=headers)
                 resp.raise_for_status()
                 names = [m.get("name", "") for m in resp.json().get("models", [])]
                 items = [DiscoveredModelItem(id=n, name=n) for n in names if n]
             else:
-                # OpenAI-compatible /v1/models (vllm, openai, openrouter, anthropic, custom)
-                resp = await client.get(f"{url}/v1/models", headers=headers)
+                resp = await client.get(probe_url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json().get("data", [])
                 items = [
@@ -520,6 +603,31 @@ async def put_config(request: Request) -> BYOMConfigResponse:
             await lazy_indexer.retry()
 
     return await get_config()
+
+
+@router.get("/providers", response_model=list[ProviderSpecOut])
+async def get_providers() -> list[ProviderSpecOut]:
+    """Return the provider registry projected for the UI (no secrets).
+
+    The dashboard renders its provider dropdown, per-provider defaults, key hints,
+    "get your key" links, model suggestions, and base-URL visibility from this —
+    so adding a provider is a backend-only change.
+    """
+    return [
+        ProviderSpecOut(
+            id=spec.id,
+            label=spec.label,
+            is_local=spec.is_local,
+            needs_key=spec.needs_key,
+            hides_base_url=spec.hides_base_url,
+            default_base_url=spec.default_base_url,
+            key_hint=spec.key_hint,
+            help_url=spec.help_url,
+            suggested_models=list(spec.suggested_models),
+            env_key=spec.env_key,
+        )
+        for spec in PROVIDER_REGISTRY.values()
+    ]
 
 
 @router.get("/engines", response_model=list[EngineStatusItem])
