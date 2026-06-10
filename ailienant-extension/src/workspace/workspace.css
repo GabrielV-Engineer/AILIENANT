@@ -2211,6 +2211,37 @@ html, body, #root { height: 100%; }
   overflow: hidden;
 }
 
+/* Interactive stdin row — shown beneath the live iteration's terminal so the
+   user can answer a blocking prompt. Routed to the session's write_stdin. */
+.ws-cell-pty-stdin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 3px 6px;
+  background: var(--vscode-editor-background, #1e1e1e);
+  border: 1px solid var(--ai-accent, var(--border-subtle));
+  border-radius: 3px;
+}
+.ws-cell-pty-stdin-caret {
+  color: var(--ai-accent, var(--text-secondary));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 700;
+}
+.ws-cell-pty-stdin-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--vscode-editor-foreground, var(--text-primary));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+}
+.ws-cell-pty-stdin-input::placeholder {
+  color: var(--text-disabled, var(--text-secondary));
+  opacity: 0.7;
+}
+
 .ws-cell-diffs {
   list-style: none;
   margin: 0;

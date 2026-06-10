@@ -281,6 +281,40 @@ async def sweep_orphaned_sessions(live_task_ids: Sequence[str]) -> int:
     return len(orphans)
 
 
+async def write_session_stdin(session_id: str, data: bytes) -> bool:
+    """Feed a line of stdin to a session's live terminal. Returns False if no session.
+
+    Lets the user answer a blocking prompt on a persistent session. Best-effort: a
+    write failure (session torn down mid-keystroke) is logged, never raised.
+    """
+    cell = _session_registry.get(session_id)
+    if cell is None:
+        return False
+    try:
+        await cell.session.write_stdin(data)
+        return True
+    except Exception as exc:  # noqa: BLE001 — a dead session must not crash the WS loop
+        logger.debug("AgenticCell stdin write failed for %s: %s", session_id, exc)
+        return False
+
+
+async def interrupt_session(session_id: str) -> bool:
+    """Send an interrupt (Ctrl-C) to a session's foreground process. False if none.
+
+    Used by the Stop control to signal the live command before the run is cancelled.
+    Best-effort: an interrupt failure is logged, never raised.
+    """
+    cell = _session_registry.get(session_id)
+    if cell is None:
+        return False
+    try:
+        await cell.session.interrupt()
+        return True
+    except Exception as exc:  # noqa: BLE001 — best-effort signal
+        logger.debug("AgenticCell interrupt failed for %s: %s", session_id, exc)
+        return False
+
+
 # =====================================================================
 # Surface helpers
 # =====================================================================

@@ -1257,6 +1257,18 @@ class TaskService:
         task.cancel()
         return True
 
+    async def write_session_stdin(self, session_id: str, data: bytes) -> bool:
+        """Feed stdin to a session's live interactive terminal. False if no session."""
+        from brain import agentic_cell
+
+        return await agentic_cell.write_session_stdin(session_id, data)
+
+    async def interrupt_session(self, session_id: str) -> bool:
+        """Signal an interrupt (Ctrl-C) to a session's live terminal. False if none."""
+        from brain import agentic_cell
+
+        return await agentic_cell.interrupt_session(session_id)
+
     # ------------------------------------------------------------------
     # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips registry + retry
     # ------------------------------------------------------------------

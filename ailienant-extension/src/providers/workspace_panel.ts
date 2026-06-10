@@ -792,6 +792,18 @@ export class WorkspacePanelManager {
                     });
                     break;
                 }
+                case 'PTY_STDIN': {
+                    // Interactive terminal: relay a line of stdin onto the WS so the
+                    // backend feeds it to the session's live PTY. Droppable if the
+                    // socket is down — a missed keystroke is not worth a queue.
+                    const ws = WSClient.getInstance();
+                    if (ws.getStatus() !== 'connected') { break; }
+                    ws.send({
+                        event_type: 'client_pty_write',
+                        data: { session_id: session.id, data: data.data as string },
+                    });
+                    break;
+                }
                 case 'RETRY_TOOL':
                     // Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: exact-replay
                     // retry. The backend looks up the stored ToolCallSpec keyed

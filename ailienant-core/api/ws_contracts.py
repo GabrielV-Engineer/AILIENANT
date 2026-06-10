@@ -708,6 +708,23 @@ class ClientAbortMeshEvent(BaseModel):
     data: ClientAbortMeshPayload
 
 
+class ClientPtyWritePayload(BaseModel):
+    """Client → server: a line of stdin for a session's live interactive terminal.
+
+    Routes to the persistent sandbox session keyed by ``session_id`` so the user can
+    answer a blocking prompt (e.g. ``[Y/n]``). ``data`` is the raw text to feed,
+    including any trailing newline the prompt expects.
+    """
+
+    session_id: str
+    data: str
+
+
+class ClientPtyWriteEvent(BaseModel):
+    event_type: Literal["client_pty_write"] = "client_pty_write"
+    data: ClientPtyWritePayload
+
+
 # --- Delivery acknowledgements (server → client) ---
 # A Stop with the socket down, or a HITL response from a torn-down webview, must
 # never be a silent fire-and-forget. The server echoes a terse ACK the instant it
@@ -1025,6 +1042,7 @@ WebSocketMessage = Union[
     ServerInlineEditDeltaEvent,      # typed mutation delta
     ServerInlineEditEndEvent,        # stream finalized
     ClientAbortMeshEvent,            # abort controller mesh (Stop button)
+    ClientPtyWriteEvent,             # interactive terminal: stdin line into the live session
     ServerAbortAckEvent,             # abort delivery acknowledgement
     ServerHitlAckEvent,              # HITL response delivery acknowledgement
     ServerToolStartEvent,            # Rich Tool Chips: tool started

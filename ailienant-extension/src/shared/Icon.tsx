@@ -3,7 +3,7 @@ import {
     Columns3, Cpu, ExternalLink, Eye, EyeOff, Flame, Gauge, KeyRound, Microscope, Moon, MessageSquare,
     Network, Play, Plug, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Telescope,
     Trash2, Wallet, X, XCircle, Zap, Loader2, Pencil, FileCode, Folder, Terminal, Wand2,
-    PanelRightOpen, PanelRightClose, ChevronRight, ChevronDown, type LucideIcon,
+    PanelRightOpen, PanelRightClose, ChevronRight, ChevronDown, Square, type LucideIcon,
 } from 'lucide-react';
 
 const REGISTRY = {
@@ -52,6 +52,7 @@ const REGISTRY = {
     'panel-right-close': PanelRightClose,
     'chevron-right': ChevronRight,
     'chevron-down': ChevronDown,
+    'square': Square,
 } as const satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof REGISTRY;

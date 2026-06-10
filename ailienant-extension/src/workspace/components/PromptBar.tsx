@@ -190,11 +190,18 @@ export function PromptBar({
                 return;
             }
         }
+        // Esc stops an in-flight task — the same affordance as the Stop button, so
+        // the keyboard mirrors the single source of truth (no separate stop key).
+        if (e.key === 'Escape' && isStreaming && !isAborting && !paletteVisible && !mentionVisible) {
+            e.preventDefault();
+            onAbort();
+            return;
+        }
         if (e.key === 'Enter' && !e.shiftKey && !paletteVisible && !mentionVisible) {
             e.preventDefault();
             submit();
         }
-    }, [submit, paletteVisible, mentionVisible, mentionResults, mentionActiveIdx, insertMention]);
+    }, [submit, paletteVisible, mentionVisible, mentionResults, mentionActiveIdx, insertMention, isStreaming, isAborting, onAbort]);
 
     /** Track the textarea caret so `useAtMentionDetect` can anchor on it. */
     const updateCaret = useCallback(() => {
@@ -288,16 +295,16 @@ export function PromptBar({
                         onPresetChange={onPresetChange}
                     />
                     {isStreaming ? (
-                        <Tooltip content={isAborting ? 'Aborting…' : 'Abort current task'} side="top">
+                        <Tooltip content={isAborting ? 'Aborting…' : 'Stop current task (Esc)'} side="top">
                             <button
                                 className="ai-btn ws-send-btn"
                                 data-variant="danger"
                                 data-state={isAborting ? 'aborting' : undefined}
                                 onClick={onAbort}
                                 disabled={isAborting}
-                                aria-label="Abort task"
+                                aria-label="Stop task"
                             >
-                                <Icon name="x" size={12} />
+                                <Icon name="square" size={11} />
                             </button>
                         </Tooltip>
                     ) : (

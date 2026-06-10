@@ -1173,12 +1173,28 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # see plan W1). The runner's CancelledError handler in
                 # task_service writes the savepoint marker + emits the
                 # "Stopped by user" turn + closes the stream.
+                # Signal the live terminal first so the foreground process gets a
+                # Ctrl-C immediately, then cancel the runner task. Best-effort: a
+                # session-less abort just skips this.
+                await task_service.interrupt_session(client_id)
                 _did_abort = task_service.abort_session(client_id)
                 # ACK so the UI never leaves the Stop button frozen: signalled=False
                 # tells the client no live task existed (already done / never ran).
                 await vfs_manager.broadcast_abort_ack(client_id, _did_abort)
                 logger.info(
                     "[Session: %s] Abort mesh: signalled=%s", client_id, _did_abort,
+                )
+
+            elif valid_event.event_type == "client_pty_write":
+                # Phase 7.19.6 — interactive terminal: feed a line of stdin to the
+                # session's live persistent terminal so the user can answer a
+                # blocking prompt. Fire-and-forget; a missing session is a no-op.
+                _pw = valid_event.data
+                _wrote = await task_service.write_session_stdin(
+                    client_id, _pw.data.encode("utf-8")
+                )
+                logger.debug(
+                    "[Session: %s] pty stdin: wrote=%s", client_id, _wrote,
                 )
 
             elif valid_event.event_type == "client_retry_tool":

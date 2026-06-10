@@ -11,7 +11,7 @@
  * inspected. The terminal panel is row-virtualized (see useWindowedRows) so a
  * multi-thousand-line build log stays at 60 FPS without flooding the DOM.
  */
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Icon, type IconName } from '../../shared/Icon';
 import type { CellIterationShape, CellRunShape } from '../../shared/config';
 import { useWindowedRows } from '../utils/useWindowedRows';
@@ -20,10 +20,16 @@ import { useWindowedRows } from '../utils/useWindowedRows';
 const PTY_ROW_HEIGHT = 16;
 // Render every line below this count; virtualize above it.
 const PTY_WINDOW_THRESHOLD = 1000;
+// Distance from the bottom (px) within which auto-follow stays engaged. Scrolling
+// up further than this detaches the follow until the user returns to the bottom.
+const STICK_TOLERANCE_PX = 10;
 
 interface Props {
     run: CellRunShape;
     streaming: boolean;
+    // Send a line of stdin to the live session, tagged with its iteration so the
+    // echo lands on the right panel. Absent on read-only (rehydrated) turns.
+    onStdin?: (iteration: number, line: string) => void;
 }
 
 function toolIcon(toolName: string): IconName {
@@ -34,12 +40,30 @@ function toolIcon(toolName: string): IconName {
 }
 
 /** Row-virtualized terminal panel, scrolled within its own container. */
-function PtyPanel({ lines }: { lines: string[] }): JSX.Element {
+function PtyPanel({ lines, live }: { lines: string[]; live: boolean }): JSX.Element {
     const { scrollRef, onScroll, startIndex, endIndex, topPad, bottomPad } =
         useWindowedRows(lines.length, PTY_ROW_HEIGHT, PTY_WINDOW_THRESHOLD);
+    // Stay pinned to the bottom while live, unless the user scrolled away. Updated
+    // from the container's own geometry on every scroll.
+    const stickRef = useRef(true);
+    const handleScroll = useCallback(() => {
+        const el = scrollRef.current;
+        if (el) {
+            stickRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - STICK_TOLERANCE_PX;
+        }
+        onScroll();
+    }, [onScroll, scrollRef]);
+    // Auto-follow new output. useLayoutEffect (not useEffect) so the scroll write
+    // lands after the DOM mutates but before paint — otherwise the windowed
+    // re-slice paints one frame at the stale offset and visibly blinks.
+    useLayoutEffect(() => {
+        if (!live || !stickRef.current) { return; }
+        const el = scrollRef.current;
+        if (el) { el.scrollTop = el.scrollHeight; }
+    }, [lines.length, live, scrollRef]);
     const slice = lines.slice(startIndex, endIndex);
     return (
-        <div className="ws-cell-pty-scroll" ref={scrollRef} onScroll={onScroll}>
+        <div className="ws-cell-pty-scroll" ref={scrollRef} onScroll={handleScroll}>
             {topPad > 0 && <div style={{ height: topPad }} aria-hidden="true" />}
             {slice.map((line, i) => (
                 <div key={startIndex + i} className="ws-cell-pty-line">
@@ -51,7 +75,39 @@ function PtyPanel({ lines }: { lines: string[] }): JSX.Element {
     );
 }
 
-function IterationSection({ it, autoOpen }: { it: CellIterationShape; autoOpen: boolean }): JSX.Element {
+/** Stdin input row — rendered only beneath the live iteration's terminal. */
+function PtyStdinBar({ onSubmit }: { onSubmit: (line: string) => void }): JSX.Element {
+    const [value, setValue] = useState('');
+    const send = useCallback(() => {
+        onSubmit(value);
+        setValue('');
+    }, [value, onSubmit]);
+    return (
+        <div className="ws-cell-pty-stdin">
+            <span className="ws-cell-pty-stdin-caret" aria-hidden="true">›</span>
+            <input
+                className="ws-cell-pty-stdin-input"
+                type="text"
+                value={value}
+                placeholder="Type a response and press Enter…"
+                aria-label="Terminal input"
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); send(); }
+                }}
+            />
+        </div>
+    );
+}
+
+function IterationSection(
+    { it, autoOpen, live, onStdin }: {
+        it: CellIterationShape;
+        autoOpen: boolean;
+        live: boolean;
+        onStdin?: (iteration: number, line: string) => void;
+    },
+): JSX.Element {
     const [expanded, setExpanded] = useState(autoOpen);
     // Follow the auto-open signal (newest-while-streaming) but let a manual toggle
     // override until the signal next changes.
@@ -102,7 +158,10 @@ function IterationSection({ it, autoOpen }: { it: CellIterationShape; autoOpen: 
                             })}
                         </ul>
                     )}
-                    {it.pty.length > 0 && <PtyPanel lines={it.pty} />}
+                    {it.pty.length > 0 && <PtyPanel lines={it.pty} live={live} />}
+                    {live && onStdin && (
+                        <PtyStdinBar onSubmit={(line) => onStdin(it.iteration, line)} />
+                    )}
                     {it.diffs.length > 0 && (
                         <ul className="ws-cell-diffs">
                             {it.diffs.map((d, i) => (
@@ -122,14 +181,23 @@ function IterationSection({ it, autoOpen }: { it: CellIterationShape; autoOpen: 
     );
 }
 
-function CellAuditWidgetImpl({ run, streaming }: Props): JSX.Element | null {
+function CellAuditWidgetImpl({ run, streaming, onStdin }: Props): JSX.Element | null {
     if (run.iterations.length === 0) { return null; }
     const lastIdx = run.iterations.length - 1;
     return (
         <div className="ws-cell-audit" aria-label="Agentic cell audit log">
-            {run.iterations.map((it, i) => (
-                <IterationSection key={it.iteration} it={it} autoOpen={streaming && i === lastIdx} />
-            ))}
+            {run.iterations.map((it, i) => {
+                const live = streaming && i === lastIdx;
+                return (
+                    <IterationSection
+                        key={it.iteration}
+                        it={it}
+                        autoOpen={live}
+                        live={live}
+                        onStdin={onStdin}
+                    />
+                );
+            })}
         </div>
     );
 }

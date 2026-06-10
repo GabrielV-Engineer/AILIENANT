@@ -169,6 +169,9 @@ export type WebviewToHostMessage =
     | { type: "SUBMIT_TASK";        value: string; preset?: ReasoningPreset; tier?: InferenceTier; planner_mode_active?: boolean }
     | { type: "ABORT_TASK" }
     | { type: "ABORT_MESH" }  // Phase 7.11.3 — Abort Controller Mesh (backend Task.cancel)
+    // Interactive terminal: a line of stdin for the session's live PTY (answer a prompt).
+    // The host relays it onto the WS as `client_pty_write`.
+    | { type: "PTY_STDIN"; session_id: string; data: string }
     | { type: "dreaming_toggle";    value: boolean; profile: DreamingProfile }
     | { type: "FORCE_AGENT";        role: AgentRole }
     | { type: "FILE_BLOCKED_ACK" }

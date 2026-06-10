@@ -2,6 +2,43 @@
 
 ---
 
+## Fase 7.19.6: Interactive Chat PTY (line-oriented) + Composer Send/Stop Toggle — 2026-06-10
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/261 · pytest dirigido 6 passed (abort-mesh/tool-chip sin regresión) · `npm run compile` 0 · production ceiling sentinel verde (518.3 KB / techo 550 KB)
+
+### Contexto
+7.19.0 construyó una `SandboxSession` bidireccional persistente (`write_stdin`/`interrupt`/`kill`/`stream`); 7.19.4 streameó su salida (`server_cell_pty_chunk`); 7.19.5 la renderizó como un log **read-only** virtualizado. El contrato era bidireccional en el backend pero **de una sola vía al ojo del usuario**: cuando un comando de la célula bloquea en un prompt (`Proceed? [Y/n]`) el usuario lo veía pero no podía responder, y el comando colgaba hasta el timeout. 7.19.6 cierra el lazo hacia el usuario: (1) el panel PTY de la iteración activa se vuelve **interactivo** (auto-scroll + fila de stdin → `write_stdin` de la sesión viva); (2) el botón Enviar del composer **muta a Detener** mientras hay una acción en curso, y Detener ahora también envía `interrupt()` (Ctrl-C) al PTY vivo, no solo cancela el run del grafo.
+
+### Decisiones arquitectónicas
+**Terminal liviano in-IIFE (decisión del usuario), no xterm.js:** xterm core (~250 KB) no cabe en el IIFE no-divisible bajo el techo de 550 KB (517 KB, ~33 KB de margen). El caso de uso real es line-oriented (logs + respuestas a prompts), así que se reutiliza el panel PTY virtualizado de 7.19.5 + `sanitizePty` y se le añade interactividad — sin dependencia nueva, sin segundo bundle, el webview sigue siendo un solo IIFE.
+
+**Corrección de scope (§3):** la etiqueta "frontend/host + IPC only" del task es inexacta. El DoD ("una tecla llega a `write_stdin`") **exige** un delta de backend (evento inbound + routing + accessor de sesión viva). Es inevitable, y limpio: [`task_service.py:262`](../ailienant-core/core/task_service.py#L262) fija `"task_id": session_id`, así que `_session_registry` está keyed por el mismo `session_id` que el frontend ya tiene. Routing trivial `_session_registry.get(session_id).session.write_stdin(...)`, sin mapa de claves. Para interrupt se reutiliza el canal `client_abort_mesh` existente — sin evento nuevo.
+
+**Auto-scroll sin flicker (corrección Director IT):** el pin-al-fondo usa `useLayoutEffect`, no `useEffect` — la escritura de `scrollTop` ocurre tras la mutación del DOM pero **antes** del paint, evitando el parpadeo de un frame en el offset viejo que el re-slice del virtualizador produciría. Heurística stick-to-bottom: `(scrollTop + clientHeight) >= scrollHeight - 10px` recalculada en cada `onScroll` sobre la geometría del **contenedor local**; scrollear hacia arriba >10px desengancha el follow hasta que el usuario vuelve al fondo. Un solo `ref` (el de `useWindowedRows`), sin listener de `window`.
+
+**Toggle Send/Stop (ya ~90% hecho):** `PromptBar` ya intercambiaba a un botón de abort en `isStreaming` con `onClick={onAbort}`; `isStreaming` (set en el primer token, limpiado en `server_stream_end`) es la única fuente de verdad. Net-new: glifo ⬛ `square` (Lucide) reemplazando la `x`, Esc-para-detener en el handler de teclado del composer, y que `client_abort_mesh` interrumpa primero el PTY vivo (`interrupt_session`) antes de `abort_session` para un Ctrl-C inmediato.
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `api/ws_contracts.py` | `ClientPtyWritePayload` + `ClientPtyWriteEvent`; añadido a la unión `WebSocketMessage` |
+| `brain/agentic_cell.py` | accessors públicos `write_session_stdin` / `interrupt_session` sobre `_session_registry` (best-effort, nunca lanzan) |
+| `core/task_service.py` | wrappers `write_session_stdin` / `interrupt_session` delegando a agentic_cell (main.py habla solo con TaskService) |
+| `main.py` | rama `client_pty_write` → `write_session_stdin`; la rama `client_abort_mesh` ahora también `interrupt_session` antes de `abort_session` |
+| `shared/config.ts` | `WebviewToHostMessage` gana `{ type: "PTY_STDIN"; session_id; data }` |
+| `shared/Icon.tsx` | registrado el glifo `square` (Lucide Square) |
+| `providers/workspace_panel.ts` | `case 'PTY_STDIN'` → relay `client_pty_write` (espejo de ABORT_MESH, droppable si el socket está caído) |
+| `workspace/components/CellAuditWidget.tsx` | `PtyPanel` con auto-scroll `useLayoutEffect` + stick-to-bottom; subcomponente `PtyStdinBar`; props `live`/`onStdin` |
+| `workspace/components/PromptBar.tsx` | botón streaming usa ⬛ `square`; Esc-para-detener |
+| `workspace/Workspace.tsx` | `handleCellStdin` (postea `PTY_STDIN` + eco-optimista vía `attachOrUpdateCellRun`/`appendPtyLines`); pasado a `CellAuditWidget` |
+| `workspace/workspace.css` | estilos de la fila de stdin (theme vars) |
+| `tests/test_phase7_19_6_pty_stdin.py` | **Nuevo** — 6 casos: stdin llega a write_stdin con los bytes exactos, sesión desconocida→False, fallo de escritura tragado, interrupt llama interrupt(), interrupt desconocido→False, frame `client_pty_write` valida en la unión |
+
+### Deuda declarada (CLAUDE.md §7)
+Cota MVP: cada comando corre bajo `_RUN_TERMINAL_TIMEOUT_S`; un prompt sin responder dentro de esa ventana expira el comando — una ventana interactiva con reset-por-inactividad queda como follow-up, no construida aquí. El estilado per-línea de `is_stderr` sigue omitido (el tee de la célula emite un stream PTY unificado). Sin deuda nueva no rastreada.
+
+---
+
 ## Fase 7.19.5: Frontend — Glass-Box Cell Audit Widgets — 2026-06-09
 
 **Estado:** ✅ COMPLETO | **Gates:** `tsc --noEmit` 0 · `eslint` 0 (2 warnings pre-existentes en archivos ajenos) · production bundle ceiling sentinel verde (517.1 KB / techo 550 KB)

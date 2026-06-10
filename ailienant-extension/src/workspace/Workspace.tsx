@@ -1382,6 +1382,13 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         vscode.postMessage({ type: 'ABORT_MESH' });
     }, [isAborting, setIsAborting]);
 
+    // Interactive terminal: send a line of stdin to the live cell session and echo
+    // it locally (the cell PTY runs echo-off, so the user otherwise sees nothing).
+    const handleCellStdin = useCallback((iteration: number, line: string) => {
+        vscode.postMessage({ type: 'PTY_STDIN', session_id: initial.sessionId, data: line + '\n' });
+        setMessages(prev => attachOrUpdateCellRun(prev, iteration, it => appendPtyLines(it, [`› ${line}`]), nattName));
+    }, [initial.sessionId, nattName]);
+
     // Phase 7.11.6 — Retry button on a Rich Tool Chip. The backend looks up
     // the historical ToolCallSpec and re-invokes verbatim; a new chip lands
     // alongside the old one (the original stays as record).
@@ -1637,7 +1644,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         cell: per-iteration tool calls → terminal output →
                                         AST edits, with a budget-governor footer. */}
                                     {m.role === 'assistant' && m.cellRun && m.cellRun.iterations.length > 0 && (
-                                        <CellAuditWidget run={m.cellRun} streaming={!!m.streaming} />
+                                        <CellAuditWidget run={m.cellRun} streaming={!!m.streaming} onStdin={handleCellStdin} />
                                     )}
                                     {(m.role === 'user' || m.content) && (
                                         <div
