@@ -2,6 +2,47 @@
 
 ---
 
+## Fase 7.19.7: Structured Agent Output — Execution Checklist + WBS Seeding + GFM Tables — 2026-06-10
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/262 · pytest 3 passed (test_phase7_19_7_structured_output.py) · `npm run compile` 0 · production ceiling sentinel verde (517.x KB / techo 550 KB)
+
+### Contexto
+Tres gaps de legibilidad cerraban un ciclo que de lo contrario quedaba opaco: (A) cuando el agente ejecuta un plan aceptado, el chat mostraba prosa y diffs pero ninguna lista de tareas progresiva — el usuario no sabía qué step terminó ni cuál está en curso; (B) cuando el usuario pegaba una lista de tareas numeradas en modo AUTO, el planner la descartaba y derivaba un WBS propio — honrar la estructura del usuario es la acción correcta; (C) el renderer de markdown no soportaba tablas GFM, así que cualquier explicación estructurada llegaba como texto literal `| col |`. Los tres se cierran con cambios aditivos mínimos reutilizando infraestructura ya cableada end-to-end.
+
+### Decisiones arquitectónicas
+
+**A — Checklist progresivo (frontend wiring sobre infraestructura ya existente).**  
+`emit_graph_mutation(step_number, new_status)` ya estaba cableado en `coder.py:_notify_status` y era recibido por el frontend (solo para el check OCC en `session.ts`). Se añade un segundo consumidor: el handler `server_graph_mutation` en `Workspace.tsx` localiza el último turno con checklist y hace flip del `status` del step por `step_number`. El seeding del checklist usa el canal `server_plan_document` ya existente — se emite una vez de forma anticipada (early-emit) en el loop `astream` en cuanto `mission_spec` aparece en el primer snapshot (latch `_plan_seeded` como variable local de la clausura, nunca module-level — aislamiento request/turno).
+
+**Durabilidad del checklist (corrección Director IT — Risk A):** a diferencia del `cellRun` forense (re-derivable, excluido de `PERSIST_TRANSCRIPT`), el checklist es evidencia de auditoría del plan ejecutado — sobrevive recargas de ventana. Se incluye en `PERSIST_TRANSCRIPT` y en `StoredMessage`. El debounce de 400 ms del persist coalescea los ticks por-step; el último write (estado final congelado) es lo que rehidrata un reload.
+
+**B — WBS seeding desde lista del usuario (directiva de prompt, sin cambio de contrato).**  
+`agents/planner.py` gana `_WBS_SEED_DIRECTIVE` como constante de módulo nombrada (testable determinísticamente, no interpolación inline). La directiva instruye al planner a tratar una lista enumerada/numerada del usuario como semilla del WBS — preservando el orden, wording, y permitiendo refinamiento (merge/split/reorder/prerequisito), pero sin descartarla. No cambia `MissionSpecification`, `WBSStep`, ni el pipeline de parse ADR-704. Activo en todos los modos (FULL_SWARM).
+
+**C — GFM tables con precedencia fence-first (corrección Director IT — Risk B).**  
+El bloque crítico: la detección de tabla **solo es evaluable cuando el cursor no está dentro de un code fence**. En la implementación actual, el inner `while` del loop de fence consume su propio cuerpo antes de retornar al outer `while (i < lines.length)` — la tabla solo se evalúa *después* de que el fence loop ha retornado. Precedencia fence-first es **estructural**, no condicional: no se necesita una bandera `inFence`. Regexes `TABLE_ROW_RE`/`TABLE_SEP_RE` anclados (`^\s*\|.*\|\s*$`) para evitar backtracking catastrófico. Una tabla incompleta mid-stream (header sin separator) cae a prosa y snaps a table en cuanto llega el separator — sin corrupción de streaming.
+
+**Latch de early-emit aislado por request (corrección Director IT — Risk C):** `_plan_seeded = False` es una variable local dentro de la clausura de `_run_coding_task` — no de clase ni de módulo. Sesiones concurrentes tienen cada una su propio stack frame; no hay leak de flag entre turnos.
+
+### Archivos mutados
+| Archivo | Cambio |
+|---|---|
+| `core/task_service.py` | `_plan_seeded` latch local + early `broadcast_plan_document`; directiva GFM en `_CHAT_SYSTEM_PROMPT` |
+| `agents/planner.py` | `_WBS_SEED_DIRECTIVE` constante de módulo + inyectada en el bloque de instrucción del planner |
+| `api/ws_contracts.py` | Sin cambio de contrato (re-usa `ServerPlanDocumentEvent` + `ServerGraphMutationEvent` existentes) |
+| `shared/config.ts` | `Message.checklist?: PlanWBSStep[]` (durable, en `PERSIST_TRANSCRIPT`) |
+| `providers/workspace_panel.ts` | `PlanWBSStep` import; `checklist?: PlanWBSStep[]` en `StoredMessage` |
+| `workspace/Workspace.tsx` | `attachOrUpdateChecklist` helper; `server_plan_document` siembra checklist; `server_graph_mutation` flip de status; `checklist` en PERSIST_TRANSCRIPT; render de `ExecutionChecklist` |
+| `workspace/components/ExecutionChecklist.tsx` | **Nuevo** — rows ☐→🔄→✅/✗ con glyphs Lucide; memoizado en longitud + firmas de status por step |
+| `workspace/components/MarkdownRenderer.tsx` | `TABLE_ROW_RE`/`TABLE_SEP_RE`; `isTableStart`/`splitTableRow`/`renderTable`; detección en block-scan con fence-first estructural |
+| `workspace/workspace.css` | `.ws-checklist` + children; `.ws-checklist-spin` keyframe; `.ws-md-table` (themed borders, header bg) |
+| `tests/test_phase7_19_7_structured_output.py` | **Nuevo** — 3 tests: directive content, planner instruction carries directive, early emit precedes turn-end |
+
+### Deuda declarada (CLAUDE.md §7)
+Sin deuda nueva no rastreada. Las listas anidadas GFM quedan fuera de scope para 7.19.7 (el renderer las trata como prosa, estabilidad aceptable); si el agente las usa frecuentemente, un follow-up extiende el block-scanner a listas. El `is_stderr` styling en PTY lines sigue omitido (deuda pre-existente del tee unificado de la célula).
+
+---
+
 ## Fase 7.19.6: Interactive Chat PTY (line-oriented) + Composer Send/Stop Toggle — 2026-06-10
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/261 · pytest dirigido 6 passed (abort-mesh/tool-chip sin regresión) · `npm run compile` 0 · production ceiling sentinel verde (518.3 KB / techo 550 KB)

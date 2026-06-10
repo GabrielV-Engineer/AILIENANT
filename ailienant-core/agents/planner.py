@@ -57,6 +57,16 @@ _SCOPE_DISCIPLINE_DIRECTIVE: str = (
     "request is the correct one.\n\n"
 )
 
+_WBS_SEED_DIRECTIVE: str = (
+    "EXISTING PLAN AS SEED:\n"
+    "- If the user requirement is ALREADY an enumerated or bulleted task list (a plan "
+    "the user wrote out), treat that list as the WBS seed: map each item to a sequential "
+    "task in the given order, preserving the user's intent and wording.\n"
+    "- You MAY refine it — merge redundant items, split a step that needs several actions, "
+    "reorder for correct dependencies, or add a missing prerequisite — but honor the "
+    "user's structure; do NOT discard their list to invent an unrelated one.\n\n"
+)
+
 # Configuración del logger para este nodo específico
 logger = logging.getLogger("PLANNER_NODE")
 
@@ -537,7 +547,8 @@ async def run_planner_node(
         "Your only task is to generate a complete and logical technical specification (MissionSpecification)."
         "Strictly define the Outcome, Scope, Constraints, Decisions, and sequential Tasks (WBS)"
         "assigning a valid target_role to each task, and the QA validation checks.\n\n"
-        + _SCOPE_DISCIPLINE_DIRECTIVE +
+        + _SCOPE_DISCIPLINE_DIRECTIVE
+        + _WBS_SEED_DIRECTIVE +
         # explicit type discipline. The LLM intermittently emits objects
         # where strings belong, and arbitrary role strings; spell out the contract.
         "STRICT TYPE RULES:\n"

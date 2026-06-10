@@ -7,7 +7,7 @@ import {
     BudgetLimitMode, ReasoningPreset, DreamingProfile,
     WsConnectionStatus, OccStatus, TelemetryFrame, TokenSnapshot, OrchestrationMode,
     ToolCallShape, DiffBlockShape, PlanDocumentShape, MAX_IPC_CODE_CHARS,
-    type ASTToken, type CellRunShape, type CellIterationShape,
+    type ASTToken, type CellRunShape, type CellIterationShape, type PlanWBSStep,
 } from '../shared/config';
 import type { AilienantConfig, ExecutionMode, IndexingState } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
@@ -37,6 +37,7 @@ import { PipelineProgress } from './components/PipelineProgress';
 import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
 import { CellAuditWidget } from './components/CellAuditWidget';
+import { ExecutionChecklist } from './components/ExecutionChecklist';
 import { sanitizePtyChunk } from './utils/sanitizePty';
 import { HITLInterventionCard, type HITLIntervention } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
@@ -69,7 +70,7 @@ const STREAM_ACTIVITY_EVENTS = new Set<string>([
     'server_tool_start', 'server_tool_stream_chunk', 'server_tool_result',
     'server_natt_token',
     'server_cell_tool_start', 'server_cell_pty_chunk', 'server_cell_ast_diff',
-    'server_cell_governor_tick',
+    'server_cell_governor_tick', 'server_graph_mutation',
 ]);
 // Hard cap on retained PTY lines per cell iteration. On overflow the buffer stops
 // appending and writes a single truncation sentinel, so the virtualized list's base
@@ -178,6 +179,11 @@ export interface Message {
     // data (the durable audit ledger lives in the core) — explicitly stripped before
     // PERSIST_TRANSCRIPT.
     cellRun?: CellRunShape;
+    // Progressive execution checklist: the WBS seeded from server_plan_document, its
+    // per-step status flipped live by server_graph_mutation. DURABLE audit evidence —
+    // unlike cellRun it IS carried through PERSIST_TRANSCRIPT so a reload preserves
+    // the record of which steps the agent completed.
+    checklist?: PlanWBSStep[];
     // Inline diffs for edits applied during this turn — one entry per file,
     // surfaced by the host (RENDER_DIFF) after PatchActuator applies. Attached to
     // the turn that explained the edit and persisted so a teardown mid-render
@@ -308,6 +314,30 @@ function appendPtyLines(it: CellIterationShape, lines: string[]): CellIterationS
     }
     const room = Math.max(0, MAX_CELL_PTY_LINES - it.pty.length);
     return { ...it, pty: [...it.pty, ...lines.slice(0, room), CELL_PTY_TRUNCATED], _truncated: true };
+}
+
+/**
+ * Update the execution checklist on the LAST assistant message (creating a
+ * placeholder turn if none exists). The updater receives the prior checklist (or
+ * undefined) and returns the next one. Pure on the previous array — no mutations.
+ */
+function attachOrUpdateChecklist(
+    prev: Message[],
+    update: (prior: PlanWBSStep[] | undefined) => PlanWBSStep[],
+    agentName: string,
+): Message[] {
+    const lastIdx = prev.length - 1;
+    const last = lastIdx >= 0 ? prev[lastIdx] : undefined;
+    if (last?.role === 'assistant') {
+        return [...prev.slice(0, lastIdx), { ...last, checklist: update(last.checklist) }];
+    }
+    return [...prev, {
+        id: mkId(),
+        role: 'assistant',
+        content: '',
+        checklist: update(undefined),
+        authorLabel: authorLabelFor('assistant', agentName),
+    }];
 }
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
@@ -485,10 +515,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 // the rehydrated transcript still shows the ↪ Branch button.
                 messages: messages.map(({
                     id, role, content, steps, stepsDone, toolCalls, diffBlocks,
-                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens,
+                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
                 }) => ({
                     id, role, content, steps, stepsDone, toolCalls, diffBlocks,
-                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens,
+                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
                 })),
                 nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
             });
@@ -705,6 +735,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     // that could flash the pointer against an empty panel.
                     const doc = msg.payload as PlanDocumentShape;
                     setPlan(doc);
+                    // Seed the in-chat execution checklist from the WBS. The early
+                    // (seed-only) broadcast carries an empty summary; the per-step
+                    // server_graph_mutation events flip the statuses from here.
+                    if (doc.tasks && doc.tasks.length > 0) {
+                        setMessages(prev => attachOrUpdateChecklist(prev, () => doc.tasks, nattName));
+                    }
                     if (doc.summary) {
                         recordChunk();
                         setMessages(prev => {
@@ -724,6 +760,24 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             }];
                         });
                     }
+                    break;
+                }
+                case 'server_graph_mutation': {
+                    // A WBS step changed status (pending→completed/failed, etc.).
+                    // Flip the matching checklist row by step_number on the most
+                    // recent turn that carries a checklist — never create a turn.
+                    const d = msg.payload as { step_number: number; new_status: string };
+                    setMessages(prev => {
+                        for (let i = prev.length - 1; i >= 0; i--) {
+                            const m = prev[i];
+                            if (m.checklist && m.checklist.length > 0) {
+                                const next = m.checklist.map(t =>
+                                    t.step_number === d.step_number ? { ...t, status: d.new_status } : t);
+                                return [...prev.slice(0, i), { ...m, checklist: next }, ...prev.slice(i + 1)];
+                            }
+                        }
+                        return prev;
+                    });
                     break;
                 }
                 case 'server_stream_end': {
@@ -1645,6 +1699,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         AST edits, with a budget-governor footer. */}
                                     {m.role === 'assistant' && m.cellRun && m.cellRun.iterations.length > 0 && (
                                         <CellAuditWidget run={m.cellRun} streaming={!!m.streaming} onStdin={handleCellStdin} />
+                                    )}
+                                    {/* Progressive execution checklist — the accepted
+                                        WBS, its rows flipping ☐→✅ as steps complete. */}
+                                    {m.role === 'assistant' && m.checklist && m.checklist.length > 0 && (
+                                        <ExecutionChecklist tasks={m.checklist} />
                                     )}
                                     {(m.role === 'user' || m.content) && (
                                         <div

@@ -67,7 +67,10 @@ _CHAT_SYSTEM_PROMPT: str = compose(
     "An expert AI coding assistant embedded in the user's IDE. "
     "Answer the user's request directly and concisely. When the task involves code, "
     "provide correct, idiomatic snippets and explain the key decisions briefly. "
-    "If the request is ambiguous, state the assumption you are making and proceed."
+    "If the request is ambiguous, state the assumption you are making and proceed. "
+    "When structured data, comparisons, or multi-step results would be clearer that "
+    "way, you may use GitHub-flavored Markdown tables or lists; prefer plain prose for "
+    "simple answers and never force a table where a sentence is clearer."
 )
 
 # Phase 7.9.B.15 — short-term session memory + GraphRAG injection.
@@ -540,10 +543,23 @@ class TaskService:
                 # cast satisfies the astream() overload (the seed carries a few
                 # transient keys beyond the AIlienantGraphState TypedDict — the
                 # graph drops them, the same way ainvoke() is cast at resume).
+                # Turn-local latch (request-isolated — never module/instance level):
+                # the moment a node first produces the WBS, surface the plan document
+                # early so the chat can seed the execution checklist BEFORE the coder
+                # starts emitting per-step status mutations. Reuses the existing
+                # server_plan_document event; an empty summary marks it seed-only.
+                _plan_seeded = False
                 async for snapshot in alienant_app.astream(
                     cast(AIlienantGraphState, state), config=cfg, stream_mode="values"
                 ):
                     final_state = snapshot
+                    if not _plan_seeded:
+                        _early_mission = snapshot.get("mission_spec")
+                        if _early_mission is not None:
+                            await vfs_manager.broadcast_plan_document(
+                                session_id, self._build_plan_payload(_early_mission, "")
+                            )
+                            _plan_seeded = True
                 # Drain any reasoning still buffered from the final node.
                 await thinking_streamer.flush()
             except asyncio.CancelledError:

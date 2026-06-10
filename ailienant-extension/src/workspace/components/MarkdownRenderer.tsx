@@ -124,6 +124,40 @@ function renderCodeLines(codeLines: string[], tokenLines: ASTToken[][]): ReactNo
     ));
 }
 
+// ── GFM tables ──────────────────────────────────────────────────────────────
+// A table row is a pipe-delimited line; a separator is the dashes row that must
+// immediately follow the header. Both anchored (^…$) so the regex is linear and
+// cannot catastrophically backtrack. Table detection is only ever evaluated
+// OUTSIDE a code fence (the fence loop consumes its own body first), so a `|` line
+// inside a code block can never be hijacked into a table.
+const TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+const TABLE_SEP_RE = /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/;
+
+function isTableStart(lines: string[], i: number): boolean {
+    return TABLE_ROW_RE.test(lines[i]) && i + 1 < lines.length && TABLE_SEP_RE.test(lines[i + 1]);
+}
+
+function splitTableRow(line: string): string[] {
+    return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+}
+
+function renderTable(header: string[], rows: string[][], key: number): ReactNode {
+    return (
+        <table key={`t-${key}`} className="ws-md-table">
+            <thead>
+                <tr>{header.map((c, ci) => <th key={ci}>{renderInlineRuns(c)}</th>)}</tr>
+            </thead>
+            <tbody>
+                {rows.map((r, ri) => (
+                    <tr key={ri}>
+                        {header.map((_h, ci) => <td key={ci}>{renderInlineRuns(r[ci] ?? '')}</td>)}
+                    </tr>
+                ))}
+            </tbody>
+        </table>
+    );
+}
+
 // ── Block-level scan: fenced code vs prose ──────────────────────────────────
 
 function renderBlocks(
@@ -184,13 +218,30 @@ function renderBlocks(
             continue;
         }
 
+        // GFM table — only reachable outside a fence, so code blocks are immune
+        // (fence-first precedence). Requires a header row + a separator row; an
+        // incomplete table (header without separator, common mid-stream) falls
+        // through to prose and snaps to a table once the separator arrives.
+        if (isTableStart(lines, i)) {
+            const header = splitTableRow(lines[i]);
+            i += 2; // consume header + separator rows
+            const rows: string[][] = [];
+            while (i < lines.length && TABLE_ROW_RE.test(lines[i])) {
+                rows.push(splitTableRow(lines[i]));
+                i += 1;
+            }
+            out.push(renderTable(header, rows, key++));
+            continue;
+        }
+
         // Prose paragraph: collect contiguous non-fence non-empty lines, then
         // a blank line breaks the paragraph.
         const para: string[] = [];
         while (
             i < lines.length &&
             lines[i].trim().length > 0 &&
-            !FENCE_OPEN_RE.test(lines[i])
+            !FENCE_OPEN_RE.test(lines[i]) &&
+            !isTableStart(lines, i)
         ) {
             para.push(lines[i]);
             i += 1;

@@ -194,7 +194,7 @@ const MAX_PERSISTED_MESSAGES = 200;  // bound storage growth per session
 
 // Phase 7.11.6 — Rich Tool Chips: persisted alongside the transcript so chips
 // (including their final status, output, and dep_graph) survive a panel close.
-import type { ToolCallShape, PlanDocumentShape } from '../shared/config';
+import type { ToolCallShape, PlanDocumentShape, PlanWBSStep } from '../shared/config';
 interface StoredMessage {
     id?: string;   // Phase 7.12 — stable turn id; keys the REHYDRATE_TRANSCRIPT merge.
     role: 'user' | 'assistant';
@@ -207,6 +207,9 @@ interface StoredMessage {
     // sessions reopened after a VS Code restart.
     checkpoint_id?: string;
     is_abort_savepoint?: boolean;
+    // Execution checklist — durable audit evidence of which WBS steps the agent
+    // completed; survives a reload so the record is never lost.
+    checklist?: PlanWBSStep[];
 }
 interface StoredNattMessage { id?: string; role: 'natt' | 'user'; content: string; }
 interface StoredTranscript { messages: StoredMessage[]; nattMessages: StoredNattMessage[]; }
