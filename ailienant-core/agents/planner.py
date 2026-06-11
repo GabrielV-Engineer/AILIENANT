@@ -306,6 +306,18 @@ async def run_planner_node(
     if _rules:
         system_prompt_text += f"\n\n{_rules}"
 
+    # ── User Skill Injection ───────────────────────────────
+    # Skills the user saved and either explicitly invoked or that matched this task
+    # semantically. Resolved upstream and threaded on the loose state dict; wrapped in
+    # the same ephemeral boundary as other injected directives.
+    _skills = state.get("active_skills") or []
+    if _skills:
+        from core.skill_resolver import build_skill_directive_block
+
+        _skill_block = build_skill_directive_block(_skills, boundary)
+        if _skill_block:
+            system_prompt_text += f"\n\n{_skill_block}"
+
     # ── Trajectory Memory Injection ────────────────────────
     _traj_mgr = TrajectoryMemoryManager()
     _past_trajectories = await _traj_mgr.search(

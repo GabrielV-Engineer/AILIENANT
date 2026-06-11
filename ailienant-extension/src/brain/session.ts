@@ -79,7 +79,7 @@ export class SessionManager {
      */
     public async startAITask(
         taskPrompt: string,
-        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string },
+        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string; invoked_skill_id?: string },
     ): Promise<number | undefined> {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
@@ -142,6 +142,8 @@ export class SessionManager {
                 // The mode selector maps to the backend session permission policy
                 // (Auto → auto-apply, Ask → HITL card, Plan → block mutations).
                 execution_mode: opts?.execution_mode,
+                // Snake_case end-to-end — must not be camelCased at the call site.
+                invoked_skill_id: opts?.invoked_skill_id,
             };
 
             // 5. Emitir la Misión (Boca) al API Gateway

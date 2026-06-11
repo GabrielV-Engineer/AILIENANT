@@ -29,8 +29,24 @@ async def save_skill(body: Dict[str, Any]) -> Dict[str, Any]:
     skill_body = str(body.get("body", "")).strip()
     if not name or not skill_body:
         return {"ok": False, "error": "name and body are required"}
+    description = str(body.get("description", "")).strip() or None
+    enabled = bool(body.get("enabled", True))
+    scope = str(body.get("scope", "global")).strip() or "global"
+    if scope not in ("global", "workspace"):
+        return {"ok": False, "error": "scope must be 'global' or 'workspace'"}
+    workspace_root = str(body.get("workspace_root", "")).strip() or None
+    if scope == "workspace" and not workspace_root:
+        return {"ok": False, "error": "workspace scope requires a workspace_root"}
     skill_id = str(body.get("id") or uuid.uuid4().hex)
-    await catalog_db.upsert_skill(skill_id, name, skill_body)
+    await catalog_db.upsert_skill(
+        skill_id,
+        name,
+        skill_body,
+        description=description,
+        enabled=enabled,
+        scope=scope,
+        workspace_root=workspace_root,
+    )
     return {"ok": True, "skills": await catalog_db.list_skills()}
 
 

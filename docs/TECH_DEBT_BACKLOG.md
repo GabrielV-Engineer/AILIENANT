@@ -31,6 +31,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-032 — Coder-side skill injection (planner-only shipped in 8.4.5)
+
+- **Date:** 2026-06-11
+- **Reproduce:** submit a task with a saved skill active — the skill directive block appears in the planner system prompt (and therefore in the `mission_spec` the coder receives) but is **not** re-injected into the coder's own system prompt. For skills that express a coding style or pattern constraint, the planner-mediated injection is sufficient; for skills that must survive across multi-step coder turns or whose instruction is structurally important to coder generation, a coder-side injection would be more robust.
+- **File(s):** `ailienant-core/agents/planner.py` (injection seam, 8.4.5) — the coder (`agents/coder.py`) has no equivalent injection.
+- **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The planner bakes skill directives into the `mission_spec` that the coder receives, so one seam shapes the whole task with zero TypedDict churn and the lowest blast radius for 8.4.5.
+- **Blocked by:** nothing; requires reading `state.get("active_skills")` in the coder's system-prompt construction and calling `build_skill_directive_block` there (same seam pattern as the planner).
+- **Phase:** a standalone coder-side injection slice (8.4.x or a bundled polish pass).
+- **Notes:** logged at 8.4.5 ship as required by CLAUDE.md §7.3 (every MVP must surface a tracked follow-up). The planner-only path covers the vast majority of skill-directive use cases.
+
 ### DEBT-031 — MCP secret-value store + connect-time env injection + config.json file/UI surface
 
 - **Date:** 2026-06-10
@@ -81,15 +91,15 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Phase:** **8.4.4** (closes this debt).
 - **Notes:** surfaced during the Phase 8 MCP-ecosystem exploration. The bootstrap function is complete; only the auto-invocation at task start is missing.
 
-### DEBT-028 — Skills/hooks persisted but never executed
+### DEBT-028 — Hooks persisted but never executed *(skills half ✅ RESOLVED — 8.4.5)*
 
 - **Date:** 2026-06-10
-- **Reproduce:** create a skill via `POST /api/v1/skills` (or a hook); it is stored in the catalog DB (`skills`/`hooks` tables) and listed back, but is never run during a task.
-- **File(s):** `ailienant-core/core/db.py` (skills/hooks tables + CRUD — storage only); `ailienant-core/api/customizers.py` (~line 215 — hooks saved, not executed); no execution wiring in the task pipeline.
-- **Error:** wiring gap — the persistence + UI half exists; the runtime application half does not. A saved skill/hook is dead metadata.
+- **Reproduce:** create a `pre_patch`/`post_patch` hook via `POST /api/v1/hooks`; it is stored in the catalog DB (`hooks` table) and listed back, but is never run around task mutations.
+- **File(s):** `ailienant-core/core/db.py` (hooks table + CRUD — storage only); `ailienant-core/api/customizers.py` (~line 215 — hooks saved, not executed); no execution wiring in `core/task_service.py` or `tools/execution_tools.py`.
+- **Error:** wiring gap — the persistence + UI half exists; the hooks runtime application half does not.
 - **Blocked by:** none.
-- **Phase:** **8.4.5** (closes this debt).
-- **Notes:** surfaced during the Phase 8 MCP-ecosystem exploration; complements DEBT-027 (both are "configured-but-inert" gaps in the customization surface).
+- **Phase:** dedicated hooks-execution sub-phase (8.4.x or standalone).
+- **Notes:** skills half closed by **8.4.5** (dual-mode resolver + planner injection + frontend chip). Hooks deferred at user request; scope confirmed as `pre_patch`/`post_patch` command execution. Complements DEBT-027 (both are "configured-but-inert" gaps).
 
 ### DEBT-025 — Docker persistent-PTY backend has no daemon integration test
 

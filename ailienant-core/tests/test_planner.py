@@ -359,3 +359,62 @@ async def test_planner_consumes_researcher_skeleton() -> None:
     sent_messages: List[Dict[str, str]] = mock_ainvoke.call_args.kwargs["messages"]
     joined = "\n".join(m["content"] for m in sent_messages)
     assert "core/auth.py: handles JWT validation" in joined
+
+
+# ── Test 4: active_skills injection ───────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_planner_injects_active_skills() -> None:
+    """A resolved skill on state['active_skills'] must surface (sandboxed) in the
+    prompt sent to the gateway; an empty list injects nothing."""
+
+    skill_body = "Always check for SQL injection in query builders."
+    good_response = _make_response(_valid_mission_json())
+
+    mock_ainvoke = AsyncMock(return_value=good_response)
+    mock_search = AsyncMock(return_value=(0.8, [], []))
+    mock_deep_parse = AsyncMock(
+        return_value=MagicMock(
+            coverage_ratio=0.0, context_block="", parsed_files=[], target_files=[]
+        )
+    )
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    state = _base_state(
+        active_skills=[{"id": "s1", "name": "SecAudit", "body": skill_body}]
+    )
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.state_manager.load_state_from_markdown", return_value=None
+    ), patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, patch(
+        "agents.planner.GraphRAGDynamicExtractor"
+    ) as mock_extractor_cls, patch(
+        "agents.planner.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ), patch(
+        "core.state_manager.dump_state_to_markdown", return_value=True
+    ), patch(
+        "agents.planner.audit_task_complexity",
+        AsyncMock(return_value=__import__("core.memory.context_auditor",
+                                          fromlist=["RiskLevel"]).RiskLevel.NONE),
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+        mock_extractor_cls.return_value.deep_parse = mock_deep_parse
+        mock_sem_cls.return_value.search_with_paths = mock_search
+
+        from agents.planner import run_planner_node
+
+        result = await run_planner_node(state)
+
+    assert result.get("mission_spec") is not None
+    sent_messages: List[Dict[str, str]] = mock_ainvoke.call_args.kwargs["messages"]
+    joined = "\n".join(m["content"] for m in sent_messages)
+    assert skill_body in joined
+    assert 'kind="skill"' in joined  # rendered inside the sandboxed directive block

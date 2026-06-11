@@ -121,6 +121,9 @@ export interface SkillTemplate {
     id: string;
     name: string;
     body: string;
+    description?: string;
+    enabled?: boolean;
+    scope?: string;
 }
 
 export interface AgentRoleInfo {

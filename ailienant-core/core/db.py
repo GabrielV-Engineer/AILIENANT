@@ -55,11 +55,15 @@ _DDL = [
     # Entity collections live here (not settings.json) so concurrent CRUD from
     # independent routers cannot lose updates (last-writer-wins on a JSON file).
     """CREATE TABLE IF NOT EXISTS skills (
-        id          TEXT PRIMARY KEY,
-        name        TEXT NOT NULL,
-        body        TEXT NOT NULL,
-        created_at  REAL NOT NULL,
-        updated_at  REAL NOT NULL
+        id             TEXT PRIMARY KEY,
+        name           TEXT NOT NULL,
+        body           TEXT NOT NULL,
+        description    TEXT,
+        enabled        INTEGER NOT NULL DEFAULT 1,
+        scope          TEXT NOT NULL DEFAULT 'global',
+        workspace_root TEXT,
+        created_at     REAL NOT NULL,
+        updated_at     REAL NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS mcp_servers (
         id          TEXT PRIMARY KEY,
@@ -120,6 +124,13 @@ _COLUMN_MIGRATIONS: List[Tuple[str, str, str]] = [
     # Reactive indexing idempotency: the content hash of the last successfully
     # indexed revision, so a re-save of byte-identical content is a cheap no-op.
     ("indexed_files", "content_hash", "TEXT"),
+    # Skill execution metadata: a one-line semantic descriptor used to auto-match a
+    # skill against a task, an on/off switch, and a scope (global vs a single
+    # workspace). DEFAULTs apply to pre-existing rows so they read as enabled/global.
+    ("skills", "description", "TEXT"),
+    ("skills", "enabled", "INTEGER DEFAULT 1"),
+    ("skills", "scope", "TEXT DEFAULT 'global'"),
+    ("skills", "workspace_root", "TEXT"),
 ]
 
 
@@ -508,23 +519,81 @@ async def purge_file_nodes(filepath: str, project_id: str = "") -> None:
 # routers are serialized by the WAL engine instead of clobbering a JSON file.
 
 
+_SKILL_COLUMNS = (
+    "id, name, body, description, enabled, scope, workspace_root, created_at, updated_at"
+)
+
+
+def _coerce_skill_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    row["enabled"] = bool(row["enabled"])
+    return row
+
+
 async def list_skills() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT id, name, body, created_at, updated_at FROM skills ORDER BY name"
+            f"SELECT {_SKILL_COLUMNS} FROM skills ORDER BY name"
         ) as cur:
-            return [dict(r) for r in await cur.fetchall()]
+            return [_coerce_skill_row(dict(r)) for r in await cur.fetchall()]
 
 
-async def upsert_skill(skill_id: str, name: str, body: str) -> None:
+async def get_skill(skill_id: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"SELECT {_SKILL_COLUMNS} FROM skills WHERE id=?", (skill_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return _coerce_skill_row(dict(row)) if row else None
+
+
+async def list_enabled_skills_for_scope(workspace_root: str) -> List[Dict[str, Any]]:
+    """Enabled skills eligible for a task: every global skill, plus the
+    workspace-scoped skills for this exact workspace. An empty ``workspace_root``
+    selects global skills only — never a literal ``workspace_root=''`` filter, which
+    would match no real workspace skill and hide them silently.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if workspace_root:
+            query = (
+                f"SELECT {_SKILL_COLUMNS} FROM skills "
+                "WHERE enabled=1 AND (scope='global' OR "
+                "(scope='workspace' AND workspace_root=?)) ORDER BY name"
+            )
+            params: Tuple[Any, ...] = (workspace_root,)
+        else:
+            query = (
+                f"SELECT {_SKILL_COLUMNS} FROM skills "
+                "WHERE enabled=1 AND scope='global' ORDER BY name"
+            )
+            params = ()
+        async with db.execute(query, params) as cur:
+            return [_coerce_skill_row(dict(r)) for r in await cur.fetchall()]
+
+
+async def upsert_skill(
+    skill_id: str,
+    name: str,
+    body: str,
+    *,
+    description: Optional[str] = None,
+    enabled: bool = True,
+    scope: str = "global",
+    workspace_root: Optional[str] = None,
+) -> None:
     now = time.time()
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:
         await db.execute(
-            "INSERT INTO skills (id, name, body, created_at, updated_at) VALUES (?,?,?,?,?) "
+            "INSERT INTO skills "
+            "(id, name, body, description, enabled, scope, workspace_root, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET name=excluded.name, body=excluded.body, "
+            "description=excluded.description, enabled=excluded.enabled, "
+            "scope=excluded.scope, workspace_root=excluded.workspace_root, "
             "updated_at=excluded.updated_at",
-            (skill_id, name, body, now, now),
+            (skill_id, name, body, description, int(enabled), scope, workspace_root, now, now),
         )
         await db.commit()
 

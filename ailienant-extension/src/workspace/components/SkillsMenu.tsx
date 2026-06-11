@@ -15,6 +15,7 @@ export function SkillsMenu({ view, onClose, onSwitchView }: Props): JSX.Element 
     const [skills, setSkills] = useState<SkillTemplate[] | null>(null);
     const [name, setName] = useState('');
     const [body, setBody] = useState('');
+    const [description, setDescription] = useState('');
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
@@ -22,7 +23,7 @@ export function SkillsMenu({ view, onClose, onSwitchView }: Props): JSX.Element 
             const msg = event.data as { type: string; skills?: SkillTemplate[] };
             if (msg.type === 'SKILLS_DATA') {
                 setSkills(msg.skills ?? []);
-                if (saving) { setSaving(false); setName(''); setBody(''); onSwitchView('skills-insert'); }
+                if (saving) { setSaving(false); setName(''); setBody(''); setDescription(''); onSwitchView('skills-insert'); }
             }
         };
         window.addEventListener('message', handler);
@@ -50,13 +51,17 @@ export function SkillsMenu({ view, onClose, onSwitchView }: Props): JSX.Element 
                                     className="ws-mode-row"
                                     style={{ flex: 1, background: 'none', border: 'none', padding: 0, textAlign: 'left' }}
                                     onClick={() => {
-                                        window.postMessage({ type: 'INSERT_PROMPT', text: s.body }, '*');
+                                        window.postMessage({ type: 'INVOKE_SKILL', id: s.id, name: s.name }, '*');
                                         onClose();
                                     }}
                                 >
                                     <div className="ws-mode-row-text">
                                         <span className="ws-mode-row-title">{s.name}</span>
-                                        <span className="ws-mode-row-desc">{s.body.slice(0, 80)}{s.body.length > 80 ? '…' : ''}</span>
+                                        <span className="ws-mode-row-desc">
+                                            {s.description
+                                                ? s.description.slice(0, 80) + (s.description.length > 80 ? '…' : '')
+                                                : s.body.slice(0, 80) + (s.body.length > 80 ? '…' : '')}
+                                        </span>
                                     </div>
                                 </button>
                                 <button className="ws-core-menu-btn" onClick={() => vscode.postMessage({ type: 'DELETE_SKILL', id: s.id })}>
@@ -66,7 +71,7 @@ export function SkillsMenu({ view, onClose, onSwitchView }: Props): JSX.Element 
                         ))}
                     </div>
                 )}
-                <p className="ws-models-note">Selecting a skill inserts its template into the prompt bar.</p>
+                <p className="ws-models-note">Selecting a skill attaches it to your next submit.</p>
             </div>
         );
     }
@@ -75,12 +80,20 @@ export function SkillsMenu({ view, onClose, onSwitchView }: Props): JSX.Element 
     const save = (): void => {
         if (!name.trim() || !body.trim()) { return; }
         setSaving(true);
-        vscode.postMessage({ type: 'SAVE_SKILL', skill: { name: name.trim(), body: body.trim() } });
+        vscode.postMessage({
+            type: 'SAVE_SKILL',
+            skill: {
+                name: name.trim(),
+                body: body.trim(),
+                description: description.trim() || undefined,
+            },
+        });
     };
     return (
         <div className="ws-models-body">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <input className="ws-input" placeholder="Skill name, e.g. Security audit" value={name} onChange={e => setName(e.target.value)} />
+                <input className="ws-input" placeholder="Description (used for auto-match)" value={description} onChange={e => setDescription(e.target.value)} />
                 <textarea className="ws-input" rows={6} placeholder="Prompt template…" value={body} onChange={e => setBody(e.target.value)} />
                 <div style={{ display: 'flex', gap: 6 }}>
                     <button className="ws-core-menu-btn" disabled={saving || !name.trim() || !body.trim()} onClick={save}>

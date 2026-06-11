@@ -41,6 +41,9 @@ export interface TaskPayload {
     // The three-way mode selector (automatic | ask_before_edits | plan_mode).
     // The backend maps it to the session permission policy that gates writes.
     execution_mode?: string;
+    // Id of a saved skill the user explicitly chose for this turn. Wire field is
+    // snake_case end-to-end — do NOT send camelCase invokedSkillId.
+    invoked_skill_id?: string;
 }
 
 // Phase 1.6.3 — Model discovery response schema (mirrors FastAPI ModelInfo).

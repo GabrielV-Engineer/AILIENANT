@@ -174,6 +174,23 @@ _exit_stacks: Dict[str, AsyncExitStack]   # one stack per server, never shared
 
 **DEBT-027 closed.** Deferred to 8.4.7: trust-once session-scoped valve (DEBT-029 remainder), live e2e graph-cell dispatch, FE HITL-card binding for `MCP_TOOL_CALL` kind.
 
+### Amendment — Skills execution wiring (8.4.5, closes DEBT-028 skills half)
+
+**Skills** are user-authored prompt directives (`{id, name, body, description}`) persisted in the `skills` catalog table. Before 8.4.5 they were dead metadata — the only path was the frontend raw-pasting the `body` into the user's prompt. 8.4.5 wires them into the planner's directive block via a new `core/skill_resolver.py` module.
+
+**Binding decisions:**
+
+1. **Dual-mode invocation** — Mode 1: backend matches `description` semantically (cosine ≥ threshold) against `user_input`; Mode 2: explicit `invoked_skill_id` in `TaskPayload` (snake_case end-to-end, never camelCase).
+2. **Dual-scope with precedence** — `scope ∈ {global, workspace}`, `workspace > global` on name collision. The `ALTER TABLE` migration is idempotent; existing rows default to `global`.
+3. **`enabled=0` is absolute** — the owner's "do not run" signal wins under both modes. Explicit invocation does not resurrect a disabled skill.
+4. **L2-normalized cosine** — `_cosine()` always normalizes before the dot product. Embedding models may return non-unit vectors; a raw dot product would make the threshold scale-dependent.
+5. **Injection seam = planner only (declared MVP)** — `agents/planner.py` after `rule_manager.get_combined_rules()`, using the `boundary` uuid already in scope. The planner bakes skill directives into the `mission_spec` the coder receives. Coder-side injection is tracked as DEBT-032.
+6. **Boundary-sandboxed directive block** — `_sandbox_escape(text, boundary)` from `agents/analyst_context.py` (single source of truth). Forged closing tags are neutralized before injection.
+7. **Absolute char cap** — `_SKILL_BLOCK_CHAR_CAP` (default 3000, env-configurable) is independent of the TCI/context budget. Coordination with the context-budget governor is future work (noted as known behavior, not silent debt — DEBT-032 scope).
+8. **Frontend chip replaces raw paste** — `SkillsMenu` now emits `INVOKE_SKILL {id, name}` instead of `INSERT_PROMPT {body}`. `PromptBar` displays a removable chip; the chip's `id` flows as `invoked_skill_id` in the SUBMIT_TASK message. `activeSkills` is per-session, transient (excluded from persisted store — never stale across reload).
+
+**DEBT-028 skills half closed.** DEBT-028 re-scoped to hooks only (deferred). DEBT-032 logged.
+
 ---
 
 ## ADR-758 — Ailienant-as-MCP-Server (origin) — SUPERSEDED by ADR-759

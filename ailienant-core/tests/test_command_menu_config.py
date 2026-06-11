@@ -50,11 +50,71 @@ def test_skills_crud(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         await catalog_db.upsert_skill("s1", "Audit", "Do a security audit")
         rows = await catalog_db.list_skills()
         assert len(rows) == 1 and rows[0]["name"] == "Audit"
+        # Execution metadata defaults: enabled (bool-coerced), global scope.
+        assert rows[0]["enabled"] is True
+        assert rows[0]["scope"] == "global"
+        assert rows[0]["description"] is None
         await catalog_db.upsert_skill("s1", "Audit v2", "Updated body")
         rows = await catalog_db.list_skills()
         assert len(rows) == 1 and rows[0]["name"] == "Audit v2"  # upsert, not duplicate
+        # get_skill returns the single row with the new fields.
+        one = await catalog_db.get_skill("s1")
+        assert one is not None and one["body"] == "Updated body"
+        assert await catalog_db.get_skill("missing") is None
         await catalog_db.delete_skill("s1")
         assert await catalog_db.list_skills() == []
+
+    asyncio.run(_run())
+
+
+def test_skills_scope_query(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """list_enabled_skills_for_scope returns global + the matching workspace, and
+    skips disabled rows. An empty workspace_root selects global only."""
+    _isolate_catalog(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        await catalog_db.upsert_skill("g1", "Global", "g", scope="global")
+        await catalog_db.upsert_skill(
+            "w1", "Local", "w", scope="workspace", workspace_root="/ws/a"
+        )
+        await catalog_db.upsert_skill(
+            "w2", "Other", "o", scope="workspace", workspace_root="/ws/b"
+        )
+        await catalog_db.upsert_skill("d1", "Disabled", "d", enabled=False)
+
+        names_a = {r["name"] for r in await catalog_db.list_enabled_skills_for_scope("/ws/a")}
+        assert names_a == {"Global", "Local"}  # global + this workspace, not /ws/b
+        assert "Disabled" not in names_a  # enabled=0 filtered out
+
+        names_empty = {r["name"] for r in await catalog_db.list_enabled_skills_for_scope("")}
+        assert names_empty == {"Global"}  # global only — workspace rows never hidden via ''
+
+    asyncio.run(_run())
+
+
+def test_save_skill_scope_validation(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from api import skills as skills_api
+
+    _isolate_catalog(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        # workspace scope without a workspace_root is rejected.
+        bad = await skills_api.save_skill(
+            {"name": "X", "body": "b", "scope": "workspace"}
+        )
+        assert bad["ok"] is False and "workspace_root" in bad["error"]
+        # an unknown scope is rejected.
+        bad2 = await skills_api.save_skill({"name": "X", "body": "b", "scope": "weird"})
+        assert bad2["ok"] is False
+        # a well-formed skill persists the new fields.
+        ok = await skills_api.save_skill(
+            {"name": "Sec", "body": "b", "description": "security review", "scope": "global"}
+        )
+        assert ok["ok"] is True
+        rows = await catalog_db.list_skills()
+        assert rows[0]["description"] == "security review"
 
     asyncio.run(_run())
 

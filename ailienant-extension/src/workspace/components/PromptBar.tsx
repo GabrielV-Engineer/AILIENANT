@@ -54,6 +54,8 @@ export function PromptBar({
     const value          = useWorkspaceStore((s) => s.draftMessages[sessionId] ?? '');
     const setDraft       = useWorkspaceStore((s) => s.setDraft);
     const setValue       = useCallback((v: string) => setDraft(sessionId, v), [setDraft, sessionId]);
+    const activeSkill    = useWorkspaceStore((s) => s.activeSkills[sessionId] ?? null);
+    const setActiveSkill = useWorkspaceStore((s) => s.setActiveSkill);
     const contextOpen    = useWorkspaceStore((s) => s.contextOpen);
     const setContextOpen = useWorkspaceStore((s) => s.setContextOpen);
     const paletteOpen    = useWorkspaceStore((s) => s.paletteOpen);
@@ -96,6 +98,8 @@ export function PromptBar({
                 type: string;
                 path?: string;
                 text?: string;
+                id?: string;
+                name?: string;
                 results?: MentionItem[];
             };
             if (msg.type === 'INSERT_MENTION' && msg.path) {
@@ -104,14 +108,13 @@ export function PromptBar({
                 setPaletteOpen(false);
                 textareaRef.current?.focus();
             }
-            // Phase 7.9.A.7.f — insert a saved skill template into the prompt.
-            if (msg.type === 'INSERT_PROMPT' && msg.text) {
-                const v = useWorkspaceStore.getState().draftMessages[sessionId] ?? '';
-                setValue(v.trim() ? `${v.replace(/\s*$/, '')}\n${msg.text}` : msg.text!);
-                setPaletteOpen(false);
+            // Skill chip: attach an explicit skill to the next submit without
+            // polluting the user's draft text. Replaces the old INSERT_PROMPT raw-paste.
+            if (msg.type === 'INVOKE_SKILL' && msg.id && msg.name) {
+                setActiveSkill(sessionId, { id: msg.id, name: msg.name });
                 textareaRef.current?.focus();
             }
-            // Phase 7.11.4 — autocomplete results from the host-side path index.
+            // Autocomplete results from the host-side path index.
             if (msg.type === 'WORKSPACE_PATHS_RESULT' && Array.isArray(msg.results)) {
                 // Always append a constant @terminal entry so it's reachable
                 // from any query (the stub opens the existing ContextOverlay
@@ -122,7 +125,7 @@ export function PromptBar({
         };
         window.addEventListener('message', handler);
         return () => window.removeEventListener('message', handler);
-    }, [setValue, setPaletteOpen, sessionId]);
+    }, [setValue, setPaletteOpen, setActiveSkill, sessionId]);
 
     /** Phase 7.11.4 — apply a selected mention into the textarea: splice it
      *  over the active `@…` range so the partial query is replaced atomically. */
@@ -160,7 +163,8 @@ export function PromptBar({
         onSubmit(text);
         setValue('');
         setPaletteOpen(false);
-    }, [value, disabled, onSubmit]);
+        setActiveSkill(sessionId, null);
+    }, [value, disabled, onSubmit, setValue, setPaletteOpen, sessionId, setActiveSkill]);
 
     const onKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         // Phase 7.11.4 — mention-dropdown keyboard navigation. Palette wins
@@ -235,6 +239,20 @@ export function PromptBar({
                     onSelect={insertMention}
                     onHoverIdx={setMentionActiveIdx}
                 />
+            )}
+            {/* Active skill chip — cleared on submit or manual removal. */}
+            {activeSkill && (
+                <div className="ws-prompt-skill-chip" style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px', marginBottom: 4, background: 'var(--vscode-badge-background)', borderRadius: 3, fontSize: 11, maxWidth: '100%', overflow: 'hidden' }}>
+                    <Icon name="wand" size={11} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeSkill.name}</span>
+                    <button
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1, opacity: 0.7, flexShrink: 0 }}
+                        onClick={() => setActiveSkill(sessionId, null)}
+                        aria-label="Remove skill"
+                    >
+                        <Icon name="x" size={10} />
+                    </button>
+                </div>
             )}
             {/* Top row: textarea */}
             <div className="ws-prompt-input-row">
