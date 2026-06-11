@@ -2,6 +2,76 @@
 
 ---
 
+## Fase 8.4.4: Auto-connect de servers MCP + dispatch-guard del adapter — 2026-06-11
+
+**Estado:** ✅ COMPLETO (cierra DEBT-027) | **Gates:** `mypy .` 0/273 · `npx pyright` 0 nuevos (2 baseline langchain BaseTool, verificados en HEAD) · pytest dispatch-guard+handshake 19 green · slice de regresión (execute_tier_gate + mcp_registry + classify) 45 green · suite completa green
+
+### Contexto
+Dos huecos bloqueaban el gate 8.4.7: (1) `bootstrap_mcp_session` **sin caller productivo** (DEBT-027) — los servers del catálogo nunca se conectaban — y construido sobre un **único** `_session_singleton`, incapaz de representar múltiples servers `enabled`; (2) `McpToolAdapter._arun` llamaba al tool remoto **sin** consultar la matriz de permisos — un tool mutador (`github.merge_pull_request`→DANGEROUS por el catálogo 8.4.2) corría sin fricción.
+
+### Decisiones de arquitectura (tomadas con el usuario antes de codificar)
+- **Registro multi-sesión:** singleton → `_sessions: Dict[str, ClientSession]` + `_exit_stacks: Dict[str, AsyncExitStack]` keyed por `server_name`. Cada server con su propio stack — un fallo o reconexión de un server jamás enreda ni filtra el proceso stdio de otro.
+- **Gate auto-contenido en `_arun` + test unitario:** misma forma que `SandboxBashTool._arun`. Engancha solo cuando un caller inyecta `session_permission_mode` (el precedente "contrato"); el dispatcher e2e live del cell/graph es 8.4.7.
+- **Trust-once (resto de DEBT-029) diferido a 8.4.7**, junto al binding del request_kind a la HITL card del frontend.
+
+### Implementación
+- **`tools/mcp_adapter.py`** — `bootstrap_mcp_session(uri, state, *, server_name=None, …)` **idempotente** (`if key in _sessions: return True` antes de abrir nada — sin procesos duplicados al reconectar); propaga `server_name` a `classify_tool_privilege(name, desc, server_name)` en harvest → el catálogo 8.4.2, antes inerte, **enlaza en vivo**. Nuevos `autoconnect_enabled_mcp_servers(state=None)` (itera `list_mcp_servers()` filtrando `enabled`, never-raises) y `shutdown_mcp_sessions()` (único choke de teardown, cierra cada stack best-effort y limpia el registro). `_call_mcp_tool` resuelve la sesión por `self.server_name or _DEFAULT_SESSION_KEY`.
+- **`McpToolAdapter`** — nuevo campo `server_name` (config de instancia, fuera de `args_schema`); `_arun` gana `session_id`/`session_permission_mode`/`request_approval` como kwargs inyectados (fuera de `args_schema`). Gate: `classify_tool_privilege` → `evaluate_action(modo, tier, EDIT_EXECUTE_RBW)` → DENY (plan), HITL (default; siempre DANGEROUS), ALLOW (auto); READ_ONLY cortocircuita ALLOW antes del floor. **`request_approval` inyectado como callable** (patrón `validate_uri` de 8.4.3) → `mcp_adapter.py` gana **cero imports de `api/`**, eliminando el riesgo de ciclo en runtime de raíz. `evaluate_action` directo (tier variable, no `gate_execute_action`). Timeout HITL env-configurable (`MCP_HITL_TIMEOUT_SEC`, default 120s).
+- **Ciclo de vida (`main.py` lifespan):** `autoconnect_enabled_mcp_servers()` en startup (tras `init_registry()`) + `shutdown_mcp_sessions()` en shutdown — las sesiones stdio son long-lived, una conexión por ciclo de vida del host, no por task. **`core/task_service.py`:** guard lazy O(1) `if not _sessions: await autoconnect…(state)` entre `_build_initial_state` y `astream` — solo corre en cold-start; el skip-if-connected lo hace idempotente sin coste de DB por task.
+
+### Tests
+- **`tests/test_mcp_dispatch_guard.py`** (nuevo) — **primer test = prueba de integración** (`postgres.query`→READ_ONLY vía catálogo, friction-free bajo DEFAULT donde la heurística daría DANGEROUS→HITL): demuestra que clasificación (8.4.1) + catálogo (8.4.2) + dispatch (8.4.4) forman una cadena coherente. + matriz completa (READ_ONLY/PLAN→ALLOW, WRITE/PLAN→DENY, WRITE/DEFAULT→approval aprobado/rechazado, DANGEROUS/AUTO→sigue HITL, WRITE/AUTO→ALLOW, HITL sin canal→BLOCKED, caller sin modo→sin gate).
+- **`tests/test_mcp_handshake.py`** (extendido) — los 2 call-path previos migrados al registro (sin `server_name` → default key, siguen green) + routing de dos servers independientes + idempotencia (segundo connect no reabre stdio) + teardown (`shutdown_mcp_sessions` cierra cada stack, registro vacío) + autoconnect (solo conecta filas `enabled`).
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `tools/mcp_adapter.py` | registro multi-sesión, bootstrap idempotente con `server_name`, autoconnect, teardown, gate inyectado en `_arun` |
+| `main.py` | autoconnect en startup + teardown en shutdown del lifespan |
+| `core/task_service.py` | guard lazy de auto-connect en cold-start |
+| `tests/test_mcp_dispatch_guard.py` | **nuevo** — matriz del gate + prueba de integración del catálogo |
+| `tests/test_mcp_handshake.py` | migración al registro + multi-server/idempotencia/teardown/autoconnect |
+
+### Diferido
+- **8.4.7:** válvula trust-once (DEBT-029 restante) · dispatcher e2e live del cell/graph que inyecta el contexto de sesión y ejecuta un tool MCP real · binding del request_kind `MCP_TOOL_CALL` a la severidad/título de la HITL card del frontend.
+
+---
+
+## Fase 10: Documentación Profesional & Presencia Pública (GitHub) — 2026-06-11
+
+**Estado:** ✅ DOCS COMPLETOS (gate 10.6 en verificación) | **Gates:** docs-only — `git status` solo `.md` + `assets/` (cero diff Python/TS); enlaces relativos verificados; 7 variantes de README presentes
+
+### Contexto
+La Fase 10 original ("Onboarding Interactivo, Gamificación y Ecosistema Abierto (MCP)") quedó redundante: el trabajo técnico de ecosistema (MCP auto-connect, dispatch-guard, Skills, Browse-Registry, BYOM, fallback de hardware) **ya está en curso en la División 8.4 / 8.2**, y la gamificación ("Sandbox de Inducción" jugable, visualizador "La Antena") era prematura. Decisión del usuario: **pivotar la fase a documentación profesional para GitHub** y descartar la gamificación por completo. El repo era privado y **sin licencia** (todos los derechos reservados) — sin base legal para publicar ni contribuir.
+
+### Decisiones de licenciamiento (tomadas primero, bloqueaban todo)
+- **Modelo open-core dual:** núcleo bajo **AGPL-3.0** (copyleft fuerte: protege contra reventa SaaS cerrada) + **licencia comercial/enterprise** vendida por el titular del copyright como motor de ingresos futuro.
+- **CLA obligatorio:** toda contribución externa cede al proyecto el derecho a relicenciar a la edición comercial; sin esto una sola contribución no-relicenciable bloquearía el enterprise. Gate: ningún PR mergea sin CLA firmado.
+- **SPDX por archivo diferido:** añadir `SPDX-License-Identifier` a cada fuente es mutación code-wide → fuera del alcance docs-only, registrado como deuda.
+
+### Implementación (todo nuevo, salvo README reescrito y manifiesto)
+- **Licenciamiento:** `LICENSE` (AGPL-3.0 verbatim, 661 líneas, descargado de fsf.org) · `LICENSING.md` (explicación del modelo dual + tabla Community vs Commercial + contacto placeholder) · `CLA.md` (individual + entidad, mecanismo de firma bot + fallback manual).
+- **README público:** `README.md` reescrito como landing enterprise estilo FastAPI/React (logo centrado → barra de 7 idiomas → badges → qué es → features → tabla diferenciadora → seguridad → quick-start → enlaces a guías → licencia). El contenido técnico interno previo migró a `DEVELOPERS.md`.
+- **Traducciones:** `README.{es,fr,zh,hi,ru,it}.md` — traducción fiel del README público con barra de idioma cruzada. "Indian" → Hindi.
+- **Guías:** `HowToUseIt.md` (manual de usuario paso a paso) + `HowItWorks.md` (arquitectura con diagramas mermaid/ASCII: spine LangGraph, motor bicéfalo, routing CSS×TCI, GraphRAG, loop cerrado, checkpoints, seguridad).
+- **Dev + contribución:** `DEVELOPERS.md` (interno profundo: grafo de ejecución, subsistemas, pseudocódigo de paths críticos —sandbox resolver, classify_tool_privilege, OCC—, mapa de repo, lista honesta de no-implementado) + `CONTRIBUTING.md` (gate CLA, setup, gates Exit 0, Conventional Commits, política timeless/inglés).
+- **Branding:** `assets/` con `logo.svg` + `icon-color.svg` reales copiados de `ailienant-extension/media`.
+- **Manifiesto:** FASE 10 reescrita (10.0 nota de alcance → 10.6 checkpoint gate); gamificación marcada como descartada; ecosistema referido a 8.4/8.2.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `LICENSE` | **nuevo** — AGPL-3.0 verbatim |
+| `LICENSING.md`, `CLA.md` | **nuevos** — modelo dual + acuerdo de contribuidor |
+| `README.md` | **reescrito** — landing público (técnica previa → `DEVELOPERS.md`) |
+| `README.{es,fr,zh,hi,ru,it}.md` | **nuevos** — 6 traducciones |
+| `HowToUseIt.md`, `HowItWorks.md` | **nuevos** — guías de usuario/arquitectura |
+| `DEVELOPERS.md`, `CONTRIBUTING.md` | **nuevos** — doc interna profunda + guía de contribución (gate CLA) |
+| `assets/logo.svg`, `assets/icon-color.svg` | **nuevos** — branding |
+| `docs/PROJECT_MANIFEST.md` | FASE 10 reescrita a documentación |
+
+---
+
 ## Fase 8.4.3: Import/export `.ailienant/config.json` — proyección portable del catálogo MCP (backend REST core) — 2026-06-10
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/272 · `npx pyright` 0/0 (archivos tocados) · pytest 1103 passed, 2 skipped · suite focalizada 25 passed

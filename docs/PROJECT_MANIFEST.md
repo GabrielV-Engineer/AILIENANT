@@ -2353,8 +2353,8 @@ the blueprint freeze lifts.
   - Mapa de tier por-tool + metadata de instalación one-click. **DoD:** los 4 servers regulados resuelven a su tier correcto (override sobre la heurística). ✅ SSoT en `core/mcp_registry.py` (install metadata + tool tiers; `_PRIVILEGE_CATALOG` se *deriva* vía `init_registry()`); allowlist de comandos extraída a `core/mcp_constants.py`. El catálogo queda **inerte en producción hasta que 8.4.4 propague `server_name`** por el auto-connect (`bootstrap_mcp_session` aún sin caller productivo) — sin deuda nueva, el consumo ya está en alcance de 8.4.4.
 - [x] **8.4.3 — Import/export `.ailienant/config.json`** — ✅ 2026-06-10 (backend REST core)
   - Upsert idempotente keyed por nombre de server; **secretos jamás en el JSON** (`key_ref: vscode_secret:...` → SecretStorage); import en máquina fresca promptea el secreto (no viaja). **DoD:** round-trip export→import sin duplicar servers ni filtrar secretos. ✅ `core/mcp_config.py` (export con redacción de credenciales en uri + `key_ref` placeholders; import idempotente keyed por `name.lower()`, allowlist-guarded, version fail-fast) + endpoints `GET/POST /api/v1/mcp/config/{export,import}` (422 en payload malformado, 200 con `skipped` en fallo parcial). **Enmienda ADR-757:** substrato de secretos = backend-mask (patrón BYOM), no VS Code SecretStorage (inexistente + inalcanzable desde el webview `fetch`-only). **Diferido → DEBT-031:** store del valor del secreto + inyección env al conectar (8.4.4) + escritura del archivo `.ailienant/config.json` y UI import/export (8.4.6).
-- [ ] **8.4.4 — Auto-connect MCP al lanzar tarea + wiring del dispatch guard** (cierra DEBT-027, cierra DEBT-029 parcial)
-  - Auto-connect: los servers `enabled` se conectan automáticamente al inicio de un task. Dispatch guard: `McpToolAdapter._arun` plumba `session_id`/`session_permission_mode` y consulta `evaluate_action` antes de llamar a `_call_mcp_tool` — mismo patrón que `SandboxBashTool._arun` en `execution_tools.py`. La válvula de sesión "confiar-una-vez" (trust-once, DEBT-029 restante) puede aterrizar aquí o en 8.4.7. **🔒 Prerrequisito obligatorio de 8.4.7** — sin el wiring del dispatch, el gate 8.4.7 siempre falla aunque la clasificación y el catálogo sean perfectos. **DoD:** los servers `enabled` se conectan automáticamente; un tool WRITE/EXECUTE/DANGEROUS MCP pasa por `evaluate_action` antes de ejecutarse.
+- [x] **8.4.4 — Auto-connect MCP al lanzar tarea + wiring del dispatch guard** — ✅ 2026-06-11 (cierra DEBT-027)
+  - Auto-connect: los servers `enabled` se conectan automáticamente al inicio de un task. Dispatch guard: `McpToolAdapter._arun` plumba `session_id`/`session_permission_mode` y consulta `evaluate_action` antes de llamar a `_call_mcp_tool` — mismo patrón que `SandboxBashTool._arun` en `execution_tools.py`. **🔒 Prerrequisito obligatorio de 8.4.7**. **DoD:** los servers `enabled` se conectan automáticamente; un tool WRITE/EXECUTE/DANGEROUS MCP pasa por `evaluate_action` antes de ejecutarse. ✅ Singleton → **registro multi-sesión** `_sessions`/`_exit_stacks` keyed por `server_name` (bootstrap idempotente skip-if-connected; `shutdown_mcp_sessions()` como único choke de teardown). Gate **dentro de `_arun`** con `request_approval` inyectado (cero imports de `api/` — patrón `validate_uri` de 8.4.3); `evaluate_action` directo (tier variable, no `gate_execute_action`); timeout HITL env-configurable. El catálogo 8.4.2 **ya enlaza en vivo** (`bootstrap` propaga `server_name` a `classify_tool_privilege` en harvest) — test probativo `postgres.query`→READ_ONLY friction-free. Auto-connect en **lifespan startup** (+ teardown en shutdown) con guard lazy O(1) en `task_service`. **Gates:** `mypy .` 0/273 · `pyright` 0 nuevos (2 baseline langchain BaseTool) · pytest dispatch-guard+handshake 19 green. **Diferido → 8.4.7:** válvula trust-once (DEBT-029 restante), dispatcher e2e live del cell/graph, binding del request_kind `MCP_TOOL_CALL` a la HITL card del frontend.
 - [ ] **8.4.5 — Wiring de ejecución de Skills** (cierra DEBT-028)
   - **DoD:** un skill guardado efectivamente se ejecuta.
 - [ ] **8.4.6 — UX VS Code "Browse Registry"**
@@ -2416,31 +2416,31 @@ the blueprint freeze lifts.
 
 ---
 
-## 🎮 FASE 10 — Onboarding Interactivo, Gamificación y Ecosistema Abierto (MCP)
+## 📚 FASE 10 — Documentación Profesional & Presencia Pública (GitHub)
 
-> Transformación del desarrollador a "Tech Lead Supervisor". Rampa de aprendizaje en forma de Sandbox que enseña la arquitectura bicefálica, gestión de hardware y extensibilidad antes de tocar código de producción.
+> Pivote de fase: dotar a AILIENANT de una presencia pública de calidad enterprise comparable a FastAPI / React / OpenCode — README público multi-idioma, guías accesibles, una guía de contribución estandarizada y un README técnico profundo separado para los desarrolladores del núcleo. **Fase exclusivamente de documentación + licenciamiento + manifiesto (sin cambios de código).**
+>
+> **Alcance descartado:** la gamificación original (Sandbox de Inducción "jugable", visualizador "La Antena") se elimina por completo. El trabajo técnico de ecosistema **ya vive en Fase 8**: MCP auto-connect / dispatch-guard / Skills / Browse-Registry en **División 8.4** (8.4.4–8.4.7) y los fallbacks de hardware/VRAM en **División 8.2**. No se duplica aquí.
 
-- [ ] **10.1. Sandbox de Inducción (Nivel 1 Jugable)**
-  - **Micro-Repo Dinámico:** descarga automática de `alienant-practice-repo` al aceptar el tutorial.
-  - **Simulaciones de Arquitectura** (saltables solo por avanzados):
-    - *Estratégica:* generar y aprobar un WBS con el PlannerAgent.
-    - *Resiliencia:* forzar choque de concurrencia editando mientras el LogicAgent escribe (demo de OCC + VFS Proxy).
+- [x] **10.0. Nota de alcance (docs-only).** Documentación + licenciamiento + manifiesto; cero mutaciones de código. Gamificación descartada; ecosistema MCP/Skills/hardware referido a 8.4 / 8.2.
 
-- [ ] **10.2. "La Antena" (Panel de Supervisión y Mentoring)**
-  - Visualizador del Motor Bicefálico — pestaña VS Code con estado en vivo del grafo (ej. `Orchestrator → Evaluando Complejidad`).
-  - Tips Contextuales Anti-Fricción: ante comandos destructivos, no solo bloquea sino explica el porqué + cómo reformular el prompt como Arquitecto.
+- [x] **10.1. Cimiento de licenciamiento (bloquea toda publicación pública)** — open-core dual-license.
+  - `LICENSE` (texto **AGPL-3.0** verbatim, FSF) + `LICENSING.md` (modelo dual: Community AGPL vs Commercial/Enterprise + canal de contacto) + `CLA.md` (Contributor License Agreement individual + entidad, habilita el relicenciamiento a la edición comercial). El repo pasa de "privado sin licencia" a base legal definida. **Seguimiento diferido → DEBT:** cabeceras `SPDX-License-Identifier: AGPL-3.0-or-later` por archivo de código (mutación code-wide, fuera del alcance docs-only).
 
-- [ ] **10.3. Hub de Configuración Híbrida (LLMs & Hardware)**
-  - **Gestor JIT VRAM Fallback:** UI para umbrales (ej. `Activar Cloud Fallback si VRAM < 1GB`).
-  - **Selector de Motor:** Ollama, LM Studio + API Keys encriptadas (Anthropic, OpenAI). Explicación de impacto en latencia GraphRAG.
+- [x] **10.2. README público (inglés) + branding**
+  - Reescritura de `README.md` raíz como landing enterprise (logo → barra de idiomas → badges; "qué es", features value-first, tabla diferenciadora, seguridad, quick-start, secciones básicas "How to Use"/"How It Works" enlazadas, licencia/enterprise). `assets/` con los logos reales (`logo.svg`, `icon-color.svg`) copiados de `ailienant-extension/media`. El README técnico interno previo se migra a `DEVELOPERS.md`.
 
-- [ ] **10.4. Ecosistema de Extensibilidad (Skills & MCP)**
-  - **Gestor MCP:** interfaz para conectar servidores MCP locales/remotos. Tutorial enseña cómo Alienant "aprende" DBs externas / APIs de empresa via config MCP.
-  - **Marketplace de Skills Comunidad:** directorio en la extensión. Ejemplos: Análisis Seguridad Rust, Deploy AWS.
-  - **Tutorial de Creación de Skills:** flujo guiado — escribir tool Python/TS + decoradores Pydantic + exposición al Orchestrator.
+- [x] **10.3. Set de traducciones (7 idiomas)**
+  - `README.{es,fr,zh,hi,ru,it}.md` + `README.md` (en). Barra de navegación de idioma cruzada en las siete variantes. Solo el README público se traduce; las guías quedan en inglés.
 
-- [ ] **10.5. Checkpoint Gate Fase 10**
-  - Validar completion rate del tutorial + reducción de tickets de soporte tipo "no entiendo qué hace la IA".
+- [x] **10.4. Guías de usuario**
+  - `HowToUseIt.md` (manual paso a paso: instalación, BYOM, primer task, modos AUTO/ASK/PLAN, Thought Box, HITL, checkpoints, troubleshooting) + `HowItWorks.md` (explicador de arquitectura con diagramas: spine LangGraph, motor bicéfalo, routing CSS×TCI, GraphRAG, loop cerrado de ejecución, checkpoints, modelo de seguridad).
+
+- [x] **10.5. Doc de desarrolladores + contribución**
+  - `DEVELOPERS.md` (interno profundo: mapa de módulos, pseudocódigo de paths críticos, modelo de seguridad, Repository Layout, lista honesta de lo no-implementado) + `CONTRIBUTING.md` (setup, gates de tipado/lint Exit 0, Conventional Commits, política de comentarios timeless/inglés, **gate CLA: ningún PR mergea sin CLA firmado**).
+
+- [x] **10.6. Checkpoint Gate Fase 10**
+  - **DoD (docs-only) — verificado:** `LICENSE`/`LICENSING.md`/`CLA.md` presentes y enlazados desde README + CONTRIBUTING; las 7 variantes de README presentes y con barra de idioma cruzada correcta (6 hrefs por variante); cero enlaces relativos rotos (`HowToUseIt.md`, `HowItWorks.md`, `DEVELOPERS.md`, `CONTRIBUTING.md`, `assets/*`, manifiesto comprobados); Repository Layout migrado a `DEVELOPERS.md`; el diff de esta fase es exclusivamente `.md` + `assets/` + `LICENSE` (los cambios Python en el árbol son trabajo en vuelo de 8.4.4, ajenos a esta fase).
 
 ---
 
