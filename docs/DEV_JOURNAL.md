@@ -2,6 +2,36 @@
 
 ---
 
+## Fase 8.4.3: Import/export `.ailienant/config.json` — proyección portable del catálogo MCP (backend REST core) — 2026-06-10
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/272 · `npx pyright` 0/0 (archivos tocados) · pytest 1103 passed, 2 skipped · suite focalizada 25 passed
+
+### Contexto
+La lista de servidores MCP es SSoT runtime en la tabla SQLite `mcp_servers`, pero no había forma de serializarla a una proyección portable y git-commiteable. ADR-757 pide un `.ailienant/config.json` que reconcilie de vuelta vía upsert idempotente keyed por nombre, que **nunca cargue valores de secreto** (solo `key_ref`), y que en máquina fresca **promptee** el secreto en vez de viajarlo.
+
+### Implementación (scope: backend REST core, por decisión del usuario)
+- **`core/mcp_config.py` (nuevo).** `export_mcp_config()` proyecta el catálogo a `{version, servers:[{name, transport, uri, enabled, key_ref?}]}`; `import_mcp_config(payload, *, validate_uri)` reconcilia por `name.lower()` (reusa el id existente → update in-place, si no uuid4 → insert) — re-importar nunca duplica.
+- **B1 — redacción de credenciales en el uri.** El vector de fuga real no es un campo nombrado sino una credencial embebida en el propio uri (p.ej. `postgresql://user:password@host/db` tecleada inline). `_redact_uri_credentials` (`r"(\w+://)[^/?#@\s]+@"` → `\1<redacted>@`) limpia el userinfo de cualquier URL embebida en TODO uri exportado. El esquema `stdio://` no matchea (no lleva userinfo).
+- **B2 — contrato REST correcto.** `McpConfigError` (payload malformado / versión no soportada) → **HTTP 422** vía `HTTPException`; un fallo parcial (servers rechazados por el allowlist) se mantiene **HTTP 200** con `{"ok": True, "skipped": [...]}`. Un cliente que hace `if response.ok` ya no confunde un payload inválido con éxito.
+- **Guard del allowlist en import (M1).** `validate_uri` (inyectado = `_validate_mcp_command`) recibe el uri completo, extrae el comando vía `_parse_mcp_uri` y levanta `ValueError` si el basename no está en `ALLOWED_MCP_COMMANDS`; un server rechazado va a `skipped` sin abortar el batch. Core no importa api/tools — la validación se inyecta.
+- **Reconcile case-insensitive (M2):** lookup keyed por `name.lower()` en ambos lados → `GitHub` y `github` reconcilian al mismo row. **Versión fail-fast (M3):** `version > MCP_CONFIG_VERSION` → `McpConfigError("unsupported config version")`.
+- **`key_ref` derivado, no persistido.** Se calcula en export desde `core.mcp_registry` (servidores regulados con `.secrets`) y se consume en import para poblar `needs_secret` — sin migración de esquema. `needs_secret` es señal de UX (el server SÍ se importó; solo falta la credencial), nunca un error.
+
+### Enmienda ADR-757: substrato de secretos
+El codebase no tiene VS Code SecretStorage y el dashboard es un webview `fetch`-only que no puede alcanzarla (es host-only). El patrón establecido (BYOM) guarda credenciales backend-side (`byom_config.json` `0600`) y las enmascara al leer. **Enmienda:** se conserva la convención `key_ref` en el JSON (jamás un valor), pero el substrato del valor es backend-mask, no SecretStorage. Registrada en `docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`.
+
+### Alcance diferido → DEBT-031
+El store del valor del secreto + inyección env al conectar (8.4.4) y la escritura del archivo `.ailienant/config.json` + UI import/export del dashboard + prompt de secreto en máquina fresca (8.4.6). El backend REST es agnóstico al nombre de archivo — opera sobre payloads JSON.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/core/mcp_config.py` | **nuevo** — `MCP_CONFIG_VERSION`, `McpConfigError`, `_redact_uri_credentials`, `export_mcp_config`, `import_mcp_config` |
+| `ailienant-core/api/mcp_servers.py` | + `GET /config/export` y `POST /config/import` (422 en `McpConfigError`); import de `HTTPException` + funciones de `core.mcp_config` |
+| `ailienant-core/tests/test_mcp_config_roundtrip.py` | **nuevo** — 8 casos (shape+key_ref, no-leak por redacción de uri, idempotente por nombre, reconcile case-insensitive reusa id, allowlist guard parcial, malformado+versión→422, round-trip máquina fresca + `needs_secret`) |
+
+---
+
 ## Fase 8.4.2: Catálogo curado de registry — SSoT de servidores regulados (tier map + install metadata) — 2026-06-10
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/270 · `npx pyright` 0/0 (archivos tocados) · pytest 1095 passed / 2 skipped · suite focalizada 52 passed

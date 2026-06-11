@@ -17,11 +17,12 @@ import uuid
 from contextlib import AsyncExitStack
 from typing import Any, Dict, Sized, cast
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
 import core.db as catalog_db
+from core.mcp_config import McpConfigError, export_mcp_config, import_mcp_config
 from core.mcp_constants import ALLOWED_MCP_COMMANDS
 from core.tool_rag import MCP_HANDSHAKE_TIMEOUT_SEC
 from tools.mcp_adapter import _parse_mcp_uri
@@ -130,3 +131,23 @@ async def test_server(body: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — probe must never 500; report instead
         logger.warning("[mcp_test] unexpected error for %r: %s", uri, exc)
         return {"reachable": False, "tool_count": 0, "error": str(exc)}
+
+
+@router.get("/config/export")
+async def export_config() -> Dict[str, Any]:
+    """Return a portable, credential-free projection of the server catalog."""
+    return await export_mcp_config()
+
+
+@router.post("/config/import")
+async def import_config(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Reconcile a config projection into the catalog (idempotent, name-keyed).
+
+    A malformed or unsupported payload is rejected with HTTP 422. A valid
+    payload whose individual servers fail the command allowlist is a partial
+    success (HTTP 200) — the rejected servers are reported under ``skipped``.
+    """
+    try:
+        return await import_mcp_config(body, validate_uri=_validate_mcp_command)
+    except McpConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))

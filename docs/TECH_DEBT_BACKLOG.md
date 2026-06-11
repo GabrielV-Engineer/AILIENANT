@@ -31,6 +31,15 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-031 — MCP secret-value store + connect-time env injection + config.json file/UI surface
+
+- **Date:** 2026-06-10
+- **Reproduce:** inspect the `mcp_servers` schema (`core/db.py`) — there is no secret/env column; a server's credential (e.g. a Postgres connection string) can only be typed inline into the `uri`. There is no mechanism to inject a secret as an environment variable into the spawned MCP process at connect time, and no on-disk `.ailienant/config.json` reader/writer or import/export UI.
+- **Error:** not a defect — a deliberately deferred slice. 8.4.3 shipped the backend config projection (`core/mcp_config.py`: export with credential redaction + `key_ref` placeholders, idempotent name-keyed import) but **the secret VALUE has nowhere to live and is never injected at connect**. The `config.json` `key_ref` convention and the `needs_secret` import signal are in place, waiting for the store + injection + UI.
+- **Blocked by:** nothing functionally; naturally pairs with the connect/dispatch wiring (8.4.4) and the registry UX (8.4.6).
+- **Phase:** secret store + env injection → **8.4.4** (connect-time); on-disk `.ailienant/config.json` write + dashboard import/export buttons + fresh-machine secret prompt → **8.4.6** (UX).
+- **Notes:** per the ADR-757 amendment (`docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`), the secret-value substrate is the codebase-consistent backend-mask (BYOM `byom_config.json` `0600` + mask-on-read), **not** VS Code SecretStorage. The `key_ref` placeholder convention is preserved end-to-end.
+
 ### DEBT-030 — BYOM dashboard has no Google preset + `_ensure_v1` mangles native cloud endpoints — ✅ RESOLVED (8.4.8)
 
 - **Date:** 2026-06-10

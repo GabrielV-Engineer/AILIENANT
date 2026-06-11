@@ -81,6 +81,17 @@ The harness enforces a **`benchmark_budget_usd`** cap, separate from the runtime
 - **Frozen corpus (non-negotiable for reproducibility):** the custom multi-file benchmark uses a **pinned-commit snapshot** of the codebase + **golden patches** + that snapshot's test suite — **never the live codebase** (a moving target makes two runs on different dates measure different things, breaking `seed=42`/n≥30). The corpus fixture records the exact git SHA.
 - **BenchmarkOracle contract:** `run_oracle(workspace_snapshot, applied_patch) -> Verdict{passed: bool, failures: [...]}` — applies the candidate patch over the frozen snapshot, runs the snapshot's test suite in the sandbox, and returns pass/fail. Its verdict is the **sole arbiter** of Resolve@k. Without a defined oracle the report is not defensible.
 
+### Indexing & cache hygiene (mandatory — GraphRAG is only as good as its index)
+
+GraphRAG's value is the entire point of the G2↔G3 delta, and it depends on a **fully built index** of the frozen corpus. Four requirements, all non-negotiable:
+
+1. **Pre-index, await completion.** Before the first problem runs, index the frozen snapshot via `LazyIndexer` ([core/indexer.py](../ailienant-core/core/indexer.py)) and **block until `is_complete`**. The indexer is background + low-priority + lazy by design — a problem that runs against a half-built graph sees `get_dependents() == []`, `coverage_ratio == 0`, a collapsed CSS, and G3/G4 lose exactly the advantage under measurement. A correctness assert (`get_dependents(seed)` non-empty over the indexed corpus) gates the run.
+2. **Index reuse, timed separately.** The index is built **once per corpus** and reused across all n problems and across every GraphRAG-using arm (G3, G4, G4-force-cloud) — never rebuilt per problem. Indexing wall-clock is a **one-time cost** recorded as `indexing_time_s` in `report.json`, **excluded** from per-problem latency.
+3. **Embedding pre-flight.** The semantic layer (and therefore CSS `sem_score`) requires a live embedding backend (`MODEL_EMBEDDING`). The `LazyIndexer` pre-flight already aborts if it is unreachable; the harness surfaces that as a hard run-abort with a clear message, never a silent zero-retrieval run.
+4. **Response cache OFF.** The semantic `response_cache` (7.18.4) must be disabled for the whole benchmark. A cache hit serves a prior answer for free, which **falsifies token accounting and the efficiency ratio** — H₂ would be measuring cache locality, not routing. A test asserts a repeated problem recomputes (non-zero token delta).
+
+`routing_decisions` telemetry is the source of truth for per-problem TCI/CSS used in bucket stratification — the harness reads it back rather than recomputing.
+
 ### Execution model (hybrid)
 
 - **Ablation (8.3.1–8.3.4):** in-process — calls `process_task()` directly (fast, deterministic, n≥30 feasible).
@@ -134,6 +145,12 @@ The result feeds the **existing** `evaluate_action`/`rbwe_guard`/`gate_execute_a
 ### UX relief valve — or fail-closed becomes unusable
 
 A `DANGEROUS` default means a brand-new server full of read-only tools would spam HITL on every call until catalogued → alarm fatigue → the user disables the whole protocol (the worst security outcome). Mitigation: a **session-scoped "trust this tool / elevate-once" memo**. The default stays safe; the human can consciously relax a specific tool for the session, never by omission.
+
+### Amendment — secret substrate is backend-mask, not VS Code SecretStorage
+
+The original wording placed the secret value in **VS Code SecretStorage**, referenced from `config.json` by `key_ref: "vscode_secret:<id>"`. The codebase has **no SecretStorage** anywhere, and the configuration surface (the dashboard) is an HTTP-served `fetch`-only webview that cannot reach the SecretStorage API (host-only). The established secret-bearing feature (BYOM) instead stores credentials backend-side (`byom_config.json`, `0600`) and masks them on read.
+
+**Amendment:** the `key_ref` placeholder convention is retained verbatim in `config.json` (a secret value never enters the JSON), but the **value substrate is the codebase-consistent backend-mask pattern**, not SecretStorage. Additionally, `export` **defensively redacts URL-userinfo credentials** from a server's `uri` (e.g. a `postgresql://user:pass@host/db` connection string a user typed inline), so a credential cannot leak through the uri field even before a structured secret store exists. The secret-value store + connect-time env injection is deferred (DEBT-031).
 
 ---
 
