@@ -91,6 +91,10 @@ class BYOMConfig(BaseModel):
     active_preset_id: Optional[str] = None
     embedding: Optional[EmbeddingTarget] = None  # persisted by _apply_preset (Phase 7.9.B.12)
     chat_models: dict[str, ModelTarget] = Field(default_factory=dict)  # tier → target (Phase 7.9.B.13)
+    # endpoint_id → canonical provider-prefixed model ids discovered by testing that
+    # endpoint ("google/gemini-2.0-flash", "openrouter/meta-llama/llama-3…:free").
+    # This is what makes a configured cloud endpoint's catalogue available to presets.
+    model_cache: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

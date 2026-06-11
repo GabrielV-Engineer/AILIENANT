@@ -8,10 +8,12 @@ import {
     type ModelPreset,
     type Provider,
     type ProviderSpec,
+    type PingResponse,
     type TestConnectionResponse,
     fetchBYOMConfig,
     fetchEngineStatus,
     fetchProviders,
+    pingModel,
     saveBYOMConfig,
     testEndpoint,
 } from './byom/api';
@@ -30,7 +32,6 @@ interface ProviderUi {
     description: string;
     helpUrl: string;
     hidesBaseUrl: boolean;  // cloud providers: endpoint is fixed/known → hide the field
-    suggestedModels: string[];
 }
 
 function uiFromSpec(s: ProviderSpec): ProviderUi {
@@ -44,19 +45,18 @@ function uiFromSpec(s: ProviderSpec): ProviderUi {
             : (s.needs_key ? `${s.label} — paste your API key` : s.label),
         helpUrl: s.help_url,
         hidesBaseUrl: s.hides_base_url,
-        suggestedModels: s.suggested_models,
     };
 }
 
 // Static fallback (original 7) — only used until GET /providers resolves.
 const FALLBACK_DEFAULTS: Record<string, ProviderUi> = {
-    ollama:     { label: 'Ollama',     url: 'http://localhost:11434',    needsKey: false, keyHint: '',          description: 'Local AI runtime — no key needed', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
-    lmstudio:   { label: 'LM Studio',  url: 'http://localhost:1234',     needsKey: false, keyHint: '',          description: 'LM Studio local server — no key needed', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
-    vllm:       { label: 'vLLM',       url: 'http://localhost:8000',     needsKey: false, keyHint: '',          description: 'vLLM OpenAI-compatible server', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
-    openai:     { label: 'OpenAI',     url: 'https://api.openai.com',    needsKey: true,  keyHint: 'sk-…',     description: 'OpenAI official API', helpUrl: '', hidesBaseUrl: true, suggestedModels: [] },
-    openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1', needsKey: true, keyHint: 'sk-or-…', description: 'Multi-provider routing', helpUrl: '', hidesBaseUrl: true, suggestedModels: [] },
-    anthropic:  { label: 'Anthropic',  url: 'https://api.anthropic.com', needsKey: true,  keyHint: 'sk-ant-…', description: 'Anthropic Claude API', helpUrl: '', hidesBaseUrl: true, suggestedModels: [] },
-    custom:     { label: 'Custom (OpenAI-compatible)', url: '',          needsKey: false, keyHint: '',          description: 'Any OpenAI-compatible API (/v1/models + /v1/chat/completions).', helpUrl: '', hidesBaseUrl: false, suggestedModels: [] },
+    ollama:     { label: 'Ollama',     url: 'http://localhost:11434',    needsKey: false, keyHint: '',          description: 'Local AI runtime — no key needed', helpUrl: '', hidesBaseUrl: false },
+    lmstudio:   { label: 'LM Studio',  url: 'http://localhost:1234',     needsKey: false, keyHint: '',          description: 'LM Studio local server — no key needed', helpUrl: '', hidesBaseUrl: false },
+    vllm:       { label: 'vLLM',       url: 'http://localhost:8000',     needsKey: false, keyHint: '',          description: 'vLLM OpenAI-compatible server', helpUrl: '', hidesBaseUrl: false },
+    openai:     { label: 'OpenAI',     url: 'https://api.openai.com',    needsKey: true,  keyHint: 'sk-…',     description: 'OpenAI official API', helpUrl: '', hidesBaseUrl: true },
+    openrouter: { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1', needsKey: true, keyHint: 'sk-or-…', description: 'Multi-provider routing', helpUrl: '', hidesBaseUrl: true },
+    anthropic:  { label: 'Anthropic',  url: 'https://api.anthropic.com', needsKey: true,  keyHint: 'sk-ant-…', description: 'Anthropic Claude API', helpUrl: '', hidesBaseUrl: true },
+    custom:     { label: 'Custom (OpenAI-compatible)', url: '',          needsKey: false, keyHint: '',          description: 'Any OpenAI-compatible API (/v1/models + /v1/chat/completions).', helpUrl: '', hidesBaseUrl: false },
 };
 
 // ---------------------------------------------------------------------------
@@ -132,6 +132,13 @@ export function BYOMPanel(): JSX.Element {
     const [presetSavedAt, setPresetSavedAt] = useState<number | null>(null);
     const [presetSaveError, setPresetSaveError] = useState<string | null>(null);
 
+    // Model browser modal (pick from the available pool into a tier field).
+    const [browseFor, setBrowseFor] = useState<{ tier: string; target: 'new' | 'edit' } | null>(null);
+    const [browseQuery, setBrowseQuery] = useState('');
+    // Model health check (low-token ping).
+    const [pingState, setPingState] = useState<Record<string, { busy: boolean; result: PingResponse | null }>>({});
+    const [detectedFilter, setDetectedFilter] = useState('');
+
     const endpointsRef = useRef(endpoints);
     endpointsRef.current = endpoints;
 
@@ -178,12 +185,6 @@ export function BYOMPanel(): JSX.Element {
             : Object.keys(FALLBACK_DEFAULTS).map(id => ({ id, label: FALLBACK_DEFAULTS[id].label }))),
         [providers],
     );
-    // Registry model suggestions ("google/gemini-2.0-flash", …) merged into the
-    // preset-tier datalist so cloud models are pickable without guessing the string.
-    const suggestedModelIds = useMemo(
-        () => providers.flatMap(s => s.suggested_models),
-        [providers],
-    );
 
     // ---- Endpoint helpers ----
     const updateEndpoint = useCallback((id: string, patch: Partial<EndpointUi>): void => {
@@ -211,15 +212,33 @@ export function BYOMPanel(): JSX.Element {
             return;
         }
         updateEndpoint(ep.id, { status: 'testing', testError: null, fieldErrors: {}, discoveredModels: [] });
+        // One-click import: persist the endpoint first (stores id + real key), then
+        // test (the backend caches the catalogue by endpoint_id), then refresh the
+        // pool so the imported models appear in presets + Detected Models.
+        try {
+            await saveBYOMConfig({
+                endpoints: endpointsRef.current.map(({ id, name, url, api_key, provider }) => ({ id, name, url, api_key, provider })),
+            });
+        } catch { /* non-fatal — test can still run with the in-form key */ }
+
         let result: TestConnectionResponse;
         try {
-            result = await testEndpoint({ url: ep.url, api_key: ep.api_key, provider: ep.provider as Provider });
+            result = await testEndpoint({ url: ep.url, api_key: ep.api_key, provider: ep.provider as Provider, endpoint_id: ep.id });
         } catch (err) {
             updateEndpoint(ep.id, { status: 'error', testError: String(err) });
             return;
         }
         if (result.ok) {
             updateEndpoint(ep.id, { status: 'ok', discoveredModels: result.models, showModels: result.models.length > 0 });
+            // Pull the refreshed POOL (now includes this endpoint's imported catalogue).
+            // Deliberately do NOT reset the endpoint cards — that would wipe the
+            // just-set status/discoveredModels on the card the user is looking at.
+            try {
+                const cfg = await fetchBYOMConfig();
+                setPresets(cfg.presets);
+                setActivePresetId(cfg.active_preset_id);
+                setDiscovered(cfg.discovered);
+            } catch { /* keep current state */ }
         } else {
             updateEndpoint(ep.id, { status: 'error', testError: result.error ?? 'Connection failed' });
         }
@@ -307,23 +326,13 @@ export function BYOMPanel(): JSX.Element {
         } catch (err) { setPresetSaveError(String(err)); }
     }, [editingPresetId, editForm, presets]);
 
-    const handleClonePreset = useCallback(async (original: ModelPreset): Promise<void> => {
-        const clone: ModelPreset = {
-            ...original,
-            id: makeId(),
-            name: `${original.name} (Custom)`,
-            is_builtin: false,
-        };
-        try {
-            const userPresets = presets.filter(p => !p.is_builtin);
-            const cfg = await saveBYOMConfig({ presets: [...userPresets, clone] });
-            setPresets(cfg.presets);
-            setDiscovered(cfg.discovered);
-            setEditingPresetId(clone.id);
-            setEditForm({ name: clone.name, tiers: { ...clone.tiers } });
-            setNewPreset(null);
-        } catch (err) { setPresetSaveError(String(err)); }
-    }, [presets]);
+    // Editing a built-in opens the New Preset form pre-filled — a built-in is an
+    // editable example, customized and saved as your own preset.
+    const startEditFromBuiltin = useCallback((preset: ModelPreset): void => {
+        setNewPreset({ name: `${preset.name} (Custom)`, tiers: { ...preset.tiers } });
+        setEditingPresetId(null);
+        setEditForm(null);
+    }, []);
 
     // ---- URL scheme soft warning ----
     const urlWarning = (url: string): string | null =>
@@ -331,12 +340,49 @@ export function BYOMPanel(): JSX.Element {
             ? 'URL should start with http:// or https://'
             : null;
 
-    // ---- Group discovered models by provider prefix ----
-    const modelsByGroup = discovered.reduce<Record<string, DiscoveredModel[]>>((acc, m) => {
-        const group = m.id.includes('/') ? m.id.split('/')[0] : 'other';
-        (acc[group] = acc[group] ?? []).push(m);
-        return acc;
-    }, {});
+    // ---- Group discovered models by provider prefix (with a filter) ----
+    const modelsByGroup = discovered
+        .filter(m => !detectedFilter || m.id.toLowerCase().includes(detectedFilter.toLowerCase()))
+        .reduce<Record<string, DiscoveredModel[]>>((acc, m) => {
+            const group = m.id.includes('/') ? m.id.split('/')[0] : 'other';
+            (acc[group] = acc[group] ?? []).push(m);
+            return acc;
+        }, {});
+
+    // ---- Models the user actually wired into a preset (any preset, active or not).
+    //      This is the set the Health Check can ping. ----
+    const configuredModels = useMemo(() => {
+        const set = new Set<string>();
+        for (const p of presets) {
+            for (const v of Object.values(p.tiers)) {
+                if (v && v.trim()) set.add(v.trim());
+            }
+        }
+        return Array.from(set).sort();
+    }, [presets]);
+
+    // ---- Model browser: select a pool model into the open tier field ----
+    const pickModel = useCallback((modelId: string): void => {
+        if (!browseFor) return;
+        if (browseFor.target === 'new') {
+            setNewPreset(p => p && ({ ...p, tiers: { ...p.tiers, [browseFor.tier]: modelId } }));
+        } else {
+            setEditForm(f => f && ({ ...f, tiers: { ...f.tiers, [browseFor.tier]: modelId } }));
+        }
+        setBrowseFor(null);
+        setBrowseQuery('');
+    }, [browseFor]);
+
+    // ---- Health check: minimal completion to verify a configured model works ----
+    const handlePing = useCallback(async (modelId: string): Promise<void> => {
+        setPingState(s => ({ ...s, [modelId]: { busy: true, result: null } }));
+        try {
+            const res = await pingModel({ model_id: modelId });
+            setPingState(s => ({ ...s, [modelId]: { busy: false, result: res } }));
+        } catch (err) {
+            setPingState(s => ({ ...s, [modelId]: { busy: false, result: { ok: false, model: modelId, reply: '', latency_ms: 0, error: String(err) } } }));
+        }
+    }, []);
 
     // ====================================================================
     // Render
@@ -548,6 +594,12 @@ export function BYOMPanel(): JSX.Element {
                         onClick={() => setShowDiscovered(v => !v)}>
                         {showDiscovered ? '▾' : '▸'} Detected Models ({discovered.length} total)
                     </button>
+                    {showDiscovered && discovered.length > 12 && (
+                        <input className="db-input byom-detected-filter"
+                            value={detectedFilter}
+                            onChange={e => setDetectedFilter(e.target.value)}
+                            placeholder="Filter models…" />
+                    )}
                     {showDiscovered && Object.entries(modelsByGroup).map(([group, models]) => (
                         <div key={group} className="byom-discovered-group">
                             <div className="byom-discovered-group-label">{group}</div>
@@ -572,17 +624,11 @@ export function BYOMPanel(): JSX.Element {
                 </button>
             </div>
 
+            {/* Available-model pool — only models from configured + tested endpoints. */}
             <datalist id="byom-models-datalist">
                 {discovered.map(m => (
-                    <option key={m.id} value={m.id}>{m.name}</option>
+                    <option key={m.id} value={m.id}>{m.id}</option>
                 ))}
-                {/* Registry suggestions ("google/gemini-2.0-flash", …) so cloud-tier
-                    models are pickable without discovering them first. */}
-                {suggestedModelIds
-                    .filter(id => !discovered.some(d => d.id === id))
-                    .map(id => (
-                        <option key={`sug-${id}`} value={id}>{id}</option>
-                    ))}
             </datalist>
 
             <div className="byom-preset-grid">
@@ -612,6 +658,9 @@ export function BYOMPanel(): JSX.Element {
                                                     value={editForm.tiers[key] ?? ''}
                                                     onChange={e => setEditForm(f => f && ({ ...f, tiers: { ...f.tiers, [key]: e.target.value } }))}
                                                     placeholder="— inherit from config.yaml —" />
+                                                <button type="button" className="byom-tier-browse"
+                                                    title="Browse available models"
+                                                    onClick={() => { setBrowseFor({ tier: key, target: 'edit' }); setBrowseQuery(''); }}>Browse</button>
                                                 {editForm.tiers[key] && (
                                                     <button type="button" className="byom-tier-clear"
                                                         title="Clear to see all available models"
@@ -671,9 +720,9 @@ export function BYOMPanel(): JSX.Element {
                                         )}
                                         {preset.is_builtin ? (
                                             <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
-                                                onClick={() => void handleClonePreset(preset)}
-                                                title="Create a user-defined copy to customize">
-                                                Clone &amp; Customize
+                                                onClick={() => startEditFromBuiltin(preset)}
+                                                title="Edit this example and save it as your own preset">
+                                                Edit
                                             </button>
                                         ) : (
                                             <button className="db-btn db-btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }}
@@ -725,6 +774,9 @@ export function BYOMPanel(): JSX.Element {
                                     onChange={e => setNewPreset(p => p && ({ ...p, tiers: { ...p.tiers, [key]: e.target.value } }))}
                                     placeholder="— inherit from config.yaml —"
                                 />
+                                <button type="button" className="byom-tier-browse"
+                                    title="Browse available models"
+                                    onClick={() => { setBrowseFor({ tier: key, target: 'new' }); setBrowseQuery(''); }}>Browse</button>
                                 {newPreset.tiers[key] && (
                                     <button type="button" className="byom-tier-clear"
                                         title="Clear to see all available models"
@@ -739,6 +791,80 @@ export function BYOMPanel(): JSX.Element {
                             Create
                         </button>
                         <button className="db-btn db-btn-secondary" onClick={() => setNewPreset(null)}>Cancel</button>
+                    </div>
+                </div>
+            )}
+
+            {/* ===== MODEL HEALTH CHECK (low-token ping) ===== */}
+            <div className="db-row" style={{ margin: '24px 0 12px', alignItems: 'center' }}>
+                <span className="db-section-title" style={{ marginBottom: 0 }}>Model Health Check</span>
+            </div>
+            <div className="db-card">
+                <div className="byom-health-hint">
+                    Sends a tiny one-word prompt (≈5 tokens) to each model you've wired into a preset —
+                    a quick way to confirm a key, model, or preset actually responds. Near-zero cost.
+                </div>
+                {configuredModels.length === 0 ? (
+                    <div className="byom-health-empty">No models configured in any preset yet. Add a model to a preset, then test it here.</div>
+                ) : (
+                    <ul className="byom-health-list">
+                        {configuredModels.map(mid => {
+                            const st = pingState[mid];
+                            return (
+                                <li key={mid} className="byom-health-row">
+                                    <span className="byom-health-model">{mid}</span>
+                                    <button className="db-btn db-btn-secondary byom-health-btn"
+                                        disabled={st?.busy}
+                                        onClick={() => void handlePing(mid)}>
+                                        {st?.busy ? 'Pinging…' : 'Ping'}
+                                    </button>
+                                    {st?.result && (st.result.ok
+                                        ? <span className="byom-health-ok">✓ {st.result.reply || 'OK'} · {st.result.latency_ms} ms</span>
+                                        : <span className="byom-health-err">✗ {st.result.error}</span>
+                                    )}
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+            </div>
+
+            {/* ===== MODEL BROWSER MODAL ===== */}
+            {browseFor && (
+                <div className="byom-confirm-overlay" onClick={() => setBrowseFor(null)}>
+                    <div className="byom-model-browser" onClick={e => e.stopPropagation()}>
+                        <div className="byom-confirm-title">
+                            Select a model · {TIER_LABELS[browseFor.tier] ?? browseFor.tier} tier
+                        </div>
+                        <input className="db-input byom-browser-search" autoFocus
+                            value={browseQuery}
+                            onChange={e => setBrowseQuery(e.target.value)}
+                            placeholder="Search available models…" />
+                        <div className="byom-browser-list">
+                            {discovered.length === 0 && (
+                                <div className="byom-health-empty">No models available yet. Configure an endpoint and click Test to import its models.</div>
+                            )}
+                            {Object.entries(
+                                discovered
+                                    .filter(m => !browseQuery || m.id.toLowerCase().includes(browseQuery.toLowerCase()))
+                                    .reduce<Record<string, DiscoveredModel[]>>((acc, m) => {
+                                        const g = m.id.includes('/') ? m.id.split('/')[0] : 'other';
+                                        (acc[g] = acc[g] ?? []).push(m); return acc;
+                                    }, {})
+                            ).map(([group, models]) => (
+                                <div key={group} className="byom-browser-group">
+                                    <div className="byom-discovered-group-label">{group}</div>
+                                    {models.map(m => (
+                                        <button key={m.id} className="byom-browser-item" onClick={() => pickModel(m.id)}>
+                                            {m.id}
+                                        </button>
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                        <div className="db-row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+                            <button className="db-btn db-btn-secondary" onClick={() => setBrowseFor(null)}>Close</button>
+                        </div>
                     </div>
                 </div>
             )}

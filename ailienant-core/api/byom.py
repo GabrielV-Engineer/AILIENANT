@@ -5,9 +5,10 @@ BYOM (Bring Your Own Model) REST surface for the Web Dashboard.
 Endpoints (prefix /api/v1/byom):
   GET  /providers   — provider registry projected for the UI (no secrets).
   GET  /engines     — probe local AI engines (Ollama, LM Studio); return health status.
-  POST /test        — probe a specific model endpoint; returns discovered models.
-  GET  /config      — load BYOM config + 3 built-in presets + currently discovered models.
-  PUT  /config      — merge-save BYOM config; apply preset → config.yaml → LiteLLM reload.
+  POST /test        — probe a model endpoint; returns + imports its discovered models.
+  POST /ping        — low-token health check: resolve a model/tier and send a 1-word completion.
+  GET  /config      — load BYOM config + built-in presets + the available-model pool.
+  PUT  /config      — merge-save BYOM config; (re)apply preset only on explicit activation.
 """
 from __future__ import annotations
 
@@ -89,6 +90,7 @@ class TestConnectionRequest(BaseModel):
     url: str
     api_key: str = ""
     provider: str
+    endpoint_id: Optional[str] = None  # when set, restores the stored key + caches results
 
 
 class DiscoveredModelItem(BaseModel):
@@ -117,6 +119,7 @@ class BYOMConfigResponse(BaseModel):
     presets: list[ModelPreset]          # built-ins first, then user-defined
     active_preset_id: Optional[str]
     discovered: list[DiscoveredModelItem]  # all live models for preset dropdowns
+    model_cache: dict[str, list[str]] = {}  # endpoint_id → canonical model ids (cloud catalogues)
 
 
 class EngineStatusItem(BaseModel):
@@ -129,9 +132,26 @@ class EngineStatusItem(BaseModel):
     models: list[str]
 
 
+class PingRequest(BaseModel):
+    """Resolve a model and send a minimal completion to verify it works.
+    Exactly one of model_id / tier is used (model_id wins)."""
+    model_id: Optional[str] = None  # a canonical pool id, e.g. "google/gemini-2.0-flash"
+    tier: Optional[str] = None      # an active-preset tier: small | medium | big | cloud
+
+
+class PingResponse(BaseModel):
+    ok: bool
+    model: str = ""           # the resolved litellm model string actually called
+    reply: str = ""           # truncated model reply (proof of life)
+    latency_ms: int = 0
+    error: Optional[str] = None
+
+
 class ProviderSpecOut(BaseModel):
     """Registry provider metadata projected for the dashboard. Carries NO secrets —
-    only the env-key *name* (so the UI can hint where a key may already be set)."""
+    only the env-key *name* (so the UI can hint where a key may already be set).
+    Note: no model lists — available models come from testing a configured
+    endpoint, never from a system-curated preference."""
     id: str
     label: str
     is_local: bool
@@ -140,7 +160,6 @@ class ProviderSpecOut(BaseModel):
     default_base_url: Optional[str] = None
     key_hint: str = ""
     help_url: str = ""
-    suggested_models: list[str] = []
     env_key: Optional[str] = None
 
 
@@ -157,15 +176,17 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-async def _build_builtin_presets() -> tuple[list[ModelPreset], list[DiscoveredModelItem]]:
-    """Compute the 3 built-in presets from currently live models.
+async def _build_builtin_presets(
+    model_cache: Optional[dict[str, list[str]]] = None,
+) -> tuple[list[ModelPreset], list[DiscoveredModelItem]]:
+    """Compute the 3 built-in template presets + the available-model pool.
 
-    Also returns a flat list of all discovered model IDs for preset dropdowns.
+    The pool is the union of locally-probed engine models and the cloud models
+    a user has imported by testing a configured cloud endpoint (``model_cache``).
+    The built-ins are editable starting examples drawn from that real pool.
     """
     raw = await discover_models()
-
     ollama = [m for m in raw if m["provider"] == "ollama"]
-    cloud = [m for m in raw if not m["is_local"]]
 
     def _best_ollama(tier: str) -> str:
         for m in ollama:
@@ -173,42 +194,60 @@ async def _build_builtin_presets() -> tuple[list[ModelPreset], list[DiscoveredMo
                 return f"ollama/{m['name']}"
         return f"ollama/{ollama[0]['name']}" if ollama else ""
 
-    cloud_id = f"{cloud[0]['provider']}/{cloud[0]['name']}" if cloud else ""
+    # Cloud models the user actually imported (canonical "provider/model" ids).
+    cached_cloud: list[str] = []
+    for ids in (model_cache or {}).values():
+        for mid in ids:
+            if mid not in cached_cloud:
+                cached_cloud.append(mid)
+    primary_cloud = cached_cloud[0] if cached_cloud else ""
 
     builtin: list[ModelPreset] = [
         ModelPreset(
             id="builtin-local",
             name="Local Only",
             is_builtin=True,
-            description="Route all tiers to local Ollama models",
+            description="Example: route every tier to your local Ollama models. Edit to customize.",
             tiers={t: _best_ollama(t) for t in ("small", "medium", "big", "cloud")},
         ),
         ModelPreset(
             id="builtin-hybrid",
             name="Hybrid",
             is_builtin=True,
-            description="Local small/medium tiers; cloud big/cloud tier",
+            description="Example: local small/medium, cloud big/cloud. Edit to customize.",
             tiers={
                 "small": _best_ollama("small"),
                 "medium": _best_ollama("medium"),
-                "big": cloud_id,
-                "cloud": cloud_id,
+                "big": primary_cloud,
+                "cloud": primary_cloud,
             },
         ),
         ModelPreset(
             id="builtin-cloud",
             name="Cloud Only",
             is_builtin=True,
-            description="Route all tiers to the primary cloud provider",
-            tiers={t: cloud_id for t in ("small", "medium", "big", "cloud")},
+            description="Example: route every tier to an imported cloud model. Edit to customize.",
+            tiers={t: primary_cloud for t in ("small", "medium", "big", "cloud")},
         ),
     ]
 
-    # Flat list of all live models for the preset-tier dropdowns.
+    # Available-model pool: local engines + imported cloud catalogues (deduped).
     discovered: list[DiscoveredModelItem] = []
+    seen: set[str] = set()
+
+    def _add(model_id: str, name: str) -> None:
+        if model_id and model_id not in seen:
+            seen.add(model_id)
+            discovered.append(DiscoveredModelItem(id=model_id, name=name))
+
     for m in raw:
-        model_id = f"ollama/{m['name']}" if m["provider"] == "ollama" else m["name"]
-        discovered.append(DiscoveredModelItem(id=model_id, name=m["name"]))
+        if m["provider"] == "ollama":
+            _add(f"ollama/{m['name']}", m["name"])
+        elif not m["is_local"]:
+            _add(m["name"], m["name"])  # env-key fallback entries (no UI endpoint)
+    for mid in cached_cloud:
+        display = mid.split("/", 1)[1] if "/" in mid else mid
+        _add(mid, display)
 
     return builtin, discovered
 
@@ -226,12 +265,29 @@ def _mask_endpoints(endpoints: list[EndpointConfig]) -> list[EndpointConfigOut]:
     ]
 
 
+def _canonical_model_id(provider: str, raw_id: str) -> str:
+    """Normalize a probed model id to a provider-prefixed canonical id.
+
+    Strips Google's ``models/`` prefix, leaves an already-known provider prefix
+    intact, and otherwise prepends the endpoint's provider id — so a preset tier
+    value resolves unambiguously even with several cloud endpoints configured.
+    """
+    name = raw_id.strip()
+    if name.startswith("models/"):
+        name = name.split("/", 1)[1]
+    head = name.split("/", 1)[0]
+    if head in _KNOWN_PROVIDERS:
+        return name
+    return f"{provider}/{name}"
+
+
 def _merge_patch(existing: BYOMConfig, raw_body: Dict[str, Any]) -> BYOMConfig:
     """Apply only the fields present in raw_body onto existing config.
 
     Prevents data-loss: a partial payload (e.g. {active_preset_id: "X"})
-    never wipes the endpoints or presets that weren't included.
-    Also preserves stored API keys when the client sends back masked values.
+    never wipes the endpoints, presets, derived targets, or model cache that
+    weren't included. Also preserves stored API keys when the client sends back
+    masked values.
     """
     existing_by_id = {ep.id: ep for ep in existing.endpoints}
 
@@ -260,10 +316,22 @@ def _merge_patch(existing: BYOMConfig, raw_body: Dict[str, Any]) -> BYOMConfig:
     if "active_preset_id" in raw_body:
         new_active = raw_body["active_preset_id"]
 
+    new_cache = dict(existing.model_cache)
+    if "model_cache" in raw_body and isinstance(raw_body["model_cache"], dict):
+        for k, v in raw_body["model_cache"].items():
+            if isinstance(v, list):
+                new_cache[str(k)] = [str(x) for x in v]
+    # Drop cache entries whose endpoint no longer exists.
+    live_ids = {ep.id for ep in new_endpoints}
+    new_cache = {k: v for k, v in new_cache.items() if k in live_ids}
+
     return BYOMConfig(
         endpoints=new_endpoints,
         presets=new_presets,
         active_preset_id=new_active,
+        embedding=existing.embedding,        # carry over derived targets (was dropped)
+        chat_models=existing.chat_models,
+        model_cache=new_cache,
     )
 
 
@@ -521,12 +589,24 @@ async def test_connection(req: TestConnectionRequest) -> TestConnectionResponse:
     if not probe_url:
         return TestConnectionResponse(ok=False, models=[], latency_ms=0, error="URL is required")
 
-    headers: dict[str, str] = {}
+    # Effective key: form value → stored endpoint key (fixes re-test on a masked
+    # field) → provider env fallback.
     key = req.api_key
+    if (not key or is_masked_key(key)) and req.endpoint_id:
+        cfg_stored = await asyncio.to_thread(load_byom_config)
+        stored_ep = next((e for e in cfg_stored.endpoints if e.id == req.endpoint_id), None)
+        if stored_ep and stored_ep.api_key:
+            key = stored_ep.api_key
     if (not key or is_masked_key(key)) and spec is not None and spec.env_key:
         key = os.getenv(spec.env_key, "")
+
+    headers: dict[str, str] = {}
     if key and not is_masked_key(key):
-        headers["Authorization"] = f"Bearer {key}"
+        if req.provider == "anthropic":
+            headers["x-api-key"] = key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {key}"
 
     t0 = time.monotonic()
     try:
@@ -555,6 +635,20 @@ async def test_connection(req: TestConnectionRequest) -> TestConnectionResponse:
         ms = int((time.monotonic() - t0) * 1000)
         return TestConnectionResponse(ok=False, models=[], latency_ms=ms, error=str(exc))
 
+    # One-click import: persist this endpoint's catalogue into the model cache so
+    # its models become available to presets + "Detected Models". No preset
+    # re-apply / LiteLLM reload here — this is a read-side cache update only.
+    if req.endpoint_id and items:
+        cfg = await asyncio.to_thread(load_byom_config)
+        if any(e.id == req.endpoint_id for e in cfg.endpoints):
+            canonical: list[str] = []
+            for it in items[:500]:
+                cid = _canonical_model_id(req.provider, it.id)
+                if cid not in canonical:
+                    canonical.append(cid)
+            cfg.model_cache[req.endpoint_id] = canonical
+            await asyncio.to_thread(save_byom_config, cfg)
+
     latency = int((time.monotonic() - t0) * 1000)
     return TestConnectionResponse(ok=True, models=items, latency_ms=latency)
 
@@ -563,26 +657,29 @@ async def test_connection(req: TestConnectionRequest) -> TestConnectionResponse:
 async def get_config() -> BYOMConfigResponse:
     """Return the full BYOM config: user endpoints, built-in + user presets, live models."""
     config = await asyncio.to_thread(load_byom_config)
-    builtin_presets, discovered = await _build_builtin_presets()
+    builtin_presets, discovered = await _build_builtin_presets(config.model_cache)
     return BYOMConfigResponse(
         endpoints=_mask_endpoints(config.endpoints),
         presets=builtin_presets + config.presets,
         active_preset_id=config.active_preset_id,
         discovered=discovered,
+        model_cache=config.model_cache,
     )
 
 
 @router.put("/config", response_model=BYOMConfigResponse)
 async def put_config(request: Request) -> BYOMConfigResponse:
-    """Merge-save BYOM config and apply the active preset if set."""
+    """Merge-save BYOM config, and re-apply the active preset only when the client
+    explicitly (re)activates one. A plain endpoints/model_cache save no longer
+    rewrites config.yaml or reloads LiteLLM."""
     raw_body: Dict[str, Any] = await request.json()
     existing = await asyncio.to_thread(load_byom_config)
     merged = _merge_patch(existing, raw_body)
     await asyncio.to_thread(save_byom_config, merged)
 
-    # Apply preset → config.yaml → LiteLLM reload.
-    if merged.active_preset_id:
-        builtin_presets, discovered = await _build_builtin_presets()
+    # Apply preset → config.yaml → LiteLLM reload — ONLY on an explicit activation.
+    if "active_preset_id" in raw_body and merged.active_preset_id:
+        builtin_presets, discovered = await _build_builtin_presets(merged.model_cache)
         all_presets = {p.id: p for p in builtin_presets + merged.presets}
         active = all_presets.get(merged.active_preset_id)
         if active:
@@ -605,6 +702,47 @@ async def put_config(request: Request) -> BYOMConfigResponse:
     return await get_config()
 
 
+@router.post("/ping", response_model=PingResponse)
+async def ping_model(req: PingRequest) -> PingResponse:
+    """Low-token health check: resolve a model (by canonical id, or by active-preset
+    tier) and send a 1-word completion. Proves a key/model/preset actually works
+    without burning tokens (``max_tokens=5``)."""
+    cfg = await asyncio.to_thread(load_byom_config)
+
+    target: Optional[ModelTarget] = None
+    if req.model_id:
+        target = _build_chat_target(req.model_id, cfg.endpoints)
+    elif req.tier:
+        target = model_resolver.get_chat_target(req.tier)
+
+    if target is None or not target.model:
+        return PingResponse(ok=False, error="No model resolved — pick a model or activate a preset.")
+
+    import litellm  # deferred — keep module import light
+
+    kwargs: dict[str, Any] = {
+        "model": target.model,
+        "messages": [{"role": "user", "content": "Reply with the single word: OK"}],
+        "max_tokens": 5,
+        "temperature": 0.0,
+        "timeout": 20.0,
+    }
+    if target.api_base:
+        kwargs["api_base"] = target.api_base
+    if target.api_key:
+        kwargs["api_key"] = target.api_key
+
+    t0 = time.monotonic()
+    try:
+        resp = await litellm.acompletion(**kwargs)
+        reply = (resp.choices[0].message.content or "").strip()  # type: ignore[union-attr,index]
+        ms = int((time.monotonic() - t0) * 1000)
+        return PingResponse(ok=True, model=target.model, reply=reply[:120], latency_ms=ms)
+    except Exception as exc:  # noqa: BLE001 — surface any provider/auth error to the UI
+        ms = int((time.monotonic() - t0) * 1000)
+        return PingResponse(ok=False, model=target.model, latency_ms=ms, error=str(exc)[:300])
+
+
 @router.get("/providers", response_model=list[ProviderSpecOut])
 async def get_providers() -> list[ProviderSpecOut]:
     """Return the provider registry projected for the UI (no secrets).
@@ -623,7 +761,6 @@ async def get_providers() -> list[ProviderSpecOut]:
             default_base_url=spec.default_base_url,
             key_hint=spec.key_hint,
             help_url=spec.help_url,
-            suggested_models=list(spec.suggested_models),
             env_key=spec.env_key,
         )
         for spec in PROVIDER_REGISTRY.values()

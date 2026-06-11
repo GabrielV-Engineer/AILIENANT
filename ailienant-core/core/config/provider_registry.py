@@ -5,13 +5,16 @@ know how to route a model to litellm, where its endpoint lives, which env var
 holds its key, or how to present it in the dashboard reads from here — so adding
 a provider is a one-entry change instead of a six-site edit.
 
+The registry carries no opinion about *which* models a user should run: the set
+of available models is discovered by testing a configured endpoint, never
+hardcoded here. This module only declares how to reach + route a provider.
+
 Routing of the model string to litellm is captured by ``model_style``:
 
   - ``"prefix"``      → ``f"{litellm_prefix}/{name}"`` with no api_base. litellm
-                        owns the endpoint (Gemini, DeepSeek, Mistral).
+                        owns the endpoint (Gemini, DeepSeek, Mistral, OpenRouter).
   - ``"bare"``        → the model id passes through unchanged. Native providers
-                        litellm recognises by name (OpenAI, Anthropic); OpenRouter
-                        rides this style with a fixed api_base.
+                        litellm recognises by name (OpenAI, Anthropic).
   - ``"openai_compat"`` → ``f"openai/{name}"`` with a custom api_base. Any
                         OpenAI-compatible server (the Chinese providers, vLLM,
                         LM Studio, generic custom).
@@ -25,7 +28,7 @@ endpoint from being mangled into an invalid ``/v1`` suffix).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional
 
 ModelStyle = Literal["prefix", "bare", "openai_compat", "ollama_chat"]
@@ -48,7 +51,6 @@ class ProviderSpec:
     env_key: Optional[str] = None          # env var fallback for the api key
     key_hint: str = ""                     # placeholder shown in the UI
     help_url: str = ""                     # "get your key" link
-    suggested_models: List[str] = field(default_factory=list)  # full "{id}/{model}" ids
     embedding_model: Optional[str] = None  # litellm embedding id if the provider offers one
 
     @property
@@ -84,30 +86,29 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         is_local=True, needs_key=False, uses_api_base=True, ensure_v1=True,
         default_base_url="",
     ),
-    # ── Western cloud (existing) ───────────────────────────────────────────
+    # ── Western cloud ──────────────────────────────────────────────────────
     "openai": ProviderSpec(
         id="openai", label="OpenAI", model_style="bare",
         is_local=False, needs_key=True, uses_api_base=False,
         test_models_url="https://api.openai.com/v1/models",
         env_key="OPENAI_API_KEY", key_hint="sk-…",
         help_url="https://platform.openai.com/api-keys",
-        suggested_models=["openai/gpt-4o", "openai/gpt-4o-mini"],
         embedding_model="text-embedding-3-small",
     ),
     "anthropic": ProviderSpec(
         id="anthropic", label="Anthropic", model_style="bare",
         is_local=False, needs_key=True, uses_api_base=False,
+        test_models_url="https://api.anthropic.com/v1/models",
         env_key="ANTHROPIC_API_KEY", key_hint="sk-ant-…",
         help_url="https://console.anthropic.com/settings/keys",
-        suggested_models=[
-            "anthropic/claude-3-5-sonnet-20241022",
-            "anthropic/claude-3-5-haiku-20241022",
-        ],
     ),
+    # Native litellm routing (`openrouter/<model>`); litellm owns the endpoint and
+    # reads OPENROUTER_API_KEY. No api_base — the prior bare+base form double-/v1'd
+    # the test probe and did not route reliably.
     "openrouter": ProviderSpec(
-        id="openrouter", label="OpenRouter", model_style="bare",
-        is_local=False, needs_key=True, uses_api_base=True,
-        default_base_url="https://openrouter.ai/api/v1",
+        id="openrouter", label="OpenRouter", model_style="prefix",
+        litellm_prefix="openrouter", is_local=False, needs_key=True, uses_api_base=False,
+        test_models_url="https://openrouter.ai/api/v1/models",
         env_key="OPENROUTER_API_KEY", key_hint="sk-or-…",
         help_url="https://openrouter.ai/keys",
     ),
@@ -118,11 +119,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         test_models_url="https://generativelanguage.googleapis.com/v1beta/openai/models",
         env_key="GOOGLE_API_KEY", key_hint="AIza…",
         help_url="https://aistudio.google.com/apikey",
-        suggested_models=[
-            "google/gemini-2.0-flash",
-            "google/gemini-2.5-flash",
-            "google/gemini-1.5-pro",
-        ],
         embedding_model="gemini/text-embedding-004",
     ),
     # ── DeepSeek (native) ──────────────────────────────────────────────────
@@ -132,7 +128,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         test_models_url="https://api.deepseek.com/v1/models",
         env_key="DEEPSEEK_API_KEY", key_hint="sk-…",
         help_url="https://platform.deepseek.com/api_keys",
-        suggested_models=["deepseek/deepseek-chat", "deepseek/deepseek-reasoner"],
     ),
     # ── Mistral (native) ───────────────────────────────────────────────────
     "mistral": ProviderSpec(
@@ -141,11 +136,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         test_models_url="https://api.mistral.ai/v1/models",
         env_key="MISTRAL_API_KEY", key_hint="…",
         help_url="https://console.mistral.ai/api-keys",
-        suggested_models=[
-            "mistral/mistral-small-latest",
-            "mistral/codestral-latest",
-            "mistral/mistral-large-latest",
-        ],
     ),
     # ── Alibaba Qwen / DashScope (OpenAI-compatible) ───────────────────────
     "qwen": ProviderSpec(
@@ -155,7 +145,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         test_models_url="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
         env_key="DASHSCOPE_API_KEY", key_hint="sk-…",
         help_url="https://dashscope.console.aliyun.com/apiKey",
-        suggested_models=["qwen/qwen-max", "qwen/qwen-plus", "qwen/qwen-coder-plus"],
     ),
     # ── Moonshot / Kimi (OpenAI-compatible) ────────────────────────────────
     "moonshot": ProviderSpec(
@@ -165,7 +154,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         test_models_url="https://api.moonshot.cn/v1/models",
         env_key="MOONSHOT_API_KEY", key_hint="sk-…",
         help_url="https://platform.moonshot.cn/console/api-keys",
-        suggested_models=["moonshot/moonshot-v1-128k", "moonshot/moonshot-v1-32k"],
     ),
     # ── Zhipu / GLM (OpenAI-compatible) ────────────────────────────────────
     "zhipu": ProviderSpec(
@@ -175,7 +163,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderSpec] = {
         test_models_url="https://open.bigmodel.cn/api/paas/v4/models",
         env_key="ZHIPU_API_KEY", key_hint="…",
         help_url="https://open.bigmodel.cn/usercenter/apikeys",
-        suggested_models=["zhipu/glm-4-plus", "zhipu/glm-4-flash"],
     ),
 }
 
@@ -210,5 +197,5 @@ def normalize_model_string(model_id: str, spec: ProviderSpec) -> str:
         return f"openai/{name}"
     if spec.model_style == "prefix" and spec.litellm_prefix:
         return f"{spec.litellm_prefix}/{name}"
-    # "bare": pass the id through unchanged (OpenAI / Anthropic / OpenRouter).
+    # "bare": pass the id through unchanged (OpenAI / Anthropic).
     return model_id

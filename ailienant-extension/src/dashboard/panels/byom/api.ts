@@ -36,8 +36,9 @@ export interface ProviderSpec {
     default_base_url: string | null;
     key_hint: string;
     help_url: string;
-    suggested_models: string[];
     env_key: string | null;
+    // No model lists: available models come from testing a configured endpoint,
+    // never from a system-curated preference.
 }
 
 export interface EndpointConfig {
@@ -65,13 +66,15 @@ export interface BYOMConfigResponse {
     endpoints: EndpointConfig[];
     presets: ModelPreset[];         // built-ins first, then user-defined
     active_preset_id: string | null;
-    discovered: DiscoveredModel[];  // live models for preset-tier dropdowns
+    discovered: DiscoveredModel[];  // available-model pool (local engines + imported cloud)
+    model_cache: Record<string, string[]>;  // endpoint_id → imported canonical model ids
 }
 
 export interface TestConnectionRequest {
     url: string;
     api_key: string;
     provider: Provider;
+    endpoint_id?: string;  // set → backend restores stored key + imports the catalogue
 }
 
 export interface TestConnectionResponse {
@@ -125,4 +128,21 @@ export function fetchEngineStatus(): Promise<EngineStatus[]> {
 
 export function fetchProviders(): Promise<ProviderSpec[]> {
     return _json<ProviderSpec[]>('/providers');
+}
+
+export interface PingRequest {
+    model_id?: string;  // canonical pool id, e.g. "google/gemini-2.0-flash"
+    tier?: string;      // active-preset tier: small | medium | big | cloud
+}
+
+export interface PingResponse {
+    ok: boolean;
+    model: string;
+    reply: string;
+    latency_ms: number;
+    error: string | null;
+}
+
+export function pingModel(req: PingRequest): Promise<PingResponse> {
+    return _json<PingResponse>('/ping', { method: 'POST', body: JSON.stringify(req) });
 }

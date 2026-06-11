@@ -714,6 +714,80 @@ html, body, #root { height: 100%; }
   text-decoration: underline;
 }
 
+/* ── Tier browse button + model browser modal ── */
+.byom-tier-browse {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: var(--color-card, #2b2f36);
+  color: var(--color-text, #e6e6e6);
+  border: 1px solid var(--color-border, #3a3f47);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.byom-tier-browse:hover { border-color: var(--color-primary, #63a583); }
+
+.byom-detected-filter { margin: 8px 0; max-width: 320px; }
+
+.byom-model-browser {
+  background: var(--color-card, #21262d);
+  border: 1px solid var(--color-border, #3a3f47);
+  border-radius: 8px;
+  padding: 16px;
+  width: min(560px, 92vw);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+}
+.byom-browser-search { margin: 10px 0; }
+.byom-browser-list { overflow-y: auto; flex: 1; }
+.byom-browser-group { margin-bottom: 10px; }
+.byom-browser-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--color-text, #e6e6e6);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.byom-browser-item:hover { background: var(--color-primary-soft, rgba(99,165,131,0.18)); }
+
+/* ── Model health check ── */
+.byom-health-hint {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+.byom-health-empty {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+.byom-health-list { list-style: none; margin: 0; padding: 0; }
+.byom-health-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  flex-wrap: wrap;
+}
+.byom-health-model {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  flex: 1;
+  min-width: 200px;
+  word-break: break-all;
+}
+.byom-health-btn { flex-shrink: 0; padding: 3px 12px; font-size: 11px; }
+.byom-health-ok { font-size: 11px; color: var(--color-primary, #63a583); }
+.byom-health-err { font-size: 11px; color: #F85149; word-break: break-all; }
+
 .byom-api-key-hint {
   font-size: 11px;
   font-weight: 400;

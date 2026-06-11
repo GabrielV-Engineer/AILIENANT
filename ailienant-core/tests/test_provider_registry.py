@@ -95,10 +95,15 @@ def test_openai_anthropic_bare_passthrough() -> None:
     assert an.api_base is None
 
 
-def test_openrouter_keeps_fixed_base() -> None:
+def test_openrouter_native_routing() -> None:
+    # OpenRouter now routes natively (openrouter/<model>) with no api_base —
+    # litellm owns the endpoint and reads OPENROUTER_API_KEY.
     api_base, _key, is_local = _connection_for_provider("openrouter", _ep("openrouter", key="sk-or"))
-    assert api_base == "https://openrouter.ai/api/v1"
+    assert api_base is None
     assert is_local is False
+    t = _build_chat_target("openrouter/meta-llama/llama-3.3-70b-instruct:free", _ep("openrouter", key="sk-or"))
+    assert t.model == "openrouter/meta-llama/llama-3.3-70b-instruct:free"
+    assert t.api_base is None
 
 
 def test_local_custom_still_appends_v1() -> None:
