@@ -103,8 +103,15 @@ def test_pack_soft_cap_prevents_starvation() -> None:
 
 # ── Mandate 1: idempotent + loop-safe ingestion ───────────────────────
 
-async def test_docs_index_single_build_under_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_docs_index_single_build_under_concurrency(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+) -> None:
     import core.memory.docs_index as di
+    # Per-test lock path prevents file-lock bleed from other tests/runs.
+    monkeypatch.setattr(di, "_LOCK_PATH", str(tmp_path / "test_docs.lock"))
+    # Fresh asyncio lock so a prior test's loop-local state cannot block.
+    di._ASYNC_LOCK = asyncio.Lock()
+    di._rebuild_in_flight = False
     calls = {"n": 0}
     fresh = {"v": False}
 
@@ -119,8 +126,13 @@ async def test_docs_index_single_build_under_concurrency(monkeypatch: pytest.Mon
     assert calls["n"] == 1           # concurrent first-uses collapse to one build
 
 
-async def test_docs_index_build_keeps_loop_responsive(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_docs_index_build_keeps_loop_responsive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+) -> None:
     import core.memory.docs_index as di
+    monkeypatch.setattr(di, "_LOCK_PATH", str(tmp_path / "test_docs.lock"))
+    di._ASYNC_LOCK = asyncio.Lock()
+    di._rebuild_in_flight = False
     fresh = {"v": False}
 
     async def fake_build() -> None:

@@ -53,7 +53,7 @@ _DEFAULT_BUDGET: int = 3000
 # the three competing brains keep the central-code-first order.
 _LADDER: Dict[str, int] = {"codex": 0, "file": 1, "graphrag": 2, "docs": 3, "readme": 4}
 _PINNED_BRAINS = frozenset({"codex", "file"})
-_ACTIVE_FILE_CAP_RATIO: float = 0.50   # active files may take at most half the budget
+_ACTIVE_FILE_CAP_RATIO: float = 0.60   # active files may take at most 60% of the budget
 _SOFT_CAP_RATIO: float = 0.60          # no single competing brain over 60% of the rest
 
 
@@ -74,7 +74,7 @@ class ContextChunk:
 class ContextBudgetManager:
     """Packs whole ContextChunks into a token budget — never a mid-chunk cut.
 
-    Pins CODEX + active files (the latter hard-capped to half the budget so many
+    Pins CODEX + active files (the latter hard-capped to 60 % of the budget so many
     huge open tabs cannot trigger ``context_length_exceeded``), then fills the
     competing brains in ladder order under a per-brain soft-cap so a dense
     top-priority result cannot starve the lower brains and erase the tutor identity.

@@ -2415,7 +2415,7 @@ the blueprint freeze lifts.
 - [x] **8.7.3 — ContextBudgetManager + presupuestos por tier.**
   - `ContextChunk(body, brain, label, tokens)` + `ContextBudgetManager.pack()` en `agents/analyst_context.py`.
   - Nunca emite un chunk parcial — descarta chunks enteros cuando no caben en el presupuesto.
-  - Escalera de retención: CODEX (pinned) → archivos activos (pinned, hard-cap ≤ 50 % del presupuesto) → GraphRAG P0 → docs P1 → README P2.
+  - Escalera de retención: CODEX (pinned) → archivos activos (pinned, hard-cap ≤ 60 % del presupuesto) → GraphRAG P0 → docs P1 → README P2.
   - Soft-cap del 60 % por brain competidor: previene que un resultado denso de GraphRAG haga starve a docs/README.
   - Pase de backfill: recupera presupuesto ocioso para chunks de mayor prioridad descartados por el soft-cap.
   - Presupuestos por tier: `small=1500 · medium=3000 · big=6000 · cloud=8000` tokens (real, via `PrecisionTokenCounter`).
