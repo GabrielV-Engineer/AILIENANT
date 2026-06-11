@@ -117,6 +117,10 @@ class TaskPayload(BaseModel):
     # Optional: an omitting client keeps the per-session settings-file default.
     execution_mode: Optional[str] = None
     workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
+    # The id of a saved skill the user explicitly chose for this turn. When present
+    # the skill is injected unconditionally (still subject to its enabled flag); the
+    # wire field is snake_case end-to-end — clients must send ``invoked_skill_id``.
+    invoked_skill_id: Optional[str] = None
     # Phase 7.12.9 (Fix 3) — the focused editor tab (may be SAVED, so absent from
     # dirty_buffers). Content is hard-capped client-side (ACTIVE_FILE_CHAR_CAP).
     active_file_path: Optional[str] = None
@@ -490,6 +494,18 @@ class TaskService:
         from langchain_core.runnables import RunnableConfig
 
         state = self._build_initial_state(session_id, payload, execution_mode)
+
+        # Resolve the user-authored skills that apply to this task (auto-matched by
+        # description plus any explicitly invoked one) and thread them as a loose
+        # state key the planner reads at prompt assembly. The resolver never raises
+        # and returns [] when no skill is relevant, so this adds no cost to the
+        # common case of a user with no skills.
+        from core.skill_resolver import resolve_active_skills
+        state["active_skills"] = await resolve_active_skills(
+            user_input=payload.task_prompt,
+            workspace_root=payload.workspace_root or "",
+            invoked_skill_id=payload.invoked_skill_id,
+        )
 
         # MCP servers connect once at host startup; this lazy guard only fires on a
         # cold first task when startup connected nothing (idempotent — the bootstrap
@@ -1061,6 +1077,43 @@ class TaskService:
                 # runner returns normally so the registry cleanup callback fires.
                 return
 
+    async def _rag_snippets(
+        self, text: str, project_id: Optional[str]
+    ) -> List[Tuple[str, str]]:
+        """Raw (path, snippet) GraphRAG hits — best-effort, never raises.
+
+        The analyst packs these as individual chunks so the budget manager can
+        drop low-rank snippets under pressure rather than the whole code brain.
+        """
+        if not project_id:
+            return []
+        try:
+            from core.memory.semantic_memory import SemanticMemoryManager
+            return await SemanticMemoryManager().search_snippets(
+                text, workspace_hash=project_id, k=_RAG_TOP_K
+            )
+        except Exception as exc:  # noqa: BLE001 — RAG fetch is non-fatal
+            logger.debug("Analyst RAG snippets fetch failed (non-fatal): %s", exc)
+            return []
+
+    def warm_readme_digest(
+        self, project_id: Optional[str], project_root: str, session_id: str
+    ) -> None:
+        """Schedule a (debounced) README digest build for a workspace.
+
+        Fired on workspace-init and on a README save so a large README's digest
+        is ready before the user asks. Best-effort; never raises.
+        """
+        if not project_root:
+            return
+        try:
+            from core import readme_digest
+            from core.vfs_middleware import make_safe_reader
+            read = make_safe_reader(project_id, project_root or None, session_id, vfs=self.vfs)
+            readme_digest.schedule_digest(project_root, read)
+        except Exception as exc:  # noqa: BLE001 — warming is best-effort
+            logger.debug("README digest warm failed (non-fatal): %s", exc)
+
     async def stream_analyst_reply(
         self,
         session_id: str,
@@ -1069,27 +1122,39 @@ class TaskService:
         cursor: Optional[int] = None,
         project_id: Optional[str] = None,
         project_root: str = "",
+        model_tier: Optional[str] = None,
     ) -> None:
-        """Phase 7.10.3 — context-aware, streamed analyst reply (ADR-703).
+        """Context-aware, streamed analyst reply — the three-brain tutor.
 
         Orchestration only (the analyst stays read-only — Voice, not the Hand): assembles
-        the budgeted + sandboxed context (active file via VFS + Codex + GraphRAG, reusing
-        _build_rag_context), replays the namespaced analyst memory, streams chunk_ms=40
-        batches to the Natt pane, emits the G2 context-version on stream end, then persists
-        the turn. Analyst memory is namespaced (``natt:``) so it never mixes with main chat.
+        the budgeted + sandboxed context from three brains (GraphRAG code, the AILIENANT
+        product docs, and the workspace README/overview) plus active-file + Codex, replays
+        the namespaced analyst memory, streams chunk_ms=40 batches to the Natt pane, emits
+        the context-version on stream end, then persists the turn. ``model_tier`` selects
+        the answer model from the active BYOM preset (speed vs quality) and only affects
+        generation — retrieval + embeddings are untouched. Analyst memory is namespaced
+        (``natt:``) so it never mixes with main chat.
         """
         from agents.analyst import generate_analyst_reply_stream  # deferred — cycle guard
         from agents.analyst_context import assemble_analyst_context
+        from core.memory.docs_index import search_ailienant_docs
 
-        rag = await self._build_rag_context(text, project_id)
+        tier = model_tier or "medium"
+        rag_snippets = await self._rag_snippets(text, project_id)
+        try:
+            docs_snippets = await search_ailienant_docs(text)
+        except Exception as exc:  # noqa: BLE001 — docs brain degrades to empty
+            logger.debug("Analyst docs retrieval failed (non-fatal): %s", exc)
+            docs_snippets = []
         try:
             context_block = await assemble_analyst_context(
                 paths, project_id, session_id, cursor,
-                rag_block=rag, project_root=project_root, vfs=self.vfs,
+                rag_snippets=rag_snippets, docs_snippets=docs_snippets, tier=tier,
+                project_root=project_root, vfs=self.vfs,
             )
         except Exception as exc:  # noqa: BLE001 — assembly must never crash the analyst
-            logger.warning("Analyst context assembly failed (degrading to RAG only): %s", exc)
-            context_block = rag
+            logger.warning("Analyst context assembly failed (degrading): %s", exc)
+            context_block = ""
 
         mem_key = f"natt:{session_id}"
         history = list(_conversations.get(mem_key, []))
@@ -1098,7 +1163,7 @@ class TaskService:
         aborted = False
         try:
             async for chunk in generate_analyst_reply_stream(
-                text, context_block, history, session_id
+                text, context_block, history, session_id, tier
             ):
                 parts.append(chunk)
                 await vfs_manager.broadcast_natt_token(session_id, chunk)

@@ -253,6 +253,7 @@ Proyect_Ailienant/
 │   │   ├── pty_session.py       #     persistent interactive shell sessions (PTY)
 │   │   ├── workspace_sync.py    #     bidirectional VFS ↔ sandbox sync
 │   │   ├── permissions.py       #     3-axis matrix + RBWE + classify_tool_privilege
+│   │   ├── skill_resolver.py    #     dual-mode skill resolver (cosine auto-match + explicit chip) + sandboxed directive block builder
 │   │   ├── mcp_registry.py      #     curated regulated-server SSoT (install meta + tiers)
 │   │   ├── mcp_config.py        #     .ailienant/config.json export/import projection
 │   │   ├── mcp_constants.py     #     ALLOWED_MCP_COMMANDS allowlist
@@ -262,7 +263,9 @@ Proyect_Ailienant/
 │   │   ├── state_manager.py     #     AGENTS.md fast-boot serializer
 │   │   ├── janitor.py           #     orphan-vector GC + MCTS purge
 │   │   ├── token_ledger.py      #     LOCAL/CLOUD token accounting
-│   │   ├── memory/              #     semantic, trajectory, graphrag_extractor, context_auditor
+│   │   ├── memory/              #     semantic, trajectory, graphrag_extractor, context_auditor,
+│   │   │                        #     docs_index (product-docs RAG — reserved LanceDB namespace)
+│   │   ├── readme_digest.py     #     workspace README brain: verbatim/digest/head-slice + debounced rebuild
 │   │   ├── db.py                #     SQLite catalog (dependency_graph, ppr_scores, indexed_files)
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
 │   ├── api/                     #   WS manager + REST routers (memory, byom, hardware, audit,

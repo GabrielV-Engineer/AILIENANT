@@ -3,7 +3,68 @@ import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { NattPromptBar } from './NattPromptBar';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { vscode } from '../vscode_bridge';
+import { useWorkspaceStore, type AnalystTier } from '../workspaceStore';
 import type { ParserState as MdParserState } from '../utils/StreamingMarkdownParser';
+
+const _ANALYST_TIERS: AnalystTier[] = ['small', 'medium', 'big', 'cloud'];
+const _TIER_LABEL: Record<AnalystTier, string> = {
+    small: 'Fast', medium: 'Balanced', big: 'Deep', cloud: 'Cloud',
+};
+
+/**
+ * Analyst answer-model picker. Lists the active BYOM preset's tiers (with their
+ * model names), greying out any the preset leaves unset, and persists the choice.
+ * It only changes which model writes the answer — retrieval/grounding is unaffected.
+ */
+function AnalystModelPicker(): JSX.Element {
+    const analystTier = useWorkspaceStore(s => s.analystTier);
+    const setAnalystTier = useWorkspaceStore(s => s.setAnalystTier);
+    const [tiers, setTiers] = useState<Record<string, string>>({});
+
+    useEffect(() => {
+        const handler = (event: MessageEvent): void => {
+            const msg = event.data as {
+                type: string;
+                data?: { presets?: { id: string; tiers: Record<string, string> }[]; active_preset_id?: string | null };
+            };
+            if (msg.type === 'BYOM_CONFIG' && msg.data) {
+                const active = msg.data.presets?.find(p => p.id === msg.data!.active_preset_id);
+                const next = active?.tiers ?? {};
+                setTiers(next);
+                // Reset a stale persisted tier the active preset no longer defines.
+                if (Object.keys(next).length > 0 && !next[analystTier]) {
+                    const fallback = (['medium', 'big', 'small', 'cloud'] as AnalystTier[])
+                        .find(t => next[t]);
+                    if (fallback) { setAnalystTier(fallback); }
+                }
+            }
+        };
+        window.addEventListener('message', handler);
+        vscode.postMessage({ type: 'GET_BYOM_CONFIG' });
+        return () => window.removeEventListener('message', handler);
+    }, [analystTier, setAnalystTier]);
+
+    const known = Object.keys(tiers).length > 0;
+    return (
+        <Tooltip content="Analyst answer model — trade speed for depth (retrieval is unchanged)">
+            <select
+                className="ws-natt-model"
+                value={analystTier}
+                aria-label="Analyst answer model"
+                onChange={e => setAnalystTier(e.target.value as AnalystTier)}
+                style={{ fontSize: 11, background: 'transparent', color: 'var(--vscode-foreground)',
+                         border: '1px solid var(--vscode-panel-border)', borderRadius: 4, padding: '1px 4px' }}
+            >
+                {_ANALYST_TIERS.map(t => (
+                    <option key={t} value={t} disabled={known && !tiers[t]}>
+                        {_TIER_LABEL[t]}{tiers[t] ? ` · ${tiers[t]}` : ''}
+                    </option>
+                ))}
+            </select>
+        </Tooltip>
+    );
+}
 
 interface NattMessage {
     role: 'natt' | 'user';
@@ -44,6 +105,7 @@ export function NattCanvas({
                     <Icon name="bot" size={16} color="var(--accent-primary)" />
                     <span>{nattName} · Analyst</span>
                 </div>
+                <AnalystModelPicker />
                 <Tooltip content={`Close ${nattName} pane`}>
                     <button
                         className="ai-btn"

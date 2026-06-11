@@ -29,6 +29,13 @@ import type { ReasoningPreset, InferenceTier } from '../shared/config';
 import { createPersistedStore } from '../shared/persistedStore';
 
 /**
+ * Analyst answer-model tier, chosen in the Natt HUD. Maps to a model in the
+ * active BYOM preset; trades speed vs quality and only affects generation
+ * (retrieval/grounding is unchanged). Independent of the orchestration tier.
+ */
+export type AnalystTier = 'small' | 'medium' | 'big' | 'cloud';
+
+/**
  * Phase 7.12 — minimal snapshot of the active streaming assistant turn, kept so
  * an in-flight Native-Thinking trace (display-only, ADR-707) survives a panel
  * teardown/reconnect (retainContextWhenHidden:false). Defined structurally (not
@@ -96,14 +103,28 @@ export interface WorkspaceState {
      */
     autoAcceptLowRisk: boolean;
     /**
+     * Analyst answer-model tier picked in the Natt HUD. Persisted so the choice
+     * survives a reload, and sent on every NATT_MESSAGE. Defaults to 'medium'.
+     * If the active preset lacks this tier the HUD resets it to a present one.
+     */
+    analystTier: AnalystTier;
+    /**
      * Phase 7.12 — last snapshot of the in-flight streaming turn. Persisted so a
      * reconnect / tab re-reveal can rehydrate a partial Thought Box instead of
      * dropping it. Cleared (`null`) on `server_stream_end`. Display-only.
      */
     inflightTurn: InflightSnapshot | null;
+    /**
+     * Pending explicit skill chip per session — set when the user selects a skill
+     * from the SkillsMenu; cleared on submit or manual removal. Transient:
+     * excluded from `pick` (a stale chip after reload would silently inject a skill
+     * the user forgot about).
+     */
+    activeSkills: Record<string, { id: string; name: string } | null>;
 
     // Setters (Zustand pattern — flat actions colocated with state).
     setDraft: (sessionId: string, text: string) => void;
+    setActiveSkill: (sessionId: string, v: { id: string; name: string } | null) => void;
     setPaletteOpen: (v: boolean) => void;
     setContextOpen: (v: boolean) => void;
     setNattOpen: (v: boolean) => void;
@@ -115,6 +136,7 @@ export interface WorkspaceState {
     setIsAborting: (v: boolean) => void;
     setNativeThinking: (v: boolean) => void;
     setAutoAcceptLowRisk: (v: boolean) => void;
+    setAnalystTier: (v: AnalystTier) => void;
     setInflightTurn: (v: InflightSnapshot | null) => void;
 }
 
@@ -132,10 +154,14 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         isAborting: false,
         nativeThinking: true,
         autoAcceptLowRisk: false,
+        analystTier: 'medium',
         inflightTurn: null,
+        activeSkills: {},
 
         setDraft:        (sessionId, text) =>
             set((s) => ({ draftMessages: { ...s.draftMessages, [sessionId]: text } })),
+        setActiveSkill:  (sessionId, v) =>
+            set((s) => ({ activeSkills: { ...s.activeSkills, [sessionId]: v } })),
         setPaletteOpen:  (v) => set({ paletteOpen: v }),
         setContextOpen:  (v) => set({ contextOpen: v }),
         setNattOpen:     (v) => set({ nattOpen: v }),
@@ -147,6 +173,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         setIsAborting:   (v) => set({ isAborting: v }),
         setNativeThinking: (v) => set({ nativeThinking: v }),
         setAutoAcceptLowRisk: (v) => set({ autoAcceptLowRisk: v }),
+        setAnalystTier:  (v) => set({ analystTier: v }),
         setInflightTurn: (v) => set({ inflightTurn: v }),
     }),
     {
@@ -168,6 +195,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
             lastScrollY: s.lastScrollY,
             nativeThinking: s.nativeThinking,
             autoAcceptLowRisk: s.autoAcceptLowRisk,
+            analystTier: s.analystTier,
             inflightTurn: s.inflightTurn,
         }),
     },

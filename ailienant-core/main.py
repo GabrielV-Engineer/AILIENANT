@@ -990,6 +990,17 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _tel_proj = _session_project_id.get(client_id, "")
                 # A live file lifecycle event invalidates an in-flight snapshot.
                 _abort_dreaming(_tel_proj)
+                # A README save/create reactively re-warms the orientation digest
+                # (debounced downstream, so a save storm collapses to one build).
+                if (
+                    valid_event.data.action in ("file_saved", "file_created")
+                    and os.path.basename(valid_event.data.filepath) == "README.md"
+                ):
+                    task_service.warm_readme_digest(
+                        _tel_proj or None,
+                        _session_workspace_root.get(client_id, ""),
+                        client_id,
+                    )
                 _dispatch_ide_telemetry(
                     valid_event.data,
                     _tel_proj,
@@ -1065,6 +1076,13 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     project_id=valid_event.data.project_id,
                     session_id=client_id,
                 )
+                # Warm the README orientation digest in the background so a large
+                # README is ready before the analyst is first asked about the repo.
+                task_service.warm_readme_digest(
+                    valid_event.data.project_id,
+                    valid_event.data.workspace_root,
+                    client_id,
+                )
                 logger.info(
                     "[Session: %s] Workspace init received: root=%s project=%s",
                     client_id,
@@ -1104,6 +1122,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     cursor: Optional[int] = _q.cursor,
                     project_id: Optional[str] = _aq_proj,
                     project_root: str = _aq_root,
+                    model_tier: Optional[str] = _q.model_tier,
                 ) -> None:
                     # Phase 7.11.3 — register THIS runner with the abort mesh
                     # (plan W1 invariant: current_task() is the spawned runner,
@@ -1114,7 +1133,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     if _ar_task is not None:
                         task_service.register_active_task(sid, _ar_task)
                     await task_service.stream_analyst_reply(
-                        sid, text, paths, cursor, project_id, project_root
+                        sid, text, paths, cursor, project_id, project_root, model_tier
                     )
                     logger.info(
                         "[Session: %s] Analyst query handled (%d chars in, %d path(s))",

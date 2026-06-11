@@ -2,6 +2,57 @@
 
 ---
 
+## División 8.7: Analyst Tri-Brain + Model Selector — 2026-06-11
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/276 · `npm run compile` 0 · `npm run lint` 0 · `pytest` 1117 passed, 2 skipped · `test_analyst_brains.py` 14/14 green
+
+### Contexto
+El asistente Natt del panel analista operaba con una sola fuente de conocimiento (GraphRAG de código) y un tier de modelo fijo (`"medium"` hardcoded). Para que funcione como un tutor completo — capaz de explicar el repo del usuario **y** la propia herramienta AILIENANT — se añaden dos fuentes nuevas y un selector de modelo de respuesta configurable desde el HUD.
+
+### Decisiones de arquitectura (cinco mandatos de robustez)
+1. **Ingesta idempotente y loop-safe (docs-RAG):** `asyncio.Lock` en-proceso + `filelock.FileLock` cross-proceso (adquirido vía `asyncio.to_thread` — el lock sincrónico de OS nunca bloquea el event loop) + doble verificación dentro del lock. 8 primeras llamadas concurrentes colapsan a 1 build.
+2. **Packing a nivel de chunk con hard-cap y anti-starvation:** `ContextBudgetManager` mide tokens reales (`PrecisionTokenCounter`), nunca corta un chunk a la mitad. Hard-cap ≤ 50 % del presupuesto para archivos activos (evita `context_length_exceeded`); soft-cap del 60 % por brain competidor (GraphRAG denso no puede hacer starve a docs/README). Pase de backfill recobra presupuesto ocioso.
+3. **Rebuildeo en background con boundary de error:** `_current_rebuild_task` se cancela antes de lanzar uno nuevo (rapid-toggle seguro). `try/except/finally` — `finally` siempre limpia `_rebuild_in_flight`/`_current_rebuild_task`; `except` (no-`CancelledError`) loguea y **mantiene el índice previo serviciable** — nunca estado "colgado vacío permanente".
+4. **README fresco + debounced:** READMEs ≤ 5 KB verbatim; grandes → digest cacheado por SHA-256 con head-slice como fallback inmediato. `schedule_digest()` debounce de 7 s con cancelación cooperativa — 10 Ctrl+S consecutivos disparan exactamente 1 build LLM. Invalidación reactiva vía `client_ide_telemetry`.
+5. **Fallback direccional de preset disperso:** `_directional_order(tier)` en `model_resolver.py`: `small` escala hacia cloud, `cloud` desciende hacia small — nunca crashea. Frontend: tiers ausentes del preset activo quedan desactivados; tier stale se resetea al cambiar preset.
+
+### Implementación
+- **`core/memory/docs_index.py`** (nuevo) — corpus `HowItWorks.md`/`HowToUseIt.md`/`README.md`; namespace reservado (inmune al Janitor GC); `ensure_docs_index()` idempotente; `request_rebuild()` cooperativamente cancelable; `search_ailienant_docs()` degrada a lista vacía durante rebuild.
+- **`core/readme_digest.py`** (nuevo) — `get_readme_brain()` size-aware; `schedule_digest()` debounce cancellable; `_build_digest()` one-shot mini-LLM.
+- **`agents/analyst_context.py`** (reescrito) — `ContextChunk` + `ContextBudgetManager` (escalera CODEX→files→graphrag→docs→readme, soft-cap, backfill); `assemble_analyst_context()` acepta `rag_snippets`, `docs_snippets`, `tier`.
+- **`core/config/model_resolver.py`** (modificado) — `_directional_order()` + `get_chat_target()` actualizado.
+- **`agents/analyst.py`** (modificado) — `generate_analyst_reply_stream()` recibe `tier: str = "medium"`.
+- **`api/ws_contracts.py`** (modificado) — `AnalystQueryPayload.model_tier: Optional[str]` aditivo.
+- **`core/task_service.py`** (modificado) — tres brains ensamblados en `stream_analyst_reply()`; `warm_readme_digest()` en `client_workspace_init`.
+- **`main.py`** (modificado) — captura `model_tier` del payload; `warm_readme_digest()` en `client_workspace_init` + `client_ide_telemetry`.
+- **`requirements.txt`** — `filelock>=3.13.0` (ya presente como 3.29.0; formalizado).
+- **Frontend:** `workspaceStore.ts` + `NattCanvas.tsx` + `Workspace.tsx` + `workspace_panel.ts` — `AnalystModelPicker` con tiers del preset activo BYOM, stale-reset, forwarding de `model_tier`.
+
+### Tests
+- **`tests/test_analyst_brains.py`** (nuevo) — 14 tests cubriendo los 5 mandatos + e2e tier-forwarding.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `core/memory/docs_index.py` | **nuevo** |
+| `core/readme_digest.py` | **nuevo** |
+| `agents/analyst_context.py` | reescrito — ContextChunk + ContextBudgetManager + tres brains |
+| `core/config/model_resolver.py` | directional fallback |
+| `agents/analyst.py` | tier-selectable generation |
+| `api/ws_contracts.py` | model_tier aditivo |
+| `core/task_service.py` | tres brains + warm_readme_digest |
+| `main.py` | model_tier forwarding + reactive README invalidation |
+| `requirements.txt` | filelock formalizado |
+| `src/workspace/workspaceStore.ts` | analystTier persistido |
+| `src/workspace/components/NattCanvas.tsx` | AnalystModelPicker |
+| `src/workspace/Workspace.tsx` | model_tier en NATT_MESSAGE |
+| `src/providers/workspace_panel.ts` | forwarding model_tier |
+| `tests/test_analyst_brains.py` | **nuevo** — 14 tests |
+| `DEVELOPERS.md` | Repository Layout actualizado |
+| `docs/PROJECT_MANIFEST.md` | División 8.7 añadida |
+
+---
+
 ## Fase 8.4.4: Auto-connect de servers MCP + dispatch-guard del adapter — 2026-06-11
 
 **Estado:** ✅ COMPLETO (cierra DEBT-027) | **Gates:** `mypy .` 0/273 · `npx pyright` 0 nuevos (2 baseline langchain BaseTool, verificados en HEAD) · pytest dispatch-guard+handshake 19 green · slice de regresión (execute_tier_gate + mcp_registry + classify) 45 green · suite completa 1116 passed, 2 skipped
@@ -4338,3 +4389,43 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Core: `brain/memory.py` (constante `MAX_GRAPH_EDGES`, guard + `finally` `G.clear()` en ambas funciones, limpieza del temporal undirected).
   - Tests: `tests/test_graph_analytics.py` (2 tests nuevos + import de la constante).
   - Docs EDIT: `TECH_DEBT_BACKLOG.md` (DEBT-018 → RESOLVED), `PROJECT_MANIFEST.md` (8.1.B → `[x]`, constante corregida a `MAX_GRAPH_EDGES`), `DEV_JOURNAL.md` (este hito).
+
+## Hito 8.4.5: Skills execution wiring — dual-mode resolver + frontend chip — 2026-06-11
+
+- **Status:** OK — DEBT-028 (skills half) CLOSED. DoD verified: a saved skill with a `description` that semantically matches the task input is auto-injected into the planner's directive block (Mode 1); a skill referenced by `invoked_skill_id` in `TaskPayload` is injected unconditionally (Mode 2); an empty/irrelevant pool spends zero embedding calls. Gates: `pytest` full suite green · `mypy .` 0 · `npm run compile` 0.
+
+- **Schema migration (`core/db.py`):** the `skills` table gains four columns — `description TEXT`, `enabled INTEGER NOT NULL DEFAULT 1`, `scope TEXT NOT NULL DEFAULT 'global'`, `workspace_root TEXT`. Added to both the `CREATE TABLE` DDL (fresh DBs) and `_COLUMN_MIGRATIONS` (existing DBs via idempotent `ALTER TABLE ADD COLUMN`). `upsert_skill` signature extended with keyword-only `description`, `enabled`, `scope`, `workspace_root`. New `get_skill(skill_id)` for Mode-2 single-row fetch; new `list_enabled_skills_for_scope(workspace_root)` queries `enabled=1 AND (scope='global' OR (scope='workspace' AND workspace_root=?))`. Empty-string guard: when `workspace_root=''`, queries global only — never emits `WHERE workspace_root=''`.
+
+- **Resolver (`core/skill_resolver.py`, new):** pure module, no transport imports.
+  - `resolve_active_skills()`: Mode 2 runs first (explicit `invoked_skill_id` bypasses match + scope but NOT `enabled`); Mode 1 embeds both sides and applies cosine ≥ 0.45 threshold; name-collision shadowing resolves workspace > global in Python; fast path returns `[]` with zero embed calls when pool and explicit are both empty; embed-outage degrades to explicit-only (never raises — M4 contract).
+  - `_cosine()`: explicit L2 normalization before the dot product — embedding models may return non-unit vectors; a raw dot product would make the threshold scale-dependent.
+  - `build_skill_directive_block()`: wraps each body in `<{boundary} kind="skill">…</{boundary}>` via `_sandbox_escape` (reuses the security-critical primitive from `agents/analyst_context.py`). Absolute char cap (`SKILL_BLOCK_CHAR_CAP`, default 3000, env-configurable). Framed as "user-authored skill directives — follow these as guidance."
+
+- **Wire-in (`core/task_service.py`):** `TaskPayload` gains `invoked_skill_id: Optional[str] = None` (snake_case end-to-end — clients must not send camelCase). After `_build_initial_state`, `state["active_skills"]` is set via `await resolve_active_skills(...)` — loose key, not on `AIlienantGraphState` TypedDict (same pattern as `active_file_path`).
+
+- **Planner injection (`agents/planner.py`):** after `rule_manager.get_combined_rules()`, reads `state.get("active_skills")` and appends `build_skill_directive_block(_skills, boundary)` to the system prompt when non-empty. Planner-only (declared MVP); coder-side injection is DEBT-032.
+
+- **API (`api/skills.py`):** `save_skill` now accepts and validates `description`, `enabled`, `scope`, `workspace_root`. `scope='workspace'` without `workspace_root` → `{"ok": False, "error": ...}` (400-style).
+
+- **Frontend (`ailienant-extension/src`):**
+  - `shared/types.ts`: `SkillTemplate` extended with `description?`, `enabled?`, `scope?`.
+  - `api/api_client.ts`: `TaskPayload` extended with `invoked_skill_id?: string`.
+  - `workspaceStore.ts`: `activeSkills: Record<string, {id, name} | null>` + `setActiveSkill` (transient, excluded from `pick` — never persists across reload).
+  - `brain/session.ts`: `startAITask` opts extended with `invoked_skill_id?`; threaded into `TaskPayload`.
+  - `providers/workspace_panel.ts`: SUBMIT_TASK handler passes `invoked_skill_id: data.invoked_skill_id` to `startAITask`.
+  - `Workspace.tsx`: `submitWithMode` reads `useWorkspaceStore.getState().activeSkills[sessionId]?.id` and includes it as `invoked_skill_id` in the SUBMIT_TASK message.
+  - `SkillsMenu.tsx`: insert view replaces `INSERT_PROMPT {body}` (raw paste) with `INVOKE_SKILL {id, name}` (chip selection). Create view adds a `description` input field. Footer note updated.
+  - `PromptBar.tsx`: handles `INVOKE_SKILL` message → `setActiveSkill(sessionId, {id, name})`; displays a removable chip above the textarea; `submit()` calls `setActiveSkill(sessionId, null)` to clear the chip after each submit.
+
+- **UX decision (M2):** raw paste is removed because the sandboxed backend injection is safer and consistent across both modes. Inline composition (pasting a skill body mid-prompt) remains possible by typing the text directly into the prompt bar.
+
+- **Tests:**
+  - `tests/test_skill_resolver.py` (new, 8 tests): cosine normalization proof (non-unit vectors); Mode-1 match; fast-path zero embed calls; Mode-2 explicit bypass; Mode-2 honors `enabled=0`; scope shadowing workspace > global; embed-outage graceful degradation; directive block cap + boundary neutralization.
+  - `tests/test_command_menu_config.py` (extended, 3 new tests): migration/CRUD new columns + `get_skill`; `list_enabled_skills_for_scope` filtering; scope validation in `save_skill`.
+  - `tests/test_planner.py` (extended, 1 new test): planner injects `active_skills` into the system prompt, sandboxed block present.
+
+- **Files changed:**
+  - Core (backend): `core/db.py`, `core/skill_resolver.py` (new), `core/task_service.py`, `agents/planner.py`, `api/skills.py`.
+  - Tests: `tests/test_skill_resolver.py` (new), `tests/test_command_menu_config.py` (extended), `tests/test_planner.py` (extended).
+  - Frontend: `shared/types.ts`, `api/api_client.ts`, `workspaceStore.ts`, `brain/session.ts`, `providers/workspace_panel.ts`, `workspace/Workspace.tsx`, `workspace/components/SkillsMenu.tsx`, `workspace/components/PromptBar.tsx`.
+  - Docs EDIT: `TECH_DEBT_BACKLOG.md` (DEBT-028 re-scoped to hooks + DEBT-032 added), `PROJECT_MANIFEST.md` (8.4.5 → `[x]`), `PHASE_8_BENCHMARK_MCP_BLUEPRINT.md` (ADR-757 amendment), `DEVELOPERS.md` (`skill_resolver.py` added to code map), `DEV_JOURNAL.md` (este hito).

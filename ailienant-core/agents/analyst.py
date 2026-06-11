@@ -290,14 +290,16 @@ async def generate_analyst_reply_stream(
     context_block: str = "",
     history: Optional[List[Dict[str, str]]] = None,
     session_id: str = "",
+    tier: str = "medium",
 ) -> AsyncIterator[str]:
     """ streaming analyst reply for the Natt pane.
 
     System prompt = SOUL persona (already identity) + the assembled,
     budgeted, sandboxed analyst context block. Conversation memory (history) is replayed
-    so the analyst keeps continuity. Outbound tokens are coalesced into chunk_ms=40 frames
-    via the shared batcher. Degrades to one actionable message if the BYOM engine is down —
-    the analyst must never crash the WS loop. Read-only: nothing here mutates files.
+    so the analyst keeps continuity. ``tier`` selects the answer model from the active BYOM
+    preset (the user trades speed vs quality); it does not affect retrieval. Outbound tokens
+    are coalesced into chunk_ms=40 frames via the shared batcher. Degrades to one actionable
+    message if the BYOM engine is down — the analyst must never crash the WS loop. Read-only.
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
     from transport.token_batcher import batch_tokens
@@ -312,7 +314,7 @@ async def generate_analyst_reply_stream(
     messages.append({"role": "user", "content": text})
 
     try:
-        raw = LLMGateway.astream_byom(messages, tier="medium", session_id=session_id)
+        raw = LLMGateway.astream_byom(messages, tier=tier, session_id=session_id)
         produced = False
         async for chunk in batch_tokens(raw, chunk_ms=40):
             produced = True

@@ -15,8 +15,23 @@ from core.config.byom_config import ModelTarget, load_byom_config
 
 logger = logging.getLogger("MODEL_RESOLVER")
 
-# Preferred order when the requested tier is unset in the active preset.
-_FALLBACK_ORDER = ("medium", "small", "big", "cloud")
+# Capability ladder, ascending. A sparse preset (some tiers null) must never crash
+# the caller, so a missing tier resolves to the nearest present neighbour — expanding
+# outward, ties preferring the higher-capability side. This makes a missing ``small``
+# step up (small→medium→big→cloud) and a missing ``cloud`` step down
+# (cloud→big→medium→small), always landing on a workable model.
+_TIER_ORDER: tuple[str, ...] = ("small", "medium", "big", "cloud")
+
+
+def _directional_order(tier: str) -> list[str]:
+    """Tiers to try for ``tier``, nearest-first, ties preferring higher capability."""
+    if tier not in _TIER_ORDER:
+        return list(_TIER_ORDER)
+    idx = _TIER_ORDER.index(tier)
+    return sorted(
+        _TIER_ORDER,
+        key=lambda t: (abs(_TIER_ORDER.index(t) - idx), -(_TIER_ORDER.index(t) > idx)),
+    )
 
 _cached: Optional[Dict[str, ModelTarget]] = None
 
@@ -50,22 +65,23 @@ def _normalize_for_chat(target: ModelTarget) -> ModelTarget:
 
 
 def get_chat_target(tier: str = "medium") -> Optional[ModelTarget]:
-    """Return the chat ModelTarget for ``tier``, with graceful fallback.
+    """Return the chat ModelTarget for ``tier``, with directional fallback.
 
-    Resolution: requested tier → medium → small → big → cloud → any. Returns
-    None when no preset has been applied yet (chat_models is empty), so callers
-    can surface an actionable "activate a BYOM preset" message.
+    Resolution: the requested tier, else its nearest present neighbour on the
+    capability ladder (see ``_directional_order``). Returns None when no preset
+    has been applied yet (chat_models is empty), so callers can surface an
+    actionable "activate a BYOM preset" message.
     """
     targets = _load()
     if not targets:
         return None
     if tier in targets:
         return _normalize_for_chat(targets[tier])
-    for t in _FALLBACK_ORDER:
+    for t in _directional_order(tier):
         if t in targets:
             logger.info("Chat tier '%s' unset — falling back to '%s'.", tier, t)
             return _normalize_for_chat(targets[t])
-    # Any remaining target (deterministic by sorted key).
+    # Any remaining target (deterministic by sorted key) — handles non-ladder keys.
     first_key = sorted(targets.keys())[0]
     return _normalize_for_chat(targets[first_key])
 

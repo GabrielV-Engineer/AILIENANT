@@ -483,6 +483,10 @@ class AnalystQueryPayload(BaseModel):
     # caret offset for cursor-targeted semantic slicing.
     # Additive + optional: pre - clients omit it and the slice degrades gracefully.
     cursor: Optional[int] = None
+    # Answer-model tier picked in the Natt HUD (small | medium | big | cloud).
+    # Additive + optional: pre-clients omit it and the analyst defaults to medium.
+    # Only changes generation; retrieval + embeddings are unaffected.
+    model_tier: Optional[str] = None
 
 
 class ClientAnalystQueryEvent(BaseModel):

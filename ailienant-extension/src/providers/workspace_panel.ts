@@ -744,6 +744,8 @@ export class WorkspacePanelManager {
                             // The three-way mode selector governs the backend session
                             // permission policy (automatic | ask_before_edits | plan_mode).
                             execution_mode: data.execution_mode as string | undefined,
+                            // Explicit skill the user invoked for this turn (snake_case).
+                            invoked_skill_id: data.invoked_skill_id as string | undefined,
                         });
                         // Backend-governed stream-stall timeout (longer for slow local
                         // engines). The webview arms its watchdog from this — never a
@@ -913,6 +915,7 @@ export class WorkspacePanelManager {
                         data: {
                             text: data.text,
                             session_id: data.session_id,
+                            ...(typeof data.model_tier === 'string' && { model_tier: data.model_tier }),
                             ...(Array.isArray(data.context_paths) && data.context_paths.length > 0
                                 && { context_paths: data.context_paths }),
                         },

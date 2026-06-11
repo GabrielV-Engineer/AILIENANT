@@ -1363,6 +1363,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const submitWithMode = useCallback((text: string, executionMode: ExecutionMode) => {
         const presetConfig = getPresetConfig(preset);
         setMessages(prev => [...prev, { id: mkId(), role: 'user', content: text, authorLabel: authorLabelFor('user', nattName) }]);
+        const storeState = useWorkspaceStore.getState();
         vscode.postMessage({
             type: 'SUBMIT_TASK',
             value: text,
@@ -1371,11 +1372,13 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             execution_mode: executionMode,
             ...presetConfig,
             session_id: initial.sessionId,
-            // Phase 9 (ADR-707) — persisted Native Thinking toggle, read at
-            // submit time so the latest value (survives reload) is injected.
-            enable_native_thinking: useWorkspaceStore.getState().nativeThinking,
+            // Persisted Native Thinking toggle, read at submit time so the
+            // latest value (survives reload) is injected.
+            enable_native_thinking: storeState.nativeThinking,
             // Plan mode → route the turn into the backend Socratic loop.
             planner_mode_active: executionMode === 'plan_mode',
+            // Explicit skill chip selected by the user (snake_case, undefined if none).
+            invoked_skill_id: storeState.activeSkills?.[initial.sessionId]?.id ?? undefined,
         });
     }, [preset, tier, initial.sessionId]);
 
@@ -1468,6 +1471,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             type: 'NATT_MESSAGE',
             text,
             session_id: initial.sessionId,
+            model_tier: useWorkspaceStore.getState().analystTier,
             ...(contextPaths.length > 0 && { context_paths: contextPaths }),
         });
         setNattAttachedItems([]);
