@@ -9,7 +9,7 @@
 | ADR | Division | Title | State |
 |-----|----------|-------|-------|
 | ADR-756 | 8.3 | Precision Benchmarking & Ablation Methodology | OPEN |
-| ADR-757 | 8.4 | MCP Config SSoT + Tool Privilege Classification | OPEN |
+| ADR-757 | 8.4 | MCP Config SSoT + Tool Privilege Classification | PARTIALLY CLOSED (8.4.0–8.4.4 ✅; 8.4.5–8.4.7 OPEN) |
 | ADR-758 | 8.5 | Ailienant-as-MCP-Server (origin) | SUPERSEDED by ADR-759 |
 | ADR-759 | 8.5 | External Capability Gateway | OPEN |
 | ADR-760 | 8.6 | Phase 8 Checkpoint Gate | OPEN |
@@ -151,6 +151,28 @@ A `DANGEROUS` default means a brand-new server full of read-only tools would spa
 The original wording placed the secret value in **VS Code SecretStorage**, referenced from `config.json` by `key_ref: "vscode_secret:<id>"`. The codebase has **no SecretStorage** anywhere, and the configuration surface (the dashboard) is an HTTP-served `fetch`-only webview that cannot reach the SecretStorage API (host-only). The established secret-bearing feature (BYOM) instead stores credentials backend-side (`byom_config.json`, `0600`) and masks them on read.
 
 **Amendment:** the `key_ref` placeholder convention is retained verbatim in `config.json` (a secret value never enters the JSON), but the **value substrate is the codebase-consistent backend-mask pattern**, not SecretStorage. Additionally, `export` **defensively redacts URL-userinfo credentials** from a server's `uri` (e.g. a `postgresql://user:pass@host/db` connection string a user typed inline), so a credential cannot leak through the uri field even before a structured secret store exists. The secret-value store + connect-time env injection is deferred (DEBT-031).
+
+### Amendment — multi-session registry + dispatch gate (8.4.4, closes DEBT-027)
+
+The original ADR assumed a **single** `_session_singleton`. The production requirement (multiple `enabled` servers in the catalog) demanded a registry keyed by `server_name`:
+
+```python
+_sessions: Dict[str, ClientSession]
+_exit_stacks: Dict[str, AsyncExitStack]   # one stack per server, never shared
+```
+
+**Key decisions (binding for 8.4.5+):**
+
+1. **Idempotent bootstrap** — `if key in _sessions: return True` before any I/O. Re-invocation never spawns a duplicate stdio process.
+2. **Per-server exit stacks** — one `AsyncExitStack` per connected server stored in `_exit_stacks`. A single server's failure or reconnect cannot entangle another server's stdio process.
+3. **`shutdown_mcp_sessions()`** — single explicit teardown choke point, wired into FastAPI `lifespan` shutdown block. No background finalizer.
+4. **Auto-connect in FastAPI lifespan startup** (after `init_registry()`), not per-task. MCP sessions are server-lifecycle resources, not request-scoped. A lazy `if not _sessions:` guard in `task_service.py` covers cold-start when startup connected nothing — no per-task DB cost in steady state.
+5. **`evaluate_action` dispatch gate in `_arun`** — injected-approval callable (never `from api/`); gate activates only when the caller passes `session_permission_mode` (the "contract" pattern, mirrors `SandboxBashTool`). READ_ONLY short-circuits to ALLOW before the floor is consulted. DANGEROUS overrides AUTO. Verdict: DENY / HITL / ALLOW.
+6. **`request_kind="MCP_TOOL_CALL"`** — free `Optional[str]` (no enum); toast bridge falls back gracefully for unknown kinds. FE HITL card severity/title binding is 8.4.7.
+7. **Env-configurable HITL timeout** — `MCP_HITL_TIMEOUT_SEC` (default 120 s).
+8. **Catalog overrides now bind live** — `server_name` is threaded into `classify_tool_privilege` at harvest, activating the qualified-key path (`postgres.query` → READ_ONLY) for the first time.
+
+**DEBT-027 closed.** Deferred to 8.4.7: trust-once session-scoped valve (DEBT-029 remainder), live e2e graph-cell dispatch, FE HITL-card binding for `MCP_TOOL_CALL` kind.
 
 ---
 

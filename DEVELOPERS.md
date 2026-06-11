@@ -267,8 +267,9 @@ Proyect_Ailienant/
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
 │   ├── api/                     #   WS manager + REST routers (memory, byom, hardware, audit,
 │   │                            #     mcp_servers, skills, sessions, agent_roles, system_settings)
-│   ├── tools/                   #   llm_gateway, validation pipeline (AST+LSP), MCP adapter,
-│   │                            #     perception/mutation/execution/control tool bundles,
+│   ├── tools/                   #   llm_gateway, validation pipeline (AST+LSP), MCP adapter
+│   │                            #     (multi-session registry + dispatch gate), perception/
+│   │                            #     mutation/execution/control tool bundles,
 │   │                            #     validation/diagnostics.py (structured verdict parser)
 │   ├── transport/               #   outbound WS stream (throttler, token batcher, narration gate)
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
@@ -382,7 +383,7 @@ The suite is large (latest gate: **1,103 passing / 2 skipped**, `mypy .` clean �
 
 Documentation should never oversell. As of this writing:
 
-- **MCP execution wiring is in progress.** The infrastructure (bootstrap session, registry SSoT, REST surface, privilege classification) is built; auto-connect on task launch, the dispatch-guard wiring, and live Skills execution are tracked as open items in Division 8.4 of the manifest.
+- **MCP dispatch wiring is substantially complete.** Auto-connect on server startup (idempotent multi-session registry, teardown wired into FastAPI lifespan) and the `evaluate_action` dispatch guard in `McpToolAdapter._arun` (DENY/HITL/ALLOW per the privilege matrix; READ_ONLY friction-free; catalog overrides bind live at harvest) are shipped as of 8.4.4. Remaining: trust-once session-scoped valve, live e2e dispatch from the graph cell, and FE HITL-card binding for `MCP_TOOL_CALL` — all deferred to 8.4.7. Live Skills execution is tracked separately as 8.4.5.
 - **Wasm sandbox tier is built but not the production default.** The resolver prefers Docker; Wasm is a pure-compute fallback. gVisor-class isolation is not present.
 - **Full MCTS rollout is deferred.** The tree, UCB1 selection, and pruning exist; the only *live* MCTS edge is the contained candidate-selection inside the agentic cell. The offline rollout loop is future work.
 - **Specialized agent classes** (RefactorAgent, SecOpsAgent, …) are **roles** on `WBSStep.target_role`, not standalone modules.

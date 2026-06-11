@@ -491,6 +491,14 @@ class TaskService:
 
         state = self._build_initial_state(session_id, payload, execution_mode)
 
+        # MCP servers connect once at host startup; this lazy guard only fires on a
+        # cold first task when startup connected nothing (idempotent — the bootstrap
+        # skips servers already in the registry, so there is no per-task DB cost in
+        # steady state).
+        from tools.mcp_adapter import _sessions, autoconnect_enabled_mcp_servers
+        if not _sessions:
+            await autoconnect_enabled_mcp_servers(state)
+
         # Phase 7.10.2 (ADR-702): granular sub-step narration over server_pipeline_step.
         # A NarrationGate keeps narration <= 15% of streamed volume once the answer is
         # live; pre-answer phases (answer_bytes == 0) are never suppressed. The emitter

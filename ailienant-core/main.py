@@ -54,6 +54,7 @@ from brain.state import AIlienantGraphState
 from core.dead_letter import get_pending_dlqs, init_dlq_table, mark_dlq_resolved
 from core.audit import init_audit_table  # Phase 6.6 — HITL audit ledger
 from core.mcp_registry import init_registry
+from tools.mcp_adapter import autoconnect_enabled_mcp_servers, shutdown_mcp_sessions
 from shared.logging_filters import SecretsScrubberFilter  # Phase 6.7 — DLP scrubber
 from langchain_core.runnables import RunnableConfig
 
@@ -146,6 +147,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_dlq_table()                   # Phase 6.4 — dead_letter_tasks table
     await init_audit_table()                 # Phase 6.6 — hitl_audit_log ledger
     init_registry()                          # curated regulated-server tier overrides
+    await autoconnect_enabled_mcp_servers()  # connect enabled MCP servers once per host lifecycle
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)
@@ -186,6 +188,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("🧹 SQLite connection closed — WAL/SHM files released.")
     compute_pool.shutdown(wait=True, cancel_futures=True)
     logger.info("🧹 Compute pool shut down — no orphan processes.")
+    await shutdown_mcp_sessions()  # close MCP stdio sessions so children never outlive the host
     shutdown_telemetry_log()  # drain the queue, join the listener thread, close the file
 
 

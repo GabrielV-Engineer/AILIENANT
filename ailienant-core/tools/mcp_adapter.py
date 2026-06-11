@@ -1,22 +1,33 @@
 # ailienant-core/tools/mcp_adapter.py
 #
-# Phase 2.18 — MCP Tool Adapter + Role-based Registry.
-# Phase 5.2 — Real stdio transport via mcp.ClientSession + bootstrap handshake
-#             that harvests tool schemas into the Tool RAG store and the SQLite
-#             tool_registry catalog. Singleton session lifetime is process-scoped;
-#             cleanup relies on OS-delivered EOF when stdin/stdout close.
+# MCP Tool Adapter + role-based registry. Provides a real stdio transport via
+# mcp.ClientSession plus a bootstrap handshake that harvests tool schemas into
+# the Tool RAG store and the SQLite tool_registry catalog. Sessions are tracked
+# in a per-server registry whose lifetime is the host process; teardown is
+# explicit via shutdown_mcp_sessions(), wired into the application lifespan.
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 import shlex
 from collections import defaultdict
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    MutableMapping,
+    Optional,
+    Type,
+)
 from urllib.parse import urlparse
 
 from langchain_core.tools import BaseTool
@@ -31,6 +42,10 @@ if TYPE_CHECKING:
     from brain.state import AIlienantGraphState
 
 logger = logging.getLogger("MCP_ADAPTER")
+
+# Human-approval window for a gated MCP tool call. Kept env-configurable so a
+# slow remote round-trip does not require a code change to tune the deadline.
+_MCP_HITL_TIMEOUT_SEC: float = float(os.environ.get("MCP_HITL_TIMEOUT_SEC", "120"))
 
 
 # =====================================================================
@@ -72,7 +87,17 @@ class McpToolAdapter(BaseTool):
     """LangChain BaseTool wrapper around a single MCP tool endpoint.
 
     _call_mcp_tool() dispatches a real mcp.ClientSession.call_tool() over the
-    process-singleton session opened by bootstrap_mcp_session().
+    session opened for ``server_name`` by bootstrap_mcp_session().
+
+    Permission gate:
+        When a caller injects ``session_permission_mode`` (the runtime session
+        policy), _arun() classifies the tool's privilege tier and consults the
+        permission matrix before any remote call. A mutating tier is denied
+        outright under plan mode, routed to human approval under the default
+        mode (always for the most-restricted tier), and allowed under the
+        auto mode. A read-only tier is friction-free. The approval channel is
+        injected as ``request_approval`` so this module never imports the API
+        layer.
 
     Timeout:
         asyncio.wait_for wraps _call_mcp_tool() with a configurable deadline (default 30s)
@@ -84,6 +109,14 @@ class McpToolAdapter(BaseTool):
     args_schema: Type[BaseModel] = _McpToolInput
 
     mcp_tool_name: str = Field(description="Canonical name of the MCP tool on the server.")
+    server_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Name of the MCP server that owns this tool. Selects the session in "
+            "the registry and scopes the curated privilege-tier override; None "
+            "resolves to the default session."
+        ),
+    )
     timeout_s: float = Field(default=30.0, description="asyncio.wait_for deadline in seconds.")
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
@@ -91,16 +124,81 @@ class McpToolAdapter(BaseTool):
             "McpToolAdapter is async-only. Use arun() / _arun() instead."
         )
 
-    async def _arun(self, arguments: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
-        """Invoke the MCP tool asynchronously with a hard timeout.
+    async def _arun(
+        self,
+        arguments: Optional[Dict[str, Any]] = None,
+        *,
+        session_id: Optional[str] = None,
+        session_permission_mode: Optional[str] = None,
+        request_approval: Optional[
+            Callable[..., Awaitable[Optional[Dict[str, Any]]]]
+        ] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Invoke the MCP tool asynchronously, gated by the permission matrix.
+
+        session_id / session_permission_mode / request_approval are
+        caller-injected runtime context, NOT model-chosen arguments — they are
+        accepted here but kept OUT of args_schema so they never enter the
+        tool-selection payload. The gate engages only when a caller supplies the
+        session policy; an unwired caller falls straight through to the call.
 
         Raises asyncio.TimeoutError if the MCP call exceeds timeout_s.
         Raises RuntimeError if invoked before bootstrap_mcp_session() opened a session.
         """
         call_args: Dict[str, Any] = arguments or {}
+
+        if session_permission_mode is not None:
+            from core.permissions import (  # core-only import — no API-layer cycle
+                PermissionDecision,
+                PermissionMode,
+                classify_tool_privilege,
+                evaluate_action,
+                session_mode_from_channel,
+            )
+
+            tier = classify_tool_privilege(
+                self.mcp_tool_name, self.description, self.server_name
+            )
+            verdict = evaluate_action(
+                session_mode_from_channel(session_permission_mode),
+                tier,
+                # Coder identity floor. A read-only tier short-circuits to ALLOW
+                # before the floor is consulted, so a search-style tool is never
+                # forced through approval.
+                PermissionMode.EDIT_EXECUTE_RBW,
+            )
+
+            if verdict is PermissionDecision.DENY:
+                return (
+                    f"[mcp:{self.mcp_tool_name}] DENIED — plan mode is read-only; "
+                    "tool not called."
+                )
+
+            if verdict is PermissionDecision.HITL:
+                # No session or no approval channel means no way to surface the
+                # request — refuse rather than silently calling an unapproved tool.
+                if not session_id or request_approval is None:
+                    return (
+                        f"[mcp:{self.mcp_tool_name}] BLOCKED — approval required but "
+                        "no channel is available to request it; tool not called."
+                    )
+                approval = await request_approval(
+                    session_id=session_id,
+                    action_description=f"MCP_TOOL_CALL: {self.mcp_tool_name}",
+                    proposed_content=json.dumps(call_args, default=str)[:2000],
+                    request_kind="MCP_TOOL_CALL",
+                    timeout_s=_MCP_HITL_TIMEOUT_SEC,
+                )
+                if not approval or not approval.get("approved"):
+                    return (
+                        f"[mcp:{self.mcp_tool_name}] BLOCKED — tool call was not "
+                        "approved; tool not called."
+                    )
+
         logger.debug(
-            "McpToolAdapter._arun: tool=%s args=%s timeout=%.1fs",
-            self.mcp_tool_name, list(call_args.keys()), self.timeout_s,
+            "McpToolAdapter._arun: tool=%s server=%s args=%s timeout=%.1fs",
+            self.mcp_tool_name, self.server_name, list(call_args.keys()), self.timeout_s,
         )
         return await asyncio.wait_for(
             self._call_mcp_tool(call_args),
@@ -110,16 +208,18 @@ class McpToolAdapter(BaseTool):
     async def _call_mcp_tool(self, arguments: Dict[str, Any]) -> Any:
         """Execute the MCP tool call over the wire via the bootstrapped session.
 
-        Phase 5.2: uses the process-singleton mcp.ClientSession opened by
-        bootstrap_mcp_session(). Raises RuntimeError if invoked before bootstrap
-        — call sites must invoke bootstrap_mcp_session(...) on app startup.
+        Resolves the session for this tool's server in the registry. Raises
+        RuntimeError if invoked before bootstrap_mcp_session() opened that
+        session — call sites must connect the server on app startup.
         """
-        if _session_singleton is None:
+        key = self.server_name or _DEFAULT_SESSION_KEY
+        session = _sessions.get(key)
+        if session is None:
             raise RuntimeError(
                 f"MCP session not bootstrapped; cannot call {self.mcp_tool_name!r}. "
                 "Call tools.mcp_adapter.bootstrap_mcp_session(uri, state) first."
             )
-        return await _session_singleton.call_tool(self.mcp_tool_name, arguments)
+        return await session.call_tool(self.mcp_tool_name, arguments)
 
 
 # =====================================================================
@@ -186,15 +286,16 @@ tool_registry = McpToolRegistry()
 
 
 # =====================================================================
-# 5. PHASE 5.2 — STDIO TRANSPORT + BOOTSTRAP HANDSHAKE
+# 5. STDIO TRANSPORT + BOOTSTRAP HANDSHAKE
 # =====================================================================
 
-# Module-level singletons. Lifetime is the entire Python process; cleanup
-# is delegated to OS-delivered EOF on stdin/stdout when the process exits
-# (see PHASE_5_BLUEPRINT Flag C in the plan). No atexit hook for the
-# async session — that pattern is unreliable once the event loop stops.
-_session_singleton: Optional[ClientSession] = None
-_exit_stack: Optional[AsyncExitStack] = None
+# Per-server session registry. Lifetime is the host process; teardown is
+# explicit via shutdown_mcp_sessions(), wired into the application lifespan.
+# Each server keeps its own AsyncExitStack so one server's connect failure or
+# re-connect never entangles or leaks another server's stdio process.
+_DEFAULT_SESSION_KEY = "__default__"
+_sessions: Dict[str, ClientSession] = {}
+_exit_stacks: Dict[str, AsyncExitStack] = {}
 
 
 def _parse_mcp_uri(uri: str) -> StdioServerParameters:
@@ -249,17 +350,28 @@ async def bootstrap_mcp_session(
     uri: Optional[str],
     state: "AIlienantGraphState",
     *,
+    server_name: Optional[str] = None,
     timeout_sec: float = MCP_HANDSHAKE_TIMEOUT_SEC,
 ) -> bool:
     """Open a stdio MCP session, harvest tool schemas, populate the Tool RAG store.
 
-    Returns True on success, False on any fallback path (None URI, timeout,
-    connection error). Never raises — failures are logged to
-    state['permission_audit_log'] as event='tool_rag_fallback'.
+    The session is registered under ``server_name`` (None resolves to the
+    default key) so multiple enabled servers coexist and each adapter routes to
+    its own server. Idempotent: a server already present in the registry is a
+    no-op, so re-invocation never spawns a duplicate stdio process.
+
+    Returns True on success (or when already connected), False on any fallback
+    path (None URI, timeout, connection error). Never raises — failures are
+    logged to state['permission_audit_log'] as event='tool_rag_fallback'.
     """
-    global _session_singleton, _exit_stack
+    key = server_name or _DEFAULT_SESSION_KEY
 
     audit_log: List[Dict[str, Any]] = state.setdefault("permission_audit_log", [])
+
+    # Idempotent connect — never reopen a server that already holds a session.
+    if key in _sessions:
+        logger.debug("bootstrap_mcp_session: %r already connected — no-op.", key)
+        return True
 
     if uri is None:
         state["mcp_server_endpoint"] = None
@@ -340,7 +452,7 @@ async def bootstrap_mcp_session(
             name=name,
             description=description,
             json_schema=json_schema,
-            privilege_tier=classify_tool_privilege(name, description),
+            privilege_tier=classify_tool_privilege(name, description, server_name),
             allowed_roles=frozenset({"core_dev"}),  # safe default
         )
         try:
@@ -352,18 +464,68 @@ async def bootstrap_mcp_session(
                 "bootstrap_mcp_session: failed to register %r: %s", name, exc
             )
 
-    _session_singleton = session
-    _exit_stack = stack
+    _sessions[key] = session
+    _exit_stacks[key] = stack
     state["mcp_server_endpoint"] = uri
     audit_log.append(
         _audit_entry("mcp_bootstrap_success", uri=uri, discovered=discovered)
     )
-    logger.info("bootstrap_mcp_session: %d tools discovered from %r.", discovered, uri)
+    logger.info(
+        "bootstrap_mcp_session: %d tools discovered from %r (server=%r).",
+        discovered, uri, key,
+    )
     return True
 
 
+async def autoconnect_enabled_mcp_servers(
+    state: Optional[MutableMapping[str, Any]] = None,
+) -> int:
+    """Connect every enabled MCP server in the catalog. Returns the count connected.
+
+    Idempotent via bootstrap_mcp_session's skip-if-connected guard, so it is safe
+    to call at app startup and again as a lazy first-task fallback. Never raises —
+    each per-server failure is already absorbed into the audit log.
+    """
+    if state is None:
+        state = {}
+
+    from core.db import list_mcp_servers  # local import to avoid top-level cycles
+
+    connected = 0
+    for row in await list_mcp_servers():
+        if not row.get("enabled"):
+            continue
+        ok = await bootstrap_mcp_session(
+            row["uri"], state, server_name=row["name"]  # type: ignore[arg-type]
+        )
+        if ok:
+            connected += 1
+    logger.info("autoconnect_enabled_mcp_servers: %d server(s) connected.", connected)
+    return connected
+
+
+async def shutdown_mcp_sessions() -> None:
+    """Close every open MCP session. The single teardown choke point.
+
+    Each server's AsyncExitStack is closed best-effort so one failure does not
+    block the rest, then the registry is cleared. Wired into the application
+    lifespan shutdown so stdio child processes never outlive the host.
+    """
+    for key, stack in list(_exit_stacks.items()):
+        try:
+            await stack.aclose()
+        except Exception:  # noqa: BLE001 — teardown is best-effort
+            logger.debug("shutdown_mcp_sessions: cleanup noise for %r.", key, exc_info=True)
+    _exit_stacks.clear()
+    _sessions.clear()
+
+
 def _reset_mcp_session_for_tests() -> None:
-    """Test-only: clear the singletons. NOT for production use."""
-    global _session_singleton, _exit_stack
-    _session_singleton = None
-    _exit_stack = None
+    """Test-only: clear the session registry. NOT for production use.
+
+    Mirrors the historical sync reset (drop references without awaiting a close);
+    real teardown is covered by shutdown_mcp_sessions(). Safe to call outside an
+    event loop.
+    """
+    _exit_stacks.clear()
+    _sessions.clear()

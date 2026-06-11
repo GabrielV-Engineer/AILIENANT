@@ -4,7 +4,7 @@
 
 ## Fase 8.4.4: Auto-connect de servers MCP + dispatch-guard del adapter — 2026-06-11
 
-**Estado:** ✅ COMPLETO (cierra DEBT-027) | **Gates:** `mypy .` 0/273 · `npx pyright` 0 nuevos (2 baseline langchain BaseTool, verificados en HEAD) · pytest dispatch-guard+handshake 19 green · slice de regresión (execute_tier_gate + mcp_registry + classify) 45 green · suite completa green
+**Estado:** ✅ COMPLETO (cierra DEBT-027) | **Gates:** `mypy .` 0/273 · `npx pyright` 0 nuevos (2 baseline langchain BaseTool, verificados en HEAD) · pytest dispatch-guard+handshake 19 green · slice de regresión (execute_tier_gate + mcp_registry + classify) 45 green · suite completa 1116 passed, 2 skipped
 
 ### Contexto
 Dos huecos bloqueaban el gate 8.4.7: (1) `bootstrap_mcp_session` **sin caller productivo** (DEBT-027) — los servers del catálogo nunca se conectaban — y construido sobre un **único** `_session_singleton`, incapaz de representar múltiples servers `enabled`; (2) `McpToolAdapter._arun` llamaba al tool remoto **sin** consultar la matriz de permisos — un tool mutador (`github.merge_pull_request`→DANGEROUS por el catálogo 8.4.2) corría sin fricción.
