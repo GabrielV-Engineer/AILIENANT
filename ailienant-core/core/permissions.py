@@ -114,9 +114,19 @@ _VERB_SETS: Dict[ToolPrivilegeTier, frozenset[str]] = {
 
 # Curated, authoritative tier overrides keyed by "<server>.<tool>" or bare
 # "<tool>" (both lowercased). Trusted source — may downgrade as well as
-# elevate the heuristic. Intentionally empty here; populated by the
-# regulated-server catalog work.
+# elevate the heuristic. Empty at module load; the curated regulated-server
+# registry merges its entries in via register_privilege_overrides() during
+# application startup.
 _PRIVILEGE_CATALOG: Dict[str, ToolPrivilegeTier] = {}
+
+
+def register_privilege_overrides(overrides: Mapping[str, ToolPrivilegeTier]) -> None:
+    """Merge curated tier overrides into the catalog (keys lowercased).
+
+    Idempotent: re-registering the same overrides is a no-op beyond the dict
+    update, so it is safe to call once at startup and again from tests.
+    """
+    _PRIVILEGE_CATALOG.update({key.lower(): tier for key, tier in overrides.items()})
 
 # Split on camelCase boundaries (lower→Upper, Upper→Upper+lower) and on any
 # run of separator characters, so "mergePullRequest" and "merge_pull_request"

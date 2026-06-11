@@ -2,6 +2,42 @@
 
 ---
 
+## Fase 8.4.2: Catálogo curado de registry — SSoT de servidores regulados (tier map + install metadata) — 2026-06-10
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/270 · `npx pyright` 0/0 (archivos tocados) · pytest 1095 passed / 2 skipped · suite focalizada 52 passed
+
+### Contexto
+8.4.1 dejó `_PRIVILEGE_CATALOG` como seam **vacío** pero load-bearing. La heurística de verbo fail-closed tiene puntos ciegos en servidores reales: `postgres.query` no lleva verbo reconocido → cae a DANGEROUS, cuando es genuinamente READ_ONLY; `github.merge_pull_request` acierta DANGEROUS por suerte. 8.4.2 puebla ese seam para los 4 servidores regulados y añade la metadata de instalación one-click que consumirán el auto-connect (8.4.4) y la UX "Browse Registry" (8.4.6).
+
+### Implementación
+- **`core/mcp_registry.py` (nuevo, SSoT único).** `RegulatedServer` (`@dataclass(frozen=True)`) con install metadata (`command`/`args`/`secrets`/`transport`) **y** `tool_tiers` por servidor. `build_privilege_catalog()` aplana a claves `"<server>.<tool>"` (lowercased); `init_registry()` las mergea en el motor de permisos. Sin dual SSoT: el catálogo se **deriva** del registry.
+- **Init explícito, sin side-effect de import.** `init_registry()` se invoca en la secuencia de boot de `main.py` (tras `init_audit_table`) — auditable e idempotente; nada de `import … # noqa: F401`.
+- **`register_privilege_overrides(mapping)`** añadido a `core/permissions.py` (mergea en `_PRIVILEGE_CATALOG` con claves lowercased; preserva el seam de monkeypatch de 8.4.1).
+- **Clean architecture:** `ALLOWED_MCP_COMMANDS` extraída de `api/mcp_servers.py` a **`core/mcp_constants.py`** para que `mcp_registry` no dependa de la capa de transporte. `_POLICY_ERROR` permanece en `api/` (mensaje de cliente; lo importa `test_dashboard_segments.py`).
+- **Dataclass endurecida (fail-loud, no `assert`):** `__post_init__` rechaza nombre no-lowercase, transport ≠ stdio, comando fuera del allowlist, nombres de secreto no-POSIX (`^[A-Z_][A-Z0-9_]*$`), y cualquier `arg` que parezca secreto/URL (`"://"` o `len > 100`). Se usa `raise`, no `assert` (los asserts se eliminan bajo `python -O`).
+
+### Decisión: connection string de PostgreSQL es secreto, no `arg`
+El string de conexión nunca viaja en `args` (estructurales). Se declara como el secreto `POSTGRES_CONNECTION_STRING`; el valor se colecta en install-time y vive en SecretStorage referenciado por `key_ref` — nunca persistido en este repositorio.
+
+### Tier map autoritativo (ADR-757)
+`brave-search.search → READ_ONLY` · `github.create_pull_request → WRITE` · `github.merge_pull_request → DANGEROUS` · `docker.run → EXECUTE` · `postgres.query → READ_ONLY` · `postgres.execute → EXECUTE`.
+
+### Alcance diferido (sin deuda nueva)
+El catálogo queda **inerte en producción hasta que 8.4.4 propague `server_name`** por el dispatch: `bootstrap_mcp_session` aún no tiene caller productivo (solo tests), y el auto-connect de servidores guardados al lanzar tarea es alcance declarado de 8.4.4. El DoD de 8.4.2 es nivel-clasificación y queda probado por unidad (con `server_name` explícito). El gate live "el HITL dispara ante un tool WRITE" es 8.4.7 (requiere 8.4.4). Corrección de auditoría: la aserción probatoria se ancla en `postgres.query` (heurística DANGEROUS → catálogo READ_ONLY, delta real), no en `execute` — `execute` ya es verbo EXECUTE desde 8.4.1, sin delta.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `ailienant-core/core/mcp_constants.py` | **nuevo** — `ALLOWED_MCP_COMMANDS` (allowlist compartido core-layer) |
+| `ailienant-core/core/mcp_registry.py` | **nuevo** — `RegulatedServer` + `REGULATED_SERVERS` (4) + `build_privilege_catalog` + `init_registry` |
+| `ailienant-core/core/permissions.py` | + `register_privilege_overrides` junto a `_PRIVILEGE_CATALOG` |
+| `ailienant-core/api/mcp_servers.py` | importa `ALLOWED_MCP_COMMANDS` de core; elimina la definición local + `FrozenSet` no usado |
+| `ailienant-core/main.py` | + `init_registry()` en el lifespan startup |
+| `ailienant-core/tests/test_mcp_registry.py` | **nuevo** — 6 resoluciones por clave calificada + delta probatorio `postgres.query` + catálogo-derivado-del-registry + integridad de metadata + anti-leak de secreto/URL en `args` |
+| `ailienant-core/tests/test_classify_tool_privilege.py` | `test_catalog_empty_by_default` → `test_catalog_bare_key_misses_regulated` (refleja el estado mutado tras el registro) |
+
+---
+
 ## Fase 8.4.0 / 8.4.1: `classify_tool_privilege()` — cierre del fail-open de privilegios MCP (DEBT-026) — 2026-06-10
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/264 · pytest 1063 passed / 2 skipped · `npx pyright` 0 errores nuevos (2 preexistentes en `BaseTool` override, sin tocar)

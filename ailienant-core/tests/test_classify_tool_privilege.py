@@ -126,6 +126,7 @@ def test_catalog_qualified_key_wins(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("server_name", [None, "unknown"])
-def test_catalog_empty_by_default(server_name: Optional[str]) -> None:
-    # With no catalog entry, classification falls through to the heuristic.
+def test_catalog_bare_key_misses_regulated(server_name: Optional[str]) -> None:
+    # A server-less (bare) or unknown-server lookup never matches a curated
+    # qualified entry, so classification falls through to the heuristic.
     assert classify_tool_privilege("delete_repo", server_name=server_name) is D

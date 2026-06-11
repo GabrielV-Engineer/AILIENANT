@@ -53,6 +53,7 @@ from brain.engine import alienant_app
 from brain.state import AIlienantGraphState
 from core.dead_letter import get_pending_dlqs, init_dlq_table, mark_dlq_resolved
 from core.audit import init_audit_table  # Phase 6.6 — HITL audit ledger
+from core.mcp_registry import init_registry
 from shared.logging_filters import SecretsScrubberFilter  # Phase 6.7 — DLP scrubber
 from langchain_core.runnables import RunnableConfig
 
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await catalog_db.init_db()
     await init_dlq_table()                   # Phase 6.4 — dead_letter_tasks table
     await init_audit_table()                 # Phase 6.6 — hitl_audit_log ledger
+    init_registry()                          # curated regulated-server tier overrides
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)

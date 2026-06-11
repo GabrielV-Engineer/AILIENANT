@@ -15,13 +15,14 @@ import logging
 import ntpath
 import uuid
 from contextlib import AsyncExitStack
-from typing import Any, Dict, FrozenSet, Sized, cast
+from typing import Any, Dict, Sized, cast
 
 from fastapi import APIRouter
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
 import core.db as catalog_db
+from core.mcp_constants import ALLOWED_MCP_COMMANDS
 from core.tool_rag import MCP_HANDSHAKE_TIMEOUT_SEC
 from tools.mcp_adapter import _parse_mcp_uri
 
@@ -31,12 +32,9 @@ router = APIRouter(prefix="/api/v1/mcp", tags=["mcp"])
 
 # S2 — command-injection defense for stdio:// MCP servers. A URI maps to an
 # arbitrary executable, so we enforce a strict basename allowlist on BOTH the
-# save and test paths. There is deliberately NO "any file that exists on disk"
-# fallback (that would let stdio://../../bin/bash through). Full paths are
-# accepted only when their basename is allowlisted; path-traversal is rejected.
-_ALLOWED_MCP_COMMANDS: FrozenSet[str] = frozenset(
-    {"npx", "npm", "node", "python", "python3", "py", "uv", "uvx", "deno", "docker"}
-)
+# save and test paths. The allowlist itself lives in core.mcp_constants so the
+# curated registry shares the same policy. Path-traversal is rejected and full
+# paths are accepted only when their basename is allowlisted.
 _POLICY_ERROR: str = "Command not allowed by system policy"
 
 
@@ -57,7 +55,7 @@ def _validate_mcp_command(uri: str) -> None:
     # Strip any directory + extension; compare the bare program name.
     basename = ntpath.basename(command)
     stem = basename.rsplit(".", 1)[0] if "." in basename else basename
-    if stem.lower() not in _ALLOWED_MCP_COMMANDS:
+    if stem.lower() not in ALLOWED_MCP_COMMANDS:
         logger.warning("[mcp] rejected non-allowlisted command: %r", command)
         raise ValueError(_POLICY_ERROR)
 

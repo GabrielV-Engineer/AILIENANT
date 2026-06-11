@@ -2349,8 +2349,8 @@ the blueprint freeze lifts.
 - [x] **8.4.0 — Blueprint** (cubierto por ADR-757 en `docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`).
 - [x] **8.4.1 — `classify_tool_privilege()` — 🔴 fix de seguridad (cierra DEBT-026)**
   - Reemplaza el hardcode `READ_ONLY` de `mcp_adapter.py:344`. Precedencia **catálogo > heurística de verbo > DANGEROUS** (fail-closed); alimenta `rbwe_guard`/`evaluate_action` para que el Asymmetric Friction HITL por fin dispare. **Bloquea 8.5 (tools EXECUTE-tier). DoD:** un tool con verbo de mutación entra como WRITE/EXECUTE/DANGEROUS, nunca READ_ONLY por omisión. ✅ La válvula de sesión "confiar-una-vez" + el wiring del guard en el dispatch MCP se difieren (DEBT-029 → 8.4.4/8.4.7); el HITL disparando ante un tool WRITE es el DoD del gate 8.4.7.
-- [ ] **8.4.2 — Catálogo curado de registry** (github / brave-search / docker / postgres)
-  - Mapa de tier por-tool + metadata de instalación one-click. **DoD:** los 4 servers regulados resuelven a su tier correcto (override sobre la heurística).
+- [x] **8.4.2 — Catálogo curado de registry** (github / brave-search / docker / postgres) — ✅ 2026-06-10
+  - Mapa de tier por-tool + metadata de instalación one-click. **DoD:** los 4 servers regulados resuelven a su tier correcto (override sobre la heurística). ✅ SSoT en `core/mcp_registry.py` (install metadata + tool tiers; `_PRIVILEGE_CATALOG` se *deriva* vía `init_registry()`); allowlist de comandos extraída a `core/mcp_constants.py`. El catálogo queda **inerte en producción hasta que 8.4.4 propague `server_name`** por el auto-connect (`bootstrap_mcp_session` aún sin caller productivo) — sin deuda nueva, el consumo ya está en alcance de 8.4.4.
 - [ ] **8.4.3 — Import/export `.ailienant/config.json`**
   - Upsert idempotente keyed por nombre de server; **secretos jamás en el JSON** (`key_ref: vscode_secret:...` → SecretStorage); import en máquina fresca promptea el secreto (no viaja). **DoD:** round-trip export→import sin duplicar servers ni filtrar secretos.
 - [ ] **8.4.4 — Auto-connect MCP al lanzar tarea + wiring del dispatch guard** (cierra DEBT-027, cierra DEBT-029 parcial)
