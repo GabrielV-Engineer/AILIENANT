@@ -64,6 +64,5 @@ Whenever you are instructed to generate Git commands for the user to execute, yo
 2. **FORMAT:** You MUST use the inline double-flag format: `git commit -m "feat: title here" -m "Brief 1-2 sentence description here."`
 3. **NO NOVELS IN COMMITS:** Do not dump exhaustive changelogs, variable lists, or DoD checklists inside the commit message. The commit body (`-m`) must be a concise summary. Verbose architectural details belong ONLY in `DEV_JOURNAL.md` or PR notes.
 4. **GRANULAR ADDS:** Always format `git add` commands one per line (e.g., `git add file1.py \n git add file2.ts`) instead of inline chaining or backslash (`\`) continuation, which breaks in some PowerShell environments.
-5. **MAIN-ONLY WORKFLOW — NO BRANCHES:** This is a solo-developer project. You MUST NEVER suggest or generate `git checkout -b`, `git branch`, `git switch -c`, or `git push origin <branch>` commands. All work commits directly to `main`. The only valid push command is `git push origin main`. If you find yourself wanting to suggest a branch for isolation, use `git stash` instead and note the stash ref.
 
 **Violation of this protocol will result in rejected mutations.**
