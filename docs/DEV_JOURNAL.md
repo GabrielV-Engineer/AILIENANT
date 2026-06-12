@@ -2,6 +2,40 @@
 
 ---
 
+## Fase 8.5.0: Blueprint — External Capability Gateway (rescoped, ADR-759) — 2026-06-11
+
+**Estado:** ✅ COMPLETO (docs-only) | **Gate:** documentario — blueprint coherente, manifest marcado `[x]`, README actualizado, cero código/config mutado
+
+### Contexto
+División 8.5 convierte AILIENANT de **consumidor** de tools MCP externos (track 8.4, cerrado) a **proveedor**: un MCP server multi-tool stdio que deja a agentes externos (Claude Code, Codex) operar AILIENANT, con el benchmark como su primer consumidor. La decisión semilla (ADR-758, single-tool `run_task`) fue **rescoped** a ADR-759 (gateway general multi-tool). Esta sub-fase es el **blueprint docs-only** que vuelve ejecutable el resumen de ADR-759 — ADR-759 es explícito: *"No source is written in the docs task."*
+
+### Decisiones de arquitectura (D1–D8, bajo ADR-759, sin acuñar nuevos ADR top-level)
+1. **D1 — Adaptador de dos vías.** Verbos EXECUTE (`run_task`/`run_benchmark`) viajan por **loopback localhost** a `POST /api/v1/task/submit` (pasa por `_require_token` real, contrato público exacto, sin segunda vía que derive); verbos READ_ONLY llaman al core in-process. Home: `ailienant-core/gateway/` (creado en 8.5.1).
+   - **D1a — Host Discovery (paradoja de ciclo de vida).** El gateway stdio es un **proceso hijo efímero** sin memoria compartida con el host FastAPI de VS Code. El host escribe `~/.ailienant/run.json` (`{port, loopback_token, pid}`) al arrancar. **Resiliencia a archivo huérfano:** un SIGKILL/crash deja el archivo apuntando a un puerto muerto → el gateway lo trata como *hint, no verdad*: verifica `pid` vivo **y** timeout de conexión estricto ~2 s; en pid-muerto/refused/timeout emite error limpio *"AILIENANT host is not running. Please open VS Code…"*, nunca un `ConnectionRefusedError` crudo. **Protección de token:** `run.json` lleva el token loopback god-tier → escrito `0600` owner-only (misma postura que `core/config/mcp_secrets.py`). MVP = fail-fast; auto-start headless diferido.
+2. **D2 — Identidad del caller = `caller_id` derivado de su token** (distinto del token de servicio loopback).
+3. **D3 — Ledger out-of-band Y durable.** `GatewayCallerLedger` keyed por `caller_id` (token-bucket + budget acumulado de tokens) como **control de seguridad** → **persistido a disco** (SQLite del catálogo o JSON con `filelock`), no in-memory: un proceso stdio efímero permitiría a un atacante/loop resetear el budget reconectando. Patrón de acceso = `_sessions`/`_session_trust`, pero la persistencia es obligatoria. **Out-of-band del grafo:** jamás toca `AIlienantGraphState`/`ContextMeter`/`MissionSpecification`. **Aterriza en el MVP 8.5.2, no diferido.**
+4. **D4 — Postura conservadora fijada en el edge.** El gateway fija la postura antes de `evaluate_action`; el input externo nunca puede elevarla (sin auto-escalación). Principio: **never silent AUTO** + HITL/DANGEROUS → degrade-deny. Reusa los enums existentes; **no acuña un modo nuevo** sin enmienda.
+5. **D5 — HITL-degrade = deny-report, nunca cuelga.** Veredicto HITL/DANGEROUS → `{status:"denied", tier, reason, would_have_required:"human_approval"}` inmediato; jamás llama a `request_human_approval` (no hay humano en el loop del caller). REST+WS sigue siendo la vía full-fidelity para nuestra extensión.
+6. **D6 — Async = poll-pair, NO HTTP 202/stream.** MCP-over-stdio es JSON-RPC puro: sin 202, y un LLM externo no consume un "stream" desde una respuesta de tool-call. Par de tools: `run_task`/`run_benchmark` devuelven `task_id` + instrucción en lenguaje natural ("en progreso, poll con el id"); **`check_task_status` (READ_ONLY)** poll. El handle es el `task_id` existente; sin nuevo store. `check_task_status` es una **adición del blueprint** al catálogo v1 (omitido en la tabla resumen de ADR-759), aterriza en 8.5.4.
+7. **D7 — Versioning semver** (`protocol_version` + `schema_version` por capability; ventana de deprecación N-minor; callers pinean).
+8. **D8 — Permisos simétricos, sin fork** (`classify_tool_privilege`/`evaluate_action` — misma tabla de precedencia; forking PROHIBIDO).
+
+### §3 Conflictos levantados
+Siete conflictos resueltos, incluido **(g):** ningún `SessionPermissionMode` (DEFAULT/PLAN/AUTO) expresa limpiamente "verbos EXECUTE curados corren pero DANGEROUS interno se deniega" → 8.5.2 compone la postura desde los enums existentes (verbos del gateway pre-autorizados en la capa de capability; el modo del task interno fija el degrade-deny). Más: inmutabilidad vs. estado por-caller, READ_ONLY directo que evita `_require_token`, token loopback, impedancia HITL, gap de ciclo de vida, amnesia del ledger.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `docs/PHASE_8_5_BLUEPRINT.md` | **nuevo** — blueprint ejecutable (objetivo, D1–D8, §3 conflictos, WBS, catálogo v1, staging, LOCK, verificación) |
+| `docs/PROJECT_MANIFEST.md` | 8.5.0 marcado `[x]` apuntando al blueprint |
+| `DEVELOPERS.md` | sin cambios — el glob `docs/PHASE_*_BLUEPRINT.md` (línea 421) ya cubre el nuevo archivo; README no tiene sección Repository Layout (tabla de docs user-facing) |
+
+### Diferido
+- Superficie de registro/instalación FE (`ailienant-extension/` TS) — fuera de scope, futura.
+- Auto-start headless del host desde el gateway — nota de diseño diferida (MVP falla rápido por D1a).
+
+---
+
 ## División 8.7: Analyst Tri-Brain + Model Selector — 2026-06-11
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/276 · `npm run compile` 0 · `npm run lint` 0 · `pytest` 1117 passed, 2 skipped · `test_analyst_brains.py` 14/14 green
