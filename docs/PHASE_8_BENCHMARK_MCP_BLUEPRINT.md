@@ -9,7 +9,7 @@
 | ADR | Division | Title | State |
 |-----|----------|-------|-------|
 | ADR-756 | 8.3 | Precision Benchmarking & Ablation Methodology | OPEN |
-| ADR-757 | 8.4 | MCP Config SSoT + Tool Privilege Classification | PARTIALLY CLOSED (8.4.0–8.4.4 ✅; 8.4.5–8.4.7 OPEN) |
+| ADR-757 | 8.4 | MCP Config SSoT + Tool Privilege Classification | CLOSED (8.4.0–8.4.7 ✅; 8.4.8–8.4.9 BYOM closed separately) |
 | ADR-758 | 8.5 | Ailienant-as-MCP-Server (origin) | SUPERSEDED by ADR-759 |
 | ADR-759 | 8.5 | External Capability Gateway | OPEN |
 | ADR-760 | 8.6 | Phase 8 Checkpoint Gate | OPEN |
@@ -206,6 +206,19 @@ The curated registry (8.4.2) shipped install metadata but no UX and no way to ac
 7. **Permission guard = severity-coded tier badges** — each card renders its `tool_tiers` as colored badges before install (the conscious-consent surface), plus a `source_url` link for tech-lead source review.
 
 **DEBT-031 load-bearing half closed (store + injection).** Synergy: a live credentialed github install is what lets 8.4.7's DoD-check fire HITL on a *real* WRITE tool, not just a sandbox stub. **DEBT-033 logged:** the `config.json` `key_ref` round-trip + import/export UI + fresh-machine prompt (usability, not security — export already redacts).
+
+### Amendment — DoD-check: live gate via ContextVar injection + trust-once valve (8.4.7, closes DEBT-029)
+
+The 8.4.4 guard was architecturally correct but **runtime-dead**: LangChain invokes `_arun(arguments=...)` without the session context kwargs, so `session_permission_mode` was always `None` and the gate never fired for LLM-orchestrated tool calls.
+
+**Binding decisions:**
+
+1. **ContextVar ambient injection** — `_task_session_id` and `_task_session_mode` (`contextvars.ContextVar`, stdlib) are set by `task_service` immediately before `alienant_app.astream()` and reset in the `finally` block. `_arun` resolves effective context as `session_permission_mode or _task_session_mode.get()` — explicit kwarg takes priority (tests, direct calls), ContextVar is the live LangChain path. Zero changes to LangChain; zero new `api/` imports in `mcp_adapter`.
+2. **Trust-once session valve** — `_session_trust: Dict[str, Set[str]]` (module-level, keyed by `session_id`). After a user approves an MCP HITL request, `_grant_session_trust(session_id, tool_name)` is called; subsequent calls to the same tool within the same task skip the prompt. `clear_session_trust(session_id)` — called in the `task_service` `finally` — wipes all grants so they never cross task boundaries. The trust is per-tool, not per-server.
+3. **Default approval channel** — when `request_approval` is `None` and a session_id is available, `_arun` lazily imports `vfs_manager.request_human_approval` (same pattern as `sandbox.py`/`supervisor.py`, no API-layer cycle at import time). An absent `session_id` is the only true block: the WS request cannot be routed without a target socket.
+4. **FE HITL-card binding** — `HITLIntervention.request_kind?: string` added so the card can render different chrome for different approval kinds. `request_kind === 'MCP_TOOL_CALL'` renders a `plug` icon, "MCP tool call" title, and a trust-for-session hint. `hitlNotifier.ts` adds `'MCP_TOOL_CALL'` to `WARNING_KINDS` (elevated warning-level toast severity). The `request_kind` field is already present in `HITLApprovalRequestPayload`/`vfs_manager.request_human_approval` and threaded through the existing WS event — no backend contract change.
+
+**DEBT-029 fully closed.**
 
 ---
 

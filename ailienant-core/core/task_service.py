@@ -538,6 +538,19 @@ class TaskService:
         # NarrationGate budget (which governs `server_pipeline_step` only).
         thinking_streamer = _ThinkingStreamer(session_id)
 
+        # Set ambient MCP session context so McpToolAdapter._arun can gate
+        # tool calls even when LangChain does not thread these as kwargs.
+        # Tokens are reset in the finally block regardless of exit path.
+        from tools.mcp_adapter import (
+            _task_session_id as _mcp_sid_var,
+            _task_session_mode as _mcp_mode_var,
+            clear_session_trust,
+        )
+        _mcp_sid_tok = _mcp_sid_var.set(session_id)
+        _mcp_mode_tok = _mcp_mode_var.set(
+            str(state.get("session_permission_mode") or "DEFAULT")
+        )
+
         # Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh. CancelledError
         # may surface from ANY await in this coroutine (planner, coder steps,
         # HITL approval, write pipeline). The single outer except catches it,
@@ -784,6 +797,12 @@ class TaskService:
             # mark the runner task as cancelled, but the user-visible flow is
             # already complete (broadcast_stream_end fired).
             return
+        finally:
+            # Reset the ambient MCP session context and wipe per-task trust
+            # grants so they never bleed into a subsequent task.
+            _mcp_sid_var.reset(_mcp_sid_tok)
+            _mcp_mode_var.reset(_mcp_mode_tok)
+            clear_session_trust(session_id)
 
     @staticmethod
     def _format_coding_summary(

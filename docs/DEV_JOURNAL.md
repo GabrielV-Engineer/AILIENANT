@@ -84,7 +84,31 @@ Dos huecos bloqueaban el gate 8.4.7: (1) `bootstrap_mcp_session` **sin caller pr
 | `tests/test_mcp_handshake.py` | migración al registro + multi-server/idempotencia/teardown/autoconnect |
 
 ### Diferido
-- **8.4.7:** válvula trust-once (DEBT-029 restante) · dispatcher e2e live del cell/graph que inyecta el contexto de sesión y ejecuta un tool MCP real · binding del request_kind `MCP_TOOL_CALL` a la severidad/título de la HITL card del frontend.
+- ~~**8.4.7:** válvula trust-once (DEBT-029 restante) · dispatcher e2e live del cell/graph · binding del request_kind `MCP_TOOL_CALL` a la HITL card del frontend.~~ → **COMPLETADO en el hito 8.4.7 a continuación.**
+
+---
+
+## Hito 8.4.7 — DoD-check: HITL en vivo sobre un tool MCP real — 2026-06-11
+
+**Estado:** ✅ COMPLETO (cierra DEBT-029) | **Gates:** `mypy .` 0/280 · `tsc` 0 · `eslint` 0 · `test_mcp_dispatch_guard.py` 15/15
+
+### Contexto
+El gate 8.4.4 inyectó la matriz de permisos en `McpToolAdapter._arun` pero el mecanismo dependía de kwargs explícitos (`session_permission_mode`, `request_approval`) que **LangChain nunca pasa** cuando invoca el tool desde el plan del LLM — la gate era muerta en runtime. Tres huecos complementarios también quedaban abiertos: (1) sin valid `request_approval` callable cuando el path es LangChain-orchestrated, (2) sin memoria de aprobaciones previas (cada llamada al mismo tool WRITE disparaba un HITL nuevo), y (3) sin binding visual en el FE para el `request_kind="MCP_TOOL_CALL"`.
+
+### Decisiones de arquitectura
+1. **ContextVar ambient injection** — patrón `contextvars.ContextVar` (stdlib, async-safe): `task_service` fija `_task_session_id` y `_task_session_mode` justo antes de `alienant_app.astream()` y los resetea en el bloque `finally`. `_arun` lee los vars si los kwargs explícitos están ausentes (`effective_mode = session_permission_mode or _task_session_mode.get()`). Zero cambios al mecanismo de LangChain; zero imports de `api/` desde `mcp_adapter`.
+2. **Trust-once valve** — `_session_trust: Dict[str, Set[str]]` (module-level, keyed por `session_id`). El `finally` de `task_service` llama a `clear_session_trust(session_id)` — los grants nunca atraviesan boundaries de task. Un grant `(session_id, tool_name)` registrado tras una aprobación exitosa bypassa el HITL en llamadas posteriores al mismo tool. Semántica: "confiar en este tool por el resto de la tarea actual".
+3. **Default vfs_manager channel** — cuando `request_approval is None` pero `effective_session_id` existe, `_arun` construye un closure lazily (`from api.websocket_manager import vfs_manager`). Mismo patrón que `sandbox.py:530` y `supervisor.py:148`. La prueba unitaria mockea el módulo en el sitio correcto.
+4. **FE binding** — `request_kind?: string` añadido a `HITLIntervention`; `HITLInterventionCard` muestra ícono `plug` + título "MCP tool call" + hint de trust-for-session cuando `request_kind === 'MCP_TOOL_CALL'`. `hitlNotifier.ts` añade `'MCP_TOOL_CALL'` a `WARNING_KINDS` (toast amarillo).
+
+### Implementación
+| Archivo | Cambio |
+|---|---|
+| `tools/mcp_adapter.py` | `contextvars` import; `_task_session_id`/`_task_session_mode` ContextVars; `_session_trust` dict + `_is_session_trusted`/`_grant_session_trust`/`clear_session_trust`; `_arun` refactorizado con effective context, trust valve, default channel, trust grant |
+| `core/task_service.py` | Set ContextVars antes de `astream`, reset + `clear_session_trust` en `finally` |
+| `HITLInterventionCard.tsx` | `request_kind?` en `HITLIntervention`; MCP-specific header/hint |
+| `hitlNotifier.ts` | `'MCP_TOOL_CALL'` → `WARNING_KINDS` |
+| `tests/test_mcp_dispatch_guard.py` | Actualizado (test `test_hitl_without_channel_blocks` → solo caso sin session_id) + 6 tests nuevos: contextvar injection (PLAN→DENY, DEFAULT→HITL), trust-once (valve skips second, scoped by tool, clear resets), default vfs_manager channel |
 
 ---
 

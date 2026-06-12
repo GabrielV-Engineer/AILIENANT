@@ -5,16 +5,27 @@
 # routed to human approval under the default mode (always for the most
 # restricted tier), allowed under auto. Read-only tools are friction-free.
 # The approval channel is injected so these tests never import the API layer.
+#
+# 8.4.7 additions: ContextVar ambient injection (gate fires without explicit
+# kwargs), trust-once session valve, and default vfs_manager approval channel.
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any, Dict, Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tools import mcp_adapter
-from tools.mcp_adapter import McpToolAdapter
+from tools.mcp_adapter import (
+    McpToolAdapter,
+    _task_session_id,
+    _task_session_mode,
+    _grant_session_trust,
+    _session_trust,
+    clear_session_trust,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +56,7 @@ def _approval(approved: bool) -> AsyncMock:
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Gate via explicit injected kwargs (8.4.4 baseline)
 # ---------------------------------------------------------------------------
 
 
@@ -200,37 +211,205 @@ async def test_write_under_auto_runs_without_approval() -> None:
 
 
 @pytest.mark.anyio
-async def test_hitl_without_channel_blocks_and_never_calls() -> None:
-    """An HITL verdict with no session or no injected approval channel must
-    refuse rather than silently calling an unapproved tool."""
+async def test_hitl_without_session_blocks_and_never_calls() -> None:
+    """An HITL verdict with no session ID cannot deliver the WS request —
+    must refuse rather than silently calling an unapproved tool."""
     mcp_adapter._reset_mcp_session_for_tests()
     session = _seed_session("srv")
 
     adapter = _adapter("update_record", server_name="srv")
 
+    # No session_id: cannot route the approval request over WS.
     no_session = await adapter._arun(
-        arguments={}, session_id=None,
-        session_permission_mode="DEFAULT", request_approval=_approval(True),
-    )
-    no_channel = await adapter._arun(
-        arguments={}, session_id="s1",
-        session_permission_mode="DEFAULT", request_approval=None,
+        arguments={},
+        session_id=None,
+        session_permission_mode="DEFAULT",
+        request_approval=_approval(True),
     )
 
-    assert "BLOCKED" in no_session and "BLOCKED" in no_channel
+    assert "BLOCKED" in no_session
     session.call_tool.assert_not_awaited()
 
 
 @pytest.mark.anyio
 async def test_unwired_caller_falls_through_without_gate() -> None:
-    """No session_permission_mode injected → the gate is skipped entirely
-    (the contract engages only for a graph-wired dispatch that knows the mode)."""
+    """No session_permission_mode injected AND no ContextVar set → gate is
+    skipped entirely (the contract engages only for a graph-wired dispatch)."""
     mcp_adapter._reset_mcp_session_for_tests()
     session = _seed_session("srv")
 
     adapter = _adapter("delete_everything", server_name="srv")
     result = await adapter._arun(arguments={"x": 1})
 
+    assert result == {"ok": True}
+    session.call_tool.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# ContextVar ambient injection (8.4.7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_contextvar_session_wires_gate_without_explicit_kwargs() -> None:
+    """When task_service sets the ContextVars before the LangGraph run, the gate
+    fires even though LangChain never passes session_permission_mode as a kwarg."""
+    mcp_adapter._reset_mcp_session_for_tests()
+    session = _seed_session("srv")
+    approve = _approval(True)
+
+    adapter = _adapter("create_issue", server_name="srv")
+
+    # Simulate what task_service does before the graph run.
+    tok_sid = _task_session_id.set("sess-ctx")
+    tok_mode = _task_session_mode.set("PLAN")
+    try:
+        result = await adapter._arun(arguments={}, request_approval=approve)
+    finally:
+        _task_session_id.reset(tok_sid)
+        _task_session_mode.reset(tok_mode)
+
+    # PLAN mode + WRITE tool → DENIED; the wire call never happened.
+    assert isinstance(result, str) and "DENIED" in result
+    session.call_tool.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_contextvar_default_mode_routes_to_hitl() -> None:
+    """ContextVar DEFAULT mode on a WRITE tool routes to the injected approval."""
+    mcp_adapter._reset_mcp_session_for_tests()
+    session = _seed_session("srv")
+    approve = _approval(True)
+
+    adapter = _adapter("update_record", server_name="srv")
+
+    tok_sid = _task_session_id.set("sess-ctx2")
+    tok_mode = _task_session_mode.set("DEFAULT")
+    try:
+        result = await adapter._arun(arguments={"id": 1}, request_approval=approve)
+    finally:
+        _task_session_id.reset(tok_sid)
+        _task_session_mode.reset(tok_mode)
+
+    approve.assert_awaited_once()
+    assert result == {"ok": True}
+    session.call_tool.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Trust-once session valve (8.4.7 — DEBT-029 remainder)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_trust_once_skips_second_hitl_within_same_session() -> None:
+    """After a user approves an MCP WRITE tool, subsequent calls to the same
+    tool within the same task session skip HITL entirely."""
+    mcp_adapter._reset_mcp_session_for_tests()
+    session = _seed_session("srv")
+    approve = _approval(True)
+
+    adapter = _adapter("update_record", server_name="srv")
+
+    # First call — HITL fires, user approves, trust is recorded.
+    await adapter._arun(
+        arguments={"id": 1},
+        session_id="s-trust",
+        session_permission_mode="DEFAULT",
+        request_approval=approve,
+    )
+    approve.assert_awaited_once()
+
+    # Second call — trust valve skips HITL.
+    approve2 = _approval(True)
+    result2 = await adapter._arun(
+        arguments={"id": 2},
+        session_id="s-trust",
+        session_permission_mode="DEFAULT",
+        request_approval=approve2,
+    )
+
+    approve2.assert_not_awaited()
+    assert result2 == {"ok": True}
+    assert session.call_tool.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_trust_is_tool_scoped_not_server_scoped() -> None:
+    """Trusting one tool does not grant trust for a different tool on the same server."""
+    mcp_adapter._reset_mcp_session_for_tests()
+    session = _seed_session("srv")
+
+    _grant_session_trust("s-scope", "update_record")
+
+    approve = _approval(True)
+    adapter_other = _adapter("delete_record", server_name="srv")
+    await adapter_other._arun(
+        arguments={},
+        session_id="s-scope",
+        session_permission_mode="DEFAULT",
+        request_approval=approve,
+    )
+
+    # delete_record is DANGEROUS — trust for update_record must not carry over.
+    approve.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_clear_session_trust_resets_valve() -> None:
+    """clear_session_trust() wipes all grants so HITL fires again after a task ends."""
+    mcp_adapter._reset_mcp_session_for_tests()
+    session = _seed_session("srv")
+
+    _grant_session_trust("s-clear", "update_record")
+    clear_session_trust("s-clear")
+
+    approve = _approval(True)
+    adapter = _adapter("update_record", server_name="srv")
+    await adapter._arun(
+        arguments={},
+        session_id="s-clear",
+        session_permission_mode="DEFAULT",
+        request_approval=approve,
+    )
+
+    # Trust was cleared — HITL must fire again.
+    approve.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Default vfs_manager approval channel (8.4.7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_default_approval_channel_fires_from_vfs_manager() -> None:
+    """When request_approval is None but session context is present, _arun builds
+    a default approval closure from vfs_manager so the gate fires live for
+    LangChain-orchestrated calls that never pass the kwarg."""
+    mcp_adapter._reset_mcp_session_for_tests()
+    session = _seed_session("srv")
+
+    mock_vfs = MagicMock()
+    mock_vfs.request_human_approval = AsyncMock(
+        return_value={"approved": True, "comment": None}
+    )
+
+    adapter = _adapter("update_record", server_name="srv")
+
+    with patch("tools.mcp_adapter.vfs_manager", mock_vfs, create=True), \
+         patch("api.websocket_manager.vfs_manager", mock_vfs):
+        result = await adapter._arun(
+            arguments={"id": 99},
+            session_id="s-dflt",
+            session_permission_mode="DEFAULT",
+            request_approval=None,   # the live path: no injection
+        )
+
+    mock_vfs.request_human_approval.assert_awaited_once()
+    call_kwargs = mock_vfs.request_human_approval.await_args.kwargs
+    assert call_kwargs["request_kind"] == "MCP_TOOL_CALL"
+    assert call_kwargs["session_id"] == "s-dflt"
     assert result == {"ok": True}
     session.call_tool.assert_awaited_once()
 

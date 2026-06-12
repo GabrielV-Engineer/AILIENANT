@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from typing import (
     List,
     MutableMapping,
     Optional,
+    Set,
     Type,
 )
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -47,6 +49,47 @@ logger = logging.getLogger("MCP_ADAPTER")
 # Human-approval window for a gated MCP tool call. Kept env-configurable so a
 # slow remote round-trip does not require a code change to tune the deadline.
 _MCP_HITL_TIMEOUT_SEC: float = float(os.environ.get("MCP_HITL_TIMEOUT_SEC", "120"))
+
+# =====================================================================
+# AMBIENT SESSION CONTEXT
+# =====================================================================
+# These ContextVars are set by task_service before the LangGraph run so
+# McpToolAdapter._arun can consult the session policy even when LangChain
+# invokes the tool without explicit session kwargs.  Each contextvar token
+# is reset in the task_service finally block, so leakage across tasks is
+# impossible regardless of how a task exits.
+_task_session_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_mcp_task_session_id", default=None
+)
+_task_session_mode: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_mcp_task_session_mode", default=None
+)
+
+# =====================================================================
+# SESSION-SCOPED TRUST VALVE
+# =====================================================================
+# After a human explicitly approves an MCP tool call, subsequent calls
+# to the same tool within the same task session skip the HITL prompt.
+# Keyed by (session_id, tool_name).  Cleared by clear_session_trust()
+# when the task finishes (called from the task_service finally block).
+_session_trust: Dict[str, Set[str]] = defaultdict(set)
+
+
+def _is_session_trusted(session_id: str, tool_name: str) -> bool:
+    return tool_name in _session_trust.get(session_id, set())
+
+
+def _grant_session_trust(session_id: str, tool_name: str) -> None:
+    _session_trust[session_id].add(tool_name)
+
+
+def clear_session_trust(session_id: str) -> None:
+    """Remove all per-session trust grants for a finished task.
+
+    Called from the task_service finally block so trust never bleeds
+    across task boundaries.  No-op when the session is unknown.
+    """
+    _session_trust.pop(session_id, None)
 
 
 # =====================================================================
@@ -141,15 +184,25 @@ class McpToolAdapter(BaseTool):
         session_id / session_permission_mode / request_approval are
         caller-injected runtime context, NOT model-chosen arguments — they are
         accepted here but kept OUT of args_schema so they never enter the
-        tool-selection payload. The gate engages only when a caller supplies the
-        session policy; an unwired caller falls straight through to the call.
+        tool-selection payload.
+
+        When invoked via LangChain's normal tool-call path these kwargs are
+        absent, so the gate resolves context from the ambient ContextVars set
+        by task_service before the graph runs.  An unwired caller (no kwargs
+        AND no ContextVar) falls straight through — zero behavioral change for
+        tests and callers that predate the gate.
 
         Raises asyncio.TimeoutError if the MCP call exceeds timeout_s.
         Raises RuntimeError if invoked before bootstrap_mcp_session() opened a session.
         """
         call_args: Dict[str, Any] = arguments or {}
 
-        if session_permission_mode is not None:
+        # Resolve session context — explicit kwargs take priority; fall back to
+        # the ambient values set by task_service before the LangGraph run.
+        effective_session_id = session_id or _task_session_id.get()
+        effective_mode = session_permission_mode or _task_session_mode.get()
+
+        if effective_mode is not None:
             from core.permissions import (  # core-only import — no API-layer cycle
                 PermissionDecision,
                 PermissionMode,
@@ -161,41 +214,64 @@ class McpToolAdapter(BaseTool):
             tier = classify_tool_privilege(
                 self.mcp_tool_name, self.description, self.server_name
             )
-            verdict = evaluate_action(
-                session_mode_from_channel(session_permission_mode),
-                tier,
-                # Coder identity floor. A read-only tier short-circuits to ALLOW
-                # before the floor is consulted, so a search-style tool is never
-                # forced through approval.
-                PermissionMode.EDIT_EXECUTE_RBW,
-            )
 
-            if verdict is PermissionDecision.DENY:
-                return (
-                    f"[mcp:{self.mcp_tool_name}] DENIED — plan mode is read-only; "
-                    "tool not called."
+            # Trust-once valve: skip HITL if the user already approved this
+            # tool during the current task session.
+            if effective_session_id and _is_session_trusted(
+                effective_session_id, self.mcp_tool_name
+            ):
+                pass  # trusted — fall through to the wire call below
+            else:
+                verdict = evaluate_action(
+                    session_mode_from_channel(effective_mode),
+                    tier,
+                    # Coder identity floor. A read-only tier short-circuits to
+                    # ALLOW before the floor is consulted, so a search-style
+                    # tool is never forced through approval.
+                    PermissionMode.EDIT_EXECUTE_RBW,
                 )
 
-            if verdict is PermissionDecision.HITL:
-                # No session or no approval channel means no way to surface the
-                # request — refuse rather than silently calling an unapproved tool.
-                if not session_id or request_approval is None:
+                if verdict is PermissionDecision.DENY:
                     return (
-                        f"[mcp:{self.mcp_tool_name}] BLOCKED — approval required but "
-                        "no channel is available to request it; tool not called."
+                        f"[mcp:{self.mcp_tool_name}] DENIED — plan mode is read-only; "
+                        "tool not called."
                     )
-                approval = await request_approval(
-                    session_id=session_id,
-                    action_description=f"MCP_TOOL_CALL: {self.mcp_tool_name}",
-                    proposed_content=json.dumps(call_args, default=str)[:2000],
-                    request_kind="MCP_TOOL_CALL",
-                    timeout_s=_MCP_HITL_TIMEOUT_SEC,
-                )
-                if not approval or not approval.get("approved"):
-                    return (
-                        f"[mcp:{self.mcp_tool_name}] BLOCKED — tool call was not "
-                        "approved; tool not called."
+
+                if verdict is PermissionDecision.HITL:
+                    # No session means we cannot deliver the request over the WS.
+                    if not effective_session_id:
+                        return (
+                            f"[mcp:{self.mcp_tool_name}] BLOCKED — approval required "
+                            "but no session is available to route the request; tool not called."
+                        )
+
+                    # When no approval callable was injected (the common path for
+                    # a LangChain-orchestrated call), build one from vfs_manager —
+                    # the same lazy-import pattern used by sandbox.py and supervisor.py.
+                    effective_approval: Callable[..., Awaitable[Optional[Dict[str, Any]]]]
+                    if request_approval is not None:
+                        effective_approval = request_approval
+                    else:
+                        from api.websocket_manager import vfs_manager  # lazy — no cycle
+                        async def _default_approval(**kw: Any) -> Optional[Dict[str, Any]]:
+                            return await vfs_manager.request_human_approval(**kw)
+                        effective_approval = _default_approval
+
+                    approval = await effective_approval(
+                        session_id=effective_session_id,
+                        action_description=f"MCP_TOOL_CALL: {self.mcp_tool_name}",
+                        proposed_content=json.dumps(call_args, default=str)[:2000],
+                        request_kind="MCP_TOOL_CALL",
+                        timeout_s=_MCP_HITL_TIMEOUT_SEC,
                     )
+                    if not approval or not approval.get("approved"):
+                        return (
+                            f"[mcp:{self.mcp_tool_name}] BLOCKED — tool call was not "
+                            "approved; tool not called."
+                        )
+                    # Record the approval so subsequent calls to this tool within
+                    # the same task session skip the HITL prompt.
+                    _grant_session_trust(effective_session_id, self.mcp_tool_name)
 
         logger.debug(
             "McpToolAdapter._arun: tool=%s server=%s args=%s timeout=%.1fs",

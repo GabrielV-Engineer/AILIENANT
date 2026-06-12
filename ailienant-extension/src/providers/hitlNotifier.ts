@@ -69,6 +69,7 @@ const WARNING_KINDS: ReadonlySet<string> = new Set([
     'TOKEN_SPIKE',
     'SANDBOX_DEGRADED_EXEC',
     'BUDGET_CEILING',
+    'MCP_TOOL_CALL',  // mutating external tool — warrants elevated toast severity
 ]);
 
 /** Maximum characters of `action_description` we surface in the toast body.
