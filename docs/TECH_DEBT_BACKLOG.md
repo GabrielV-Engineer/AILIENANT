@@ -31,6 +31,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-035 — MultiPL-E TypeScript execution needs a Node-capable sandbox runtime
+
+- **Date:** 2026-06-12
+- **Reproduce:** run a TypeScript codegen problem through `SandboxCodegenExecutor.run(program, Language.TYPESCRIPT, …)` — it returns `ExecOutcome(passed=False, exit_code=-2, stderr="[unsupported_runtime: ...]")` instead of executing.
+- **File(s):** `ailienant-core/tests/benchmark/executors.py` (`SandboxCodegenExecutor`); `ailienant-core/core/sandbox.py` (`_DOCKERFILE_TEXT`, `python:3.13-slim`).
+- **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The shared sandbox image is Python-only (no Node/tsc), so MultiPL-E TS cannot be executed in-container. 8.3.1 ships the full TS *adapter* (loader, prompt, extraction, assembly, Pass@1 wiring); only the TS *execution backend* is deferred. Python (HumanEval) Pass@1 is real.
+- **Blocked by:** nothing technical — needs a Node-capable sandbox tier (extend the image with Node/tsx, or a vetted host-Node executor behind explicit opt-in) without compromising the locked Docker security profile.
+- **Phase:** a standalone benchmark-runtime slice (before the definitive cross-language run, post-8.5/8.8).
+- **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. Until then TS Pass@1 is `unsupported_runtime`; the 8.3.1 DoD is met on the Python subset.
+
 ### DEBT-034 — Gateway project_id hashing is path-format-fragile (no normalization)
 
 - **Date:** 2026-06-12

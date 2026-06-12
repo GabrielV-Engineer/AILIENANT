@@ -2,6 +2,47 @@
 
 ---
 
+## Fase 8.3.1: Adaptador de codegen + Pass@1 (HumanEval / MultiPL-E) — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/302 · `pyright` 0 · `test_codegen_pass1.py` 8/8 · suite completa 1241 passed / 2 skipped (sin regresión)
+
+### Contexto
+8.3.1 es la **baseline modelo-solo** de H₁ ("un modelo *a través de* Ailienant sube su precisión vs. el modelo solo"). Carga un subset congelado de problemas auto-contenidos (HumanEval-style Python, MultiPL-E-style TypeScript), produce **una generación por problema a temp=0**, ejecuta la generación contra los tests del problema y reporta **Pass@1**.
+
+### Decisiones de arquitectura
+- **Completion directa, no `process_task`.** Los problemas son funciones aisladas — no hay contexto de repo que aporte el GraphRAG — así que el camino canónico y barato es una sola `LLMGateway.ainvoke(messages, temperature=0)`, que *es* la baseline modelo-solo. La línea 97 del blueprint ("8.3.1–8.3.4 llaman `process_task()`") se lee dirigida a los brazos Resolve@k (8.3.2–8.3.4); el Pass@1 de función aislada es la excepción natural (y coincide con la literatura). **Confirmado con el usuario.**
+- **Subset congelado hand-authored.** JSONL pinneado en el esquema canónico HumanEval (`test`) + MultiPL-E-TS (`tests`) — hermético, reproducible, sin descarga/licencia. El loader resuelve relativo a `__file__` (no cwd) y mapea ambos esquemas, así el dataset real entra por path en la corrida definitiva diferida.
+- **Enforcement temp=0 honesto (cierra el diferido de 8.3.0).** La adapter fija `temperature=TEMPERATURE` en su `ainvoke`; **no se agrega una perilla global en prod** (sería un flag de benchmark en el hot path, prohibido). El path del agente ya default a temp=0 en el chokepoint `ainvoke` (verificado).
+- **Ejecución pluggable (seam de aislamiento).** `CodegenExecutor` Protocol: `SandboxCodegenExecutor` (default, output de modelo no confiable) corre dentro del tier Docker; `SubprocessPythonExecutor` (gate hermético, input confiable) corre en subproceso host. El backend es un swap, no está horneado en el scorer.
+
+### Correcciones de auditoría (ronda 2)
+- **Sin ARG_MAX/inyección (item 1):** el `SandboxCodegenExecutor` **escribe el programa a un archivo** bajo el lado-host del mount read-only (`.benchmark_eval/<uuid>.py`) y ejecuta `python3 .benchmark_eval/<id>.py` con `cwd` traducido al `/workspace` del contenedor (el host escribe; el `ro` solo bloquea escrituras del *contenedor*). Reemplaza el rechazado `printf <b64> | base64 -d | python3 -` (O(1) en memoria de shell, a prueba de inyección y de longitud). Limpieza garantizada en `finally`.
+- **Reap a prueba de zombies (item 2):** el `SubprocessPythonExecutor` reapea el hijo en `finally` (`kill()` + `await wait()`) — dispara en timeout *y* en cancelación, así ningún hijo sobrevive a la corrida en CI.
+- **Extracción robusta (item 3):** el prompt exige una única función completa en un solo bloque cercado sin prosa; `extract_code` **concatena todos los bloques del lenguaje** (maneja el caso del bloque de pseudocódigo inicial), con fallback a bloques sin tag → cualquier bloque → texto crudo sin fences.
+
+### Hallazgos propios (5)
+- **Guard de tier Docker:** el sandbox executor aborta limpio si el tier resuelto es Wasm (pure-compute, sin FS) o NativeHITL (necesita humano) — ninguno puede correr un archivo de test no-interactivamente.
+- **Env de Windows:** el gate executor hereda el env del padre (`env=None`); `env={}` borraría `SystemRoot`/`PATH` y Python no arrancaría en win32.
+- **Paths de dataset relativos al módulo:** el loader resuelve `datasets/` desde `__file__`, no cwd.
+- **Contrato de función completa:** la instrucción de chat exige la función completa con firma, así `assemble_program` no re-antepone el stub.
+- **Acoplamiento `host_workspace`:** arg explícito del ctor que default al root del mount del adapter, documentado.
+
+### MVP / diferido (deuda rastreada, §7)
+- **Ejecución TypeScript diferida → DEBT-035.** La imagen sandbox compartida es `python:3.13-slim` (sin Node/tsc) ⇒ MultiPL-E TS **no se ejecuta in-container**. Se entrega el *adapter* TS completo (loader, prompt, extracción, ensamblado, wiring Pass@1) pero el **executor reporta `unsupported_runtime`**; Python (HumanEval) Pass@1 es real ya. El refactor Enterprise (imagen sandbox Node-capable) es DEBT-035. El DoD "Pass@1 reproducible sobre el subset" se cumple sobre el subset Python.
+- **Sin `seed` de modelo:** `ainvoke`/litellm no plumean un `seed` de generación; `seed=42` se registra y `temp=0` se fija, consistente con el caveat de no-determinismo del propio blueprint.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `tests/benchmark/datasets/humaneval_subset.jsonl` · `multipl_e_ts_subset.jsonl` | **nuevos** — subset congelado (3 Python + 2 TS) |
+| `tests/benchmark/codegen.py` | **nuevo** — adapter (load/build/extract/assemble/evaluate Pass@1) |
+| `tests/benchmark/executors.py` | **nuevo** — `CodegenExecutor` + backends sandbox/subprocess |
+| `tests/benchmark/test_codegen_pass1.py` | **nuevo** — gate hermético (8 tests) |
+| `.gitignore` | `+ .benchmark_eval/` (dir temporal transitorio del sandbox executor) |
+| `docs/TECH_DEBT_BACKLOG.md` | `+ DEBT-035` (runtime sandbox Node-capable para TS) |
+
+---
+
 ## Fase 8.3.0: Blueprint + scaffold del harness de benchmark — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/299 · `pyright` 0 · `test_harness_scaffold.py` 7/7 · suite completa 1233 passed / 2 skipped (sin regresión)

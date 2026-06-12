@@ -314,6 +314,9 @@ Proyect_Ailienant/
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
 │   └── tests/                   #   pytest suite + per-phase checkpoint gates + chaos crucible
 │       └── benchmark/           #     in-process precision/ablation harness (arms, runner, hygiene, metrics)
+│           ├── codegen.py        #       plain-codegen adapter + Pass@1 scorer (HumanEval/MultiPL-E)
+│           ├── executors.py      #       pluggable exec backends (sandbox / trusted subprocess)
+│           └── datasets/         #       frozen codegen subset (HumanEval py + MultiPL-E ts JSONL)
 ├── ailienant-extension/         # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts         #     activation entry
