@@ -280,7 +280,7 @@ sequenceDiagram
   participant Ext as VS Code Extension
   participant Core as LangGraph Engine
   participant LLM as Model — local or cloud
-  participant Box as Sandbox
+  participant Sbx as Sandbox
 
   You->>Ext: "Add validation to users.py + a test"
   Ext->>Core: submit task (+ editor context)
@@ -288,11 +288,11 @@ sequenceDiagram
   Core->>LLM: Planner → MissionSpecification (WBS)
   Core-->>Ext: stream plan + reasoning (Thought Box)
   Core->>LLM: Coder → patch for task 1
-  Core->>Box: run the test
-  Box-->>Core: structured verdict (red)
+  Core->>Sbx: run the test
+  Sbx-->>Core: structured verdict (red)
   Core->>LLM: self-heal → revised patch
-  Core->>Box: re-run the test
-  Box-->>Core: structured verdict (green)
+  Core->>Sbx: re-run the test
+  Sbx-->>Core: structured verdict (green)
   Core-->>Ext: propose diffs + checklist ✅
   You->>Ext: Accept
   Ext->>Ext: apply edits (with stale-guard)
