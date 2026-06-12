@@ -306,6 +306,8 @@ Proyect_Ailienant/
 │   │                            #     verbs to external agents (catalog + schemas + call-tool routing seam)
 │   │   ├── governance.py        #     symmetric permission gate (evaluate_action reuse) + caller_id +
 │   │   │                        #       conservative posture (no self-escalation, no silent AUTO)
+│   │   ├── handlers.py          #     capability handlers: in-process READ_ONLY memory/graph verbs +
+│   │   │                        #       loopback run_task/check_task_status (poll-pair) over the live host
 │   │   └── ledger.py            #     durable per-caller token-bucket + budget DoS guard (filelock, fail-closed)
 │   ├── transport/               #   outbound WS stream (throttler, token batcher, narration gate)
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
@@ -329,7 +331,7 @@ Proyect_Ailienant/
 ├── DEVELOPERS.md                # This document
 ├── CONTRIBUTING.md · CLA.md     # Contribution guide + CLA
 ├── LICENSE · LICENSING.md       # AGPL-3.0 + dual-license explainer
-└── CLAUDE.md · AGENTS.md        # Operating rules for AI contributors
+└── CLAUDE.md · AGENTS.md        # Coding standards, architectural guardrails, and build protocols
 ```
 
 > Keep this tree accurate. Per [CLAUDE.md](CLAUDE.md) §5, any new file or structural directory must be reflected here.
@@ -455,4 +457,4 @@ If you want one of these, it's a great place to start — see [CONTRIBUTING.md](
 | [docs/SYSTEM_PROMPTS.md](docs/SYSTEM_PROMPTS.md) | Agent system prompts |
 | [docs/TECH_DEBT_BACKLOG.md](docs/TECH_DEBT_BACKLOG.md) | Tracked technical debt |
 | `docs/PHASE_*_BLUEPRINT.md` | Per-phase architectural contracts (ADRs) |
-| [CLAUDE.md](CLAUDE.md) | Operating rules for AI contributors |
+| [CLAUDE.md](CLAUDE.md) | Coding standards, architectural guardrails, and build protocols |
