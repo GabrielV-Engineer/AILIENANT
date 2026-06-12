@@ -2442,6 +2442,57 @@ the blueprint freeze lifts.
 
 ---
 
+### 🧰 División 8.8 — Tool Parity Matrix (Arsenal por Agente) — **[ADR-761]** 🔴
+
+> Los seis agentes (Researcher, Analyst, Orchestrator, Planner, Coder×8-roles, Universal) están desigualmente equipados: hoy sólo **14 schemas de tool** registrados, y los dos agentes que construyen el contexto del que dependen todos los demás — Researcher y Analyst — son los más sub-equipados respecto a su misión. El **Planner** (el agente más caro y de mayor consecuencia arquitectónica) opera con **cero tools formales**: una sola llamada LLM → `MissionSpecification`, sin forma de verificar sus propios supuestos antes de sellar el plan; un supuesto erróneo se propaga a O(N) en retries. Esta división construye la **matriz de paridad de 56 tools** — una asignación tool × agente donde cada tool declara un `allowed_roles` preciso. El desbloqueo es la **Ola 0** (`ToolSearchTool` sobre el `ToolRAGStore` existente) para que 56 tools nunca revienten el presupuesto del prompt. Substrato confirmado presente (`ToolRAGStore`, `ToolSchema.allowed_roles`, `ToolPrivilegeTier`, `ROLE_REGISTRY` con 8 roles): la mayoría de las tools net-new son wrappers finos sobre funciones que ya operan. **No altera `AIlienantGraphState`/`MissionSpecification`** (SCHEMA_EVOLUTION.MD). El motor de permisos (`classify_tool_privilege`/`evaluate_action`) se reusa — forking PROHIBIDO.
+
+> **Recuento honesto del inventario** (corrige el "22 de 50" del análisis fuente): **(A)** 13 tools reales registradas, sólo requieren wire-in de `allowed_roles` (`inspect_ast_node`, `get_symbol_references`, `trace_data_flow`, `document_parser`, `web_fetch`, `atomic_code_patch`, `batch_semantic_edit`, `file_write`, `sandbox_bash`, `task_create`, `task_get`, `ask_user_question`, `toggle_plan_mode`). **(B)** 4 con función de respaldo que requieren formalización como schema (`get_dependents`→`GetDependentsTool`, `deep_parse`→`GraphRAGQueryTool`, `validate_ast`→`ASTValidateTool`, `make_read_file_tool`→`FileReadTool` paginado). **(C)** ~29 genuinamente net-new. **Corrección de substrato:** las tools `ContextMeter*` del análisis fuente asumen una clase `ContextMeter` con `css_total`/`TCI` que **NO existe**; el substrato real es `TokenLedger` (`core/token_ledger.py`) — se reencauzan como `TokenLedgerReadTool`/`BudgetEstimatorTool`.
+
+- [ ] **8.8.0 — Ola 0: Infra gate (`ToolSearchTool` / `DeferredToolLoader`) — GATE DE TODA LA DIVISIÓN.**
+  - Recuperación de tools por relevancia sobre el `ToolRAGStore` existente, auto-disparada a ~10 % del presupuesto de contexto; por debajo del umbral las tools cargan eager, por encima el agente las recupera por query. Nada más en 8.8 ships hasta que esto esté verde.
+  - **DoD:** con las 56 schemas registradas, un prompt frío respeta el techo `TOOL_RAG_MIN_REDUCTION=0.70` y la tool correcta es recuperable por query.
+
+- [ ] **8.8.1 — Ola 1: Arsenal del Researcher (READ_ONLY).** *(≈5 net-new · 5 wire-in)*
+  - Wire-in de `researcher` en `allowed_roles`: `inspect_ast_node`, `get_symbol_references`, `trace_data_flow`, `document_parser`, `FileReadTool` paginado.
+  - Net-new: `GlobTool`/`GrepTool` sobre el VFS RAM-first (no FS directo), `WorkspaceStructureTool` (árbol filtrado por relevancia, output compacto), `GraphRAGQueryTool` (formaliza `deep_parse`), `GetDependentsTool` (formaliza `get_dependents`).
+  - **DoD:** el Researcher recupera y ejecuta cada tool de lectura bajo su rol; ninguna escribe.
+
+- [ ] **8.8.2 — Ola 2: Lente de calidad del Analyst (READ_ONLY).** *(≈6 net-new · 4 wire-in)*
+  - Wire-in de `analyst`: `inspect_ast_node`, `trace_data_flow`, `get_symbol_references`, `web_fetch`.
+  - Net-new: `RunLinterTool` (envuelve `tools/validation/lsp_filter.py`), `ComplexityAnalysisTool` (CC de McCabe, profundidad de anidamiento), `DependencyAuditTool` (manifests vs CVE vía MCP), `CodeDiffTool` (dirty-buffer vs VFS), `WebSearchTool` (MCP brave-search), `TokenLedgerReadTool` (reencauzada sobre `TokenLedger`, no `ContextMeter`).
+  - **DoD:** el Analyst explica complejidad ciclomática, traza flujo de datos y compara versiones — todo sin tocar código.
+
+- [ ] **8.8.3 — Ola 3: Introspección del Orchestrator (determinista).** *(≈3 net-new · 2 wire-in)*
+  - Net-new: `GetWBSStatusTool` (lee `mission_spec.tasks`), `GetTokenLedgerTool` (formaliza `token_ledger.snapshot()`), `EmitHITLRequestTool` (emisión auditada de `HITL_APPROVAL_REQUIRED`).
+  - Wire-in del Orchestrator: `ask_user_question`, `toggle_plan_mode`.
+  - **DoD:** las operaciones del Orchestrator quedan como tools auditadas (no accesos directos al estado), invocables de forma segura por el gateway externo de 8.5.
+
+- [ ] **8.8.4 — Ola 3b: Verificación pre-commit del Planner (READ_ONLY — el moat).** *(≈2 net-new · 3 wire-in)*
+  - Wire-in de `planner`: `WorkspaceStructureTool`, `GetDependentsTool`, `InspectASTNodeTool`.
+  - Net-new: `ValidateWBSDependenciesTool` (detecta dependencias circulares entre `WBSStep` + pasos que referencian archivos fuera del scope — AILIENANT usando su propio GraphRAG para verificar su propio plan), `BudgetEstimatorTool` (costo en tokens del plan draft vs presupuesto de `TokenLedger` — shift-left del `oom_fallback`).
+  - **DoD:** un `MissionSpecification` draft con dependencia circular es rechazado pre-commit; el primer intento del Planner se auto-corrige en vez de consumir `MAX_PLANNER_RETRIES`.
+
+- [ ] **8.8.5 — Ola 4: Coder por rol (apalanca `ROLE_REGISTRY`).** *(≈10 net-new · 5 formalizar)*
+  - Formalizar: `atomic_code_patch`, `batch_semantic_edit`, `file_write`, `sandbox_bash`, `ASTValidateTool` (envuelve `validate_ast`).
+  - Net-new por rol exclusivo: `RunTestsTool` (qa_tester), `GitStageTool`/`GitCommitTool`/`GitDiffTool` (vcs_manager, conventional commits), `DocstringGeneratorTool` (doc_manager), `LinterAutoFixTool` (secops/qa_tester, `--fix` con diff antes de aplicar), `DependencyInstallTool` (devops_infra, EXECUTE en sandbox), `EnvFileGuardTool` (devops_infra, intercepta mutaciones a `.env` → HITL), `DataPipelineRunTool` (data_ml_engineer), `SecurityAuditTool` (secops, OWASP sobre el diff).
+  - El `allowed_roles` de cada tool espeja el `allowed_tools` del rol en `agents/roles.py`.
+  - **DoD:** un rol no puede invocar una tool fuera de su set; cada tool exclusiva responde sólo a su(s) rol(es).
+
+- [ ] **8.8.6 — Ola 5: Gateway/Benchmark — DEPENDE DE División 8.5.** *(≈6 net-new · 2 extend)*
+  - ⚠️ **Conflicto resuelto (Pivot):** 8.5 ya posee `run_task` (8.5.4), `run_benchmark`/`get_report` (8.5.5) y `list_tools()` (8.5.1) como **verbos del gateway externo**. Esta Ola **formaliza-como-tool-interna** el mismo substrato — un solo benchmark runner, un solo catálogo, un solo ciclo de tarea — **nunca un fork**. Si 8.5 sigue 🔴 al arrancar esta Ola, ésta construye el substrato compartido y 8.5 lo consume.
+  - Net-new: `RunBenchmarkTool`, `GetBenchmarkReportTool`, `ListCapabilitiesTool`, `SkillInvokeTool` (envuelve el resolver de skills de 8.4.5). Task V2: `task_create`/`task_get` extend; `TaskListTool`/`TaskStopTool` net-new.
+  - **DoD:** las tools de benchmark/catálogo llaman a las mismas funciones de substrato que los verbos de 8.5 (sin runner duplicado).
+
+- [ ] **8.8.7 — Ola 6: Universales (todos los roles).** *(≈1 net-new · 1 cross-listed)*
+  - `ToolSearchTool` (cross-listada desde la Ola 0, disponible a todos los roles) + `TodoWriteTool` net-new sobre `AIlienantGraphState`.
+  - **DoD:** cualquier agente recupera tools por query y escribe su lista de TODOs en el estado.
+
+- [ ] **8.8.8 — Checkpoint Gate División 8.8.**
+  - `tests/test_phase8_8_tool_parity_gate.py` (convención de archivo-hermano): cada schema registrada resuelve a través del `ToolRAGStore`; `allowed_roles` enforced (un rol no puede invocar una tool fuera de su set); la reducción de la Ola 0 ≥ 70 %; fila ISO asserta que los contratos de rol de `agents/roles.py` no degradan.
+  - **DoD:** `pytest` verde · `mypy .` 0 · `ruff` limpio · `npm run compile` 0 (sólo si algún surface FE expone una tool).
+
+---
+
 ## 🧠 FASE 9 — Native Thinking (Real-Time Reasoning Stream) — ✅ COMPLETADA (2026-05-29)
 
 > Exposición en tiempo real del razonamiento nativo del modelo (Claude Extended Thinking / modelos de razonamiento abiertos vía `reasoning_content`) en un "Thought Box" colapsable estilo Claude Code. Evolución aprobada de ADR-702 registrada como **ADR-707** ([`docs/PHASE_7_BLUEPRINT.md`](PHASE_7_BLUEPRINT.md)). Estrictamente capas de transporte / orquestación / UI — `agents/` intacto.
