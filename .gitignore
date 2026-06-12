@@ -71,6 +71,7 @@ Thumbs.db
 *.sqlite-wal
 # Config local y secretos de proveedor (BYOM / API keys)
 byom_config.json
+mcp_secrets.json
 config.yaml
 # Tooling local del agente (Claude Code)
 .claude/

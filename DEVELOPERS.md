@@ -254,7 +254,7 @@ Proyect_Ailienant/
 │   │   ├── workspace_sync.py    #     bidirectional VFS ↔ sandbox sync
 │   │   ├── permissions.py       #     3-axis matrix + RBWE + classify_tool_privilege
 │   │   ├── skill_resolver.py    #     dual-mode skill resolver (cosine auto-match + explicit chip) + sandboxed directive block builder
-│   │   ├── mcp_registry.py      #     curated regulated-server SSoT (install meta + tiers)
+│   │   ├── mcp_registry.py      #     curated regulated-server SSoT (install meta + tiers + source_url)
 │   │   ├── mcp_config.py        #     .ailienant/config.json export/import projection
 │   │   ├── mcp_constants.py     #     ALLOWED_MCP_COMMANDS allowlist
 │   │   ├── supervisor.py        #     deterministic FinOps supervisor (hard-kill / soft gate)
@@ -268,6 +268,7 @@ Proyect_Ailienant/
 │   │   ├── readme_digest.py     #     workspace README brain: verbatim/digest/head-slice + debounced rebuild
 │   │   ├── db.py                #     SQLite catalog (dependency_graph, ppr_scores, indexed_files)
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
+│   │       └── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
 │   ├── api/                     #   WS manager + REST routers (memory, byom, hardware, audit,
 │   │                            #     mcp_servers, skills, sessions, agent_roles, system_settings)
 │   ├── tools/                   #   llm_gateway, validation pipeline (AST+LSP), MCP adapter
@@ -335,7 +336,7 @@ The Core exposes a REST + WebSocket surface (see [api/](ailienant-core/api/)). H
 | `GET/PUT /api/v1/byom/config` · `POST /api/v1/byom/test` | BYOM config + endpoint probing |
 | `GET /api/v1/hardware/profile` · `GET/POST /api/v1/hardware/mode` | Hardware snapshot + execution-mode preference |
 | `GET /api/v1/runtime/status` · `POST /api/v1/runtime/{start-docker,pull-image}` | Sandbox tier + Docker lifecycle |
-| `GET/POST /api/v1/mcp/servers` · `POST /api/v1/mcp/test` · `…/config/{export,import}` | MCP registry CRUD + portable config |
+| `GET/POST /api/v1/mcp/servers` · `POST /api/v1/mcp/test` · `GET …/registry` · `POST …/registry/install` · `…/config/{export,import}` | MCP server CRUD + curated browse/one-click install + portable config |
 | `GET /api/v1/audit/{log,stats,verify}` | HITL audit ledger + chain verification |
 | `GET /api/v1/sessions/{thread_id}/checkpoints` | Time-travel checkpoint chain |
 | `GET /api/v1/memory/{sections,graph,vectors}` | GraphRAG browse surfaces |

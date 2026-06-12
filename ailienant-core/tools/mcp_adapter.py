@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 from collections import defaultdict
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
@@ -28,11 +29,11 @@ from typing import (
     Optional,
     Type,
 )
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 from langchain_core.tools import BaseTool
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 from pydantic import BaseModel, Field
 
 from core.permissions import classify_tool_privilege
@@ -299,34 +300,43 @@ _exit_stacks: Dict[str, AsyncExitStack] = {}
 
 
 def _parse_mcp_uri(uri: str) -> StdioServerParameters:
-    """Parse 'stdio:///abs/path/to/server[?arg=x&arg=y]' into StdioServerParameters.
+    """Parse a ``stdio://`` URI into StdioServerParameters.
 
-    The path component is the executable; the query string contributes positional
-    arguments (one ?arg=value pair per arg). Anything else is rejected loudly.
+    Two command forms are accepted:
+      * absolute path — ``stdio:///abs/path/to/server`` (the path is the
+        executable; on Windows ``stdio:///C:/path/to/exe`` is also accepted);
+      * bare command — ``stdio://npx`` (an empty path falls back to the netloc;
+        the program is resolved from PATH at launch).
+
+    The query string contributes positional arguments (one ``arg=value`` pair per
+    argument). Values are percent-decoded then shell-split, so an argument
+    carrying ``&`` or ``=`` survives intact when it was URL-encoded on the way in.
+    Any query key other than ``arg`` is rejected loudly.
     """
     parsed = urlparse(uri)
     if parsed.scheme != "stdio":
         raise ValueError(
             f"_parse_mcp_uri: unsupported scheme {parsed.scheme!r}. "
-            "Phase 5.2 only supports stdio:// transports."
+            "Only stdio:// transports are supported."
         )
-    if not parsed.path:
-        raise ValueError(f"_parse_mcp_uri: missing executable path in URI {uri!r}.")
+
+    # An absolute-path executable rides in the path; a bare PATH-resolved command
+    # (npx, uvx) has an empty path and rides in the netloc instead.
+    command = parsed.path or parsed.netloc
+    if not command:
+        raise ValueError(f"_parse_mcp_uri: missing executable in URI {uri!r}.")
 
     # The leading slash on absolute paths is preserved by urlparse; on Windows
     # callers can pass stdio:///C:/path/to/exe and we strip the leading slash
     # only when followed by a drive letter.
-    command = parsed.path
     if len(command) >= 3 and command[0] == "/" and command[2] == ":":
         command = command[1:]
 
     args: List[str] = []
     if parsed.query:
-        # Format: arg=foo&arg=bar — preserve order; values may be shell-quoted.
-        for pair in parsed.query.split("&"):
-            if not pair:
-                continue
-            key, _, value = pair.partition("=")
+        # parse_qsl percent-decodes and splits on '&'/'=' correctly; shlex then
+        # honors quoting within a single decoded value.
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
             if key != "arg":
                 raise ValueError(
                     f"_parse_mcp_uri: only 'arg' query keys supported, got {key!r}."
@@ -334,6 +344,78 @@ def _parse_mcp_uri(uri: str) -> StdioServerParameters:
             args.extend(shlex.split(value))
 
     return StdioServerParameters(command=command, args=args)
+
+
+def build_stdio_uri(command: str, args: List[str]) -> str:
+    """Compose a ``stdio://`` URI from a command and its arguments.
+
+    The inverse of :func:`_parse_mcp_uri` for bare commands. Each argument is
+    URL-encoded so special characters (``&``, ``=``, spaces) round-trip safely —
+    never naive string concatenation.
+    """
+    query = urlencode([("arg", a) for a in args])
+    return f"stdio://{command}?{query}" if query else f"stdio://{command}"
+
+
+def _resolve_server_env(server_name: Optional[str]) -> Dict[str, str]:
+    """Return the stored secret env vars a curated server declares it needs.
+
+    Looks up the server in the curated registry to learn which environment
+    variable NAMES it expects, then pulls the matching stored VALUES from the
+    secret store. A manual server, an unknown name, or a server with no stored
+    secrets yields ``{}`` — the regression-safe default that leaves launch
+    behavior unchanged.
+    """
+    if not server_name:
+        return {}
+    # Local imports keep this module's import graph cycle-free.
+    from core.config.mcp_secrets import get_server_env
+    from core.mcp_registry import get_regulated_server
+
+    server = get_regulated_server(server_name)
+    if server is None or not server.secrets:
+        return {}
+    stored = get_server_env(server_name)
+    return {name: stored[name] for name in server.secrets if name in stored}
+
+
+def _build_stdio_params(
+    uri: str, server_name: Optional[str] = None
+) -> Optional[StdioServerParameters]:
+    """Build launch parameters, hardening command resolution and env injection.
+
+    Returns ``None`` (never raises here) when a bare command cannot be resolved
+    on PATH, so the caller can degrade gracefully instead of crashing.
+
+      * Command resolution: a bare command (no path separator) is resolved via
+        ``shutil.which`` so a PATH-only launcher like ``npx`` (``npx.cmd`` on
+        Windows) is handed to the SDK as an absolute path — ``shell=True`` is
+        never used. A command that already contains a separator is passed
+        through unchanged.
+      * Secret injection: when the server has stored secrets, they are merged
+        on top of the SDK's default (platform-critical) environment so the child
+        inherits PATH/HOME/APPDATA etc. without leaking the full host
+        environment. With no secrets the env is left as ``None`` (the SDK applies
+        the same default internally).
+    """
+    params = _parse_mcp_uri(uri)
+    command = params.command
+
+    if not any(sep in command for sep in ("/", "\\", os.sep)):
+        resolved = shutil.which(command)
+        if resolved is None:
+            logger.warning(
+                "_build_stdio_params: command %r not found on PATH.", command
+            )
+            return None
+        command = resolved
+
+    secrets = _resolve_server_env(server_name)
+    env: Optional[Dict[str, str]] = None
+    if secrets:
+        env = {**get_default_environment(), **secrets}
+
+    return StdioServerParameters(command=command, args=params.args, env=env)
 
 
 def _audit_entry(event: str, **extra: Any) -> Dict[str, Any]:
@@ -380,13 +462,20 @@ async def bootstrap_mcp_session(
         return False
 
     try:
-        params = _parse_mcp_uri(uri)
+        params = _build_stdio_params(uri, server_name)
     except ValueError as exc:
         state["mcp_server_endpoint"] = None
         audit_log.append(
             _audit_entry("tool_rag_fallback", reason="invalid_uri", detail=str(exc))
         )
         logger.warning("bootstrap_mcp_session: invalid URI %r: %s", uri, exc)
+        return False
+    if params is None:
+        state["mcp_server_endpoint"] = None
+        audit_log.append(
+            _audit_entry("tool_rag_fallback", reason="command_not_found", detail=uri)
+        )
+        logger.warning("bootstrap_mcp_session: launcher command not found for %r.", uri)
         return False
 
     stack = AsyncExitStack()
@@ -502,6 +591,24 @@ async def autoconnect_enabled_mcp_servers(
             connected += 1
     logger.info("autoconnect_enabled_mcp_servers: %d server(s) connected.", connected)
     return connected
+
+
+async def close_mcp_session(server_name: str) -> None:
+    """Close a single server's session and drop it from the registry.
+
+    The per-key counterpart of :func:`shutdown_mcp_sessions`. A re-install must
+    call this before reconnecting: ``bootstrap_mcp_session`` short-circuits when a
+    key is already present, so without an explicit close the stale session would
+    survive (the new credentials would never take effect and the old stdio child
+    would leak). No-op when the server is not connected.
+    """
+    stack = _exit_stacks.pop(server_name, None)
+    _sessions.pop(server_name, None)
+    if stack is not None:
+        try:
+            await stack.aclose()
+        except Exception:  # noqa: BLE001 — teardown is best-effort
+            logger.debug("close_mcp_session: cleanup noise for %r.", server_name, exc_info=True)
 
 
 async def shutdown_mcp_sessions() -> None:

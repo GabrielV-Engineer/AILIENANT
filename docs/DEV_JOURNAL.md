@@ -4429,3 +4429,35 @@ El auto-start de este hito asume el layout monorepo/dev: terminal de VS Code (`c
   - Tests: `tests/test_skill_resolver.py` (new), `tests/test_command_menu_config.py` (extended), `tests/test_planner.py` (extended).
   - Frontend: `shared/types.ts`, `api/api_client.ts`, `workspaceStore.ts`, `brain/session.ts`, `providers/workspace_panel.ts`, `workspace/Workspace.tsx`, `workspace/components/SkillsMenu.tsx`, `workspace/components/PromptBar.tsx`.
   - Docs EDIT: `TECH_DEBT_BACKLOG.md` (DEBT-028 re-scoped to hooks + DEBT-032 added), `PROJECT_MANIFEST.md` (8.4.5 → `[x]`), `PHASE_8_BENCHMARK_MCP_BLUEPRINT.md` (ADR-757 amendment), `DEVELOPERS.md` (`skill_resolver.py` added to code map), `DEV_JOURNAL.md` (este hito).
+
+---
+
+## Hito 8.4.6: Browse Registry UX + credentialed one-click install — DEBT-031 closed — 2026-06-11
+
+- **Status:** OK — DEBT-031 (load-bearing half) CLOSED. DoD verified at unit + API level: a curated server installs from the dashboard without leaving the IDE; a secret-less server (docker) persists + connects; a credentialed server (github) collects its token, stores it masked, and injects it as process `env` at connect time. Gates: `pytest` 59 focused + full suite green · `mypy .` 0/280 · `tsc` 0 · `eslint` 0 (2 pre-existing warnings, unrelated files).
+
+- **Architecture conflict surfaced & resolved (CLAUDE.md §3):** the curated registry (`core/mcp_registry.py`) already held install metadata, but a credentialed install was hollow — there was no secret store and `_parse_mcp_uri` produced `StdioServerParameters(command, args)` with **no `env`** (DEBT-031 deferred). Decision (user-approved): close DEBT-031 inside this slice rather than ship an install that silently fails for 3 of 4 servers. External-registry discovery stays **outbound links only** — in-IDE install remains gated to the curated allowlist so the 8.4.1 fail-closed posture is preserved.
+
+- **Secret store (`core/config/mcp_secrets.py`, new):** backend-masked credential store mirroring the BYOM substrate — `mcp_secrets.json` co-located with the catalog DB, atomic (`mkstemp`+`os.replace`) + `0600` + UTF-8, schema `{ server_name: { ENV_NAME: value } }`. `set_server_secrets` skips masked re-submissions (a round-tripped placeholder never clobbers the real value); `mask_server_secrets` for GET responses; `get_server_env` raw, injection-only. Documented Windows `0600` limitation (read-only bit only; profile-dir protection) and last-writer-wins concurrency (same as BYOM). Added to `.gitignore`.
+
+- **Registry serialization (`core/mcp_registry.py`):** `RegulatedServer` gains `source_url` (canonical repo, fail-loud `https://` invariant) for tech-lead source review. New `serialize_registry(installed_names)` projects each server to `{name, display_name, description, source_url, command, args, secrets (NAMES only), tool_tiers (tier NAME), installed}` — secret values never appear. New `get_regulated_server(name)` lookup.
+
+- **Launch hardening (`tools/mcp_adapter.py`):**
+  - `_parse_mcp_uri` now accepts a bare PATH-resolved command (`stdio://npx`) via the netloc when the path is empty; absolute-path form unchanged. Query parsing switched to `parse_qsl` (percent-decodes) + `shlex`; new `build_stdio_uri` composes via `urlencode` so an arg carrying `&`/`=`/spaces round-trips intact.
+  - `_build_stdio_params(uri, server_name)` is the single hardened launch builder: a **bare** command (no path separator) is resolved via `shutil.which` (fixes Windows `npx.cmd`; never `shell=True`; `None` → graceful `command_not_found` fallback), while a path-form command (and the existing fake-path tests) passes through untouched. Stored secrets merge on top of the SDK `get_default_environment()` (platform-critical vars inherited; full host env not leaked to the child); no secrets → `env=None` (zero behavioral change).
+  - `close_mcp_session(server_name)` — per-key teardown; a re-install closes the stale session first so the new credential takes effect and the old stdio child is reaped (the idempotent connect guard would otherwise keep the dead session).
+
+- **REST (`api/mcp_servers.py`):** `GET /registry` (serialized curated catalog with `installed` flags); `POST /registry/install` (validate name ∈ registry, secret keys ⊆ declared, all required present-or-stored; persist secrets; build uri; close-first on re-install; upsert with `id=name`; best-effort timeout-bounded live connect). `DELETE /servers/{id}` resolves the row name and wipes both the secret and the live session. `/test` routes through `_build_stdio_params` with optional `server_name` (env-aware probe).
+
+- **Frontend (`ailienant-extension/src/dashboard/panels/ExtensionsPanel.tsx`):** MCP tab restructured into **Browse registry / Installed / Add manually**. Registry cards render severity-coded tier badges (the conscious-consent permission guard: R green / W amber / E orange / D red), a "View source ↗" external link, and one-click install; credentialed cards expand inline `type="password"` secret inputs with a consent line. Discovery footer links to `registry.modelcontextprotocol.io` + `github.com/modelcontextprotocol/servers` (external browser). Search filters cards. Dashboard is fetch-only HTTP, so external links are plain anchors (no host bridge).
+
+- **Tests:** `tests/test_mcp_secrets.py` (new, 7): round-trip, masking, masked-resubmit guard, delete, unknown server, corrupt-file degrade, POSIX `0600`. `tests/test_mcp_registry.py` (extended): `source_url` https invariant, `serialize_registry` shape + `installed` flag + no secret values, `get_regulated_server`. `tests/test_mcp_handshake.py` (extended): bare-command parse, urlencode special-char round-trip, which-resolution (bare only; abs-path skips), unresolvable → None, secret-env injection + platform vars, no-secrets → `env=None`, secret-wins-on-clash, `bootstrap` command_not_found fallback, `close_mcp_session`. `tests/test_command_menu_config.py` (extended): list registry, install secret-less, install credentialed (masked), reject unknown name/secret/missing-required, re-install closes prior session, delete wipes secret + session.
+
+- **Tech-debt:** DEBT-031 marked ✅ RESOLVED (load-bearing half). DEBT-033 logged — the `config.json` ↔ secret-store `key_ref` round-trip + import/export UI + fresh-machine prompt (usability gap, not security; export already redacts).
+
+- **Files changed:**
+  - Core (backend): `core/config/mcp_secrets.py` (new), `core/mcp_registry.py`, `tools/mcp_adapter.py`, `api/mcp_servers.py`.
+  - Tests: `tests/test_mcp_secrets.py` (new), `tests/test_mcp_registry.py` (extended), `tests/test_mcp_handshake.py` (extended), `tests/test_command_menu_config.py` (extended).
+  - Frontend: `dashboard/panels/ExtensionsPanel.tsx`.
+  - Config: `.gitignore` (`mcp_secrets.json`).
+  - Docs EDIT: `PROJECT_MANIFEST.md` (8.4.6 → `[x]`), `TECH_DEBT_BACKLOG.md` (DEBT-031 resolved + DEBT-033 added), `PHASE_8_BENCHMARK_MCP_BLUEPRINT.md` (ADR-757 amendment), `DEVELOPERS.md` (`mcp_secrets.py` in code-map tree + registry/install endpoints in the API table — the structural tree lives here, not README), `DEV_JOURNAL.md` (este hito).

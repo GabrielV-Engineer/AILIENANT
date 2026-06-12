@@ -191,6 +191,22 @@ _exit_stacks: Dict[str, AsyncExitStack]   # one stack per server, never shared
 
 **DEBT-028 skills half closed.** DEBT-028 re-scoped to hooks only (deferred). DEBT-032 logged.
 
+### Amendment — Browse Registry UX + credentialed install (8.4.6, closes DEBT-031 load-bearing half)
+
+The curated registry (8.4.2) shipped install metadata but no UX and no way to actually launch a credentialed server. 8.4.6 surfaces the registry as install cards and **lands the secret-value store + connect-time env injection that the earlier secret-substrate amendment (above) had deferred to DEBT-031**. That prior amendment ("secret substrate is backend-mask, not VS Code SecretStorage") is now realized: the value store exists and is injected at connect.
+
+**Binding decisions:**
+
+1. **Secret substrate = backend-mask, realized** — `core/config/mcp_secrets.py`: `mcp_secrets.json` co-located with the catalog DB, atomic + `0600` + UTF-8, keyed by server name, masked on read, masked-resubmit guarded. Mirrors BYOM; **not** VS Code SecretStorage (the dashboard is a fetch-only HTTP webview that cannot reach the host SecretStorage API). Git-ignored.
+2. **Connect-time env injection** — `tools/mcp_adapter._build_stdio_params` merges a server's stored secrets on top of the SDK `get_default_environment()` and passes them as the stdio child's `env`. The SDK default inherits platform-critical vars (PATH/HOME/APPDATA/…) **without** leaking the full host environment (other API keys) to the child — a deliberate refinement over a blanket `os.environ.copy()`.
+3. **Command resolution is mandatory, `shell=True` is forbidden** — a bare launcher (`npx`/`uvx`) is resolved via `shutil.which` so Windows `npx.cmd` runs; unresolvable → graceful `command_not_found` fallback. Absolute-path commands pass through untouched.
+4. **URI carries args via `urlencode`/`parse_qsl`** — never naive concatenation; an arg with `&`/`=`/spaces round-trips intact. The parser also accepts a bare command in the netloc.
+5. **Re-install is close-first** — the idempotent connect guard short-circuits on an existing session, so a credential change must `close_mcp_session(name)` before re-bootstrapping; `DELETE` wipes both the secret and the live session.
+6. **Install stays curated; discovery is outbound-only** — in-IDE install is restricted to `REGULATED_SERVERS` (the same `ALLOWED_MCP_COMMANDS` gate as manual save), preserving the 8.4.1 fail-closed posture. The two official pages (`registry.modelcontextprotocol.io`, `github.com/modelcontextprotocol/servers`) are external-browser discovery links, not an in-panel arbitrary-install surface (that would reopen the DEBT-026 hole).
+7. **Permission guard = severity-coded tier badges** — each card renders its `tool_tiers` as colored badges before install (the conscious-consent surface), plus a `source_url` link for tech-lead source review.
+
+**DEBT-031 load-bearing half closed (store + injection).** Synergy: a live credentialed github install is what lets 8.4.7's DoD-check fire HITL on a *real* WRITE tool, not just a sandbox stub. **DEBT-033 logged:** the `config.json` `key_ref` round-trip + import/export UI + fresh-machine prompt (usability, not security — export already redacts).
+
 ---
 
 ## ADR-758 — Ailienant-as-MCP-Server (origin) — SUPERSEDED by ADR-759

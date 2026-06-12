@@ -41,13 +41,23 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Phase:** a standalone coder-side injection slice (8.4.x or a bundled polish pass).
 - **Notes:** logged at 8.4.5 ship as required by CLAUDE.md §7.3 (every MVP must surface a tracked follow-up). The planner-only path covers the vast majority of skill-directive use cases.
 
-### DEBT-031 — MCP secret-value store + connect-time env injection + config.json file/UI surface
+### DEBT-033 — config.json ↔ MCP secret-store `key_ref` round-trip (fresh-machine import prompt)
+
+- **Date:** 2026-06-11
+- **Reproduce:** export `.ailienant/config.json` on a machine with installed credentialed servers, then import it on a fresh machine — the server rows reconcile but their secrets do not travel (correctly: secrets never enter the JSON), and there is no flow that re-prompts for the missing credential. The dashboard also has no import/export buttons surfacing `core/mcp_config.py`.
+- **Error:** not a defect — a deferred polish slice. 8.4.6 landed the secret VALUE store + connect-time env injection (closing the load-bearing half of the former DEBT-031), and `core/mcp_config.py` already redacts on export + emits `key_ref` placeholders. What remains is wiring the placeholder round-trip to the new `mcp_secrets` store: on import, detect a `key_ref` whose value is absent locally and prompt for it; expose import/export in the dashboard.
+- **Blocked by:** nothing.
+- **Phase:** a standalone config-portability slice (8.4.x or a later polish pass).
+- **Notes:** logged at 8.4.6 ship per CLAUDE.md §7.3. Export already prevents credential leakage (userinfo redaction + no secret in JSON), so this is a usability gap, not a security one. Substrate is the backend-mask store (`core/config/mcp_secrets.py`), consistent with the ADR-757 amendment.
+
+### DEBT-031 — MCP secret-value store + connect-time env injection + config.json file/UI surface — ✅ RESOLVED (8.4.6, load-bearing half)
 
 - **Date:** 2026-06-10
 - **Reproduce:** inspect the `mcp_servers` schema (`core/db.py`) — there is no secret/env column; a server's credential (e.g. a Postgres connection string) can only be typed inline into the `uri`. There is no mechanism to inject a secret as an environment variable into the spawned MCP process at connect time, and no on-disk `.ailienant/config.json` reader/writer or import/export UI.
 - **Error:** not a defect — a deliberately deferred slice. 8.4.3 shipped the backend config projection (`core/mcp_config.py`: export with credential redaction + `key_ref` placeholders, idempotent name-keyed import) but **the secret VALUE has nowhere to live and is never injected at connect**. The `config.json` `key_ref` convention and the `needs_secret` import signal are in place, waiting for the store + injection + UI.
 - **Blocked by:** nothing functionally; naturally pairs with the connect/dispatch wiring (8.4.4) and the registry UX (8.4.6).
-- **Phase:** secret store + env injection → **8.4.4** (connect-time); on-disk `.ailienant/config.json` write + dashboard import/export buttons + fresh-machine secret prompt → **8.4.6** (UX).
+- **Phase:** secret store + env injection → **8.4.6** (connect-time); the config.json file write + dashboard import/export buttons + fresh-machine secret prompt re-tracked as **DEBT-033**.
+- **Resolution (8.4.6, 2026-06-11):** new `core/config/mcp_secrets.py` — a backend-masked secret store (`mcp_secrets.json`, atomic + `0600` + UTF-8, mirroring BYOM) keyed by server name, with mask-on-read and masked-resubmit guard. `tools/mcp_adapter._build_stdio_params` injects a server's stored secrets as process `env` at connect time, merged on top of the SDK's `get_default_environment()` (platform-critical vars inherited, full host env NOT leaked to the child). `POST /api/v1/mcp/registry/install` collects + validates secrets; `DELETE` wipes them. `mcp_secrets.json` added to `.gitignore`. Proof: `tests/test_mcp_secrets.py` (7) + install/secret cases in `test_command_menu_config.py` + env-injection cases in `test_mcp_handshake.py`; `mypy .` 0/280, full pytest green. **Remaining (DEBT-033):** the config.json `key_ref` round-trip + import/export UI.
 - **Notes:** per the ADR-757 amendment (`docs/PHASE_8_BENCHMARK_MCP_BLUEPRINT.md`), the secret-value substrate is the codebase-consistent backend-mask (BYOM `byom_config.json` `0600` + mask-on-read), **not** VS Code SecretStorage. The `key_ref` placeholder convention is preserved end-to-end.
 
 ### DEBT-030 — BYOM dashboard has no Google preset + `_ensure_v1` mangles native cloud endpoints — ✅ RESOLVED (8.4.8)

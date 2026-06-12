@@ -15,7 +15,9 @@ from core.mcp_constants import ALLOWED_MCP_COMMANDS
 from core.mcp_registry import (
     REGULATED_SERVERS,
     build_privilege_catalog,
+    get_regulated_server,
     init_registry,
+    serialize_registry,
 )
 from core.permissions import ToolPrivilegeTier, classify_tool_privilege
 
@@ -98,3 +100,41 @@ def test_no_secret_or_url_leaks_into_args() -> None:
     # in the structural argument list.
     for server in REGULATED_SERVERS:
         assert not any("://" in arg or len(arg) > 100 for arg in server.args)
+
+
+def test_every_server_has_https_source_url() -> None:
+    for server in REGULATED_SERVERS:
+        assert server.source_url.startswith("https://")
+
+
+# ---------------------------------------------------------------------------
+# Browse-and-install serialization
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_registry_shape_and_installed_flag() -> None:
+    payload = serialize_registry(installed_names={"docker"})
+    assert {s["name"] for s in payload} == {s.name for s in REGULATED_SERVERS}
+    by_name = {s["name"]: s for s in payload}
+    assert by_name["docker"]["installed"] is True
+    assert by_name["github"]["installed"] is False
+    gh = by_name["github"]
+    # Tiers project as their tier NAME for the UI badges.
+    assert gh["tool_tiers"]["merge_pull_request"] == "DANGEROUS"
+    assert gh["source_url"].startswith("https://")
+    # Secret NAMES are exposed; values never are (the registry holds no values).
+    assert gh["secrets"] == ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+
+
+def test_serialize_exposes_no_secret_values() -> None:
+    # Defensive: no field in the projection should look like a real credential.
+    for server in serialize_registry(installed_names=set()):
+        assert all(isinstance(name, str) for name in server["secrets"])
+        # A declared secret is a NAME (uppercase env-var form), never a value.
+        for name in server["secrets"]:
+            assert re.match(r"^[A-Z_][A-Z0-9_]*$", name)
+
+
+def test_get_regulated_server_lookup() -> None:
+    assert get_regulated_server("postgres") is not None
+    assert get_regulated_server("does-not-exist") is None

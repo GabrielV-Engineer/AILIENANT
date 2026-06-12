@@ -393,6 +393,154 @@ async def test_autoconnect_connects_only_enabled_servers(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# URI parsing — bare commands + URL-encoded argument round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_parse_bare_command_uri() -> None:
+    from tools.mcp_adapter import _parse_mcp_uri
+
+    params = _parse_mcp_uri("stdio://npx?arg=-y&arg=pkg")
+    assert params.command == "npx"
+    assert params.args == ["-y", "pkg"]
+
+
+def test_parse_absolute_path_uri_unchanged() -> None:
+    from tools.mcp_adapter import _parse_mcp_uri
+
+    params = _parse_mcp_uri("stdio:///abs/path/server?arg=foo")
+    assert params.command == "/abs/path/server"
+    assert params.args == ["foo"]
+
+
+def test_uri_arg_with_special_chars_round_trips() -> None:
+    # An argument carrying '&' and '=' must survive build -> parse intact rather
+    # than being shredded by naive '&'-splitting.
+    from tools.mcp_adapter import _parse_mcp_uri, build_stdio_uri
+
+    args = ["--filter=type=api&status=open", "plain"]
+    uri = build_stdio_uri("npx", args)
+    params = _parse_mcp_uri(uri)
+    assert params.command == "npx"
+    assert params.args == args
+
+
+# ---------------------------------------------------------------------------
+# Launch hardening — PATH resolution + secret env injection
+# ---------------------------------------------------------------------------
+
+
+def test_bare_command_resolved_via_which() -> None:
+    from tools import mcp_adapter
+
+    with patch("shutil.which", return_value="/resolved/npx") as p_which:
+        params = mcp_adapter._build_stdio_params("stdio://npx?arg=-y", server_name=None)
+    assert params is not None
+    assert params.command == "/resolved/npx"
+    p_which.assert_called_once_with("npx")
+
+
+def test_abs_path_command_skips_which() -> None:
+    from tools import mcp_adapter
+
+    with patch("shutil.which", return_value=None) as p_which:
+        params = mcp_adapter._build_stdio_params("stdio:///abs/server", server_name=None)
+    assert params is not None
+    assert params.command == "/abs/server"
+    p_which.assert_not_called()  # a path-form command is never PATH-resolved
+
+
+def test_unresolvable_command_returns_none() -> None:
+    from tools import mcp_adapter
+
+    with patch("shutil.which", return_value=None):
+        assert mcp_adapter._build_stdio_params("stdio://nope", server_name=None) is None
+
+
+def test_secret_env_injected_alongside_platform_vars() -> None:
+    from tools import mcp_adapter
+
+    token = {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_live"}
+    with (
+        patch("shutil.which", return_value="/resolved/npx"),
+        patch("core.config.mcp_secrets.get_server_env", return_value=token),
+    ):
+        params = mcp_adapter._build_stdio_params(
+            "stdio://npx?arg=-y", server_name="github"
+        )
+    assert params is not None and params.env is not None
+    assert params.env["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_live"
+    # Platform-critical vars from the SDK default environment are also present.
+    assert "PATH" in params.env
+
+
+def test_no_secrets_leaves_env_none() -> None:
+    from tools import mcp_adapter
+
+    with patch("shutil.which", return_value="/resolved/npx"):
+        params = mcp_adapter._build_stdio_params("stdio://npx", server_name="docker")
+    assert params is not None
+    assert params.env is None  # zero behavioral change for a secret-less server
+
+
+def test_secret_overrides_default_env_on_clash() -> None:
+    from tools import mcp_adapter
+
+    with (
+        patch("shutil.which", return_value="/resolved/npx"),
+        patch.object(mcp_adapter, "_resolve_server_env", return_value={"PATH": "OVERRIDDEN"}),
+    ):
+        params = mcp_adapter._build_stdio_params("stdio://npx", server_name="x")
+    assert params is not None and params.env is not None
+    assert params.env["PATH"] == "OVERRIDDEN"  # injected secret wins the merge
+
+
+@pytest.mark.anyio
+async def test_bootstrap_command_not_found_falls_back(tmp_path: Path) -> None:
+    from tools import mcp_adapter
+
+    mcp_adapter._reset_mcp_session_for_tests()
+    state = _new_state()
+    with patch("shutil.which", return_value=None):
+        ok = await mcp_adapter.bootstrap_mcp_session(
+            uri="stdio://npx", state=cast(AIlienantGraphState, state),
+        )
+    assert ok is False
+    reasons = {e.get("reason") for e in state["permission_audit_log"]}
+    assert "command_not_found" in reasons
+
+
+@pytest.mark.anyio
+async def test_close_mcp_session_drops_one_server(tmp_path: Path) -> None:
+    from tools import mcp_adapter
+
+    isolated_store = _make_isolated_store(tmp_path)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    session = _make_session_mock([_make_descriptor("Echo", "Echo", {})])
+    stdio_cm = _make_stdio_client_cm()
+    register_tool_mock = AsyncMock(return_value=None)
+    state = _new_state()
+
+    with (
+        patch.object(mcp_adapter, "stdio_client", return_value=stdio_cm),
+        patch.object(mcp_adapter, "ClientSession", return_value=session),
+        patch.object(mcp_adapter, "tool_rag_store", isolated_store),
+        patch("core.db.register_tool", register_tool_mock),
+    ):
+        await mcp_adapter.bootstrap_mcp_session(
+            uri="stdio:///fake/echo", state=cast(AIlienantGraphState, state),
+            server_name="echo", timeout_sec=2.0,
+        )
+        assert "echo" in mcp_adapter._sessions
+        await mcp_adapter.close_mcp_session("echo")
+
+    assert "echo" not in mcp_adapter._sessions
+    assert "echo" not in mcp_adapter._exit_stacks
+    stdio_cm.__aexit__.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
 # anyio backend constraint
 # ---------------------------------------------------------------------------
 

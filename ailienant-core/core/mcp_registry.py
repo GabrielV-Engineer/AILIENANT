@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from core.mcp_constants import ALLOWED_MCP_COMMANDS
 from core.permissions import ToolPrivilegeTier, register_privilege_overrides
@@ -43,6 +43,7 @@ class RegulatedServer:
     name: str  # logical id, lowercased — the key namespace for tool tiers
     display_name: str
     description: str
+    source_url: str  # canonical repository, for source review before install
     transport: str  # only "stdio" is supported today
     command: str  # launcher; must be in ALLOWED_MCP_COMMANDS
     args: Tuple[str, ...]  # STRUCTURAL FLAGS ONLY — never a secret or URL
@@ -55,6 +56,10 @@ class RegulatedServer:
         # security-relevant checks in an optimized deployment.
         if self.name != self.name.lower():
             raise ValueError(f"server name must be lowercase: {self.name!r}")
+        if not self.source_url.startswith("https://"):
+            raise ValueError(
+                f"source_url must be an https:// URL for {self.name!r}: {self.source_url!r}"
+            )
         if self.transport != "stdio":
             raise ValueError(f"unsupported transport for {self.name!r}: {self.transport!r}")
         if self.command not in ALLOWED_MCP_COMMANDS:
@@ -80,6 +85,7 @@ REGULATED_SERVERS: Tuple[RegulatedServer, ...] = (
         name="github",
         display_name="GitHub",
         description="Repository, issue, and pull-request operations on GitHub.",
+        source_url="https://github.com/modelcontextprotocol/servers/tree/main/src/github",
         transport="stdio",
         command="npx",
         args=("-y", "@modelcontextprotocol/server-github"),
@@ -93,6 +99,7 @@ REGULATED_SERVERS: Tuple[RegulatedServer, ...] = (
         name="brave-search",
         display_name="Brave Search",
         description="Web and local search via the Brave Search API.",
+        source_url="https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
         transport="stdio",
         command="npx",
         args=("-y", "@modelcontextprotocol/server-brave-search"),
@@ -105,6 +112,7 @@ REGULATED_SERVERS: Tuple[RegulatedServer, ...] = (
         name="docker",
         display_name="Docker",
         description="Container lifecycle and image management on the local Docker host.",
+        source_url="https://github.com/ckreiling/mcp-server-docker",
         transport="stdio",
         command="uvx",
         args=("mcp-server-docker",),
@@ -117,6 +125,7 @@ REGULATED_SERVERS: Tuple[RegulatedServer, ...] = (
         name="postgres",
         display_name="PostgreSQL",
         description="Read and run statements against a PostgreSQL database.",
+        source_url="https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
         transport="stdio",
         command="npx",
         # The connection string is a secret (POSTGRES_CONNECTION_STRING), not an
@@ -143,6 +152,42 @@ def build_privilege_catalog() -> Dict[str, ToolPrivilegeTier]:
         for tool_name, tier in server.tool_tiers.items():
             catalog[f"{server.name}.{tool_name}".lower()] = tier
     return catalog
+
+
+def get_regulated_server(name: str) -> Optional[RegulatedServer]:
+    """Return the curated server with this logical name, or ``None``."""
+    for server in REGULATED_SERVERS:
+        if server.name == name:
+            return server
+    return None
+
+
+def serialize_registry(installed_names: Set[str]) -> List[Dict[str, Any]]:
+    """Project the curated registry into JSON for the browse-and-install UI.
+
+    Exposes install metadata, the source-review link, and the per-tool privilege
+    tiers (the conscious-consent surface) — but only secret NAMES, never values
+    (the registry never held values to begin with). ``installed`` reflects
+    whether a server with this name is already in the runtime catalog.
+    """
+    out: List[Dict[str, Any]] = []
+    for server in REGULATED_SERVERS:
+        out.append(
+            {
+                "name": server.name,
+                "display_name": server.display_name,
+                "description": server.description,
+                "source_url": server.source_url,
+                "command": server.command,
+                "args": list(server.args),
+                "secrets": list(server.secrets),
+                "tool_tiers": {
+                    tool: tier.name for tool, tier in server.tool_tiers.items()
+                },
+                "installed": server.name in installed_names,
+            }
+        )
+    return out
 
 
 def init_registry() -> None:

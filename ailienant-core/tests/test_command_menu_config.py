@@ -13,18 +13,25 @@ import asyncio
 import sqlite3
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from api import mcp_servers as mcp_api
 from api import system_settings
 from core import db as catalog_db
+from core.config import mcp_secrets
+from tools import mcp_adapter
 
 
 def _isolate_catalog(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> str:
     db = str(tmp_path / "catalog_test.sqlite")
     monkeypatch.setattr(catalog_db, "DB_CATALOG_PATH", db)
     return db
+
+
+def _isolate_secrets(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mcp_secrets, "MCP_SECRETS_PATH", Path(tmp_path) / "mcp_secrets.json")
 
 
 def test_config_tables_created(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,3 +202,146 @@ def test_mcp_test_unreachable_is_fast_and_safe() -> None:
     missing = asyncio.run(mcp_api.test_server({}))
     assert missing["reachable"] is False
     assert "uri" in (missing.get("error") or "")
+
+
+# ---------------------------------------------------------------------------
+# Browse-and-install from the curated registry
+# ---------------------------------------------------------------------------
+
+
+def test_registry_lists_curated_servers(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        out = await mcp_api.list_registry()
+        names = {s["name"] for s in out["servers"]}
+        assert {"github", "docker", "postgres", "brave-search"} <= names
+        assert all(s["installed"] is False for s in out["servers"])  # nothing installed yet
+
+    asyncio.run(_run())
+
+
+def test_install_secretless_server(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    _isolate_secrets(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        with patch.object(mcp_api, "bootstrap_mcp_session", AsyncMock(return_value=False)):
+            res = await mcp_api.install_from_registry({"name": "docker"})
+        assert res["ok"] is True
+        rows = await catalog_db.list_mcp_servers()
+        assert len(rows) == 1 and rows[0]["name"] == "docker"
+        # The persisted uri parses back to the registry's command + args.
+        params = mcp_adapter._parse_mcp_uri(rows[0]["uri"])
+        assert params.command == "uvx"
+
+    asyncio.run(_run())
+
+
+def test_install_credentialed_server_stores_masked(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    _isolate_secrets(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        with patch.object(mcp_api, "bootstrap_mcp_session", AsyncMock(return_value=False)):
+            res = await mcp_api.install_from_registry(
+                {"name": "github", "secrets": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_secretvalue"}}
+            )
+        assert res["ok"] is True
+        # Stored for injection, masked for display — the raw value never echoes.
+        assert mcp_secrets.get_server_env("github")["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_secretvalue"
+        masked = mcp_secrets.mask_server_secrets("github")["GITHUB_PERSONAL_ACCESS_TOKEN"]
+        assert "secretvalue" not in masked
+
+    asyncio.run(_run())
+
+
+def test_install_rejects_unknown_name(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    _isolate_secrets(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        res = await mcp_api.install_from_registry({"name": "totally-not-real"})
+        assert res["ok"] is False
+        assert await catalog_db.list_mcp_servers() == []
+
+    asyncio.run(_run())
+
+
+def test_install_rejects_unknown_secret_key(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    _isolate_secrets(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        res = await mcp_api.install_from_registry(
+            {"name": "github", "secrets": {"NOT_A_DECLARED_SECRET": "x"}}
+        )
+        assert res["ok"] is False
+        assert "Unknown secret" in res["error"]
+
+    asyncio.run(_run())
+
+
+def test_install_rejects_missing_required_secret(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    _isolate_secrets(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        res = await mcp_api.install_from_registry({"name": "github"})
+        assert res["ok"] is False
+        assert "Missing required secret" in res["error"]
+
+    asyncio.run(_run())
+
+
+def test_reinstall_closes_prior_session(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    _isolate_secrets(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+    mcp_adapter._sessions["github"] = MagicMock()  # pretend a live session exists
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        close_spy = AsyncMock()
+        with (
+            patch.object(mcp_api, "bootstrap_mcp_session", AsyncMock(return_value=False)),
+            patch.object(mcp_api, "close_mcp_session", close_spy),
+        ):
+            res = await mcp_api.install_from_registry(
+                {"name": "github", "secrets": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_new"}}
+            )
+        assert res["ok"] is True
+        close_spy.assert_awaited_once_with("github")
+
+    try:
+        asyncio.run(_run())
+    finally:
+        mcp_adapter._reset_mcp_session_for_tests()
+
+
+def test_delete_wipes_secret_and_session(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    _isolate_secrets(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        with patch.object(mcp_api, "bootstrap_mcp_session", AsyncMock(return_value=False)):
+            await mcp_api.install_from_registry(
+                {"name": "github", "secrets": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_x"}}
+            )
+        assert mcp_secrets.get_server_env("github") != {}
+        with patch.object(mcp_api, "close_mcp_session", AsyncMock()) as close_spy:
+            await mcp_api.remove_server("github")  # id == name for registry installs
+            close_spy.assert_awaited_once_with("github")
+        assert mcp_secrets.get_server_env("github") == {}
+
+    asyncio.run(_run())

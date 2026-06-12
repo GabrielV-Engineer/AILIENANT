@@ -15,17 +15,33 @@ import logging
 import ntpath
 import uuid
 from contextlib import AsyncExitStack
-from typing import Any, Dict, Sized, cast
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sized, cast
 
 from fastapi import APIRouter, HTTPException
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
 import core.db as catalog_db
+from core.config.mcp_secrets import (
+    delete_server_secrets,
+    mask_server_secrets,
+    set_server_secrets,
+)
 from core.mcp_config import McpConfigError, export_mcp_config, import_mcp_config
 from core.mcp_constants import ALLOWED_MCP_COMMANDS
+from core.mcp_registry import get_regulated_server, serialize_registry
 from core.tool_rag import MCP_HANDSHAKE_TIMEOUT_SEC
-from tools.mcp_adapter import _parse_mcp_uri
+from tools import mcp_adapter
+from tools.mcp_adapter import (
+    _build_stdio_params,
+    _parse_mcp_uri,
+    bootstrap_mcp_session,
+    build_stdio_uri,
+    close_mcp_session,
+)
+
+if TYPE_CHECKING:
+    from brain.state import AIlienantGraphState
 
 logger = logging.getLogger("MCP_API")
 
@@ -86,8 +102,82 @@ async def save_server(body: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.delete("/servers/{server_id}")
 async def remove_server(server_id: str) -> Dict[str, Any]:
+    # Resolve the row's name before deleting: secrets and live sessions are keyed
+    # by server name, but the endpoint only carries the id. Wiping both keeps a
+    # deleted credentialed server from leaving its token or stdio child behind.
+    servers = await catalog_db.list_mcp_servers()
+    name = next((s["name"] for s in servers if s["id"] == server_id), None)
     await catalog_db.delete_mcp_server(server_id)
+    if name:
+        delete_server_secrets(name)
+        await close_mcp_session(name)
     return {"ok": True, "servers": await catalog_db.list_mcp_servers()}
+
+
+@router.get("/registry")
+async def list_registry() -> Dict[str, Any]:
+    """Return the curated catalog of installable servers for the browse UI."""
+    installed = {s["name"] for s in await catalog_db.list_mcp_servers()}
+    return {"servers": serialize_registry(installed)}
+
+
+@router.post("/registry/install")
+async def install_from_registry(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Install a curated server: collect secrets, persist, and connect live.
+
+    Only the vetted registry servers are installable here — install reuses the
+    same command allowlist as the manual save path, so this opens no new attack
+    surface. Secrets are stored backend-side and injected as env at connect time;
+    they never enter the persisted uri.
+    """
+    name = str(body.get("name", "")).strip()
+    server = get_regulated_server(name)
+    if server is None:
+        return {"ok": False, "error": "Unknown registry server."}
+
+    raw_secrets = body.get("secrets") or {}
+    if not isinstance(raw_secrets, dict):
+        return {"ok": False, "error": "secrets must be an object of name -> value."}
+    submitted = {str(k): str(v) for k, v in raw_secrets.items()}
+
+    # Reject any secret key the server did not declare.
+    unknown = set(submitted) - set(server.secrets)
+    if unknown:
+        return {"ok": False, "error": f"Unknown secret(s): {', '.join(sorted(unknown))}."}
+
+    # Every declared secret must be provided now or already stored. A masked
+    # placeholder counts as "already stored" (the value is preserved on merge).
+    already = mask_server_secrets(name)
+    for required in server.secrets:
+        provided = submitted.get(required, "").strip()
+        if not provided and not already.get(required):
+            return {"ok": False, "error": f"Missing required secret: {required}."}
+
+    if submitted:
+        set_server_secrets(name, submitted)
+
+    uri = build_stdio_uri(server.command, list(server.args))
+
+    # Close any prior live session before re-bootstrapping — otherwise the
+    # idempotent connect guard would keep the stale session and ignore the new
+    # secret (and leak the old stdio child).
+    if name in mcp_adapter._sessions:
+        await close_mcp_session(name)
+
+    await catalog_db.upsert_mcp_server(name, name, uri, "stdio", True)
+
+    # Best-effort live connect so the server is usable without a host restart.
+    # A failure (e.g. a cold npx download exceeding the handshake deadline) is
+    # non-fatal: the row stays enabled and the next task or Test reconnects.
+    state: Dict[str, Any] = {}
+    reachable = await bootstrap_mcp_session(
+        uri, cast("AIlienantGraphState", state), server_name=name
+    )
+    return {
+        "ok": True,
+        "reachable": reachable,
+        "servers": await catalog_db.list_mcp_servers(),
+    }
 
 
 @router.post("/test")
@@ -103,6 +193,7 @@ async def test_server(body: Dict[str, Any]) -> Dict[str, Any]:
     uri = str(body.get("uri", "")).strip()
     if not uri:
         return {"reachable": False, "tool_count": 0, "error": "uri is required"}
+    server_name: Optional[str] = (str(body.get("server_name", "")).strip() or None)
 
     try:
         _validate_mcp_command(uri)  # S2 — reject non-allowlisted commands pre-spawn
@@ -110,9 +201,13 @@ async def test_server(body: Dict[str, Any]) -> Dict[str, Any]:
         return {"reachable": False, "tool_count": 0, "error": str(exc)}
 
     try:
-        params = _parse_mcp_uri(uri)
+        # Route through the launch builder so a PATH-only command resolves and a
+        # credentialed server is probed with its stored secrets injected as env.
+        params = _build_stdio_params(uri, server_name)
     except ValueError as exc:
         return {"reachable": False, "tool_count": 0, "error": f"invalid uri: {exc}"}
+    if params is None:
+        return {"reachable": False, "tool_count": 0, "error": "command not found on PATH"}
 
     try:
         async with AsyncExitStack() as stack:
