@@ -567,15 +567,6 @@ async def submit_task(
         }
 
     async def _runner() -> None:
-        # Phase 7.11.3 (ADR-706 §4.5b) — register THIS runner task with the
-        # abort mesh BEFORE the first await. asyncio.current_task() here
-        # returns the runner Task (NOT the WS receive loop's task — that's
-        # the disaster case the W1 invariant in the plan guards against).
-        # cancel() will propagate CancelledError into the generation coroutine
-        # below, where task_service catches it and emits the savepoint marker.
-        _runner_task = asyncio.current_task()
-        if _runner_task is not None:
-            task_service.register_active_task(x_task_id, _runner_task)
         try:
             # Resolve execution mode — Zero-Trust hardware gate (Phase 7.9.B.3)
             hw = await _get_hw_profile()
@@ -606,6 +597,13 @@ async def submit_task(
                 pass
 
     _t = asyncio.create_task(_runner(), name=f"task_submit:{x_task_id}")
+    # Register the runner with the abort mesh synchronously, before returning the ack,
+    # so an immediate status poll observes the task as running rather than missing it in
+    # the gap before the background coroutine first executes. `_t` is the runner task
+    # itself (never the WS receive loop), so cancelling it propagates CancelledError into
+    # the generation coroutine without disturbing the socket; the done-callback inside
+    # register_active_task clears the entry on completion.
+    task_service.register_active_task(x_task_id, _t)
     _task_submit_tasks.add(_t)
     _t.add_done_callback(_task_submit_tasks.discard)
 
@@ -617,6 +615,17 @@ async def submit_task(
         "session_id": x_task_id,
         "stream_watchdog_ms": stream_watchdog_ms(),
     }
+
+
+@app.get("/api/v1/task/{task_id}/status")
+async def task_status(task_id: str) -> Dict[str, Any]:
+    """Report a submitted task's lifecycle status from existing engine state.
+
+    Serves the gateway's poll-pair companion: a running task is read from the in-flight
+    registry, a finished one from its persisted checkpoint chain. A pure read over state
+    that already exists — it introduces no new task store.
+    """
+    return task_service.get_task_status(task_id)
 
 
 # =====================================================================

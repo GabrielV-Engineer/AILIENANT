@@ -10,13 +10,18 @@ response rather than a transport error.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Awaitable, Callable, Dict, List
 
 import mcp.types as types
 from mcp.server.lowlevel.server import Server
 
+from core.config.host_discovery import HostNotRunningError
 from core.permissions import PermissionDecision
-from gateway import catalog, governance, ledger
+from gateway import catalog, governance, handlers, ledger
+from gateway.handlers import InvalidArguments
+
+logger = logging.getLogger("GATEWAY_SERVER")
 
 # Semantic version of the gateway surface as a public contract. Breaking changes to
 # the capability schemas bump this and trigger the deprecation policy.
@@ -104,13 +109,48 @@ async def dispatch_call(name: str, arguments: Dict[str, Any]) -> List[types.Text
     handler = _HANDLERS.get(name)
     if handler is None:
         return _envelope({"status": "not_implemented", "capability": name})
-    result = await handler(arguments)
+    try:
+        result = await handler(arguments)
+    except InvalidArguments as exc:
+        return _envelope(
+            {
+                "status": "error",
+                "reason": "invalid_arguments",
+                "capability": name,
+                "missing": exc.missing,
+            }
+        )
+    except HostNotRunningError:
+        # An EXECUTE verb needs the live engine and none is running. Fail fast with a
+        # clean, actionable envelope rather than letting the transport surface a raw error.
+        return _envelope(
+            {
+                "status": "error",
+                "reason": "host_unavailable",
+                "capability": name,
+                "message": "Open VS Code to start the AILIENANT engine.",
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 — a handler fault must stay machine-readable
+        logger.warning("Handler for %s failed: %s", name, exc, exc_info=True)
+        return _envelope(
+            {
+                "status": "error",
+                "reason": "handler_error",
+                "capability": name,
+                "detail": str(exc),
+            }
+        )
     return _envelope({"status": "ok", "capability": name, "result": result})
 
 
 def build_gateway_server() -> Server:
     """Construct the MCP server with the catalog, governance, and routing registered."""
     governance.register_gateway_privileges()
+    # Bind capability handlers from their static registry. handlers never imports the
+    # server, so the dependency stays one-directional (no cycle).
+    for name, handler in handlers.CAPABILITY_HANDLERS.items():
+        register_handler(name, handler)
     server: Server = Server(SERVER_NAME, version=PROTOCOL_VERSION)
     server.list_tools()(list_tools)
     server.call_tool()(dispatch_call)

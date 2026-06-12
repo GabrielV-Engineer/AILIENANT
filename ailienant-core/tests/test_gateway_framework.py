@@ -87,9 +87,17 @@ def test_async_verbs_are_execute_tier_and_have_a_poll_companion() -> None:
 
 
 def test_build_gateway_server_registers_handlers() -> None:
-    srv = server.build_gateway_server()
-    assert types.ListToolsRequest in srv.request_handlers
-    assert types.CallToolRequest in srv.request_handlers
+    # Building the real server binds the capability handlers into the module-global
+    # registry; snapshot/restore so it cannot leak into the unwired-verb assertions
+    # below (or other modules).
+    saved = dict(server._HANDLERS)
+    try:
+        srv = server.build_gateway_server()
+        assert types.ListToolsRequest in srv.request_handlers
+        assert types.CallToolRequest in srv.request_handlers
+    finally:
+        server._HANDLERS.clear()
+        server._HANDLERS.update(saved)
 
 
 def test_dispatch_unknown_capability_returns_error_envelope() -> None:

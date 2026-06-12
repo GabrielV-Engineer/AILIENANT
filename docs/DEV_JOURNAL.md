@@ -2,6 +2,45 @@
 
 ---
 
+## Fase 8.5.4: Capability Catalog v1 — handlers READ-heavy + run_task conservador — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/292 · `pyright` 0 · `pytest` (full suite) verde · `test_gateway_catalog_v1.py` 14/14 · suites gateway 49/49
+
+### Contexto
+8.5.1–8.5.3 dejaron el seam `dispatch_call` ruteando pero sin handlers (todo `not_implemented`). 8.5.4 cablea los 5 verbos del catálogo v1, realizando **D6** (poll-pair). Tras esto un agente externo puede consultar memoria/grafo de AILIENANT y enviar tareas.
+
+### Decisiones de arquitectura
+- **Split in-process vs loopback (verificado en código):** el estado de memoria/grafo vive en stores on-disk compartidos keyados por `project_id`, así que los verbos READ_ONLY corren **in-process** (host-independent, Conflicto (b)). La liveness de una tarea corriendo vive solo en memoria del host, así que `run_task` envía por **loopback HTTP** y `check_task_status` lee un **read-endpoint del host sobre estado existente** (sin store nuevo, D6).
+- **`project_id = sha256(workspace_root)` crudo (§3 resuelto):** espejo exacto del `PathResolver.computeProjectId` de la extensión. Normalizar solo en el gateway DIVERGIRÍA del hash crudo con que la extensión indexó → el RAG no encontraría nada. Decisión: match crudo ahora (preserva el link con índices existentes); migración coordinada `normcase/normpath` (ambos lados, re-keya) → `TECH_DEBT_BACKLOG.md`.
+- **Modo conservador atado por drift-guard:** `run_task` envía `execution_mode="ask_before_edits"` (⇐ `INTERNAL_TASK_MODE`=DEFAULT, garantía "no silent AUTO"). Un guard a nivel de import (raise explícito, no `assert` — se stripea con `-O`) falla si el string-wire deja de mapear a la postura de gobernanza.
+- **Inversión de dependencia:** `handlers.py` exporta un dict estático `CAPABILITY_HANDLERS` e importa **nada** de `server`; `server` importa el dict en una sola dirección. Sin ciclo, sin hack de import dentro de funciones.
+- **Race submit→register cerrado:** `submit_task` registraba el runner en `_active_tasks` *dentro* de `_runner` (tras `create_task`), dejando una ventana donde un poll leía `unknown`. Ahora registra el task del runner **síncronamente en el endpoint antes del 202** (`_t` es el runner, no el WS loop — invariante W1 intacto; además amplía la cobertura del abort-mesh al instante de creación).
+- **Robustez del dispatcher:** el handler se envuelve — `InvalidArguments`→envelope `invalid_arguments` top-level (los handlers *lanzan*, no retornan, porque `dispatch_call` envuelve todo retorno como `result`), `HostNotRunningError`→`host_unavailable` (fail-fast D1a), cualquier otra excepción→`handler_error`. Contrato "machine-readable en todos los casos" intacto.
+
+### Implementación
+- **`gateway/handlers.py`** (nuevo) — `project_id_for`, los 3 handlers READ_ONLY in-process (imports lazy de `core.db`/`core.memory`), los seams loopback `_submit_task_loopback`/`_get_status_loopback` (httpx), `handle_run_task`/`handle_check_task_status`, `InvalidArguments`, el drift-guard y `CAPABILITY_HANDLERS`.
+- **`gateway/server.py`** — `dispatch_call` envuelve el handler con las 3 ramas de error; `build_gateway_server` registra desde `CAPABILITY_HANDLERS`.
+- **`core/task_service.py`** — `get_task_status` (read puro: `_active_tasks`→`running`, si no `list_checkpoints`→`completed`/`aborted`/`unknown`). Boy-Scout: fix de acceso a key no-requerida de `RunnableConfig` en `_finalize_stream`.
+- **`main.py`** — ruta `GET /api/v1/task/{id}/status`; registro síncrono del runner en `submit_task`; scrub de refs de fase en el comentario del runner.
+- **`tests/test_gateway_catalog_v1.py`** (nuevo, 14 tests) + contención del leak de `_HANDLERS` en `test_gateway_framework.py`.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `gateway/handlers.py` | **nuevo** — handlers del catálogo v1 (in-process READ_ONLY + loopback EXECUTE), registry estático |
+| `gateway/server.py` | dispatch envuelve handler (invalid_arguments/host_unavailable/handler_error); registra desde el dict |
+| `core/task_service.py` | `get_task_status` (read sobre estado existente) + fix Boy-Scout `RunnableConfig` |
+| `main.py` | ruta de status + race submit→register cerrado |
+| `tests/test_gateway_catalog_v1.py` | **nuevo** — 14 tests (READ_ONLY DoD, run_task conservador, host-down, status, race) |
+| `tests/test_gateway_framework.py` | contención snapshot/restore de `_HANDLERS` en el build test |
+
+### Deuda / Diferido
+- Normalización coordinada `normcase/normpath` del `project_id` (extensión + gateway; re-keya índices) → TECH_DEBT.
+- `check_task_status` retorna status-level (count/timestamp/terminación), no el mensaje streameado ni los diffs → enhancement futuro.
+- `completed` se detecta vía promoción L2; una tarea recién terminada pre-promoción o de intención chat (sin checkpoints) lee `unknown` transitoriamente — aceptable para `run_task` (tareas de código). `run_benchmark`/`get_report` → 8.5.5.
+
+---
+
 ## Docs: Revisión de documentación pública — equipo de 5 agentes, GraphRAG, Dreaming, ecosistema — 2026-06-12
 
 **Estado:** ✅ COMPLETO (solo docs) | **Verificación:** sin `assets/logo.svg` restante en los 7 README · `icon-color.svg` en los 7 · sin framing "two agents" en ningún README · mermaid de HowItWorks parsea · sin mención de Obsidian.

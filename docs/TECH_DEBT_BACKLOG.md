@@ -31,6 +31,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-034 — Gateway project_id hashing is path-format-fragile (no normalization)
+
+- **Date:** 2026-06-12
+- **Reproduce:** call a gateway READ_ONLY verb (`query_memory`/`get_dependents`/`get_workspace_graph`) with a `workspace_root` whose casing/separators/trailing-slash differ from the exact path VS Code opened the folder under — e.g. `c:\projects\app\` vs `C:\Projects\app`. The derived `project_id = sha256(workspace_root)` mismatches the indexed key and the verb returns empty results.
+- **File(s):** `ailienant-core/gateway/handlers.py` (`project_id_for`); `ailienant-extension/src/core/PathResolver.ts` (`computeProjectId`).
+- **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The gateway intentionally mirrors the extension's *raw* `sha256(uri.fsPath)` so it hits the existing on-disk LanceDB/sqlite keys. Normalizing only in the gateway would diverge and orphan that data, so it was rejected.
+- **Blocked by:** nothing technical, but the fix is **cross-cutting**: it must apply `os.path.normcase(os.path.normpath(...))` in BOTH `project_id_for` and the extension's `computeProjectId` simultaneously, and it re-keys every existing index (the lazy indexer rebuilds them on next workspace open).
+- **Phase:** a standalone coordinated-normalization slice (extension + core, with a one-time re-index).
+- **Notes:** logged at 8.5.4 ship per CLAUDE.md §7.3. Until then the contract is "the caller passes the exact `uri.fsPath`"; documented in the 8.5.4 manifest row.
+
 ### DEBT-032 — Coder-side skill injection (planner-only shipped in 8.4.5)
 
 - **Date:** 2026-06-11

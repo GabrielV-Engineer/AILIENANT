@@ -417,7 +417,7 @@ class TaskService:
             cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
             ct = checkpoint_manager.get_tuple(cfg)
             if ct is not None:
-                cid = ct.config["configurable"].get("checkpoint_id")
+                cid = ct.config.get("configurable", {}).get("checkpoint_id")
                 # Persist L1 → L2 so the branch_from() flow can find this
                 # snapshot after a backend restart.
                 try:
@@ -1364,6 +1364,36 @@ class TaskService:
             return False
         task.cancel()
         return True
+
+    def get_task_status(self, session_id: str) -> Dict[str, Any]:
+        """Report a task's lifecycle status from existing state — no new store.
+
+        Liveness comes from the in-flight task registry; a task no longer in flight is
+        summarized from its persisted checkpoint chain (count, last timestamp, and any
+        termination reason). A task that never produced a checkpoint reads ``unknown``.
+        This is a pure read, safe to call from a request handler.
+        """
+        task = self._active_tasks.get(session_id)
+        if task is not None and not task.done():
+            return {"status": "running", "session_id": session_id}
+
+        # Deferred import: the checkpointer singleton is the same instance the compiled
+        # engine writes to, so its persisted L2 chain is authoritative for a done task.
+        from brain.checkpoint import hybrid_checkpointer
+
+        checkpoints = hybrid_checkpointer.list_checkpoints(session_id)
+        if not checkpoints:
+            return {"status": "unknown", "session_id": session_id}
+
+        last = checkpoints[-1]
+        terminated = last.termination_reason
+        return {
+            "status": "aborted" if terminated else "completed",
+            "session_id": session_id,
+            "checkpoints": len(checkpoints),
+            "last_at": last.promoted_at,
+            "termination_reason": terminated,
+        }
 
     async def write_session_stdin(self, session_id: str, data: bytes) -> bool:
         """Feed stdin to a session's live interactive terminal. False if no session."""
