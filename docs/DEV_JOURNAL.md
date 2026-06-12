@@ -2,6 +2,41 @@
 
 ---
 
+## Fase 8.3.0: Blueprint + scaffold del harness de benchmark — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/299 · `pyright` 0 · `test_harness_scaffold.py` 7/7 · suite completa 1233 passed / 2 skipped (sin regresión)
+
+### Contexto y reorden de roadmap (§3)
+Al arrancar 8.5.5 (eval surface del gateway) saltó un conflicto §3: su productor — el harness de benchmark + `report.json` de la División 8.3 — **no existía** (8.3.0–8.3.6 sin marcar; `tests/benchmark/` ausente; cero endpoint de trigger). La ejecución había construido 8.4 y 8.5.0–8.5.4 saltándose 8.3. **Decisión del usuario: reorden de roadmap (Opción B)** — no stub contract-first ni fork de runner, sino promover División 8.3 como prerrequisito. Matiz clave que concilia "medir con el sistema completo" con la dependencia: se separa **construir el harness** (infra reutilizable, ahora, DoDs con dummy baratos) de **correr la medición definitiva** (barrido caro, diferido a post-8.5/8.8 feature-complete). 8.5.5 queda pausada con marcador `BLOQUEADO por 8.3.5`.
+
+### Decisiones de arquitectura
+- **Toggles en el límite del harness, prod intacto (mandato no-negociable del blueprint):** los arms de ablación se aplican con `mock.patch` con-scoped dentro de `tests/benchmark/`, **nunca** un flag `if benchmark_mode` en `core/`/`agents/`. (Esto corrige la sugerencia de un explorador de meter `os.getenv("AILIENANT_ABLATION_MODE")` en `planner.py`/`coder.py`.) La inyección por DI pura de la Strategy G2 llega en 8.3.3.
+- **Medición pure-delta, jamás `reset()`:** el `token_ledger` es un singleton global; resetearlo destruiría el conteo de cualquier tarea concurrente. Se mide `S₁−S₀` (snapshot antes/después) — aislamiento matemático sin mutar estado global.
+- **Aislamiento de telemetría por `session_id` único + fila canónica:** cada iteración (arm × problema × pass) acuña un `uuid4` para que sus filas de `routing_decisions` no colisionen con otras. Pero **una tarea emite ~8 filas** (`log_routing_decision` se llama desde supervisor/engine×5/finops/guardrails/mcts); solo algunas llevan TCI/CSS, propagados del mismo estado → `collect_routing` selecciona la fila canónica con ambos scores, y trata cero filas como fallo de wiring (no default silencioso a 0).
+- **Seguridad de patch + determinismo = barrido serial:** los patches son globales al proceso, así que el runner corre los problemas en serie; ningún `await` puede filtrar un símbolo parcheado a otra corrutina.
+- **Budget sobre delta de spend:** como el ledger es acumulativo y no se resetea, el ceiling `benchmark_budget_usd` se chequea contra el gasto desde un baseline capturado al inicio del barrido, no contra el total absoluto.
+
+### Implementación — nuevo paquete `tests/benchmark/`
+- **`arms.py`** — `AblationArm` (G1–G4 + G4_FORCE_CLOUD reservado), `apply_arm` (context manager), `ARM_TOGGLE_INVENTORY` (G3 existe vía `_coder_target`; G4-force-cloud override existe; G2/G1 net-new), seams como constantes.
+- **`metrics.py`** — `ProblemMetrics` (tokens/USD/tci/css/latency/verdict-placeholder) + `collect_routing` con selección de fila canónica.
+- **`hygiene.py`** — `assert_embeddings_live` (reusa `LazyIndexer._preflight_check`), `disable_response_cache`, `BenchmarkBudget` (delta), constantes `SEED=42`/`TEMPERATURE=0.0` + `configure_determinism`.
+- **`runner.py`** — `BenchmarkRunner` con `task_runner` inyectable, `telemetry_db_path` para aislar la DB; `run_problem` (pure-delta) / `run_arms` (serial, init telemetría + preflight una vez).
+- **`problems.py`** — `BenchmarkProblem` + un problema dummy (corpus congelado = 8.3.2).
+- **`test_harness_scaffold.py`** (7 tests) — **dos capas no-huecas:** toggle-correctness sobre los seams reales (`_coder_target` enruta a one-shot bajo G3; G2 suprime grafo y conserva vector; G1 suprime ambos; todos restauran al salir) + plumbing con stub del model layer (4 grupos emiten métricas crudas con tci/css canónico; embeddings caídos→`BenchmarkAbort`; cache-off→recomputa tokens y el ledger nunca se resetea). Fixture autouse restaura `telemetry._conn` para no filtrar la DB tmp a tests posteriores.
+
+### MVP / diferidos (deuda rastreada, §7)
+- G2 vía `mock.patch` (scaffold) → **Strategy con DI pura en 8.3.3**. Enforcement global de `temp=0` → **8.3.1**. Corpus congelado + `BenchmarkOracle` → **8.3.2**. `report.json` + schema → **8.3.5**. Corrida definitiva cara → post-8.5/8.8.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `tests/benchmark/__init__.py` · `arms.py` · `metrics.py` · `hygiene.py` · `runner.py` · `problems.py` | **nuevos** — scaffold del harness in-process |
+| `tests/benchmark/test_harness_scaffold.py` | **nuevo** — gate hermético (7 tests, dos capas) |
+| `docs/PROJECT_MANIFEST.md` | 8.3.0 `[x]`; División 8.3 promovida a ACTIVO; 8.5.5 pausada (`BLOQUEADO por 8.3.5`) |
+| `DEVELOPERS.md` | Repository layout: añade `tests/benchmark/` |
+
+---
+
 ## Fase 8.5.4: Capability Catalog v1 — handlers READ-heavy + run_task conservador — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/292 · `pyright` 0 · `pytest` (full suite) verde · `test_gateway_catalog_v1.py` 14/14 · suites gateway 49/49

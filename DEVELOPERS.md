@@ -313,6 +313,7 @@ Proyect_Ailienant/
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
 │   └── tests/                   #   pytest suite + per-phase checkpoint gates + chaos crucible
+│       └── benchmark/           #     in-process precision/ablation harness (arms, runner, hygiene, metrics)
 ├── ailienant-extension/         # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts         #     activation entry
