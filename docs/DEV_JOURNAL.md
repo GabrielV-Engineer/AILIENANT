@@ -2,6 +2,35 @@
 
 ---
 
+## Fase 8.5.3: HITL-degrade — deny-report estructurado, nunca cuelga — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/290 · `pytest` 1212 passed, 2 skipped · `test_gateway_hitl_degrade.py` 3/3 · `test_gateway_governance.py` 17/17 (shapes 8.5.2 intactos)
+
+### Contexto
+8.5.2 dejó la rama HITL de `dispatch_call` como un placeholder mínimo con un comentario que difería el reporte rico a esta fase. 8.5.3 realiza **D5**: cuando `evaluate_action` devuelve un veredicto HITL/DANGEROUS, el gateway retorna un **deny-report estructurado de inmediato** y **jamás** llama `request_human_approval`. Un caller MCP externo no tiene humano en su loop — pedir aprobación bloquearía sobre un click que nunca llega (cuelga). El path interactivo de full-fidelity sigue siendo REST+WS (nuestra propia extensión).
+
+### Decisiones de arquitectura
+- **Deny-report D5 (la entrega):** la rama HITL emite `{status:"denied", reason:"requires_human_approval", capability, tier, would_have_required:"human_approval", message}`. El `message` es guía accionable en lenguaje natural que apunta al caller hacia el path interactivo de la extensión.
+- **"Nunca cuelga" es estructural, no defensivo:** la rama es un **retorno síncrono puro** — sin `await` sobre ningún primitivo de aprobación y sin import de `request_human_approval` en todo el paquete `gateway/`. No hay nada que pueda bloquear. Se blinda con un test que conduce un verbo DANGEROUS bajo `asyncio.wait_for(timeout=2.0)`: si alguna edición futura reintrodujera una espera, el test lanzaría `TimeoutError`.
+- **Helper `_denied` que respeta el contrato del SDK:** `call_tool` exige `List[types.TextContent]` — retornar un dict crudo de Python crashearía la serialización Pydantic en el wire (lección de 8.5.1). `_denied(reason, name, **extra)` construye el envelope **delegando en `_envelope`** (un único path de serialización, sin segundo `json.dumps` que pueda derivar). Las denegaciones simples (`rate_exceeded`/`budget_exceeded`) lo llaman sin extras → quedan **byte-idénticas** a 8.5.2; `permission_denied` y HITL adjuntan `tier`/guía vía `**extra`.
+- **Dormant-but-wired:** ningún verbo del catálogo v1 es DANGEROUS, así que la rama no se dispara en el wire por diseño. La DoD se prueba inyectando una capability DANGEROUS sintética **parcheando el resolver `catalog.get_capability`** (no la tupla `CATALOG`) — agnóstico a la implementación, sobrevive a un futuro resolver con caché de dict; el original se captura antes de parchear para evitar auto-recursión.
+
+### Implementación
+- **`gateway/server.py`** — nuevo helper `_denied`; las cuatro ramas de denegación (`rate_exceeded`, `budget_exceeded`, `permission_denied`, HITL) ahora pasan por él; la rama HITL se enriquece al deny-report D5 con comentario timeless que explica el *por qué* del degrade.
+- **`tests/test_gateway_hitl_degrade.py`** (nuevo) — 3 tests: DoD (verbo DANGEROUS → deny-report bajo deadline duro, sin colgar), garantía estructural (`not hasattr(server, "request_human_approval")`), regresión de shape (envelope `rate_exceeded` sigue con sus tres keys exactas).
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `gateway/server.py` | helper `_denied` + rama HITL enriquecida al deny-report D5; denegaciones simples byte-idénticas |
+| `tests/test_gateway_hitl_degrade.py` | **nuevo** — DoD no-hang + garantía estructural + regresión de shape |
+
+### Deuda / Diferido
+- Handlers reales de capabilities y costo real de tokens a `consume_budget` → 8.5.4 / 8.5.5.
+- Sin deuda nueva introducida; cero verbos DANGEROUS en catálogo v1 (la rama queda lista para verbos futuros).
+
+---
+
 ## Fase 8.5.2: Tier governance — gate simétrico + DoS guard durable por-caller — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/289 · `pytest` 1209 passed, 2 skipped · `test_gateway_governance.py` 17/17 · round-trip stdio real: 2º `query_memory` → `rate_exceeded` en el wire

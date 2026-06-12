@@ -41,6 +41,16 @@ def _envelope(payload: Dict[str, Any]) -> List[types.TextContent]:
     return [types.TextContent(type="text", text=json.dumps(payload))]
 
 
+def _denied(reason: str, name: str, **extra: Any) -> List[types.TextContent]:
+    """Build a denied envelope as MCP content.
+
+    Bare denials (rate, budget) carry only the three core keys; richer reports
+    (permission, human-approval degrade) attach the tier and caller guidance via
+    ``extra``. Delegates to ``_envelope`` so there is a single serialization path.
+    """
+    return _envelope({"status": "denied", "reason": reason, "capability": name, **extra})
+
+
 async def list_tools() -> List[types.Tool]:
     """Return the declared capability catalog as MCP tool descriptors."""
     return catalog.to_mcp_tools()
@@ -64,34 +74,31 @@ async def dispatch_call(name: str, arguments: Dict[str, Any]) -> List[types.Text
     # DoS guard — every call is metered, READ_ONLY included; a call denied downstream
     # still spends its rate token, so probing floods are throttled regardless.
     if not await ledger.check_and_consume_rate(caller_id):
-        return _envelope({"status": "denied", "reason": "rate_exceeded", "capability": name})
+        return _denied("rate_exceeded", name)
     if await ledger.budget_exceeded(caller_id):
-        return _envelope(
-            {"status": "denied", "reason": "budget_exceeded", "capability": name}
-        )
+        return _denied("budget_exceeded", name)
 
     cap = catalog.get_capability(name)
     assert cap is not None  # re-checked above; narrows the Optional for the type checker
     decision = governance.authorize_invocation(cap)
     if decision is PermissionDecision.DENY:
-        return _envelope(
-            {
-                "status": "denied",
-                "reason": "permission_denied",
-                "capability": name,
-                "tier": cap.tier.value,
-            }
-        )
+        return _denied("permission_denied", name, tier=cap.tier.value)
     if decision is PermissionDecision.HITL:
-        # A DANGEROUS verb with no human in the loop. 8.5.3 enriches this into the
-        # full structured deny-report; here it is a minimal degrade-to-deny.
-        return _envelope(
-            {
-                "status": "denied",
-                "reason": "requires_human_approval",
-                "capability": name,
-                "tier": cap.tier.value,
-            }
+        # The verb needs interactive human approval, but an external caller has no
+        # human in its loop — calling for one would block on a click that never comes.
+        # Degrade to an immediate, structured deny-report instead of hanging. Clients
+        # that do have a human (our own extension) use the interactive REST+WS path.
+        return _denied(
+            "requires_human_approval",
+            name,
+            tier=cap.tier.value,
+            would_have_required="human_approval",
+            message=(
+                "This capability requires interactive human approval, which the stdio "
+                "gateway cannot provide (no human is in an external caller's loop). The "
+                "request was denied without blocking. For an interactive approval path, "
+                "drive this action through the AILIENANT VS Code extension."
+            ),
         )
 
     handler = _HANDLERS.get(name)
