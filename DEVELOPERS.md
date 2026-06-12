@@ -268,13 +268,16 @@ Proyect_Ailienant/
 │   │   ├── readme_digest.py     #     workspace README brain: verbatim/digest/head-slice + debounced rebuild
 │   │   ├── db.py                #     SQLite catalog (dependency_graph, ppr_scores, indexed_files)
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
-│   │       └── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
+│   │       ├── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
+│   │       └── host_discovery.py #      ephemeral ~/.ailienant/run.json (port+token+pid, 0600) + async liveness probe
 │   ├── api/                     #   WS manager + REST routers (memory, byom, hardware, audit,
 │   │                            #     mcp_servers, skills, sessions, agent_roles, system_settings)
 │   ├── tools/                   #   llm_gateway, validation pipeline (AST+LSP), MCP adapter
 │   │                            #     (multi-session registry + dispatch gate), perception/
 │   │                            #     mutation/execution/control tool bundles,
 │   │                            #     validation/diagnostics.py (structured verdict parser)
+│   ├── gateway/                 #   External Capability Gateway: stdio MCP server exposing AILIENANT
+│   │                            #     verbs to external agents (catalog + schemas + call-tool routing seam)
 │   ├── transport/               #   outbound WS stream (throttler, token batcher, narration gate)
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe

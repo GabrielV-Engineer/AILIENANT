@@ -2,6 +2,41 @@
 
 ---
 
+## Fase 8.5.1: Framework del gateway — stdio MCP server + host discovery — 2026-06-11
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/286 · `pytest` 1192 passed, 2 skipped · `test_gateway_framework.py` 15/15 · round-trip MCP client real lista 7 schemas y recibe el envelope `not_implemented`
+
+### Contexto
+Primera sub-fase de código de la División 8.5 (External Capability Gateway, ADR-759). Levanta el **esqueleto del MCP server stdio** para que un agente externo (Claude Code / Codex) se conecte, llame `list_tools()` y obtenga schemas JSON válidos por capability. Realiza las decisiones del blueprint **D1** (home del módulo), **D1a** (host discovery), **D6** (forma del poll-pair, declarada) y **D7** (versioning semver, declarado). Scope **solo declarativo**: la lógica de las capabilities (8.5.4/8.5.5), el gate de permisos + ledger por-caller (8.5.2) y el HITL-degrade (8.5.3) quedan fuera por diseño.
+
+### Decisiones de arquitectura
+- **Catálogo como SSoT (`gateway/catalog.py`):** `@dataclass(frozen=True) Capability{name, description, tier: ToolPrivilegeTier, input_schema, is_async, schema_version}`; `CATALOG` declara las 7 verbos v1 con JSON-Schema válido. `check_task_status` (READ_ONLY) es el compañero de polling que hace usable el contrato async de D6 sobre JSON-RPC (no hay 202 ni stream nativo que un LLM externo consuma). `to_mcp_tools()` proyecta cada capability a `types.Tool` con `annotations.readOnlyHint` + `_meta` (schema_version, tier, async) — el tier aquí es metadata declarada; el wiring a `evaluate_action` es 8.5.2.
+- **Server + seam de routing (`gateway/server.py`):** low-level `Server("ailienant-gateway", version="0.1.0")`; `list_tools()` devuelve el catálogo; `dispatch_call(name, args)` (función módulo-level, testeable) valida contra el catálogo y rutea por un registro `_HANDLERS` vacío → envelope estructurado `{"status":"unknown_capability"|"not_implemented"|"ok"}` (siempre `list[TextContent]`, nunca un error de transporte). El registro es el seam que poblan 8.5.3/8.5.4/8.5.5 vía `register_handler`. `python -m gateway` (`gateway/__main__.py`) corre standalone sobre `stdio_server()` + `server.create_initialization_options()` — no requiere host vivo para bootear/listar.
+- **Host discovery D1a (`core/config/host_discovery.py`):** contrato de `~/.ailienant/run.json` en un módulo único (host escribe / gateway lee+prueba) para que la forma no derive. `write_run_state` atómico `0600` (espejo de `mcp_secrets._save_all`). **`probe_host_alive` async = el connect TCP es la única fuente de verdad cross-platform** (un PID se reusa/queda zombie → falso positivo): el PID se usa solo como fast-negative en POSIX (`os.kill(pid,0)`→`ProcessLookupError`), en Windows se va directo al socket; el connect usa `asyncio.wait_for(asyncio.open_connection(...))` para no bloquear el event loop del gateway. `resolve_host_or_error` levanta `HostNotRunningError("...Please open VS Code...")` ante stale/ausente.
+- **Hook en `main.py` lifespan:** `_publish_host_discovery()` resuelve port/token **frescos del env** en el momento de escribir (la extensión fija `AILIENANT_API_PORT` == `--port` de uvicorn, así que el env es la verdad, no un global posiblemente stale; warning si cae al default 8000 sin env). Escribe antes del `yield` (best-effort, nunca bloquea startup); `clear_run_state()` en shutdown para que un crash deje un archivo detectablemente stale.
+
+### Implementación
+- **`gateway/__init__.py`, `gateway/catalog.py`, `gateway/server.py`, `gateway/__main__.py`** (paquete nuevo).
+- **`core/config/host_discovery.py`** (nuevo) — `HostCoords`, `HostNotRunningError`, `write_run_state`/`clear_run_state`/`read_run_state`/`probe_host_alive`/`resolve_host_or_error`.
+- **`main.py`** — import + `_publish_host_discovery()` en startup + `clear_run_state()` en shutdown.
+- **`tests/test_gateway_framework.py`** (nuevo) — 15 tests: catálogo/schemas (DoD), seam de routing, host-discovery write(`0600`)/read/probe(live/dead)/resolve(stale/absent). In-process (`asyncio.run`), sin subprocess.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `gateway/__init__.py` · `gateway/catalog.py` · `gateway/server.py` · `gateway/__main__.py` | **nuevo** — paquete del gateway stdio MCP |
+| `core/config/host_discovery.py` | **nuevo** — contrato `run.json` + probe async de liveness |
+| `main.py` | hook de host-discovery en el lifespan (write startup / clear shutdown) |
+| `tests/test_gateway_framework.py` | **nuevo** — 15 tests (catálogo + seam + discovery) |
+| `DEVELOPERS.md` | code-map: paquete `gateway/` + `host_discovery.py` |
+
+### Diferido (por diseño, no deuda)
+- Gate de permisos (`evaluate_action`) + `caller_id`/ledger durable → **8.5.2**.
+- HITL-degrade deny-report → **8.5.3**.
+- Handlers reales (`run_task` loopback, verbos READ_ONLY al core) → **8.5.4** / **8.5.5**.
+
+---
+
 ## Fase 8.5.0: Blueprint — External Capability Gateway (rescoped, ADR-759) — 2026-06-11
 
 **Estado:** ✅ COMPLETO (docs-only) | **Gate:** documentario — blueprint coherente, manifest marcado `[x]`, README actualizado, cero código/config mutado

@@ -37,6 +37,7 @@ from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
 from core.task_service import TaskPayload, TaskService
 from core.config.byom_config import stream_watchdog_ms
+from core.config.host_discovery import clear_run_state, write_run_state
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _JSONResponse, PlainTextResponse
@@ -130,6 +131,30 @@ logger = logging.getLogger("AILIENANT_API")
 # LIFESPAN — Startup & Graceful Shutdown
 # =====================================================================
 
+def _publish_host_discovery() -> None:
+    """Write the loopback coordinates the External Capability Gateway reads.
+
+    Port and token are resolved fresh from the environment the server is actually
+    running under — the extension sets ``AILIENANT_API_PORT`` equal to the uvicorn
+    ``--port`` it binds, so the env is the authoritative value, not a stale global.
+    A bare default port with no env var set means a manual/standalone start, where
+    discovery may not match the real bind; we warn rather than silently mislead.
+    """
+    env_port = os.environ.get("AILIENANT_API_PORT")
+    port = int(env_port) if env_port else _API_PORT
+    token = os.environ.get("AILIENANT_AUTH_TOKEN") or None
+    if env_port is None:
+        logger.warning(
+            "AILIENANT_API_PORT unset; host-discovery advertises default port %d "
+            "which may not match the real bind.",
+            port,
+        )
+    try:
+        write_run_state(port, token, os.getpid())
+    except OSError as exc:  # noqa: BLE001 — discovery is best-effort, never blocks startup
+        logger.warning("Could not write host-discovery state: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
@@ -155,6 +180,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _wal = WALCheckpointer(checkpoint_manager)
     _wal.start()
     overnight_daemon.start()                 # on-demand memory consolidation (no timer)
+    _publish_host_discovery()                # advertise loopback coords for the gateway
     logger.info("🟢 AILIENANT startup complete (WAL mode active).")
 
     yield  # application handles requests
@@ -189,6 +215,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     compute_pool.shutdown(wait=True, cancel_futures=True)
     logger.info("🧹 Compute pool shut down — no orphan processes.")
     await shutdown_mcp_sessions()  # close MCP stdio sessions so children never outlive the host
+    clear_run_state()  # remove the host-discovery file so a crash leaves a detectable stale one
     shutdown_telemetry_log()  # drain the queue, join the listener thread, close the file
 
 
