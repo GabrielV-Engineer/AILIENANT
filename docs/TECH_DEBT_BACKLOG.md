@@ -31,6 +31,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-036 — BenchmarkOracle executes candidate patches on the host (no sandbox isolation)
+
+- **Date:** 2026-06-12
+- **Reproduce:** call `BenchmarkOracle.run_oracle(problem, candidate_patch)` with live LLM output — the patched files are written to a host `TemporaryDirectory` and run via `SubprocessPythonExecutor` (inherits the parent process environment).
+- **File(s):** `ailienant-core/tests/benchmark/oracle.py` (`BenchmarkOracle.run_oracle`, `SubprocessPythonExecutor`).
+- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The hermetic gate uses trusted golden/wrong fixtures; the AST pre-flight (`_check_patch_safety`) limits the blast radius for this MVP path. A fully isolated oracle (Docker sandbox + read-only corpus mount) is the Enterprise target.
+- **Blocked by:** requires a sandbox tier that allows writing the corpus snapshot into a container-local temp dir (the current `SandboxCodegenExecutor` writes to the Docker ro mount's host side, which is sufficient for codegen but not for multi-file oracle isolation).
+- **Phase:** standalone benchmark-runtime hardening slice (before the definitive ablation sweep, post-8.5/8.8 when the system is feature-complete).
+- **Notes:** logged at 8.3.2 ship per CLAUDE.md §7.3. AST pre-flight (`_BLOCKED_IMPORTS` + Level-1 reflexivity blocklist) is the in-place mitigation.
+
 ### DEBT-035 — MultiPL-E TypeScript execution needs a Node-capable sandbox runtime
 
 - **Date:** 2026-06-12

@@ -1,0 +1,6 @@
+{
+  "pinned_sha": "a3f1c7e2",
+  "corpus_version": "v1",
+  "language": "py",
+  "description": "Frozen mini corpus: three interconnected Python modules with deliberate gaps and bugs. Baseline for Resolve@k benchmarking."
+}

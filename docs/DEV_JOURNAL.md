@@ -2,6 +2,45 @@
 
 ---
 
+## Fase 8.3.2: Benchmark multi-archivo + BenchmarkOracle (Resolve@k) — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/308 · `pyright` 0 · `test_oracle_resolve_k.py` 12/12 · suite completa 1253 passed / 2 skipped (sin regresión)
+
+### Contexto
+8.3.2 construye la **pata multi-archivo** del benchmark de precisión: un corpus congelado de tres módulos Python interconectados, un `BenchmarkOracle` que aplica un patch candidato sobre una copia del snapshot y ejecuta su propio test suite, y el scorer `evaluate_resolve_k` que orquesta indexación + assert estructural + loop serial → `ResolveKReport`. El score resultante es **Resolve@k = resueltos/total** sobre los problemas del corpus. Esta superficie mide si GraphRAG/`get_dependents` agrega valor real en tareas multi-archivo (H₁). La capa de ablación G1–G4 que consume esta superficie es 8.3.3.
+
+### Decisiones arquitectónicas clave
+
+**Corpus como árbol de archivos reales (no JSONL embebido):** `LazyIndexer` recorre el filesystem — el corpus debe ser un directorio Python real para que el índice construya aristas reales en la `dependency_graph`. Se optó por `tests/benchmark/corpus/v1/` con `src/` (módulos interconectados) y `problems.jsonl` (problemas). El SHA pinneado en `meta.json` ancla la reproducibilidad.
+
+**asyncio.Event en LazyIndexer (cambio de producción mínimo y aditivo):** El `_await_index` original habría necesitado polling (`while not is_complete: await asyncio.sleep(0.2)`), un anti-pattern en un loop de eventos. Se añadió `complete_event` (property lazy-create de `asyncio.Event`) a `LazyIndexer` con `.set()` en los 3 puntos donde `_is_complete = True` se asigna en `_run()`. Cambio puramente aditivo — ningún comportamiento existente se altera. `_await_index` usa `asyncio.wait_for(event.wait(), timeout)`.
+
+**AST pre-flight sobre patches candidatos:** `SubprocessPythonExecutor` ejecuta en el host (MVP declarado). Para contener el blast radius se implementó `_check_patch_safety()` que parsea el AST del patch y bloquea imports de módulos peligrosos + vectores de reflexividad L-1 (`getattr`/`setattr`/`__builtins__`/`vars`/`globals`/`locals`) antes de escribir ningún archivo temporal.
+
+**Correcciones del segundo ciclo de auditoría:**
+1. **FileNotFoundError en subdirectorios nuevos** → `target.parent.mkdir(parents=True, exist_ok=True)` antes de cada escritura.
+2. **Reflexividad L-1** → `_BLOCKED_BUILTINS` extiende `eval`/`exec`/`__import__`/`compile` con los vectores de namespace.
+3. **asyncio.to_thread(shutil.copytree)** → evita bloquear el event loop durante la copia del corpus.
+4. **extract_patch fallback** → solo aplica con un único `target_file`; múltiples targets sin etiqueta → `{}` (sin adivinar).
+5. **Path-traversal guard** → resolve + relative_to antes de escribir cada archivo del patch.
+6. **project_id determinístico** → `f"benchmark_corpus_{corpus_root.name}"` garantiza crash-resume correcto.
+
+### Archivos clave creados / modificados
+
+| Archivo | Tipo | Descripción |
+|---|---|---|
+| `tests/benchmark/corpus/v1/meta.json` | NEW | SHA pinneado + metadatos |
+| `tests/benchmark/corpus/v1/src/*.py` | NEW | Snapshot Python interconectado (3 módulos) |
+| `tests/benchmark/corpus/v1/problems.jsonl` | NEW | 3 problemas multi-archivo con golden patches |
+| `tests/benchmark/oracle.py` | NEW | BenchmarkOracle, Resolve@k, AST safety |
+| `tests/benchmark/test_oracle_resolve_k.py` | NEW | Gate hermético 12 tests |
+| `core/indexer.py` | MODIFIED | complete_event aditivo (3 sitios en _run) |
+
+### MVP declarado / DEBT
+- **DEBT-036** — Oracle usa `SubprocessPythonExecutor` en el host (no sandbox Docker) para la corrida live con salida de modelo real.
+
+---
+
 ## Fase 8.3.1: Adaptador de codegen + Pass@1 (HumanEval / MultiPL-E) — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/302 · `pyright` 0 · `test_codegen_pass1.py` 8/8 · suite completa 1241 passed / 2 skipped (sin regresión)

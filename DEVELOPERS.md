@@ -316,7 +316,9 @@ Proyect_Ailienant/
 │       └── benchmark/           #     in-process precision/ablation harness (arms, runner, hygiene, metrics)
 │           ├── codegen.py        #       plain-codegen adapter + Pass@1 scorer (HumanEval/MultiPL-E)
 │           ├── executors.py      #       pluggable exec backends (sandbox / trusted subprocess)
-│           └── datasets/         #       frozen codegen subset (HumanEval py + MultiPL-E ts JSONL)
+│           ├── oracle.py         #       multi-file BenchmarkOracle + Resolve@k scorer (AST safety, indexer event)
+│           ├── datasets/         #       frozen codegen subset (HumanEval py + MultiPL-E ts JSONL)
+│           └── corpus/v1/        #       frozen multi-file snapshot (src/ + problems.jsonl + meta.json)
 ├── ailienant-extension/         # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts         #     activation entry

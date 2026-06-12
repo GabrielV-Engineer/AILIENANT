@@ -168,6 +168,20 @@ class LazyIndexer:
         self._last_workspace_root: str | None = None
         self._last_project_id: str | None = None
         self._last_session_id: str | None = None
+        self._complete_event: Optional[asyncio.Event] = None
+
+    @property
+    def complete_event(self) -> asyncio.Event:
+        """Lazy-created event that is set once when indexing finishes.
+
+        Callers that need to await completion should access this property
+        *before* calling ``start()`` so the event exists before ``_run()``
+        can fire it. Accessing it after completion is safe — the event will
+        already be set.
+        """
+        if self._complete_event is None:
+            self._complete_event = asyncio.Event()
+        return self._complete_event
 
     @property
     def is_complete(self) -> bool:
@@ -296,6 +310,8 @@ class LazyIndexer:
             if self._total == 0:
                 logger.info("LazyIndexer: no eligible files in %s", workspace_root)
                 self._is_complete = True
+                if self._complete_event is not None:
+                    self._complete_event.set()
                 return
 
             # Skip full crawl if enough files are already indexed (crash-resume)
@@ -307,6 +323,8 @@ class LazyIndexer:
                 )
                 self._current = self._total
                 self._is_complete = True
+                if self._complete_event is not None:
+                    self._complete_event.set()
                 await vfs_manager.broadcast_indexing_complete(session_id)
                 return
 
@@ -342,8 +360,8 @@ class LazyIndexer:
                             await upsert_indexed_file(file_path, project_id)
                             if result.imports:
                                 await upsert_dependencies(file_path, result.imports, project_id)
-                            # ── Phase 3.1: Semantic upsert (fire-and-forget) ──────────
-                            # Deferred import: isolates even import errors from indexing.
+                            # Semantic upsert is fire-and-forget; deferred import isolates
+                            # grammar/embedding errors from the core indexing path.
                             try:
                                 from core.memory.semantic_memory import SemanticMemoryManager
                                 await SemanticMemoryManager().semantic_upsert(
@@ -363,6 +381,8 @@ class LazyIndexer:
                 await asyncio.sleep(_BATCH_SLEEP_S)
 
             self._is_complete = True
+            if self._complete_event is not None:
+                self._complete_event.set()
             await vfs_manager.broadcast_indexing_complete(session_id)
             logger.info("LazyIndexer: done — %d files indexed for project=%s", self._total, project_id)
 
