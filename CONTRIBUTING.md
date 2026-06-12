@@ -84,8 +84,12 @@ Add or update tests for behavior you change. Phases ship a sibling `test_phase*_
 ## 6. Git & pull-request workflow
 
 - **Branch from `main`** in your fork and open a PR against `main`.
-- **Conventional Commits.** Format: `type(scope): summary` — e.g. `feat(core): add VRAM fallback threshold`, `fix(byom): correct re-test 404`, `docs(readme): clarify install`. Keep the subject concise; put detail in the PR description, not a novel in the commit body.
-- **PR description should include:** a one-line summary, a test plan, and a note on whether the change touches `mypy`-strict modules or any blueprint-governed contract.
+- **Reference an issue.** Every PR links an existing issue — use `Fixes #123` / `Closes #123` in the description. For a small fix, a one-line issue is enough; it just gives maintainers context and prevents duplicate work. (See [§3](#3-before-you-start-coding) and [§8](#8-reporting-bugs--requesting-features).)
+- **Conventional Commits — for both the title and commits.** Format: `type(scope): summary`. Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`. Examples: `feat(core): add VRAM fallback threshold`, `fix(byom): correct re-test 404`, `docs(readme): clarify install`. Keep the subject concise; put detail in the PR description, not a novel in the commit body.
+- **Keep PRs small and focused.** One concern per PR. If you can't describe it in a couple of sentences, it's probably too big — split it.
+- **Say how you verified it.** For logic changes, the PR description must answer: *what did you test, and how can a reviewer reproduce/confirm it?* Name the tests you added or ran. "Trust me" is not a test plan. Also note whether the change touches `mypy`-strict modules or any blueprint-governed contract.
+- **UI changes need before/after.** Include screenshots or a short clip of the change in the webview or dashboard — it makes review far faster.
+- **Write it yourself, keep it short.** Explain what changed and why in your own words. Long, AI-generated walls of text in PRs or issues slow review down and may be ignored — concise and specific wins.
 - **Keep history clean.** Don't force-push over others' commits or rewrite shared history. Never skip hooks (`--no-verify`) or bypass signing unless explicitly asked.
 - **Don't commit secrets.** API keys live in `.env` / secret storage, never in code or config you commit.
 
@@ -100,7 +104,8 @@ Add or update tests for behavior you change. Phases ship a sibling `test_phase*_
 
 ## 8. Reporting bugs & requesting features
 
-Open an issue with: what you expected, what happened, steps to reproduce, and your environment (OS, Python/Node versions, model setup). For security issues, please report privately rather than in a public issue.
+- **Bugs:** open an issue with what you expected, what happened, steps to reproduce, and your environment (OS, Python/Node versions, model setup). For security issues, please report privately rather than in a public issue.
+- **Features:** start with a **design conversation, not a PR.** Open an issue describing the problem, your proposed approach (optional), and why it belongs in AILIENANT — and check it against [docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md) first. Net-new functionality should be aligned on before it's built; a large feature PR that arrives unannounced may be asked to go back to an issue. Keep issues short and specific — AI-generated walls of text may be closed.
 
 ---
 

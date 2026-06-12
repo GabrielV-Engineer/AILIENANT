@@ -2,6 +2,20 @@
 
 ---
 
+## Docs: Revisión de documentación pública — equipo de 5 agentes, GraphRAG, Dreaming, ecosistema — 2026-06-12
+
+**Estado:** ✅ COMPLETO (solo docs) | **Verificación:** sin `assets/logo.svg` restante en los 7 README · `icon-color.svg` en los 7 · sin framing "two agents" en ningún README · mermaid de HowItWorks parsea · sin mención de Obsidian.
+
+### Contexto
+La documentación pública subvendía y describía mal el sistema: el README llamaba a AILIENANT una herramienta de **dos agentes** (Planner + Coder), fijaba un **puerto 8000** obsoleto, y omitía lo que distingue al proyecto. Esta pasada corrige los hechos y llena los huecos en el README (7 idiomas), las guías profundas y CONTRIBUTING.
+
+### Cambios
+- **README (EN + 6 traducciones, paridad completa):** roster de **5 agentes** (Researcher → Planner → Orchestrator → Coder → Analyst, + los 8 roles del Coder); secciones nuevas "El equipo por dentro", "Conversa con tu código: el Analista", "Memoria que puedes ver", "Ecosistema abierto" (MCP/skills/tools), "Dreaming", "Terminal en vivo y panel de control"; GraphRAG con reducción ~70 % + hardware modesto; logo `assets/logo.svg` → `assets/icon-color.svg`.
+- **Puerto (corrección de hecho):** el puerto es **asignado por el SO** vía `findFreePort()` y auto-cableado por la extensión; `59247` era efímero, no fijo. Reencuadrado en README, HowToUseIt.md y VSCODE_EXTENSION_SPEC.md; `8000` solo como fallback de lanzamiento manual.
+- **HowItWorks.md:** corregido el `sequenceDiagram` roto de "the life of a task" (alias de participant con paréntesis rompía el parser de mermaid); añadidos pipeline de 5 agentes, tabla de 8 roles, deep-dive de GraphRAG con tabla por-tier, catálogo de tools (16 reales + ~56 planeadas en 8.8), MCP/skills, y el deep-dive de Dreaming (perfiles Medium/Big/Cloud/Hybrid + MCTS).
+- **DEVELOPERS.md:** "The two agents" → "The agents" (5 + malla de seguridad); subsecciones de Dreaming (`OvernightDaemon`), visualización de memoria (`CodeGraphLayer` + REST), registro de tools y PTY; honest-list ampliada — Researcher/Orchestrator emergentes, Dreaming on-demand vs daemon MCTS diferido, y **prompt caching nativo (cache_control) como ahorro de coste pendiente (~90 % en input tokens)**.
+- **CONTRIBUTING.md:** issue-first explícito (`Fixes #123`), bloque "cómo lo verificaste" para cambios de lógica, capturas antes/después para UI, no a los muros de texto generados por IA, flujo de feature-request por diseño primero, ejemplos de título conventional-commit.
+
 ## Fase 8.5.3: HITL-degrade — deny-report estructurado, nunca cuelga — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/290 · `pytest` 1212 passed, 2 skipped · `test_gateway_hitl_degrade.py` 3/3 · `test_gateway_governance.py` 17/17 (shapes 8.5.2 intactos)

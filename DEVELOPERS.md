@@ -10,7 +10,7 @@
 
 - [System shape](#system-shape)
 - [The execution graph](#the-execution-graph)
-- [The two agents](#the-two-agents)
+- [The agents](#the-agents)
 - [Core subsystems](#core-subsystems)
 - [The security model](#the-security-model)
 - [Repository layout](#repository-layout)
@@ -98,7 +98,13 @@ async def run_<node>_node(state, config) -> dict:
 
 ---
 
-## The two agents
+## The agents
+
+Five named agents (Researcher → Planner → Orchestrator → Coder → Analyst) plus a deterministic safety/execution mesh (`drift_monitor`, `error_correction`, `agentic_cell`, `contract_guard`, `finops_gate`, `supervisor`, `validate_output`). Planner and Coder are the fully-wired cognitive core; the others range from shipped (Analyst) to emerging (Researcher/Orchestrator — see the [honest list](#honest-list-of-what-is-not-implemented)).
+
+### Researcher — [agents/researcher.py](ailienant-core/agents/researcher.py)
+
+Builds a **skeleton map** of the workspace — struct/function signatures and cross-module relationships — so the Planner reasons over real structure. *Emerging:* today its output is consumed as the optional `researcher_skeleton` state field by the Planner rather than as a standalone graph node; promotion to a first-class node and its READ_ONLY tool arsenal (`glob`, `grep`, `workspace_structure`, `graphrag_query`, `get_dependents`) are scoped in [División 8.8](docs/PROJECT_MANIFEST.md).
 
 ### Planner — [agents/planner.py](ailienant-core/agents/planner.py)
 
@@ -118,7 +124,15 @@ Takes one WBS step and emits a patch as git-conflict-style SEARCH/REPLACE blocks
 - Bounded local retries; on the configured strike count it escalates to a cloud "surgeon."
 - `run_command` steps dispatch into the resolved sandbox tier and read a **structured** verdict — see [the closed-loop executor](#closed-loop-execution).
 
-For steps the planner flags as needing iteration, control routes into the **agentic cell** ([brain/agentic_cell.py](ailienant-core/brain/agentic_cell.py)): a bounded ReAct loop over a live, persistent terminal exposing exactly three strict-schema tools — `run_terminal` (structured diagnostics, never raw stdout), `read_file_ast` (skeleton, not full file), and `apply_granular_edit` (transactional SEARCH/REPLACE with an optimistic-concurrency guard).
+For steps the planner flags as needing iteration, control routes into the **agentic cell** ([brain/agentic_cell.py](ailienant-core/brain/agentic_cell.py)): a bounded ReAct loop over a live, persistent terminal ([core/pty_session.py](ailienant-core/core/pty_session.py) — one long-lived shell owns `cwd`/`env`, async byte-stream with backpressure, Ctrl-C, teardown) exposing exactly three strict-schema tools — `run_terminal` (structured diagnostics, never raw stdout), `read_file_ast` (skeleton, not full file), and `apply_granular_edit` (transactional SEARCH/REPLACE with an optimistic-concurrency guard).
+
+### Orchestrator
+
+Deterministic driver of the WBS: sequences steps, threads state, and routes each step's tier. *Emerging:* its operations are direct state access today; [División 8.8](docs/PROJECT_MANIFEST.md) formalizes them as audited, callable tools (`get_wbs_status`, `get_token_ledger`, `emit_hitl_request`) so an external gateway can invoke them safely.
+
+### Analyst (Natt) — [agents/analyst.py](ailienant-core/agents/analyst.py)
+
+The read-only conversational tutor in the side panel (the *voice*, not the *hand* — it never edits files). It runs inside the optional `ideation_loop` sub-graph and grounds answers in a **tri-brain** context: the code GraphRAG (central, model-independent), the workspace README (size-aware digest, [core/readme_digest.py](ailienant-core/core/readme_digest.py)), and AILIENANT's own product docs-RAG (reserved LanceDB namespace, [core/memory/docs_index.py](ailienant-core/core/memory/docs_index.py)). A `ContextBudgetManager` packs whole chunks by real tokens with a per-brain soft-cap; the answer model tier is user-selectable and fully decoupled from retrieval.
 
 ---
 
@@ -151,6 +165,18 @@ Source: [agents/planner.py](ailienant-core/agents/planner.py), [core/memory/cont
 ### Memory Janitor
 
 [core/janitor.py](ailienant-core/core/janitor.py): vector GC drops LanceDB rows (filtered by `workspace_hash`) whose source file no longer exists; graph purge deletes obsolete pruned MCTS episodes. Triggered via `POST /api/v1/system/janitor`.
+
+### Dreaming (memory consolidation)
+
+[brain/daemon.py](ailienant-core/brain/daemon.py) — `OvernightDaemon`. **On-demand only: it holds no timer and no loop** (an idle trigger would peg CPU, race a resuming typist, and burn tokens). A pass is fired by `client_dreaming_run` (HUD/command), reads a bounded `build_workspace_overview`, asks `MODEL_MEDIUM` to distill durable facts/patterns/debt into a ≤1024-token note (optionally scoped to a `focus_area`), and upserts it to `.ailienant/dreams/<slug>.md` in semantic memory. It is **read-only** (never edits source), gated by the FinOps session ceiling, runs the network call *outside* `graph_write_lock` (which wraps only the final write), and aborts without writing on a mid-run `stale_check` (OCC). HUD profiles (Medium/Big/Cloud/Hybrid, [DreamingMode.tsx](ailienant-extension/src/workspace/components/DreamingMode.tsx)) bound tasks/files/time per the active BYOM tier. The deeper MCTS patch-exploration loop is future work (see the honest list).
+
+### Memory visualization
+
+The dashboard's Memory panel ([CodeGraphLayer.tsx](ailienant-extension/src/dashboard/panels/memory/CodeGraphLayer.tsx)) renders the GraphRAG index as a force-directed knowledge graph (ReactFlow): LOD nodes, hub/"god" nodes by degree centrality, community coloring, PPR ramp, phyllotaxis layout. Data is plain HTTP — `GET /api/v1/memory/graph` (nodes with `ppr_score`/`in_degree`/`out_degree`, edges with `confidence`) and `/api/v1/memory/vectors` (2D PCA projection) from [api/memory_dashboard.py](ailienant-core/api/memory_dashboard.py). No WebSocket — the dashboard is a same-origin REST SPA.
+
+### Tool registry
+
+Tools are role-gated `ToolSchema`s in a RAM-resident LanceDB store ([core/tool_rag.py](ailienant-core/core/tool_rag.py), `ToolRAGStore`): each declares a `ToolPrivilegeTier` and an `allowed_roles` frozenset, enforced at dispatch. Registered via `register_{perception,mutation,execution,control}_tools` (16 tools today); MCP tools are harvested into the same store at session bootstrap. The roadmap to ~56 role-assigned tools — and the `tool_search` deferred-loader that keeps a large catalog inside the prompt budget — is [División 8.8](docs/PROJECT_MANIFEST.md).
 
 ### Closed-loop execution
 
@@ -396,6 +422,10 @@ Documentation should never oversell. As of this writing:
 - **MCP dispatch wiring is substantially complete.** Auto-connect on server startup (idempotent multi-session registry, teardown wired into FastAPI lifespan) and the `evaluate_action` dispatch guard in `McpToolAdapter._arun` (DENY/HITL/ALLOW per the privilege matrix; READ_ONLY friction-free; catalog overrides bind live at harvest) are shipped as of 8.4.4. Remaining: trust-once session-scoped valve, live e2e dispatch from the graph cell, and FE HITL-card binding for `MCP_TOOL_CALL` — all deferred to 8.4.7. Live Skills execution is tracked separately as 8.4.5.
 - **Wasm sandbox tier is built but not the production default.** The resolver prefers Docker; Wasm is a pure-compute fallback. gVisor-class isolation is not present.
 - **Full MCTS rollout is deferred.** The tree, UCB1 selection, and pruning exist; the only *live* MCTS edge is the contained candidate-selection inside the agentic cell. The offline rollout loop is future work.
+- **Dreaming is on-demand consolidation today.** `OvernightDaemon.run_consolidation` (read-only memory notes, FinOps-gated, OCC-safe) ships and is fired from the HUD; the deeper autonomous multi-task profiles (Big/Hybrid working ahead on a focus) ride on the deferred MCTS rollout above.
+- **Researcher and Orchestrator are emerging.** Researcher's skeleton is consumed as optional Planner context, not yet a standalone graph node; the Orchestrator's operations are direct state access. Both are promoted to first-class nodes + audited tools in [División 8.8](docs/PROJECT_MANIFEST.md). The Analyst, Planner, and Coder are fully wired.
+- **The tool catalog is 16 of a planned ~56.** The role-gated registry + MCP harvest are live; the 8.8 waves (and the `tool_search` deferred-loader gating them) are roadmap.
+- **Provider-native prompt caching is not wired (a large pending cost win).** Today's caching is a *semantic/response* cache (short-circuits near-identical requests); it is **not** the same as Anthropic/OpenAI **prompt caching** (`cache_control` / ephemeral breakpoints), which gives a ~90 % discount on *input* tokens that are re-sent unchanged. Our payload is ideal for it — the system prompts, MCP tool schemas, and GraphRAG context are large and static across a graph iteration. The work: structure the LangGraph message assembly so that stable, high-volume prefix (system prompt → tool/MCP schemas → GraphRAG/manifest context) is **byte-identical and front-loaded** ahead of the volatile per-step suffix, then tag the cache breakpoint, so every coder/planner iteration re-reading the same context hits the cache instead of re-billing it. This is a transport-layer change in [tools/llm_gateway.py](ailienant-core/tools/llm_gateway.py) + the prompt builders; it touches no agent logic.
 - **Specialized agent classes** (RefactorAgent, SecOpsAgent, …) are **roles** on `WBSStep.target_role`, not standalone modules.
 - **Auth / multi-user / cloud deployment** is roadmap, not shipped.
 

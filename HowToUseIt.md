@@ -67,11 +67,13 @@ Open the new `.env` and set what you have. Everything has a sane default; the mo
 
 > You can configure models entirely from the UI later (see [§5](#5-connect-your-models-byom)); `.env` is just the headless option.
 
-You normally don't start the server by hand — the extension does it for you. To run it manually for debugging:
+You normally don't start the server by hand — the extension starts it for you on an **automatically-assigned free loopback port** (a random `127.0.0.1` port, e.g. `http://127.0.0.1:59247/`) and wires the UI to it, so there's nothing to configure and no port clashes. To run it manually for debugging (headless / CI), pick a fixed port yourself:
 
 ```powershell
 uvicorn main:app --reload --port 8000
 ```
+
+Then point the extension's `ailienant.backendUrl` setting at `http://127.0.0.1:8000` so it talks to your manual instance instead of auto-starting one.
 
 ---
 
@@ -219,7 +221,7 @@ AILIENANT ships a local web dashboard (served by the Core) for the heavier contr
 ## 13. Troubleshooting
 
 **The sidebar says the Core is unreachable.**
-Check that Python deps installed cleanly and that nothing else holds port 8000. Use the **Start Core** button, or run `uvicorn main:app --port 8000` manually to see the error.
+Check that Python deps installed cleanly. The extension auto-assigns a free port, so clashes are rare — but if startup fails, use the **Start Core** button, or run `uvicorn main:app --port 8000` manually (and set `ailienant.backendUrl` to match) to see the error.
 
 **Models don't appear / "no models found".**
 Make sure your local engine is running (e.g. `ollama serve`) and the endpoint URL is right, then hit **Test** again in BYOM. For cloud, confirm the API key is set in `.env` or the BYOM panel.

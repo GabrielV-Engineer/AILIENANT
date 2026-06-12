@@ -44,7 +44,7 @@ fetches the content via the backend.
 
 ## Backend HTTP endpoints
 
-Base URL: `http://127.0.0.1:8000/api/v1`
+Base URL: `http://127.0.0.1:<port>/api/v1`, where `<port>` is the free loopback port the extension assigns at launch (`findFreePort()` → injected as `AILIENANT_API_PORT`, e.g. `59247`). `8000` is only the fallback default for a manual `uvicorn` launch.
 
 ### `GET /mcts/{node_id}/vfs?path={rel_path}`
 

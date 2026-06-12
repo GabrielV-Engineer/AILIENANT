@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
 
-<img src="assets/logo.svg" alt="AILIENANT" width="340" />
+<img src="assets/icon-color.svg" alt="AILIENANT" width="340" />
 
 <h1>AILIENANT</h1>
 
@@ -41,7 +41,7 @@ Lo que lo distingue de los asistentes de IA más populares es **dónde se ejecut
 
 ## Por qué la gente lo usa
 
-- **🧠 Planifica antes de programar.** Un *Planificador* dedicado convierte tu petición en una especificación concreta y una lista de tareas, congela el alcance y vigila la "desviación" para que el agente no se desvíe en silencio y reescriba medio proyecto. Un *Programador* aparte ejecuta ese plan. Dos cabezas, cada una haciendo bien una tarea.
+- **🧠 Planifica antes de programar.** Un verdadero equipo de agentes especializados — un *Investigador* mapea tu código, un *Planificador* convierte la petición en una especificación concreta y una lista de tareas y congela el alcance, un *Orquestador* dirige los pasos, un *Programador* (en uno de 8 roles expertos) hace los cambios, y un *Analista* con el que puedes conversar explica el código. Una guardia de desviación impide que el agente se desvíe en silencio y reescriba medio proyecto.
 - **🔒 Tu código sigue siendo tuyo.** Funciona 100% en local con tus propios modelos. Sin nube obligatoria, sin telemetría que llama a casa, sin entrenar con tu repositorio.
 - **💸 Ves el coste.** Cada tarea tiene un registro de tokens en vivo y un límite de presupuesto estricto. El uso local frente al de nube y el ahorro estimado se muestran, no se ocultan.
 - **🪟 Ves el razonamiento.** Una "Caja de Pensamiento" en vivo transmite el razonamiento del modelo, y una traza paso a paso muestra cada archivo leído, comando ejecutado y parche propuesto.
@@ -56,7 +56,7 @@ Lo que lo distingue de los asistentes de IA más populares es **dónde se ejecut
 | | **AILIENANT** | Asistente de nube típico |
 | --- | --- | --- |
 | Funciona del todo en tu máquina | ✅ Local-first, modelo propio | ❌ Solo nube |
-| Planifica y luego programa (bicéfalo) | ✅ Planificador + Programador, con guardia de desviación | ❌ Un modelo, un intento |
+| Investiga, planifica, programa y se autoverifica | ✅ Un equipo de 5 agentes con guardia de desviación | ❌ Un modelo, un intento |
 | Enrutado inteligente local↔nube | ✅ Elige el nivel más barato que sirva | ❌ Fijo |
 | Muestra el coste en tiempo real | ✅ Registro de tokens + límite de presupuesto | ⚠️ Normalmente oculto |
 | Viaje en el tiempo / ramificar una ejecución | ✅ Puntos de control duraderos | ❌ Sin estado |
@@ -64,6 +64,24 @@ Lo que lo distingue de los asistentes de IA más populares es **dónde se ejecut
 | Dependencia de proveedor | ✅ Ninguna — cambia libremente | ❌ Atado a uno |
 
 Una comparación técnica más completa está en **[HowItWorks.md](HowItWorks.md)**.
+
+---
+
+## El equipo por dentro
+
+AILIENANT no es un único modelo haciéndolo todo — es un pequeño equipo de especialistas, cada uno con una tarea, conectados por un motor **LangGraph** con estado:
+
+| Agente | Qué hace |
+| --- | --- |
+| 🔭 **Investigador** | Construye un "mapa esqueleto" de tu código — firmas y relaciones entre módulos — para que el Planificador razone sobre la estructura real, no sobre conjeturas. |
+| 🧭 **Planificador** | Convierte tu petición en una especificación concreta y validada y una lista de tareas (una WBS), y luego **congela el alcance** para que el trabajo no se desborde. |
+| 🎛️ **Orquestador** | Dirige el plan paso a paso, coordinando el estado y enrutando cada paso al nivel de modelo adecuado. |
+| 🛠️ **Programador** | Hace los cambios reales — adoptando uno de **8 roles expertos** por tarea. |
+| 💬 **Analista (Natt)** | Un tutor de solo lectura con el que puedes conversar. Explica tu código y al propio AILIENANT, pero nunca toca archivos — la *voz*, no la *mano*. |
+
+El Programador se especializa en el rol que cada tarea necesita: **core-dev, arquitecto/refactor, devops/infra, secops, qa-tester, doc-manager, vcs-manager, ingeniero de datos/ML** — cada uno con sus propias herramientas, salvaguardas y disparadores de aprobación (p. ej., una edición de `.env` siempre se pausa para ti).
+
+Cuando un paso falla, un bucle de **autocuración** lee el error y propone un parche corregido antes de rendirse; para pasos abiertos, una **célula ReAct** acotada trabaja contra una terminal en vivo hasta terminar el trabajo. El desglose completo por agente está en **[HowItWorks.md](HowItWorks.md)**.
 
 ---
 
@@ -99,20 +117,73 @@ npm install
 npm run compile
 ```
 
-Luego abre el proyecto en VS Code y pulsa **F5** para lanzar la extensión. La primera vez que abras una sesión de AILIENANT, arrancará el backend por ti y empezará a indexar tu workspace. Configura tus modelos desde el panel **BYOM** integrado, escribe una petición y listo.
+Luego abre el proyecto en VS Code y pulsa **F5** para lanzar la extensión. La primera vez que abras una sesión de AILIENANT, **arranca el backend por ti en un puerto local asignado automáticamente** (un puerto `127.0.0.1` libre, p. ej. `http://127.0.0.1:59247/`) y conecta la interfaz a él — no hay puerto que configurar. Después empieza a indexar tu workspace. Configura tus modelos desde el panel **BYOM** integrado, escribe una petición y listo.
+
+> ¿Ejecutas el backend a mano (sin interfaz / CI)? Lánzalo con `uvicorn main:app --port 8000` y apunta el ajuste `backendUrl` de la extensión hacia él. El puerto asignado automáticamente es solo para el flujo normal dentro de VS Code.
 
 ---
 
 ## Cómo funciona (versión corta)
 
 ```
-Preguntas ─▶ Planificador ─▶ guardia de ─▶ Programador ─▶ el sandbox lo ejecuta
-            (escribe spec    desviación     (edita            ▲      │
-             + plan)         (alcance        archivos)        │      ▼
-                              bloqueado)                  corrígelo ◀─ lee el resultado
+Preguntas ─▶ Investigador ─▶ Planificador ─▶ guardia ─▶ Programador ─▶ el sandbox lo ejecuta
+             (mapea el        (spec +         desviación  (edita          ▲      │
+              código)          plan)          (bloqueo)    archivos)       │      ▼
+                                                                    autocuración ◀─ lee el resultado
 ```
 
-Por dentro, un motor **LangGraph** con estado enruta cada tarea entre modelos locales y de nube usando una puntuación de contexto y complejidad, recupera los archivos correctos con **GraphRAG** (búsqueda vectorial + un recorrido de dependencias de un salto) y guarda un punto de control en cada paso para no perder nada. La versión profunda — diagramas, la matemática del enrutado, el bucle de ejecución y el modelo de seguridad — está en **[HowItWorks.md](HowItWorks.md)**.
+Por dentro, un motor **LangGraph** con estado enruta cada tarea entre modelos locales y de nube usando una puntuación de contexto y complejidad — eligiendo siempre el **nivel más barato capaz de hacer el trabajo** y recurriendo a la nube solo cuando una tarea realmente lo necesita.
+
+Recupera los archivos correctos con **GraphRAG**: en lugar de volcar archivos enteros en el prompt, indexa tu código como un grafo de dependencias (Tree-sitter) con embeddings vectoriales, y luego extrae solo el fragmento relevante mediante búsqueda vectorial + un recorrido de dependencias de k saltos ordenado por importancia (PageRank). Eso mantiene los prompts pequeños — una **reducción media del ~70 % del tamaño del prompt** — que es justo lo que permite a AILIENANT **funcionar bien en hardware modesto**: los presupuestos por nivel mantienen el contexto dentro de la ventana de un modelo local pequeño (de tan solo 4 K tokens), y el índice vive en un almacén rápido y en RAM. Cada paso tiene un punto de control para no perder nada. La versión profunda — diagramas, la matemática del enrutado, el bucle de ejecución y el modelo de seguridad — está en **[HowItWorks.md](HowItWorks.md)**.
+
+---
+
+## Conversa con tu código: el Analista
+
+No toda pregunta necesita que el agente *haga* algo — a veces solo quieres entender. El **Analista (Natt)** es un compañero de chat que vive en un panel lateral: pregúntale *"¿cómo fluye la autenticación por este servicio?"*, *"¿qué se rompería si cambio esta función?"* o incluso *"¿cómo funciona realmente el enrutado de AILIENANT?"* y te responde en lenguaje claro.
+
+Es un **tutor de solo lectura — la voz, nunca la mano.** Explica, traza y enseña, pero nunca edita tus archivos, así que puedes explorar con libertad sin que cambie nada.
+
+Lo que hace fiables sus respuestas es **en qué se basa** — tres fuentes a la vez: el **grafo de conocimiento** de tu código (para citar la estructura real, no una alucinación), el **README de tu workspace** (para conocer la intención de tu proyecto) y la **propia documentación de producto de AILIENANT** (para explicar la herramienta en sí). Y como explicar es más barato que programar, **eliges el modelo de respuesta** desde un pequeño selector — un modelo local rápido para preguntas rápidas, uno más potente para un recorrido arquitectónico profundo — sin afectar a la calidad de la recuperación.
+
+---
+
+## Memoria que puedes ver
+
+La comprensión que AILIENANT tiene de tu código no es una caja negra. El **panel de control** integrado representa el índice GraphRAG como un **grafo de conocimiento interactivo** — un mapa dirigido por fuerzas de tus archivos y sus dependencias, donde los archivos "concentradores" más conectados destacan, los módulos relacionados comparten color y la importancia (PageRank) guía la disposición. Un **mapa vectorial** 2D acompañante proyecta cómo agrupa el motor tu código *semánticamente*. Es una imagen viva de lo que el agente sabe, y de cómo decide qué leer.
+
+---
+
+## Un ecosistema abierto
+
+- **🧩 Servidores MCP.** AILIENANT habla el **Model Context Protocol**, con un registro curado de servidores verificados (GitHub, Brave Search, Docker, Postgres) que puedes activar con un clic. Cada herramienta MCP se **clasifica por privilegio** — las desconocidas se tratan como peligrosas hasta demostrar lo contrario — y solo se confían durante la sesión después de que tú las apruebes.
+- **⚡ Skills.** Guarda fragmentos de instrucciones reutilizables — globales o por workspace — y suéltalos en cualquier prompt. Tus propias plantillas de comandos, versionadas con el proyecto.
+- **🧰 Herramientas.** Los agentes actúan a través de un registro de herramientas tipado y restringido por rol: leer y trazar código, editar archivos transaccionalmente, ejecutar comandos en el sandbox y preguntarte cuando dudan. El catálogo está **creciendo hacia ~56 herramientas asignadas por rol** (ver la hoja de ruta en **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)**); la tabla completa — qué agente usa qué herramienta — está en **[HowItWorks.md](HowItWorks.md)**.
+
+---
+
+## Dreaming: mejora mientras no estás
+
+Programar es a ráfagas — sales a comer, te desconectas por la noche. El **Modo Dreaming** convierte ese tiempo inactivo en progreso. Le indicas a AILIENANT en qué pensar — *arquitectura y patrones*, *refactorización y deuda técnica*, *corrección de errores*, todo el workspace o un tema que escribas — y mientras no estás trabaja ese foco de forma autónoma: estudiando el código, **consolidando lo que aprende en la memoria a largo plazo** y explorando mejoras. Se autocorrige sobre la marcha y **se detiene solo si los errores empiezan a acumularse**.
+
+Y lo más importante: **nunca se despierta por un temporizador para asaltar tu máquina** — *tú* decides cuándo gastar los recursos arrancándolo cuando te alejas. Tiene **límite de presupuesto** (se niega una vez alcanzado el techo de gasto de la sesión) y es seguro: si vuelves y guardas un archivo a mitad de una pasada, esa pasada se aborta limpiamente sin escribir.
+
+Elige el **perfil** que encaje con el descanso que te tomas — intercambian velocidad, coste y profundidad:
+
+| Perfil | Ideal para | Aproximadamente |
+| --- | --- | --- |
+| **Medium** | Una pausa de comida — ligero, totalmente local | 1 tarea · 3 archivos · ~60 min |
+| **Big** | Toda la noche — más profundo, más archivos, local | 3 tareas · 10 archivos · nocturno |
+| **Cloud** | Razonamiento de máxima calidad, acotado por tokens | 1 tarea · 5 archivos · con tope de tokens |
+| **Hybrid** | La nube *planifica*, el modelo local *edita* — calidad a menor coste | 2 tareas · 6 archivos |
+
+El mecanismo completo — qué puede lograr cada perfil, los tiempos estimados y cómo la búsqueda en árbol offline (MCTS) valida los cambios candidatos — está en **[HowItWorks.md](HowItWorks.md)**.
+
+---
+
+## Terminal en vivo y panel de control
+
+El agente trabaja contra una **terminal persistente e interactiva** — una sesión de shell real que recuerda su directorio de trabajo y su entorno entre comandos, transmite la salida en vivo y puede interrumpirse — todo dentro del sandbox. El **panel de control** (un dashboard integrado, servido localmente) te da once vistas sobre una sesión en ejecución: telemetría de coste y enrutado, estado de hardware y runtime, el grafo de memoria, modelos BYOM, servidores MCP y skills, reglas de gobernanza, un área de staging para revisar parches pendientes, un libro de auditoría a prueba de manipulaciones y recuperación ante caídas.
 
 ---
 

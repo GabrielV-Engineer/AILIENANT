@@ -1,6 +1,6 @@
 # How AILIENANT Works
 
-This guide explains the machinery behind AILIENANT — the two-headed engine, how it decides between local and cloud models, how it finds the right code, how it runs and verifies that code safely, and how it stays auditable. It's written for the technically curious; you don't need to be an AI engineer.
+This guide explains the machinery behind AILIENANT — the team of agents, how it decides between local and cloud models, how it finds the right code, how it runs and verifies that code safely, how it improves itself while you're away, and how it stays auditable. It's written for the technically curious; you don't need to be an AI engineer.
 
 > For a gentler overview, see the [README](README.md). For the full internals — code maps, pseudocode, exact contracts — see [DEVELOPERS.md](DEVELOPERS.md).
 
@@ -35,25 +35,50 @@ flowchart LR
 
 ---
 
-## The two-headed engine: Planner and Coder
+## The agent team
 
-Most assistants use one model for everything. AILIENANT splits the job in two, because *deciding what to do* and *doing it* are different skills.
+Most assistants use one model for everything. AILIENANT splits the work across a small team of specialists, because *understanding the code*, *deciding what to do*, *doing it*, and *explaining it* are different skills. They are wired together by a stateful **LangGraph** engine.
 
 ```mermaid
 flowchart TD
-  A["Your request"] --> P["🧠 Planner<br/>writes a MissionSpecification:<br/>outcome · scope · constraints · WBS tasks · acceptance checks"]
+  A["Your request"] --> RS["🔭 Researcher<br/>maps the codebase into a skeleton"]
+  RS --> P["🧭 Planner<br/>writes a MissionSpecification:<br/>outcome · scope · constraints · WBS tasks · acceptance checks"]
   P --> D{"Drift guard:<br/>does this still match<br/>the frozen plan?"}
   D -- "drifted" --> H["Pause → ask you"]
-  D -- "ok" --> C["⚙️ Coder<br/>turns each task into a patch"]
+  D -- "ok" --> O["🎛️ Orchestrator<br/>drives each step, routes the tier"]
+  O --> C["🛠️ Coder (1 of 8 roles)<br/>turns each task into a patch"]
   C --> V["Run & verify in sandbox"]
   V -- "green" --> DONE["Propose / apply changes"]
   V -- "failed" --> FIX["Self-heal: read the error,<br/>fix, retry (bounded)"]
   FIX --> C
 ```
 
-- **The Planner** never writes code. It converts your prompt into a strict, structured plan — a `MissionSpecification` with an explicit scope and a Work Breakdown Structure (WBS). The first plan is **frozen**.
-- **The drift guard** compares every later re-plan against that frozen baseline. If the agent starts to wander outside the agreed scope, it stops and escalates to you instead of quietly rewriting things.
-- **The Coder** takes one task at a time and emits a patch in a git-conflict-style SEARCH/REPLACE format, validated before it ever touches disk.
+The five agents, in pipeline order:
+
+- **🔭 Researcher** builds a *skeleton map* of the codebase — signatures, types, and cross-module relationships — so the Planner reasons over real structure rather than guesses. *(Emerging: today its skeleton is consumed as optional context by the Planner; it is being promoted to a first-class pipeline node.)*
+- **🧭 Planner** never writes code. It converts your prompt into a strict, structured plan — a `MissionSpecification` with an explicit scope and a Work Breakdown Structure (WBS). The first plan is **frozen**.
+- **🎛️ Orchestrator** drives the plan step by step — coordinating state, sequencing the WBS, and routing each step to the right model tier. *(Its operations are being formalized into audited, callable tools — see the roadmap.)*
+- **🛠️ Coder** takes one task at a time and emits a patch in a git-conflict-style SEARCH/REPLACE format, validated before it ever touches disk. It adopts the **expert role** the task needs (below).
+- **💬 Analyst (Natt)** is the read-only tutor you chat with in the side panel. It explains your code and AILIENANT itself, grounded in three context sources (the code graph, your workspace README, and AILIENANT's own product docs), but it **never edits files** — the *voice*, not the *hand*.
+
+Around them runs a **safety & execution mesh** of deterministic nodes: a **drift guard** that compares every re-plan against the frozen baseline and escalates instead of quietly rewriting things; a **self-healing** unit that, on a fresh in-budget failure, reads the error and proposes a corrective patch before giving up; an **agentic cell** (a bounded ReAct loop over a live terminal) for steps that need real iteration; a **contract guard** (read-before-write), a **FinOps supervisor** (budget ceiling), and an **output validator** (AST + lint) on the write path.
+
+### The Coder's 8 expert roles
+
+A single "coder" prompt is a generalist. AILIENANT instead loads the role the task calls for — each with its own system prompt, tool allow-list, forbidden patterns, and human-approval triggers:
+
+| Role | Focus | Notable guardrail |
+| --- | --- | --- |
+| **core_dev** | Business logic; prefer existing utilities over new abstractions | — |
+| **architect_refactor** | SOLID refactors via coordinated multi-file edits | Must use batch edits; no full-file rewrites |
+| **devops_infra** | Docker / CI / shell work | Any `sudo` or `.env` change pauses for your approval |
+| **secops** | Security hardening; OWASP Top-10 | Runs Bandit/Semgrep after a patch; quotes CVE IDs |
+| **qa_tester** | Tests first | Never marks a step done without a green test run |
+| **doc_manager** | Docstrings, JSDoc, `.md` files only | Shell disabled; writes no business logic |
+| **vcs_manager** | Git operations; Conventional Commits | Never force-pushes without approval |
+| **data_ml_engineer** | Tensors, pipelines, analytics | Validates dataframe shapes before writing |
+
+All roles share a base prompt and a language-mirroring directive (it answers in the language you write in). An unknown role safely defaults to `core_dev`.
 
 ---
 
@@ -83,19 +108,29 @@ The result is that simple, well-understood edits stay on a fast local model, whi
 
 ## How it finds the right code: GraphRAG
 
-Before planning or coding, AILIENANT retrieves the files that matter. It combines two techniques:
+Before planning or coding, AILIENANT retrieves the files that matter — and, crucially, **only** those. Dumping whole files into the prompt is what makes other assistants slow, expensive, and impossible to run on a small local model. AILIENANT instead combines three techniques:
 
 1. **Vector search.** One embedding call against a [LanceDB](https://lancedb.com/) index returns the top-K files most semantically similar to your request.
-2. **Dependency expansion.** Those seed files are expanded **one hop** through a SQLite dependency graph, so the agent also sees the things they import and are imported by — parsed with [Tree-sitter](https://tree-sitter.github.io/) for 20+ languages.
+2. **Dependency expansion.** Those seed files are expanded through a SQLite dependency graph, so the agent also sees the things they import and are imported by — parsed with [Tree-sitter](https://tree-sitter.github.io/) for 20+ languages.
+3. **Importance ranking.** The expanded set is ranked by **Personalized PageRank (PPR)** over the dependency graph, so the most structurally central files survive the budget and the peripheral ones are dropped first.
 
 ```mermaid
 flowchart LR
   Q["Your request"] --> E["Embed → vector search<br/>(top-K similar files)"]
-  E --> G["1-hop dependency walk<br/>(imports / importers)"]
-  G --> CTX["Bounded context block<br/>(files + token budget scaled to the tier)"]
+  E --> G["k-hop dependency walk<br/>(imports / importers)"]
+  G --> R["PageRank ranking<br/>(keep the central files)"]
+  R --> CTX["Bounded context block<br/>(files + token budget scaled to the tier)"]
 ```
 
-The depth, file count, and token budget all **scale with the routing tier** — a small local task gets a tight context; a cloud task gets a wide one. Everything is filtered by a per-workspace hash, so one project's code can never leak into another's.
+The hop depth, file count, and token budget all **scale with the routing tier**, so context always fits the model that will read it:
+
+| Tier | Hops | Max files | Token ceiling |
+| --- | --- | --- | --- |
+| **LOCAL_SMALL** | 1 | 10 | 4,096 |
+| **LOCAL_BIG** | 1 | 20 | 16,384 |
+| **CLOUD** | 3 | 50 | 32,768 |
+
+The payoff is concrete: across intents this retrieval targets a **~70 % mean reduction in prompt size** versus naïve file-dumping (an enforced gate, not an aspiration). That's the single biggest reason AILIENANT runs well on modest hardware — a 4 K-token local window is enough when the context is this precisely chosen. Everything is filtered by a per-workspace hash, so one project's code can never leak into another's.
 
 A **Cognitive Fast-Boot** optimization skips the embedding call entirely on a warm start: after a successful plan, the mission state is written to `.ailienant/AGENTS.md`, and if that file is fresh (< 1 hour) on the next launch, retrieval reuses it.
 
@@ -114,7 +149,53 @@ flowchart TD
   W -- "no" --> HITL["🙋 Native + human approval<br/>every run gated by your OK"]
 ```
 
-The closed **execute → verify → fix** loop is what makes the agent reliable: it runs the command, reads a *structured* verdict (not raw stdout it might misread), and if the verdict is red it enters a bounded self-healing loop — read the error, propose a fix, re-run — until it's green or it honestly gives up. For steps that need real iteration, AILIENANT runs an **agentic cell**: a small, bounded ReAct loop over a live terminal, where each iteration is its own checkpoint.
+The closed **execute → verify → fix** loop is what makes the agent reliable: it runs the command, reads a *structured* verdict (not raw stdout it might misread), and if the verdict is red it enters a bounded self-healing loop — read the error, propose a fix, re-run — until it's green or it honestly gives up. For steps that need real iteration, AILIENANT runs an **agentic cell**: a small, bounded ReAct loop over a **live, persistent terminal** — a real shell session that keeps its working directory and environment across commands, streams output as it happens, and can be interrupted — where each iteration is its own checkpoint.
+
+---
+
+## How agents act: the tool catalog
+
+Agents never touch your system directly — they act through a **typed, role-gated tool registry**. Each tool declares a privilege tier (`READ_ONLY` → `WRITE` → `EXECUTE` → `DANGEROUS`) and an allow-list of which agent roles may call it, both enforced at dispatch. Tools available today:
+
+| Tool | Tier | Used by | What it does |
+| --- | --- | --- | --- |
+| `inspect_ast_node` | READ_ONLY | Coder roles, (Analyst) | Extract the source of a class/function by name |
+| `get_symbol_references` | READ_ONLY | Coder roles | Find files that import a target (1-hop backward) |
+| `trace_data_flow` | READ_ONLY | Coder roles | Forward/backward k-hop reachability over the dep graph |
+| `document_parser` | READ_ONLY | Coder roles | Parse PDF / CSV / DOCX without disk I/O |
+| `web_fetch` | READ_ONLY | Coder roles | Fetch a URL and convert HTML → Markdown |
+| `read_file` | READ_ONLY | all roles | Paginated VFS read |
+| `atomic_code_patch` | WRITE | core_dev, architect_refactor, secops, data_ml | Fuzzy search/replace with AST + optimistic-concurrency check |
+| `batch_semantic_edit` | WRITE | core_dev, architect_refactor | Multi-file coordinated edit, ACID via unit-of-work |
+| `file_write` | WRITE | core_dev, devops_infra | Create/overwrite a VFS file with AST + OCC |
+| `sandbox_bash` | EXECUTE | core_dev, devops_infra, secops, qa_tester, data_ml | Short-lived shell command in the sandbox (HITL-gated) |
+| `task_create` | EXECUTE | exec-capable roles | Spawn a long-running background task |
+| `check_type_integrity` | EXECUTE | exec-capable roles | Run `mypy` / `tsc` over a target |
+| `task_get` | READ_ONLY | exec-capable roles | Read a background task's status/output |
+| `ask_user_question` | READ_ONLY | all roles | Pause and surface a structured question to you |
+| `toggle_plan_mode` | READ_ONLY | all roles | Switch the session's permission mode |
+
+That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)**) expands it toward **~56 role-assigned tools**, organized as a tool × agent matrix — so the two context-building agents (Researcher and Analyst) everyone else depends on are no longer the least equipped. Highlights of what's planned (status ⏳):
+
+| Agent | Planned tools (⏳) |
+| --- | --- |
+| 🔭 **Researcher** | `glob`, `grep` (over the VFS), `workspace_structure`, `graphrag_query`, `get_dependents` |
+| 💬 **Analyst** | `run_linter`, `complexity_analysis`, `dependency_audit`, `code_diff`, `web_search`, `token_ledger_read` |
+| 🎛️ **Orchestrator** | `get_wbs_status`, `get_token_ledger`, `emit_hitl_request` |
+| 🧭 **Planner** | `validate_wbs_dependencies` (catch a circular/over-scope plan *before* it runs), `budget_estimator` |
+| 🛠️ **Coder** *(by role)* | `run_tests` (qa), `git_stage`/`git_commit`/`git_diff` (vcs), `docstring_generator` (doc), `linter_autofix` (secops/qa), `dependency_install` (devops), `env_file_guard` (devops), `security_audit` (secops) |
+| 🌐 **Universal** | `tool_search` (the gate that makes 56 tools fit a prompt), `todo_write` |
+
+The enabling piece is `tool_search`: rather than load every schema into the prompt, agents **retrieve the few tools relevant to the step** from a RAM-resident vector store — keeping the prompt small no matter how large the catalog grows.
+
+---
+
+## Extending it: MCP servers & skills
+
+AILIENANT has no bespoke "plugin" runtime — it extends through two open mechanisms instead:
+
+- **MCP servers.** It speaks the **Model Context Protocol**. A curated **regulated registry** ships vetted servers — GitHub, Brave Search, Docker, Postgres — each with its install metadata and a per-tool privilege **tier map**. When a server connects, AILIENANT opens a stdio session, lists its tools, and harvests their schemas straight into the same role-gated registry and the `tool_search` store. Two safety rules apply: every MCP tool is **privilege-classified fail-closed** (unknown → DANGEROUS until proven otherwise, via a curated catalog → verb-heuristic → default chain), and the server command is checked against a **basename allow-list** to block command injection. After you approve a tool once, it's trusted for the rest of the session.
+- **Skills.** Reusable instruction snippets — a prompt or command template you save once and reuse, either globally or scoped to a workspace. They live in the catalog DB (so concurrent edits don't clobber each other) and drop into any prompt. *(Invoking a skill as a first-class tool, `skill_invoke`, is on the 8.8 roadmap.)*
 
 ---
 
@@ -150,6 +231,47 @@ Security isn't a bolt-on; it's woven through the engine.
 
 ---
 
+## Memory you can see
+
+The GraphRAG index is not a black box. The dashboard's **Memory** panel renders it as an interactive **knowledge graph**: a force-directed view of your files (nodes) and their dependencies (edges), where the most-connected "hub" files are scaled up, modules in the same cluster share a color, and a node's importance (PageRank) pulls it toward the center. A second view projects the *semantic* embeddings into a 2D map (PCA), so you can literally see which parts of the code the engine considers related. The graph is served over plain HTTP (`GET /api/v1/memory/graph`, `/vectors`) — a living picture of what the agent knows and why it reads what it reads.
+
+---
+
+## How it improves while you're away: Dreaming
+
+Coding happens in bursts. You break for lunch; you log off for the night. **Dreaming** turns that idle time into autonomous, self-taught improvement — and it's built around one deliberate principle: **you decide when the resources are spent.**
+
+### Why it's on-demand, not a timer
+
+A naïve "background AI" wakes itself on a schedule. AILIENANT explicitly **rejects** that: an idle trigger that fired GraphRAG + an LLM mid-build would peg your CPU, race a typist who just came back, and burn tokens unattended. So Dreaming **never wakes on a timer**. You start it when you step away — the moment you know the machine is free. That single choice is what makes unattended autonomy safe.
+
+### What a pass actually does
+
+A consolidation pass is **strictly read-only — it never edits your files.** It:
+
+1. Reads a hard-bounded **workspace overview** (a skeleton, not the whole repo).
+2. Asks the model to distill **durable architectural facts, recurring patterns, and latent technical debt** into a compact note — optionally scoped to a **focus** you choose (*Architecture & Patterns*, *Refactoring & Technical Debt*, *Bug Fixes*, the whole workspace, or a theme you type). A focus spends fewer tokens and aims the pass at what you care about.
+3. Writes the result into **long-term semantic memory** (`.ailienant/dreams/<focus>.md`), so every future task starts better-informed. Re-running a focus upserts in place.
+
+Three safety rails wrap every pass: a **FinOps gate** refuses to start once the session's spend ceiling is hit (Dreaming is genuinely token-hungry); the network call happens **outside** the project's write-lock, which guards only the final write; and an **optimistic-concurrency check** aborts the pass without writing if you come back and save a file mid-run. It also **stops on its own if errors compound** rather than thrashing.
+
+### Choosing a profile
+
+Match the profile to the break you're taking — they trade speed, cost, and depth. The model used comes from your active BYOM preset:
+
+| Profile | Engine | Limits | Best for |
+| --- | --- | --- | --- |
+| **Medium** | Local *medium* model | 1 task · 3 files · ~60 min | A lunch break — light, fully local, **zero cloud cost**; keep memory fresh + small consolidations |
+| **Big** | Local *big* model | 3 tasks · 10 files · nightly | Overnight — deeper exploration and tech-debt mapping, still **no cloud spend** |
+| **Cloud** | Cloud model | 1 task · 5 files · token-capped | Top-tier reasoning on a focused area, with a **hard token cap** so cost stays predictable |
+| **Hybrid** | Cloud *plans* + local *edits* | 2 tasks · 6 files | The cost/quality sweet spot: a cloud model does the thinking, a local model does the work |
+
+### The offline tree-search (MCTS)
+
+Beyond consolidating memory, the deeper Dreaming profiles explore **candidate improvements** with a Monte-Carlo Tree Search. The loop is cost-aware by construction: it generates variants with a **cheap local model**, tries to repair a failing variant locally (bounded retries), and **escalates to a stronger "surgeon" model only when it's genuinely stuck** (after a streak of failures). A final reward judge keeps only changes that actually pass. The result is self-correcting exploration that spends expensive tokens only where local effort has demonstrably failed. *(This MCTS daemon is in active development; the on-demand memory-consolidation pass above is the part you can run today.)*
+
+---
+
 ## Putting it together: the life of a task
 
 ```mermaid
@@ -157,12 +279,12 @@ sequenceDiagram
   participant You
   participant Ext as VS Code Extension
   participant Core as LangGraph Engine
-  participant LLM as Model (local/cloud)
+  participant LLM as Model — local or cloud
   participant Box as Sandbox
 
   You->>Ext: "Add validation to users.py + a test"
   Ext->>Core: submit task (+ editor context)
-  Core->>Core: GraphRAG retrieves users.py & friends
+  Core->>Core: GraphRAG retrieves users.py and friends
   Core->>LLM: Planner → MissionSpecification (WBS)
   Core-->>Ext: stream plan + reasoning (Thought Box)
   Core->>LLM: Coder → patch for task 1
