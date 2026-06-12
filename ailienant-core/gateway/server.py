@@ -15,7 +15,8 @@ from typing import Any, Awaitable, Callable, Dict, List
 import mcp.types as types
 from mcp.server.lowlevel.server import Server
 
-from gateway import catalog
+from core.permissions import PermissionDecision
+from gateway import catalog, governance, ledger
 
 # Semantic version of the gateway surface as a public contract. Breaking changes to
 # the capability schemas bump this and trigger the deprecation policy.
@@ -46,16 +47,53 @@ async def list_tools() -> List[types.Tool]:
 
 
 async def dispatch_call(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
-    """Route a tool call to its handler, or return a structured fallback envelope.
+    """Govern and route a tool call, returning a structured envelope in every case.
 
-    Unknown verbs return an ``error`` envelope; declared-but-unwired verbs return a
-    ``not_implemented`` envelope. Both keep the transport healthy — a caller always
-    gets a machine-readable JSON result rather than a protocol error.
+    The pipeline runs the cheap DoS guard first (rate, then budget), then the
+    symmetric permission gate, then the handler registry. Unknown verbs, throttled
+    callers, denied permissions, and unwired verbs all return a machine-readable JSON
+    result rather than a protocol error.
     """
     if catalog.get_capability(name) is None:
         return _envelope(
             {"status": "error", "reason": "unknown_capability", "capability": name}
         )
+
+    caller_id = governance.resolve_caller_id()
+
+    # DoS guard — every call is metered, READ_ONLY included; a call denied downstream
+    # still spends its rate token, so probing floods are throttled regardless.
+    if not await ledger.check_and_consume_rate(caller_id):
+        return _envelope({"status": "denied", "reason": "rate_exceeded", "capability": name})
+    if await ledger.budget_exceeded(caller_id):
+        return _envelope(
+            {"status": "denied", "reason": "budget_exceeded", "capability": name}
+        )
+
+    cap = catalog.get_capability(name)
+    assert cap is not None  # re-checked above; narrows the Optional for the type checker
+    decision = governance.authorize_invocation(cap)
+    if decision is PermissionDecision.DENY:
+        return _envelope(
+            {
+                "status": "denied",
+                "reason": "permission_denied",
+                "capability": name,
+                "tier": cap.tier.value,
+            }
+        )
+    if decision is PermissionDecision.HITL:
+        # A DANGEROUS verb with no human in the loop. 8.5.3 enriches this into the
+        # full structured deny-report; here it is a minimal degrade-to-deny.
+        return _envelope(
+            {
+                "status": "denied",
+                "reason": "requires_human_approval",
+                "capability": name,
+                "tier": cap.tier.value,
+            }
+        )
+
     handler = _HANDLERS.get(name)
     if handler is None:
         return _envelope({"status": "not_implemented", "capability": name})
@@ -64,7 +102,8 @@ async def dispatch_call(name: str, arguments: Dict[str, Any]) -> List[types.Text
 
 
 def build_gateway_server() -> Server:
-    """Construct the MCP server with the catalog and routing seam registered."""
+    """Construct the MCP server with the catalog, governance, and routing registered."""
+    governance.register_gateway_privileges()
     server: Server = Server(SERVER_NAME, version=PROTOCOL_VERSION)
     server.list_tools()(list_tools)
     server.call_tool()(dispatch_call)

@@ -2,6 +2,41 @@
 
 ---
 
+## Fase 8.5.2: Tier governance — gate simétrico + DoS guard durable por-caller — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/289 · `pytest` 1209 passed, 2 skipped · `test_gateway_governance.py` 17/17 · round-trip stdio real: 2º `query_memory` → `rate_exceeded` en el wire
+
+### Contexto
+El seam `dispatch_call` de 8.5.1 ruteaba sin **ningún** gate de permisos ni DoS guard. 8.5.2 inyecta la capa de gobernanza: identidad del caller, ledger durable (rate + budget), gate de permisos simétrico y el resolver de modo conservador anti-escalación. Realiza **D2** (caller_id derivado de token), **D3** (ledger durable), **D4** (postura conservadora, sin auto-escalación), **D8** (permisos simétricos, sin fork) y resuelve el **Conflicto (g)**. Scope: solo la capa de gobernanza — los handlers (8.5.4/8.5.5) y el deny-report HITL enriquecido (8.5.3) quedan fuera.
+
+### Decisiones de arquitectura
+- **Conflicto (g) resuelto con dos posturas separadas (el núcleo del diseño):** `_INVOCATION_GATE_MODE = AUTO` es el **eje de invocación** — bajo AUTO el motor da ALLOW a EXECUTE, así que pre-autoriza los verbos curados READ_ONLY/EXECUTE (que SON el producto) mientras DANGEROUS sigue ruteando a HITL. **NO es** el modo en que corre una tarea generada. `INTERNAL_TASK_MODE = DEFAULT` es la postura conservadora de la tarea generada — nunca AUTO silencioso ⇒ las acciones mutadoras del agente generado gatean (y, sin humano, degradan a deny). El caller jamás puede elevarla.
+- **Gate simétrico (D8), sin fork:** `authorize_invocation` llama `evaluate_action(_INVOCATION_GATE_MODE, classify_tool_privilege(cap.name), EDIT_EXECUTE_RBW)` — exactamente el patrón de `mcp_adapter._arun`. `register_gateway_privileges()` registra `{cap.name: cap.tier}` en el catálogo de privilegios compartido (registrado en import para que la clasificación sea determinista en cualquier dispatch, incl. `check_task_status` que de otro modo caería a DANGEROUS por fail-closed heurístico).
+- **Anti-escalación (D4, DoD):** `resolve_internal_task_mode` SIEMPRE devuelve `INTERNAL_TASK_MODE`, ignorando toda key del caller (`mode`/`execution_mode`/`session_permission_mode`/`permission_mode`).
+- **Ledger durable (D3) — control de seguridad:** token-bucket de frecuencia + budget acumulado por `caller_id`, **persistido a disco** (un proceso stdio efímero con bucket in-memory se resetearía al reconectar → bypass trivial). JSON co-ubicado con el catalog DB (derivación idéntica a `mcp_secrets`), escritura atómica `0600`. **Candado en archivo `.lock` DEDICADO, jamás el de datos:** lockear el archivo de datos rompería la exclusión mutua en cuanto `os.replace` swapea el inodo bajo el lock retenido (un proceso concurrente lockearía el inodo nuevo e intercalaría escrituras). Matemática de refill **endurecida contra regresión de reloj** (NTP/cambio manual): `Δt = max(0.0, now - last)` + total `min(cap, …)` — un reloj hacia atrás nunca resta tokens ni desborda. **Fail-closed** ante `filelock.Timeout` (un atacante no debe poder bypassear reteniendo el lock).
+- **Pipeline en `dispatch_call`:** DoS-guard (rate→budget) primero, luego permiso, luego handler. **Todo** call se mide, READ_ONLY incluido (Conflicto (b)); un call denegado aguas abajo igual gasta su token de rate (postura DoS correcta — los floods de sondeo se throttlean sin importar el resultado).
+
+### Implementación
+- **`gateway/ledger.py`** (nuevo) — `LEDGER_PATH`, `check_and_consume_rate`/`consume_budget`/`budget_exceeded` (async vía `asyncio.to_thread` sobre lock sync); `_lock_path()` derivado de `LEDGER_PATH` en call-time (un monkeypatch mueve ambos); env-knobs `AILIENANT_GATEWAY_{RATE_CAP,RATE_REFILL_PER_S,BUDGET}`.
+- **`gateway/governance.py`** (nuevo) — `resolve_caller_id`, `_INVOCATION_GATE_MODE`/`INTERNAL_TASK_MODE`, `register_gateway_privileges` (registro en import), `authorize_invocation`, `resolve_internal_task_mode`.
+- **`gateway/server.py`** — `dispatch_call` gana el pipeline de gobernanza; `build_gateway_server` registra privilegios.
+- **`tests/test_gateway_governance.py`** (nuevo) — 17 tests: identidad, anti-escalación, gate simétrico (incl. verbo DANGEROUS sintético→HITL), rate ceiling + dispatch envelope, budget ceiling, durabilidad post-reinicio, seguridad ante clock-skew, aislamiento del lock + fail-closed, metering de READ_ONLY.
+
+### Archivos
+| Archivo | Cambio |
+|---|---|
+| `gateway/ledger.py` | **nuevo** — DoS guard durable por-caller (token-bucket + budget, lock dedicado, fail-closed) |
+| `gateway/governance.py` | **nuevo** — gate simétrico + caller_id + postura conservadora anti-escalación |
+| `gateway/server.py` | `dispatch_call` con pipeline DoS-guard→budget→permiso→handler |
+| `tests/test_gateway_governance.py` | **nuevo** — 17 tests |
+| `DEVELOPERS.md` | code-map: `gateway/governance.py` + `gateway/ledger.py` |
+
+### Diferido (por diseño, no deuda)
+- Deny-report HITL estructurado/enriquecido → **8.5.3** (8.5.2 emite la decisión + un envelope `denied` mínimo).
+- Handlers reales + wiring de `INTERNAL_TASK_MODE` a un `submit` real + costo real de tokens en `consume_budget` → **8.5.4 / 8.5.5**.
+
+---
+
 ## Fase 8.5.1: Framework del gateway — stdio MCP server + host discovery — 2026-06-11
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/286 · `pytest` 1192 passed, 2 skipped · `test_gateway_framework.py` 15/15 · round-trip MCP client real lista 7 schemas y recibe el envelope `not_implemented`

@@ -278,6 +278,9 @@ Proyect_Ailienant/
 │   │                            #     validation/diagnostics.py (structured verdict parser)
 │   ├── gateway/                 #   External Capability Gateway: stdio MCP server exposing AILIENANT
 │   │                            #     verbs to external agents (catalog + schemas + call-tool routing seam)
+│   │   ├── governance.py        #     symmetric permission gate (evaluate_action reuse) + caller_id +
+│   │   │                        #       conservative posture (no self-escalation, no silent AUTO)
+│   │   └── ledger.py            #     durable per-caller token-bucket + budget DoS guard (filelock, fail-closed)
 │   ├── transport/               #   outbound WS stream (throttler, token batcher, narration gate)
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
