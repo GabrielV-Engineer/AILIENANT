@@ -207,6 +207,8 @@ The agent works against a **persistent, interactive terminal** — a real shell 
 | **[DEVELOPERS.md](DEVELOPERS.md)** | Core developers — deep internals, diagrams, pseudocode, code map |
 | **[CONTRIBUTING.md](CONTRIBUTING.md)** | Contributors — setup, standards, and how to send a great PR |
 | **[docs/PROJECT_MANIFEST.md](docs/PROJECT_MANIFEST.md)** | The full phase-by-phase roadmap |
+| **[docs/DEV_JOURNAL.md](docs/DEV_JOURNAL.md)** | Active engineering log (Phase 8.x) |
+| **[docs/DEV_JOURNAL_ARCHIVE.md](docs/DEV_JOURNAL_ARCHIVE.md)** | Compressed history — Phase 0 through 7.19 |
 
 ---
 
