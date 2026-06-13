@@ -48,8 +48,9 @@ async def tool_rag_select_node(state: AIlienantGraphState) -> Dict[str, Any]:
     """
     from datetime import datetime, timezone
 
+    from core.deferred_tool_loader import deferred_tool_loader
     from core.permissions import SessionPermissionMode
-    from core.tool_rag import TOOL_RAG_TOP_K, ToolRAGStore, tool_rag_store
+    from core.tool_rag import TOOL_RAG_TOP_K
 
     intent: str = state.get("user_input") or ""
     active_role: str = state.get("active_role") or "core_dev"
@@ -59,35 +60,35 @@ async def tool_rag_select_node(state: AIlienantGraphState) -> Dict[str, Any]:
     except ValueError:
         session_mode = SessionPermissionMode.DEFAULT
 
-    # Eager baseline: every schema this (role, session_mode) pair would have
-    # seen without Tool RAG. Local computation, no embedding cost.
-    eager_baseline = [
-        s
-        for s in tool_rag_store.all_schemas()
-        if active_role in s.allowed_roles
-        and (
-            session_mode is not SessionPermissionMode.PLAN
-            or s.privilege_tier.value == "read_only"
-        )
-    ]
+    _ctx_window = state.get("context_window")
+    context_window: int = _ctx_window if isinstance(_ctx_window, int) else 8192
 
-    selected = await tool_rag_store.select_tools(
+    # Eager-vs-deferred policy: inject the whole role/mode-visible catalog when it
+    # fits under ~10% of the context budget; otherwise retrieve by relevance and
+    # always carry tool_search so the agent can pull the rest on demand.
+    decision = await deferred_tool_loader.resolve(
         intent,
-        k=TOOL_RAG_TOP_K,
         active_role=active_role,
         session_mode=session_mode,
+        context_window=context_window,
+        k=TOOL_RAG_TOP_K,
     )
-
-    metrics = ToolRAGStore.prompt_size_metrics(eager_baseline, selected)
+    selected = decision.schemas
 
     audit_entry: Dict[str, Any] = {
         "event": "tool_rag_select" if selected else "tool_rag_fallback",
         "active_role": active_role,
         "session_mode": session_mode.value,
+        "loader_mode": decision.mode,
         "selected": [s.name for s in selected],
-        "eager_count": len(eager_baseline),
+        "eager_count": decision.eager_count,
+        "eager_chars": decision.eager_chars,
+        "threshold_chars": decision.threshold_chars,
+        # Metric keys preserved for downstream auditors (prompt_size_metrics shape).
+        "eager_size": float(decision.eager_chars),
+        "selected_size": float(sum(len(s.json_schema) for s in selected)),
+        "reduction_ratio": decision.reduction_ratio,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        **metrics,
     }
     if not selected:
         audit_entry["reason"] = "empty_catalog_or_no_survivors"

@@ -174,6 +174,7 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `task_get` | READ_ONLY | exec-capable roles | Read a background task's status/output |
 | `ask_user_question` | READ_ONLY | all roles | Pause and surface a structured question to you |
 | `toggle_plan_mode` | READ_ONLY | all roles | Switch the session's permission mode |
+| `tool_search` | READ_ONLY | all roles | Discover tools that aren't loaded — relevance-retrieve them by query so the prompt stays small as the catalog grows |
 
 That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)**) expands it toward **~56 role-assigned tools**, organized as a tool × agent matrix — so the two context-building agents (Researcher and Analyst) everyone else depends on are no longer the least equipped. Highlights of what's planned (status ⏳):
 
@@ -184,9 +185,9 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 | 🎛️ **Orchestrator** | `get_wbs_status`, `get_token_ledger`, `emit_hitl_request` |
 | 🧭 **Planner** | `validate_wbs_dependencies` (catch a circular/over-scope plan *before* it runs), `budget_estimator` |
 | 🛠️ **Coder** *(by role)* | `run_tests` (qa), `git_stage`/`git_commit`/`git_diff` (vcs), `docstring_generator` (doc), `linter_autofix` (secops/qa), `dependency_install` (devops), `env_file_guard` (devops), `security_audit` (secops) |
-| 🌐 **Universal** | `tool_search` (the gate that makes 56 tools fit a prompt), `todo_write` |
+| 🌐 **Universal** | `todo_write` |
 
-The enabling piece is `tool_search`: rather than load every schema into the prompt, agents **retrieve the few tools relevant to the step** from a RAM-resident vector store — keeping the prompt small no matter how large the catalog grows.
+The enabling piece, `tool_search`, **already ships** (the Wave 0 gate): rather than load every schema into the prompt, the engine injects the whole tool catalog only while it fits a small slice of the context budget — and once it would grow past that, it switches automatically to retrieving the few tools relevant to the step from a RAM-resident vector store, always keeping `tool_search` on hand so an agent can pull the rest by query. The prompt stays small no matter how large the catalog grows.
 
 ---
 

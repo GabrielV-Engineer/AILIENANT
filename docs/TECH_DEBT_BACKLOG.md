@@ -51,6 +51,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Phase:** standalone eval-surface hardening slice, post-8.5/8.8.
 - **Notes:** logged at 8.5.5 ship per CLAUDE.md §7.3.
 
+### DEBT-040 — `tool_search` role resolution is stale across per-step role transitions
+
+- **Date:** 2026-06-13
+- **Reproduce:** inspect `tools/meta_tools.py:_resolve_active_role` — when no `RunnableConfig` is threaded, it falls back to the `_task_active_role` ContextVar, which `core/task_service.py` sets ONCE at task entry. The Orchestrator rewrites `active_role` per WBS step, so a turn that has transitioned (e.g. `planner → coder`) would resolve `tool_search` under the *initial* role.
+- **File(s):** `ailienant-core/tools/meta_tools.py`, `ailienant-core/tools/mcp_adapter.py` (`_task_active_role`), `ailienant-core/core/task_service.py` (set/reset block).
+- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §11.2)**. Resolution is config-first: when the call site threads `config.configurable["active_role"]` the live role wins (no staleness). The ContextVar is only the fallback. Because `tool_search` is READ_ONLY, a stale role can never escalate privilege — worst case it under/over-scopes a read-only discovery listing.
+- **Blocked by:** nothing structural; needs the coder's tool-dispatch call site to always thread the live role through `config.configurable` (or refresh the var at each Orchestrator step transition).
+- **Phase:** **8.8.5** (Role-Specific Coder Tools), where per-role tool gating becomes load-bearing.
+- **Notes:** logged at 8.8.0 ship per CLAUDE.md §11.3. Test `test_config_role_overrides_stale_contextvar` already proves the config-first path defeats a divergent ambient role.
+
 ### DEBT-037 — G2 retrieval isolation uses mock.patch, not a production DI seam
 
 - **Date:** 2026-06-12

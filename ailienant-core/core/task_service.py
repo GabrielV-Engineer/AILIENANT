@@ -542,6 +542,7 @@ class TaskService:
         # tool calls even when LangChain does not thread these as kwargs.
         # Tokens are reset in the finally block regardless of exit path.
         from tools.mcp_adapter import (
+            _task_active_role as _mcp_role_var,
             _task_session_id as _mcp_sid_var,
             _task_session_mode as _mcp_mode_var,
             clear_session_trust,
@@ -550,6 +551,7 @@ class TaskService:
         _mcp_mode_tok = _mcp_mode_var.set(
             str(state.get("session_permission_mode") or "DEFAULT")
         )
+        _mcp_role_tok = _mcp_role_var.set(str(state.get("active_role") or "core_dev"))
 
         # Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh. CancelledError
         # may surface from ANY await in this coroutine (planner, coder steps,
@@ -802,6 +804,7 @@ class TaskService:
             # grants so they never bleed into a subsequent task.
             _mcp_sid_var.reset(_mcp_sid_tok)
             _mcp_mode_var.reset(_mcp_mode_tok)
+            _mcp_role_var.reset(_mcp_role_tok)
             clear_session_trust(session_id)
 
     @staticmethod

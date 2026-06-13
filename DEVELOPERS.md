@@ -289,6 +289,7 @@ Proyect_Ailienant/
 │   │   ├── state_manager.py     #     AGENTS.md fast-boot serializer
 │   │   ├── janitor.py           #     orphan-vector GC + MCTS purge
 │   │   ├── token_ledger.py      #     LOCAL/CLOUD token accounting
+│   │   ├── deferred_tool_loader.py # eager-vs-deferred tool injection over ToolRAGStore (~10%-budget gate)
 │   │   ├── memory/              #     semantic, trajectory, graphrag_extractor, context_auditor,
 │   │   │                        #     docs_index (product-docs RAG — reserved LanceDB namespace)
 │   │   ├── readme_digest.py     #     workspace README brain: verbatim/digest/head-slice + debounced rebuild
@@ -301,7 +302,8 @@ Proyect_Ailienant/
 │   │                            #     mcp_servers, skills, sessions, agent_roles, system_settings)
 │   ├── tools/                   #   llm_gateway, validation pipeline (AST+LSP), MCP adapter
 │   │                            #     (multi-session registry + dispatch gate), perception/
-│   │                            #     mutation/execution/control tool bundles,
+│   │                            #     mutation/execution/control/meta tool bundles
+│   │                            #     (meta_tools.py = tool_search discovery),
 │   │                            #     validation/diagnostics.py (structured verdict parser)
 │   ├── gateway/                 #   External Capability Gateway: stdio MCP server exposing AILIENANT
 │   │                            #     verbs to external agents (catalog + schemas + call-tool routing seam)

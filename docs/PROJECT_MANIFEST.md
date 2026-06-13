@@ -387,7 +387,7 @@
 
 > **Honest inventory count:** (A) 13 real registered tools requiring `allowed_roles` wire-in only. (B) 4 with backing functions requiring schema formalization (`GetDependentsTool`, `GraphRAGQueryTool`, `ASTValidateTool`, `FileReadTool` paginated). (C) ~29 genuinely net-new. **Substrate correction:** `ContextMeter*` tools from source analysis assume a `ContextMeter` class with `css_total`/`TCI` that does NOT exist; real substrate is `TokenLedger` (`core/token_ledger.py`) — re-channeled as `TokenLedgerReadTool`/`BudgetEstimatorTool`.
 
-- [ ] **8.8.0 — Wave 0: Infra gate (`ToolSearchTool` / `DeferredToolLoader`) — GATE FOR THE ENTIRE DIVISION.**
+- [x] **8.8.0 — Wave 0: Infra gate (`ToolSearchTool` / `DeferredToolLoader`) — GATE FOR THE ENTIRE DIVISION.**
   - Relevance-based tool retrieval over the existing `ToolRAGStore`, auto-triggered at ~10% of context budget; below the threshold, tools load eagerly; above, the agent retrieves by query. Nothing else in 8.8 ships until this is green.
   - **DoD:** with 56 schemas registered, a cold prompt respects `TOOL_RAG_MIN_REDUCTION=0.70` and the correct tool is retrievable by query.
 
