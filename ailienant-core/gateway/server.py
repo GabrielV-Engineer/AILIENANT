@@ -19,13 +19,14 @@ from mcp.server.lowlevel.server import Server
 from core.config.host_discovery import HostNotRunningError
 from core.permissions import PermissionDecision
 from gateway import catalog, governance, handlers, ledger
+from gateway.catalog import PROTOCOL_VERSION
 from gateway.handlers import InvalidArguments
 
 logger = logging.getLogger("GATEWAY_SERVER")
 
-# Semantic version of the gateway surface as a public contract. Breaking changes to
-# the capability schemas bump this and trigger the deprecation policy.
-PROTOCOL_VERSION = "0.1.0"
+# Re-exported for callers that import it from the server module; the single source
+# of truth lives in gateway.catalog (advertised in list_tools and the handshake).
+__all__ = ["PROTOCOL_VERSION", "build_gateway_server", "register_handler", "dispatch_call", "list_tools"]
 
 SERVER_NAME = "ailienant-gateway"
 

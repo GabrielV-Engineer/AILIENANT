@@ -18,7 +18,7 @@ can consume natively.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import mcp.types as types
 
@@ -26,6 +26,12 @@ from core.permissions import ToolPrivilegeTier
 
 # Bumped when a capability's argument schema changes in a breaking way.
 SCHEMA_VERSION = "1.0.0"
+
+# Semver of the gateway surface as a permanent public contract. The single source
+# of truth for the version advertised in list_tools() and the MCP initialize
+# handshake. A breaking change to the surface bumps the major and announces
+# deprecation on the affected capability; callers pin a version.
+PROTOCOL_VERSION = "1.0.0"
 
 _TASK_ID_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -50,6 +56,12 @@ class Capability:
     input_schema: Dict[str, Any]
     is_async: bool
     schema_version: str = SCHEMA_VERSION
+    # Deprecation metadata. A breaking schema change marks the old capability
+    # deprecated and pins the release it disappears in; callers read this off
+    # list_tools() and migrate before the sunset.
+    deprecated: bool = False
+    deprecated_since: Optional[str] = None
+    sunset_version: Optional[str] = None
 
 
 CATALOG: Tuple[Capability, ...] = (
@@ -180,8 +192,9 @@ def get_capability(name: str) -> Capability | None:
 def to_mcp_tools() -> list[types.Tool]:
     """Project the catalog into MCP ``Tool`` descriptors for ``list_tools``.
 
-    The schema version and privilege tier are surfaced as tool annotations so a
-    caller can read them without an out-of-band channel.
+    The surface version, per-capability schema version, and privilege tier are
+    surfaced in each tool's metadata so a caller can discover the contract — and
+    any deprecation — without an out-of-band channel.
     """
     return [
         types.Tool(
@@ -191,11 +204,28 @@ def to_mcp_tools() -> list[types.Tool]:
             annotations=types.ToolAnnotations(
                 readOnlyHint=cap.tier == ToolPrivilegeTier.READ_ONLY,
             ),
-            _meta={
-                "schema_version": cap.schema_version,
-                "tier": cap.tier.value,
-                "async": cap.is_async,
-            },
+            _meta=_tool_meta(cap),
         )
         for cap in CATALOG
     ]
+
+
+def _tool_meta(cap: Capability) -> Dict[str, Any]:
+    """Build a tool's wire metadata, omitting empty deprecation fields.
+
+    The deprecation detail keys appear only on a capability that is actually
+    deprecated, so the common (non-deprecated) tool carries no null noise.
+    """
+    meta: Dict[str, Any] = {
+        "protocol_version": PROTOCOL_VERSION,
+        "schema_version": cap.schema_version,
+        "tier": cap.tier.value,
+        "async": cap.is_async,
+        "deprecated": cap.deprecated,
+    }
+    if cap.deprecated:
+        if cap.deprecated_since is not None:
+            meta["deprecated_since"] = cap.deprecated_since
+        if cap.sunset_version is not None:
+            meta["sunset_version"] = cap.sunset_version
+    return meta

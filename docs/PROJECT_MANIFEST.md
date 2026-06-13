@@ -14,8 +14,8 @@
 | 8.2 Resilience & Observability | ⬜ PENDING | — | 8.2.1 E2E tests |
 | 8.3 Benchmark Harness | ✅ CLOSED | 2026-06-13 | — |
 | 8.4 MCP Hardening | ✅ CLOSED | 2026-06-11 | — |
-| 8.5 External Gateway | 🟡 ACTIVE | — | 8.5.6 versioning + auth |
-| 8.6 Phase 8 Checkpoint Gate | ⬜ PENDING | — | Awaits 8.2 + 8.5 |
+| 8.5 External Gateway | ✅ CLOSED | 2026-06-13 | — |
+| 8.6 Phase 8 Checkpoint Gate | ⬜ PENDING | — | Awaits 8.2 |
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ⬜ PENDING | — | 8.8.0 ToolSearchTool gate |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -356,9 +356,8 @@
 - [x] **8.5.3 — HITL-degrade deny-report.** Structured deny envelope (`status/reason/capability/tier/would_have_required/message`); `_denied()` helper; structurally no `await` (never hangs); `asyncio.wait_for(timeout=2.0)` safety test. Gates: mypy 0/290 · test_gateway_hitl_degrade 3/3.
 - [x] **8.5.4 — Capability catalog v1.** `gateway/handlers.py` — in-process READ_ONLY (`query_memory`/`get_dependents`/`get_workspace_graph`) + loopback EXECUTE (`run_task` with `INTERNAL_TASK_MODE`=DEFAULT anti-escalation); `check_task_status` poll companion; race submit→register closed; `CAPABILITY_HANDLERS` dict DI. Gates: mypy 0/292 · pyright 0 · test_gateway_catalog_v1 14/14 · gateway 49/49.
 - [x] **8.5.5 — Eval surface (run_benchmark + get_report).** `core/benchmark_service.py` (LFI-hardened `_resolve_artifact`, single-flight `_inflight`, durable artifact-file completion signal, pay-upfront refund); 2 loopback host endpoints. 8 zero-trust findings closed. DEBT-038/039. Gates: mypy 0/317 · pyright 0 · test_gateway_eval_surface 17/17 · suite 1303 passed.
-- [ ] **8.5.6 — Versioning + auth ergonomics + integration docs**
-  - Semver + deprecation policy (permanent public contract), token ergonomics, per-caller ceiling. **DoD:** the surface declares its version; integration docs for an external agent.
-- [ ] **8.5.7 — DoD-check** — an external caller lists the catalog, runs a READ_ONLY verb, and is denied+reported on a DANGEROUS verb without hanging.
+- [x] **8.5.6 — Versioning + auth ergonomics + integration docs.** `PROTOCOL_VERSION` 1.0.0 single-sourced in `catalog.py` + advertised per-tool in `list_tools()._meta` (with `schema_version`/`deprecated`; null sunset keys omitted); `Capability` deprecation mechanism (N=2-minor support window); safe masked boot line (never logs the token); `docs/GATEWAY_INTEGRATION.md` (launch/auth/ceilings/catalog/envelopes/versioning). **DoD:** surface declares its version; integration docs exist. Gates: mypy 0/318 · pyright 0 · suite 1308 passed.
+- [x] **8.5.7 — DoD-check** — an external caller lists the catalog, runs a READ_ONLY verb, and is denied+reported on a DANGEROUS verb without hanging. ✅ `test_gateway_dod.py` (3 rows): catalog discovery + `_meta` version, READ_ONLY `ok`, DANGEROUS → `requires_human_approval` deny-report under `asyncio.wait_for` (proves non-hang). **División 8.5 CERRADA** (el gate de fase sigue siendo 8.6).
 
 ---
 

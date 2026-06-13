@@ -71,6 +71,47 @@ def test_to_mcp_tools_projects_catalog_faithfully() -> None:
         assert tool.annotations.readOnlyHint is is_read_only
 
 
+def test_list_tools_advertises_protocol_version() -> None:
+    """Every tool surfaces the surface semver (D7) alongside its schema version."""
+    for tool in catalog.to_mcp_tools():
+        assert tool.meta is not None
+        assert tool.meta["protocol_version"] == catalog.PROTOCOL_VERSION
+        # A non-deprecated v1 verb carries the flag but no null detail keys.
+        assert tool.meta["deprecated"] is False
+        assert "deprecated_since" not in tool.meta
+        assert "sunset_version" not in tool.meta
+
+
+def test_deprecated_capability_surfaces_sunset_metadata() -> None:
+    """A deprecated capability advertises its since/sunset so callers can migrate."""
+    live = catalog._tool_meta(
+        catalog.Capability(
+            name="live_verb",
+            description="d",
+            tier=ToolPrivilegeTier.READ_ONLY,
+            input_schema={"type": "object"},
+            is_async=False,
+        )
+    )
+    assert live["deprecated"] is False
+
+    sunset = catalog._tool_meta(
+        catalog.Capability(
+            name="old_verb",
+            description="d",
+            tier=ToolPrivilegeTier.READ_ONLY,
+            input_schema={"type": "object"},
+            is_async=False,
+            deprecated=True,
+            deprecated_since="1.1.0",
+            sunset_version="2.0.0",
+        )
+    )
+    assert sunset["deprecated"] is True
+    assert sunset["deprecated_since"] == "1.1.0"
+    assert sunset["sunset_version"] == "2.0.0"
+
+
 def test_async_verbs_are_execute_tier_and_have_a_poll_companion() -> None:
     async_names = {cap.name for cap in catalog.CATALOG if cap.is_async}
     assert async_names == {"run_task", "run_benchmark"}

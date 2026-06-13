@@ -472,5 +472,6 @@ If you want one of these, it's a great place to start — see [CONTRIBUTING.md](
 | [docs/SCHEMA_EVOLUTION.MD](docs/SCHEMA_EVOLUTION.MD) | State and agent contracts |
 | [docs/SYSTEM_PROMPTS.md](docs/SYSTEM_PROMPTS.md) | Agent system prompts |
 | [docs/TECH_DEBT_BACKLOG.md](docs/TECH_DEBT_BACKLOG.md) | Tracked technical debt |
+| [docs/GATEWAY_INTEGRATION.md](docs/GATEWAY_INTEGRATION.md) | External-agent integration guide for the MCP capability gateway (launch, auth, ceilings, catalog, versioning) |
 | `docs/PHASE_*_BLUEPRINT.md` | Per-phase architectural contracts (ADRs) |
 | [CLAUDE.md](CLAUDE.md) | Coding standards, architectural guardrails, and build protocols |
