@@ -215,6 +215,74 @@ flowchart LR
 
 ---
 
+## How it plans before it codes: spec-driven development
+
+Most AI coding tools go straight from prompt to edit. AILIENANT inserts a disciplined planning stage that produces a **frozen contract** before the first file is opened.
+
+**The flow:**
+```
+intent
+  → Planner (run_planner_node)
+      → MissionSpecification (9 fields)
+          → immutable_wbs freeze
+              → Coder executes against the frozen spec
+                  → drift_monitor watches for scope changes
+```
+
+**What's in a `MissionSpecification`** (`brain/state.py:138`):
+
+| Field | What it enforces |
+|-------|-----------------|
+| `outcome` | The expected result and delivered value — the single source of truth for "done" |
+| `scope` | Exact list of files in scope; anything not named is out of scope |
+| `constraints` | Technical limits — no new external libs, complexity bounds, project conventions |
+| `decisions` | Architectural choices adopted for this task; the Coder can't override them |
+| `tasks` | The WBS: ordered `WBSStep` list with `target_file`, `action`, `target_role`, `requires_iteration` |
+| `checks` | Acceptance criteria the output must satisfy before the task closes |
+| `ubiquitous_language` | DDD domain terms extracted from a Socratic session — agent and human share a vocabulary |
+| `deep_modules_sdd` | Architectural SDD narrative for core modules touched by this plan |
+| `tdd_criteria` | Test-driven acceptance criteria wired directly to the validation step |
+
+**Why the spec freezes:** On the first turn, the Planner writes `immutable_wbs` and never touches it again. All subsequent re-plans produce a new `mission_spec`, but the original remains the baseline. The `drift_monitor` node (`brain/drift_monitor.py`) runs after every planner call and computes a hybrid similarity score:
+
+- 50 % — text similarity of outcome + task descriptions (SequenceMatcher)
+- 30 % — Jaccard overlap of the target-file sets
+- 10 % — task-count ratio
+- 10 % — action-type overlap
+
+If the score drops below **70 %**, the drift monitor opens a HITL approval gate (5-minute timeout). Approving resets the baseline to the new spec; rejecting propagates an error back to the agent. The agent cannot silently expand scope.
+
+---
+
+## How it recovers: the execution harness
+
+The harness is the scaffold that prevents a node failure from becoming a session crash. Every agent turn passes through several deterministic layers before and after the LLM call.
+
+**Reflexion guard** (`brain/engine.py`, `reflexion_guard` decorator):
+The `coder_agent` node is wrapped in a decorator that intercepts any unhandled exception at the Python level. Instead of propagating the traceback, it produces a state delta: `{"healing_required": True, "failed_node": "coder_agent", "failure_signature": "<hash>", "last_error_trace": "..."}`. A circuit-breaker (`failure_breaker.allow()`) blocks routing the same failure signature twice. The graph's `route_after_coder` edge sends `healing_required=True` turns to the `error_correction` node instead of `contract_guard`.
+
+**Error correction agent** (`agents/error_correction.py`):
+Receives the traceback and the offending source. Extracts candidate files from traceback frames, caps content at 16 K chars, and proposes the **smallest corrective patch** that resolves the error. The patch flows through the normal HITL approval + write pipeline — the repair agent has no direct disk write access.
+
+**Contract guard** (`agents/contract_guard.py`):
+Runs after every successful coder turn. Mints a `SessionContract` when any of three triggers fires:
+
+| Trigger | Condition |
+|---------|-----------|
+| `TCI_DELTA` | Task Complexity Index jumped > 15 points |
+| `CSS_AT_CAPACITY` | Context Sufficiency Score < 40 % **and** token usage ≥ 80 % of window |
+| `SUBGRAPH_SHIFT` | `target_role` changed between steps |
+
+The contract is a structured LLM-generated record: `{mission_outcome, active_role, in_scope, out_of_scope, open_constraints, trigger_reason}`. It falls back to a deterministic skeleton on any LLM failure.
+
+**FinOps gate** (`brain/finops.py`):
+Runs on every super-step after `supervisor_node`. Reads `current_cost_usd` against `max_budget_usd`. Under budget: zero-cost pass-through. Over budget: opens a HITL approval gate (120-second timeout). On timeout: routes to END — the gate fails safe rather than silently burning budget.
+
+**Dead-letter queue:**
+Seven nodes are wrapped with `dead_letter_decorator`. On an unhandled exception, the decorator promotes the current L1 (in-memory) checkpoint to L2 (SQLite WAL) before re-raising. This means the session state at the point of failure is durable — you can resume or branch from the last good checkpoint rather than starting over.
+
+---
+
 ## How it stays honest: the safety & audit model
 
 Security isn't a bolt-on; it's woven through the engine.

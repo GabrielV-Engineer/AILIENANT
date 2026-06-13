@@ -139,7 +139,13 @@ You ask ─▶ Researcher ─▶ Planner ─▶ drift guard ─▶ Coder ─▶ 
 
 Behind the scenes, a stateful **LangGraph** engine routes each task between local and cloud models using a context-and-complexity score — always picking the **cheapest tier that can do the job** and only reaching for the cloud when a task genuinely needs it.
 
-It retrieves the right files with **GraphRAG**: instead of dumping whole files into the prompt, it indexes your code as a dependency graph (Tree-sitter) with vector embeddings, then pulls just the relevant slice via vector search + a k-hop dependency walk ranked by importance (PageRank). That keeps prompts small — a **~70 % mean reduction in prompt size** — which is exactly what lets AILIENANT **run well on modest hardware**: per-tier budgets keep context inside a small local model's window (as little as a 4 K-token window), and the index lives in a fast, RAM-first store. Every step is checkpointed so nothing is lost. The deep version — diagrams, the routing math, the execution loop, and the security model — is in **[HowItWorks.md](HowItWorks.md)**.
+It retrieves the right files with **GraphRAG**: instead of dumping whole files into the prompt, it indexes your code as a dependency graph (Tree-sitter) with vector embeddings, then pulls just the relevant slice via vector search + a k-hop dependency walk ranked by importance (PageRank). That keeps prompts small — a **~70 % mean reduction in prompt size** — which is exactly what lets AILIENANT **run well on modest hardware**: per-tier budgets keep context inside a small local model's window (as little as a 4 K-token window), and the index lives in a fast, RAM-first store. Every step is checkpointed so nothing is lost.
+
+**Built on a spec, not a guess.** Before any file is touched, the Planner turns your request into a frozen `MissionSpecification` — outcome, scope, WBS steps, constraints, and acceptance criteria (TDD + DDD terminology included). Once frozen, neither the Planner nor the Coder can silently change scope: a `drift_monitor` compares every re-plan against the original using a multi-factor similarity metric and escalates to you if they diverge. The spec is the contract; the agent can't self-authorize scope changes.
+
+**Failures route, they don't crash.** Every agent turn runs inside a structured execution harness: a `reflexion_guard` intercepts exceptions and routes them to a dedicated repair agent (instead of surfacing a traceback), a deterministic `finops_gate` enforces your cost ceiling on every graph step, and structured verdicts — not raw stdout — drive all retry decisions. If a node has an unhandled exception it's written to a dead-letter queue before the error propagates, so you can inspect and resume.
+
+The deep version — diagrams, the full spec schema, and the repair routing logic — is in **[HowItWorks.md](HowItWorks.md)**.
 
 ---
 
