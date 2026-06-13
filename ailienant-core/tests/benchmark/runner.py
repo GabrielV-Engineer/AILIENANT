@@ -25,8 +25,9 @@ from tests.benchmark.hygiene import (
     assert_embeddings_live,
     disable_response_cache,
 )
-from tests.benchmark.metrics import ProblemMetrics, collect_routing
+from tests.benchmark.metrics import BenchmarkMetricError, ProblemMetrics, collect_routing
 from tests.benchmark.problems import BenchmarkProblem
+from tests.benchmark.routing_study import RoutingStudyTable, build_routing_study
 
 if TYPE_CHECKING:
     from tests.benchmark.oracle import BenchmarkOracle
@@ -186,15 +187,14 @@ class BenchmarkRunner:
             verdict=verdict,
         )
 
-    async def run_arms(
-        self, problem: BenchmarkProblem, arms: List[AblationArm]
-    ) -> List[ProblemMetrics]:
-        """Run one problem across several arms serially and return raw metrics.
+    async def _prepare_run(self, problem: BenchmarkProblem) -> BenchmarkBudget:
+        """Initialize telemetry, verify embeddings, index the corpus once, open a budget.
 
-        If the problem carries a corpus_root, the indexer is awaited once before
-        the arm loop so all arms share the same indexed graph (index once, measure
-        all). The project_id used for indexing must equal the one on the payload
-        so graph/vector lookups are keyed correctly.
+        The corpus is indexed a single time so every arm and every problem of a
+        sweep shares the same graph. The project_id used for indexing must equal
+        the one on the payload so graph/vector lookups are keyed correctly. The
+        returned budget tracks cumulative spend from this point so a multi-problem
+        sweep aborts cleanly once its ceiling is reached.
         """
         from core.telemetry import init_telemetry_db
 
@@ -223,8 +223,50 @@ class BenchmarkRunner:
                     problem.corpus_problem.dependency_seed, problem.project_id
                 )
 
-        budget = BenchmarkBudget.from_snapshot(self._budget_usd, token_ledger.snapshot())
+        return BenchmarkBudget.from_snapshot(
+            self._budget_usd, token_ledger.snapshot()
+        )
+
+    async def run_arms(
+        self, problem: BenchmarkProblem, arms: List[AblationArm]
+    ) -> List[ProblemMetrics]:
+        """Run one problem across several arms serially and return raw metrics.
+
+        The corpus is indexed once before the arm loop so all arms share the same
+        indexed graph (index once, measure all).
+        """
+        budget = await self._prepare_run(problem)
         results: List[ProblemMetrics] = []
         for arm in arms:
             results.append(await self.run_problem(problem, arm, budget))
         return results
+
+    async def run_study(
+        self,
+        problems: List[BenchmarkProblem],
+        *,
+        routing_arm: AblationArm = AblationArm.G4,
+        baseline_arm: AblationArm = AblationArm.G4_FORCE_CLOUD,
+    ) -> RoutingStudyTable:
+        """Sweep problems across the routing and baseline arms; return the study table.
+
+        The corpus is indexed once for the whole sweep and a single budget is
+        threaded across every problem-arm run so the cumulative ceiling holds.
+        Each problem runs both arms serially (the arm patches are process-global),
+        and the flat metric list is stratified into a TCI-bucket table.
+        """
+        if not problems:
+            raise BenchmarkMetricError("run_study requires at least one problem")
+
+        budget = await self._prepare_run(problems[0])
+        arms = [routing_arm, baseline_arm]
+        metrics: List[ProblemMetrics] = []
+        for problem in problems:
+            for arm in arms:
+                metrics.append(await self.run_problem(problem, arm, budget))
+
+        return build_routing_study(
+            metrics,
+            routing_arm=routing_arm.value,
+            baseline_arm=baseline_arm.value,
+        )

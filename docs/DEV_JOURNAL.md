@@ -2,6 +2,38 @@
 
 ---
 
+## Fase 8.3.4: Routing Study — TCI-bucket × tokens × Resolve@3 (H₂) — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/312 · `pyright` 0 · `test_routing_study.py` 9/9 · `tests/benchmark` 44/44 · suite completa sin regresión
+
+### Contexto
+8.3.4 operationalizes H₂ (cost efficiency; pipeline held constant, routing varied). It adds **no new pipeline mechanics** — 8.3.3 already emits per-arm `ProblemMetrics` carrying `tci`, tokens, and an oracle-judged `verdict` for the two arms H₂ compares: `G4` (TCI-routing) vs `G4_FORCE_CLOUD` (forced-cloud baseline). 8.3.4 is purely a **stratification layer** that buckets each problem by TCI (`[0,40)`/`[40,75)`/`[75,100]`) and tabulates tokens and Resolve@3 per bucket per arm, plus the per-bucket savings/retention ratios (`tokens(routing) ≤ 0.60 × tokens(baseline)` and `Resolve@3(routing) ≥ 0.95 × Resolve@3(baseline)`). The Token Efficiency Ratio is stratified, not aggregated, to defuse the composition trap (solving cheap easies while failing expensive hards flatters a single ratio).
+
+### Audit response (round 2)
+**Telemetry-bypass claim — refuted by evidence.** A reviewer flagged that forcing the routing tier would skip the code that writes TCI/CSS telemetry, emptying the baseline arm. `derive_routing_decision` is a pure `if/return` function with zero side effects (`context_auditor.py`); the TCI/CSS rows are written independently by the `route_to_coders` conditional edge (`engine.py`, both SWARM and RELAY paths) from `state["tci"]`/`state["css"]`, which `audit_task_complexity` populates upstream and independent of the routing tier. So the baseline arm logs telemetry exactly as G4 — only the tier string differs. No change made.
+
+### Key architectural decisions
+**Anchored bucketing.** A problem's bucket is decided once, by the **routing arm's TCI**, and both arms' metrics are filed there. Cloud models are not bitwise deterministic at `temp=0`, so per-metric bucketing could file the same problem under different buckets per arm and silently compare disjoint sets. `build_routing_study` groups by `problem_id` and anchors to the routing TCI.
+
+**Strict pairing.** A problem contributes to a bucket only when both arms produced a metric (and the routing TCI is non-`None`); otherwise it is dropped — `dropped_no_tci` vs `dropped_unpaired` are counted separately. This holds the invariant `routing.n == baseline.n` in every bucket, so a budget abort or a crashed arm cannot skew the paired counts.
+
+**Token-efficiency None-guard.** `tokens_per_resolved` is `None` when a stratum resolved nothing (undefined, not zero), and the H₂ ratios are `None` when the baseline spent/resolved nothing; `render()` prints `—`.
+
+**Index-once `_prepare_run` refactor.** The head of `run_arms` (telemetry init → embeddings preflight → corpus index-once → budget) was extracted to `_prepare_run` so the new multi-problem `run_study` indexes the corpus a single time and threads one cumulative budget across the whole sweep. `run_arms` delegates to it unchanged (behavior-preserving — the 8.3.3 gate stays green).
+
+### Test-scope boundary
+`TaskRunner`'s signature is `(session_id, problem)` — it never sees the arm, so a hermetic stub records identical tokens for both arms. The H₂ arithmetic (savings/retention, boundaries, `None`-guards) is therefore tested by feeding synthetic asymmetric metrics straight into `build_routing_study`; the stubbed `run_study` test asserts only sweep wiring (both arms present, verdicts judged, table shape). The real token asymmetry is a live-only property.
+
+### Files created / modified
+
+| File | Type | Description |
+|---|---|---|
+| `tests/benchmark/routing_study.py` | NEW | `bucket_for_tci`, `StratumCell`/`H2Stratum`/`RoutingStudyTable`, `build_routing_study` (anchored + paired), `render()` |
+| `tests/benchmark/test_routing_study.py` | NEW | Hermetic gate — 9 tests |
+| `tests/benchmark/runner.py` | MODIFIED | extract `_prepare_run` (index-once); add live `run_study` sweep |
+
+---
+
 ## Fase 8.3.3: Ablation Harness — G1–G4 + G4-force-cloud, comparable verdicts — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/310 · `pyright` 0 · `test_ablation_verdicts.py` 8/8 · `tests/benchmark` 35/35 · suite completa 1261 passed / 2 skipped (sin regresión)
