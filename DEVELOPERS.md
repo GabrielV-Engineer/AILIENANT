@@ -319,8 +319,12 @@ Proyect_Ailienant/
 │           ├── oracle.py         #       multi-file BenchmarkOracle + Resolve@k scorer (AST safety, indexer event)
 │           ├── strategies.py     #       retrieval strategy objects (Full/VectorOnly/ZeroShot) — G1/G2 patch encapsulation
 │           ├── routing_study.py   #       TCI-bucket × tokens × Resolve@3 stratifier (anchored, strictly paired)
+│           ├── report.py          #       machine-readable report: Wilson CI, H1/H2 verdicts, ablation deltas, schema
+│           ├── report.schema.json #       committed Draft-07 public contract for report.json (versioned)
 │           ├── test_ablation_verdicts.py  #  hermetic gate: 5-arm comparable verdicts, provider seam, drain, normalize
 │           ├── test_routing_study.py      #  hermetic gate: TCI bucketing, H2 savings/retention, anchored pairing
+│           ├── test_report.py             #  hermetic gate: Wilson, H1 0/0 guard, schema validity, full-matrix sweep
+│           ├── test_reproducibility.py    #  DoD-check: pinned-SHA surfaced + byte-deterministic report
 │           ├── datasets/         #       frozen codegen subset (HumanEval py + MultiPL-E ts JSONL)
 │           └── corpus/v1/        #       frozen multi-file snapshot (src/ + problems.jsonl + meta.json)
 ├── ailienant-extension/         # VS Code extension (TypeScript + React)

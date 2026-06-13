@@ -2,6 +2,51 @@
 
 ---
 
+## Fase 8.3.5 + 8.3.6: Report Generator + Reproducibility DoD-check — 2026-06-13
+
+**Estado:** ✅ COMPLETO (División 8.3 cerrada) | **Gates:** `mypy .` 0/315 · `pyright` 0 · `test_report.py` 13/13 · `test_reproducibility.py` 3/3 · `tests/benchmark` 60/60 · suite completa 1286 passed/2 skipped
+
+### Contexto
+8.3.5 emits the single auditable `report.json` the gateway eval surface (`get_report`, 8.5.5) consumes — 8.5.5 was hard-blocked with no producer to read. Like 8.3.4 it adds **no new pipeline mechanics**: it is a pure aggregation/serialization layer over the per-arm `ProblemMetrics`. The document carries per-test verdict rows, per-arm aggregates with Wilson confidence intervals, the H₁/H₂ hypothesis verdicts against their multiplicative thresholds, the TCI-bucket-stratified Token Efficiency Ratio (the 8.3.4 routing study embedded), and the three ablation deltas (G2↔G3 graph, G3↔G4 ReAct, G4↔force-cloud routing). 8.3.6 is the reproducibility DoD-check: the corpus declares a pinned revision and the aggregator is byte-deterministic.
+
+### Key architectural decisions
+**Pure builder, live sweep.** `report.py`'s `build_report` is a pure function (`List[ProblemMetrics] → BenchmarkReport`) with no I/O and **no wall-clock in the dict**, so the same metrics always serialize identically. `BenchmarkRunner.run_report` is the live-only sweep over the full five-arm matrix; the hermetic gate drives it with an injected stub (same convention as `run_study`).
+
+**H₁ rigor parity with 8.3.4.** Precision uplift (`Resolve@3(G4) ≥ 1.25 × Resolve@3(G1)` on TCI>60) reuses the anchored + strictly-paired grouping: inclusion is anchored to G4's TCI and a problem counts only when both G1 and G4 produced a metric. **H₂** reuses `build_routing_study` directly and embeds its stratified table.
+
+**Schema as a versioned public contract.** `REPORT_SCHEMA` (Draft-07, `additionalProperties:false` everywhere, nullable fields typed) is validated by `Draft7Validator`; the committed `report.schema.json` is the stable artifact external consumers validate against, carrying `schema_version` (semver). A drift-guard test asserts the file equals the in-code dict.
+
+**Index-time capture.** `_prepare_run` now returns `(budget, indexing_time_s)` so the report records indexing wall-clock as a one-time cost excluded from per-problem latency; `run_arms`/`run_study` unpack and ignore it (behavior-preserving — the 8.3.3/8.3.4 gates stay green).
+
+### Audit response (round 2 — zero-trust, 7 findings closed)
+**F1 — H₁ false positive at 0/0 (accepted, fixed).** `resolve(G4) >= 1.25 * resolve(G1)` evaluates `0.0 >= 1.25*0.0` → `True`, which would *validate* the architecture on hard problems where both arms resolved nothing. `_h1_verdict` branches explicitly: `n==0` → `None` (no data), control resolves 0 → `True` only if treatment resolves >0 (genuine uplift) else `False` (mutual failure), otherwise the inequality. "Undefined" and "no uplift" are never conflated.
+
+**F2 — cross-device atomic write / EXDEV (accepted, fixed).** `write_report` creates the temp file in the destination's own directory (not `%TEMP%`/`/tmp`), so the `os.replace` rename stays on one filesystem.
+
+**F3 — JSON `Infinity`/`NaN` leak (mine, fixed).** `json.dumps` emits bare `Infinity`/`NaN` by default — valid Python output but invalid JSON. `serialize_report`/`write_report` use `allow_nan=False`, refusing a non-finite float at the source instead of writing a poisoned artifact.
+
+**F4 — H₂ must not mirror F1 (mine).** The symmetric temptation (return `True` when the baseline retains nothing) would reintroduce F1 on the H₂ side. The shipped `_make_stratum` already returns `None` when the baseline resolved 0, so `_h2_verdict` holds is `None` (undefined) — never a false `True` — when retention is undefined. Left deliberately asymmetric and documented.
+
+**F5 — list-ordering determinism (mine, fixed).** `sort_keys=True` orders object keys but not array elements. The builder emits every list in canonical order (`verdicts` by `(problem_id, arm)`, `groups` in `AblationArm` order, deltas in the fixed `[G2→G3, G3→G4, G4→force-cloud]` sequence, strata in bucket order), so serialization is input-order-independent (the 8.3.6 contract).
+
+**F6 — `RoutingStudyTable` had no `to_dict` (mine, fixed).** Added additive `to_dict()` to `StratumCell`/`H2Stratum`/`RoutingStudyTable` (new methods only; the 8.3.4 gate is untouched) so the report can embed and schema-validate the routing study.
+
+**F7 — Windows/NTFS open-handle replace (accepted, fixed).** `os.replace` over a still-open temp handle raises `PermissionError` on Windows; `write_report` closes the handle after `fsync` and before the rename.
+
+### Files
+| File | Change |
+|------|--------|
+| `tests/benchmark/report.py` | NEW — `wilson_interval`, report dataclasses, `build_report`, `REPORT_SCHEMA`, `validate_report`/`serialize_report`/`write_report` |
+| `tests/benchmark/report.schema.json` | NEW — committed Draft-07 public contract (generated from `REPORT_SCHEMA`) |
+| `tests/benchmark/routing_study.py` | `to_dict()` added to `StratumCell`/`H2Stratum`/`RoutingStudyTable` (additive) |
+| `tests/benchmark/runner.py` | `_prepare_run` → `(budget, indexing_time_s)`; `_read_corpus_sha`; `run_report` five-arm sweep + partial-report guard |
+| `tests/benchmark/test_report.py` | NEW — 13-test hermetic gate |
+| `tests/benchmark/test_reproducibility.py` | NEW — 3-test reproducibility DoD-check |
+
+**→ 8.5.5 unblocked:** the `report.json` producer + schema now exist.
+
+---
+
 ## Fase 8.3.4: Routing Study — TCI-bucket × tokens × Resolve@3 (H₂) — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/312 · `pyright` 0 · `test_routing_study.py` 9/9 · `tests/benchmark` 44/44 · suite completa sin regresión

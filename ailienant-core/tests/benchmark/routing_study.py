@@ -25,7 +25,7 @@ fails the expensive ones would otherwise show a flattering aggregate ratio.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from tests.benchmark.metrics import ProblemMetrics
 
@@ -67,6 +67,21 @@ class StratumCell:
     # Tokens spent per resolved problem; None when nothing resolved (undefined).
     tokens_per_resolved: Optional[float]
 
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-native projection for serialization into a report."""
+        return {
+            "arm": self.arm,
+            "bucket": self.bucket,
+            "n": self.n,
+            "resolved": self.resolved,
+            "resolve_at_3": self.resolve_at_3,
+            "tokens_total": self.tokens_total,
+            "tokens_local": self.tokens_local,
+            "tokens_cloud": self.tokens_cloud,
+            "est_usd": self.est_usd,
+            "tokens_per_resolved": self.tokens_per_resolved,
+        }
+
 
 @dataclass(frozen=True)
 class H2Stratum:
@@ -82,6 +97,18 @@ class H2Stratum:
     # True when the ratio meets its threshold; None when the ratio is undefined.
     meets_savings: Optional[bool]
     meets_retention: Optional[bool]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-native projection for serialization into a report."""
+        return {
+            "bucket": self.bucket,
+            "routing": self.routing.to_dict(),
+            "baseline": self.baseline.to_dict(),
+            "token_savings_ratio": self.token_savings_ratio,
+            "resolve_retention": self.resolve_retention,
+            "meets_savings": self.meets_savings,
+            "meets_retention": self.meets_retention,
+        }
 
 
 @dataclass(frozen=True)
@@ -102,6 +129,21 @@ class RoutingStudyTable:
             if c.bucket == bucket and c.arm == arm:
                 return c
         return None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-native projection for serialization into a report.
+
+        Strata are emitted in the fixed bucket order so the projection is stable
+        across runs regardless of how the source metrics were ordered.
+        """
+        return {
+            "routing_arm": self.routing_arm,
+            "baseline_arm": self.baseline_arm,
+            "strata": [s.to_dict() for s in self.strata],
+            "overall": self.overall.to_dict(),
+            "dropped_no_tci": self.dropped_no_tci,
+            "dropped_unpaired": self.dropped_unpaired,
+        }
 
     def render(self) -> str:
         """Render the human-readable TCI-bucket x tokens x Resolve@3 table."""

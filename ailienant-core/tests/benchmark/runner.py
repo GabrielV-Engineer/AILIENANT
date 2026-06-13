@@ -15,18 +15,23 @@ import asyncio
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+import json
 
 from core.token_ledger import token_ledger
 
 from tests.benchmark.arms import AblationArm, apply_arm
 from tests.benchmark.hygiene import (
+    BenchmarkAbort,
     BenchmarkBudget,
+    BudgetExceeded,
     assert_embeddings_live,
     disable_response_cache,
 )
 from tests.benchmark.metrics import BenchmarkMetricError, ProblemMetrics, collect_routing
 from tests.benchmark.problems import BenchmarkProblem
+from tests.benchmark.report import BenchmarkReport, build_report
 from tests.benchmark.routing_study import RoutingStudyTable, build_routing_study
 
 if TYPE_CHECKING:
@@ -39,6 +44,22 @@ TaskRunner = Callable[[str, BenchmarkProblem], Awaitable[Dict[str, str]]]
 
 _DEFAULT_BUDGET_USD = 25.0
 _DEFAULT_INDEXER_TIMEOUT_S = 300.0
+
+
+def _read_corpus_sha(corpus_root: Optional[Path]) -> Optional[str]:
+    """Read the pinned corpus revision from ``meta.json``, or None when absent.
+
+    The pinned revision makes a run reproducible: it records exactly which frozen
+    snapshot the report measured. A corpus-less (dummy) sweep has no pinned SHA.
+    """
+    if corpus_root is None:
+        return None
+    meta_path = corpus_root / "meta.json"
+    if not meta_path.exists():
+        return None
+    meta: Dict[str, Any] = json.loads(meta_path.read_text(encoding="utf-8"))
+    sha = meta.get("pinned_sha")
+    return str(sha) if sha else None
 
 
 def _normalize_patch(raw: Dict[str, str], workspace_root: Path) -> Dict[str, str]:
@@ -187,14 +208,17 @@ class BenchmarkRunner:
             verdict=verdict,
         )
 
-    async def _prepare_run(self, problem: BenchmarkProblem) -> BenchmarkBudget:
+    async def _prepare_run(
+        self, problem: BenchmarkProblem
+    ) -> Tuple[BenchmarkBudget, float]:
         """Initialize telemetry, verify embeddings, index the corpus once, open a budget.
 
         The corpus is indexed a single time so every arm and every problem of a
         sweep shares the same graph. The project_id used for indexing must equal
         the one on the payload so graph/vector lookups are keyed correctly. The
         returned budget tracks cumulative spend from this point so a multi-problem
-        sweep aborts cleanly once its ceiling is reached.
+        sweep aborts cleanly once its ceiling is reached. The index wall-clock is
+        returned alongside it as a one-time cost, excluded from per-problem latency.
         """
         from core.telemetry import init_telemetry_db
 
@@ -204,6 +228,7 @@ class BenchmarkRunner:
             init_telemetry_db()
         await assert_embeddings_live()
 
+        indexing_time_s = 0.0
         if problem.corpus_root is not None and problem.project_id is not None:
             from core.indexer import LazyIndexer
             from tests.benchmark.oracle import (
@@ -212,7 +237,7 @@ class BenchmarkRunner:
             )
 
             indexer = LazyIndexer()
-            await _await_index(
+            indexing_time_s = await _await_index(
                 problem.corpus_root,
                 problem.project_id,
                 indexer,
@@ -223,9 +248,10 @@ class BenchmarkRunner:
                     problem.corpus_problem.dependency_seed, problem.project_id
                 )
 
-        return BenchmarkBudget.from_snapshot(
+        budget = BenchmarkBudget.from_snapshot(
             self._budget_usd, token_ledger.snapshot()
         )
+        return budget, indexing_time_s
 
     async def run_arms(
         self, problem: BenchmarkProblem, arms: List[AblationArm]
@@ -235,7 +261,7 @@ class BenchmarkRunner:
         The corpus is indexed once before the arm loop so all arms share the same
         indexed graph (index once, measure all).
         """
-        budget = await self._prepare_run(problem)
+        budget, _indexing_time_s = await self._prepare_run(problem)
         results: List[ProblemMetrics] = []
         for arm in arms:
             results.append(await self.run_problem(problem, arm, budget))
@@ -258,7 +284,7 @@ class BenchmarkRunner:
         if not problems:
             raise BenchmarkMetricError("run_study requires at least one problem")
 
-        budget = await self._prepare_run(problems[0])
+        budget, _indexing_time_s = await self._prepare_run(problems[0])
         arms = [routing_arm, baseline_arm]
         metrics: List[ProblemMetrics] = []
         for problem in problems:
@@ -269,4 +295,40 @@ class BenchmarkRunner:
             metrics,
             routing_arm=routing_arm.value,
             baseline_arm=baseline_arm.value,
+        )
+
+    async def run_report(
+        self,
+        problems: List[BenchmarkProblem],
+        *,
+        arms: Optional[List[AblationArm]] = None,
+    ) -> BenchmarkReport:
+        """Sweep the full ablation matrix and return the machine-readable report.
+
+        The corpus is indexed once and a single budget is threaded across every
+        problem-arm run. If the budget is exhausted (or a hard precondition aborts)
+        mid-sweep, the metrics collected so far are still aggregated into a report
+        flagged ``complete=False`` — a clean partial rather than a lost run.
+        """
+        if not problems:
+            raise BenchmarkMetricError("run_report requires at least one problem")
+
+        sweep_arms = arms if arms is not None else list(AblationArm)
+        budget, indexing_time_s = await self._prepare_run(problems[0])
+        corpus_sha = _read_corpus_sha(problems[0].corpus_root)
+
+        metrics: List[ProblemMetrics] = []
+        complete = True
+        try:
+            for problem in problems:
+                for arm in sweep_arms:
+                    metrics.append(await self.run_problem(problem, arm, budget))
+        except (BudgetExceeded, BenchmarkAbort):
+            complete = False
+
+        return build_report(
+            metrics,
+            corpus_sha=corpus_sha,
+            complete=complete,
+            indexing_time_s=indexing_time_s,
         )

@@ -1,0 +1,403 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "h2_stratum": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "$ref": "#/definitions/stratum_cell"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "meets_retention": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "meets_savings": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "resolve_retention": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "routing": {
+          "$ref": "#/definitions/stratum_cell"
+        },
+        "token_savings_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bucket",
+        "routing",
+        "baseline",
+        "token_savings_ratio",
+        "resolve_retention",
+        "meets_savings",
+        "meets_retention"
+      ],
+      "type": "object"
+    },
+    "hypothesis": {
+      "additionalProperties": false,
+      "properties": {
+        "holds": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "n": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "resolve_baseline": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resolve_retention": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resolve_treatment": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "statement": {
+          "type": "string"
+        },
+        "threshold": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "token_savings_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "statement",
+        "holds",
+        "n",
+        "resolve_treatment",
+        "resolve_baseline",
+        "threshold",
+        "token_savings_ratio",
+        "resolve_retention"
+      ],
+      "type": "object"
+    },
+    "stratum_cell": {
+      "additionalProperties": false,
+      "properties": {
+        "arm": {
+          "type": "string"
+        },
+        "bucket": {
+          "type": "string"
+        },
+        "est_usd": {
+          "type": "number"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "resolve_at_3": {
+          "type": "number"
+        },
+        "resolved": {
+          "type": "integer"
+        },
+        "tokens_cloud": {
+          "type": "number"
+        },
+        "tokens_local": {
+          "type": "number"
+        },
+        "tokens_per_resolved": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tokens_total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "arm",
+        "bucket",
+        "n",
+        "resolved",
+        "resolve_at_3",
+        "tokens_total",
+        "tokens_local",
+        "tokens_cloud",
+        "est_usd",
+        "tokens_per_resolved"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "ablation_deltas": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "delta_resolve_at_3": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "delta_tokens_total": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "isolates": {
+            "type": "string"
+          },
+          "lower_arm": {
+            "type": "string"
+          },
+          "n": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "upper_arm": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "lower_arm",
+          "upper_arm",
+          "isolates",
+          "n",
+          "delta_resolve_at_3",
+          "delta_tokens_total"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "arms": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "corpus_sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "groups": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "arm": {
+            "type": "string"
+          },
+          "est_usd": {
+            "type": "number"
+          },
+          "n": {
+            "type": "integer"
+          },
+          "resolve_at_3": {
+            "type": "number"
+          },
+          "resolved": {
+            "type": "integer"
+          },
+          "tokens_total": {
+            "type": "number"
+          },
+          "wilson_hi": {
+            "type": "number"
+          },
+          "wilson_lo": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "arm",
+          "n",
+          "resolved",
+          "resolve_at_3",
+          "wilson_lo",
+          "wilson_hi",
+          "tokens_total",
+          "est_usd"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "h1": {
+      "$ref": "#/definitions/hypothesis"
+    },
+    "h2": {
+      "$ref": "#/definitions/hypothesis"
+    },
+    "indexing_time_s": {
+      "type": "number"
+    },
+    "routing_study": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_arm": {
+          "type": "string"
+        },
+        "dropped_no_tci": {
+          "type": "integer"
+        },
+        "dropped_unpaired": {
+          "type": "integer"
+        },
+        "overall": {
+          "$ref": "#/definitions/h2_stratum"
+        },
+        "routing_arm": {
+          "type": "string"
+        },
+        "strata": {
+          "items": {
+            "$ref": "#/definitions/h2_stratum"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "routing_arm",
+        "baseline_arm",
+        "strata",
+        "overall",
+        "dropped_no_tci",
+        "dropped_unpaired"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "verdicts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "arm": {
+            "type": "string"
+          },
+          "css": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "est_usd": {
+            "type": "number"
+          },
+          "latency_s": {
+            "type": "number"
+          },
+          "problem_id": {
+            "type": "string"
+          },
+          "tci": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tokens_cloud": {
+            "type": "number"
+          },
+          "tokens_local": {
+            "type": "number"
+          },
+          "tokens_total": {
+            "type": "number"
+          },
+          "verdict": {
+            "enum": [
+              "passed",
+              "failed",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "problem_id",
+          "arm",
+          "verdict",
+          "tci",
+          "css",
+          "tokens_local",
+          "tokens_cloud",
+          "tokens_total",
+          "est_usd",
+          "latency_s"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "corpus_sha",
+    "complete",
+    "seed",
+    "indexing_time_s",
+    "arms",
+    "verdicts",
+    "groups",
+    "h1",
+    "h2",
+    "routing_study",
+    "ablation_deltas"
+  ],
+  "title": "AILIENANT benchmark report",
+  "type": "object"
+}
