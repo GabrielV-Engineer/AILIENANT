@@ -2,6 +2,32 @@
 
 ---
 
+## Fase 8.5.5: Eval Surface Tools (`run_benchmark` + `get_report`) — 2026-06-13
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/317 · `pyright` 0 · `test_gateway_eval_surface.py` 17/17 · suites gateway 46/46 · suite completa 1303 passed/2 skipped
+
+### Contexto
+8.5.4 cableó 5 de los 7 verbos del catálogo del gateway; los 2 restantes — `run_benchmark` (EXECUTE, budget-gated, async) y `get_report` (READ_ONLY) — estaban bloqueados por la ausencia de un productor de `report.json`, que 8.3.5 cerró. 8.5.5 cablea la superficie de evaluación para que un agente externo dispare un benchmark y recupere su reporte machine-readable.
+
+### Decisión arquitectónica — espejo de `run_task` (EXECUTE → loopback al host)
+`handlers.py` documenta el seam: los verbos READ_ONLY corren in-process; el verbo EXECUTE y su poll companion alcanzan el motor vivo por loopback HTTP. El benchmark necesita modelo/Docker/embeddings, que viven en el **host** (VS Code), no en el child stdio efímero. Por eso `run_benchmark` hace loopback a un endpoint host nuevo igual que `run_task`, el benchmark corre host-side, escribe `report.json` keyed por `task_id` (reusando `write_report` de 8.3.5), y `get_report` lo lee. El gateway sigue siendo un adaptador delgado; el pipeline DoS/permiso/HITL-degrade de `dispatch_call` no cambia, y `check_task_status` reusa `_active_tasks` sin store nuevo. **MVP declarado:** el run es un bounded smoke sobre el corpus `v1`; el sweep definitivo n≥30 sigue diferido (DEBT-no-nuevo, ya en manifest).
+
+### Auditoría zero-trust (3 rondas, 8 hallazgos)
+**F1 — LFI por `task_id`:** choke point `_resolve_artifact` (regex `^[0-9a-f]{32}$` + `is_relative_to(BENCHMARK_DIR)`), usado por lectura y escritura. **F2 — LFI por `suite`:** allowlist fail-closed `{"v1"}` antes de tocar el filesystem. **F3 — free-ride de budget (TOCTOU):** cobro **upfront** antes del loopback, refund en cualquier fallo. **F4 — leak de `_active_tasks`:** se registra la propia `asyncio.Task` del run; el done-callback de `register_active_task` la auto-desregistra al terminar. **F5 — DoS por concurrencia:** single-flight `_inflight` (cap 1, env-config) que devuelve `busy`. **F6 — leak de `_inflight` si el registro falla:** el slot tiene **un solo dueño** (el done-callback de la task); `run_benchmark` no toca `_inflight`; si `create_task` falla se libera manual, si `register_active_task` falla se hace `cancel()` y el callback libera. **F7 — refund que enmascara el error original:** guard anidado que loguea el fallo del refund y re-lanza el error original. **F8 — limpieza prematura de `_runs`:** sin `finally` sobre `_runs`; en éxito se borra el marcador `running` tras `write_report` (el archivo es la respuesta), en fallo se **conserva** `failed:<detail>` para que `read_report` lo reporte. Ledger: `_budget_consume_txn` floored a `max(0, ...)` para que un refund no deje budget negativo.
+
+### Files
+| File | Change |
+|------|--------|
+| `core/benchmark_service.py` | NEW — host-side run + report store (LFI-hardened paths, single-flight, durable file signal) |
+| `main.py` | `POST /api/v1/benchmark/submit` + `GET /api/v1/benchmark/{id}/report` (leak-proof reserve/spawn/register) |
+| `gateway/handlers.py` | `handle_run_benchmark`/`handle_get_report` + loopback seams + pay-upfront refund; registered in `CAPABILITY_HANDLERS` |
+| `gateway/ledger.py` | `_budget_consume_txn` floored at zero (refund support) |
+| `tests/test_gateway_eval_surface.py` | NEW — 17-test hermetic gate |
+
+**DEBT-038** (prod `benchmark_service` importa el harness de `tests/`) + **DEBT-039** (retención de reportes) declarados.
+
+---
+
 ## Fase 8.3.5 + 8.3.6: Report Generator + Reproducibility DoD-check — 2026-06-13
 
 **Estado:** ✅ COMPLETO (División 8.3 cerrada) | **Gates:** `mypy .` 0/315 · `pyright` 0 · `test_report.py` 13/13 · `test_reproducibility.py` 3/3 · `tests/benchmark` 60/60 · suite completa 1286 passed/2 skipped

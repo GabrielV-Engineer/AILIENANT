@@ -31,6 +31,26 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-038 — Production benchmark service imports the harness from the test tree
+
+- **Date:** 2026-06-13
+- **Reproduce:** inspect `core/benchmark_service.py` — `run_benchmark` lazily imports `tests.benchmark.{oracle,problems,report,runner}` (a production module depending on a test package).
+- **File(s):** `ailienant-core/core/benchmark_service.py`, `ailienant-core/tests/benchmark/*`.
+- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The blueprint placed the Division 8.3 harness under `tests/benchmark/`, and ADR-759 has `run_benchmark` wrap that harness; so the eval-surface verb must reach into the test tree. Imports are lazy (kept out of module import time), but a production deployment that excludes `tests/` would break `run_benchmark`.
+- **Blocked by:** requires relocating the benchmark harness to a shippable package (e.g. `core/benchmark/`) and updating all `tests.benchmark` imports + the existing benchmark gates.
+- **Phase:** standalone harness-relocation slice, post-8.5/8.8 when the ablation track is stable.
+- **Notes:** logged at 8.5.5 ship per CLAUDE.md §7.3. The path/suite inputs are LFI-hardened at the `benchmark_service` boundary regardless of harness location.
+
+### DEBT-039 — Benchmark report artifacts have no retention policy
+
+- **Date:** 2026-06-13
+- **Reproduce:** trigger `run_benchmark` repeatedly — each run writes a `~/.ailienant/benchmark/<task_id>.json` that is never pruned.
+- **File(s):** `ailienant-core/core/benchmark_service.py` (`BENCHMARK_DIR`, `run_benchmark`).
+- **Error:** not a runtime defect — unbounded disk growth over time. The single-flight cap bounds the *rate* of growth, not the total.
+- **Blocked by:** nothing structural; needs a retention policy decision (cap by count, age-prune, or LRU eviction on write).
+- **Phase:** standalone eval-surface hardening slice, post-8.5/8.8.
+- **Notes:** logged at 8.5.5 ship per CLAUDE.md §7.3.
+
 ### DEBT-037 — G2 retrieval isolation uses mock.patch, not a production DI seam
 
 - **Date:** 2026-06-12

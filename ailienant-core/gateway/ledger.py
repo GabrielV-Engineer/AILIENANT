@@ -152,7 +152,9 @@ def _budget_consume_txn(caller_id: str, amount: float) -> None:
     try:
         store = _load()
         rec = store.get(caller_id, {})
-        rec["budget_consumed"] = rec.get("budget_consumed", 0.0) + amount
+        # Floor at zero so a refund (a negative amount) can never drive a caller's
+        # cumulative budget below zero and gift them free headroom.
+        rec["budget_consumed"] = max(0.0, rec.get("budget_consumed", 0.0) + amount)
         rec.setdefault("bucket_tokens", _rate_cap())
         rec.setdefault("refill_at", time.time())
         store[caller_id] = rec

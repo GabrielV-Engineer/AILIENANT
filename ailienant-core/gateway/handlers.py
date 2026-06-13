@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List
 
@@ -24,7 +25,8 @@ import httpx
 
 from core.config.host_discovery import HostCoords, resolve_host_or_error
 from core.permissions import session_mode_from_frontend
-from gateway.governance import INTERNAL_TASK_MODE
+from gateway import ledger
+from gateway.governance import INTERNAL_TASK_MODE, resolve_caller_id
 
 logger = logging.getLogger("GATEWAY_HANDLERS")
 
@@ -162,6 +164,86 @@ async def handle_check_task_status(args: Dict[str, Any]) -> Any:
     return await _get_status_loopback(coords, args["task_id"])
 
 
+# ── Eval surface: run_benchmark (EXECUTE, budget-gated) + get_report (READ_ONLY) ──
+
+# Deadlines mirror the task verbs: submit acks fast, the report read is a fast lookup.
+_BENCHMARK_SUBMIT_TIMEOUT_S = 10.0
+_REPORT_TIMEOUT_S = 5.0
+
+
+def _benchmark_cost() -> float:
+    """The flat budget cost charged per benchmark run (env-configurable)."""
+    try:
+        return float(os.environ.get("AILIENANT_GATEWAY_BENCHMARK_COST", "1.0"))
+    except ValueError:
+        return 1.0
+
+
+async def _submit_benchmark_loopback(
+    coords: HostCoords, task_id: str, suite: str
+) -> Dict[str, Any]:
+    """POST a benchmark run to the running host. Returns the host's ack body."""
+    headers = {**_auth_headers(coords), "X-Task-ID": task_id}
+    url = f"http://127.0.0.1:{coords.port}/api/v1/benchmark/submit"
+    async with httpx.AsyncClient(timeout=_BENCHMARK_SUBMIT_TIMEOUT_S) as client:
+        resp = await client.post(url, json={"suite": suite}, headers=headers)
+        resp.raise_for_status()
+        body: Dict[str, Any] = resp.json()
+        return body
+
+
+async def _get_report_loopback(coords: HostCoords, task_id: str) -> Any:
+    """GET a benchmark run's report from the running host."""
+    url = f"http://127.0.0.1:{coords.port}/api/v1/benchmark/{task_id}/report"
+    async with httpx.AsyncClient(timeout=_REPORT_TIMEOUT_S) as client:
+        resp = await client.get(url, headers=_auth_headers(coords))
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _safe_refund(caller_id: str, amount: float) -> None:
+    """Refund a prior charge, never raising — a refund fault must not mask a caller error."""
+    try:
+        await ledger.consume_budget(caller_id, -amount)
+    except Exception as refund_error:  # noqa: BLE001 — log and move on, never re-raise
+        logger.error("benchmark budget refund failed: %s", refund_error)
+
+
+async def handle_run_benchmark(args: Dict[str, Any]) -> Any:
+    suite = str(args.get("suite") or "v1")
+    coords = await resolve_host_or_error()
+    caller_id = resolve_caller_id()
+    cost = _benchmark_cost()
+    task_id = uuid.uuid4().hex
+
+    # Pay upfront: charge before the run is dispatched so a crash between dispatch
+    # and charge can never hand out a free expensive run. Refund on any failure.
+    await ledger.consume_budget(caller_id, cost)
+    try:
+        body = await _submit_benchmark_loopback(coords, task_id, suite)
+    except Exception as original_error:  # noqa: BLE001 — refund without masking the cause
+        await _safe_refund(caller_id, cost)
+        raise original_error
+
+    if not isinstance(body, dict) or body.get("status") != "accepted":
+        # The host refused the run (single-flight busy); refund the upfront charge.
+        await _safe_refund(caller_id, cost)
+        return {"status": "busy", "reason": "benchmark_busy"}
+
+    return {
+        "task_id": task_id,
+        "status": "submitted",
+        "poll": "check_task_status",
+        "then": "get_report",
+    }
+
+
+async def handle_get_report(args: Dict[str, Any]) -> Any:
+    _require(args, ["task_id"])
+    coords = await resolve_host_or_error()
+    return await _get_report_loopback(coords, args["task_id"])
+
+
 # Static name->callable export. The server imports this and registers from it; this
 # module never imports the server, so the dependency graph stays acyclic.
 CAPABILITY_HANDLERS: Dict[str, Handler] = {
@@ -170,4 +252,6 @@ CAPABILITY_HANDLERS: Dict[str, Handler] = {
     "query_memory": handle_query_memory,
     "get_dependents": handle_get_dependents,
     "get_workspace_graph": handle_get_workspace_graph,
+    "run_benchmark": handle_run_benchmark,
+    "get_report": handle_get_report,
 }

@@ -293,6 +293,7 @@ Proyect_Ailienant/
 │   │   │                        #     docs_index (product-docs RAG — reserved LanceDB namespace)
 │   │   ├── readme_digest.py     #     workspace README brain: verbatim/digest/head-slice + debounced rebuild
 │   │   ├── db.py                #     SQLite catalog (dependency_graph, ppr_scores, indexed_files)
+│   │   ├── benchmark_service.py #     host-side run_benchmark execution + report store (LFI-hardened, single-flight)
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
 │   │       ├── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
 │   │       └── host_discovery.py #      ephemeral ~/.ailienant/run.json (port+token+pid, 0600) + async liveness probe
@@ -307,7 +308,7 @@ Proyect_Ailienant/
 │   │   ├── governance.py        #     symmetric permission gate (evaluate_action reuse) + caller_id +
 │   │   │                        #       conservative posture (no self-escalation, no silent AUTO)
 │   │   ├── handlers.py          #     capability handlers: in-process READ_ONLY memory/graph verbs +
-│   │   │                        #       loopback run_task/check_task_status (poll-pair) over the live host
+│   │   │                        #       loopback run_task/run_benchmark/check_task_status/get_report over the live host
 │   │   └── ledger.py            #     durable per-caller token-bucket + budget DoS guard (filelock, fail-closed)
 │   ├── transport/               #   outbound WS stream (throttler, token batcher, narration gate)
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters

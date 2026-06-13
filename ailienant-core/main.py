@@ -32,6 +32,7 @@ from core.lifecycle_manager import lifecycle_manager
 
 # --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
 from core import db as catalog_db
+from core import benchmark_service
 from core.config_generator import discover_models
 from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
@@ -626,6 +627,59 @@ async def task_status(task_id: str) -> Dict[str, Any]:
     that already exists — it introduces no new task store.
     """
     return task_service.get_task_status(task_id)
+
+
+class BenchmarkSubmitPayload(BaseModel):
+    """Body for a benchmark submission — an optional frozen-corpus suite name."""
+
+    suite: str = "v1"
+
+
+@app.post("/api/v1/benchmark/submit", status_code=202)
+async def submit_benchmark(
+    payload: BenchmarkSubmitPayload,
+    x_task_id: str = Header(..., alias="X-Task-ID"),
+) -> Dict[str, object]:
+    """Start a benchmark run and return immediately; the report is read back later.
+
+    Mirrors task submit: the heavy run is scheduled in the background and the HTTP
+    response only acknowledges receipt. A single-flight slot is reserved before the
+    task is spawned, and the slot is released exactly once by the spawned task's
+    done-callback — so a failure to spawn or register can never strand the slot.
+    """
+    if not benchmark_service.try_reserve(payload.suite):
+        return {"status": "busy", "task_id": x_task_id}
+
+    try:
+        runner = asyncio.create_task(
+            benchmark_service.run_benchmark(x_task_id, payload.suite),
+            name=f"benchmark_submit:{x_task_id}",
+        )
+    except BaseException:
+        # The task never existed, so its done-callback can never fire — release here.
+        benchmark_service.release_flight()
+        raise
+
+    # The task's done-callback is the sole releaser of the reserved slot from here.
+    runner.add_done_callback(lambda _t: benchmark_service.release_flight())
+
+    try:
+        # Register synchronously before the ack so an immediate status poll observes
+        # the run as in flight; its own done-callback auto-deregisters on completion.
+        task_service.register_active_task(x_task_id, runner)
+    except BaseException:
+        # The slot is now owned by the task's callback; cancel it so the task ends
+        # and that callback performs the single release.
+        runner.cancel()
+        raise
+
+    return {"status": "accepted", "task_id": x_task_id}
+
+
+@app.get("/api/v1/benchmark/{task_id}/report")
+async def benchmark_report(task_id: str) -> Dict[str, Any]:
+    """Return a benchmark run's status and, when complete, its report (pure read)."""
+    return benchmark_service.read_report(task_id)
 
 
 # =====================================================================
