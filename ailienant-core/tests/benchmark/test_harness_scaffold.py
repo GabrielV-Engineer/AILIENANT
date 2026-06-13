@@ -12,7 +12,7 @@ The runner stays real for a manual live smoke; only the model layer is stubbed.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Tuple
 
 import pytest
 
@@ -92,11 +92,12 @@ async def _ok_preflight(self: Any) -> None:
 def _make_stub(tokens_per_call: int = 100) -> Any:
     """A model-layer stub: records token usage and emits one scored routing row."""
 
-    async def stub(session_id: str, problem: BenchmarkProblem) -> None:
+    async def stub(session_id: str, problem: BenchmarkProblem) -> Dict[str, str]:
         token_ledger.record_local(prompt=tokens_per_call, completion=tokens_per_call)
         log_routing_decision(
             session_id, "planner", "coder", "stub route", css=42.0, tci=63.0
         )
+        return {}
 
     return stub
 

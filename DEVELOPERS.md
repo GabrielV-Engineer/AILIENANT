@@ -317,6 +317,8 @@ Proyect_Ailienant/
 │           ├── codegen.py        #       plain-codegen adapter + Pass@1 scorer (HumanEval/MultiPL-E)
 │           ├── executors.py      #       pluggable exec backends (sandbox / trusted subprocess)
 │           ├── oracle.py         #       multi-file BenchmarkOracle + Resolve@k scorer (AST safety, indexer event)
+│           ├── strategies.py     #       retrieval strategy objects (Full/VectorOnly/ZeroShot) — G1/G2 patch encapsulation
+│           ├── test_ablation_verdicts.py  #  hermetic gate: 5-arm comparable verdicts, provider seam, drain, normalize
 │           ├── datasets/         #       frozen codegen subset (HumanEval py + MultiPL-E ts JSONL)
 │           └── corpus/v1/        #       frozen multi-file snapshot (src/ + problems.jsonl + meta.json)
 ├── ailienant-extension/         # VS Code extension (TypeScript + React)

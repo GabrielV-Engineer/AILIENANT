@@ -31,6 +31,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 
 ## Open Entries
 
+### DEBT-037 — G2 retrieval isolation uses mock.patch, not a production DI seam
+
+- **Date:** 2026-06-12
+- **Reproduce:** inspect `tests/benchmark/strategies.py:VectorOnlyRetrievalStrategy.patches()` — it returns `[mock.patch(GRAPH_SEAM, _no_graph)]`, a process-global monkey-patch scoped to one task run.
+- **File(s):** `ailienant-core/tests/benchmark/strategies.py`, `ailienant-core/tests/benchmark/arms.py`.
+- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The patch-based mechanism is the harness-boundary approach established at 8.3.0; no production code is changed. The enterprise alternative is a `RetrievalStrategy` injected via a DI seam in `GraphRAGDynamicExtractor` so the strategy boundary is visible in production profiling and A/B testing, not only in benchmark runs.
+- **Blocked by:** requires a production DI refactor of `GraphRAGDynamicExtractor` and its callers (planner + researcher). Out of scope for the 8.3.x measurement track.
+- **Phase:** standalone retrieval-DI slice, post-8.5/8.8 when the ablation sweep is complete and the architecture is stable.
+- **Notes:** logged at 8.3.3 ship per CLAUDE.md §7.3. The patch-based mechanism is hermetically verified by `test_ablation_verdicts.py` gate tests.
+
 ### DEBT-036 — BenchmarkOracle executes candidate patches on the host (no sandbox isolation)
 
 - **Date:** 2026-06-12

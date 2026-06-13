@@ -2,6 +2,46 @@
 
 ---
 
+## Fase 8.3.3: Ablation Harness — G1–G4 + G4-force-cloud, comparable verdicts — 2026-06-12
+
+**Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/310 · `pyright` 0 · `test_ablation_verdicts.py` 8/8 · `tests/benchmark` 35/35 · suite completa 1261 passed / 2 skipped (sin regresión)
+
+### Contexto
+8.3.3 closes the ablation loop opened at 8.3.0: five arms (`G1`/`G2`/`G3`/`G4`/`G4_FORCE_CLOUD`) each run the same frozen corpus problem from 8.3.2, and each arm's `pending_contents` (the coder's in-memory edits, never written to disk) is fed to the same `BenchmarkOracle.run_oracle` → `Verdict`. All five arms produce comparable verdicts — the DoD — so the ablation matrix is measurable end-to-end without a live model in the gate.
+
+### WBS conflict resolved (CLAUDE.md §3)
+The WBS named `resolve_provider` as the G4-force-cloud override seam. `resolve_provider` is dead in the live graph (referenced only in `routing_engine.py` + `test_routing.py`). The live provider is set by the planner via `derive_routing_decision(tci, css)` → `_cascade_provider` → `result["provider"]` (planner.py:479/781). **Resolution Option B:** G4_FORCE_CLOUD patches `agents.planner.derive_routing_decision → "CLOUD"`, and the WBS line was amended in this PR.
+
+### Key architectural decisions
+
+**Strategy objects (no prod DI — DEBT-037).** `VectorOnlyRetrievalStrategy` (G2) and `ZeroShotRetrievalStrategy` (G1) encapsulate their `mock.patch` lists and are entered via `apply_arm`'s `ExitStack`. Seam constants stay exported from `arms.py`; lazy imports inside `patches()` break the circular dependency cleanly. The enterprise refactor (prod retrieval DI) is logged as DEBT-037.
+
+**`ainvoke` not `astream`.** The headless graph runner (`_graph_task_runner`) uses `alienant_app.ainvoke(cast(AIlienantGraphState, state), config=cfg)` — the same blocking call used at `main.py:657`. `astream` is an async generator that does nothing unless iterated; using it would have silently returned an empty final state.
+
+**Snapshot-then-clear drain.** The coder fires `asyncio.create_task(vfs_manager.emit_graph_mutation(...))` into `agents.coder._background_tasks` (module-level set). Done-callbacks call `.discard()` on the same set. Unpacking a live set while callbacks can fire raises `RuntimeError: Set changed size during iteration`. The drain snapshots first: `tasks = list(agents.coder._background_tasks)` then `asyncio.gather(*tasks)` then `.clear()`.
+
+**Benchmark-invalidating project_id (Finding A).** Graph + vector retrieval are keyed by `project_id`; if the headless payload's id ≠ the indexer's id, G4 degrades to G1 silently. Fixed by deriving `effective_id = f"benchmark_corpus_{corpus_root.name}"` in `BenchmarkProblem.from_corpus` and passing it unchanged to both the indexer and the payload.
+
+**Path normalization (Finding B).** The coder's `pending_contents` keys can be absolute paths. The oracle's path-traversal guard would reject them, returning an incorrect failed verdict. `_normalize_patch(raw, workspace_root)` relativizes absolute keys inside the workspace; keys that escape it (e.g. `C:\Windows\...`) are silently dropped — the oracle judges an incomplete patch as failed, never crashing.
+
+**Neutral judge.** Oracle judgment runs outside the `apply_arm` context manager so no arm's patches can influence the verdict. A G1 arm that routes to `HUMAN_REQUIRED` produces empty `pending_contents` → `verdict = "failed"`, a valid ablation signal (the zero-shot control can't resolve without retrieval), not a harness bug.
+
+### Files created / modified
+
+| File | Type | Description |
+|---|---|---|
+| `tests/benchmark/strategies.py` | NEW | RetrievalStrategy Protocol + Full/VectorOnly/ZeroShot classes |
+| `tests/benchmark/test_ablation_verdicts.py` | NEW | Hermetic gate — 8 tests |
+| `tests/benchmark/arms.py` | MODIFIED | PROVIDER_SEAM + `_force_cloud_routing` + strategy-driven apply_arm |
+| `tests/benchmark/problems.py` | MODIFIED | corpus_problem / corpus_root / project_id fields + from_corpus |
+| `tests/benchmark/runner.py` | MODIFIED | TaskRunner → Dict, `_normalize_patch`, `_graph_task_runner`, oracle judgment, index-once |
+| `tests/benchmark/test_harness_scaffold.py` | MODIFIED | stub stub returns `{}` (Dict), `Dict` import added |
+
+### MVP declared / DEBT
+- **DEBT-037** — G2 retrieval isolation via `mock.patch` (no prod DI seam). Enterprise refactor: inject `RetrievalStrategy` through a production DI seam so the strategy boundary is observable in live runs without harness patches.
+
+---
+
 ## Fase 8.3.2: Benchmark multi-archivo + BenchmarkOracle (Resolve@k) — 2026-06-12
 
 **Estado:** ✅ COMPLETO | **Gates:** `mypy .` 0/308 · `pyright` 0 · `test_oracle_resolve_k.py` 12/12 · suite completa 1253 passed / 2 skipped (sin regresión)
