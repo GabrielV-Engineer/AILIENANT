@@ -1,9 +1,12 @@
-# SCHEMA_EVOLUTION.md
-## LangGraph State Definition para Ialienant
+# SCHEMA_EVOLUTION.MD — Wire Contract History
 
-Este documento define el esquema estricto de datos que fluye a través del grafo de LangGraph. Se implementará en Python utilizando `typing.TypedDict` y validación con `pydantic`.
+> Contracts are **additive-only** and **version-tagged**. Consumers must tolerate unknown or missing fields. Each section is an append-only record of what was added in that phase. Fields are never deleted from this document — deprecated fields carry a `Deprecated:` annotation. Cross-reference `docs/PROJECT_MANIFEST.md` for the WBS context of each phase.
 
-### 🧠 1. Core State Schema (`AIlienantGraphState`)
+---
+
+## 1. Core State Schema (`AIlienantGraphState`)
+
+Initial Phase 0 specification. All fields below were present from first commit.
 
 ```python
 from typing import TypedDict, List, Dict, Any, Optional, Annotated, Literal
@@ -11,19 +14,19 @@ from pydantic import BaseModel, Field
 import operator
 
 class ContextMeter(BaseModel):
-    semantic_similarity: float  # 0.0 a 1.0
-    graph_coverage: float       # 0.0 a 1.0
-    recency_score: float        # 0.0 a 1.0
-    css_total: float            # Context Sufficiency Score (0 - 100%)
-    task_complexity_index: float # TCI (0 - 100%)
-    routing_decision: str       # "LOCAL_SMALL", "LOCAL_BIG", "CLOUD"
-    is_red_alert: bool          # True si CSS < 40%
+    semantic_similarity: float  # 0.0 to 1.0
+    graph_coverage: float       # 0.0 to 1.0
+    recency_score: float        # 0.0 to 1.0
+    css_total: float            # Context Sufficiency Score (0–100%)
+    task_complexity_index: float  # TCI (0–100%)
+    routing_decision: str       # "LOCAL_SMALL" | "LOCAL_BIG" | "CLOUD"
+    is_red_alert: bool          # True when CSS < 40%
 
 class LLMProfile(BaseModel):
-    model_name: str            # ej. "llama3:8b-instruct-q4_K_M"
-    parameters_b: float        # ej. 8.0, 1.5, 32.0 (Para calcular capacidad lógica)
-    context_window: int        # ej. 8192 (Para evitar crashes de ventana)
-    quantization: str          # ej. "int4", "fp16"
+    model_name: str            # e.g. "llama3:8b-instruct-q4_K_M"
+    parameters_b: float        # e.g. 8.0, 1.5, 32.0 (logical capacity proxy)
+    context_window: int        # e.g. 8192 (crash prevention)
+    quantization: str          # e.g. "int4", "fp16"
 
 class TokenCounter(BaseModel):
     local: int = 0
@@ -32,21 +35,20 @@ class TokenCounter(BaseModel):
 
 # --- Virtual File System (VFS) ---
 class VFSFile(BaseModel):
-    content: str = Field(..., description="Contenido en texto plano del archivo")
-    document_version_id: str = Field(..., description="Timestamp o Hash para OCC")
-    is_dirty: bool = Field(default=False, description="True si requiere sincronización con el IDE")
+    content: str = Field(..., description="Plain-text file contents")
+    document_version_id: str = Field(..., description="Timestamp or hash for OCC")
+    is_dirty: bool = Field(default=False, description="True if sync with IDE is pending")
 
 class EnvironmentProfile(BaseModel):
     os_name: str
     vram_available_gb: float
-    # Registro de capacidades. El orquestador lee esto antes de enrutar.
-    available_models: Dict[str, LLMProfile] # Map de roles ("LOCAL_SMALL", "CLOUD") a sus perfiles reales
+    available_models: Dict[str, LLMProfile]  # "LOCAL_SMALL" | "CLOUD" → profile
 
 # --- Spec-Driven Development (WBS) ---
 class WBSStep(BaseModel):
     step_number: int
     target_role: Literal["Refactor", "Infra", "Doc", "SecOps", "Test"] = Field(
-        description="Rol que asumirá el CoderAgent para esta tarea."
+        description="Role the CoderAgent adopts for this step."
     )
     action: Literal["read_file", "write_file", "edit_file", "run_command"]
     target_file: str
@@ -54,7 +56,7 @@ class WBSStep(BaseModel):
     status: Literal["pending", "in_progress", "completed", "failed"] = "pending"
 
 class MissionSpecification(BaseModel):
-    """El Macro-Contrato que blinda la ejecución del CoderAgent."""
+    """The macro-contract that bounds CoderAgent execution."""
     outcome: str
     scope: List[str]
     constraints: List[str]
@@ -62,87 +64,84 @@ class MissionSpecification(BaseModel):
     tasks: List[WBSStep]
     checks: List[str]
 
-# --- INSERCIÓN: Control de Estado HITL y Planner Manual ---
-PlanningStrategy = Literal["autonomous", "manual_override", "collaborative"]
-
 class AIlienantGraphState(TypedDict):
-    # --- Memoria Base y Petición ---
+    # --- Base Memory & Request ---
     task_id: str
     user_input: str
     messages: Annotated[List[Dict[str, str]], operator.add]
-    
-    # --- Telemetría Dinámica ---
+
+    # --- Dynamic Telemetry ---
     context_metrics: ContextMeter
     active_llm_profile: LLMProfile
     token_usage: TokenCounter
-    
-    # --- Control de Flujo (Prompt Swapping) ---
-    is_manual_override: bool 
-    target_role: Optional[str]        # El rol forzado actual si hay override
-    current_step_id: Optional[int]    # ID de la tarea actual en ejecución
-    
-    # --- Planificación Inmutable (SDD) ---
-    mission_spec: Optional[MissionSpecification] 
-    
+
+    # --- Flow Control (Prompt Swapping) ---
+    is_manual_override: bool
+    target_role: Optional[str]        # Forced role when override is active
+    current_step_id: Optional[int]    # ID of the currently executing WBS task
+
+    # --- Immutable Planning (SDD) ---
+    mission_spec: Optional[MissionSpecification]
+
     # --- VFS (Single Source of Truth) ---
     read_files_state: Dict[str, VFSFile]
     vfs_buffer: Dict[str, VFSFile]
-    
-    # --- Diagnóstico ---
+
+    # --- Diagnostics ---
     errors: Annotated[List[str], operator.add]
     retry_count: int
     security_flags: Annotated[List[str], operator.add]
     terminal_output: str
 
-    # Control de Concurrencia y Planificación
-    planning_strategy: PlanningStrategy
-    human_wbs_draft: Optional[str] # Payload crudo del IDE. Solo primitivas, NO objetos de conexión.
-    wbs_approved: bool # Bandera de transición. Si es False, el grafo interrumpe (HITL).
-
+    # --- Planning Mode (DEPRECATED — see Phase 7.13.9 replacement) ---
+    # planning_strategy: PlanningStrategy   # Deprecated — replaced by planner_mode_active
+    # human_wbs_draft: Optional[str]        # Deprecated — replaced by hitl_response
+    # wbs_approved: bool                    # Deprecated — replaced by shared_understanding_reached
 ```
+
+> **Deprecated:** `planning_strategy`, `human_wbs_draft`, and `wbs_approved` were removed and replaced by the `planner_mode_active` / `hitl_pending` / `hitl_response` / `shared_understanding_reached` quartet documented in the Phase 7 State Expansion section below.
 
 ---
 
-### 📋 2. Reglas de Transición (Mutaciones de Estado)
+## 2. Mutation Rules (State Transition Permissions)
 
-Para garantizar un flujo predecible, evitar colisiones en LangGraph y operar bajo la nueva arquitectura de **Prompt Swapping**, los permisos de mutación y uso de herramientas sobre el `AIlienantGraphState` están estrictamente centralizados:
+To guarantee predictable flow and avoid collisions in LangGraph, mutation permissions are strictly centralized:
 
-* **🕵️ ResearcherAgent (Retrieval Only):** Operación estricta de **Solo Lectura** sobre el sistema de archivos. Único agente autorizado para mutar el contexto inyectando el `skeleton_prompt`. No tiene permisos para alterar código fuente.
-* **📐 PlannerAgent:** Único agente autorizado para inicializar y mutar el `wbs_plan`. Durante su ejecución ($O(1)$), el grafo entra en "modo plan", bloqueando globalmente cualquier herramienta de escritura (`Write Tools`).
-* **🧠 OrchestratorAgent:** Único agente con autoridad para gestionar el ciclo de ejecución ($O(N)$). Muta las métricas de ruteo inyectando la **Matriz de Enrutamiento 3D** (calculando el $CSS$). 
-  * *Drift Detection:* Tiene autoridad absoluta para bloquear el grafo e inyectar el estado `HITL_APPROVAL_REQUIRED` si detecta que la ejecución intenta desviarse del `immutable_wbs`. No posee permisos de escritura de código.
-* **⚙️ CoderAgent (El Obrero Mutante):** Es el **ÚNICO nodo** con permisos de escritura (`Write`) y ejecución (`Execute`). Sus permisos de mutación cambian dinámicamente en tiempo real según el System Prompt (Rol) inyectado por el Orchestrator:
-  * *Rol Refactor:* Permisos restringidos exclusivamente a `BatchEditTool` para mutaciones quirúrgicas. Tiene prohibido reescribir el archivo completo.
-  * *Rol Infra:* Permisos sobre Docker y Bash. Si intenta mutar un archivo `.env` o usar la `BashTool` para despliegues, el estado transita forzosamente a una interrupción (Human-in-the-Loop).
-  * *Rol Doc:* Permisos de escritura limitados a la generación de JSDoc/Docstrings y mutación de archivos `.md`.
-  * *Rol SecOps:* Muta el código basándose estrictamente en el output del `RunLinterTool` y reglas OWASP. 
-  * *Rol Debug & Test:* Opera en un Micro-Enjambre cerrado. Utiliza la `BashTool` para ejecutar pruebas. **Regla de Bloqueo:** La tarea no puede transitar a "completada" en el estado hasta que reciba un *exit code 0*. Utiliza `FileEditTool` para inyectar los parches basados en el `stderr`.
-* **🐜 AnalystAgent (La Hormiga):** Operación inmutable (**Solo Lectura**). Muta el estado conversacional de la UI, pero nunca el código. Utiliza herramientas `ReadOnly` (como `RunLinter` o `FileReadTool`) cruzando la memoria a corto plazo (`IalienantGraphState`), la memoria a largo plazo (GraphRAG) y los `dirty_buffers` del IDE para generar críticas usando el Método Socrático.
+- **ResearcherAgent (Retrieval Only):** Strict read-only access to the filesystem. The only agent authorized to mutate context by injecting `researcher_skeleton`. No permission to alter source code.
+- **PlannerAgent:** The only agent authorized to initialize and mutate `mission_spec`. While running (O(1)), the graph enters "plan mode", globally blocking all write tools.
+- **OrchestratorAgent:** The only agent with authority to manage the execution cycle (O(N)). Mutates routing metrics. Has absolute authority to block the graph and inject `HITL_APPROVAL_REQUIRED` state when execution attempts to deviate from `mission_spec`. No write permissions for code.
+- **CoderAgent (The Mutant Worker):** The **ONLY node** with Write and Execute permissions. Its mutation permissions change dynamically at runtime based on the Role injected by the Orchestrator (see `agents/roles.py`).
+- **AnalystAgent (The Ant):** Immutable operation (read-only). Mutates the UI conversational state, never source code. Uses ReadOnly tools crossing short-term memory (`AIlienantGraphState`), long-term memory (GraphRAG), and IDE dirty buffers.
 
-### 💾 3. Persistencia y Consolidación de Estado (AgentMemory)
- es el motor de infraestructura subyacente (Checkpointer).
+---
 
-* **Regla de Consolidación (Commit):** El estado temporal del grafo (`AIlienantGraphState`) no persiste automáticamente. Toda mutación de código confirmada y ejecutada por el `CoderAgent` debe pasar por la validación de hashing del motor de memoria.
-* **Sincronización:** Solo tras obtener un exit code exitoso (ej. del micro-enjambre de Testing) y pasar el hashing, el código se refleja permanentemente en la memoria a largo plazo (LanceDB / NetworkX), actualizando el contexto para futuras recuperaciones del `ResearcherAgent`.
+## 3. Persistence and State Consolidation
 
-### 🛡️ 4. Phase 2.26 — Contract Guard Fields (Additive Schema Growth)
+The LangGraph SQLite checkpointer is the underlying persistence engine.
 
-`AIlienantGraphState` gana dos campos opcionales. `ContextMeter` Pydantic permanece **inmutable**.
+- **Consolidation Rule (Commit):** The transient graph state (`AIlienantGraphState`) does not persist automatically. Every confirmed code mutation executed by the CoderAgent must pass the memory engine's hash validation.
+- **Synchronization:** Only after a successful exit code (from the testing micro-swarm) and after passing hash validation does code permanently reflect in long-term memory (LanceDB / NetworkX), updating the context for future ResearcherAgent retrievals.
 
-| Campo | Tipo | Owner (mutación) | Semántica |
+---
+
+## 4. ContractGuard Fields (Additive Schema Growth)
+
+`AIlienantGraphState` gains two optional fields. `ContextMeter` Pydantic model remains **immutable**.
+
+| Field | Type | Owner (mutation) | Semantics |
 |---|---|---|---|
-| `ui_payload` | `Optional[Dict[str, object]]` | `ContractGuardNode` | Señal de render para la extensión VS Code. Cuando llega no-None con `action="RENDER_PERSISTENT_CONTRACT"`, el frontend dibuja el banner persistente y luego lo *ack* (vuelve a `None`). |
-| `contract_anchor` | `Optional[Dict[str, object]]` | `ContractGuardNode` (sólo) | Snapshot de `{tci, target_role, turn}` en la última emisión. Read-only para el resto del grafo. `None` hasta la primera emisión. |
+| `ui_payload` | `Optional[Dict[str, object]]` | `ContractGuardNode` | Render signal for the VS Code extension. When non-None with `action="RENDER_PERSISTENT_CONTRACT"`, the frontend draws the persistent banner then acks it (sets back to `None`). |
+| `contract_anchor` | `Optional[Dict[str, object]]` | `ContractGuardNode` (only) | Snapshot of `{tci, target_role, turn}` at the last emission. Read-only for the rest of the graph. `None` until first emission. |
 
-Ambos campos son *scalar overwrite* (sin reducer) — no se aplican en fan-out paralelo porque `ContractGuardNode` corre en serie tras `coder_agent`.
+Both are scalar overwrite (no reducer) — not applied in parallel fan-out because `ContractGuardNode` runs serially after `coder_agent`.
 
-**Invariantes deterministas (O(1)):**
+**Deterministic invariants (O(1)):**
 
-* **TCI Delta:** `abs(state["tci"] - anchor["tci"]) > 15.0` (puntos absolutos sobre 0–100). Requiere anchor previo.
-* **CSS at Token Capacity:** `state["css"] < 40.0` **AND** `(token_usage.local + token_usage.cloud) / active_llm_profile.context_window >= 0.80`. Es la única regla que puede disparar en el primer turno (sin anchor).
-* **Subgraph/Domain Shift:** `state["target_role"] != anchor["target_role"]` (y `target_role is not None`). Requiere anchor previo.
+- **TCI Delta:** `abs(state["tci"] - anchor["tci"]) > 15.0` (absolute points on 0–100). Requires a prior anchor.
+- **CSS at Token Capacity:** `state["css"] < 40.0` AND `(token_usage.local + token_usage.cloud) / active_llm_profile.context_window >= 0.80`. The only rule that can fire on the first turn (no anchor needed).
+- **Subgraph/Domain Shift:** `state["target_role"] != anchor["target_role"]` (and `target_role is not None`). Requires a prior anchor.
 
-**Contrato del payload:**
+**Payload contract:**
 
 ```jsonc
 {
@@ -159,28 +158,30 @@ Ambos campos son *scalar overwrite* (sin reducer) — no se aplican en fan-out p
 }
 ```
 
-`SessionContract` (Pydantic) es el contrato vinculante para el LLM y la extensión. Cualquier fallo de red, parse o validación del LLM cae a un esqueleto determinista construido desde `mission_spec.outcome / .scope / .constraints` — el banner siempre se renderiza si el trigger se activó.
+`SessionContract` (Pydantic) is the binding contract for the LLM and the extension. Any network, parse, or LLM validation failure falls back to a deterministic skeleton built from `mission_spec.outcome / .scope / .constraints` — the banner always renders if the trigger fired.
 
-### 🚦 5. Phase 2.27 — Resource Broker Fields (Additive Schema Growth)
+---
 
-Tres campos opcionales nuevos en `AIlienantGraphState`. `ContextMeter` Pydantic permanece **inmutable**.
+## 5. Resource Broker Fields (Additive Schema Growth)
 
-| Campo | Tipo | Owner (mutación) | Semántica |
+Three new optional fields in `AIlienantGraphState`. `ContextMeter` Pydantic model remains **immutable**.
+
+| Field | Type | Owner (mutation) | Semantics |
 |---|---|---|---|
-| `ui_interrupt` | `Optional[Dict[str, object]]` | `ResourceBroker` | Señal de modal bloqueante. **Distinto** de `ui_payload` (banner persistente). Cleared por la extensión al elegir resolución. |
-| `contention_status` | `Optional[Dict[str, object]]` | `ResourceBroker` (sólo) | Telemetría del momento de contención: `requested_model`, `holder_session`, `queue_len`, `recommendation`. |
-| `user_resource_resolution` | `Optional[Literal["WAIT","SWITCH_TO_CLOUD","CANCEL"]]` | `ResourceBroker` (lee del HitL reply) | Respuesta del usuario consumida dentro del mismo nodo. |
+| `ui_interrupt` | `Optional[Dict[str, object]]` | `ResourceBroker` | Blocking modal signal. **Distinct** from `ui_payload` (persistent banner). Cleared by the extension when the user selects a resolution. |
+| `contention_status` | `Optional[Dict[str, object]]` | `ResourceBroker` (only) | Telemetry at contention time: `requested_model`, `holder_session`, `queue_len`, `recommendation`. |
+| `user_resource_resolution` | `Optional[Literal["WAIT","SWITCH_TO_CLOUD","CANCEL"]]` | `ResourceBroker` (reads from HITL reply) | User response consumed inside the same node. |
 
-Los tres son *scalar overwrite* (sin reducer) — el broker corre serialmente desde los sitios de llamada protegidos.
+All three are scalar overwrite (no reducer) — the broker runs serially from its protected call sites.
 
-**Heurística de recomendación (`_compute_recommendation`):**
+**Recommendation heuristic (`_compute_recommendation`):**
 
-* `TCI > 75` → `SWITCH_TO_CLOUD` (tarea pesada, cloud es más rápido)
-* `TCI < 40` → `SWITCH_TO_CLOUD` (tarea ligera, no hacer esperar al usuario)
-* `40 ≤ TCI ≤ 75` + queue vacío → `WAIT`
-* `40 ≤ TCI ≤ 75` + queue ocupado → `SWITCH_TO_CLOUD`
+- `TCI > 75` → `SWITCH_TO_CLOUD` (heavy task, cloud is faster)
+- `TCI < 40` → `SWITCH_TO_CLOUD` (light task, no point waiting)
+- `40 ≤ TCI ≤ 75` + empty queue → `WAIT`
+- `40 ≤ TCI ≤ 75` + occupied queue → `SWITCH_TO_CLOUD`
 
-**Contrato `ui_interrupt`:**
+**`ui_interrupt` contract:**
 
 ```jsonc
 {
@@ -195,29 +196,28 @@ Los tres son *scalar overwrite* (sin reducer) — el broker corre serialmente de
 }
 ```
 
-**Transporte WebSocket (sin cambios en `ws_contracts.py`):**
+**WebSocket transport (no changes to `ws_contracts.py`):**
 
-El broker reutiliza `vfs_manager.request_human_approval(...)` (mismo patrón que `drift_monitor` y `finops_gate`). Distinción vía sentinel:
+The broker reuses `vfs_manager.request_human_approval(...)` (same pattern as `drift_monitor` and `finops_gate`). Distinguished via sentinel:
+- `action_description == "RESOURCE_CONTENTION"` → the extension deserializes `proposed_content` as JSON to obtain the rich payload.
+- User response in `client_hitl_response` with `comment ∈ {"WAIT","SWITCH_TO_CLOUD","CANCEL"}`. The `approved` field is ignored for this action.
 
-* `action_description == "RESOURCE_CONTENTION"` → la extensión deserializa `proposed_content` como JSON para obtener el payload rico.
-* Respuesta del usuario en `client_hitl_response` con `comment ∈ {"WAIT","SWITCH_TO_CLOUD","CANCEL"}`. El campo `approved` se ignora para esta acción.
+**Anti-deadlock discipline (CRITICAL):**
 
-**Disciplina anti-deadlock (CRÍTICO):**
-
-Cada sitio de llamada (planner, summarizer, mcts_coder) DEBE envolver toda la región lock-held — no sólo la llamada `LLMGateway.ainvoke`, sino también el parsing y la validación Pydantic — en `try/finally` que invoque `await ResourceBroker.release(session_id)` si `decision.holds_lock`. Un error de parsing JSON que escape sin liberar el lock dejaría bloqueadas todas las demás sesiones permanentemente. La regression está cubierta por `test_lock_released_when_post_llm_processing_raises`.
+Every call site (planner, summarizer, mcts_coder) MUST wrap the entire lock-held region — not just the `LLMGateway.ainvoke` call, but also post-LLM parsing and Pydantic validation — in a `try/finally` that invokes `await ResourceBroker.release(session_id)` if `decision.holds_lock`. A JSON parsing error that escapes without releasing the lock would permanently block all other sessions. Regression covered by `test_lock_released_when_post_llm_processing_raises`.
 
 ---
 
-## Phase 5.1 — Permission Engine + Cognitive Quarantine channels (2026-05-17)
+## 6. Permission Engine + Cognitive Quarantine Channels
 
 **Strictly additive. No removals, no renames, no Literal narrowing.** Existing checkpoints deserialize unchanged because every new field has a safe default at construction sites.
 
 **New enums in `core/permissions.py`:**
 
-* `SessionPermissionMode` — `{DEFAULT, PLAN, AUTO}` — per-mission HITL policy.
-* `ToolPrivilegeTier` — `{READ_ONLY, WRITE, EXECUTE, DANGEROUS}` — per-tool tier declared at registration.
-* `PermissionDecision` — `{ALLOW, HITL, DENY}` — outcome of the pure `evaluate_action()` matrix.
-* `PermissionDeniedError(Exception)` — raised by `rbwe_guard`, surfaced to agent scratchpad (not crash).
+- `SessionPermissionMode` — `{DEFAULT, PLAN, AUTO}` — per-mission HITL policy.
+- `ToolPrivilegeTier` — `{READ_ONLY, WRITE, EXECUTE, DANGEROUS}` — per-tool tier declared at registration.
+- `PermissionDecision` — `{ALLOW, HITL, DENY}` — outcome of the pure `evaluate_action()` matrix.
+- `PermissionDeniedError(Exception)` — raised by `rbwe_guard`, surfaced to agent scratchpad (not crash).
 
 **`AIlienantGraphState` extended (8 new channels, end of TypedDict body):**
 
@@ -236,237 +236,132 @@ Orthogonal to existing `shared/rbac.py::PermissionMode` (`{PLAN_ONLY, ROUTING_ON
 
 ---
 
-## Phase 5.2 — Tool RAG + MCP transport (2026-05-18)
+## 7. Tool RAG + MCP Transport
 
 **Strictly additive. No state-field renames or removals; no enum widening; no breaking change to `mcp_adapter` public API.**
 
 **New constants in `core/tool_rag.py`:**
 
-* `TOOL_RAG_TOP_K = 5` — hard cap on schemas returned per `select_tools()` call.
-* `TOOL_RAG_MIN_REDUCTION = 0.70` — mean prompt-size reduction target (asserted by Phase 5.7 gate).
-* `MCP_HANDSHAKE_TIMEOUT_SEC = 5.0` — `asyncio.wait_for` deadline for `bootstrap_mcp_session()`.
+- `TOOL_RAG_TOP_K = 5` — hard cap on schemas returned per `select_tools()` call.
+- `TOOL_RAG_MIN_REDUCTION = 0.70` — mean prompt-size reduction target (asserted by Phase 5.7 gate).
+- `MCP_HANDSHAKE_TIMEOUT_SEC = 5.0` — `asyncio.wait_for` deadline for `bootstrap_mcp_session()`.
 
 **New classes/functions:**
 
-* `ToolSchema` (frozen dataclass) — in-memory representation `{name, description, json_schema, privilege_tier, allowed_roles (frozenset[str]), embedding (List[float] | None)}`. On disk in LanceDB, `allowed_roles` is persisted as a comma-flanked string for future `.where()` filtering.
-* `ToolRAGStore` — RAM-resident (tempfile-backed) LanceDB store, schemas-only. Methods: `register_schema()`, `select_tools()`, `all_schemas()`, `clear()`, `prompt_size_metrics()`.
-* `core/tool_rag.tool_rag_store` — module-level singleton.
-* `tools/mcp_adapter.bootstrap_mcp_session(uri, state, *, timeout_sec)` — opens stdio MCP session, harvests `session.list_tools()`, populates Tool RAG store + `core.db.tool_registry` SQLite table. Returns `bool`; never raises.
-* `brain/swarms.tool_rag_select_node(state)` — graph node spliced before `coder_agent` in MICRO_SWARM (also covers FULL_SWARM via embedded sub-graph).
+- `ToolSchema` (frozen dataclass) — in-memory representation `{name, description, json_schema, privilege_tier, allowed_roles (frozenset[str]), embedding (List[float] | None)}`. On disk in LanceDB, `allowed_roles` is persisted as a comma-flanked string for future `.where()` filtering.
+- `ToolRAGStore` — RAM-resident (tempfile-backed) LanceDB store, schemas only. Methods: `register_schema()`, `select_tools()`, `all_schemas()`, `clear()`, `prompt_size_metrics()`.
+- `core/tool_rag.tool_rag_store` — module-level singleton.
+- `tools/mcp_adapter.bootstrap_mcp_session(uri, state, *, timeout_sec)` — opens stdio MCP session, harvests `session.list_tools()`, populates Tool RAG store + `core.db.tool_registry` SQLite table. Returns `bool`; never raises.
+- `brain/swarms.tool_rag_select_node(state)` — graph node spliced before `coder_agent` in MICRO_SWARM (also covers FULL_SWARM via embedded sub-graph).
 
 **New env var:**
 
-* `AILIENANT_MCP_SERVER_URI` — default `None` ⇒ local-only fallback. Format: `stdio:///absolute/path/to/server[?arg=val]`.
+- `AILIENANT_MCP_SERVER_URI` — default `None` → local-only fallback. Format: `stdio:///absolute/path/to/server[?arg=val]`.
 
 **`AIlienantGraphState` channels (NO new fields, only consumption changes):**
 
-* `tool_registry_active` — now written by `tool_rag_select_node` per turn.
-* `mcp_server_endpoint` — written by `bootstrap_mcp_session` at app start.
-* `permission_audit_log` — appended by both above with `event="tool_rag_select"` / `"tool_rag_fallback"` / `"mcp_bootstrap_success"`.
+- `tool_registry_active` — now written by `tool_rag_select_node` per turn.
+- `mcp_server_endpoint` — written by `bootstrap_mcp_session` at app start.
+- `permission_audit_log` — appended by both above.
 
-Existing checkpoints deserialize unchanged. `mcp_adapter._call_mcp_tool` no longer raises `NotImplementedError`; it now raises `RuntimeError` if called before `bootstrap_mcp_session()` — semantic change is opt-in (callers that never bootstrap also never invoke the adapter).
-
-**Known tech debt:** the two `operator.add` channels (`permission_audit_log`, `rbwe_violations`) grow O(N) over long missions; deferred reducer swap to truncating `(old + new)[-cap:]` in Phase 5.6/5.7. Field names/types remain stable; callers will not see the change.
+Existing checkpoints deserialize unchanged.
 
 ---
 
-## Phase 5.3 — Perception tools bundle (2026-05-18)
+## 8. Perception/Mutation/Execution/Control Tools + Adversarial Gate
 
-**Strictly additive. No state-field renames or removals; no `AIlienantGraphState` channel additions; no enum widening.** Five ReadOnly tools registered in `tool_rag_store` with `privilege_tier=ToolPrivilegeTier.READ_ONLY`.
+**Strictly additive at the schema level.** No new `AIlienantGraphState` channels. No `core/permissions.py` edits. No new dependencies beyond `pypdf==5.4.0` and `markdownify==1.1.0`.
 
-**New helpers:**
+**Registered tool schemas (14 total):**
+- Perception (5): `document_parser`, `inspect_ast_node`, `get_symbol_references`, `trace_data_flow`, `web_fetch`
+- Mutation (3): `atomic_code_patch`, `batch_semantic_edit`, `file_write`
+- Execution (4): `sandbox_bash`, `task_create`, `task_get`, `check_type_integrity`
+- Control (2): `ask_user_question`, `toggle_plan_mode`
 
-* `core/db.py::get_dependents(target, project_id="")` — async, returns `List[str]` of files importing the target (1-hop backward edge from `dependency_graph`).
-* `core/memory/graphrag_extractor.py::GraphRAGDynamicExtractor.bfs_k_hop_forward(seed, k)` — public alias of the existing `_bfs_k_hop` walker.
-* `core/memory/graphrag_extractor.py::GraphRAGDynamicExtractor.bfs_k_hop_backward(seed, k)` — symmetric BFS using reversed edges (`target_dependency` IN frontier → `source_file`).
-* `tools/agent_tools.py::make_read_file_tool(vfs_read, *, vfs_stat=None, record_read=None)` — adds `offset` / `limit` pagination + a `record_read(path, VFSFile)` audit hook. The graph-node wiring (orchestrator-side recorder writing to `state["read_files_state"]`) is a Phase 5.4 deliverable.
-* `tools/perception_tools.register_perception_tools(store)` — async, registers 5 schemas (`document_parser`, `inspect_ast_node`, `get_symbol_references`, `trace_data_flow`, `web_fetch`).
+`TOOL_RAG_MIN_REDUCTION = 0.70` empirically validated: eager 6054 bytes, selected 1810 bytes → ratio 0.7010.
 
-**New dependencies:**
-
-* `pypdf==5.4.0` — pure-Python PDF parser, lazy-imported by `DocumentParserTool._parse_pdf`.
-* `markdownify==1.1.0` — pure-Python HTML→Markdown, lazy-imported by `WebFetchTool._fetch`. Pulls in `beautifulsoup4==4.14.3` + `soupsieve==2.8.3` (pure Python).
-
-No semantic change to `mcp_adapter._call_mcp_tool` or Phase 5.2 contracts. Existing checkpoints deserialize unchanged.
+Known tech debt: `permission_audit_log` and `rbwe_violations` (`operator.add`) grow O(N) over long missions; reducer swap to truncating `(old + new)[-cap:]` deferred.
 
 ---
 
-## Phase 5.4 — Surgical Mutation Tools (WRITE bundle) — 2026-05-18
-
-**Strictly additive. No state-field renames or removals. `core/permissions.py` byte-identical — only its `ToolPrivilegeTier.WRITE` enum value is imported as a schema-tier marker.** Three WRITE-tier tools registered in `tool_rag_store`.
-
-**New tools (LangChain BaseTool subclasses in `tools/mutation_tools.py`):**
-
-* `AtomicCodePatchTool` — wraps `tools.patch_tool.apply_patch_to_vfs` (fuzzy match + Python AST + OCC).
-* `BatchSemanticEditTool` — multi-file ACID transaction via the Unit-of-Work / Write-Buffer pattern. Three phases (Phase 1 pre-validate OCC, Phase 2 apply against in-memory `Dict[str, str]` buffer, Phase 3 commit). Any failure in Phase 1 or 2 discards the buffer — the real `vfs_write` is invoked only after every item passes.
-* `FileWriteTool` — full-file create/overwrite. Optional OCC via `expected_hash`. Python files are AST-validated before commit. RBWE is enforced **upstream** by `core/permissions.rbwe_guard` (Phase 5.1) — this tool's body is not state-aware.
-
-**New helper:**
-
-* `tools/agent_tools.py::make_state_aware_read_file_tool(state, vfs_read, *, vfs_stat=None)` — the integration seam that completes Phase 5.3's `record_read` hook. Builds a state-mutating callback that writes the `VFSFile` audit record into `state["read_files_state"]`. Agent-layer callers swap this in for `make_read_file_tool` to satisfy `rbwe_guard`.
-
-**Role whitelist** (`_ALLOWED_MUTATION_ROLES`): `frozenset({"core_dev", "architect_refactor", "secops", "data_ml_engineer", "devops_infra"})`. Matches Phase 4 §3.2 RBAC matrix. Excludes `doc_manager` (scope-limited refinement deferred), `qa_tester` (EXECUTE tier domain), `vcs_manager` (git-only).
-
-**No new state channels. No `core/permissions.py` edits. No new dependencies.** Existing checkpoints deserialize unchanged.
-
----
-
-## Phase 5.5 / 5.6 — Async Execution + Cognitive Control bundles — 2026-05-18
-
-**Strictly additive. No state-field renames or removals. `core/permissions.py` byte-identical — only its `ToolPrivilegeTier.{READ_ONLY, EXECUTE}` enum values are imported as schema-tier markers.** Six new schemas registered in `tool_rag_store` (4 execution + 2 control).
-
-**New tools — `tools/execution_tools.py` (Phase 5.5, EXECUTE bundle):**
-
-* `SandboxBashTool` — `ToolPrivilegeTier.EXECUTE`. Short-lived shell command via `asyncio.create_subprocess_shell` + `asyncio.wait_for` (30 s default timeout, kill-on-overrun). Output capped at `TASK_OUTPUT_TRUNC = 2000` chars with middle truncation. **HITL Interceptor**: every invocation pre-checks against `DANGEROUS_COMMANDS_REGEX` (imported from `tools.control_tools`); any match blocks the spawn and returns a sentinel string redirecting the agent to `ask_user_question`.
-* `TaskCreateTool` — `ToolPrivilegeTier.EXECUTE`. Spawns a long-running asyncio subprocess; returns a UUID-hex `task_id`. State mutation happens inside the injected `BackgroundTaskManager` (registry is a reference to `state["background_tasks"]`).
-* `TaskGetTool` — `ToolPrivilegeTier.READ_ONLY` (per blueprint §4 line 272 — the tool only reads the in-memory registry, no subprocess spawn; marking it EXECUTE would block status polling from PLAN mode).
-* `CheckTypeIntegrityTool` — `ToolPrivilegeTier.EXECUTE`. `mypy --strict <dir>` or `npx --no-install tsc --noEmit -p <dir>` via `create_subprocess_exec`. Same truncation rules.
-* `BackgroundTaskManager` (non-BaseTool helper class) — owns the lifecycle of long-running `asyncio.subprocess.Process` handles. Strong-ref `Set[asyncio.Task]` mirrors `agents/coder.py:101` precedent. Mutates the supplied registry dict directly.
-
-**New tools — `tools/control_tools.py` (Phase 5.6, CONTROL classification):**
-
-* `AskUserQuestionTool` — registered as `ToolPrivilegeTier.READ_ONLY` so the session-mode filter admits it in every mode (READ_ONLY is universally permitted, behaviourally satisfying the blueprint §4 line 277 "policy-neutral across the matrix" requirement without extending the enum). Mutates `state["pending_hitl_request"] = {request_id, kind, question, context, suggested_options, requested_at}` and returns sentinel string `[ask_user_question] HITL_PENDING:{request_id}`. Orchestrator graph node detects the populated channel and suspends the turn.
-* `TogglePlanModeTool` — `ToolPrivilegeTier.READ_ONLY`. Mutates `state["session_permission_mode"]` with `Literal["DEFAULT", "PLAN", "AUTO"]` per blueprint §4 line 275. (The system prompt's `execution_mode` / topology-swap interpretation was rejected — that's an orthogonal Phase 4.3 concern.)
-
-**New module-level export — `tools/control_tools.DANGEROUS_COMMANDS_REGEX`:** `List[re.Pattern[str]]` containing 10 patterns covering `rm -rf`, `sudo`, `drop table`, `dd if=…of=/dev/`, fork-bomb, `mkfs`, `chmod -R 777`, `> /dev/sd?`, pipe-to-shell, `git push --force`. Imported by `SandboxBashTool` for HITL interception. Will eventually drive the Frontend friction modal (Phase 5.7).
-
-**New factories — `tools/agent_tools.py`:**
-
-* `make_task_create_tool(state)` — captures `state.setdefault("background_tasks", {})` by reference, constructs a `BackgroundTaskManager`, returns a `TaskCreateTool` bound to it.
-* `make_task_get_tool(state)` — symmetric to the above. Independent manager instance, same backing dict (factories are pair-friendly: a TaskGetTool can read entries written by a separate TaskCreateTool because both share the registry through `state`).
-* `make_ask_user_question_tool(state)` — passes the state mapping to `AskUserQuestionTool(state=state)`.
-* `make_toggle_plan_mode_tool(state)` — passes the state mapping to `TogglePlanModeTool(state=state)`.
-
-**Role whitelists:**
-
-* `tools/execution_tools._EXECUTE_ROLES`: `frozenset({"core_dev", "devops_infra", "secops", "qa_tester", "data_ml_engineer"})` — 5 hands-on roles. `architect_refactor` excluded (planning role); `doc_manager` and `vcs_manager` excluded by scope.
-* `tools/control_tools._CONTROL_ROLES`: all 8 canonical roles — any agent may request HITL or self-mode its session.
-
-**Constants:**
-
-* `tools/execution_tools.TASK_OUTPUT_TRUNC = 2000` — blueprint §5.1 line 293 truncation cap. Re-used by all 3 truncating tools and the BackgroundTaskManager watcher.
-
-**No new state channels. No `core/permissions.py` edits. No new dependencies.** Existing checkpoints deserialize unchanged. `permissions.ToolPrivilegeTier` enum is intentionally NOT extended with a "CONTROL" value — that design intent is honoured behaviourally via READ_ONLY tier (D1 in the approved plan).
-
----
-
-## Phase 5.7 — Checkpoint Gate Fase 5 (Adversarial E2E Audit) — 2026-05-18
-
-**Strictly additive at the schema level. No state-field renames, removals, or new channels. `core/permissions.py` byte-identical. `brain/state.py` byte-identical.**
-
-Phase 5.7 is the milestone gate that proves the cumulative Phase 5.1–5.6 contract holds under attack. It lands as **one new test file** plus **honest description compression** in 5 Pydantic input models (user-locked D5 remedy, see DEV_JOURNAL.md for the full rationale). No tool semantics or runtime behaviour change.
-
-**New test artefact — `tests/test_phase5_7_checkpoint_gate.py`:** 7 mocked-boundary integration tests:
-
-* **RBWE Zero-Trust** (A1/A2) — `AtomicCodePatchTool` / `FileWriteTool` against an unread path → `rbwe_guard` raises `PermissionDeniedError`, `vfs_write` mock registers 0 calls. The guard call is simulated at the **Node** (orchestrator) boundary rather than the Tool boundary, matching the production reality that LangGraph dispatches `rbwe_guard` upstream of `_arun` (the graph-level integration test that proves the orchestrator wires the guard is deferred to Phase 6 hardening).
-* **Tool RAG financial audit** (B1) — load all 14 Phase-5 schemas (5 perception + 3 mutation + 4 execution + 2 control), call `store.select_tools(intent="Run the test suite and check linting", k=TOOL_RAG_TOP_K=5, active_role="core_dev", session_mode=DEFAULT)`, assert `ToolRAGStore.prompt_size_metrics(eager, selected)["reduction_ratio"] >= 0.70`. With the post-compression schemas the empirical ratio is **0.7010** (eager 6054 bytes, selected 1810 bytes).
-* **AST malicious-patch containment** (C1/C2) — `replace_block` / `content` that produces unparseable Python → `_validate_python_syntax` raises `PatchError` → tool returns `[atomic_code_patch] ERROR: …` or `[file_write] ERROR: …` → `vfs_write` mock 0 calls.
-* **Asymmetric Friction containment** (D1/D2) — `rm -rf node_modules` → `DANGEROUS_COMMANDS_REGEX` blocks before `asyncio.create_subprocess_shell` (subprocess spawn mock raises `AssertionError` if ever called; `spawn_calls == []`); subsequent `AskUserQuestionTool` call populates `state["pending_hitl_request"]` with a 32-char uuid4 hex `request_id`. Sentinel string from the bash interceptor advises the agent to call `ask_user_question`; D2 verifies that escalation does in fact populate the suspension channel.
-
-**Modified — `mypy.ini`:** added `[mypy-tools.patch_tool]` `follow_imports = silent` stanza. Phase 5.7's test file is the first one to transitively pull `tools.patch_tool` into a `mypy --strict` invocation; the pre-existing `unused-ignore` at `patch_tool.py:219` (LangChain `@tool` decorator stub mismatch) surfaced. Same pattern already documented for `agents.planner` and `core.compute_pool` — out-of-scope strict violations get a follow_imports=silent gate so the in-scope file can land clean.
-
-**Modified — Pydantic Field descriptions ONLY (D5 user-locked remedy)** in `tools/mutation_tools.py::AtomicCodePatchInput`, `tools/execution_tools.py::{SandboxBashInput, CheckTypeIntegrityInput}`, `tools/control_tools.py::TogglePlanModeInput`, `tools/perception_tools.py::TraceDataFlowInput`. The first run of B1 reported `reduction_ratio = 0.636`; the locked remedy was to compress verbose descriptions (NOT lower the threshold nor shrink `TOOL_RAG_TOP_K`). Field/class names and `Literal` / `Optional` typing remain unchanged — the operational verbosity ("Phase 1 of the batch rejects…", "Subject to DANGEROUS_COMMANDS_REGEX pre-check", multi-sentence enum explainers) was removed; that detail lives more naturally in the `BaseTool` docstrings (which do NOT enter the measured `json_schema`) or in code comments. No tool semantics changed.
-
-**No new state channels. No new dependencies. No `core/permissions.py` edits. No `brain/state.py` edits.** Phase 5 LOCK-IN (CLAUDE.md §1) auto-expires with the 5.7 `[x]` mark.
----
-
-## Phase 6.3 — OOM Cascade: 6 Operational-Safety state channels — 2026-05-19
+## 9. OOM Cascade, DLQ, FinOps Supervisor, HITL Audit Ledger
 
 **Additive only. No renames, no removals, no Literal narrowing. Phase 5.7 checkpoints deserialize unchanged.**
 
-`brain/state.py::AIlienantGraphState` gains the **6 Phase-6 channels** mandated by `PHASE_6_BLUEPRINT.md` §1 — all scalar overwrite (no reducer), safe defaults. Landed in one shot during Phase 6.3 (the OOM Cascade needs `oom_fallback_active`; the other 5 front-load the 6.4 DLQ / 6.5 Supervisor work and avoid a second `state.py` churn):
+### 9.1 - 6 Operational-Safety State Channels
 
-* `accumulated_session_cost: float` — USD cost across the WHOLE WebSocket session (many tasks). Owner: `core/supervisor.py` (Phase 6.5).
-* `session_max_budget_usd: float` — hard session ceiling injected at graph construction from `AILIENANT_MAX_SESSION_BUDGET_USD`. Owner: task_service (Phase 6.5).
-* `oom_fallback_active: bool` — set True by `tools/llm_gateway.py::ainvoke` when it traps an OOM-class exception; read by `brain/nodes/circuit_breaker.py` to bypass the `error_streak` evaluation; reset to False once the fallback turn is acknowledged. **This is the only channel functionally wired in 6.3.**
-* `sandbox_tier_active: Literal["DOCKER","WASM","NATIVE_HITL"]` — mirror of `core.sandbox.ACTIVE_TIER` injected at graph start. Owner: graph factory (Phase 6.5).
-* `hitl_audit_chain_head: Optional[str]` — blake2b chain_hash of the last resolved `hitl_audit_log` row. Owner: `core/audit.py` (Phase 6.6).
-* `dead_letter_episode_id: Optional[str]` — episode_id of a resumed DLQ turn; None for fresh tasks. Owner: `main.py::resume_task` (Phase 6.4).
+`brain/state.py::AIlienantGraphState` gains 6 channels — all scalar overwrite, safe defaults:
 
-**No new dependencies. No `core/permissions.py` edits.** `LLMGateway.ainvoke` gains an optional `state: Optional[Dict[str, Any]] = None` parameter (backward compatible — no existing caller breaks; the channel mutation only happens when a caller threads `state`, deferred to a later phase).
+| Field | Type | Owner |
+|---|---|---|
+| `accumulated_session_cost` | `float` | `core/supervisor.py` |
+| `session_max_budget_usd` | `float` | task_service (injected at graph construction) |
+| `oom_fallback_active` | `bool` | `tools/llm_gateway.py` on OOM trap |
+| `sandbox_tier_active` | `Literal["DOCKER","WASM","NATIVE_HITL"]` | graph factory |
+| `hitl_audit_chain_head` | `Optional[str]` | `core/audit.py` |
+| `dead_letter_episode_id` | `Optional[str]` | `main.py::resume_task` |
 
----
+### 9.2 — `dead_letter_tasks` Table
 
-## Phase 6.4 — DLQ table `dead_letter_tasks` — 2026-05-19
-
-**Additive only. New SQLite table in the catalog DB (`DB_CATALOG_PATH`); no state-channel changes, no renames.** The Phase 6 state channel `dead_letter_episode_id` was already added in Phase 6.3 (Blueprint §1 block) — 6.4 only writes to it via the Resume API.
-
-**New table — `dead_letter_tasks`** (created idempotently by `core/dead_letter.py::init_dlq_table()`, invoked from the FastAPI lifespan after `catalog_db.init_db()`):
+New SQLite table in the catalog DB (`DB_CATALOG_PATH`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS dead_letter_tasks (
     episode_id               TEXT    PRIMARY KEY,   -- uuid4 hex
     task_id                  TEXT    NOT NULL,
-    thread_id                TEXT    NOT NULL,      -- == task_id in this codebase
+    thread_id                TEXT    NOT NULL,
     failed_node              TEXT    NOT NULL,
     exception_class          TEXT    NOT NULL,
     exception_message        TEXT    NOT NULL,      -- truncated to 2000 chars
-    state_snapshot_blob_hash TEXT    NOT NULL,      -- blake2b CAS ref (RAM-backed; integrity marker only)
+    state_snapshot_blob_hash TEXT    NOT NULL,      -- blake2b CAS ref
     created_at               INTEGER NOT NULL,
-    resolved_at              INTEGER                -- NULL until a successful resume stamps it
+    resolved_at              INTEGER                -- NULL until successful resume
 );
 CREATE INDEX IF NOT EXISTS idx_dlq_task_id ON dead_letter_tasks(task_id, created_at);
 ```
 
-**`resolved_at` is a deliberate non-ADR addition** to the Blueprint §5.1 DDL: the blueprint's resume idempotency ("task already COMPLETED") is not implementable without it (no task-status table exists). Idempotency is realized as "is there a row with `resolved_at IS NULL` for this `task_id`?" — a successful resume stamps `resolved_at`, so a repeated `POST /api/v1/task/resume/{task_id}` is a deterministic no-op.
+`resolved_at` enables idempotent resume: a repeated `POST /api/v1/task/resume/{task_id}` is a no-op once stamped.
 
-**New module-level API — `core/dead_letter.py`:** `DeadLetterRecord` (Pydantic), `init_dlq_table()`, `save_dead_letter(...)`, `get_pending_dlqs(task_id=None)`, `mark_dlq_resolved(episode_id)`, `dead_letter_decorator(node_name)`. **No new dependencies, no `core/db.py` edits, no `ws_contracts.py` edits.** Existing checkpoints deserialize unchanged.
+### 9.3 — FinOps Supervisor
 
-## Phase 6.5 — FinOps Supervisor: no schema change — 2026-05-19
+No new state channels, no new tables. `core/supervisor.py` consumes channels. `SESSION_BUDGET_HARD_KILL` is appended to the existing `security_flags` channel.
 
-**No new state channels, no new SQLite tables, no renames.** The Phase 6.5 Supervisor (`core/supervisor.py`) is purely additive at the *graph-topology* level and consumes channels that already exist:
+### 9.4 — `hitl_audit_log` Table
 
-* It **reads** `task_id`, `hitl_audit_chain_head`, `session_max_budget_usd`, `security_flags` and **writes** `accumulated_session_cost`, `session_max_budget_usd`, `security_flags` — every one of these was already added in the Phase 6.3 Blueprint §1 block above. The Supervisor is simply the declared owner of `accumulated_session_cost` finally coming online.
-* `SESSION_BUDGET_HARD_KILL` is an additive **value** appended to the existing `security_flags` channel (`Annotated[List[str], operator.add]`) — not a new channel.
-* `core/audit.py` is created as a **minimal seam** (`AuditChainBrokenError`, `get_chain_head` stub) — no table yet. The `hitl_audit_log` table lands in Phase 6.6.
-
-Existing checkpoints deserialize unchanged.
-
-## Phase 6.6 — HITL audit ledger table `hitl_audit_log` — 2026-05-19
-
-**Additive only. New SQLite table in the catalog DB (`DB_CATALOG_PATH`); no state-channel changes, no renames.** The Phase 6 state channel `hitl_audit_chain_head` was already added in Phase 6.3 (Blueprint §1 block) — 6.6 only populates the ledger that channel will eventually mirror.
-
-**New table — `hitl_audit_log`** (created idempotently by `core/audit.py::init_audit_table()`, invoked from the FastAPI lifespan after `init_dlq_table()`):
+New SQLite table in the catalog DB:
 
 ```sql
 CREATE TABLE IF NOT EXISTS hitl_audit_log (
     audit_id                  TEXT    PRIMARY KEY,   -- uuid4 (== approval_id)
     session_id                TEXT    NOT NULL,
-    request_kind              TEXT    NOT NULL,      -- classified sentinel
+    request_kind              TEXT    NOT NULL,
     action_description        TEXT    NOT NULL,
-    proposed_content_scrubbed TEXT,                  -- secrets-redacted cleartext
+    proposed_content_scrubbed TEXT,                  -- secrets-redacted
     proposed_content_hash     TEXT    NOT NULL,      -- blake2b(scrubbed)
     resolution                TEXT    NOT NULL,      -- approved | rejected | timeout
     resolution_comment        TEXT,
-    operator_user_email       TEXT,                  -- best-effort, env
-    prev_chain_hash           TEXT,                  -- NULL for the session genesis row
+    operator_user_email       TEXT,
+    prev_chain_hash           TEXT,                  -- NULL for session genesis row
     chain_hash                TEXT    NOT NULL,
     resolved_at               INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_audit_session ON hitl_audit_log(session_id);
 ```
 
-**Chain formula:** `chain_hash = blake2b(prev_chain_hash ‖ audit_id ‖ session_id ‖ request_kind ‖ action_description ‖ proposed_content_hash ‖ resolution ‖ resolved_at).hexdigest()`. One immutable row per resolved HITL event (single-write model — user-confirmed); `verify_chain()` re-walks a session and raises `AuditChainBrokenError` on the first divergence.
+**Chain formula:** `chain_hash = blake2b(prev_chain_hash ‖ audit_id ‖ session_id ‖ request_kind ‖ action_description ‖ proposed_content_hash ‖ resolution ‖ resolved_at).hexdigest()`.
 
-**Schema reconciliation vs Blueprint §7.1** (non-ADR realization corrections, documented — no amendment): `state_snapshot_hash` is **dropped** — the canonical `request_human_approval` channel carries no graph state and ADR-003 forbids changing its signature, so a state snapshot is not computable at the audit site. `task_id` is dropped (`== session_id` everywhere). `requested_at` is dropped (single-write records only `resolved_at`). `proposed_content` is stored **scrubbed** (`proposed_content_scrubbed`), never raw — Blueprint §7.4/§12.
+### 9.5 — Secrets Scrubber + OOM Telemetry Table
 
-**New module-level API — `core/audit.py`:** `init_audit_table()`, `log_audit_event(...)`, `get_chain_head(session_id)` (promoted from the 6.5 stub), `verify_chain(session_id)`, plus `_scrub`/`_classify`/`_compute_chain_hash` helpers. **No new dependencies** (`hashlib.blake2b` is stdlib), **no `core/db.py` edits, no new state channels.** Existing checkpoints deserialize unchanged.
+`SecretsScrubberFilter` process-wide logging filter — no schema change.
 
-## Phase 6.7 — Secrets Scrubber: no schema change — 2026-05-19
-
-**No new state channels, no new SQLite tables, no renames.** Phase 6.7 centralises the secrets-redaction engine into `shared/logging_filters.py` (`SecretsScrubber` + `SecretsScrubberFilter`) and installs it as a process-wide `logging.Filter`. `core/audit.py` is refactored to consume `SecretsScrubber` instead of its Phase 6.6 local `_scrub`; the `hitl_audit_log` table and its `proposed_content_scrubbed` / `proposed_content_hash` columns are **unchanged**. The only observable change is the redaction marker format (`**REDACTED:<hash8>**` → `REDACTED:<hash8>`), which is cosmetic — each ledger row's `chain_hash` is computed independently, so the format change does not affect chain verification of rows written before or after it.
-
-## Phase 6.8 & 6.9 — OOM telemetry table; no graph-state change — 2026-05-19
-
-**No new `AIlienantGraphState` channels, no renames, no catalog-DB change.** Phase 6.8 adds one table to the **telemetry DB** (`data/telemetry.sqlite`, NOT the catalog DB):
+adds one table to the **telemetry DB** (`data/telemetry.sqlite`, NOT the catalog DB):
 
 ```sql
 CREATE TABLE IF NOT EXISTS oom_fallback_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp         DATETIME DEFAULT CURRENT_TIMESTAMP,
     session_id        TEXT,
-    event             TEXT NOT NULL,         -- constant "oom_fallback"
-    reason            TEXT NOT NULL,         -- context_overflow | cuda_oom | provider:*
+    event             TEXT NOT NULL,
+    reason            TEXT NOT NULL,
     original_model    TEXT NOT NULL,
     fallback_model    TEXT NOT NULL,
     tokens_at_failure INTEGER,
@@ -474,29 +369,292 @@ CREATE TABLE IF NOT EXISTS oom_fallback_events (
 );
 ```
 
-Idempotent `CREATE TABLE IF NOT EXISTS` appended to `core/telemetry.py::_DDL`; written by the new `log_oom_event(...)` from `tools/llm_gateway.py::_oom_cascade`. Phase 6.9 adds **no schema** — the `dead_letter_tasks` table (catalog DB) shipped in Phase 6.4 is unchanged; 6.9 only adds the read-only `GET /api/v1/dlq/pending` endpoint over `get_pending_dlqs`. The OOM (`oom_fallback_active`) and DLQ (`dead_letter_episode_id`) graph-state channels already existed (Phase 6 §1); Phase 6 checkpoints deserialise unchanged.
+no schema change — adds read-only `GET /api/v1/dlq/pending` endpoint.
 
 ---
 
-## Phase 9 (ADR-707) — Native Thinking: additive WS event + TaskPayload fields — 2026-05-29
+## 10. GraphRAG Enrichment: Additive Columns on `dependency_graph` + `ppr_scores`
 
-**Additive only. No `AIlienantGraphState` channel changes, no renames, no Literal narrowing. Pre-Phase-9 wire shapes validate unchanged.**
+**Additive only. Three nullable columns added to existing catalog-DB tables; no `AIlienantGraphState` channel changes.** Same idempotent `PRAGMA table_info`-guarded `ALTER TABLE ADD COLUMN` path.
 
-- **New WS event** `ServerThinkingChunkEvent` (`api/ws_contracts.py`), discriminator `event_type="server_thinking_chunk"`, payload `ThinkingChunkPayload{ session_id: str, delta: str, token_count: int = 0 }`. Registered in the `WebSocketMessage` union. Coexists with `server_token_chunk` (answer) and `server_pipeline_step` (narration) — does not modify either.
-- **`TaskPayload` growth** (`core/task_service.py`): `enable_native_thinking: bool = True`, `thinking_budget_tokens: int = 4096`. Optional/defaulted → an omitted field from a pre-Phase-9 client keeps prior behaviour for non-thinking models while enabling thinking for capable ones.
-- **No persisted/graph schema:** reasoning text is transport-only — it is NOT a graph-state channel, NOT written to the checkpointer, and is excluded from the frontend `PERSIST_TRANSCRIPT` whitelist. The gateway-internal `StreamDelta{kind,text}` (`tools/stream_delta.py`) is an in-process value, never serialised.
+- **`dependency_graph.confidence TEXT`** + **`dependency_graph.confidence_score REAL`** — per-edge confidence. Taxonomy: `EXTRACTED` (1.0) = edge target is an indexed source file; `AMBIGUOUS` (0.25) = module stem collides with ≥2 indexed files; `INFERRED` (0.5) = everything else.
+- **`ppr_scores.leiden_community_id INTEGER`** — node community id from networkx Louvain (deterministic `seed=42`). Named `leiden_*` for forward-compatibility; algorithm is Louvain. `NULL` until the analytics pass runs.
 
-## Phase 7.13.5 — GraphRAG enrichment: additive columns on `dependency_graph` + `ppr_scores` — 2026-05-31
+---
 
-**Additive only. Three nullable columns added to existing catalog-DB tables; no `AIlienantGraphState` channel changes, no renames, no table drops.** Pre-migration rows read back as `NULL`; legacy readers that ignore the columns are unaffected. The migration is idempotent (`PRAGMA table_info` guard + `ALTER TABLE ADD COLUMN`, since SQLite lacks `ADD COLUMN IF NOT EXISTS`) and runs in `core/db.py::init_db` → `_apply_column_migrations`.
+## 11. Reactive Indexing Idempotency: Additive `indexed_files.content_hash`
 
-- **`dependency_graph.confidence TEXT`** + **`dependency_graph.confidence_score REAL`** — per-edge resolution confidence. Populated by the debounced batch analytics pass (`brain/memory.py::calculate_graph_analytics_sync`), refined from whole-graph resolution; per-file `upsert_dependencies` inserts leave them `NULL` (eventual consistency — repopulated on the next batch). Inserts were converted to named-column form so the additive columns never shift positionally.
-  - **Confidence taxonomy:** `EXTRACTED` (score `1.0`) = the edge target is itself an indexed source file (a concrete internal dependency); `AMBIGUOUS` (`0.25`) = the target's module stem collides with ≥2 indexed files (cannot disambiguate); `INFERRED` (`0.5`) = everything else (an external/unindexed module the import implies). `NULL` confidence is rendered as a solid edge (safe default).
-- **`ppr_scores.leiden_community_id INTEGER`** — node community id from networkx Louvain community detection (deterministic `seed=42`), computed in the same worker graph build as the centrality score and persisted via `upsert_ppr_scores(..., communities=...)`. (Node scoring uses pure-Python `nx.degree_centrality` — scipy is intentionally excluded for lightweight bundling; the `ppr_score` column name is retained to avoid a cross-cutting rename.) `NULL` until the analytics pass runs; the dashboard then colors nodes by community (falling back to the PPR ramp when `NULL`). Field is named `leiden_*` for forward-compatibility; the algorithm is Louvain (same community semantics), avoiding the native `igraph`/`leidenalg` dependency.
-- **No new tables, no vector-store change.** "God Nodes" (top-3 by degree centrality) are computed at the API layer (`api/memory_dashboard.py::/graph`) from already-available in/out degree — not persisted.
+**Additive only. One nullable column on `indexed_files`; no channel changes.**
 
-## Phase 7.13.5 — Reactive indexing idempotency: additive `indexed_files.content_hash` — 2026-05-31
+- **`indexed_files.content_hash TEXT`** — `sha256` of the last reactively-indexed file revision. A byte-identical re-save costs nothing (content_hash match skips AST extraction and re-embedding). The bulk indexer inserts `NULL`; the first reactive save backfills.
 
-**Additive only. One nullable column on the existing `indexed_files` catalog-DB table; no channel changes, no renames, no table drops.** Same idempotent `PRAGMA table_info`-guarded `ALTER TABLE ADD COLUMN` path in `core/db.py::init_db` → `_apply_column_migrations`; pre-migration rows read back as `NULL` and legacy readers are unaffected.
+---
 
-- **`indexed_files.content_hash TEXT`** — `sha256` of the file revision last indexed reactively. The unified per-save entry (`core/indexer.py::ReactiveIndexer.index`) compares the freshest content's hash against this value via `get_indexed_hash`; a match skips both AST extraction and re-embedding, so a byte-identical re-save (e.g. the agent's applyEdit echoing back as a save event, or a no-op Ctrl+S) costs nothing. `upsert_indexed_file` was converted to a named-column insert so the additive column never shifts positionally; the bulk indexer keeps inserting `NULL` (the first reactive save then backfills the hash). The reactive path indexes under the session's **real** `project_id` (not the former `""` orphan) so AST edges and vectors land in the partition the RAG consumer reads. Delete/rename purges the graph (`purge_file_nodes`) **and** evicts the vector (`semantic_memory.semantic_delete`).
+## 12. Native Thinking: Additive WS Event + `TaskPayload` Fields
+
+**Additive only. No `AIlienantGraphState` channel changes.**
+
+- **New WS event** `ServerThinkingChunkEvent` (`api/ws_contracts.py`), discriminator `event_type="server_thinking_chunk"`, payload `ThinkingChunkPayload{ session_id: str, delta: str, token_count: int = 0 }`.
+- **`TaskPayload` growth** (`core/task_service.py`): `enable_native_thinking: bool = True`, `thinking_budget_tokens: int = 4096`. Omitted field from a client keeps prior behavior.
+- **No persisted/graph schema:** reasoning text is transport-only — not a graph-state channel, not written to the checkpointer, excluded from `PERSIST_TRANSCRIPT`.
+
+---
+
+## 13. State Expansion
+
+Approximately 40 channels were added incrementally. They are grouped below by functional cluster. All are scalar overwrite unless a reducer is noted.
+
+### 13.1 Workspace / Project Identity
+
+| Field | Type | Owner |
+|---|---|---|
+| `project_id` | `Optional[str]` | `client_workspace_init` payload |
+| `workspace_root` | `Optional[str]` | `client_workspace_init` payload |
+| `explicit_mentions` | `List[str]` | Payload parser (`@mention` extraction) |
+| `attachments` | `List[ManualAttachment]` | Payload parser (manual file attachments) |
+| `workspace_pid` | `Optional[int]` | `WorkspaceLifecycleManager` |
+| `workspace_active` | `bool` | `WorkspaceLifecycleManager` |
+| `venv_interpreter_path` | `Optional[str]` | Workspace discovery (venv probe) |
+
+### 13.2 Routing Refinements
+
+| Field | Type | Notes |
+|---|---|---|
+| `tci` | `float` | Scalar mirror of `ContextMeter.task_complexity_index` — avoids Pydantic deserialization in hot routing path |
+| `css` | `float` | Scalar mirror of `ContextMeter.css_total` |
+| `has_images` | `bool` | Vision bypass gate: skips text routing when True |
+| `routing_warning` | `Optional[str]` | Non-fatal advisory emitted by routing engine |
+| `hardware_profile` | `Optional[HardwareProfile]` | Hardware profiler snapshot |
+| `provider` | `str` | Active litellm provider key (e.g. `"anthropic"`, `"ollama"`) |
+| `execution_mode` | `Literal["SEQUENTIAL","MICRO_SWARM","FULL_SWARM"]` | Orchestrator-assigned LangGraph topology |
+| `active_role` | `Optional[Literal["core_dev","architect_refactor","devops_infra","secops","qa_tester","doc_manager","vcs_manager","data_ml_engineer"]]` | Orchestrator-assigned coder role |
+
+### 13.3 Planner UI + HITL Channels
+
+> Replaces the deprecated `planning_strategy` / `human_wbs_draft` / `wbs_approved` triad.
+
+| Field | Type | Notes |
+|---|---|---|
+| `planner_mode_active` | `bool` | Socratic planning session is active |
+| `hitl_pending` | `bool` | Turn suspended — awaiting user plan approval |
+| `hitl_response` | `Optional[str]` | User's review response text |
+| `shared_understanding_reached` | `bool` | Transition flag that closes the planner session |
+
+### 13.4 Coder Output Pipeline
+
+| Field | Type | Reducer |
+|---|---|---|
+| `generated_code` | `Dict[str, VFSFile]` | `_merge_generated_code` |
+| `pending_patches` | `Dict[str, str]` | `operator.or_` |
+| `pending_contents` | `Dict[str, str]` | `operator.or_` (filepath → full replacement content) |
+| `pending_base_hash` | `Dict[str, str]` | `operator.or_` (filepath → sha256 of pre-edit content, EOL-normalized) |
+| `researcher_skeleton` | `Optional[str]` | Researcher → Planner handoff channel |
+| `session_delta` | `str` | Token streaming accumulator for in-progress turns |
+
+### 13.5 Syntax / Style Validation Gate
+
+| Field | Type |
+|---|---|
+| `relaxed_typing_mode` | `bool` |
+| `style_bypass_active` | `bool` |
+| `consecutive_style_failures` | `int` |
+| `syntax_gate_status` | `Literal["pass","fail","pending"]` |
+| `code_under_validation` | `Optional[str]` |
+| `style_gate_status` | `Literal["pass","fail","pending"]` |
+| `is_indexing_complete` | `bool` |
+| `guardrail_failed` | `bool` |
+| `validation_feedback` | `Optional[str]` |
+
+### 13.6 Circuit Breaker / Retry
+
+| Field | Type | Notes |
+|---|---|---|
+| `error_streak` | `int` | Consecutive coder failures without recovery |
+| `circuit_breaker_tripped` | `bool` | Halts coder dispatch when True |
+| `cloud_surgeon_invocations` | `int` | `operator.add` — cloud escalation counter |
+| `planner_retry_count` | `int` | Planner planning-loop retries |
+
+### 13.7 Error Correction / Self-Healing
+
+| Field | Type |
+|---|---|
+| `healing_required` | `bool` |
+| `correction_attempts` | `int` |
+| `last_error_trace` | `Optional[str]` |
+| `failed_node` | `Optional[str]` |
+| `failure_signature` | `Optional[str]` |
+| `termination_reason` | `Optional[str]` — set to `"user_abort"` on `asyncio.CancelledError`; cold-serializable; UI renders "Stopped by user" on rehydrate |
+
+### 13.8 Agentic Cell
+
+| Field | Type | Reducer |
+|---|---|---|
+| `agentic_iteration` | `int` | (none) |
+| `agentic_trajectory` | `List[Dict[str, Any]]` | `operator.add` |
+
+### 13.9 Per-Task Budget (distinct from Phase 6.3 session-level fields)
+
+| Field | Type | Reducer | Notes |
+|---|---|---|---|
+| `current_cost_usd` | `float` | `operator.add` | Counts only the **current task turn** |
+| `max_budget_usd` | `float` | (none) | Per-task hard ceiling |
+
+> **Distinction:** `current_cost_usd` / `max_budget_usd` are per-task counters reset each task dispatch. `accumulated_session_cost` / `session_max_budget_usd` span the entire WebSocket session and are never reset mid-session.
+
+---
+
+## 14. Skills, MCP Config, Hooks, Agent Role Override Tables
+
+**No `AIlienantGraphState` channel changes.** Four new SQLite catalog tables:
+
+```sql
+CREATE TABLE IF NOT EXISTS skills (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    description  TEXT,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    scope        TEXT NOT NULL DEFAULT 'global',  -- 'global' | 'workspace'
+    workspace_root TEXT,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    transport  TEXT NOT NULL DEFAULT 'stdio',
+    uri        TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hooks (
+    id         TEXT PRIMARY KEY,
+    event      TEXT NOT NULL,
+    command    TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_role_overrides (
+    role          TEXT PRIMARY KEY,
+    system_prompt TEXT NOT NULL,
+    updated_at    REAL NOT NULL
+);
+```
+
+`mcp_server_endpoint` (Phase 5.1 channel) is now written by the MCP auto-connect bootstrap during the FastAPI lifespan rather than only by manual calls.
+
+**Curated MCP Registry (`core/mcp_registry.py`):**
+
+| Server | Privilege map |
+|---|---|
+| `github` | `create_pull_request` → WRITE · `merge_pull_request` → DANGEROUS |
+| `brave-search` | `search` → READ_ONLY |
+| `docker` | `run` → EXECUTE |
+| `postgres` | `query` → READ_ONLY · `execute` → EXECUTE |
+
+---
+
+## 15. External Gateway Catalog
+
+Public surface exposed via stdio MCP server (`gateway/catalog.py`). All input schemas use strict `type: "object"` with `"additionalProperties": false`.
+
+| Capability | Privilege tier | Mode | Notes |
+|---|---|---|---|
+| `run_task` | EXECUTE | async | Submits a coding task; returns `task_id`. Spawned task runs under `INTERNAL_TASK_MODE = DEFAULT` — never AUTO. |
+| `run_benchmark` | EXECUTE | async | Triggers benchmark harness; returns `task_id`. |
+| `check_task_status` | READ_ONLY | sync | Polls `task_id` status from in-memory + DLQ. |
+| `query_memory` | READ_ONLY | sync | GraphRAG semantic search. |
+| `get_dependents` | READ_ONLY | sync | 1-hop backward symbol lookup. |
+| `get_workspace_graph` | READ_ONLY | sync | Snapshot of the code-dependency graph. |
+| `get_report` | READ_ONLY | sync | Reads a completed benchmark artifact. |
+
+**Governance constants (`gateway/governance.py`):**
+
+- `_INVOCATION_GATE_MODE = SessionPermissionMode.AUTO` — pre-authorizes READ_ONLY/EXECUTE verbs; routes DANGEROUS to HITL.
+- `INTERNAL_TASK_MODE = SessionPermissionMode.DEFAULT` — conservative; a spawned task cannot self-escalate its permissions.
+- `_ESCALATION_KEYS = ("mode", "execution_mode", "session_permission_mode", "permission_mode")` — any caller-supplied key in this list is stripped from the payload (caller cannot escalate privileges via injection).
+
+---
+
+## 16. Analyst Tri-Brain Context Protocol
+
+`ContextChunk` dataclass and `ContextBudgetManager.pack()` contracts (`agents/analyst_context.py`):
+
+**`ContextChunk` fields:**
+- `body: str` — content text
+- `brain: str` — source identifier: `"codex"` | `"file"` | `"graphrag"` | `"docs"` | `"readme"`
+- `label: str` — human-readable label for drop reporting
+- `tokens: int` — measured by `PrecisionTokenCounter`
+
+**Budget tiers (Dict[str, int]):**
+
+| Tier | Tokens |
+|---|---|
+| `"small"` | 1500 |
+| `"medium"` | 3000 |
+| `"big"` | 6000 |
+| `"cloud"` | 8000 |
+
+**Retention ladder (lower priority number = kept first under budget pressure):**
+
+| Brain source | Priority |
+|---|---|
+| `codex` | 0 (pinned) |
+| `file` | 1 (pinned, capped to 60% of budget) |
+| `graphrag` | 2 |
+| `docs` | 3 |
+| `readme` | 4 |
+
+**Character pre-caps (applied before token counting):**
+`CODEX_CAP = 1024` · `FILE_CAP = 4096` · `RAG_CAP = 2048` · `WS_CAP = 1024` · `README_CAP = 3072`
+
+**`pack()` contract:**
+- Whole-chunk-only packing (never mid-chunk split).
+- Returns `(packed_context_text: str, dropped_labels: List[str])`.
+- Hard cap: 60% of budget reserved for `file` brain; remaining 40% split by ladder priority.
+
+---
+
+## 17. WebSocket Contract Additions
+
+The following event types were added to `api/ws_contracts.py` after Phase 6.9. The full union now contains 60+ events. Grouped by functional area:
+
+**Inline edit pipeline:**
+`client_inline_edit_request` · `client_inline_edit_cancel` · `server_inline_edit_start` · `server_inline_edit_delta` · `server_inline_edit_end`
+
+**Abort mesh (ADR-706):**
+`client_abort_mesh` · `server_abort_ack`
+
+**Tool chips / tool transparency:**
+`server_tool_start` · `server_tool_stream_chunk` · `server_tool_result` · `server_tool_dep_graph` · `client_retry_tool` · `client_invoke_tracked_bash`
+
+**Planner surface:**
+`client_planner_mode_toggle` · `server_plan_document`
+
+**VFS / OCC patch flow:**
+`server_vfs_patch_approved` · `server_apply_workspace_edit` · `client_patch_applied`
+
+**Analyst / Natt chat channel:**
+`client_analyst_query` · `server_natt_message` · `server_natt_token` · `server_natt_stream_end`
+
+**Workspace lifecycle:**
+`client_workspace_init` · `server_indexing_progress` · `server_indexing_error` · `server_byom_config_applied`
+
+**IDE telemetry + Manual Dreaming:**
+`client_ide_telemetry` · `client_dreaming_run`
+
+**HITL ACK:**
+`server_hitl_ack`
+
+**Checkpointing / time travel:**
+`client_branch_from_checkpoint` · `server_session_branched`
+
+**PTY / Agentic Cell:**
+`client_pty_write` · `server_cell_tool_start` · `server_cell_pty_chunk` · `server_cell_ast_diff` · `server_cell_governor_tick`
+
+**Native Thinking:**
+`server_thinking_chunk`
