@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { NattContextOverlay } from './NattContextOverlay';
+import { useAutoResizeTextarea } from '../hooks/useAutoResizeTextarea';
 
 interface Props {
     nattName: string;
@@ -12,6 +13,8 @@ interface Props {
 export function NattPromptBar({ nattName, disabled, onSubmit }: Props): JSX.Element {
     const [value, setValue] = useState('');
     const [contextOpen, setContextOpen] = useState(false);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    useAutoResizeTextarea(textareaRef, value);
 
     const submit = useCallback(() => {
         const t = value.trim();
@@ -34,8 +37,9 @@ export function NattPromptBar({ nattName, disabled, onSubmit }: Props): JSX.Elem
                 </button>
             </Tooltip>
             <textarea
+                ref={textareaRef}
                 className="ws-natt-prompt-input"
-                rows={2}
+                rows={1}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 onKeyDown={(e) => {

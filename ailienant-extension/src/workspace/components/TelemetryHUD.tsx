@@ -9,31 +9,65 @@ const OCC_COLORS: Record<OccStatus, string> = {
     hard_conflict: 'var(--accent-alert)',
 };
 
-interface OccRingProps { status: OccStatus; lockedFiles: number; }
+interface OccContextRingProps {
+    status: OccStatus;
+    lockedFiles: number;
+    ctxUsed: number;
+    ctxWindow: number;
+}
 
-export function OccRing({ status, lockedFiles }: OccRingProps): JSX.Element {
+/**
+ * Dual-purpose status ring. The left semicircle reports OCC (file-lock) health
+ * via the status palette; the right semicircle reports live context-window
+ * occupancy in lavender — faded when the window is near-empty and intensifying
+ * toward full as the conversation fills it. A divider tick at 12 o'clock marks
+ * the boundary between the two halves. Both readings live in one tooltip.
+ */
+export function OccContextRing({ status, lockedFiles, ctxUsed, ctxWindow }: OccContextRingProps): JSX.Element {
     const r = 12;
-    const circ = 2 * Math.PI * r;
-    const fill = status === 'clear' ? circ : status === 'soft_conflict' ? circ * 0.6 : circ * 0.3;
-    const label = status === 'clear'
-        ? 'Optimistic Concurrency Control (OCC) — no concurrent file locks'
-        : `Optimistic Concurrency Control (OCC) — ${status.replace('_', ' ')} · ${lockedFiles} file(s) locked`;
+    const cx = 20, cy = 20;
+    const top = `${cx} ${cy - r}`;       // 12 o'clock
+    const bottom = `${cx} ${cy + r}`;    // 6 o'clock
+
+    const hasWindow = ctxWindow > 0;
+    const ctxPct = hasWindow ? Math.max(0, Math.min(ctxUsed / ctxWindow, 1)) : 0;
+    // Faded → vivid as occupancy climbs, so the right half visibly "fills" with color.
+    const ctxOpacity = 0.22 + 0.78 * ctxPct;
+    const pctLabel = (ctxPct * 100).toFixed(ctxPct >= 0.1 ? 0 : 1);
+
+    const occLabel = status === 'clear'
+        ? 'no concurrent file locks'
+        : `${status.replace('_', ' ')} · ${lockedFiles} file(s) locked`;
+    const ctxLabel = hasWindow
+        ? `${Math.round(ctxUsed).toLocaleString()} / ${ctxWindow.toLocaleString()} tokens (${pctLabel}% full)`
+        : 'warming up';
+    const tip = `OCC (left) — ${occLabel}  ·  Context window (right) — ${ctxLabel}. `
+        + 'The context reading reflects the live window and drops when the agent summarizes old turns.';
 
     return (
-        <Tooltip content={label}>
+        <Tooltip content={tip}>
             <div className="ws-telemetry-cell">
                 <svg width="30" height="30" viewBox="0 0 40 40" aria-hidden>
-                    <circle cx="20" cy="20" r={r} fill="none" stroke="var(--border-subtle)" strokeWidth="3" />
-                    <circle
-                        cx="20" cy="20" r={r} fill="none"
-                        stroke={OCC_COLORS[status]} strokeWidth="3"
-                        strokeDasharray={`${fill} ${circ}`}
-                        strokeLinecap="round"
-                        transform="rotate(-90 20 20)"
-                        style={{ transition: 'stroke-dasharray 0.4s ease, stroke 0.3s ease' }}
+                    {/* Background track */}
+                    <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--border-subtle)" strokeWidth="3" />
+                    {/* Left half — OCC status */}
+                    <path
+                        d={`M ${top} A ${r} ${r} 0 0 0 ${bottom}`}
+                        fill="none" stroke={OCC_COLORS[status]} strokeWidth="3"
+                        style={{ transition: 'stroke 0.3s ease' }}
+                    />
+                    {/* Right half — context window, lavender intensifying with occupancy */}
+                    <path
+                        d={`M ${top} A ${r} ${r} 0 0 1 ${bottom}`}
+                        fill="none" stroke="var(--accent-context)" strokeWidth="3"
+                        style={{ opacity: ctxOpacity, transition: 'opacity 0.4s ease' }}
+                    />
+                    {/* Divider tick at 12 o'clock */}
+                    <line
+                        x1={cx} y1={cy - r - 2.5} x2={cx} y2={cy - r + 2.5}
+                        stroke="var(--text-primary)" strokeWidth="1.5" strokeLinecap="round"
                     />
                 </svg>
-                <span className="ws-telemetry-label">OCC</span>
             </div>
         </Tooltip>
     );
@@ -128,44 +162,6 @@ export function FinOpsBar({ costUsd, budgetUsd }: FinOpsBarProps): JSX.Element {
                     className="ws-finops-vertical-fill"
                     style={{ height: `${remainingPct}%`, background: color }}
                 />
-            </div>
-        </Tooltip>
-    );
-}
-
-interface ContextMeterProps { usedTokens: number; window: number; }
-
-/**
- * Context-window occupancy bar. Unlike the FinOps bar (which shows budget
- * *remaining*), this shows how *full* the live window is — so the danger
- * direction is inverted: green when there's headroom, red as it approaches the
- * limit. The figure is the current pruned/summarized window, so it can fall
- * after the backend summarizes; the tooltip says so to set expectations.
- */
-export function ContextMeter({ usedTokens, window }: ContextMeterProps): JSX.Element | null {
-    if (window <= 0) { return null; }
-    const pct = Math.max(0, Math.min(usedTokens / window, 1));
-    const pctLabel = (pct * 100).toFixed(pct >= 0.1 ? 0 : 1);
-
-    const color =
-        pct < 0.6 ? 'var(--accent-primary)' :
-        pct < 0.85 ? 'var(--accent-warn)' :
-        'var(--accent-alert)';
-
-    const tip = `Context window: ${Math.round(usedTokens).toLocaleString()} / ${window.toLocaleString()} tokens `
-        + `(${pctLabel}% full). Reflects the live conversation window — it drops when the agent summarizes old turns.`;
-
-    return (
-        <Tooltip content={tip}>
-            <div className="ws-context-meter" aria-label="Context window occupancy">
-                <span className="ws-context-meter-label">CTX</span>
-                <div className="ws-context-meter-track">
-                    <div
-                        className="ws-context-meter-fill"
-                        style={{ width: `${pct * 100}%`, background: color }}
-                    />
-                </div>
-                <span className="ws-context-meter-pct">{pctLabel}%</span>
             </div>
         </Tooltip>
     );
@@ -315,7 +311,7 @@ interface TelemetryHUDProps {
 
 /**
  * Right-side sibling card to the PromptBar. 2-column grid:
- *   left column (stacked) — top: OccRing, bottom: Speedometer
+ *   left column (stacked) — top: OccContextRing (OCC + context window), bottom: Speedometer
  *   right column (full height) — vertical FinOpsBar
  */
 export function TelemetryHUD({
@@ -329,7 +325,12 @@ export function TelemetryHUD({
         <div className="ws-telemetry-card ai-card">
             <div className="ws-telemetry-gauges">
                 <div className="ws-telemetry-left">
-                    <OccRing status={occStatus} lockedFiles={lockedFiles} />
+                    <OccContextRing
+                        status={occStatus}
+                        lockedFiles={lockedFiles}
+                        ctxUsed={ctxUsed}
+                        ctxWindow={ctxWindow}
+                    />
                     <Speedometer tps={tps} />
                 </div>
                 <div className="ws-telemetry-right">
@@ -352,7 +353,6 @@ export function TelemetryHUD({
                     />
                 </div>
             </div>
-            <ContextMeter usedTokens={ctxUsed} window={ctxWindow} />
         </div>
     );
 }

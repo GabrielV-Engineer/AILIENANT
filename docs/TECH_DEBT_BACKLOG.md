@@ -59,11 +59,12 @@ Decision    Not a defect — see [DECISION] tier.
 
 | ID | Title (short) | Tier | Type | Target Phase | Schedule |
 |---|---|---|---|---|---|
-| DEBT-055 | Chat scroll regression — flex container collapses on multiple messages | HIGH | FE Regression | 8.10.0 | Locked |
+| DEBT-064 | Agent organizes its own `.ailienant/` runtime files → OCC stale-apply | HIGH | Correctness | 8.10.x | Floating |
 | DEBT-036 | Oracle executes on host (no sandbox) | HIGH | Security/Safety | 8.10.5 | Locked |
 | DEBT-034 | Gateway project_id path-format-fragile | HIGH | Correctness | 8.10.1 | Locked |
 | DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | 8.10.5 | Locked |
-| DEBT-056 | Text HUD fixed height — input does not auto-resize (Planner: 1 line visible) | MEDIUM | FE Regression | 8.10.0 | Locked |
+| DEBT-063 | Plan executes out of WBS order (steps run non-sequentially) | MEDIUM | Correctness | 8.10.x | Floating |
+| DEBT-065 | Auto-mode summary says "review the diff and authorize" though it auto-applies | LOW | UX gap | 8.10.x | Floating |
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
@@ -109,15 +110,15 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
-### DEBT-055 [HIGH · Locked] — Chat scroll regression: flex container collapses after multiple messages
+### DEBT-064 [HIGH · Floating] — Agent organizes its own `.ailienant/` runtime files → OCC stale-apply
 
 - **Date:** 2026-06-14
-- **Reproduce:** Send 3+ prompts in a single session. After the third response the message list stops expanding, messages compress vertically, and scroll becomes impossible. Regression — was previously fixed.
-- **File(s):** `ailienant-extension/src/webview/components/NattCanvas.tsx` (message list container + CSS). Likely a CSS specificity regression or a webview re-mount that resets computed flex styles.
-- **Error:** UX regression (no JS error). Root cause: flex container loses `overflow-y: auto` invariant. Fix: `flex: 1 1 0; min-height: 0; overflow-y: auto` on the message list container; outer panel must have a bounded height (not `height: 100vh` without `max-height: 100vh` containment).
+- **Reproduce:** In a workspace containing `.ailienant_telemetry.log` (or the `.ailienant/` home), ask the agent to "organize files into folders." It plans a move for `.ailienant_telemetry.log`; because AILIENANT writes that log continuously during the task, its content hash changes between proposal and apply, so `apply_patch_set` lists it in `stale_files` and the whole batch reports "Not applied."
+- **File(s):** the agent's organizable-file enumeration (`.ailienantignore` / VFS middleware listing) must exclude `.ailienant/` and `.ailienant_telemetry.log`. `core/write_pipeline.py` (OCC `base_hash` check) is correct and should stay.
+- **Error:** correctness — the agent treats its own self-mutating runtime files as user content, guaranteeing an OCC failure on any task that touches them.
 - **Blocked by:** nothing.
-- **Phase:** 8.10.0 — emergency FE fix before any debt triage.
-- **Notes:** confirmed in live testing session 2026-06-14.
+- **Phase:** 8.10.x — backend ignore-list slice.
+- **Notes:** root cause of a live test failure 2026-06-14 (the "organize files" task). Highest-value deferred item — it broke a real user task.
 
 ### DEBT-036 [HIGH · Locked] — BenchmarkOracle executes candidate patches on the host (no sandbox isolation)
 
@@ -168,15 +169,25 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
-### DEBT-056 [MEDIUM · Locked] — Text HUD fixed height: chat input and Socratic planner textarea do not auto-resize
+### DEBT-063 [MEDIUM · Floating] — Plan executes out of WBS order (steps run non-sequentially)
 
 - **Date:** 2026-06-14
-- **Reproduce:** Type a prompt longer than one line in the chat input field. The textarea does not expand; text scrolls inside a fixed-height box. In Socratic planner mode, only one line is visible regardless of content.
-- **File(s):** Chat input component in `ailienant-extension/src/webview/components/NattCanvas.tsx`; Socratic form textarea in `PlannerSession.tsx`.
-- **Error:** UX gap. Fix: `scrollHeight`-driven auto-resize pattern — on every `input` event set `element.style.height = 'auto'; element.style.height = element.scrollHeight + 'px'`; cap with `max-height: 12rem` and `overflow-y: auto` beyond that. Apply to both NattCanvas input and PlannerSession textarea identically.
+- **Reproduce:** Submit a multi-step task whose plan renders an ordered WBS. Watch execution — steps complete in a different order than displayed (near-random relative to the list).
+- **File(s):** backend orchestration / graph node execution order (`agents/orchestrator.py`, `brain/engine.py`). The FE checklist flips by `step_number` (`Workspace.tsx` `server_graph_mutation`) and is not the cause.
+- **Error:** UX/correctness — execution order does not match the presented plan, eroding trust in the displayed plan.
 - **Blocked by:** nothing.
-- **Phase:** 8.10.0 — bundle with the scroll regression fix (same component pass).
-- **Notes:** confirmed in live testing session 2026-06-14.
+- **Phase:** 8.10.x — orchestration ordering slice (deep).
+- **Notes:** pre-existing; surfaced during the 8.10.0 test. Untouched by the FE regression work.
+
+### DEBT-065 [LOW · Floating] — Auto-mode summary says "review the diff and authorize" though it auto-applies
+
+- **Date:** 2026-06-14
+- **Reproduce:** In Auto mode, submit a task that proposes file changes. The pre-gate summary reads "Proposed N file change(s) — review the diff below and authorize," but Auto applies with no authorize step and no inline diff.
+- **File(s):** `core/task_service.py` `_format_coding_summary` — the summary is built (~line 655) before the permission verdict (~line 688), yet the session mode is known and could shape the wording.
+- **Error:** UX gap — misleading instruction in Auto mode; contributes to the "no diff appears" confusion.
+- **Blocked by:** nothing.
+- **Phase:** 8.10.x — make the pre-gate summary mode-aware.
+- **Notes:** surfaced during the 8.10.0 live test.
 
 ### DEBT-057 [MEDIUM · Locked] — Non-native-thinking models produce an empty ThoughtBox and appear pre-scripted
 
@@ -598,6 +609,11 @@ Decision    Not a defect — see [DECISION] tier.
 
 *(Entries here are compact summaries. Full resolution notes are in git history and in the entry's Resolution block before it was moved here.)*
 
+- **DEBT-055 — Chat scroll regression** — **RESOLVED 2026-06-14** (8.10.0). The real defect was the Natt/Analyst pane: `.ws-natt-body` is a `1fr` grid track missing `min-height: 0`. The main chat list was already correct.
+- **DEBT-056 — Text HUD fixed height (no auto-resize)** — **RESOLVED 2026-06-14** (8.10.0). Shared `useAutoResizeTextarea` (`useLayoutEffect`) hook on PromptBar + NattPromptBar; bounds in CSS (`min-height: 2.5rem; max-height: 12rem`). Introduced a HUD height regression, fixed under DEBT-062.
+- **DEBT-060 — Diff-authorize card duplicated on tab switch with no diff** — **RESOLVED 2026-06-14** (8.10.0). `server_plan_document` re-injected its summary on every panel reveal; made the webview handler idempotent by summary content + a content-based host re-post guard. (Renumbered from a collision with the existing DEBT-057.)
+- **DEBT-061 — Pipeline execution trace collapsed to a 1px box line** — **RESOLVED 2026-06-14** (8.10.0). Redesigned `.ws-thinking` from a bordered widget into an inline borderless trace. (Renumbered from a collision with the existing DEBT-058.)
+- **DEBT-062 — Telemetry HUD height regression + context-window indicator** — **RESOLVED 2026-06-14** (8.10.0). Shared `--hud-rest-height` aligns composer + telemetry card; merged OCC ring and context meter into one split donut (`OccContextRing`); per-model window resolved via litellm `get_model_info`; apply-result paths backtick-wrapped. Live used-tokens read may still need a runtime trace (diagnostic logged).
 - **DEBT-001 — tools.patch_tool: LangChain @tool decorator stub mismatch** — **CLOSED 2026-06-05** (Phase 8.0.1). Removed stale `# type: ignore[misc]` on `tools/patch_tool.py:219` after langchain-core stubs caught up. `mypy --strict tools/patch_tool.py` → 0.
 
 - **DEBT-002 — agents/contract_guard.py: MODEL_MEDIUM not explicitly exported** — **CLOSED 2026-06-13** (verified post-Phase 8.0.2). `mypy --strict agents/contract_guard.py` → 0. The attr-defined error was resolved when `contract_guard.py:100` was changed to import `MODEL_MEDIUM` from `shared.config` directly (same fix as DEBT-015).

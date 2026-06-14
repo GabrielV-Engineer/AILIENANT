@@ -131,13 +131,12 @@ html, body, #root { height: 100%; }
 .ws-indexing-spin { animation: ws-spin 1s linear infinite; }
 @keyframes ws-spin { to { transform: rotate(360deg); } }
 
-/* ── 'Thinking' execution trace (Phase 7.9.B.14) ─────────────── */
+/* ── 'Thinking' execution trace ──────────────────────────────
+   Inline, borderless trace that reads as part of the conversation — a quiet
+   muted status line in the same family as the per-turn footer, not a floating
+   widget box. */
 .ws-thinking {
   margin: 2px 0 6px;
-  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
-  border-radius: 6px;
-  background: var(--vscode-editorWidget-background, var(--bg-main));
-  overflow: hidden;
   font-size: 12px;
 }
 .ws-thinking-header {
@@ -145,16 +144,18 @@ html, body, #root { height: 100%; }
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 2px 0;
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--vscode-descriptionForeground, var(--text-secondary));
+  color: var(--text-secondary);
+  opacity: 0.8;
   text-align: left;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
 }
-.ws-thinking-header:hover { color: var(--vscode-foreground, var(--text-primary)); }
+.ws-thinking-header:hover { color: var(--text-primary); opacity: 1; }
 .ws-thinking-spin { animation: ws-spin 1s linear infinite; flex-shrink: 0; }
 .ws-thinking-check { color: var(--accent-primary, #63a583); flex-shrink: 0; }
 .ws-thinking-label { flex: 1; text-transform: capitalize; }
@@ -162,15 +163,15 @@ html, body, #root { height: 100%; }
 .ws-thinking-steps {
   list-style: none;
   margin: 0;
-  padding: 4px 10px 8px 14px;
-  border-top: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.06));
+  padding: 2px 0 4px 6px;
 }
 .ws-thinking-step {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 3px 0;
-  color: var(--vscode-descriptionForeground, var(--text-secondary));
+  color: var(--text-secondary);
+  opacity: 0.7;
   text-transform: capitalize;
 }
 .ws-thinking-step-dot {
@@ -272,9 +273,13 @@ html, body, #root { height: 100%; }
 
 /* ── Bottom row (PromptBar + Telemetry side-by-side) ──────── */
 .ws-bottom {
+  /* Shared resting height for the composer and the telemetry card so they read as
+     equal-height siblings at rest. The composer grows past it on a long prompt
+     (auto-resize); the telemetry card stays pinned to it via flex-end. */
+  --hud-rest-height: 4.5rem;
   display: flex;
   gap: 8px;
-  align-items: stretch;
+  align-items: flex-end;
   padding-bottom: 10px;
   max-width: 720px;
   width: 100%;
@@ -295,6 +300,7 @@ html, body, #root { height: 100%; }
 .ws-prompt {
   position: relative;
   flex: 1;
+  min-height: var(--hud-rest-height);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-smart);
@@ -318,14 +324,16 @@ html, body, #root { height: 100%; }
 }
 
 .ws-prompt-input-row {
-  flex: 1;
   display: flex;
   flex-direction: column;
   padding: 4px 10px 2px;
   min-height: 0;
 }
 .ws-prompt-input {
-  flex: 1;
+  /* Height is driven by useAutoResizeTextarea (scrollHeight), bounded below; the
+     row no longer stretches it, so the bar grows with the prompt and scrolls past
+     the cap. */
+  flex: 0 0 auto;
   width: 100%;
   appearance: none;
   background: transparent;
@@ -337,7 +345,8 @@ html, body, #root { height: 100%; }
   outline: none;
   line-height: 1.4;
   padding: 0;
-  min-height: 0;
+  min-height: 2.5rem;
+  max-height: 12rem;
   overflow-y: auto;
 }
 .ws-prompt-input::placeholder { color: var(--text-disabled); }
@@ -769,9 +778,13 @@ html, body, #root { height: 100%; }
 .ws-telemetry-card {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 4px;
   padding: 4px;
   width: 72px;
+  /* Matches the composer's resting height so the two HUD cards align; the
+     composer grows past this on a long prompt while this card stays put. */
+  min-height: var(--hud-rest-height);
   position: relative;
 }
 .ws-telemetry-gauges {
@@ -780,39 +793,6 @@ html, body, #root { height: 100%; }
   grid-template-rows: 1fr 1fr;
   gap: 2px;
   align-items: center;
-}
-/* Context-window occupancy: a thin full-width bar under the gauges. The fill
-   color is set inline (theme-var driven) so the band tracks how full the live
-   window is. */
-.ws-context-meter {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  width: 100%;
-}
-.ws-context-meter-label {
-  font-size: 7px;
-  letter-spacing: 0.5px;
-  color: var(--text-secondary);
-  opacity: 0.8;
-}
-.ws-context-meter-track {
-  flex: 1;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border-subtle);
-  overflow: hidden;
-}
-.ws-context-meter-fill {
-  height: 100%;
-  border-radius: 2px;
-  transition: width 0.4s ease, background 0.3s ease;
-}
-.ws-context-meter-pct {
-  font-size: 7px;
-  color: var(--text-secondary);
-  min-width: 16px;
-  text-align: right;
 }
 .ws-telemetry-left {
   grid-column: 1;
@@ -894,6 +874,10 @@ html, body, #root { height: 100%; }
 }
 .ws-natt-body {
   overflow-y: auto;
+  /* The parent is a grid with a `1fr` middle track; a grid item defaults to
+     min-height:auto and refuses to shrink below its content, so without this the
+     track grows past the viewport and the body never scrolls internally. */
+  min-height: 0;
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -951,6 +935,11 @@ html, body, #root { height: 100%; }
   resize: none;
   outline: none;
   line-height: 1.4;
+  /* Height auto-grows with content (useAutoResizeTextarea), bounded so a long
+     message scrolls internally instead of pushing the send button off-screen. */
+  min-height: 2.5rem;
+  max-height: 12rem;
+  overflow-y: auto;
 }
 .ws-natt-prompt-input:focus { border-color: var(--accent-primary); }
 .ws-natt-prompt-input::placeholder { color: var(--text-disabled); }

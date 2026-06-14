@@ -7,13 +7,15 @@ interface Props {
 }
 
 /**
- * Phase 7.9.B.14 — collapsible "Thinking" execution trace.
+ * Collapsible "Thinking" execution trace.
  *
- * Collapsed by default: a muted single line showing a spinner + the currently
- * executing node. Click to expand the full vertical node stepper. On completion
- * the spinner becomes a checkmark, the label switches to the step count, and the
- * block auto-collapses — while remaining re-expandable so the user can inspect
- * any past turn's execution trace. Rendered per assistant turn (not chat content).
+ * Renders inline as a quiet, borderless status line in the conversation flow
+ * (not a floating widget). Collapsed by default: a muted single line showing a
+ * spinner + the currently executing node. Click to expand the full vertical node
+ * stepper. On completion the spinner becomes a checkmark, the label switches to
+ * the step count, and the block auto-collapses — while remaining re-expandable so
+ * the user can inspect any past turn's execution trace. Rendered per assistant
+ * turn (not chat content); renders nothing when no steps have arrived.
  */
 export function PipelineProgress({ steps, done = false }: Props): JSX.Element | null {
     const [expanded, setExpanded] = useState(false);

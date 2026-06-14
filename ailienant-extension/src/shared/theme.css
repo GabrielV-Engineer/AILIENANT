@@ -14,6 +14,9 @@
   --accent-hover:   #74b394;
   --accent-alert:   #F85149;
   --accent-warn:    #E3B341;
+  /* Context-window accent — a pastel lavender tuned to sit beside the brand
+     green; the live HUD ring fades it in proportion to window occupancy. */
+  --accent-context: #a98fcf;
 
   /* Text Hierarchy */
   --text-primary:   #E6EDF3;

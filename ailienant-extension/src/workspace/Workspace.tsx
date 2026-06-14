@@ -751,6 +751,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     content: last.content ? `${last.content}\n${doc.summary}` : doc.summary,
                                 }];
                             }
+                            // Idempotency: the host re-posts the latest plan when a
+                            // hidden panel becomes visible again (to restore the docked
+                            // panel after a webview teardown). The panel state is
+                            // restored by setPlan above; re-appending the summary here
+                            // would stack a duplicate chat pointer on every tab switch,
+                            // so skip when a turn already carries this exact summary.
+                            if (prev.some(m => m.role === 'assistant' && m.content === doc.summary)) {
+                                return prev;
+                            }
                             return [...prev, {
                                 id: mkId(),
                                 role: 'assistant',

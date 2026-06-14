@@ -6,6 +6,7 @@ import { ContextOverlay } from './ContextOverlay';
 import { DreamingMode } from './DreamingMode';
 import { ModeMenu } from './ModeMenu';
 import { MentionDropdown } from './MentionDropdown';
+import { useAutoResizeTextarea } from '../hooks/useAutoResizeTextarea';
 import { vscode } from '../vscode_bridge';
 import type { AilienantConfig, ExecutionMode } from '../../shared/types';
 import type {
@@ -61,6 +62,7 @@ export function PromptBar({
     const paletteOpen    = useWorkspaceStore((s) => s.paletteOpen);
     const setPaletteOpen = useWorkspaceStore((s) => s.setPaletteOpen);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    useAutoResizeTextarea(textareaRef, value);
     const { slashActive, slashQuery } = useSlashDetect(value);
     const paletteVisible = paletteOpen || slashActive;
 

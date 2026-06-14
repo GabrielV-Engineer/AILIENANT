@@ -504,13 +504,19 @@ export class WorkspacePanelManager {
                 // Re-post the last finalized plan from host memory — the
                 // remounted webview holds it only in transient React state, so
                 // without this the Plan panel would be empty after a tab-switch.
-                // BUT: only re-post if the summary is not already in the persisted transcript
-                // (to avoid duplicating the "Drafted a plan..." message).
+                // BUT: only re-post if its summary pointer is not already in the
+                // persisted transcript. Match the plan's OWN summary text, not a
+                // fixed phrase — the pointer reads "Drafted a plan…" on the plan
+                // surface but "Proposed N file change(s)…" in Ask/Auto, and a
+                // phrase-specific guard let the latter re-inject a duplicate
+                // bubble on every reveal. (The webview handler is also idempotent
+                // on the summary; this is defense in depth.)
                 const plan = this._latestPlan.get(session.id);
                 if (plan) {
                     const t = this._getTranscript(session.id);
-                    const hasInTranscript = t.messages.some(m =>
-                        m.role === 'assistant' && m.content?.includes('Drafted a plan')
+                    const summaryHead = (plan.summary ?? '').split('\n')[0].trim();
+                    const hasInTranscript = summaryHead.length > 0 && t.messages.some(m =>
+                        m.role === 'assistant' && (m.content ?? '').includes(summaryHead)
                     );
                     if (!hasInTranscript) {
                         e.webviewPanel.webview.postMessage({ type: 'server_plan_document', payload: plan });
@@ -701,6 +707,15 @@ export class WorkspacePanelManager {
                         });
                     }
                     this._runningTasks.add(session.id);
+                    // Refresh the context-budget meter at task start so it reflects
+                    // the window the turn begins from — paired with the post-turn
+                    // read on stream end, the meter updates each turn instead of
+                    // only once. Fire-and-forget; a null read leaves the prior value.
+                    void APIClient.getInstance().fetchContextOccupancy(session.id).then((occ) => {
+                        if (occ) {
+                            panel.webview.postMessage({ type: 'CONTEXT_OCCUPANCY', payload: occ });
+                        }
+                    });
                     const activeDoc = vscode.window.activeTextEditor?.document;
                     const intercepted = await IntentRouter.intercept(taskText, activeDoc);
                     if (!intercepted) {

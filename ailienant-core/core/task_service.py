@@ -775,9 +775,13 @@ class TaskService:
                 applied = res.get("applied_files") or list(patches_to_apply)
                 result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
             elif res.get("stale_files"):
+                # Wrap paths in backticks so the markdown renderer treats them as
+                # inline code — bare paths with underscores (e.g. a *_telemetry.log)
+                # would otherwise be mangled into italics on the client.
+                stale = ", ".join(f"`{p}`" for p in res["stale_files"])
                 result_msg = (
                     "⚠️ Not applied — these files changed since the proposal: "
-                    + ", ".join(res["stale_files"])
+                    + stale
                     + ". Re-run the request to regenerate against the current code."
                 )
             else:

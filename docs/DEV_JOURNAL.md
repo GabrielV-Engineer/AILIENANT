@@ -13,6 +13,18 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.0b: FE Regression Follow-up — HUD Height + Context Ring — 2026-06-14
+**Status:** COMPLETE | **Gates:** tsc 0 · eslint 0 errors · mypy 0/340 · pytest 1494 passed
+- Shipped (DEBT-062): fixed the HUD height regression DEBT-056 introduced (composer + telemetry share `--hud-rest-height`, equal at rest via `flex-end`); merged the OCC ring and context meter into one split donut (`OccContextRing` — left OCC palette, right `--accent-context` lavender deepening with occupancy); per-model context window resolved from litellm `get_model_info` instead of the flat 200k default; apply-result paths backtick-wrapped so `*_telemetry.log` no longer renders italic.
+- Key decision: only the HUD height was a true regression from my change; the context window/plan-order/telemetry-log-apply issues were pre-existing — fixed the regression + the requested ring redesign now and logged the rest rather than fold backend orchestration into an FE pass.
+- Deferred: DEBT-063 (plan executes out of WBS order), DEBT-064 (agent organizes its own `.ailienant/` runtime files → OCC stale-apply; root cause of the live test failure), DEBT-065 (Auto-mode "authorize" wording). Live used-tokens may still read 0 (coding-task path may not populate the L1 `messages` channel) — diagnostic logged in `compute_context_occupancy` pending a runtime trace.
+
+## 8.10.0: Emergency FE Regressions — 2026-06-14
+**Status:** COMPLETE | **Gates:** tsc 0 · eslint 0 errors (2 pre-existing warnings untouched) · esbuild 0
+- Shipped: Natt-pane scroll (`min-height:0` on the `.ws-natt-body` grid track); `scrollHeight` composer auto-resize via a shared `useAutoResizeTextarea` (`useLayoutEffect`) hook wired into PromptBar + NattPromptBar; diff-authorize card no longer duplicates on tab-switch (idempotent `server_plan_document` + content-based host re-post guard); pipeline trace redesigned from a bordered box to an inline borderless trace.
+- Key decision: DEBT-060's duplicate bubble was the host re-posting the latest plan on every panel reveal under a guard that matched only the plan-surface `"Drafted a plan"` phrasing; fixed by making the webview summary-append idempotent by content (charter §5.3) with a content-based host guard as defense in depth — not by suppressing the panel restore.
+- Deferred: original WBS paths were stale (`src/webview/`, `PlannerSession.tsx` — neither exists); the real surface is `src/workspace/`. (DEBT-055/056 scroll+resize; DEBT-060 diff card; DEBT-061 pipeline trace — renumbered from a collision with existing backlog IDs.)
+
 ## 8.9: Portable Workspace Home (`.ailienant/` Provisioning) — 2026-06-14
 **Status:** COMPLETE | **Gates:** mypy 0/340 · pytest 1494 passed · tsc 0 · eslint 0 errors
 - Shipped: global stores relocated from CWD to `~/.ailienant/` via `shared.config` home defaults; new `core/storage_paths.py` partitions only the GraphRAG semantic store per project (`projects/<id>/lancedb/`, bound on `client_workspace_init`); freeform `AILIENANT.md` instructions injected into planner+coder prompts; navigable `dump_plan_to_markdown` plan export; extension first-run provisioning of `.ailienant/` + starter `AILIENANT.md` + marked `.gitignore` block; `test_phase8_9_checkpoint_gate.py` (8 rows).
