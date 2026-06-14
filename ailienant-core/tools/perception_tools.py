@@ -521,6 +521,9 @@ def _tool_schema(
 _RESEARCHER_ROLE: FrozenSet[str] = frozenset({"researcher"})
 _ANALYST_ROLE: FrozenSet[str] = frozenset({"analyst"})
 _RESEARCHER_AND_ANALYST: FrozenSet[str] = frozenset({"researcher", "analyst"})
+# inspect_ast_node is shared with the planner role so the Planner can inspect
+# symbol definitions during pre-commit verification.
+_RESEARCHER_AND_ANALYST_AND_PLANNER: FrozenSet[str] = _RESEARCHER_AND_ANALYST | frozenset({"planner"})
 
 
 async def register_perception_tools(store: ToolRAGStore) -> int:
@@ -540,7 +543,7 @@ async def register_perception_tools(store: ToolRAGStore) -> int:
             "inspect_ast_node",
             "Extract the source code of a class or function by symbol name.",
             InspectASTInput,
-            extra_roles=_RESEARCHER_AND_ANALYST,
+            extra_roles=_RESEARCHER_AND_ANALYST_AND_PLANNER,
         ),
         _tool_schema(
             "get_symbol_references",

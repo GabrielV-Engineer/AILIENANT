@@ -1,5 +1,6 @@
 # alienant-core/agents/planner.py
 
+import json
 import logging
 import os as _os
 import time as _time
@@ -28,6 +29,7 @@ from core.memory.context_auditor import (
     RiskLevel,
 )
 from brain.retry_policy import PLANNER_MAX_RETRIES
+from tools.planner_tools import BudgetEstimatorTool, ValidateWBSDependenciesTool
 
 # Bounded planner retry budget on Pydantic ValidationError. Distinct from the
 # MICRO_SWARM Coder's MAX_RETRIES (different agent, different gate); both budgets
@@ -665,6 +667,7 @@ async def run_planner_node(
         # cycle (review → rejected → replanning → validated) so it is legible in the log.
         await _emit("critic_review")
         last_validation_err: str = ""
+        _bud: Optional[dict] = None  # budget estimate populated after first clean draft
 
         try:
             while retry_count <= MAX_PLANNER_RETRIES:
@@ -710,6 +713,39 @@ async def run_planner_node(
                     mission_plan = mission_plan.model_copy(update={
                         "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
                     })
+                    # Hard gate: WBS dependency / scope validation. Raises ValueError on
+                    # blocking issues so the existing except block feeds structured feedback
+                    # to the LLM and increments retry_count — no extra control-flow needed.
+                    _wbs_val = ValidateWBSDependenciesTool(state=state)
+                    _val = json.loads(await _wbs_val._arun())
+                    if not _val.get("valid", True):
+                        _issue_lines = [
+                            f"{i['type']}: step {i.get('step_number', '?')},"
+                            f" file={i.get('target_file', '?')}"
+                            + (
+                                f" (producer at step {i['first_producer']})"
+                                if i.get("first_producer")
+                                else ""
+                            )
+                            for i in _val.get("issues", [])[:5]
+                        ]
+                        raise ValueError(
+                            "WBS pre-commit dependency check failed — fix the following"
+                            " then re-emit the plan:\n" + "\n".join(_issue_lines)
+                        )
+                    # Advisory gate: budget estimate. Stored via the return dict (not
+                    # in-place mutation) so LangGraph reducers persist it. Advisory only
+                    # — a budget overage is logged but does not consume a retry.
+                    _bud_tool = BudgetEstimatorTool(state=state)
+                    _bud = json.loads(await _bud_tool._arun())
+                    if not _bud.get("fits_within_budget", True):
+                        await _emit("plan_budget_overage_advisory")
+                        logger.warning(
+                            "plan_budget_advisory: est=$%.4f remaining=$%.4f margin=$%.4f",
+                            _bud["estimated_cost_usd"],
+                            _bud["remaining_budget_usd"],
+                            _bud["margin_usd"],
+                        )
                     await _emit("plan_validated")  # the critic accepted the draft.
                     # Cache the validated raw draft for future identical turns.
                     if cache_enabled and raw_content:
@@ -780,6 +816,7 @@ async def run_planner_node(
         "context_metrics": updated_context_metrics,
         "provider": _cascade_provider,
         "planner_retry_count": retry_count,  # 0 on first-shot success
+        "budget_estimate": _bud,  # None if loop exhausted; Dict after clean draft
     }
     if state.get("immutable_wbs") is None:
         result["immutable_wbs"] = mission_plan

@@ -63,7 +63,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-034 | Gateway project_id path-format-fragile | HIGH | Correctness | standalone coordinated | Floating |
 | DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | streaming refactor | Floating |
 | DEBT-043 | Orchestrator tools register but unbound in live graph node | MEDIUM | Integration gap | Graph-wiring sprint | Floating |
+| DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
 | DEBT-042 | WebSearchTool / DependencyAuditTool search_fn unwired | MEDIUM | Feature gap | 8.8.x integration sprint | Floating |
+| DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
 | DEBT-040 | tool_search role resolution stale | MEDIUM | Correctness (bounded) | 8.8.5 | Locked |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
@@ -152,6 +154,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** dedicated graph-wiring sprint.
 - **Notes:** logged at 8.8.3 ship per CLAUDE.md §11.3.
 
+### DEBT-044 [MEDIUM · Floating] — ValidateWBSDependenciesTool detects forward-reference ordering violations only, not true DAG cycles
+
+- **Date:** 2026-06-14
+- **Reproduce:** Construct a `MissionSpecification` with two mutually-dependent steps where file A is consumed by step 2 (which produces file B) and file B is consumed by step 1 (which produces file A). The tool reports the step with the smaller index as a forward-reference, but cannot report the full cycle because `WBSStep` carries no `depends_on` field — dependency edges must be inferred from `target_file`/`action` patterns alone.
+- **File(s):** `ailienant-core/tools/planner_tools.py` (`ValidateWBSDependenciesTool._arun`, Pass 2).
+- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. The dominant planning error class (forward-reference ordering) is caught; true cross-file cycles require schema surgery on `WBSStep`.
+- **Blocked by:** additive `depends_on: Optional[List[int]] = None` field on `WBSStep` (`brain/state.py`) + migration in `docs/SCHEMA_EVOLUTION.MD`.
+- **Phase:** post-8.8.4 — schedule after `WBSStep` schema extension.
+- **Notes:** logged at 8.8.4 ship per CLAUDE.md §11.3.
+
 ### DEBT-042 [MEDIUM · Floating] — WebSearchTool and DependencyAuditTool search_fn injection point is unwired
 
 - **Date:** 2026-06-13
@@ -239,6 +251,16 @@ Decision    Not a defect — see [DECISION] tier.
 **LOW**
 
 ---
+
+### DEBT-045 [LOW · Floating] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
+
+- **Date:** 2026-06-14
+- **Reproduce:** `BudgetEstimatorTool._arun` computes `estimated_cost_usd` from static base-token constants (`write_file=1000`, `edit_file=800`, `read_file=200`, `run_command=100`) plus `len(description)//4`. These constants were chosen as conservative approximations of the cloud rate; no session-history calibration is performed.
+- **File(s):** `ailienant-core/tools/planner_tools.py` (`BudgetEstimatorTool._arun`, `_ACTION_BASE_TOKENS`).
+- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. The advisory is shift-left (fires before `oom_fallback`) and produces `confidence="low"` to signal the approximation to consumers.
+- **Blocked by:** requires session-history telemetry (actual token counts per action type stored in `TokenLedger` or a side table).
+- **Phase:** post-8.8.4 — calibration pass after session telemetry is available.
+- **Notes:** logged at 8.8.4 ship per CLAUDE.md §11.3.
 
 ### DEBT-037 [LOW · Floating] — G2 retrieval isolation uses mock.patch, not a production DI seam
 

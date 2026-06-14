@@ -407,7 +407,7 @@
   - Amendment (§4 pivot): `GetTokenLedgerTool` dropped — it duplicated 8.8.2's `read_token_ledger` (`TokenLedgerReadTool`, which already formalizes `token_ledger.snapshot()`). Resolved by additively wiring `orchestrator` into `read_token_ledger.allowed_roles`. Net-new 3→2, wire-in 2→3; surface unchanged (5 tools).
   - **DoD:** Orchestrator operations are audited tools (not direct state access), safely invocable by the 8.5 external gateway.
 
-- [ ] **8.8.4 — Wave 3b: Planner Pre-Commit Verification (READ_ONLY — the moat).** *(≈2 net-new · 3 wire-in)*
+- [x] **8.8.4 — Wave 3b: Planner Pre-Commit Verification (READ_ONLY — the moat).** *(≈2 net-new · 3 wire-in)*
   - Wire-in `planner`: `WorkspaceStructureTool`, `GetDependentsTool`, `InspectASTNodeTool`.
   - Net-new: `ValidateWBSDependenciesTool` (detects circular dependencies between `WBSStep` + steps referencing out-of-scope files — AILIENANT using its own GraphRAG to verify its own plan), `BudgetEstimatorTool` (plan draft token cost vs `TokenLedger` budget — shift-left of `oom_fallback`).
   - **DoD:** a `MissionSpecification` draft with a circular dependency is rejected pre-commit; the Planner's first attempt self-corrects instead of burning `MAX_PLANNER_RETRIES`.

@@ -307,6 +307,7 @@ Proyect_Ailienant/
 │   │                            #      researcher_tools.py = Wave-1 Researcher arsenal;
 │   │                            #      analyst_tools.py  = Wave-2 Analyst arsenal (6 READ_ONLY tools);
 │   │                            #      orchestrator_tools.py = Wave-3 Orchestrator introspection (2 READ_ONLY tools);
+│   │                            #      planner_tools.py = Wave-3b Planner pre-commit verification (2 READ_ONLY tools);
 │   │                            #      quarantine.py = shared Cognitive-Quarantine boundary wrapper),
 │   │                            #     validation/diagnostics.py (structured verdict parser)
 │   ├── gateway/                 #   External Capability Gateway: stdio MCP server exposing AILIENANT

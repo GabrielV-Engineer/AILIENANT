@@ -45,6 +45,9 @@ _WORKSPACE_MAX_NODES = 300
 
 # ── Role assignment ────────────────────────────────────────────────────────────
 _RESEARCHER_ROLES: FrozenSet[str] = frozenset({"researcher"})
+# workspace_structure and get_dependents are shared with the planner role so the
+# Planner can inspect repository layout and dependency edges during pre-commit checks.
+_RESEARCHER_AND_PLANNER: FrozenSet[str] = _RESEARCHER_ROLES | frozenset({"planner"})
 
 
 # ── Path canonicalization (audit fix #1) ──────────────────────────────────────
@@ -485,13 +488,15 @@ def _tool_schema(
     name: str,
     description: str,
     json_schema_class: Type[BaseModel],
+    *,
+    roles: FrozenSet[str] = _RESEARCHER_ROLES,
 ) -> ToolSchema:
     return ToolSchema(
         name=name,
         description=description,
         json_schema=json.dumps(json_schema_class.model_json_schema(), default=str),
         privilege_tier=ToolPrivilegeTier.READ_ONLY,
-        allowed_roles=_RESEARCHER_ROLES,
+        allowed_roles=roles,
     )
 
 
@@ -521,6 +526,7 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
             "workspace_structure",
             "Show an indented directory tree of the workspace (RAM ∪ indexed catalog).",
             WorkspaceStructureInput,
+            roles=_RESEARCHER_AND_PLANNER,
         ),
         _tool_schema(
             "query_graphrag",
@@ -531,6 +537,7 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
             "get_dependents",
             "Return JSON {target, dependents[]} of files that import the given file.",
             GetDependentsInput,
+            roles=_RESEARCHER_AND_PLANNER,
         ),
     ]
     for schema in schemas:

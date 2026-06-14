@@ -485,6 +485,11 @@ class AIlienantGraphState(TypedDict):
     # No reducer: this value is never aggregated, only read by the finops_gate node.
     max_budget_usd: float
 
+    # Heuristic cost estimate for the committed mission plan, produced by the Planner's
+    # pre-commit BudgetEstimatorTool. Scalar overwrite — no reducer. None until the
+    # first clean plan draft clears both Pydantic and WBS validation.
+    budget_estimate: Optional[Dict[str, Any]]
+
     # --- Contract Guard (Phase 2.23) ---
     # Render signal emitted by ContractGuardNode when a drift trigger fires; consumed
     # by the VS Code extension to render a persistent banner. Cleared by the extension

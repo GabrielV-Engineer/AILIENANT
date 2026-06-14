@@ -159,7 +159,7 @@ Agents never touch your system directly — they act through a **typed, role-gat
 
 | Tool | Tier | Used by | What it does |
 | --- | --- | --- | --- |
-| `inspect_ast_node` | READ_ONLY | Coder roles, Researcher, Analyst | Extract the source of a class/function by name |
+| `inspect_ast_node` | READ_ONLY | Coder roles, Researcher, Analyst, Planner | Extract the source of a class/function by name |
 | `get_symbol_references` | READ_ONLY | Coder roles, Researcher, Analyst | Find files that import a target (1-hop backward) |
 | `trace_data_flow` | READ_ONLY | Coder roles, Researcher, Analyst | Forward/backward k-hop reachability over the dep graph |
 | `document_parser` | READ_ONLY | Coder roles, Researcher | Parse PDF / CSV / DOCX without disk I/O |
@@ -167,9 +167,9 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `read_file` | READ_ONLY | Researcher + all roles | Paginated VFS read (RAM-first, firewall-enforced) |
 | `glob` | READ_ONLY | Researcher | List workspace files matching an fnmatch pattern (VFS RAM ∪ indexed catalog) |
 | `grep` | READ_ONLY | Researcher | Regex search over workspace file contents (RAM-first, O(max_matches) short-circuit) |
-| `workspace_structure` | READ_ONLY | Researcher | Relevance-filtered directory tree over the VFS ∪ catalog universe |
+| `workspace_structure` | READ_ONLY | Researcher, Planner | Relevance-filtered directory tree over the VFS ∪ catalog universe |
 | `query_graphrag` | READ_ONLY | Researcher | Expand seed files via the GraphRAG graph and return a compact context block |
-| `get_dependents` | READ_ONLY | Researcher | JSON list of files that import the given file (1-hop backward, structured output) |
+| `get_dependents` | READ_ONLY | Researcher, Planner | JSON list of files that import the given file (1-hop backward, structured output) |
 | `run_linter` | READ_ONLY | Analyst | ruff (Python) / eslint (TS) diagnostics; cascade RAM→disk read; degrades gracefully |
 | `analyze_complexity` | READ_ONLY | Analyst | McCabe CC + nesting depth + per-function breakdown for Python files (100 KB cap) |
 | `audit_dependencies` | READ_ONLY | Analyst | Parse requirements.txt / pyproject.toml / package.json; optional CVE lookup via injectable search |
@@ -178,6 +178,8 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `read_token_ledger` | READ_ONLY | Analyst, Orchestrator | Live token-cost snapshot from TokenLedger (local / cloud / all tiers) |
 | `get_wbs_status` | READ_ONLY | Orchestrator | Aggregate + per-step view of the live mission WBS (status counts, active step; 200-step cap) |
 | `emit_hitl_request` | READ_ONLY | Orchestrator | Raise an audited, idempotent HITL approval gate (deterministic id; injection-sanitized flag) |
+| `validate_wbs_dependencies` | READ_ONLY | Planner | Pre-commit WBS gate: detects forward-reference ordering violations and out-of-scope target files (200-step cap; path boundary via `PurePosixPath.is_relative_to`) |
+| `estimate_plan_budget` | READ_ONLY | Planner | Heuristic token-cost estimate for a committed mission plan vs session budget; advisory — never raises, stores result via LangGraph reducer (shift-left of OOM fallback) |
 | `atomic_code_patch` | WRITE | core_dev, architect_refactor, secops, data_ml | Fuzzy search/replace with AST + optimistic-concurrency check |
 | `batch_semantic_edit` | WRITE | core_dev, architect_refactor | Multi-file coordinated edit, ACID via unit-of-work |
 | `file_write` | WRITE | core_dev, devops_infra | Create/overwrite a VFS file with AST + OCC |
@@ -195,7 +197,7 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 | --- | --- |
 | 💬 **Analyst** | *(all 10 tools shipped — see live catalog above)* |
 | 🎛️ **Orchestrator** | *(all tools shipped — see live catalog above; token telemetry reuses `read_token_ledger`)* |
-| 🧭 **Planner** | `validate_wbs_dependencies` (catch a circular/over-scope plan *before* it runs), `budget_estimator` |
+| 🧭 **Planner** | *(all tools shipped — `validate_wbs_dependencies`, `estimate_plan_budget` + 3 wire-ins — see live catalog above)* |
 | 🛠️ **Coder** *(by role)* | `run_tests` (qa), `git_stage`/`git_commit`/`git_diff` (vcs), `docstring_generator` (doc), `linter_autofix` (secops/qa), `dependency_install` (devops), `env_file_guard` (devops), `security_audit` (secops) |
 | 🌐 **Universal** | `todo_write` |
 
