@@ -39,7 +39,7 @@ from core.tool_rag import (
     ToolSchema,
     tool_rag_store,
 )
-from tools.control_tools import _CONTROL_ROLES
+from tools.control_tools import ALL_ROLES
 
 logger = logging.getLogger("META_TOOLS")
 
@@ -176,7 +176,10 @@ def _meta_schema(
         description=description,
         json_schema=json.dumps(input_model.model_json_schema(), default=str),
         privilege_tier=ToolPrivilegeTier.READ_ONLY,
-        allowed_roles=_CONTROL_ROLES,
+        # Cross-listed universal tool: visible to every role (the 8 canonical coder roles
+        # plus researcher / analyst / planner / orchestrator). READ_ONLY, so widening the
+        # role set only broadens read-only discovery — it can never escalate privilege.
+        allowed_roles=ALL_ROLES,
     )
 
 

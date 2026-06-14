@@ -74,6 +74,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-051 | list_tasks cross-role visibility — orchestrator sees all tasks regardless of originating role | LOW | Feature gap | post-8.8.6 | Floating |
 | DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | DB-layer async migration | Floating |
 | DEBT-053 | TaskStopTool uses SIGTERM only — no SIGKILL escalation after timeout | LOW | Reliability | post-8.8.6 | Floating |
+| DEBT-054 | todo_write / agent_todos channel unbound — no cognitive node wiring | LOW | Integration gap | future integration sprint | Floating |
 | DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
 | DEBT-040 | tool_search role resolution stale | MEDIUM | Correctness (bounded) | 8.8.5 | Locked |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
@@ -248,6 +249,15 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** declared trade-off. A kill-after-timeout pattern (SIGTERM → wait N seconds → SIGKILL / TerminateProcess) is the correct fix.
 - **Phase:** post-8.8.6.
 - **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+
+### DEBT-054 [LOW · Floating] — `todo_write` / `agent_todos` channel have no runtime call site
+
+- **Date:** 2026-06-14
+- **Reproduce:** `TodoWriteTool._arun` returns a well-formed JSON string keyed `agent_todos`; `brain/state.py` has the channel and reducer. However, no graph node calls this tool or routes its output through the `_merge_todos` reducer at runtime — the channel is invisible in the UI.
+- **File(s):** `ailienant-core/tools/universal_tools.py`, `ailienant-core/brain/state.py`.
+- **Error:** declared trade-off (CLAUDE.md §11.2). Division 8.8 is schema-registration-surface only; no `register_*_tools` has a runtime call site. Wiring `todo_write` into a cognitive node so the TODO list renders in the extension sidebar belongs in a dedicated integration phase.
+- **Phase:** future integration sprint.
+- **Notes:** logged at 8.8.7 ship per CLAUDE.md §11.3.
 
 ### DEBT-042 [MEDIUM · Floating] — WebSearchTool and DependencyAuditTool search_fn injection point is unwired
 

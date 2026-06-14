@@ -206,9 +206,10 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `task_stop` | EXECUTE | orchestrator | Send SIGTERM to a running background task; cancel-wins race guard prevents status overwrite |
 | `ask_user_question` | READ_ONLY | all roles, Orchestrator | Pause and surface a structured question to you |
 | `toggle_plan_mode` | READ_ONLY | all roles, Orchestrator | Switch the session's permission mode |
-| `tool_search` | READ_ONLY | all roles | Discover tools that aren't loaded — relevance-retrieve them by query so the prompt stays small as the catalog grows |
+| `tool_search` | READ_ONLY | all 12 roles | Discover tools that aren't loaded — relevance-retrieve them by query so the prompt stays small as the catalog grows |
+| `todo_write` | READ_ONLY | all 12 roles | Write the agent's structured TODO list to shared state (`content / status / active_form`); replaces the prior list each call, an empty list clears it |
 
-That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)**) expands it toward **~56 role-assigned tools**, organized as a tool × agent matrix — so the two context-building agents (Researcher and Analyst) everyone else depends on are no longer the least equipped. Highlights of what's planned (status ⏳):
+That's the full live catalog — the **56-tool parity matrix** (**[División 8.8](docs/PROJECT_MANIFEST.md)**) is now complete. All tools are organized as a tool × agent matrix so every cognitive role — including Researcher, Analyst, and Planner — is properly equipped:
 
 | Agent | Planned tools (⏳) |
 | --- | --- |
@@ -217,7 +218,7 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 | 🧭 **Planner** | *(all tools shipped — `validate_wbs_dependencies`, `estimate_plan_budget` + 3 wire-ins — see live catalog above)* |
 | 🛠️ **Coder** *(by role)* | *(all shipped — 10 net-new role-exclusive tools + `validate_ast`, and the 4 formalize tools re-mirrored to roles.py — see live catalog above)* |
 | 🔌 **Gateway/Benchmark** | *(all shipped — `run_benchmark`, `get_benchmark_report`, `list_capabilities`, `skill_invoke`, `task_list`, `task_stop` + Task V2 role expansion on `task_create`/`task_get` — see live catalog above)* |
-| 🌐 **Universal** | `todo_write` |
+| 🌐 **Universal** | *(all shipped — `todo_write` net-new + `tool_search` cross-listed to all 12 roles — see live catalog above)* |
 
 The enabling piece, `tool_search`, **already ships** (the Wave 0 gate): rather than load every schema into the prompt, the engine injects the whole tool catalog only while it fits a small slice of the context budget — and once it would grow past that, it switches automatically to retrieving the few tools relevant to the step from a RAM-resident vector store, always keeping `tool_search` on hand so an agent can pull the rest by query. The prompt stays small no matter how large the catalog grows.
 

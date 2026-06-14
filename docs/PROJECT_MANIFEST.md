@@ -18,6 +18,7 @@
 | 8.6 Phase 8 Checkpoint Gate | ⬜ PENDING | — | Awaits 8.2 |
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ⬜ PENDING | — | 8.8.0 ToolSearchTool gate |
+| 8.9 Portable Workspace Home | ⬜ PENDING | — | 8.9.1 Storage-path foundation |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Portfolio Release | ⬜ PENDING | — | 11.1 Dockerization |
 
@@ -423,13 +424,33 @@
   - Net-new: `RunBenchmarkTool`, `GetBenchmarkReportTool`, `ListCapabilitiesTool`, `SkillInvokeTool` (wraps the 8.4.5 skill resolver). Task V2: `task_create`/`task_get` extend; `TaskListTool`/`TaskStopTool` net-new.
   - **DoD:** benchmark/catalog tools call the same substrate functions as the 8.5 verbs (no duplicated runner).
 
-- [ ] **8.8.7 — Wave 6: Universal Tools (all roles).** *(≈1 net-new · 1 cross-listed)*
+- [x] **8.8.7 — Wave 6: Universal Tools (all roles).** *(≈1 net-new · 1 cross-listed)*
   - `ToolSearchTool` (cross-listed from Wave 0, available to all roles) + `TodoWriteTool` net-new over `AIlienantGraphState`.
+  - Amendment (§4 pivot): `agent_todos: Annotated[List[Dict[str, Any]], _merge_todos]` added additively to `AIlienantGraphState`; reducer tests `right is not None` (not truthiness) so an explicit `[]` clears the panel — the anti-immortal-TODO invariant. Cross-reference `docs/SCHEMA_EVOLUTION.MD §14`.
   - **DoD:** any agent retrieves tools by query and writes its TODO list to state.
 
-- [ ] **8.8.8 — Division 8.8 Checkpoint Gate.**
+- [x] **8.8.8 — Division 8.8 Checkpoint Gate.**
   - `tests/test_phase8_8_tool_parity_gate.py` (sibling-file convention): every registered schema resolves through `ToolRAGStore`; `allowed_roles` enforced (a role cannot invoke an out-of-set tool); Wave 0 reduction ≥70%; ISO row asserts that `agents/roles.py` role contracts do not degrade.
   - **DoD:** `pytest` green · `mypy .` 0 · `ruff` clean · `npm run compile` 0 (only if any FE surface exposes a tool).
+
+---
+
+## Division 8.9 — Portable Workspace Home (`.ailienant/` Provisioning) ⬜
+
+> AILIENANT manages its own persistence home like Claude Code manages `~/.claude/`. Relocate global runtime stores from the CWD to a stable `~/.ailienant/` home; partition only the GraphRAG semantic store per-project. Add a freeform `AILIENANT.md` project-instructions channel, renderable WBS plans, and zero-friction workspace provisioning. Hybrid storage (Option C): catalog SQLite / MCTS / gateway ledger / global LanceDB tables stay global (already isolated by `project_id`/`workspace_hash` columns); only `workspace_embeddings` goes per-project.
+
+- [ ] **8.9.1 — Storage-Path Foundation.**
+  Relocate global-store defaults in `shared/config.py` to `~/.ailienant/` (`catalog.sqlite`, `lancedb/`, `mcts.sqlite`); ensure home exists at import. New `core/storage_paths.py`: canonical `project_id_for`, `bind_project(workspace_root)`, `graphrag_lancedb_path()` (per-project `~/.ailienant/projects/<id>/lancedb/` + `_unbound` fallback). Bind on `client_workspace_init` (`main.py:1154`). **DoD:** globals resolve under home; bind creates the per-project lancedb dir; unbound fallback safe; env overrides win.
+- [ ] **8.9.2 — Wire GraphRAG + migrate CWD stores.**
+  `semantic_memory.SemanticMemoryManager` defaults its lancedb path to `storage_paths.graphrag_lancedb_path()`; `docs_index`/`trajectory_memory` stay global. `checkpointing`/`janitor` use `MCTS_DB_PATH`; `gateway/handlers` + `janitor` import the shared `project_id_for`. One-time best-effort migration of legacy CWD stores into the home. **DoD:** CWD clean; GraphRAG under per-project home; existing data migrated or re-indexed.
+- [ ] **8.9.3 — `AILIENANT.md` Project-Instructions Injection.**
+  Read `<ws>/.ailienant/AILIENANT.md` (fallback `<ws>/AILIENANT.md`) via `make_safe_reader`, token-capped (digest if large), inject alongside the rules block in the prompt pipeline. **DoD:** present → injected (capped); absent → prompt unchanged, zero tokens.
+- [ ] **8.9.4 — Renderable `plans/` WBS Export.**
+  `dump_plan_to_markdown(spec, workspace_root, task_id)` writes a navigable `<ws>/.ailienant/plans/<task_id>.md` after planning; atomic, non-fatal. **DoD:** a planning turn leaves a readable plan file.
+- [ ] **8.9.5 — Extension Auto-Provision + `.gitignore`.**
+  On first workspace open, idempotently create `<ws>/.ailienant/` + starter `AILIENANT.md` and append a marked `.gitignore` block (ignore runtime/cache, keep `AILIENANT.md` trackable) via `vscode.workspace.fs`. **DoD:** once-only provisioning; re-activation is a no-op.
+- [ ] **8.9.6 — Division 8.9 Checkpoint Gate.**
+  `tests/test_phase8_9_checkpoint_gate.py` (sibling convention): global defaults under home; `bind_project`/`graphrag_lancedb_path` per-project + unbound fallback; env override precedence; `project_id_for` golden vector matches the extension contract; `AILIENANT.md` present→injected/absent→no-op; planning writes `plans/<task_id>.md`; cross-platform path safety. **DoD:** `pytest` green · `mypy .` 0 · `npm run compile` 0 · `npm run lint` 0.
 
 ---
 

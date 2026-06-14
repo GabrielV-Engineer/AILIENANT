@@ -13,6 +13,16 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.8.8: Division 8.8 Checkpoint Gate — 2026-06-14
+**Status:** COMPLETE | **Gates:** mypy 0/339 · pytest 1486 passed · ruff clean
+- Shipped: `tests/test_phase8_8_tool_parity_gate.py` — 5 tests (R1a integrity · R1b READ_ONLY retrievability · R2 RBAC negative · R3 reduction ≥70% at full catalog scale · R4 ISO role-contract snapshot) certifying all 12 `register_*_tools` over an isolated store.
+
+## 8.8.7: Wave 6 Universal Tools — 2026-06-14
+**Status:** COMPLETE | **Gates:** mypy 0/339 · pytest 1486 passed · ruff clean
+- Shipped: `tools/universal_tools.py` (`TodoWriteTool` / `todo_write`, READ_ONLY, ALL_ROLES 12-role universe); `brain/state.py` additive `agent_todos` channel; `ALL_ROLES` constant in `control_tools.py`; `tool_search` cross-listed to all 12 roles in `meta_tools.py`; 28 tests.
+- Key decision: `_merge_todos` reducer tests `right is not None` (not truthiness) so an explicit `[]` clears the panel and TODO immortality is impossible.
+- Deferred: DEBT-054 — `todo_write` / `agent_todos` channel have no runtime call site; wiring into a cognitive node deferred.
+
 ## 8.8.6: Wave 5 Gateway/Benchmark Tools — 2026-06-14
 **Status:** COMPLETE | **Gates:** mypy 0/334 · pytest 33 new passed · full suite 1465 passed
 - Shipped: 6 net-new RBAC-gated tools in `tools/gateway_tools.py` (`run_benchmark`, `get_benchmark_report`, `list_capabilities`, `skill_invoke`, `task_list`, `task_stop`) wrapping the 8.5 benchmark substrate, gateway catalog, and skill resolver; `task_create`/`task_get` extended to include `orchestrator` role (Task V2).

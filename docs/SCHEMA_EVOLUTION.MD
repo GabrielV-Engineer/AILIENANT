@@ -503,6 +503,22 @@ Approximately 40 channels were added incrementally. They are grouped below by fu
 
 ---
 
+## 14. `agent_todos` Channel (Universal Tools)
+
+**Additive only. One new `AIlienantGraphState` channel; no renames, no removals. Older checkpoints rehydrate unchanged; readers use `.get("agent_todos") or []`.**
+
+```python
+agent_todos: Annotated[List[Dict[str, Any]], _merge_todos]
+```
+
+- **Added in:** `brain/state.py`, alongside reducer `_merge_todos`.
+- **Item shape:** `{content: str, status: "pending"|"in_progress"|"completed", active_form: str}` — the same structure `TodoWriteTool._arun` emits and `TodoWriteInput` validates.
+- **Reducer semantics (`_merge_todos`):**
+  - `right is not None` → return `right` (including `[]`, which explicitly clears the list).
+  - `right is None` → return `left or []` (no-op for turns that do not call `todo_write`).
+  - Tests `is not None`, never truthiness, so an empty list is a valid "clear" signal — the anti-immortal-TODO invariant.
+- **No runtime call site yet:** `todo_write._arun` returns a JSON string keyed `agent_todos`; a future graph node will `json.loads` it and write the delta through this channel. Registration-surface only as of Division 8.8.
+
 ## 14. Skills, MCP Config, Hooks, Agent Role Override Tables
 
 **No `AIlienantGraphState` channel changes.** Four new SQLite catalog tables:

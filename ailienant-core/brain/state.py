@@ -338,6 +338,22 @@ def _resolve_target_role(left: Optional[str], right: Optional[str]) -> Optional[
     return right if right is not None else left
 
 
+def _merge_todos(
+    left: Optional[List[Dict[str, Any]]], right: Optional[List[Dict[str, Any]]]
+) -> List[Dict[str, Any]]:
+    """Reducer for an agent's TODO list — replace-semantics, swarm-safe.
+
+    A write rewrites the whole list (the tool always emits the full set), so the latest
+    write wins. The distinction that matters: None means 'no opinion this turn' and keeps
+    the prior list, while an explicit empty list [] means 'I finished — clear my panel'.
+    Testing truthiness (``right if right else left``) would make that clear impossible —
+    an empty list would be read as 'no opinion' and the completed TODOs would never go
+    away. So branch on ``is not None``, never on emptiness."""
+    if right is not None:
+        return right
+    return left or []
+
+
 class AIlienantGraphState(TypedDict):
     """
     El cerebro compartido del flujo de LangGraph.
@@ -619,3 +635,11 @@ class AIlienantGraphState(TypedDict):
     #   record. operator.add reducer keeps parallel/resumed writes additive.
     agentic_iteration: int
     agentic_trajectory: Annotated[List[Dict[str, Any]], operator.add]
+
+    # --- Universal agent TODO list channel ---
+    # A per-agent task scratchpad written by the universal `todo_write` tool. Each item is
+    # {content: str, status: "pending"|"in_progress"|"completed", active_form: str}. Replace
+    # semantics via _merge_todos: a write rewrites the full list (latest wins); None keeps the
+    # prior list; [] explicitly clears it. Additive and safe-defaulted — older checkpoints
+    # rehydrate unchanged (readers use `state.get("agent_todos") or []`).
+    agent_todos: Annotated[List[Dict[str, Any]], _merge_todos]

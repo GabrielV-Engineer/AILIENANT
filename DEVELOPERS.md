@@ -310,6 +310,7 @@ Proyect_Ailienant/
 │   │                            #      planner_tools.py = Wave-3b Planner pre-commit verification (2 READ_ONLY tools);
 │   │                            #      coder_tools.py = Wave-4 role-specific coder arsenal (10 net-new + ASTValidateTool);
 │   │                            #      gateway_tools.py = Wave-5 gateway/benchmark tools (6 net-new: run_benchmark, get_benchmark_report, list_capabilities, skill_invoke, task_list, task_stop);
+│   │                            #      universal_tools.py = Wave-6 universal arsenal (todo_write, READ_ONLY, all 12 roles);
 │   │                            #      quarantine.py = shared Cognitive-Quarantine boundary wrapper),
 │   │                            #     validation/diagnostics.py (structured verdict parser)
 │   ├── gateway/                 #   External Capability Gateway: stdio MCP server exposing AILIENANT

@@ -14,7 +14,8 @@
 #         and returns the shift-left instruction, not bare JSON.
 #   C2  — config-threaded role wins over a divergent ambient ContextVar role.
 #   D   — tool_search is always present in a deferred set, bound stays <= TOP_K.
-#   E   — tool_search invariants: READ_ONLY, all-roles, survives PLAN mode.
+#   E   — tool_search invariants: READ_ONLY, all-roles (the full 12-role universe,
+#         cross-listed in Wave 6), survives PLAN mode.
 #   F   — k=1 deferred returns exactly [tool_search] (no select_tools(k=0) leak).
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import pytest
 from core.deferred_tool_loader import DeferredToolLoader
 from core.permissions import SessionPermissionMode, ToolPrivilegeTier
 from core.tool_rag import TOOL_RAG_MIN_REDUCTION, TOOL_RAG_TOP_K, ToolRAGStore, ToolSchema
-from tools.control_tools import _CONTROL_ROLES
+from tools.control_tools import ALL_ROLES
 from tools.meta_tools import ToolSearchTool, register_meta_tools
 
 # Needle: distinctively described so an exact-text query lands a zero-distance
@@ -258,7 +259,7 @@ async def test_tool_search_invariants(tmp_path: Path) -> None:
     by_name: Dict[str, ToolSchema] = {s.name: s for s in store.all_schemas()}
     ts = by_name["tool_search"]
     assert ts.privilege_tier is ToolPrivilegeTier.READ_ONLY
-    assert ts.allowed_roles == _CONTROL_ROLES
+    assert ts.allowed_roles == ALL_ROLES
 
     # Survives PLAN mode (READ_ONLY-only filter) — still in the deferred set.
     loader = DeferredToolLoader(store)

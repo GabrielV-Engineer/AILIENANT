@@ -64,6 +64,15 @@ _CONTROL_ROLES_WITH_ORCHESTRATOR: FrozenSet[str] = _CONTROL_ROLES | frozenset({"
 its session and surface questions to the operator through these CONTROL tools."""
 
 
+ALL_ROLES: FrozenSet[str] = _CONTROL_ROLES | frozenset(
+    {"researcher", "analyst", "planner", "orchestrator"}
+)
+"""The authoritative role universe: the 8 canonical coder roles plus the four cognitive
+graph-node roles (researcher, analyst, planner, orchestrator). Universal tools — tool
+discovery and the TODO scratchpad — are visible to every one of them, so this is the
+`allowed_roles` they register with."""
+
+
 DANGEROUS_COMMANDS_REGEX: List[re.Pattern[str]] = [
     re.compile(r"\brm\s+-rf?\b", re.IGNORECASE),
     re.compile(r"\bsudo\b", re.IGNORECASE),
