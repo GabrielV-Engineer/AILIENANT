@@ -412,7 +412,7 @@
   - Net-new: `ValidateWBSDependenciesTool` (detects circular dependencies between `WBSStep` + steps referencing out-of-scope files — AILIENANT using its own GraphRAG to verify its own plan), `BudgetEstimatorTool` (plan draft token cost vs `TokenLedger` budget — shift-left of `oom_fallback`).
   - **DoD:** a `MissionSpecification` draft with a circular dependency is rejected pre-commit; the Planner's first attempt self-corrects instead of burning `MAX_PLANNER_RETRIES`.
 
-- [ ] **8.8.5 — Wave 4: Role-Specific Coder Tools (leverages `ROLE_REGISTRY`).** *(≈10 net-new · 5 formalize)*
+- [x] **8.8.5 — Wave 4: Role-Specific Coder Tools (leverages `ROLE_REGISTRY`).** *(≈10 net-new · 5 formalize)*
   - Formalize: `atomic_code_patch`, `batch_semantic_edit`, `file_write`, `sandbox_bash`, `ASTValidateTool` (wraps `validate_ast`).
   - Net-new by exclusive role: `RunTestsTool` (qa_tester), `GitStageTool`/`GitCommitTool`/`GitDiffTool` (vcs_manager, conventional commits), `DocstringGeneratorTool` (doc_manager), `LinterAutoFixTool` (secops/qa_tester, `--fix` with diff before apply), `DependencyInstallTool` (devops_infra, EXECUTE in sandbox), `EnvFileGuardTool` (devops_infra, intercepts `.env` mutations → HITL), `DataPipelineRunTool` (data_ml_engineer), `SecurityAuditTool` (secops, OWASP on the diff).
   - `allowed_roles` of each tool mirrors the `allowed_tools` of the role in `agents/roles.py`.

@@ -64,8 +64,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | streaming refactor | Floating |
 | DEBT-043 | Orchestrator tools register but unbound in live graph node | MEDIUM | Integration gap | Graph-wiring sprint | Floating |
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
+| DEBT-046 | Coder EXECUTE/DANGEROUS wrappers rely on tier-gating, not sandbox_bash's interactive HITL card | MEDIUM | Integration gap | post-8.8.5 | Floating |
 | DEBT-042 | WebSearchTool / DependencyAuditTool search_fn unwired | MEDIUM | Feature gap | 8.8.x integration sprint | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
+| DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
 | DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
 | DEBT-040 | tool_search role resolution stale | MEDIUM | Correctness (bounded) | 8.8.5 | Locked |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
@@ -163,6 +165,26 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** additive `depends_on: Optional[List[int]] = None` field on `WBSStep` (`brain/state.py`) + migration in `docs/SCHEMA_EVOLUTION.MD`.
 - **Phase:** post-8.8.4 — schedule after `WBSStep` schema extension.
 - **Notes:** logged at 8.8.4 ship per CLAUDE.md §11.3.
+
+### DEBT-046 [MEDIUM · Floating] — Coder EXECUTE/DANGEROUS wrappers rely on tier-gating, not the interactive HITL card
+
+- **Date:** 2026-06-14
+- **Reproduce:** Invoke any `coder_tools` EXECUTE wrapper (e.g. `run_tests`, `install_dependency`) outside the graph dispatch. It dispatches through the sandbox adapter once tier-gating admits it, but unlike `sandbox_bash` it does NOT surface the `session_permission_mode` + `session_id` interactive approval card; there is no card channel on that path.
+- **File(s):** `ailienant-core/tools/coder_tools.py` (all EXECUTE/DANGEROUS `_arun` bodies).
+- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. The thin-wrapper reuse boundary stops at the adapter; tier-gating + the always-HITL DANGEROUS tier is the floor. `guard_env_file` already emits a content-hash-idempotent HITL gate, so secret mutation is covered.
+- **Blocked by:** a graph-wiring sprint that threads `session_id`/`session_permission_mode` into the coder tool factories (mirrors `sandbox_bash`).
+- **Phase:** post-8.8.5.
+- **Notes:** logged at 8.8.5 ship per CLAUDE.md §11.3.
+
+### DEBT-047 [LOW · Floating] — generate_docstring is line-anchored, not a signature-aware renderer
+
+- **Date:** 2026-06-14
+- **Reproduce:** Call `generate_docstring` on a multi-line `def`/`class`. It inserts a `"""TODO: document <name>."""` stub as the first body statement; it does not synthesize param/return sections from the signature, and it deliberately SKIPs single-line definitions (`def f(): return 1`).
+- **File(s):** `ailienant-core/tools/coder_tools.py` (`DocstringGeneratorTool._arun`).
+- **Error:** not a defect — a **declared trade-off (CLAUDE.md §11.2)**. AST-anchored insertion + `_validate_python_syntax` keeps it safe and deterministic; a richer Google/Numpy renderer is deferred.
+- **Blocked by:** nothing — a self-contained enhancement.
+- **Phase:** post-8.8.5.
+- **Notes:** logged at 8.8.5 ship per CLAUDE.md §11.3.
 
 ### DEBT-042 [MEDIUM · Floating] — WebSearchTool and DependencyAuditTool search_fn injection point is unwired
 

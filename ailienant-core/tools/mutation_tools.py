@@ -43,8 +43,23 @@ logger = logging.getLogger("MUTATION_TOOLS")
 # Shared constants & helpers
 # =====================================================================
 
-_ALLOWED_MUTATION_ROLES: FrozenSet[str] = frozenset(
-    {"core_dev", "architect_refactor", "secops", "data_ml_engineer", "devops_infra"}
+# allowed_roles mirror agents/roles.py per capability, so the parity matrix gates
+# each mutation tool by exactly the roles whose whitelist holds the corresponding
+# legacy capability (apply_patch / BatchEditTool / WriteFileTool).
+_ATOMIC_PATCH_ROLES: FrozenSet[str] = frozenset(  # apply_patch holders (all but vcs_manager)
+    {
+        "core_dev",
+        "architect_refactor",
+        "devops_infra",
+        "secops",
+        "qa_tester",
+        "doc_manager",
+        "data_ml_engineer",
+    }
+)
+_BATCH_EDIT_ROLES: FrozenSet[str] = frozenset({"architect_refactor"})  # BatchEditTool holder
+_FILE_WRITE_ROLES: FrozenSet[str] = frozenset(  # WriteFileTool holders
+    {"core_dev", "devops_infra", "doc_manager", "data_ml_engineer"}
 )
 
 
@@ -334,14 +349,18 @@ class FileWriteTool(BaseTool):
 
 
 def _tool_schema(
-    name: str, description: str, json_schema_class: Type[BaseModel]
+    name: str,
+    description: str,
+    json_schema_class: Type[BaseModel],
+    *,
+    roles: FrozenSet[str],
 ) -> ToolSchema:
     return ToolSchema(
         name=name,
         description=description,
         json_schema=json.dumps(json_schema_class.model_json_schema(), default=str),
         privilege_tier=ToolPrivilegeTier.WRITE,
-        allowed_roles=_ALLOWED_MUTATION_ROLES,
+        allowed_roles=roles,
     )
 
 
@@ -352,16 +371,19 @@ async def register_mutation_tools(store: ToolRAGStore) -> int:
             "atomic_code_patch",
             "Surgical search/replace patch in a VFS file with fuzzy + AST + OCC.",
             AtomicCodePatchInput,
+            roles=_ATOMIC_PATCH_ROLES,
         ),
         _tool_schema(
             "batch_semantic_edit",
             "Multi-file coordinated edit, fully ACID via a Unit-of-Work write buffer.",
             BatchSemanticEditInput,
+            roles=_BATCH_EDIT_ROLES,
         ),
         _tool_schema(
             "file_write",
             "Create or overwrite a VFS file with optional OCC and Python AST checks.",
             FileWriteInput,
+            roles=_FILE_WRITE_ROLES,
         ),
     ]
     for schema in schemas:

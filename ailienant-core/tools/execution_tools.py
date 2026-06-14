@@ -82,6 +82,13 @@ _EXECUTE_ROLES: FrozenSet[str] = frozenset(
     {"core_dev", "devops_infra", "secops", "qa_tester", "data_ml_engineer"}
 )
 
+# sandbox_bash mirrors the roles.py BashTool whitelist specifically (the parity
+# matrix gates the shell by exactly the roles granted a shell). The other
+# execution tools keep the broader _EXECUTE_ROLES set.
+_SANDBOX_BASH_ROLES: FrozenSet[str] = frozenset(
+    {"devops_infra", "qa_tester", "vcs_manager", "data_ml_engineer"}
+)
+
 _SANDBOX_ENV_WHITELIST: Tuple[str, ...] = (
     "PYTHONPATH", "NODE_OPTIONS", "RUFF_CACHE_DIR", "MYPY_CACHE_DIR",
 )
@@ -467,13 +474,14 @@ def _execute_schema(
     input_model: Type[BaseModel],
     *,
     tier: ToolPrivilegeTier = ToolPrivilegeTier.EXECUTE,
+    roles: FrozenSet[str] = _EXECUTE_ROLES,
 ) -> ToolSchema:
     return ToolSchema(
         name=name,
         description=description,
         json_schema=json.dumps(input_model.model_json_schema(), default=str),
         privilege_tier=tier,
-        allowed_roles=_EXECUTE_ROLES,
+        allowed_roles=roles,
     )
 
 
@@ -485,6 +493,7 @@ async def register_execution_tools(store: ToolRAGStore) -> int:
             "Run a short-lived shell command (2000-char-truncated output, HITL "
             "interceptor on dangerous patterns).",
             SandboxBashInput,
+            roles=_SANDBOX_BASH_ROLES,
         ),
         _execute_schema(
             "task_create",

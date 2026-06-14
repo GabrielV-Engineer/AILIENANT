@@ -153,10 +153,13 @@ async def test_tool_rag_selection_yields_70pct_payload_reduction(
     eager = store.all_schemas()
     assert len(eager) >= 14, f"expected >=14 schemas across Phase 5; got {len(eager)}"
 
+    # qa_tester is the role whose roles.py whitelist holds the shell (BashTool) for
+    # this QA intent; after the parity-matrix mirror, sandbox_bash is gated to the
+    # BashTool holders, so the QA role — not core_dev — is the right selector here.
     selected = await store.select_tools(
         intent="Run the test suite and check linting",
         k=TOOL_RAG_TOP_K,
-        active_role="core_dev",
+        active_role="qa_tester",
         session_mode=SessionPermissionMode.DEFAULT,
     )
     selected_names = {s.name for s in selected}

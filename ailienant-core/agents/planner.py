@@ -653,6 +653,11 @@ async def run_planner_node(
                 logger.debug("Planner cache entry unusable, re-planning live: %s", _cache_err)
                 mission_plan = None
 
+    # Budget estimate from the pre-commit BudgetEstimatorTool. Hoisted above the
+    # planning branch so every return path — including the cache-hit / dirty-buffer
+    # bypass that skips the branch entirely — has it bound before the result dict.
+    _bud: Optional[dict] = None
+
     if mission_plan is None:
         # mandates Big/cloud model for the Planner.
         # ResourceBroker still arbitrates the VRAM lock; we just request BIG by default.
@@ -667,7 +672,6 @@ async def run_planner_node(
         # cycle (review → rejected → replanning → validated) so it is legible in the log.
         await _emit("critic_review")
         last_validation_err: str = ""
-        _bud: Optional[dict] = None  # budget estimate populated after first clean draft
 
         try:
             while retry_count <= MAX_PLANNER_RETRIES:

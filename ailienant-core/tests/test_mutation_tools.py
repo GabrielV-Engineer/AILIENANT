@@ -20,7 +20,9 @@ from tools.mutation_tools import (
     AtomicCodePatchTool,
     BatchSemanticEditTool,
     FileWriteTool,
-    _ALLOWED_MUTATION_ROLES,
+    _ATOMIC_PATCH_ROLES,
+    _BATCH_EDIT_ROLES,
+    _FILE_WRITE_ROLES,
     register_mutation_tools,
 )
 
@@ -436,9 +438,16 @@ async def test_register_mutation_tools_registers_three_write_tier_schemas(tmp_pa
 async def test_all_mutation_schemas_are_write_tier(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await register_mutation_tools(store)
+    # allowed_roles mirror agents/roles.py per capability, so each tool carries its
+    # own role set (apply_patch / BatchEditTool / WriteFileTool holders respectively).
+    expected_roles = {
+        "atomic_code_patch": _ATOMIC_PATCH_ROLES,
+        "batch_semantic_edit": _BATCH_EDIT_ROLES,
+        "file_write": _FILE_WRITE_ROLES,
+    }
     for schema in store.all_schemas():
         assert schema.privilege_tier is ToolPrivilegeTier.WRITE
-        assert schema.allowed_roles == _ALLOWED_MUTATION_ROLES
+        assert schema.allowed_roles == expected_roles[schema.name]
 
 
 # =====================================================================

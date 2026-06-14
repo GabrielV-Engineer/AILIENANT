@@ -28,6 +28,7 @@ from tools.execution_tools import (
     TaskCreateTool,
     TaskGetTool,
     _EXECUTE_ROLES,
+    _SANDBOX_BASH_ROLES,
     register_execution_tools,
 )
 
@@ -280,8 +281,11 @@ async def test_execution_tier_assignment(tmp_path: Path) -> None:
     assert by_name["task_create"].privilege_tier is ToolPrivilegeTier.EXECUTE
     assert by_name["check_type_integrity"].privilege_tier is ToolPrivilegeTier.EXECUTE
     assert by_name["task_get"].privilege_tier is ToolPrivilegeTier.READ_ONLY
-    for schema in store.all_schemas():
-        assert schema.allowed_roles == _EXECUTE_ROLES
+    # sandbox_bash mirrors the roles.py BashTool whitelist specifically; the other
+    # three execution tools keep the broader _EXECUTE_ROLES set.
+    assert by_name["sandbox_bash"].allowed_roles == _SANDBOX_BASH_ROLES
+    for name in ("task_create", "task_get", "check_type_integrity"):
+        assert by_name[name].allowed_roles == _EXECUTE_ROLES
 
 
 # =====================================================================

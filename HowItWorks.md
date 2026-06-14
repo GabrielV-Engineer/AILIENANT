@@ -180,10 +180,21 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `emit_hitl_request` | READ_ONLY | Orchestrator | Raise an audited, idempotent HITL approval gate (deterministic id; injection-sanitized flag) |
 | `validate_wbs_dependencies` | READ_ONLY | Planner | Pre-commit WBS gate: detects forward-reference ordering violations and out-of-scope target files (200-step cap; path boundary via `PurePosixPath.is_relative_to`) |
 | `estimate_plan_budget` | READ_ONLY | Planner | Heuristic token-cost estimate for a committed mission plan vs session budget; advisory — never raises, stores result via LangGraph reducer (shift-left of OOM fallback) |
-| `atomic_code_patch` | WRITE | core_dev, architect_refactor, secops, data_ml | Fuzzy search/replace with AST + optimistic-concurrency check |
-| `batch_semantic_edit` | WRITE | core_dev, architect_refactor | Multi-file coordinated edit, ACID via unit-of-work |
-| `file_write` | WRITE | core_dev, devops_infra | Create/overwrite a VFS file with AST + OCC |
-| `sandbox_bash` | EXECUTE | core_dev, devops_infra, secops, qa_tester, data_ml | Short-lived shell command in the sandbox (HITL-gated) |
+| `atomic_code_patch` | WRITE | all coder roles except vcs_manager (apply_patch holders) | Fuzzy search/replace with AST + optimistic-concurrency check |
+| `batch_semantic_edit` | WRITE | architect_refactor | Multi-file coordinated edit, ACID via unit-of-work |
+| `file_write` | WRITE | core_dev, devops_infra, doc_manager, data_ml | Create/overwrite a VFS file with AST + OCC |
+| `sandbox_bash` | EXECUTE | devops_infra, qa_tester, vcs_manager, data_ml (BashTool holders) | Short-lived shell command in the sandbox (HITL-gated) |
+| `run_tests` | EXECUTE | qa_tester | Run pytest against a project-relative target (`-q -- <target>`; flag/traversal-guarded) |
+| `git_stage` | EXECUTE | vcs_manager | `git add` of `List[str]` project-relative paths (each arg guarded + quoted) |
+| `git_commit` | EXECUTE | vcs_manager | Commit from validated parts; Conventional-Commit composed conditionally (no `feat(): …`) |
+| `git_diff` | EXECUTE | vcs_manager | On-disk git diff (worktree/staged). Does NOT show RAM-VFS pending edits — use `diff_changes` |
+| `generate_docstring` | WRITE | doc_manager | AST-anchored docstring stub insertion; catches `SyntaxError`/`RecursionError` (never crashes) |
+| `linter_autofix` | EXECUTE | secops, qa_tester | ruff `--diff` (default) or `--fix`; diff-before-apply |
+| `install_dependency` | EXECUTE | devops_infra | pip install of a strictly-validated package/version (anchored regex; no URLs/VCS refs) |
+| `guard_env_file` | DANGEROUS | devops_infra | Intercepts `.env`/`.env.*` mutations → content-hash-idempotent HITL gate; never writes secrets |
+| `run_data_pipeline` | EXECUTE | data_ml | Run a project-relative pipeline script in the sandbox (arg-guarded) |
+| `security_audit` | READ_ONLY | secops | Pure-Python OWASP scan over a diff/code string (secrets, eval/exec, shell=True, pickle, yaml.load, dynamic SQL) |
+| `validate_ast` | READ_ONLY | all coder roles except vcs_manager | Structural AST validation (Python `ast.parse`, TS/TSX engine); `{is_valid, errors}` |
 | `task_create` | EXECUTE | exec-capable roles | Spawn a long-running background task |
 | `check_type_integrity` | EXECUTE | exec-capable roles | Run `mypy` / `tsc` over a target |
 | `task_get` | READ_ONLY | exec-capable roles | Read a background task's status/output |
@@ -198,7 +209,7 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 | 💬 **Analyst** | *(all 10 tools shipped — see live catalog above)* |
 | 🎛️ **Orchestrator** | *(all tools shipped — see live catalog above; token telemetry reuses `read_token_ledger`)* |
 | 🧭 **Planner** | *(all tools shipped — `validate_wbs_dependencies`, `estimate_plan_budget` + 3 wire-ins — see live catalog above)* |
-| 🛠️ **Coder** *(by role)* | `run_tests` (qa), `git_stage`/`git_commit`/`git_diff` (vcs), `docstring_generator` (doc), `linter_autofix` (secops/qa), `dependency_install` (devops), `env_file_guard` (devops), `security_audit` (secops) |
+| 🛠️ **Coder** *(by role)* | *(all shipped — 10 net-new role-exclusive tools + `validate_ast`, and the 4 formalize tools re-mirrored to roles.py — see live catalog above)* |
 | 🌐 **Universal** | `todo_write` |
 
 The enabling piece, `tool_search`, **already ships** (the Wave 0 gate): rather than load every schema into the prompt, the engine injects the whole tool catalog only while it fits a small slice of the context budget — and once it would grow past that, it switches automatically to retrieving the few tools relevant to the step from a RAM-resident vector store, always keeping `tool_search` on hand so an agent can pull the rest by query. The prompt stays small no matter how large the catalog grows.
