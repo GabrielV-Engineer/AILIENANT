@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.9: Portable Workspace Home (`.ailienant/` Provisioning) — 2026-06-14
+**Status:** COMPLETE | **Gates:** mypy 0/340 · pytest 1494 passed · tsc 0 · eslint 0 errors
+- Shipped: global stores relocated from CWD to `~/.ailienant/` via `shared.config` home defaults; new `core/storage_paths.py` partitions only the GraphRAG semantic store per project (`projects/<id>/lancedb/`, bound on `client_workspace_init`); freeform `AILIENANT.md` instructions injected into planner+coder prompts; navigable `dump_plan_to_markdown` plan export; extension first-run provisioning of `.ailienant/` + starter `AILIENANT.md` + marked `.gitignore` block; `test_phase8_9_checkpoint_gate.py` (8 rows).
+- Key decision: hybrid storage (Option C) — the catalog/MCTS/ledger and the `ailienant_product_docs`/trajectory LanceDB tables stay global because they are shared across projects (isolated by `project_id`/`workspace_hash` column); only `workspace_embeddings` is physically per-project, so out-of-process/dashboard consumers resolve it from an explicit `graphrag_lancedb_path_for(project_id)`.
+
 ## 8.8.8: Division 8.8 Checkpoint Gate — 2026-06-14
 **Status:** COMPLETE | **Gates:** mypy 0/339 · pytest 1486 passed · ruff clean
 - Shipped: `tests/test_phase8_8_tool_parity_gate.py` — 5 tests (R1a integrity · R1b READ_ONLY retrievability · R2 RBAC negative · R3 reduction ≥70% at full catalog scale · R4 ISO role-contract snapshot) certifying all 12 `register_*_tools` over an isolated store.

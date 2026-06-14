@@ -15,10 +15,11 @@ from typing import Optional
 
 from brain.checkpoint import checkpoint_manager
 from brain.mcts.tree import MCTSNode
+from shared.config import MCTS_DB_PATH
 
 logger = logging.getLogger("MCTS_CHECKPOINTER")
 
-_DEFAULT_DB_PATH: str = "ailienant_mcts.sqlite"
+_DEFAULT_DB_PATH: str = MCTS_DB_PATH
 
 _DDL: str = """
 CREATE TABLE IF NOT EXISTS mcts_episodes (

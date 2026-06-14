@@ -15,7 +15,6 @@ backend modules are imported lazily inside each handler to keep this import chea
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import uuid
@@ -25,6 +24,7 @@ import httpx
 
 from core.config.host_discovery import HostCoords, resolve_host_or_error
 from core.permissions import session_mode_from_frontend
+from core.storage_paths import project_id_for
 from gateway import ledger
 from gateway.governance import INTERNAL_TASK_MODE, resolve_caller_id
 
@@ -62,16 +62,6 @@ _SUBMIT_TIMEOUT_S = 10.0
 _STATUS_TIMEOUT_S = 5.0
 
 
-def project_id_for(workspace_root: str) -> str:
-    """Derive the per-workspace project id the on-disk stores are keyed by.
-
-    Mirrors the editor's identity exactly: the SHA-256 hex digest of the raw workspace
-    root path. The caller must pass the same absolute path the editor uses, or the
-    digest will not match the indexed data.
-    """
-    return hashlib.sha256(workspace_root.encode("utf-8")).hexdigest()
-
-
 def _require(args: Dict[str, Any], required: List[str]) -> None:
     """Raise ``InvalidArguments`` if any required key is absent or empty."""
     absent = [key for key in required if not args.get(key)]
@@ -85,11 +75,13 @@ def _require(args: Dict[str, Any], required: List[str]) -> None:
 async def handle_query_memory(args: Dict[str, Any]) -> Any:
     _require(args, ["query", "workspace_root"])
     from core.memory.semantic_memory import SemanticMemoryManager
+    from core.storage_paths import graphrag_lancedb_path_for
 
     project_id = project_id_for(args["workspace_root"])
-    pairs = await SemanticMemoryManager().search_snippets(
-        args["query"], workspace_hash=project_id
-    )
+    # The gateway runs out of process and never binds a project, so resolve the
+    # GraphRAG store explicitly from the caller's project id.
+    sem = SemanticMemoryManager(lancedb_path=graphrag_lancedb_path_for(project_id))
+    pairs = await sem.search_snippets(args["query"], workspace_hash=project_id)
     return [{"file_path": file_path, "snippet": snippet} for file_path, snippet in pairs]
 
 

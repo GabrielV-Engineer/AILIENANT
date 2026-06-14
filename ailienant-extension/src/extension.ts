@@ -15,6 +15,7 @@ import {
 import { boundingBoxRegistry, installDecayListener } from './providers/telemetry';
 import { InlineMutationManager } from './core/InlineMutationManager';
 import { IdeSync } from './ide_sync';
+import { provisionWorkspaceHome } from './workspace_provisioning';
 
 function makeSessionId(): string {
     if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -25,6 +26,10 @@ function makeSessionId(): string {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     console.log('AILIENANT extension activated.');
+
+    // First-run provisioning of the workspace-local .ailienant/ home (idempotent,
+    // non-fatal). Runs before the backend connects so the home is ready early.
+    void provisionWorkspaceHome(context);
 
     // Phase 7.9.A.5.1 — dynamic port selection + ephemeral auth token.
     // findFreePort() is OS-assigned (listen(0)) — no TOCTOU race.

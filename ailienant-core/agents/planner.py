@@ -19,6 +19,7 @@ from agents.workspace_context import build_workspace_overview
 from agents.recency import compute_recency_score, session_heatmap
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
+from core.project_instructions import get_project_instructions
 from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
 from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
 from core.memory.semantic_memory import SemanticMemoryManager
@@ -307,6 +308,16 @@ async def run_planner_node(
     _rules = rule_manager.get_combined_rules(state.get("workspace_root", ""))
     if _rules:
         system_prompt_text += f"\n\n{_rules}"
+
+    # Freeform project instructions (AILIENANT.md) — standing prose guidance that
+    # complements the machine-checkable .ailienant.json rules above.
+    _project_instructions = get_project_instructions(
+        state.get("project_id") or "",
+        state.get("workspace_root", ""),
+        state.get("task_id", ""),
+    )
+    if _project_instructions:
+        system_prompt_text += f"\n\n{_project_instructions}"
 
     # ── User Skill Injection ───────────────────────────────
     # Skills the user saved and either explicitly invoked or that matched this task
@@ -828,10 +839,13 @@ async def run_planner_node(
 
     # flush cognitive state to .ailienant/AGENTS.md ────────────
     try:
-        from core.state_manager import dump_state_to_markdown
+        from core.state_manager import dump_state_to_markdown, dump_plan_to_markdown
+        _ws_root = state.get("workspace_root", "")
         _state_for_dump = dict(state) | result
         _state_for_dump["_top_k_files_cache"] = locals().get("_top_k_files", [])
-        dump_state_to_markdown(_state_for_dump, state.get("workspace_root", ""))
+        dump_state_to_markdown(_state_for_dump, _ws_root)
+        # Also export a navigable plan the user can open in the editor preview.
+        dump_plan_to_markdown(mission_plan, _ws_root, str(state.get("task_id") or ""))
     except Exception as _dump_err:
         logger.debug("state dump skipped: %s", _dump_err)
     # ─────────────────────────────────────────────────────────────────────────

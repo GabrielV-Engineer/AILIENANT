@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from brain.state import WBSStep
 # role registry lives in agents/roles.py (flat-module import via conftest).
 from agents.roles import build_coder_system_prompt, get_role_config
+from core.project_instructions import get_project_instructions
 
 logger = logging.getLogger("CODER_NODE")
 
@@ -211,6 +212,12 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
     role_cfg = get_role_config(target_step.target_role)
     system_prompt: str = build_coder_system_prompt(target_step.target_role)
+
+    # Freeform project instructions (AILIENANT.md) — standing implementation
+    # guidance (conventions, domain notes) the coder honors on every step.
+    _project_instructions = get_project_instructions(project_id, workspace_root, session_id)
+    if _project_instructions:
+        system_prompt += f"\n\n{_project_instructions}"
 
     # Pre-execution HITL gates — emit security flags when the active step matches a
     # role-specific HITL trigger (e.g. devops_infra touching .env, vcs_manager --force).

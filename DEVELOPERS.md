@@ -160,7 +160,11 @@ Source: [agents/planner.py](ailienant-core/agents/planner.py), [core/memory/cont
 
 ### Cognitive Fast-Boot
 
-`dump_state_to_markdown` ([core/state_manager.py](ailienant-core/core/state_manager.py)) writes a human-readable checkpoint with an embedded machine-JSON payload to `<workspace>/.ailienant/AGENTS.md` via temp-file + `os.replace`. `load_state_from_markdown` returns `None` if missing or older than `max_age_seconds` (default 3600). On a warm hit, the planner skips the LanceDB embedding call and runs only `deep_parse`.
+`dump_state_to_markdown` ([core/state_manager.py](ailienant-core/core/state_manager.py)) writes a human-readable checkpoint with an embedded machine-JSON payload to `<workspace>/.ailienant/AGENTS.md` via temp-file + `os.replace`. `load_state_from_markdown` returns `None` if missing or older than `max_age_seconds` (default 3600). On a warm hit, the planner skips the LanceDB embedding call and runs only `deep_parse`. The sibling `dump_plan_to_markdown` writes a separate navigable plan (no embedded JSON) to `<workspace>/.ailienant/plans/<task_id>.md` for the editor preview.
+
+### Storage Home
+
+[core/storage_paths.py](ailienant-core/core/storage_paths.py): global stores (catalog SQLite, MCTS, gateway ledger, the global LanceDB tables) live under `~/.ailienant/`; only the GraphRAG `workspace_embeddings` store is partitioned per project at `~/.ailienant/projects/<project_id>/lancedb/`, bound on `client_workspace_init` (or resolved explicitly via `graphrag_lancedb_path_for(project_id)` by the out-of-process gateway and the dashboard). Legacy CWD-era stores are migrated into the home once at import.
 
 ### Memory Janitor
 
@@ -286,7 +290,9 @@ Proyect_Ailienant/
 │   │   ├── supervisor.py        #     deterministic FinOps supervisor (hard-kill / soft gate)
 │   │   ├── audit.py             #     append-only blake2b HITL audit ledger
 │   │   ├── vfs_middleware.py    #     VFS proxy firewall (ignore + binary + anti-OOM)
-│   │   ├── state_manager.py     #     AGENTS.md fast-boot serializer
+│   │   ├── state_manager.py     #     AGENTS.md fast-boot serializer + navigable plans/ export
+│   │   ├── storage_paths.py     #     app-home resolver; per-project GraphRAG partition + legacy CWD migration
+│   │   ├── project_instructions.py # freeform AILIENANT.md project-instructions reader (token-capped)
 │   │   ├── janitor.py           #     orphan-vector GC + MCTS purge
 │   │   ├── token_ledger.py      #     LOCAL/CLOUD token accounting
 │   │   ├── deferred_tool_loader.py # eager-vs-deferred tool injection over ToolRAGStore (~10%-budget gate)
@@ -342,6 +348,7 @@ Proyect_Ailienant/
 │   ├── src/
 │   │   ├── extension.ts         #     activation entry
 │   │   ├── ide_sync.ts          #     context capture (debounced, .ailienantignore gate)
+│   │   ├── workspace_provisioning.ts # first-run .ailienant/ skeleton + starter AILIENANT.md + .gitignore block
 │   │   ├── webview/             #     React sidebar (chat, ThoughtBox, diffs, HUD, checklist)
 │   │   ├── dashboard/           #     Web Dashboard SPA (Hardware/BYOM/Rules/Staging/Audit/…)
 │   │   ├── core/                #     IntentRouter, PatchActuator, tokenizer, inline-edit manager

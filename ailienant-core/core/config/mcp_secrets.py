@@ -30,13 +30,13 @@ import stat
 import tempfile
 from typing import Dict
 
+from shared.config import DB_CATALOG_PATH
+
 logger = logging.getLogger("MCP_SECRETS")
 
 # Co-locate with the catalog DB so the path is deterministic regardless of the
 # process working directory — identical resolution to byom_config.
-_CATALOG_PATH: pathlib.Path = pathlib.Path(
-    os.environ.get("AILIENANT_CATALOG_DB", "ailienant_catalog.sqlite")
-).resolve()
+_CATALOG_PATH: pathlib.Path = pathlib.Path(DB_CATALOG_PATH).resolve()
 MCP_SECRETS_PATH: pathlib.Path = _CATALOG_PATH.parent / "mcp_secrets.json"
 
 # A generic redaction marker. Deliberately NOT the BYOM "sk-" prefix: these

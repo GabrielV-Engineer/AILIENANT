@@ -1,32 +1,31 @@
 # core/janitor.py
-"""Phase 3.5 — Memory Janitor & GC.
+"""Memory Janitor & GC.
 
 Two cleanup targets:
     run_vector_gc          — delete LanceDB vectors whose source files no longer exist on disk
-    purge_obsolete_graphs  — delete old pruned MCTS episodes from ailienant_mcts.sqlite
+    purge_obsolete_graphs  — delete old pruned MCTS episodes from the MCTS audit DB
     run_janitor            — orchestrator that calls both and returns a combined JanitorReport
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import time
-from typing import List
+from typing import List, Optional
 
 import aiosqlite
 import lancedb
 import pyarrow.compute as pc
 from pydantic import BaseModel
 
-from shared.config import LANCEDB_PATH
+from shared.config import MCTS_DB_PATH
+from core.storage_paths import graphrag_lancedb_path, project_id_for
 
 logger = logging.getLogger("JANITOR")
 
 _WORKSPACE_EMBEDDINGS_TABLE: str = "workspace_embeddings"
 _DEFAULT_RETENTION_DAYS: int = 30
-_DEFAULT_MCTS_DB_PATH: str = "ailienant_mcts.sqlite"
 
 
 # ── Report models (Pydantic so FastAPI can serialise them directly) ────────────
@@ -47,13 +46,9 @@ class JanitorReport(BaseModel):
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
-def _compute_workspace_hash(workspace_root: str) -> str:
-    return hashlib.sha256(workspace_root.encode("utf-8")).hexdigest()
-
-
 def _vector_gc_sync(workspace_root: str, lancedb_path: str) -> VectorGCReport:
     """Sync implementation; always called via asyncio.to_thread()."""
-    ws_hash: str = _compute_workspace_hash(workspace_root)
+    ws_hash: str = project_id_for(workspace_root)
     db = lancedb.connect(lancedb_path)
     if _WORKSPACE_EMBEDDINGS_TABLE not in db.table_names():
         logger.info("Janitor: table '%s' not found — skipping vector GC.", _WORKSPACE_EMBEDDINGS_TABLE)
@@ -84,20 +79,23 @@ def _vector_gc_sync(workspace_root: str, lancedb_path: str) -> VectorGCReport:
 
 async def run_vector_gc(
     workspace_root: str,
-    lancedb_path: str = LANCEDB_PATH,
+    lancedb_path: Optional[str] = None,
 ) -> VectorGCReport:
     """Query LanceDB workspace_embeddings, delete rows whose file_path no longer exists.
 
+    The GraphRAG store is partitioned per project, so the path defaults to the
+    bound project's directory when no explicit path is supplied.
     LanceDB is synchronous; wrapped in asyncio.to_thread() for non-blocking operation.
     """
-    return await asyncio.to_thread(_vector_gc_sync, workspace_root, lancedb_path)
+    resolved_path = lancedb_path or graphrag_lancedb_path()
+    return await asyncio.to_thread(_vector_gc_sync, workspace_root, resolved_path)
 
 
 async def purge_obsolete_graphs(
-    mcts_db_path: str = _DEFAULT_MCTS_DB_PATH,
+    mcts_db_path: str = MCTS_DB_PATH,
     retention_days: int = _DEFAULT_RETENTION_DAYS,
 ) -> GraphGCReport:
-    """Delete pruned MCTS episodes older than retention_days from ailienant_mcts.sqlite.
+    """Delete pruned MCTS episodes older than retention_days from the MCTS audit DB.
 
     Only rows with prune_reason IS NOT NULL are candidates — stable nodes are preserved.
     """
@@ -118,8 +116,8 @@ async def purge_obsolete_graphs(
 
 async def run_janitor(
     workspace_root: str,
-    lancedb_path: str = LANCEDB_PATH,
-    mcts_db_path: str = _DEFAULT_MCTS_DB_PATH,
+    lancedb_path: Optional[str] = None,
+    mcts_db_path: str = MCTS_DB_PATH,
     retention_days: int = _DEFAULT_RETENTION_DAYS,
 ) -> JanitorReport:
     """Orchestrate both GC passes and return a combined JanitorReport."""

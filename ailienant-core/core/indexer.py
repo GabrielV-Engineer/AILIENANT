@@ -364,7 +364,10 @@ class LazyIndexer:
                             # grammar/embedding errors from the core indexing path.
                             try:
                                 from core.memory.semantic_memory import SemanticMemoryManager
-                                await SemanticMemoryManager().semantic_upsert(
+                                from core.storage_paths import graphrag_lancedb_path_for
+                                await SemanticMemoryManager(
+                                    lancedb_path=graphrag_lancedb_path_for(project_id)
+                                ).semantic_upsert(
                                     file_path=file_path,
                                     content=content,
                                     workspace_hash=project_id,
@@ -544,8 +547,11 @@ class ReactiveIndexer:
 
     async def _semantic_upsert(self, filepath: str, content: str, project_id: str) -> bool:
         from core.memory.semantic_memory import SemanticMemoryManager  # deferred import
+        from core.storage_paths import graphrag_lancedb_path_for
         try:
-            return await SemanticMemoryManager().semantic_upsert(
+            return await SemanticMemoryManager(
+                lancedb_path=graphrag_lancedb_path_for(project_id)
+            ).semantic_upsert(
                 file_path=filepath, content=content, workspace_hash=project_id
             )
         except Exception as exc:
@@ -554,8 +560,11 @@ class ReactiveIndexer:
 
     async def _semantic_delete(self, filepath: str, project_id: str) -> None:
         from core.memory.semantic_memory import SemanticMemoryManager  # deferred import
+        from core.storage_paths import graphrag_lancedb_path_for
         try:
-            await SemanticMemoryManager().semantic_delete(filepath, workspace_hash=project_id)
+            await SemanticMemoryManager(
+                lancedb_path=graphrag_lancedb_path_for(project_id)
+            ).semantic_delete(filepath, workspace_hash=project_id)
         except Exception as exc:
             logger.debug("ReactiveIndexer: semantic delete failed (non-fatal): %s", exc)
 

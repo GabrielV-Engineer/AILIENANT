@@ -1,6 +1,17 @@
 # shared/config.py
 
 import os
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Application home — the stable per-user root for all global runtime stores.
+# Mirrors how a CLI tool keeps its state under a dotfolder in the user's home,
+# so the stores no longer depend on the process working directory (launching
+# from a different CWD would otherwise orphan the catalog / vector index).
+# Created at import so the very first store connection finds the directory.
+# ---------------------------------------------------------------------------
+AILIENANT_HOME: Path = Path.home() / ".ailienant"
+AILIENANT_HOME.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # LiteLLM Proxy (Phase 1.6) — all agent LLM calls route through this endpoint
@@ -55,12 +66,20 @@ def check_cloud_availability() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Catalog DB (Phase 1.x.1) — separate from LangGraph's alienant_memory.sqlite
+# Catalog DB — global command/graph store, separate from LangGraph's
+# alienant_memory.sqlite. Per-project rows are isolated by a project_id column;
+# the file itself is global (skills / MCP servers / hooks are shared across
+# projects), so it lives in the application home.
 # ---------------------------------------------------------------------------
-DB_CATALOG_PATH: str = os.getenv("AILIENANT_CATALOG_DB", "ailienant_catalog.sqlite")
+DB_CATALOG_PATH: str = os.getenv("AILIENANT_CATALOG_DB", str(AILIENANT_HOME / "catalog.sqlite"))
 
-# Trajectory Memory (Phase 3.0.1) — LanceDB store and embedding model alias.
-LANCEDB_PATH: str = os.getenv("AILIENANT_LANCEDB_PATH", "ailienant_lancedb")
+# Global LanceDB store — home of the cross-project tables (product-doc index and
+# trajectory memory). The per-project GraphRAG store (workspace_embeddings) is
+# resolved separately by core.storage_paths so each project gets its own index.
+LANCEDB_PATH: str = os.getenv("AILIENANT_LANCEDB_PATH", str(AILIENANT_HOME / "lancedb"))
+
+# MCTS episodic audit DB — global, retention-pruned by the janitor.
+MCTS_DB_PATH: str = os.getenv("AILIENANT_MCTS_DB", str(AILIENANT_HOME / "mcts.sqlite"))
 # Phase 7.9.B.12 — advanced override ONLY. When unset, the embedding backend is
 # resolved per-provider from the active BYOM preset (core/config/embedding_resolver.py).
 # Setting this env var forces a fixed embedding model regardless of the preset.

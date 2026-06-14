@@ -27,8 +27,8 @@ import tiktoken
 
 import litellm
 
-from shared.config import LANCEDB_PATH
 from core.config.embedding_resolver import get_embedding_target
+from core.storage_paths import graphrag_lancedb_path
 
 logger = logging.getLogger("SEMANTIC_MEMORY")
 
@@ -62,8 +62,11 @@ class SemanticMemoryManager:
     Stateless — safe to share across concurrent LangGraph fan-out invocations.
     """
 
-    def __init__(self, lancedb_path: str = LANCEDB_PATH) -> None:
-        self._lancedb_path = lancedb_path
+    def __init__(self, lancedb_path: Optional[str] = None) -> None:
+        # The GraphRAG store is partitioned per project; resolve the bound
+        # project's directory when no explicit path is supplied. Resolved at
+        # instantiation (not import) so each session uses its own partition.
+        self._lancedb_path = lancedb_path or graphrag_lancedb_path()
 
     # ── Public API ────────────────────────────────────────────────────
 

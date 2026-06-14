@@ -16,15 +16,16 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from shared.config import DB_CATALOG_PATH
+
 logger = logging.getLogger("BYOM_CONFIG")
 
 # ---------------------------------------------------------------------------
-# Resolve the global storage directory from the same env var used by the DB.
-# This guarantees byom_config.json is co-located with ailienant_catalog.sqlite.
+# Resolve the global storage directory from the catalog DB path. This guarantees
+# byom_config.json is co-located with the catalog regardless of the process
+# working directory (and follows the catalog into the application home).
 # ---------------------------------------------------------------------------
-_CATALOG_PATH: pathlib.Path = pathlib.Path(
-    os.environ.get("AILIENANT_CATALOG_DB", "ailienant_catalog.sqlite")
-).resolve()
+_CATALOG_PATH: pathlib.Path = pathlib.Path(DB_CATALOG_PATH).resolve()
 BYOM_CONFIG_PATH: pathlib.Path = _CATALOG_PATH.parent / "byom_config.json"
 
 _MASK_PREFIX = "sk-••••"  # "sk-••••"

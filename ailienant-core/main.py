@@ -33,6 +33,7 @@ from core.lifecycle_manager import lifecycle_manager
 # --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
 from core import db as catalog_db
 from core import benchmark_service
+from core import storage_paths
 from core.config_generator import discover_models
 from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
@@ -1157,6 +1158,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # Bind this session to its project so reactive saves index into the
                 # same partition the agent's RAG consumer reads (not the "" orphan).
                 _session_project_id[client_id] = valid_event.data.project_id
+                # Bind the per-project GraphRAG store so the semantic index writes
+                # into this project's own directory under the application home.
+                storage_paths.bind_project(valid_event.data.workspace_root)
                 # Point the live telemetry sink at this workspace (idempotent).
                 configure_telemetry_log(valid_event.data.workspace_root)
                 if valid_event.data.workspace_pid is not None:

@@ -33,12 +33,12 @@ from typing import Dict
 
 from filelock import FileLock, Timeout
 
+from shared.config import DB_CATALOG_PATH
+
 logger = logging.getLogger("GATEWAY_LEDGER")
 
 # Co-locate with the catalog DB, identical derivation to mcp_secrets.
-_CATALOG_PATH: pathlib.Path = pathlib.Path(
-    os.environ.get("AILIENANT_CATALOG_DB", "ailienant_catalog.sqlite")
-).resolve()
+_CATALOG_PATH: pathlib.Path = pathlib.Path(DB_CATALOG_PATH).resolve()
 LEDGER_PATH: pathlib.Path = _CATALOG_PATH.parent / "gateway_ledger.json"
 
 # Held only briefly per transaction; a security control fails CLOSED on contention.

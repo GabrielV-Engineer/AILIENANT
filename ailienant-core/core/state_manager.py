@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -27,7 +28,12 @@ logger = logging.getLogger("STATE_MANAGER")
 
 _AGENTS_MD_FILENAME: str = "AGENTS.md"
 _AILIENANT_DIR: str = ".ailienant"
+_PLANS_SUBDIR: str = "plans"
 _DEFAULT_MAX_AGE_SECONDS: int = 3600  # 1 hour
+
+# Confines a task id to a safe filename stem (defense against path traversal in a
+# value that ultimately reaches the filesystem).
+_SAFE_STEM_RE: re.Pattern[str] = re.compile(r"[^A-Za-z0-9._-]")
 
 # Sentinel delimiters for machine-parseable JSON embedded in Markdown.
 _JSON_START: str = "<!-- MACHINE_DATA_JSON\n"
@@ -189,6 +195,74 @@ def dump_state_to_markdown(state: Dict[str, Any], workspace_root: str) -> bool:
         return True
     except Exception as exc:
         logger.warning("Phase 3.6: dump_state_to_markdown failed (non-fatal): %s", exc)
+        return False
+
+
+def _plan_md_path(workspace_root: str, task_id: str) -> Path:
+    stem = _SAFE_STEM_RE.sub("_", task_id.strip()) or "plan"
+    return Path(workspace_root) / _AILIENANT_DIR / _PLANS_SUBDIR / f"{stem}.md"
+
+
+def _build_plan_md(spec: MissionSpecification, task_id: str) -> str:
+    """Render a mission as a navigable, human-readable Markdown plan.
+
+    Distinct from AGENTS.md (the machine fast-boot cache): this view carries no
+    embedded JSON and includes each step's full description so a reader can follow
+    the agent's intended work in the editor preview.
+    """
+    lines: List[str] = [
+        f"# Plan — {task_id or 'current task'}",
+        "",
+        f"_Generated {_iso_now()}_",
+        "",
+        f"**Outcome:** {spec.outcome}",
+        "",
+        "## Scope",
+        "",
+    ]
+    for item in spec.scope:
+        lines.append(f"- {item}")
+    if not spec.scope:
+        lines.append("- *(no scope recorded)*")
+
+    lines += ["", "## Work Breakdown", ""]
+    if spec.tasks:
+        for task in spec.tasks:
+            iteration = " · iterative" if getattr(task, "requires_iteration", False) else ""
+            lines += [
+                f"### Step {task.step_number} — {task.target_role} · {task.action}{iteration}",
+                "",
+                f"**Target:** `{task.target_file}`",
+                "",
+                task.description or "*(no description)*",
+                "",
+            ]
+    else:
+        lines.append("*(no tasks)*")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def dump_plan_to_markdown(
+    spec: Optional[MissionSpecification],
+    workspace_root: str,
+    task_id: str,
+) -> bool:
+    """Write a navigable plan to .ailienant/plans/<task_id>.md atomically.
+
+    Non-fatal: logs a warning and returns False on any failure (a plan-export
+    error must never interrupt planning). No-op when the mission or workspace is
+    absent.
+    """
+    if not workspace_root or spec is None:
+        return False
+    try:
+        target: Path = _plan_md_path(workspace_root, task_id)
+        _write_agents_md(target, _build_plan_md(spec, task_id))
+        logger.info("Plan exported to %s", target)
+        return True
+    except Exception as exc:  # noqa: BLE001 — plan export must never crash planning
+        logger.warning("dump_plan_to_markdown failed (non-fatal): %s", exc)
         return False
 
 

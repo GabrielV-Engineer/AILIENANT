@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from core import db as catalog_db
 from core.memory.semantic_memory import SemanticMemoryManager, pca_project_2d
+from core.storage_paths import graphrag_lancedb_path_for
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory-dashboard"])
 
@@ -279,7 +280,9 @@ async def get_vectors(
     if not _SAFE_ID_RE.match(project_id):
         raise HTTPException(status_code=400, detail="invalid project_id")
 
-    sem = SemanticMemoryManager()
+    # The dashboard browses any project's vectors, so resolve the GraphRAG store
+    # from the requested project id rather than any process binding.
+    sem = SemanticMemoryManager(lancedb_path=graphrag_lancedb_path_for(project_id))
     rows = await sem.dump_vectors(project_id, folder_prefix=folder, max_rows=max_points)
 
     if not rows:
