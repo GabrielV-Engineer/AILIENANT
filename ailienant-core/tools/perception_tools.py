@@ -516,10 +516,11 @@ def _tool_schema(
     )
 
 
-# The Researcher (READ_ONLY context-hound) is wired into the file-inspection
-# perception tools. web_fetch is deliberately excluded here — it is assigned to
-# the Analyst arsenal in a later wave.
+# File-inspection tools are shared between the Researcher and Analyst roles.
+# web_fetch is assigned to the Analyst only (not the Researcher).
 _RESEARCHER_ROLE: FrozenSet[str] = frozenset({"researcher"})
+_ANALYST_ROLE: FrozenSet[str] = frozenset({"analyst"})
+_RESEARCHER_AND_ANALYST: FrozenSet[str] = frozenset({"researcher", "analyst"})
 
 
 async def register_perception_tools(store: ToolRAGStore) -> int:
@@ -539,24 +540,25 @@ async def register_perception_tools(store: ToolRAGStore) -> int:
             "inspect_ast_node",
             "Extract the source code of a class or function by symbol name.",
             InspectASTInput,
-            extra_roles=_RESEARCHER_ROLE,
+            extra_roles=_RESEARCHER_AND_ANALYST,
         ),
         _tool_schema(
             "get_symbol_references",
             "Find files that import the given file (1-hop backward edges).",
             GetSymbolReferencesInput,
-            extra_roles=_RESEARCHER_ROLE,
+            extra_roles=_RESEARCHER_AND_ANALYST,
         ),
         _tool_schema(
             "trace_data_flow",
             "Forward + backward k-hop reachability over the dependency graph.",
             TraceDataFlowInput,
-            extra_roles=_RESEARCHER_ROLE,
+            extra_roles=_RESEARCHER_AND_ANALYST,
         ),
         _tool_schema(
             "web_fetch",
             "Fetch a URL and convert HTML to clean Markdown (5 s timeout).",
             WebFetchInput,
+            extra_roles=_ANALYST_ROLE,
         ),
     ]
     for schema in schemas:

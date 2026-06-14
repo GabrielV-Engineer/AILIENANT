@@ -159,17 +159,23 @@ Agents never touch your system directly — they act through a **typed, role-gat
 
 | Tool | Tier | Used by | What it does |
 | --- | --- | --- | --- |
-| `inspect_ast_node` | READ_ONLY | Coder roles, Researcher | Extract the source of a class/function by name |
-| `get_symbol_references` | READ_ONLY | Coder roles, Researcher | Find files that import a target (1-hop backward) |
-| `trace_data_flow` | READ_ONLY | Coder roles, Researcher | Forward/backward k-hop reachability over the dep graph |
+| `inspect_ast_node` | READ_ONLY | Coder roles, Researcher, Analyst | Extract the source of a class/function by name |
+| `get_symbol_references` | READ_ONLY | Coder roles, Researcher, Analyst | Find files that import a target (1-hop backward) |
+| `trace_data_flow` | READ_ONLY | Coder roles, Researcher, Analyst | Forward/backward k-hop reachability over the dep graph |
 | `document_parser` | READ_ONLY | Coder roles, Researcher | Parse PDF / CSV / DOCX without disk I/O |
-| `web_fetch` | READ_ONLY | Coder roles | Fetch a URL and convert HTML → Markdown |
+| `web_fetch` | READ_ONLY | Coder roles, Analyst | Fetch a URL and convert HTML → Markdown |
 | `read_file` | READ_ONLY | Researcher + all roles | Paginated VFS read (RAM-first, firewall-enforced) |
 | `glob` | READ_ONLY | Researcher | List workspace files matching an fnmatch pattern (VFS RAM ∪ indexed catalog) |
 | `grep` | READ_ONLY | Researcher | Regex search over workspace file contents (RAM-first, O(max_matches) short-circuit) |
 | `workspace_structure` | READ_ONLY | Researcher | Relevance-filtered directory tree over the VFS ∪ catalog universe |
 | `query_graphrag` | READ_ONLY | Researcher | Expand seed files via the GraphRAG graph and return a compact context block |
 | `get_dependents` | READ_ONLY | Researcher | JSON list of files that import the given file (1-hop backward, structured output) |
+| `run_linter` | READ_ONLY | Analyst | ruff (Python) / eslint (TS) diagnostics; cascade RAM→disk read; degrades gracefully |
+| `analyze_complexity` | READ_ONLY | Analyst | McCabe CC + nesting depth + per-function breakdown for Python files (100 KB cap) |
+| `audit_dependencies` | READ_ONLY | Analyst | Parse requirements.txt / pyproject.toml / package.json; optional CVE lookup via injectable search |
+| `diff_changes` | READ_ONLY | Analyst | Unified diff of in-RAM dirty buffer vs on-disk original; new-file aware; capped at 300 lines |
+| `web_search` | READ_ONLY | Analyst | Web search via injectable provider (brave-search MCP compatible); degrades when unconfigured |
+| `read_token_ledger` | READ_ONLY | Analyst | Live token-cost snapshot from TokenLedger (local / cloud / all tiers) |
 | `atomic_code_patch` | WRITE | core_dev, architect_refactor, secops, data_ml | Fuzzy search/replace with AST + optimistic-concurrency check |
 | `batch_semantic_edit` | WRITE | core_dev, architect_refactor | Multi-file coordinated edit, ACID via unit-of-work |
 | `file_write` | WRITE | core_dev, devops_infra | Create/overwrite a VFS file with AST + OCC |
@@ -185,7 +191,7 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 
 | Agent | Planned tools (⏳) |
 | --- | --- |
-| 💬 **Analyst** | `run_linter`, `complexity_analysis`, `dependency_audit`, `code_diff`, `web_search`, `token_ledger_read` |
+| 💬 **Analyst** | *(all 10 tools shipped — see live catalog above)* |
 | 🎛️ **Orchestrator** | `get_wbs_status`, `get_token_ledger`, `emit_hitl_request` |
 | 🧭 **Planner** | `validate_wbs_dependencies` (catch a circular/over-scope plan *before* it runs), `budget_estimator` |
 | 🛠️ **Coder** *(by role)* | `run_tests` (qa), `git_stage`/`git_commit`/`git_diff` (vcs), `docstring_generator` (doc), `linter_autofix` (secops/qa), `dependency_install` (devops), `env_file_guard` (devops), `security_audit` (secops) |

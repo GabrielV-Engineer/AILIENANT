@@ -235,6 +235,17 @@ class VFSMiddleware:
         with self._lock:
             return list(self._ram_vfs.keys())
 
+    def read_ram_only(self, path: str) -> Optional[str]:
+        """Return content from the in-RAM buffer for `path`, or None if absent.
+
+        Read-only lookup under the lock — does not fall through to disk. Used by
+        tools that need to distinguish the dirty (in-RAM) version from the on-disk
+        original (e.g. CodeDiffTool cascade reads).
+        """
+        normalized = os.path.normpath(path)
+        with self._lock:
+            return self._ram_vfs.get(normalized)
+
     # ------------------------------------------------------------------
     # Ignore spec cache (thread-safe, compiled once per project_id)
     # ------------------------------------------------------------------

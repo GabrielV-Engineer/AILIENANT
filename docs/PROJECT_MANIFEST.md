@@ -396,7 +396,7 @@
   - Net-new: `GlobTool`/`GrepTool` over VFS RAM-first (no direct FS), `WorkspaceStructureTool` (relevance-filtered tree), `GraphRAGQueryTool` (formalizes `deep_parse`), `GetDependentsTool` (formalizes `get_dependents`).
   - **DoD:** Researcher retrieves and executes each read tool under its role; none writes.
 
-- [ ] **8.8.2 — Wave 2: Analyst Quality Lens (READ_ONLY).** *(≈6 net-new · 4 wire-in)*
+- [x] **8.8.2 — Wave 2: Analyst Quality Lens (READ_ONLY).** *(≈6 net-new · 4 wire-in)*
   - Wire-in `analyst`: `inspect_ast_node`, `trace_data_flow`, `get_symbol_references`, `web_fetch`.
   - Net-new: `RunLinterTool` (wraps `tools/validation/lsp_filter.py`), `ComplexityAnalysisTool` (McCabe CC, nesting depth), `DependencyAuditTool` (manifests vs CVE via MCP), `CodeDiffTool` (dirty-buffer vs VFS), `WebSearchTool` (MCP brave-search), `TokenLedgerReadTool` (re-channeled over `TokenLedger`, not `ContextMeter`).
   - **DoD:** Analyst explains cyclomatic complexity, traces data flow, and compares versions — all without touching code.
