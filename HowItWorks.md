@@ -195,9 +195,15 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `run_data_pipeline` | EXECUTE | data_ml | Run a project-relative pipeline script in the sandbox (arg-guarded) |
 | `security_audit` | READ_ONLY | secops | Pure-Python OWASP scan over a diff/code string (secrets, eval/exec, shell=True, pickle, yaml.load, dynamic SQL) |
 | `validate_ast` | READ_ONLY | all coder roles except vcs_manager | Structural AST validation (Python `ast.parse`, TS/TSX engine); `{is_valid, errors}` |
-| `task_create` | EXECUTE | exec-capable roles | Spawn a long-running background task |
+| `task_create` | EXECUTE | exec-capable roles + orchestrator (V2) | Spawn a long-running background task |
 | `check_type_integrity` | EXECUTE | exec-capable roles | Run `mypy` / `tsc` over a target |
-| `task_get` | READ_ONLY | exec-capable roles | Read a background task's status/output |
+| `task_get` | READ_ONLY | exec-capable roles + orchestrator (V2) | Read a background task's status/output |
+| `run_benchmark` | EXECUTE | orchestrator, qa_tester, devops_infra | Reserve a single-flight slot and dispatch the benchmark harness; returns task_id |
+| `get_benchmark_report` | READ_ONLY | orchestrator, qa_tester, devops_infra | Read benchmark run status + report via `asyncio.to_thread` (non-blocking disk I/O) |
+| `list_capabilities` | READ_ONLY | orchestrator, planner | Return JSON array of the gateway's external capabilities (name, tier, async flag) |
+| `skill_invoke` | READ_ONLY | orchestrator, planner | Resolve user-authored skills by explicit ID or auto-match against a task description |
+| `task_list` | READ_ONLY | orchestrator | Snapshot of all background tasks (metadata only, raw output excluded, capped at 50) |
+| `task_stop` | EXECUTE | orchestrator | Send SIGTERM to a running background task; cancel-wins race guard prevents status overwrite |
 | `ask_user_question` | READ_ONLY | all roles, Orchestrator | Pause and surface a structured question to you |
 | `toggle_plan_mode` | READ_ONLY | all roles, Orchestrator | Switch the session's permission mode |
 | `tool_search` | READ_ONLY | all roles | Discover tools that aren't loaded — relevance-retrieve them by query so the prompt stays small as the catalog grows |
@@ -210,6 +216,7 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 | 🎛️ **Orchestrator** | *(all tools shipped — see live catalog above; token telemetry reuses `read_token_ledger`)* |
 | 🧭 **Planner** | *(all tools shipped — `validate_wbs_dependencies`, `estimate_plan_budget` + 3 wire-ins — see live catalog above)* |
 | 🛠️ **Coder** *(by role)* | *(all shipped — 10 net-new role-exclusive tools + `validate_ast`, and the 4 formalize tools re-mirrored to roles.py — see live catalog above)* |
+| 🔌 **Gateway/Benchmark** | *(all shipped — `run_benchmark`, `get_benchmark_report`, `list_capabilities`, `skill_invoke`, `task_list`, `task_stop` + Task V2 role expansion on `task_create`/`task_get` — see live catalog above)* |
 | 🌐 **Universal** | `todo_write` |
 
 The enabling piece, `tool_search`, **already ships** (the Wave 0 gate): rather than load every schema into the prompt, the engine injects the whole tool catalog only while it fits a small slice of the context budget — and once it would grow past that, it switches automatically to retrieving the few tools relevant to the step from a RAM-resident vector store, always keeping `tool_search` on hand so an agent can pull the rest by query. The prompt stays small no matter how large the catalog grows.

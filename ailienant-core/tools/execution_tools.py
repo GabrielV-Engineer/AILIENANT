@@ -89,6 +89,10 @@ _SANDBOX_BASH_ROLES: FrozenSet[str] = frozenset(
     {"devops_infra", "qa_tester", "vcs_manager", "data_ml_engineer"}
 )
 
+# Task V2: orchestrator needs to create and poll background tasks (wave 5 parity).
+_TASK_CREATE_ROLES: FrozenSet[str] = _EXECUTE_ROLES | frozenset({"orchestrator"})
+_TASK_GET_ROLES: FrozenSet[str] = _EXECUTE_ROLES | frozenset({"orchestrator"})
+
 _SANDBOX_ENV_WHITELIST: Tuple[str, ...] = (
     "PYTHONPATH", "NODE_OPTIONS", "RUFF_CACHE_DIR", "MYPY_CACHE_DIR",
 )
@@ -282,6 +286,7 @@ class BackgroundTaskManager:
     def __init__(self, registry: MutableMapping[str, Dict[str, Any]]) -> None:
         self._registry = registry
         self._tasks: Set[asyncio.Task[None]] = set()
+        self._procs: Dict[str, asyncio.subprocess.Process] = {}
 
     async def create(
         self, command: str, working_dir: Optional[str] = None
@@ -293,6 +298,7 @@ class BackgroundTaskManager:
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
         )
+        self._procs[task_id] = proc  # stored for stop(); released by _watch on completion
         self._registry[task_id] = {
             "command": command,
             "pid": proc.pid,
@@ -313,9 +319,14 @@ class BackgroundTaskManager:
         self, task_id: str, proc: asyncio.subprocess.Process
     ) -> None:
         stdout_bytes, stderr_bytes = await proc.communicate()
+        self._procs.pop(task_id, None)  # release proc ref; stop() may have already popped it
         entry = self._registry.get(task_id)
         if entry is None:
             logger.warning("task_watch: task_id=%s vanished from registry", task_id)
+            return
+        # Race guard: stop() commits "cancelled" before calling terminate(); if we see it
+        # here, the cancellation wins — do not overwrite with "completed"/"failed".
+        if entry.get("status") == "cancelled":
             return
         entry["status"] = "completed" if proc.returncode == 0 else "failed"
         entry["completed_at"] = _now_iso()
@@ -329,6 +340,41 @@ class BackgroundTaskManager:
 
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         return self._registry.get(task_id)
+
+    def list_tasks(self) -> Dict[str, Dict[str, Any]]:
+        """Snapshot of all registered tasks excluding raw output for token hygiene.
+
+        The orchestrator (the sole role-holder of task_list) is a cognitive superuser
+        and sees all tasks regardless of originating role. See DEBT-051 for a future
+        owner_role filtering extension.
+        """
+        _SKIP = frozenset({"truncated_stdout", "truncated_stderr"})
+        return {
+            task_id: {k: v for k, v in entry.items() if k not in _SKIP}
+            for task_id, entry in self._registry.items()
+        }
+
+    def stop(self, task_id: str) -> bool:
+        """Send SIGTERM to a running background process and mark it cancelled.
+
+        Returns False when no running proc is tracked (already completed or unknown).
+        Commits 'cancelled' status BEFORE calling terminate so _watch() respects the
+        race guard even if it wakes up first. The _procs pop is in a finally block to
+        guarantee cleanup regardless of what terminate() raises.
+        """
+        proc = self._procs.get(task_id)
+        if proc is None:
+            return False
+        entry = self._registry.get(task_id)
+        if entry:
+            entry["status"] = "cancelled"  # committed before terminate; _watch respects it
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            pass  # process already exited on Windows or POSIX
+        finally:
+            self._procs.pop(task_id, None)  # guaranteed cleanup; prevents zombie reference
+        return True
 
 
 class TaskCreateInput(BaseModel):
@@ -499,12 +545,14 @@ async def register_execution_tools(store: ToolRAGStore) -> int:
             "task_create",
             "Spawn a long-running background asyncio subprocess; returns task_id.",
             TaskCreateInput,
+            roles=_TASK_CREATE_ROLES,
         ),
         _execute_schema(
             "task_get",
             "Read status + truncated output of a background task by id.",
             TaskGetInput,
             tier=ToolPrivilegeTier.READ_ONLY,
+            roles=_TASK_GET_ROLES,
         ),
         _execute_schema(
             "check_type_integrity",

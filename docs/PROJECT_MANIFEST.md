@@ -418,7 +418,7 @@
   - `allowed_roles` of each tool mirrors the `allowed_tools` of the role in `agents/roles.py`.
   - **DoD:** a role cannot invoke a tool outside its set; each exclusive tool responds only to its role(s).
 
-- [ ] **8.8.6 — Wave 5: Gateway/Benchmark — DEPENDS ON Division 8.5.** *(≈6 net-new · 2 extend)*
+- [x] **8.8.6 — Wave 5: Gateway/Benchmark — DEPENDS ON Division 8.5.** *(≈6 net-new · 2 extend)*
   - **Resolved conflict (Pivot):** 8.5 already owns `run_task` (8.5.4), `run_benchmark`/`get_report` (8.5.5), and `list_tools()` (8.5.1) as **external gateway verbs**. This Wave **formalizes-as-internal-tool** the same substrate — one benchmark runner, one catalog, one task cycle — **never a fork**. If 8.5 is still active when this Wave starts, this Wave builds the shared substrate and 8.5 consumes it.
   - Net-new: `RunBenchmarkTool`, `GetBenchmarkReportTool`, `ListCapabilitiesTool`, `SkillInvokeTool` (wraps the 8.4.5 skill resolver). Task V2: `task_create`/`task_get` extend; `TaskListTool`/`TaskStopTool` net-new.
   - **DoD:** benchmark/catalog tools call the same substrate functions as the 8.5 verbs (no duplicated runner).

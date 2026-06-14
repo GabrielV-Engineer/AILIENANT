@@ -68,6 +68,12 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-042 | WebSearchTool / DependencyAuditTool search_fn unwired | MEDIUM | Feature gap | 8.8.x integration sprint | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
+| DEBT-048 | RunBenchmarkTool skips task_service.register_active_task — task_id not visible via check_task_status | MEDIUM | Integration gap | post-8.8.6 | Floating |
+| DEBT-049 | SkillInvokeTool passes embed_fn=None — semantic skill auto-matching disabled | LOW | Feature gap | post-8.8.6 | Floating |
+| DEBT-050 | RunBenchmarkTool does not charge ledger.consume_budget — internal benchmarks unbudgeted | MEDIUM | Correctness gap | post-8.8.6 | Floating |
+| DEBT-051 | list_tasks cross-role visibility — orchestrator sees all tasks regardless of originating role | LOW | Feature gap | post-8.8.6 | Floating |
+| DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | DB-layer async migration | Floating |
+| DEBT-053 | TaskStopTool uses SIGTERM only — no SIGKILL escalation after timeout | LOW | Reliability | post-8.8.6 | Floating |
 | DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
 | DEBT-040 | tool_search role resolution stale | MEDIUM | Correctness (bounded) | 8.8.5 | Locked |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
@@ -185,6 +191,63 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing — a self-contained enhancement.
 - **Phase:** post-8.8.5.
 - **Notes:** logged at 8.8.5 ship per CLAUDE.md §11.3.
+
+### DEBT-048 [MEDIUM · Floating] — RunBenchmarkTool skips task_service.register_active_task
+
+- **Date:** 2026-06-14
+- **Reproduce:** Submit a benchmark via `run_benchmark` tool and then poll `check_task_status` with the returned task_id. `check_task_status` routes through `task_service.get_task_status()` which only knows about tasks registered via `register_active_task`. Since the tool bypasses that call, it returns `{"status": "unknown"}`. `get_benchmark_report` still works (it reads the artifact file directly).
+- **File(s):** `ailienant-core/tools/gateway_tools.py` (`RunBenchmarkTool._arun`).
+- **Error:** declared trade-off (CLAUDE.md §11.2). `task_service` is a singleton wired at lifespan startup — tools have no dependency-injection path to it currently.
+- **Blocked by:** a shared benchmark/task lifecycle service that exposes `register_active_task` via a module-level accessor or injection point.
+- **Phase:** post-8.8.6.
+- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+
+### DEBT-049 [LOW · Floating] — SkillInvokeTool embed_fn=None disables semantic auto-matching
+
+- **Date:** 2026-06-14
+- **Reproduce:** Call `skill_invoke` with only `user_input` (no `skill_id`). Without an embedder, `resolve_active_skills` falls back to the explicit-ID path and returns an empty list (no skills auto-matched by semantic similarity).
+- **File(s):** `ailienant-core/tools/gateway_tools.py` (`SkillInvokeTool._arun`).
+- **Error:** declared trade-off. A shared embedder injection point does not yet exist at tool-init time.
+- **Blocked by:** a graph-level embedder factory that can be passed to skill-related tools at construction.
+- **Phase:** post-8.8.6.
+- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+
+### DEBT-050 [MEDIUM · Floating] — RunBenchmarkTool does not charge ledger.consume_budget
+
+- **Date:** 2026-06-14
+- **Reproduce:** Internal agents invoking `run_benchmark` tool bypass the `ledger.consume_budget()` call that the external gateway handler applies. Benchmark compute cost is unaccounted for in the token ledger.
+- **File(s):** `ailienant-core/tools/gateway_tools.py` (`RunBenchmarkTool._arun`); compare `gateway/handlers.py` (`handle_run_benchmark`).
+- **Error:** declared trade-off. A cross-cutting budget interceptor (pre-action hook on EXECUTE-tier tools) would close this uniformly.
+- **Phase:** post-8.8.6.
+- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+
+### DEBT-051 [LOW · Floating] — task_list cross-role visibility (orchestrator sees all tasks)
+
+- **Date:** 2026-06-14
+- **Reproduce:** Multiple roles (e.g. qa_tester, devops_infra) use `task_create`; the orchestrator's `task_list` shows all of them with no owner attribution.
+- **File(s):** `ailienant-core/tools/execution_tools.py` (`BackgroundTaskManager.list_tasks`), `ailienant-core/tools/gateway_tools.py` (`TaskListTool._arun`).
+- **Error:** not a defect — the orchestrator is a cognitive superuser in the current model. A future `owner_role` field on registry entries would allow scope-filtered listing.
+- **Phase:** post-8.8.6.
+- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+
+### DEBT-052 [LOW · Floating] — resolve_active_skills may execute synchronous LanceDB queries
+
+- **Date:** 2026-06-14
+- **Reproduce:** Call `skill_invoke` with a valid skill_id. `resolve_active_skills` is `async def` but internally calls `catalog_db.get_skill()` / `list_enabled_skills_for_scope()` which may be synchronous LanceDB queries. If synchronous, they block the FastAPI event loop during the `await`.
+- **File(s):** `ailienant-core/core/skill_resolver.py`, `ailienant-core/tools/gateway_tools.py`.
+- **Error:** pre-existing substrate concern, not introduced by this wave.
+- **Blocked by:** DB-layer async migration.
+- **Phase:** DB-layer async migration.
+- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+
+### DEBT-053 [LOW · Floating] — TaskStopTool uses SIGTERM only, no SIGKILL escalation
+
+- **Date:** 2026-06-14
+- **Reproduce:** Use `task_stop` on a process that traps SIGTERM. The process ignores the signal and keeps running; `_registry["status"]` is "cancelled" but the PID is still alive.
+- **File(s):** `ailienant-core/tools/execution_tools.py` (`BackgroundTaskManager.stop`).
+- **Error:** declared trade-off. A kill-after-timeout pattern (SIGTERM → wait N seconds → SIGKILL / TerminateProcess) is the correct fix.
+- **Phase:** post-8.8.6.
+- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
 
 ### DEBT-042 [MEDIUM · Floating] — WebSearchTool and DependencyAuditTool search_fn injection point is unwired
 

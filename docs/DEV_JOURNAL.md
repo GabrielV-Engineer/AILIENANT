@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.8.6: Wave 5 Gateway/Benchmark Tools — 2026-06-14
+**Status:** COMPLETE | **Gates:** mypy 0/334 · pytest 33 new passed · full suite 1465 passed
+- Shipped: 6 net-new RBAC-gated tools in `tools/gateway_tools.py` (`run_benchmark`, `get_benchmark_report`, `list_capabilities`, `skill_invoke`, `task_list`, `task_stop`) wrapping the 8.5 benchmark substrate, gateway catalog, and skill resolver; `task_create`/`task_get` extended to include `orchestrator` role (Task V2).
+- Key decision: `BackgroundTaskManager` extended with `_procs` dict, `list_tasks()`, and `stop()` (cancel-wins race guard + `finally`-block pop to prevent zombie references); `GetBenchmarkReportTool` uses `asyncio.to_thread` for disk I/O; `_cleanup_benchmark` is a named function (not a lambda) for proper `exc_info` logging.
+- Deferred: DEBT-048 — `RunBenchmarkTool` skips `task_service.register_active_task` (task_id not visible via check_task_status); DEBT-049 — `SkillInvokeTool` `embed_fn=None` (explicit only); DEBT-050 — unbudgeted internal benchmark invocations; DEBT-051 — task_list cross-role visibility; DEBT-052 — potential sync DB calls under `resolve_active_skills`; DEBT-053 — SIGTERM only, no SIGKILL escalation.
+
 ## 8.8.5: Wave 4 Role-Specific Coder Tools — 2026-06-14
 **Status:** COMPLETE | **Gates:** mypy 0/332 · pytest 27 new passed · full suite 1432 passed (1 latent 8.8.4 defect fixed)
 - Shipped: 10 net-new role-exclusive coder tools + `ASTValidateTool` in new `tools/coder_tools.py` (thin wrappers over the sandbox adapter / `validate_ast` / patch engine), and re-mirrored the 4 formalize tools' `allowed_roles` to `agents/roles.py` per capability (`mutation_tools` split into 3 per-tool sets; `sandbox_bash` given its own `_SANDBOX_BASH_ROLES`).
