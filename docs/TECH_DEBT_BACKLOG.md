@@ -59,9 +59,14 @@ Decision    Not a defect — see [DECISION] tier.
 
 | ID | Title (short) | Tier | Type | Target Phase | Schedule |
 |---|---|---|---|---|---|
-| DEBT-036 | Oracle executes on host (no sandbox) | HIGH | Security/Safety | post-8.5/8.8 | Floating |
-| DEBT-034 | Gateway project_id path-format-fragile | HIGH | Correctness | standalone coordinated | Floating |
-| DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | streaming refactor | Floating |
+| DEBT-055 | Chat scroll regression — flex container collapses on multiple messages | HIGH | FE Regression | 8.10.0 | Locked |
+| DEBT-036 | Oracle executes on host (no sandbox) | HIGH | Security/Safety | 8.10.5 | Locked |
+| DEBT-034 | Gateway project_id path-format-fragile | HIGH | Correctness | 8.10.1 | Locked |
+| DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | 8.10.5 | Locked |
+| DEBT-056 | Text HUD fixed height — input does not auto-resize (Planner: 1 line visible) | MEDIUM | FE Regression | 8.10.0 | Locked |
+| DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
+| DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
+| DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
 | DEBT-043 | Orchestrator tools register but unbound in live graph node | MEDIUM | Integration gap | Graph-wiring sprint | Floating |
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
 | DEBT-046 | Coder EXECUTE/DANGEROUS wrappers rely on tier-gating, not sandbox_bash's interactive HITL card | MEDIUM | Integration gap | post-8.8.5 | Floating |
@@ -104,7 +109,17 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
-### DEBT-036 [HIGH · Floating] — BenchmarkOracle executes candidate patches on the host (no sandbox isolation)
+### DEBT-055 [HIGH · Locked] — Chat scroll regression: flex container collapses after multiple messages
+
+- **Date:** 2026-06-14
+- **Reproduce:** Send 3+ prompts in a single session. After the third response the message list stops expanding, messages compress vertically, and scroll becomes impossible. Regression — was previously fixed.
+- **File(s):** `ailienant-extension/src/webview/components/NattCanvas.tsx` (message list container + CSS). Likely a CSS specificity regression or a webview re-mount that resets computed flex styles.
+- **Error:** UX regression (no JS error). Root cause: flex container loses `overflow-y: auto` invariant. Fix: `flex: 1 1 0; min-height: 0; overflow-y: auto` on the message list container; outer panel must have a bounded height (not `height: 100vh` without `max-height: 100vh` containment).
+- **Blocked by:** nothing.
+- **Phase:** 8.10.0 — emergency FE fix before any debt triage.
+- **Notes:** confirmed in live testing session 2026-06-14.
+
+### DEBT-036 [HIGH · Locked] — BenchmarkOracle executes candidate patches on the host (no sandbox isolation)
 
 - **Date:** 2026-06-12
 - **Reproduce:** call `BenchmarkOracle.run_oracle(problem, candidate_patch)` with live LLM output — the patched files are written to a host `TemporaryDirectory` and run via `SubprocessPythonExecutor` (inherits the parent process environment).
@@ -152,6 +167,46 @@ Decision    Not a defect — see [DECISION] tier.
 **MEDIUM**
 
 ---
+
+### DEBT-056 [MEDIUM · Locked] — Text HUD fixed height: chat input and Socratic planner textarea do not auto-resize
+
+- **Date:** 2026-06-14
+- **Reproduce:** Type a prompt longer than one line in the chat input field. The textarea does not expand; text scrolls inside a fixed-height box. In Socratic planner mode, only one line is visible regardless of content.
+- **File(s):** Chat input component in `ailienant-extension/src/webview/components/NattCanvas.tsx`; Socratic form textarea in `PlannerSession.tsx`.
+- **Error:** UX gap. Fix: `scrollHeight`-driven auto-resize pattern — on every `input` event set `element.style.height = 'auto'; element.style.height = element.scrollHeight + 'px'`; cap with `max-height: 12rem` and `overflow-y: auto` beyond that. Apply to both NattCanvas input and PlannerSession textarea identically.
+- **Blocked by:** nothing.
+- **Phase:** 8.10.0 — bundle with the scroll regression fix (same component pass).
+- **Notes:** confirmed in live testing session 2026-06-14.
+
+### DEBT-057 [MEDIUM · Locked] — Non-native-thinking models produce an empty ThoughtBox and appear pre-scripted
+
+- **Date:** 2026-06-14
+- **Reproduce:** Select a model that does not support native extended thinking (any non-Anthropic/non-DeepSeek-R1 model). Submit a complex prompt. The ThoughtBox is empty; the agent's response appears as a fixed, pre-scripted answer with no visible reasoning trace, making the AI look unintelligent.
+- **File(s):** `ailienant-core/tools/llm_gateway.py` (`_supports_native_thinking`, `acomplete_with_thinking`); `ailienant-core/agents/planner.py` / `agents/coder.py` (system prompt builders); `ailienant-extension/src/webview/components/ThoughtBox.tsx`.
+- **Error:** UX/capability gap. Fix: when native thinking is unavailable, inject a reasoning scaffold into the system prompt (`"Before answering, reason step-by-step inside <thinking>…</thinking>"`); stream the `<thinking>` block content via existing `broadcast_thinking_chunk` (identical contract, no new WS type); strip the tags before emitting the final answer token stream. FE: add `[Simulated]` vs `[Native]` tag to ThoughtBox header; add Reasoning Mode toggle (`Native` / `Verbose` / `Compact`).
+- **Blocked by:** nothing — fully self-contained.
+- **Phase:** Phase 11.5.
+- **Notes:** confirmed in live testing session 2026-06-14.
+
+### DEBT-058 [MEDIUM · Locked] — Submitted prompt not preserved during task execution; lost in long sessions
+
+- **Date:** 2026-06-14
+- **Reproduce:** Submit a long prompt. The input clears immediately. Scroll up in a session with 20+ messages to find the original prompt — difficult to locate. No sticky indicator of what task the AI is currently working on.
+- **File(s):** `ailienant-extension/src/webview/components/NattCanvas.tsx`; `ailienant-extension/src/store/workspaceStore.ts`.
+- **Error:** UX gap. Fix: Add `activeTaskPrompt: string | null` + `activeTaskId: string | null` to `workspaceStore.ts`; set on submit, clear on `TASK_COMPLETE`/`ERROR`. New `ActiveTaskHeader.tsx` component: sticky card above the message list showing the current task prompt (compressed, expandable), animated "Working…" indicator, elapsed time, Cancel affordance. Auto-collapses on completion; user-dismissible. No backend change — uses existing WS events.
+- **Blocked by:** nothing.
+- **Phase:** Phase 11.6.
+- **Notes:** analogous to Claude Code's in-flight task header. Confirmed need in live testing session 2026-06-14.
+
+### DEBT-059 [MEDIUM · Locked] — Chat UI has no compaction strategy for long sessions (DOM grows unboundedly)
+
+- **Date:** 2026-06-14
+- **Reproduce:** Run a session with 60+ messages. NattCanvas DOM grows unboundedly, causing sluggish rendering and memory pressure in the VS Code webview process. Also mirrors the backend context-window constraint for local models — frequent compaction events would be useful but no FE receiver exists.
+- **File(s):** `ailienant-extension/src/webview/components/NattCanvas.tsx`; new `SessionSummaryCard.tsx`; `ailienant-extension/src/store/workspaceStore.ts`; `ailienant-core/api/websocket_manager.py` (new event type); `ailienant-core/brain/context_pipeline.py` (Division 8.12 emission hook).
+- **Error:** FE architecture gap + backend integration gap. Fix (two-part): (a) Backend — when `ContextPipeline` (Division 8.12) evicts Layer 4 entries, emit `{"type": "STATE_COMPACTED", "summary": "...", "turns_compressed": N}` over WS. (b) Frontend — when message count exceeds `MESSAGE_COMPACTION_THRESHOLD` (default 40) AND a `STATE_COMPACTED` event arrives, replace messages before the compaction point with a collapsible `SessionSummaryCard` (header: "N messages summarized", body: StateSummarizer output text carried in the event). Messages after the point remain fully rendered.
+- **Blocked by:** Division 8.12 `STATE_COMPACTED` event contract (8.12.3).
+- **Phase:** Phase 11.7 (FE) + Division 8.12 (backend hook).
+- **Notes:** analogous to Claude Code's `/compact` auto-compact. Addresses both DOM memory pressure AND context-window viability for local model sessions. Confirmed need 2026-06-14.
 
 ### DEBT-043 [MEDIUM · Floating] — Orchestrator introspection tools register but are not bound into the live graph node
 

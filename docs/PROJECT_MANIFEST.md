@@ -17,10 +17,16 @@
 | 8.5 External Gateway | ✅ CLOSED | 2026-06-13 | — |
 | 8.6 Phase 8 Checkpoint Gate | ⬜ PENDING | — | Awaits 8.2 |
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
-| 8.8 Tool Parity Matrix | ⬜ PENDING | — | 8.8.0 ToolSearchTool gate |
+| 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.0 FE regressions |
+| 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
+| 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
-| Phase 11 Portfolio Release | ⬜ PENDING | — | 11.1 Dockerization |
+| Phase 11 Dashboard Enterprise Redesign | ⬜ PENDING | — | 11.0 Design system |
+| Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
+| Phase 13 Pre-Launch Innovation Sprint | ⬜ PENDING | — | 13.1 Prompt caching |
+| Phase 14 Portfolio Level Release | ⬜ PENDING | — | 14.1 Dockerization |
 
 ---
 
@@ -50,9 +56,15 @@
 | 7.18 | Six-Technique Enterprise Hardening Sweep | ✅ |
 | 7.19 | Agentic Execution Cell & Persistent Audit Trail | ✅ |
 | 8 | Testing, Refinement & Graceful Degradation | 🟡 Active |
+| 8.10 | Debt Reduction + Complete 8.2 + 8.6 (8 sub-phases) | ⬜ |
+| 8.11 | 7-Mode Permission System | ⬜ |
+| 8.12 | Five-Layer Context Compression Pipeline | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
-| 11 | Portfolio Level (Standout Release) | ⬜ |
+| 11 | Web Dashboard Enterprise Redesign (9 sub-phases) | ⬜ |
+| 12 | Human Evaluation Execution | ⬜ |
+| 13 | Pre-Launch Innovation Sprint | ⬜ |
+| 14 | Portfolio Level (Standout Release) | ⬜ |
 
 **Legend:** ✅ Closed · 🟡 Active · ⬜ Pending
 
@@ -454,6 +466,105 @@
 
 ---
 
+## Division 8.10 — Aggressive Debt Reduction & Path to 8.2 + 8.6 ⬜
+
+> Closes the full open DEBT backlog aggressively before enterprise initiatives begin. Ordered so that 8.2 and 8.6 complete cleanly mid-phase. Eight sub-phases.
+
+- [ ] **8.10.0 — Emergency FE Regressions (unblock daily use first)**
+  - DEBT-055 (HIGH): Chat scroll regression — flex container loses `overflow-y: auto` on multiple messages; fix with `flex: 1 1 0; overflow-y: auto` on the NattCanvas message list container. Files: `ailienant-extension/src/webview/components/NattCanvas.tsx` + CSS.
+  - DEBT-056 (MEDIUM): Text HUD fixed height — chat input and Socratic planner textarea do not auto-resize; fix with `scrollHeight`-driven resize, `min-height: 2.5rem; max-height: 12rem`. Files: input component in `NattCanvas.tsx` / `PlannerSession.tsx`. **DoD:** `npm run compile` 0 · manual smoke: long prompt expands input; multiple messages remain scrollable.
+
+- [ ] **8.10.1 — Deployment readiness & critical path fixes**
+  - DEBT-034 (HIGH): normalize `project_id` hash — apply `os.path.normcase(os.path.normpath(...))` in BOTH `gateway/handlers.py:project_id_for` and `extension/src/core/PathResolver.ts:computeProjectId`; triggers one-time lazy re-index on next workspace open.
+  - DEBT-038 (MEDIUM): relocate benchmark harness from `tests/benchmark/` to `core/benchmark/`; update all `tests.benchmark.*` imports in gate files.
+  - DEBT-040 (MEDIUM · Locked): close stale `tool_search` role resolution — thread live role through `config.configurable["active_role"]` at the Orchestrator step-transition site; remove stale ContextVar fallback path.
+  - **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
+
+- [ ] **8.10.2 — Integration wiring sprint**
+  - DEBT-043 (MEDIUM): bind orchestrator tools into the live graph node — create `make_get_wbs_status_tool` / `make_emit_hitl_request_tool` factories in `tools/agent_tools.py`; wire into `agents/orchestrator.py` tool set.
+  - DEBT-046 (MEDIUM): thread `session_id`/`session_permission_mode` into coder tool factories; EXECUTE-tier coder tools surface the HITL approval card (mirrors `sandbox_bash`).
+  - DEBT-042 (MEDIUM): wire `WebSearchTool._search_fn` + `DependencyAuditTool._search_fn` to the brave-search MCP session handle via `bootstrap_mcp_session` lifecycle propagation.
+  - DEBT-028 hooks (MEDIUM): execute stored `pre_patch`/`post_patch` hooks around task mutations in `core/task_service.py`.
+  - **DoD:** `mypy .` 0 · `pytest` green.
+
+- [ ] **8.10.3 — Execute Division 8.2: Resilience & Observability**
+  Drives all five pending 8.2 sub-tasks:
+  - 8.2.1: E2E tests — full SSoT stack over real HTTP/WS returning an applied patch.
+  - 8.2.2: Fast Track + LangSmith observability (no new log sink; builds on 7.13.3).
+  - 8.2.3: Hardware fallbacks — VRAM threshold as config; Cloud reroute on insufficient VRAM. 8.2.3.1: Graph Weight Calculator predicts State size before prompt execution.
+  - 8.2.4: Hardware Stress Simulator — chaos script triggering real `hardware_profiler` fallbacks observable in telemetry.
+  - 8.2.5: DoD-check — resilience smoke green.
+  - **DoD:** `mypy .` 0 · `pytest` green.
+
+- [ ] **8.10.4 — Execute Division 8.6: Phase 8 Checkpoint Gate**
+  Sibling gate re-certifying H₁/H₂ harness, MCP privilege fail-closed, HITL-degrade, and resilience. **DoD:** `pytest` green · `mypy .` 0 · gate green · `npm run compile` 0.
+
+- [ ] **8.10.5 — HIGH-tier architectural debts**
+  - DEBT-036 (HIGH): route `BenchmarkOracle` code execution through the sandbox adapter (Docker tier) for corpus isolation; replace `SubprocessPythonExecutor` direct host execution.
+  - DEBT-013 (HIGH): add a gateway streaming branch that keeps `response_format` for providers supporting streaming structured output (OpenAI style); fall back to ADR-742 adaptive sanitizer only where unsupported.
+  - **DoD:** `mypy .` 0 · `pytest` green.
+
+- [ ] **8.10.6 — MEDIUM performance & correctness debts**
+  - DEBT-024 (MEDIUM): compute unified diff server-side in `task_service.py`; transport O(Δ) patch; client reconstructs both sides via existing `applyPatch`. Shared `PatchedFileDiff`/`DiffBlockShape` contract updated.
+  - DEBT-035 (MEDIUM): TypeScript sandbox execution — extend Docker image with `node:20-slim`; `SandboxCodegenExecutor` routes `Language.TYPESCRIPT` to Node tier.
+  - DEBT-041 (MEDIUM): GrepTool inverted-content-index — async index at index time; `GrepTool._scan` becomes O(matches) not O(files); ReDoS-bounded regex evaluator.
+  - DEBT-048 + DEBT-050 (MEDIUM): `RunBenchmarkTool` registers with `task_service.register_active_task` and charges `ledger.consume_budget()`.
+  - DEBT-053 (LOW→pre-release): `TaskStopTool` SIGTERM → wait 5 s → SIGKILL escalation.
+  - **DoD:** `mypy .` 0 · `pytest` green.
+
+- [ ] **8.10.7 — Pre-launch gap audit (docs-only)**
+  Update `DEVELOPERS.md` honest list to reflect completions (56-tool catalog, MCP wiring, orchestrator/researcher nodes), remaining deferrals (Wasm default, full MCTS, autonomous dreaming, auth), and planned implementations (prompt caching → Phase 13.1). **DoD:** honest list accurate; no code changes.
+
+---
+
+### Division 8.11 — 7-Mode Permission System ⬜
+
+> Extend the current 3-mode `session_mode` (DEFAULT / PLAN / READ_ONLY) to a 7-mode execution permission matrix, modeled on Claude Code's Allow/Ask/Deny granularity adapted to AILIENANT's privilege-tier model. ADR to be assigned.
+
+| Mode | Name | Behavior |
+|------|------|----------|
+| 1 | FULL_AUTO | No HITL for any tier; all tools execute immediately |
+| 2 | STANDARD | HITL for DANGEROUS only (current DEFAULT) |
+| 3 | CAUTIOUS | HITL for EXECUTE + DANGEROUS; READ_ONLY auto-admitted |
+| 4 | ASK_EXECUTE | Ask before any non-READ_ONLY tool; deny DANGEROUS |
+| 5 | ASK_ALL | Ask before every tool call (including READ_ONLY) |
+| 6 | READ_ONLY | Only READ_ONLY tier admitted; EXECUTE/DANGEROUS blocked |
+| 7 | PLAN_ONLY | Planning only; no execution (current PLAN) |
+
+- [ ] **8.11.1 — ADR + `session_mode` enum extension.**
+  Additive extension: `session_mode` gains 4 new enum values; DEFAULT maps to STANDARD (2); PLAN maps to PLAN_ONLY (7); READ_ONLY maps to READ_ONLY (6). No existing checkpoint breaks. SCHEMA_EVOLUTION.MD versioned entry. Files: `brain/state.py`, `docs/SCHEMA_EVOLUTION.MD`.
+- [ ] **8.11.2 — `evaluate_action` resolver rewrite.**
+  `gateway/governance.py:evaluate_action` maps `(mode, tier) → ALLOW | ASK | DENY` per the 7×3 matrix. Files: `gateway/governance.py`, `core/task_service.py` (ambient mode propagation).
+- [ ] **8.11.3 — Frontend mode switcher (7 modes).**
+  Extend `ModeSwitcher.tsx` to surface all 7 modes with descriptions. Persist selection in `workspaceStore`. Files: `ailienant-extension/src/webview/components/ModeSwitcher.tsx`.
+- [ ] **8.11.4 — Division 8.11 Checkpoint Gate.**
+  `tests/test_permission_modes.py`: 7 × 3 tier matrix asserted (ALLOW/ASK/DENY per mode per tier). **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
+
+---
+
+### Division 8.12 — Five-Layer Context Compression Pipeline ⬜
+
+> Formalize context management into a typed 5-layer pipeline preventing silent mid-task context loss. Inspired by Claude Code's 6-layer context window architecture. Emits `STATE_COMPACTED` WS events consumed by Phase 11.7 chat compaction. ADR to be assigned.
+
+| Layer | Name | Content | Persistence | Budget |
+|---|---|---|---|---|
+| 1 | Foundation | System prompt, role identity, AILIENANT.md, tool schemas | Static startup, never evicted | 20% |
+| 2 | Project | README digest, GraphRAG project summary, rules | Session-persistent, reloaded on workspace change | 15% |
+| 3 | Memory | StateSummarizer output, checkpoint deltas, dreaming digest | Rolling, oldest evicted on overflow | 20% |
+| 4 | Conversation | Recent turns, WBS status, HITL decisions | FIFO window, explicit eviction | 30% |
+| 5 | Execution | Tool results, diffs, benchmark reports (on-demand) | Volatile per-turn, not persisted | 15% |
+
+- [ ] **8.12.1 — `brain/context_pipeline.py` + assembler.**
+  `ContextLayer` ABC + `ContextPipeline` assembler; Layer 4 FIFO eviction emits `STATE_COMPACTED` event over WS when entries are dropped. Existing `brain/summarizer.py` becomes Layer 3's compression backend (no rename). Existing `agents/analyst_context.py:ContextBudgetManager` becomes Layer 4's budget.
+- [ ] **8.12.2 — Agent integration.**
+  `agents/planner.py` / `agents/coder.py` consume `ContextPipeline` instead of ad-hoc injection. Guarantee: a task exceeding 100K tokens never silently truncates Layers 1–3.
+- [ ] **8.12.3 — WS `STATE_COMPACTED` event contract.**
+  `api/websocket_manager.py`: new event type `{"type": "STATE_COMPACTED", "summary": "...", "turns_compressed": N}`; consumed by Phase 11.7 `SessionSummaryCard` frontend (not yet shipped — wired in Phase 11).
+- [ ] **8.12.4 — Division 8.12 Checkpoint Gate.**
+  `tests/test_context_pipeline.py`: Layer 1–3 are never evicted; Layer 4 FIFO eviction fires when the budget is exceeded; `STATE_COMPACTED` event is emitted. **DoD:** `mypy .` 0 · `pytest` green.
+
+---
+
 ## PHASE 9 — Native Thinking (Real-Time Reasoning Stream) ✅
 
 > Real-time native model reasoning exposed in a collapsible Thought Box (Claude Extended Thinking / open reasoning models via `reasoning_content`). Strictly transport/orchestration/UI layers — `agents/` untouched.
@@ -480,15 +591,74 @@
 
 ---
 
-## PHASE 11 — Portfolio Level (Standout Release) ⬜
+## PHASE 11 — Web Dashboard Enterprise Redesign ⬜
 
-> Final preparation to showcase the tool.
+> Elevate the web dashboard from MVP (11 functional panels, basic CSS) to an enterprise-grade observability console with full project-context awareness and a flagship GraphRAG visualization. Depends on Division 8.12 `STATE_COMPACTED` event contract. Nine sub-phases.
 
-- [ ] **11.1. Full Dockerization.** `Dockerfile` + `docker-compose.yml` to launch the full architecture (LanceDB + Backend) with a single command.
-- [ ] **11.2. Binary Packaging (Zero-Friction Install).** **PyInstaller / Nuitka:** compile `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) into a per-OS binary (`.exe` / macOS / Linux). **VS Code Extension Bundling:** the TS extension unpacks and executes the local binary in background on install. The user needs no Python, Docker, or Node installed.
-- [ ] **11.3. Visual Documentation.** `README.md` final with real architecture diagrams.
-- [ ] **11.4. Autonomous Demo.** Recording where TestAgent + LogicAgent + AnalystAgent solve a cyclic bug unattended.
-- [ ] **11.5. Final Checkpoint Gate.** Zero-Friction Install E2E validation + project closure.
+- [ ] **11.0 — Design System & Navigation.**
+  Enterprise component library (design tokens, spacing scale, typography, color system); sidebar nav with grouped panels (Monitoring / Configuration / Operations); keyboard shortcuts; collapsible sidebar; responsive layout. Foundation inherited by all redesigned panels.
+- [ ] **11.1 — Project Context Disambiguation (critical — precedes all panel redesigns).**
+  Active project selector (project name + path) pinned to the top bar; `project_id` propagated to all polling hooks (`HardwarePanel`, `TelemetryPanel`, `OverviewPanel`, `AuditPanel`, `RuntimePanel`, `RecoveryPanel`); global config panels (`BYOMPanel`, `ExtensionsPanel`, `RulesPanel`) show active project badge; backend dashboard endpoints gain `?project_id=` filter param. **DoD:** switching projects re-scopes all widget data.
+- [ ] **11.2 — GraphRAG Knowledge Visualization (flagship — highest priority).**
+  Full enterprise visualization for `MemoryManagement` panel demonstrating AILIENANT's cognitive depth.
+  - *Force-directed graph (D3.js / Cytoscape.js):* node types with distinct shapes + colors (`file`=circle, `function/method`=diamond, `class`=hexagon, `module`=square, `external dep`=triangle); node sizes scaled by PPR score; **god nodes** (top-K centrality) highlighted with gold ring + star badge; **community clusters** (Louvain) as colored halos with click-to-filter; edge types (imports/calls/inherits) as distinct line styles with legend toggle; cross-community nodes get multi-color rings; click-to-inspect side panel (symbol, file, code snippet via VFS, PPR rank, community, degree, last indexed); graph search with matched-node pulse animation.
+  - *Vector map layer (2D projection):* UMAP/t-SNE of LanceDB embeddings as density heatmap; each point = a doc chunk colored by cluster; hover shows chunk text preview, source file, and embedding distance; clicking a region zooms the graph layer to that cluster's files.
+  - *Doc chunk browser (list layer):* paginated list of all indexed chunks (content preview, source file, vector ID, last-access timestamp — recency of RAG retrieval); sortable by recency / PPR score / embedding norm; Purge button with HITL confirmation for stale eviction.
+- [ ] **11.3 — Real-time Monitoring Panels Redesign.**
+  `TelemetryPanel`: live sparkline charts (token cost, routing-decision pie, latency P50/P95) — all scoped to active project. `HardwarePanel`: animated radial VRAM/RAM gauges with configurable alarm thresholds + 60-second VRAM timeline. `OverviewPanel`: project-scoped KPI cards (session cost, tasks today, MCP servers connected, HITL approvals pending). `RuntimePanel`: Docker lifecycle Gantt timeline, adapter tier switcher, live container log stream.
+- [ ] **11.4 — BYOM & Extensions Polish.**
+  BYOM: model browser with benchmark Pass@1 scores (from Division 8.3 reports), cost-per-token badges, quick-connect CTA, health-check status. Extensions: skill cards with usage stats, semantic search over the 56-tool catalog, installed vs available MCP servers with one-click install from the curated registry.
+- [ ] **11.5 — Verbal Reasoning Fallback for Non-Native-Thinking Models (closes DEBT-057).**
+  When native thinking is unavailable, `tools/llm_gateway.py` injects a reasoning scaffold into the system prompt (`<thinking>…</thinking>` prefix); the block is streamed to ThoughtBox via the existing `broadcast_thinking_chunk` path and stripped from the final answer. FE: Reasoning Mode toggle (`Native` / `Verbose` / `Compact`); ThoughtBox header shows `[Simulated]` vs `[Native]` tag. Files: `tools/llm_gateway.py`, `agents/planner.py`, `agents/coder.py`, `ThoughtBox.tsx`.
+- [ ] **11.6 — Active Task Header / Prompt Preservation (closes DEBT-058).**
+  Submitted prompt stays as a sticky card pinned above the message list while the AI responds; collapses to 1-line summary on `TASK_COMPLETE`; user-dismissible. New `ActiveTaskHeader.tsx` with animated "Working…" + elapsed-time indicator + Cancel affordance. `workspaceStore.ts`: `activeTaskPrompt` / `activeTaskId` state. No backend change; uses existing WS events. Files: `workspaceStore.ts`, new `ActiveTaskHeader.tsx`, `NattCanvas.tsx`.
+- [ ] **11.7 — Chat Compaction for Long Sessions (closes DEBT-059).**
+  When message list exceeds `MESSAGE_COMPACTION_THRESHOLD` (default 40) AND the backend emits a `STATE_COMPACTED` WS event (from Division 8.12 Layer 4 eviction), replace messages before the compaction point with a collapsible `SessionSummaryCard` (header: "N messages summarized", body: `StateSummarizer` output). Messages after the point remain fully rendered. No new backend endpoint — event payload carries the summary text. Files: `NattCanvas.tsx`, new `SessionSummaryCard.tsx`, `workspaceStore.ts`.
+- [ ] **11.8 — Dashboard Checkpoint Gate.** `npm run compile` 0 · `npm run lint` 0 · Playwright smoke: all panels load; project context selector re-scopes data on switch; GraphRAG graph renders with ≥1 node + god-node badge; vector map heatmap visible; `ActiveTaskHeader` appears on submit and clears on completion; ThoughtBox shows `[Simulated]` tag for a non-thinking model.
+
+---
+
+## PHASE 12 — Human Evaluation Execution ⬜
+
+> Run the Division 8.3 benchmark harness end-to-end with a curated corpus and human judges, producing exact accuracy percentages with statistical confidence bounds — the "moat proof" document backing every quality claim in the portfolio.
+
+**Output metrics (exact percentages + Wilson CI):**
+- **Pass@1**: % correct on first attempt. **Resolve@k** (k≤3): % correct within k retries.
+- **Ablation delta**: G1 (full arch) vs G2 (vector-only) vs G3 (no RAG) vs G4 (no HITL) — exact ΔPass@1 per component.
+- **Human judge scores**: correctness (0/1), code quality (1–5), intent alignment (1–5), HITL appropriateness (1–5) — averaged per problem per arm.
+- **H₁/H₂ verdicts** with Wilson CI: e.g. "Pass@1 = 74% ± 6%; ΔG1-G2 = +18 pp (p<0.05)".
+- Final artifact: `docs/HUMAN_EVAL_REPORT.md` — structured, versioned, public-ready.
+
+- [ ] **12.1 — Problem Set Curation.** Freeze 30–50 real-world multi-file problems with known-correct solutions, difficulty tags (easy/medium/hard), Python + TS language split. Each problem attempted by all 4 arms under identical conditions.
+- [ ] **12.2 — Blind Evaluation Protocol.** Judge assignment rubric (correctness, code quality, intent alignment, HITL appropriateness); arm identity hidden at scoring time; Cohen's κ inter-rater reliability check before final scoring.
+- [ ] **12.3 — Data Collection & Report.** Run `run_benchmark` via gateway for G1–G4 arms; collect judge scores; pipe into `BenchmarkReport` with Wilson CI; compare H₁/H₂. Output: `docs/HUMAN_EVAL_REPORT.md`.
+- [ ] **12.4 — Human Eval Gate.** Report artifact exists; Wilson CI columns populated; H₁/H₂ verdict rendered. **DoD:** `get_report` returns a valid, non-empty report.
+
+---
+
+## PHASE 13 — Pre-Launch Innovation Sprint ⬜
+
+> The "Phase 9 spirit" — a focused innovation wave immediately before the final launch deploying the highest-ROI features not yet in the system.
+
+- [ ] **13.1 — Provider-Native Prompt Caching (~90% input-token discount).**
+  Structure LangGraph message assembly so the stable high-volume prefix (system prompt → tool/MCP schemas → GraphRAG context) is byte-identical and front-loaded across coder/planner iterations; tag `cache_control` breakpoints for Anthropic/OpenAI providers; measure per-session savings in telemetry. Files: `tools/llm_gateway.py`, `agents/planner.py`, `agents/coder.py`. **DoD:** tokens-saved metric > 0 in session telemetry.
+- [ ] **13.2 — WBSStep `depends_on` Schema Extension (closes DEBT-044).**
+  Add `depends_on: Optional[List[int]] = None` to `WBSStep`; update `ValidateWBSDependenciesTool` to detect true DAG cycles; add SCHEMA_EVOLUTION.MD §15 entry.
+- [ ] **13.3 — Remaining Integration DEBTs Sprint.**
+  Close DEBT-049 (`SkillInvokeTool` embedder injection via graph-level factory), DEBT-054 (`agent_todos` channel runtime wiring into a cognitive node), DEBT-051 (`task_list` owner-scoped visibility for non-orchestrator roles).
+- [ ] **13.4 — Pre-Launch Innovation Gate.** Prompt caching tokens-saved metric > 0; DEBT-049/054/051 closed; `pytest` green · `mypy .` 0 · `npm run compile` 0.
+
+---
+
+## PHASE 14 — Portfolio Level (Standout Release) ⬜
+
+> Final preparation to showcase the tool. Content migrated from old Phase 11.
+
+- [ ] **14.1. Full Dockerization.** `Dockerfile` + `docker-compose.yml` to launch the full architecture (LanceDB + Backend) with a single command.
+- [ ] **14.2. Binary Packaging (Zero-Friction Install).** **PyInstaller / Nuitka:** compile `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) into a per-OS binary (`.exe` / macOS / Linux). **VS Code Extension Bundling:** the TS extension unpacks and executes the local binary in background on install. The user needs no Python, Docker, or Node installed.
+- [ ] **14.3. Visual Documentation.** `README.md` final with real architecture diagrams.
+- [ ] **14.4. Autonomous Demo.** Recording where TestAgent + LogicAgent + AnalystAgent solve a cyclic bug unattended.
+- [ ] **14.5. Final Checkpoint Gate.** Zero-Friction Install E2E validation + project closure.
 
 ---
 
