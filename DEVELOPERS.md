@@ -302,8 +302,10 @@ Proyect_Ailienant/
 │   │                            #     mcp_servers, skills, sessions, agent_roles, system_settings)
 │   ├── tools/                   #   llm_gateway, validation pipeline (AST+LSP), MCP adapter
 │   │                            #     (multi-session registry + dispatch gate), perception/
-│   │                            #     mutation/execution/control/meta tool bundles
-│   │                            #     (meta_tools.py = tool_search discovery),
+│   │                            #     mutation/execution/control/meta/researcher tool bundles
+│   │                            #     (meta_tools.py = tool_search discovery;
+│   │                            #      researcher_tools.py = Wave-1 Researcher arsenal;
+│   │                            #      quarantine.py = shared Cognitive-Quarantine boundary wrapper),
 │   │                            #     validation/diagnostics.py (structured verdict parser)
 │   ├── gateway/                 #   External Capability Gateway: stdio MCP server exposing AILIENANT
 │   │                            #     verbs to external agents (catalog + schemas + call-tool routing seam)

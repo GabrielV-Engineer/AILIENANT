@@ -25,12 +25,12 @@ import csv
 import io
 import json
 import logging
-import uuid
 import zipfile
 from typing import (
     Any,
     Callable,
     Dict,
+    FrozenSet,
     List,
     Literal,
     Optional,
@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
+from tools.quarantine import wrap_boundary
 
 logger = logging.getLogger("PERCEPTION_TOOLS")
 
@@ -64,25 +65,9 @@ _ALLOWED_PERCEPTION_ROLES = frozenset(
 )
 
 
-def _wrap_boundary(text: str, boundary_provider: Optional[Callable[[], str]]) -> str:
-    """Wrap untrusted content in the per-turn Cognitive Quarantine tag.
-
-    Falls back to a locally-generated uuid4 with a logged warning when the
-    state-owned boundary is unavailable — defensive only; production wires
-    boundary_provider to read state["boundary_id"].
-    """
-    if boundary_provider is not None:
-        try:
-            tag = boundary_provider() or ""
-        except Exception as exc:  # noqa: BLE001 — provider failures must not crash the tool
-            logger.warning("boundary_provider raised %s; falling back to local uuid.", exc)
-            tag = ""
-    else:
-        tag = ""
-    if not tag:
-        tag = uuid.uuid4().hex
-        logger.debug("No state-owned boundary_id available; using local fallback.")
-    return f"<{tag}>{text}</{tag}>"
+# Canonical Cognitive-Quarantine wrapper lives in tools.quarantine; this alias
+# preserves the original private call sites in this module unchanged.
+_wrap_boundary = wrap_boundary
 
 
 # =====================================================================
@@ -509,42 +494,64 @@ class WebFetchTool(BaseTool):
 # =====================================================================
 
 
-def _tool_schema(name: str, description: str, json_schema_class: Type[BaseModel]) -> ToolSchema:
+def _tool_schema(
+    name: str,
+    description: str,
+    json_schema_class: Type[BaseModel],
+    *,
+    extra_roles: FrozenSet[str] = frozenset(),
+) -> ToolSchema:
+    """Build a READ_ONLY perception schema.
+
+    `extra_roles` is unioned additively onto the base perception role set so a
+    tool can be surfaced to an agent-level role (e.g. ``researcher``) without
+    disturbing any existing assignment.
+    """
     return ToolSchema(
         name=name,
         description=description,
         json_schema=json.dumps(json_schema_class.model_json_schema(), default=str),
         privilege_tier=ToolPrivilegeTier.READ_ONLY,
-        allowed_roles=_ALLOWED_PERCEPTION_ROLES,
+        allowed_roles=_ALLOWED_PERCEPTION_ROLES | extra_roles,
     )
+
+
+# The Researcher (READ_ONLY context-hound) is wired into the file-inspection
+# perception tools. web_fetch is deliberately excluded here — it is assigned to
+# the Analyst arsenal in a later wave.
+_RESEARCHER_ROLE: FrozenSet[str] = frozenset({"researcher"})
 
 
 async def register_perception_tools(store: ToolRAGStore) -> int:
     """Register all 5 perception-tool schemas in the given store. Returns count.
 
-    Phase 5.3 does NOT auto-register at module import — the function is exposed
-    for tests and for the FastAPI startup hook a Phase 5.4 PR will wire.
+    The function is exposed for tests and for the startup hook; it does NOT
+    auto-register at module import.
     """
     schemas: List[ToolSchema] = [
         _tool_schema(
             "document_parser",
             "Parse a PDF, CSV, or DOCX payload into plain text without disk I/O.",
             DocumentParserInput,
+            extra_roles=_RESEARCHER_ROLE,
         ),
         _tool_schema(
             "inspect_ast_node",
             "Extract the source code of a class or function by symbol name.",
             InspectASTInput,
+            extra_roles=_RESEARCHER_ROLE,
         ),
         _tool_schema(
             "get_symbol_references",
             "Find files that import the given file (1-hop backward edges).",
             GetSymbolReferencesInput,
+            extra_roles=_RESEARCHER_ROLE,
         ),
         _tool_schema(
             "trace_data_flow",
             "Forward + backward k-hop reachability over the dependency graph.",
             TraceDataFlowInput,
+            extra_roles=_RESEARCHER_ROLE,
         ),
         _tool_schema(
             "web_fetch",

@@ -221,6 +221,21 @@ class VFSMiddleware:
         return result
 
     # ------------------------------------------------------------------
+    # Read-only path enumeration
+    # ------------------------------------------------------------------
+
+    def snapshot_paths(self) -> List[str]:
+        """Return a copy of all in-RAM VFS paths, safely under the lock.
+
+        Used by path-enumeration tools (Glob, Grep, WorkspaceStructure) as the
+        RAM half of the RAM ∪ indexed-catalog universe. Copying under the lock
+        prevents RuntimeError when a concurrent ingest_dirty_buffers mutates the
+        dict while a caller iterates the snapshot.
+        """
+        with self._lock:
+            return list(self._ram_vfs.keys())
+
+    # ------------------------------------------------------------------
     # Ignore spec cache (thread-safe, compiled once per project_id)
     # ------------------------------------------------------------------
 

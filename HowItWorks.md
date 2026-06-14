@@ -159,12 +159,17 @@ Agents never touch your system directly — they act through a **typed, role-gat
 
 | Tool | Tier | Used by | What it does |
 | --- | --- | --- | --- |
-| `inspect_ast_node` | READ_ONLY | Coder roles, (Analyst) | Extract the source of a class/function by name |
-| `get_symbol_references` | READ_ONLY | Coder roles | Find files that import a target (1-hop backward) |
-| `trace_data_flow` | READ_ONLY | Coder roles | Forward/backward k-hop reachability over the dep graph |
-| `document_parser` | READ_ONLY | Coder roles | Parse PDF / CSV / DOCX without disk I/O |
+| `inspect_ast_node` | READ_ONLY | Coder roles, Researcher | Extract the source of a class/function by name |
+| `get_symbol_references` | READ_ONLY | Coder roles, Researcher | Find files that import a target (1-hop backward) |
+| `trace_data_flow` | READ_ONLY | Coder roles, Researcher | Forward/backward k-hop reachability over the dep graph |
+| `document_parser` | READ_ONLY | Coder roles, Researcher | Parse PDF / CSV / DOCX without disk I/O |
 | `web_fetch` | READ_ONLY | Coder roles | Fetch a URL and convert HTML → Markdown |
-| `read_file` | READ_ONLY | all roles | Paginated VFS read |
+| `read_file` | READ_ONLY | Researcher + all roles | Paginated VFS read (RAM-first, firewall-enforced) |
+| `glob` | READ_ONLY | Researcher | List workspace files matching an fnmatch pattern (VFS RAM ∪ indexed catalog) |
+| `grep` | READ_ONLY | Researcher | Regex search over workspace file contents (RAM-first, O(max_matches) short-circuit) |
+| `workspace_structure` | READ_ONLY | Researcher | Relevance-filtered directory tree over the VFS ∪ catalog universe |
+| `query_graphrag` | READ_ONLY | Researcher | Expand seed files via the GraphRAG graph and return a compact context block |
+| `get_dependents` | READ_ONLY | Researcher | JSON list of files that import the given file (1-hop backward, structured output) |
 | `atomic_code_patch` | WRITE | core_dev, architect_refactor, secops, data_ml | Fuzzy search/replace with AST + optimistic-concurrency check |
 | `batch_semantic_edit` | WRITE | core_dev, architect_refactor | Multi-file coordinated edit, ACID via unit-of-work |
 | `file_write` | WRITE | core_dev, devops_infra | Create/overwrite a VFS file with AST + OCC |
@@ -180,7 +185,6 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 
 | Agent | Planned tools (⏳) |
 | --- | --- |
-| 🔭 **Researcher** | `glob`, `grep` (over the VFS), `workspace_structure`, `graphrag_query`, `get_dependents` |
 | 💬 **Analyst** | `run_linter`, `complexity_analysis`, `dependency_audit`, `code_diff`, `web_search`, `token_ledger_read` |
 | 🎛️ **Orchestrator** | `get_wbs_status`, `get_token_ledger`, `emit_hitl_request` |
 | 🧭 **Planner** | `validate_wbs_dependencies` (catch a circular/over-scope plan *before* it runs), `budget_estimator` |

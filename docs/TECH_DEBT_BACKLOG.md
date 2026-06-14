@@ -61,6 +61,16 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 - **Phase:** **8.8.5** (Role-Specific Coder Tools), where per-role tool gating becomes load-bearing.
 - **Notes:** logged at 8.8.0 ship per CLAUDE.md §11.3. Test `test_config_role_overrides_stale_contextvar` already proves the config-first path defeats a divergent ambient role.
 
+### DEBT-041 — GrepTool reads catalog-only files sequentially without a content index
+
+- **Date:** 2026-06-13
+- **Reproduce:** `GrepTool._arun` iterates `path_provider()` and calls `content_reader(path)` per file via the firewalled `read_safe` reader. The mandatory O(max_matches) short-circuit limits total matches, but on a large workspace every pre-filter file still incurs a disk read until a match is found. No inverted index exists.
+- **File(s):** `ailienant-core/tools/researcher_tools.py` (`GrepTool._scan`).
+- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §11.2)**. The `asyncio.to_thread` offload and the short-circuit guarantee the event loop is never blocked and latency is O(L) in the match cap. The residual is latency on very large workspaces with sparse matches.
+- **Blocked by:** nothing structural; the enterprise fix adds an inverted content index and a ReDoS-bounded regex evaluator.
+- **Phase:** Wave 2 / Analyst quality-lens (8.8.2), where search tooling becomes load-bearing for the Analyst.
+- **Notes:** logged at 8.8.1 ship per CLAUDE.md §11.3.
+
 ### DEBT-037 — G2 retrieval isolation uses mock.patch, not a production DI seam
 
 - **Date:** 2026-06-12

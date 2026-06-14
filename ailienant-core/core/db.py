@@ -412,6 +412,22 @@ async def get_all_indexed_files() -> List[Tuple[str, str]]:
             return [(r[0], r[1]) for r in await cur.fetchall()]
 
 
+async def list_indexed_files(project_id: str = "") -> List[str]:
+    """Return every file_path the LazyIndexer has recorded for a given project.
+
+    Project-scoped read-only helper used by the VFS path-enumeration tools
+    (Glob, Grep, WorkspaceStructure) to build the catalog half of the
+    RAM ∪ indexed-catalog path universe. Deterministic order (ORDER BY file_path).
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT DISTINCT file_path FROM indexed_files WHERE project_id=? ORDER BY file_path",
+            (project_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [r[0] for r in rows]
+
+
 async def get_ppr_scores_bulk(
     file_paths: List[str], project_id: str = ""
 ) -> Dict[str, float]:

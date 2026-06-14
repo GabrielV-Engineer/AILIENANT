@@ -391,7 +391,7 @@
   - Relevance-based tool retrieval over the existing `ToolRAGStore`, auto-triggered at ~10% of context budget; below the threshold, tools load eagerly; above, the agent retrieves by query. Nothing else in 8.8 ships until this is green.
   - **DoD:** with 56 schemas registered, a cold prompt respects `TOOL_RAG_MIN_REDUCTION=0.70` and the correct tool is retrievable by query.
 
-- [ ] **8.8.1 — Wave 1: Researcher Arsenal (READ_ONLY).** *(≈5 net-new · 5 wire-in)*
+- [x] **8.8.1 — Wave 1: Researcher Arsenal (READ_ONLY).** *(≈5 net-new · 5 wire-in)*
   - Wire-in `researcher` in `allowed_roles`: `inspect_ast_node`, `get_symbol_references`, `trace_data_flow`, `document_parser`, `FileReadTool` paginated.
   - Net-new: `GlobTool`/`GrepTool` over VFS RAM-first (no direct FS), `WorkspaceStructureTool` (relevance-filtered tree), `GraphRAGQueryTool` (formalizes `deep_parse`), `GetDependentsTool` (formalizes `get_dependents`).
   - **DoD:** Researcher retrieves and executes each read tool under its role; none writes.
