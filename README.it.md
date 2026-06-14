@@ -35,6 +35,12 @@
 
 Ciò che lo distingue dagli assistenti IA più diffusi è **dove viene eseguito e come decide.** AILIENANT è **local-first**: può funzionare interamente sulla tua macchina con modelli aperti (Ollama, LM Studio e altri), ricorrendo al cloud solo quando un compito ne ha davvero bisogno — e te lo dice, in dollari, quando lo fa. Il tuo codice non deve lasciare il tuo portatile, e non sei mai vincolato a un unico fornitore.
 
+Il tuo codice merita di più di un autocompletamento magico o di agenti autonomi che operano alla cieca. Ailienant è l'unico agente per VS Code creato per ingegneri che esigono rigore, auditabilità e controllo totale.
+
+Operiamo secondo la filosofia Spec-Driven Development. Ailienant legge la tua architettura come un grafo vivente (GraphRAG) e utilizza ragionamenti all'avanguardia — Dreaming, MCTS (Monte Carlo Tree Search) e Harness Systems — per pianificare ed eseguire compiti complessi su più file. Ciò garantisce una precisione chirurgica e molti meno errori, superando persino i limiti di contesto dei modelli locali su PC.
+
+Tutto è integrato in modo semplice da usare, ma senza essere una "scatola nera". Sei tu a dettare le regole: scegli il modello, cambia il motore di esecuzione, controlla il budget e audita ogni passo del pipeline. Ailienant esegue in modo autonomo, ma si ferma per la tua approvazione prima di qualsiasi azione critica (HITL). Vera autonomia, zero vendor lock-in. Il pipeline è tuo.
+
 > **In una riga:** un ingegnere IA privato, attento ai costi e che pianifica per primo, per il tuo codice — open source e senza lock-in del fornitore.
 
 ---
