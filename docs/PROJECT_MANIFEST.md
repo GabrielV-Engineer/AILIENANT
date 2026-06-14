@@ -401,9 +401,10 @@
   - Net-new: `RunLinterTool` (wraps `tools/validation/lsp_filter.py`), `ComplexityAnalysisTool` (McCabe CC, nesting depth), `DependencyAuditTool` (manifests vs CVE via MCP), `CodeDiffTool` (dirty-buffer vs VFS), `WebSearchTool` (MCP brave-search), `TokenLedgerReadTool` (re-channeled over `TokenLedger`, not `ContextMeter`).
   - **DoD:** Analyst explains cyclomatic complexity, traces data flow, and compares versions — all without touching code.
 
-- [ ] **8.8.3 — Wave 3: Orchestrator Introspection (deterministic).** *(≈3 net-new · 2 wire-in)*
-  - Net-new: `GetWBSStatusTool` (reads `mission_spec.tasks`), `GetTokenLedgerTool` (formalizes `token_ledger.snapshot()`), `EmitHITLRequestTool` (audited `HITL_APPROVAL_REQUIRED` emission).
-  - Wire-in Orchestrator: `ask_user_question`, `toggle_plan_mode`.
+- [x] **8.8.3 — Wave 3: Orchestrator Introspection (deterministic).** *(2 net-new · 3 wire-in)*
+  - Net-new: `GetWBSStatusTool` (reads `mission_spec.tasks`), `EmitHITLRequestTool` (audited `HITL_APPROVAL_REQUIRED` emission).
+  - Wire-in Orchestrator: `ask_user_question`, `toggle_plan_mode`, `read_token_ledger`.
+  - Amendment (§4 pivot): `GetTokenLedgerTool` dropped — it duplicated 8.8.2's `read_token_ledger` (`TokenLedgerReadTool`, which already formalizes `token_ledger.snapshot()`). Resolved by additively wiring `orchestrator` into `read_token_ledger.allowed_roles`. Net-new 3→2, wire-in 2→3; surface unchanged (5 tools).
   - **DoD:** Orchestrator operations are audited tools (not direct state access), safely invocable by the 8.5 external gateway.
 
 - [ ] **8.8.4 — Wave 3b: Planner Pre-Commit Verification (READ_ONLY — the moat).** *(≈2 net-new · 3 wire-in)*

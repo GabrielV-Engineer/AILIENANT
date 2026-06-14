@@ -62,6 +62,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-036 | Oracle executes on host (no sandbox) | HIGH | Security/Safety | post-8.5/8.8 | Floating |
 | DEBT-034 | Gateway project_id path-format-fragile | HIGH | Correctness | standalone coordinated | Floating |
 | DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | streaming refactor | Floating |
+| DEBT-043 | Orchestrator tools register but unbound in live graph node | MEDIUM | Integration gap | Graph-wiring sprint | Floating |
 | DEBT-042 | WebSearchTool / DependencyAuditTool search_fn unwired | MEDIUM | Feature gap | 8.8.x integration sprint | Floating |
 | DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
 | DEBT-040 | tool_search role resolution stale | MEDIUM | Correctness (bounded) | 8.8.5 | Locked |
@@ -140,6 +141,16 @@ Decision    Not a defect — see [DECISION] tier.
 **MEDIUM**
 
 ---
+
+### DEBT-043 [MEDIUM · Floating] — Orchestrator introspection tools register but are not bound into the live graph node
+
+- **Date:** 2026-06-13
+- **Reproduce:** `get_wbs_status` / `emit_hitl_request` register in `ToolRAGStore` and are retrievable by the orchestrator role, but no production code path constructs them with a live `state` handle or binds them into the orchestrator node's tool set. The orchestrator graph node still reads `state["mission_spec"]` directly and emits the `HITL_APPROVAL_REQUIRED` flag inline into `security_flags`. No runtime failure — the tools are simply not yet exercised by the engine.
+- **File(s):** `ailienant-core/tools/orchestrator_tools.py` (tool classes); wiring target is `ailienant-core/agents/orchestrator.py` + state-injecting factories in `ailienant-core/tools/agent_tools.py` (`make_get_wbs_status_tool`, `make_emit_hitl_request_tool` — not yet created).
+- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**, identical posture to 8.8.0/8.8.1/8.8.2 where tools register without a production boot hook. Migrating the orchestrator's direct state access onto the audited tools is a focused graph-wiring change.
+- **Blocked by:** nothing structural; needs the tool-set binding + factory plumbing in the orchestrator node.
+- **Phase:** dedicated graph-wiring sprint.
+- **Notes:** logged at 8.8.3 ship per CLAUDE.md §11.3.
 
 ### DEBT-042 [MEDIUM · Floating] — WebSearchTool and DependencyAuditTool search_fn injection point is unwired
 

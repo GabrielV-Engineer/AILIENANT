@@ -57,7 +57,7 @@ The five agents, in pipeline order:
 
 - **🔭 Researcher** builds a *skeleton map* of the codebase — signatures, types, and cross-module relationships — so the Planner reasons over real structure rather than guesses. *(Emerging: today its skeleton is consumed as optional context by the Planner; it is being promoted to a first-class pipeline node.)*
 - **🧭 Planner** never writes code. It converts your prompt into a strict, structured plan — a `MissionSpecification` with an explicit scope and a Work Breakdown Structure (WBS). The first plan is **frozen**.
-- **🎛️ Orchestrator** drives the plan step by step — coordinating state, sequencing the WBS, and routing each step to the right model tier. *(Its operations are being formalized into audited, callable tools — see the roadmap.)*
+- **🎛️ Orchestrator** drives the plan step by step — coordinating state, sequencing the WBS, and routing each step to the right model tier. *(Its introspection is now exposed as audited, callable tools — `get_wbs_status`, `emit_hitl_request`, `read_token_ledger` — see the catalog below.)*
 - **🛠️ Coder** takes one task at a time and emits a patch in a git-conflict-style SEARCH/REPLACE format, validated before it ever touches disk. It adopts the **expert role** the task needs (below).
 - **💬 Analyst (Natt)** is the read-only tutor you chat with in the side panel. It explains your code and AILIENANT itself, grounded in three context sources (the code graph, your workspace README, and AILIENANT's own product docs), but it **never edits files** — the *voice*, not the *hand*.
 
@@ -175,7 +175,9 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `audit_dependencies` | READ_ONLY | Analyst | Parse requirements.txt / pyproject.toml / package.json; optional CVE lookup via injectable search |
 | `diff_changes` | READ_ONLY | Analyst | Unified diff of in-RAM dirty buffer vs on-disk original; new-file aware; capped at 300 lines |
 | `web_search` | READ_ONLY | Analyst | Web search via injectable provider (brave-search MCP compatible); degrades when unconfigured |
-| `read_token_ledger` | READ_ONLY | Analyst | Live token-cost snapshot from TokenLedger (local / cloud / all tiers) |
+| `read_token_ledger` | READ_ONLY | Analyst, Orchestrator | Live token-cost snapshot from TokenLedger (local / cloud / all tiers) |
+| `get_wbs_status` | READ_ONLY | Orchestrator | Aggregate + per-step view of the live mission WBS (status counts, active step; 200-step cap) |
+| `emit_hitl_request` | READ_ONLY | Orchestrator | Raise an audited, idempotent HITL approval gate (deterministic id; injection-sanitized flag) |
 | `atomic_code_patch` | WRITE | core_dev, architect_refactor, secops, data_ml | Fuzzy search/replace with AST + optimistic-concurrency check |
 | `batch_semantic_edit` | WRITE | core_dev, architect_refactor | Multi-file coordinated edit, ACID via unit-of-work |
 | `file_write` | WRITE | core_dev, devops_infra | Create/overwrite a VFS file with AST + OCC |
@@ -183,8 +185,8 @@ Agents never touch your system directly — they act through a **typed, role-gat
 | `task_create` | EXECUTE | exec-capable roles | Spawn a long-running background task |
 | `check_type_integrity` | EXECUTE | exec-capable roles | Run `mypy` / `tsc` over a target |
 | `task_get` | READ_ONLY | exec-capable roles | Read a background task's status/output |
-| `ask_user_question` | READ_ONLY | all roles | Pause and surface a structured question to you |
-| `toggle_plan_mode` | READ_ONLY | all roles | Switch the session's permission mode |
+| `ask_user_question` | READ_ONLY | all roles, Orchestrator | Pause and surface a structured question to you |
+| `toggle_plan_mode` | READ_ONLY | all roles, Orchestrator | Switch the session's permission mode |
 | `tool_search` | READ_ONLY | all roles | Discover tools that aren't loaded — relevance-retrieve them by query so the prompt stays small as the catalog grows |
 
 That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)**) expands it toward **~56 role-assigned tools**, organized as a tool × agent matrix — so the two context-building agents (Researcher and Analyst) everyone else depends on are no longer the least equipped. Highlights of what's planned (status ⏳):
@@ -192,7 +194,7 @@ That's the foundation. The roadmap (**[División 8.8](docs/PROJECT_MANIFEST.md)*
 | Agent | Planned tools (⏳) |
 | --- | --- |
 | 💬 **Analyst** | *(all 10 tools shipped — see live catalog above)* |
-| 🎛️ **Orchestrator** | `get_wbs_status`, `get_token_ledger`, `emit_hitl_request` |
+| 🎛️ **Orchestrator** | *(all tools shipped — see live catalog above; token telemetry reuses `read_token_ledger`)* |
 | 🧭 **Planner** | `validate_wbs_dependencies` (catch a circular/over-scope plan *before* it runs), `budget_estimator` |
 | 🛠️ **Coder** *(by role)* | `run_tests` (qa), `git_stage`/`git_commit`/`git_diff` (vcs), `docstring_generator` (doc), `linter_autofix` (secops/qa), `dependency_install` (devops), `env_file_guard` (devops), `security_audit` (secops) |
 | 🌐 **Universal** | `todo_write` |

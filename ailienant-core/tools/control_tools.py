@@ -59,6 +59,11 @@ _CONTROL_ROLES: FrozenSet[str] = frozenset(
 """All 8 canonical roles. Any agent may request HITL or self-mode its session."""
 
 
+_CONTROL_ROLES_WITH_ORCHESTRATOR: FrozenSet[str] = _CONTROL_ROLES | frozenset({"orchestrator"})
+"""The 8 canonical roles plus the orchestrator — the orchestrator may also self-mode
+its session and surface questions to the operator through these CONTROL tools."""
+
+
 DANGEROUS_COMMANDS_REGEX: List[re.Pattern[str]] = [
     re.compile(r"\brm\s+-rf?\b", re.IGNORECASE),
     re.compile(r"\bsudo\b", re.IGNORECASE),
@@ -196,19 +201,22 @@ def _control_schema(
     name: str,
     description: str,
     input_model: Type[BaseModel],
+    *,
+    allowed_roles: FrozenSet[str] = _CONTROL_ROLES,
 ) -> ToolSchema:
     """Build a ToolSchema for a CONTROL-classified tool.
 
-    Per D1 (plan §"Decisions locked"), the privilege_tier is READ_ONLY — this
-    is the simplest way to satisfy the blueprint's "policy-neutral across the
-    matrix" requirement without extending the ToolPrivilegeTier enum.
+    The privilege_tier is READ_ONLY — the simplest way to satisfy the
+    "policy-neutral across the matrix" requirement without extending the
+    ToolPrivilegeTier enum. ``allowed_roles`` defaults to the 8 canonical roles;
+    callers pass a widened set to additively admit another role (e.g. orchestrator).
     """
     return ToolSchema(
         name=name,
         description=description,
         json_schema=json.dumps(input_model.model_json_schema(), default=str),
         privilege_tier=ToolPrivilegeTier.READ_ONLY,
-        allowed_roles=_CONTROL_ROLES,
+        allowed_roles=allowed_roles,
     )
 
 
@@ -219,11 +227,13 @@ async def register_control_tools(store: ToolRAGStore) -> int:
             "ask_user_question",
             "Pause the agent and surface a structured question to the human operator.",
             AskUserQuestionInput,
+            allowed_roles=_CONTROL_ROLES_WITH_ORCHESTRATOR,
         ),
         _control_schema(
             "toggle_plan_mode",
             "Self-mutate session_permission_mode (DEFAULT / PLAN / AUTO).",
             TogglePlanModeInput,
+            allowed_roles=_CONTROL_ROLES_WITH_ORCHESTRATOR,
         ),
     ]
     for schema in schemas:

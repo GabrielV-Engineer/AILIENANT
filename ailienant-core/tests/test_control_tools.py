@@ -163,7 +163,10 @@ async def test_register_control_tools_registers_two_readonly_schemas(
     assert names == {"ask_user_question", "toggle_plan_mode"}
     for schema in schemas:
         assert schema.privilege_tier is ToolPrivilegeTier.READ_ONLY
-        assert schema.allowed_roles == _CONTROL_ROLES
+        # The 8 canonical roles plus the orchestrator (additive wire-in) — both
+        # CONTROL tools are also reachable by the orchestrator role.
+        assert _CONTROL_ROLES <= schema.allowed_roles
+        assert "orchestrator" in schema.allowed_roles
 
 
 # =====================================================================

@@ -13,6 +13,7 @@ Tools registered here (all READ_ONLY, allowed_roles={"analyst"}):
   diff_changes        — unified diff of dirty RAM buffer vs on-disk original
   web_search          — injectable search callable (brave-search MCP compatible)
   read_token_ledger   — live token-cost snapshot from core.token_ledger.TokenLedger
+                        (also surfaced to the orchestrator for budget telemetry)
 
 Security: every disk read is confined to workspace_root via _jailed_disk_read (path
 traversal check using pathlib.resolve().is_relative_to). LLM-supplied file paths
@@ -57,6 +58,9 @@ _CVE_MAX_DEPS: int = 20
 
 # ── Role assignment ────────────────────────────────────────────────────────────
 _ANALYST_ROLES: FrozenSet[str] = frozenset({"analyst"})
+# read_token_ledger is shared with the orchestrator (its live token-spend view doubles
+# as the orchestrator's budget telemetry — no second tool needed).
+_ANALYST_AND_ORCHESTRATOR: FrozenSet[str] = _ANALYST_ROLES | frozenset({"orchestrator"})
 
 # ── Manifest filename allowlist ────────────────────────────────────────────────
 _MANIFEST_NAMES: FrozenSet[str] = frozenset(
@@ -629,13 +633,15 @@ def _tool_schema(
     name: str,
     description: str,
     json_schema_class: Type[BaseModel],
+    *,
+    roles: FrozenSet[str] = _ANALYST_ROLES,
 ) -> ToolSchema:
     return ToolSchema(
         name=name,
         description=description,
         json_schema=json.dumps(json_schema_class.model_json_schema(), default=str),
         privilege_tier=ToolPrivilegeTier.READ_ONLY,
-        allowed_roles=_ANALYST_ROLES,
+        allowed_roles=roles,
     )
 
 
@@ -671,6 +677,7 @@ async def register_analyst_tools(store: ToolRAGStore) -> int:
             "read_token_ledger",
             "Read live token usage and estimated USD cost from the TokenLedger.",
             TokenLedgerInput,
+            roles=_ANALYST_AND_ORCHESTRATOR,
         ),
     ]
     for schema in schemas:
