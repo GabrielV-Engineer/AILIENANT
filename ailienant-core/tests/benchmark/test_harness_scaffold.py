@@ -23,10 +23,10 @@ from core.memory.semantic_memory import SemanticMemoryManager
 from core.telemetry import log_routing_decision
 from core.token_ledger import token_ledger
 
-from tests.benchmark.arms import ARM_TOGGLE_INVENTORY, AblationArm, apply_arm
-from tests.benchmark.hygiene import BenchmarkAbort
-from tests.benchmark.problems import DUMMY_PROBLEM, BenchmarkProblem
-from tests.benchmark.runner import BenchmarkRunner
+from core.benchmark.arms import ARM_TOGGLE_INVENTORY, AblationArm, apply_arm
+from core.benchmark.hygiene import BenchmarkAbort
+from core.benchmark.problems import DUMMY_PROBLEM, BenchmarkProblem
+from core.benchmark.runner import BenchmarkRunner
 
 
 @pytest.fixture(autouse=True)

@@ -19,7 +19,7 @@
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.0 FE regressions |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.2 integration wiring |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -479,10 +479,10 @@
   - **DoD:** `npm run compile` 0 (tsc/eslint 0 errors) · `mypy .` 0/340 · `pytest` 1494 passed · manual smoke: composer & HUD equal at rest, long prompt grows composer only; split ring shows OCC + lavender context; stale-file notice renders the path intact.
   - Deferred to `docs/TECH_DEBT_BACKLOG.md`: DEBT-063 (plan executes out of WBS order), DEBT-064 (agent organizes its own `.ailienant/` runtime files → OCC stale-apply), DEBT-065 (Auto-mode summary says "authorize" though it auto-applies).
 
-- [ ] **8.10.1 — Deployment readiness & critical path fixes**
-  - DEBT-034 (HIGH): normalize `project_id` hash — apply `os.path.normcase(os.path.normpath(...))` in BOTH `gateway/handlers.py:project_id_for` and `extension/src/core/PathResolver.ts:computeProjectId`; triggers one-time lazy re-index on next workspace open.
+- [x] **8.10.1 — Deployment readiness & critical path fixes**
+  - DEBT-034 (HIGH): normalize `project_id` hash — apply `os.path.normcase(os.path.normpath(...))` in `core/storage_paths.py:project_id_for` and the byte-for-byte equivalent in `extension/src/core/PathResolver.ts:computeProjectId` (Node `path` module + trailing-sep strip except root); triggers one-time lazy re-index on next workspace open.
   - DEBT-038 (MEDIUM): relocate benchmark harness from `tests/benchmark/` to `core/benchmark/`; update all `tests.benchmark.*` imports in gate files.
-  - DEBT-040 (MEDIUM · Locked): close stale `tool_search` role resolution — thread live role through `config.configurable["active_role"]` at the Orchestrator step-transition site; remove stale ContextVar fallback path.
+  - DEBT-040 (MEDIUM · Locked): close stale `tool_search` role resolution via Explicit State Augmentation — the per-step role rides in the `Send` payload (router sets `active_role = step.target_role`); `_resolve_active_role` is config-first; the ambient `_task_active_role` ContextVar is removed (no per-step staleness, no cross-WS leak).
   - **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
 
 - [ ] **8.10.2 — Integration wiring sprint**

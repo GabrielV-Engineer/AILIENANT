@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from tests.benchmark.oracle import CorpusProblem
+    from core.benchmark.oracle import CorpusProblem
 
 
 @dataclass(frozen=True)

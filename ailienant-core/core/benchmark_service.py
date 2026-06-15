@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict
 
 if TYPE_CHECKING:
-    from tests.benchmark.runner import BenchmarkRunner
+    from core.benchmark.runner import BenchmarkRunner
 
 logger = logging.getLogger("BENCHMARK_SERVICE")
 
@@ -69,9 +69,9 @@ def _resolve_artifact(task_id: str) -> Path:
 
 def _default_runner_factory(corpus_root: Path) -> "BenchmarkRunner":
     """Build a live benchmark runner backed by the Docker sandbox oracle."""
-    from tests.benchmark.executors import SandboxCodegenExecutor
-    from tests.benchmark.oracle import BenchmarkOracle
-    from tests.benchmark.runner import BenchmarkRunner
+    from core.benchmark.executors import SandboxCodegenExecutor
+    from core.benchmark.oracle import BenchmarkOracle
+    from core.benchmark.runner import BenchmarkRunner
 
     return BenchmarkRunner(
         oracle=BenchmarkOracle(corpus_root, SandboxCodegenExecutor()),
@@ -113,9 +113,9 @@ async def run_benchmark(task_id: str, suite: str = "v1") -> None:
     cannot crash the host process. The single-flight slot is released by the
     caller's done-callback, not here.
     """
-    from tests.benchmark.oracle import load_corpus
-    from tests.benchmark.problems import BenchmarkProblem
-    from tests.benchmark.report import write_report
+    from core.benchmark.oracle import load_corpus
+    from core.benchmark.problems import BenchmarkProblem
+    from core.benchmark.report import write_report
 
     path = _resolve_artifact(task_id)
     _runs[task_id] = "running"

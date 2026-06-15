@@ -64,7 +64,7 @@ class VectorOnlyRetrievalStrategy:
     name: str = "vector_only"
 
     def patches(self) -> List[Any]:
-        from tests.benchmark.arms import GRAPH_SEAM
+        from core.benchmark.arms import GRAPH_SEAM
 
         return [mock.patch(GRAPH_SEAM, _no_graph)]
 
@@ -75,7 +75,7 @@ class ZeroShotRetrievalStrategy:
     name: str = "zero_shot"
 
     def patches(self) -> List[Any]:
-        from tests.benchmark.arms import (
+        from core.benchmark.arms import (
             CODER_VECTOR_SEAM,
             GRAPH_SEAM,
             PLANNER_VECTOR_SEAM,

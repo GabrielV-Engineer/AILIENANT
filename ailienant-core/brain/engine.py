@@ -271,7 +271,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 
     if provider == "CLOUD" and parallel_tasks:
         logger.info(
-            "🔀 SWARM: provider=CLOUD, fan-out → %d CoderAgent(s) en paralelo.",
+            "🔀 SWARM: provider=CLOUD, fan-out → %d CoderAgent(s) in parallel.",
             len(parallel_tasks),
         )
         log_routing_decision(
@@ -282,8 +282,18 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
             css=state.get("css"),
             tci=state.get("tci"),
         )
+        # Explicit state augmentation: each fan-out node carries its own step's
+        # role in its immutable payload, so per-step tool selection is scoped to
+        # the step that runs there rather than the task-initial role.
         return [
-            Send(_coder_target(step), {**state, "current_step_id": step.step_number})
+            Send(
+                _coder_target(step),
+                {
+                    **state,
+                    "active_role": step.target_role,
+                    "current_step_id": step.step_number,
+                },
+            )
             for step in parallel_tasks
         ]
 
@@ -295,7 +305,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
     )
     target = _coder_target(first_pending)
     logger.info(
-        "➡️  RELAY: provider=%s, ejecución secuencial → paso #%s (%s).",
+        "➡️  RELAY: provider=%s, sequential execution → step #%s (%s).",
         provider,
         first_pending.step_number if first_pending else "None",
         target,
@@ -308,7 +318,25 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         css=state.get("css"),
         tci=state.get("tci"),
     )
-    return [Send(target, {**state, "current_step_id": first_pending.step_number if first_pending else None})]
+    # Explicit state augmentation: surface the pending step's role on the payload
+    # so the single relayed node selects tools under the role that step runs as,
+    # not whatever role the task entered with.
+    return [
+        Send(
+            target,
+            {
+                **state,
+                "active_role": (
+                    first_pending.target_role
+                    if first_pending
+                    else state.get("active_role")
+                ),
+                "current_step_id": (
+                    first_pending.step_number if first_pending else None
+                ),
+            },
+        )
+    ]
 
 
 # =====================================================================

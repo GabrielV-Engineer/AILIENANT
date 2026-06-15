@@ -32,9 +32,9 @@ from typing import (
     Tuple,
 )
 
-from tests.benchmark.codegen import Completion, Language, _FENCE_RE
-from tests.benchmark.executors import CodegenExecutor
-from tests.benchmark.hygiene import BenchmarkAbort
+from core.benchmark.codegen import Completion, Language, _FENCE_RE
+from core.benchmark.executors import CodegenExecutor
+from core.benchmark.hygiene import BenchmarkAbort
 
 if TYPE_CHECKING:
     from core.indexer import LazyIndexer

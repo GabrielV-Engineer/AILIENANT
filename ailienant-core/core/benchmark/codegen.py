@@ -20,8 +20,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
-from tests.benchmark.executors import CodegenExecutor
-from tests.benchmark.hygiene import TEMPERATURE
+from core.benchmark.executors import CodegenExecutor
+from core.benchmark.hygiene import TEMPERATURE
 
 _DATASETS_DIR = Path(__file__).parent / "datasets"
 _DEFAULT_MODEL = "ailienant/big"

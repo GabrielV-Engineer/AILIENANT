@@ -28,8 +28,10 @@ def _make_arrow_table(rows: list[dict[str, str]]) -> pa.Table:
 
 
 def _ws_hash(ws: str) -> str:
-    import hashlib
-    return hashlib.sha256(ws.encode("utf-8")).hexdigest()
+    # Mirror the production key derivation so seeded rows match what the janitor
+    # queries: project_id_for normalizes path casing/separators before hashing.
+    from core.storage_paths import project_id_for
+    return project_id_for(ws)
 
 
 # ── Test 1: orphaned file → delete called ─────────────────────────────────────

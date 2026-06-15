@@ -77,6 +77,63 @@ def test_route_to_coders_emits_multiple_sends_in_swarm_mode() -> None:
 
 
 # ---------------------------------------------------------------------------
+# route_to_coders — explicit per-step role augmentation on the Send payload
+# ---------------------------------------------------------------------------
+
+
+def test_swarm_send_carries_per_step_role() -> None:
+    """Each fan-out Send payload carries its own step's role, not the task-initial
+    role, so per-step tool selection is scoped to the step that runs there."""
+    tasks = [
+        WBSStep(
+            step_number=1,
+            target_role="secops",
+            action="read_file",
+            target_file="a.py",
+            description="Step A.",
+        ),
+        WBSStep(
+            step_number=2,
+            target_role="qa_tester",
+            action="read_file",
+            target_file="b.py",
+            description="Step B.",
+        ),
+    ]
+    state = {
+        "provider": "CLOUD",
+        "parallel_tasks": tasks,
+        "mission_spec": None,
+        "active_role": "core_dev",  # task-initial role — must NOT leak onto the steps
+    }
+    sends = route_to_coders(cast(AIlienantGraphState, state))
+    roles = {s.arg["active_role"] for s in sends}
+    assert roles == {"secops", "qa_tester"}, (
+        f"SWARM fan-out must carry per-step roles, not the task-initial role; got {roles}"
+    )
+
+
+def test_relay_send_carries_pending_step_role() -> None:
+    """The single relayed Send is scoped to the first pending step's role, overriding
+    whatever role the task entered with."""
+    import types
+
+    pending = types.SimpleNamespace(
+        step_number=3, target_role="devops_infra", status="pending"
+    )
+    mission = types.SimpleNamespace(tasks=[pending])
+    state = {
+        "provider": "LOCAL",
+        "parallel_tasks": [],
+        "mission_spec": mission,
+        "active_role": "core_dev",
+    }
+    sends = route_to_coders(cast(AIlienantGraphState, state))
+    assert len(sends) == 1
+    assert sends[0].arg["active_role"] == "devops_infra"
+
+
+# ---------------------------------------------------------------------------
 # run_planner_node — async planner fan-out tests
 # ---------------------------------------------------------------------------
 

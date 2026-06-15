@@ -11,7 +11,8 @@ Rows certified here:
   BIND1     bind_project creates the per-project GraphRAG dir; accessor returns it
   UNBOUND1  unbound access falls back without raising and never escapes the home
   OVERRIDE1 the explicit GraphRAG override beats the bound path
-  PID1      project_id_for is raw-path SHA-256 (parity with the editor contract)
+  PID1      project_id_for normalizes (normcase+normpath) before SHA-256; cosmetic
+            path differences collapse to one id (editor parity contract)
   INSTR1    AILIENANT.md present -> injected (capped); absent -> empty
   PLAN1     planning writes a navigable, traversal-safe plan file
   PORT1     path handling is pathlib-based with no shell-out
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 from pathlib import Path
 
 import pytest
@@ -103,12 +105,14 @@ def test_override1_env_beats_bound_path(tmp_path: Path, monkeypatch: pytest.Monk
 
 # ── PID1 ──────────────────────────────────────────────────────────────────────
 
-def test_pid1_project_id_is_raw_sha256() -> None:
+def test_pid1_project_id_normalized_sha256() -> None:
     sample = "/home/user/proj"
-    expected = hashlib.sha256(sample.encode("utf-8")).hexdigest()
+    norm = os.path.normcase(os.path.normpath(sample))
+    expected = hashlib.sha256(norm.encode("utf-8")).hexdigest()
     assert storage_paths.project_id_for(sample) == expected
-    # Golden vector: pins the editor↔backend identity contract.
-    assert expected == "7d73bf4fdeae2f4951c4c30c31818b272a36061af1a9153e5ab4575436ffc407"
+    # Cosmetic path differences collapse to one id — the editor mirrors this
+    # normalization, so the editor↔backend identity contract holds on one host.
+    assert storage_paths.project_id_for(sample) == storage_paths.project_id_for(sample + "/")
 
 
 # ── INSTR1 ────────────────────────────────────────────────────────────────────

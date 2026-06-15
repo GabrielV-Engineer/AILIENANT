@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator
 
@@ -66,7 +67,9 @@ def _dispatch(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _WS = "/abs/workspace"
-_PID = hashlib.sha256(_WS.encode("utf-8")).hexdigest()
+# The handler keys on project_id_for (normalized path → sha256); derive the
+# expected id the same way so the test tracks the contract, not a raw digest.
+_PID = handlers.project_id_for(_WS)
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +77,9 @@ _PID = hashlib.sha256(_WS.encode("utf-8")).hexdigest()
 # ---------------------------------------------------------------------------
 
 
-def test_project_id_for_is_raw_sha256_of_path() -> None:
-    assert handlers.project_id_for(_WS) == hashlib.sha256(_WS.encode("utf-8")).hexdigest()
+def test_project_id_for_normalizes_before_hashing() -> None:
+    norm = os.path.normcase(os.path.normpath(_WS))
+    assert handlers.project_id_for(_WS) == hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------

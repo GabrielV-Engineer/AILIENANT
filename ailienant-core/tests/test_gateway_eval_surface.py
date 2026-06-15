@@ -19,8 +19,8 @@ import pytest
 
 from core import benchmark_service
 from core.config.host_discovery import HostCoords, HostNotRunningError
-from tests.benchmark.metrics import ProblemMetrics
-from tests.benchmark.report import BenchmarkReport, build_report, validate_report
+from core.benchmark.metrics import ProblemMetrics
+from core.benchmark.report import BenchmarkReport, build_report, validate_report
 from gateway import handlers, ledger, server
 
 _ARMS = ("G1", "G2", "G3", "G4", "G4_FORCE_CLOUD")

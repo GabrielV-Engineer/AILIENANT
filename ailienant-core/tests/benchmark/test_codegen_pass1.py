@@ -14,7 +14,7 @@ from typing import Awaitable, Callable, Dict, List
 
 import pytest
 
-from tests.benchmark.codegen import (
+from core.benchmark.codegen import (
     CodegenProblem,
     Language,
     Pass1Report,
@@ -25,8 +25,8 @@ from tests.benchmark.codegen import (
     extract_code,
     load_dataset,
 )
-from tests.benchmark.executors import SandboxCodegenExecutor, SubprocessPythonExecutor
-from tests.benchmark.hygiene import TEMPERATURE
+from core.benchmark.executors import SandboxCodegenExecutor, SubprocessPythonExecutor
+from core.benchmark.hygiene import TEMPERATURE
 
 _Completion = Callable[[List[Dict[str, str]]], Awaitable[str]]
 

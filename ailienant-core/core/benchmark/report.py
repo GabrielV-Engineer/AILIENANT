@@ -37,9 +37,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from jsonschema import Draft7Validator  # type: ignore[import-untyped]
 
-from tests.benchmark.arms import AblationArm
-from tests.benchmark.metrics import ProblemMetrics
-from tests.benchmark.routing_study import (
+from core.benchmark.arms import AblationArm
+from core.benchmark.metrics import ProblemMetrics
+from core.benchmark.routing_study import (
     TCI_BUCKETS,
     RoutingStudyTable,
     build_routing_study,

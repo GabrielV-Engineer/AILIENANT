@@ -10,9 +10,9 @@
 #   A   — mode switches: 56 schemas + small window -> deferred (<= TOP_K);
 #         huge window -> eager (whole visible catalog, > TOP_K).
 #   B   — deferred reduction_ratio >= TOOL_RAG_MIN_REDUCTION.
-#   C   — tool_search retrieves the needle by query (ContextVar fallback path)
+#   C   — tool_search retrieves the needle by query (explicit-config role path)
 #         and returns the shift-left instruction, not bare JSON.
-#   C2  — config-threaded role wins over a divergent ambient ContextVar role.
+#   C2  — the explicitly-threaded role alone scopes tool visibility (no ambient leak).
 #   D   — tool_search is always present in a deferred set, bound stays <= TOP_K.
 #   E   — tool_search invariants: READ_ONLY, all-roles (the full 12-role universe,
 #         cross-listed in Wave 6), survives PLAN mode.
@@ -177,19 +177,19 @@ async def test_deferred_reduction_meets_floor(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_tool_search_retrieves_needle_via_contextvar(tmp_path: Path) -> None:
+async def test_tool_search_retrieves_needle_via_config(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await _seed_synthetic_catalog(store, n=56)
     tool = ToolSearchTool(store=store)
 
-    from tools.mcp_adapter import _task_active_role
-
-    token = _task_active_role.set("core_dev")
-    try:
-        # Exact needle description => zero-distance hit under the fake embedding.
-        result = await tool._arun(query=_NEEDLE_DESC, k=5, config=None)
-    finally:
-        _task_active_role.reset(token)
+    # The live per-step role is threaded explicitly via the RunnableConfig (the
+    # graph forwards it from the Send payload state); there is no ambient process var.
+    # Exact needle description => zero-distance hit under the fake embedding.
+    result = await tool._arun(
+        query=_NEEDLE_DESC,
+        k=5,
+        config={"configurable": {"active_role": "core_dev"}},
+    )
 
     assert _NEEDLE_NAME in result
     # Discovery, not direct-load: instruction must be present, full schema absent.
@@ -198,31 +198,31 @@ async def test_tool_search_retrieves_needle_via_contextvar(tmp_path: Path) -> No
 
 
 # =====================================================================
-# C2 — config-threaded role wins over a divergent ambient ContextVar role
+# C2 — the explicitly-threaded role alone scopes tool visibility
 # =====================================================================
 
 
 @pytest.mark.anyio
-async def test_config_role_overrides_stale_contextvar(tmp_path: Path) -> None:
+async def test_explicit_role_scopes_tool_visibility(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await _seed_synthetic_catalog(store, n=56)
     tool = ToolSearchTool(store=store)
 
-    from tools.mcp_adapter import _task_active_role
+    # qa_tester cannot see the core_dev-only needle; core_dev can. With no ambient
+    # role to leak across steps, the threaded role alone determines the scoped listing.
+    as_qa = await tool._arun(
+        query=_NEEDLE_DESC,
+        k=5,
+        config={"configurable": {"active_role": "qa_tester"}},
+    )
+    as_dev = await tool._arun(
+        query=_NEEDLE_DESC,
+        k=5,
+        config={"configurable": {"active_role": "core_dev"}},
+    )
 
-    # Ambient role is qa_tester (cannot see the core_dev-only needle); the live
-    # config role is core_dev (can). If config wins, the needle surfaces.
-    token = _task_active_role.set("qa_tester")
-    try:
-        result = await tool._arun(
-            query=_NEEDLE_DESC,
-            k=5,
-            config={"configurable": {"active_role": "core_dev"}},
-        )
-    finally:
-        _task_active_role.reset(token)
-
-    assert _NEEDLE_NAME in result, "config role did not win over stale ContextVar"
+    assert _NEEDLE_NAME not in as_qa, "core_dev-only needle leaked to qa_tester"
+    assert _NEEDLE_NAME in as_dev, "core_dev role did not surface its own needle"
 
 
 # =====================================================================

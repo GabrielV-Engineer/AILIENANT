@@ -20,10 +20,10 @@ from typing import Any, Awaitable, Callable, Dict, List
 
 import pytest
 
-from tests.benchmark.codegen import Language
-from tests.benchmark.executors import SubprocessPythonExecutor
-from tests.benchmark.hygiene import BenchmarkAbort
-from tests.benchmark.oracle import (
+from core.benchmark.codegen import Language
+from core.benchmark.executors import SubprocessPythonExecutor
+from core.benchmark.hygiene import BenchmarkAbort
+from core.benchmark.oracle import (
     BenchmarkOracle,
     CorpusProblem,
     ResolveKReport,

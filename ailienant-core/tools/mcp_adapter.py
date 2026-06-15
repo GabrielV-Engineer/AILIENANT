@@ -64,13 +64,6 @@ _task_session_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar
 _task_session_mode: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_mcp_task_session_mode", default=None
 )
-# Live agent role for the current task. Read by tool_search as a fallback when a
-# RunnableConfig is not threaded. Captured once at task entry — see DEBT-039: it
-# is stale across per-WBS-step role transitions; the robust per-step / config
-# resolution lands in the role-specific coder-tools work.
-_task_active_role: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "_mcp_task_active_role", default=None
-)
 
 # =====================================================================
 # SESSION-SCOPED TRUST VALVE

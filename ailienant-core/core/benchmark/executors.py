@@ -25,10 +25,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Protocol
 
-from tests.benchmark.hygiene import BenchmarkAbort
+from core.benchmark.hygiene import BenchmarkAbort
 
 if TYPE_CHECKING:
-    from tests.benchmark.codegen import Language
+    from core.benchmark.codegen import Language
 
 _EVAL_DIR_NAME = ".benchmark_eval"
 _TS_UNSUPPORTED = (
@@ -56,7 +56,7 @@ class CodegenExecutor(Protocol):
 
 def _is_typescript(language: "Language") -> bool:
     """True when the target is TypeScript (deferred import to avoid a cycle)."""
-    from tests.benchmark.codegen import Language
+    from core.benchmark.codegen import Language
 
     return language is Language.TYPESCRIPT
 

@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from tests.benchmark.metrics import ProblemMetrics
+from core.benchmark.metrics import ProblemMetrics
 
 # TCI runs on a 0-100 scale. The bucket edges partition complexity into low,
 # medium, and high bands; the high band is closed so a maximum TCI lands in it.

@@ -27,7 +27,7 @@ import core.telemetry as telemetry
 from core.telemetry import log_routing_decision
 from core.token_ledger import token_ledger
 
-from tests.benchmark.arms import (
+from core.benchmark.arms import (
     AblationArm,
     CODER_VECTOR_SEAM,
     GRAPH_SEAM,
@@ -35,11 +35,11 @@ from tests.benchmark.arms import (
     PROVIDER_SEAM,
     apply_arm,
 )
-from tests.benchmark.executors import SubprocessPythonExecutor
-from tests.benchmark.oracle import BenchmarkOracle, load_corpus
-from tests.benchmark.problems import BenchmarkProblem
-from tests.benchmark.runner import BenchmarkRunner, TaskRunner, _normalize_patch
-from tests.benchmark.strategies import (
+from core.benchmark.executors import SubprocessPythonExecutor
+from core.benchmark.oracle import BenchmarkOracle, load_corpus
+from core.benchmark.problems import BenchmarkProblem
+from core.benchmark.runner import BenchmarkRunner, TaskRunner, _normalize_patch
+from core.benchmark.strategies import (
     VectorOnlyRetrievalStrategy,
     ZeroShotRetrievalStrategy,
 )

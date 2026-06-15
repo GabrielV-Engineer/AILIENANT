@@ -13,13 +13,13 @@ next plan/output; the intent-based selection node then injects that tool's full
 schema on the following execution cycle. The full ``json_schema`` never
 round-trips through the result, preserving the very token budget retrieval saved.
 
-Role resolution is config-first: the live per-step role is read from the injected
-``RunnableConfig`` when the call site threads it; otherwise it falls back to the
-ambient ``_task_active_role`` ContextVar. That fallback is captured once per task
-and is therefore stale across per-WBS-step role transitions — a declared MVP
-trade-off (see DEBT-039). Because ``tool_search`` is READ_ONLY, a stale role can
-never escalate privilege: worst case it under- or over-scopes a read-only
-discovery listing.
+Role resolution is explicit-state-driven: the live per-step role rides in the
+immutable graph-state payload dispatched to each node and is forwarded into the
+injected ``RunnableConfig`` (``configurable['active_role']``) at the tool-dispatch
+site. With no ambient process-wide role to read, a value from an earlier step can
+never leak across a transition. Absent any threaded role the resolver falls back to
+the default role; because ``tool_search`` is READ_ONLY, role only scopes the breadth
+of a discovery listing and never gates a mutation.
 """
 
 from __future__ import annotations
@@ -47,22 +47,24 @@ _DEFAULT_ROLE: str = "core_dev"
 
 
 # =====================================================================
-# Role / session-mode resolution (config-first, ContextVar fallback)
+# Role / session-mode resolution (explicit-state-driven)
 # =====================================================================
 
 
 def _resolve_active_role(config: Optional[RunnableConfig]) -> str:
-    """Live per-step role from RunnableConfig; ambient ContextVar as MVP fallback."""
+    """Resolve the active role from the explicitly-threaded RunnableConfig.
+
+    The live per-step role travels in the ``Send`` payload state and is forwarded
+    into ``configurable['active_role']`` by the tool-dispatch site. Absent that, it
+    resolves to the default role — never an ambient process-wide value, so a role
+    from an earlier step can never bleed across a transition.
+    """
     if config:
         configurable = config.get("configurable") or {}
         role = configurable.get("active_role")
         if role:
             return str(role)
-    # Fallback: ambient context captured at task entry (DEBT-039 — stale across
-    # per-step role transitions; robust config threading lands in 8.8.5).
-    from tools.mcp_adapter import _task_active_role
-
-    return _task_active_role.get() or _DEFAULT_ROLE
+    return _DEFAULT_ROLE
 
 
 def _resolve_session_mode(config: Optional[RunnableConfig]) -> SessionPermissionMode:

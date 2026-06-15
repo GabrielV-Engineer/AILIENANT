@@ -301,6 +301,10 @@ Proyect_Ailienant/
 │   │   ├── readme_digest.py     #     workspace README brain: verbatim/digest/head-slice + debounced rebuild
 │   │   ├── db.py                #     SQLite catalog (dependency_graph, ppr_scores, indexed_files)
 │   │   ├── benchmark_service.py #     host-side run_benchmark execution + report store (LFI-hardened, single-flight)
+│   │   ├── benchmark/           #     shippable in-process precision/ablation harness (importable without tests/)
+│   │   │                        #       arms/runner/hygiene/metrics/problems + codegen (Pass@1) + executors +
+│   │   │                        #       oracle (Resolve@k) + strategies + routing_study + report; ships its own
+│   │   │                        #       datasets/ (HumanEval/MultiPL-E) and corpus/v1/ (multi-file snapshot)
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
 │   │       ├── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
 │   │       └── host_discovery.py #      ephemeral ~/.ailienant/run.json (port+token+pid, 0600) + async liveness probe
@@ -330,20 +334,15 @@ Proyect_Ailienant/
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
 │   └── tests/                   #   pytest suite + per-phase checkpoint gates + chaos crucible
-│       └── benchmark/           #     in-process precision/ablation harness (arms, runner, hygiene, metrics)
-│           ├── codegen.py        #       plain-codegen adapter + Pass@1 scorer (HumanEval/MultiPL-E)
-│           ├── executors.py      #       pluggable exec backends (sandbox / trusted subprocess)
-│           ├── oracle.py         #       multi-file BenchmarkOracle + Resolve@k scorer (AST safety, indexer event)
-│           ├── strategies.py     #       retrieval strategy objects (Full/VectorOnly/ZeroShot) — G1/G2 patch encapsulation
-│           ├── routing_study.py   #       TCI-bucket × tokens × Resolve@3 stratifier (anchored, strictly paired)
-│           ├── report.py          #       machine-readable report: Wilson CI, H1/H2 verdicts, ablation deltas, schema
-│           ├── report.schema.json #       committed Draft-07 public contract for report.json (versioned)
-│           ├── test_ablation_verdicts.py  #  hermetic gate: 5-arm comparable verdicts, provider seam, drain, normalize
-│           ├── test_routing_study.py      #  hermetic gate: TCI bucketing, H2 savings/retention, anchored pairing
-│           ├── test_report.py             #  hermetic gate: Wilson, H1 0/0 guard, schema validity, full-matrix sweep
+│       └── benchmark/           #     hermetic gates for the core/benchmark harness (harness itself lives in core/)
+│           ├── test_ablation_verdicts.py  #  5-arm comparable verdicts, provider seam, drain, normalize
+│           ├── test_codegen_pass1.py      #  plain-codegen Pass@1 over the frozen dataset subset
+│           ├── test_harness_scaffold.py   #  four-arm smoke over the scaffold problem
+│           ├── test_oracle_resolve_k.py   #  Resolve@k on golden/wrong patches + patch extraction
+│           ├── test_routing_study.py      #  TCI bucketing, H2 savings/retention, anchored pairing
+│           ├── test_report.py             #  Wilson, H1 0/0 guard, schema validity, full-matrix sweep
 │           ├── test_reproducibility.py    #  DoD-check: pinned-SHA surfaced + byte-deterministic report
-│           ├── datasets/         #       frozen codegen subset (HumanEval py + MultiPL-E ts JSONL)
-│           └── corpus/v1/        #       frozen multi-file snapshot (src/ + problems.jsonl + meta.json)
+│           └── report.schema.json #       committed Draft-07 public contract for report.json (read by test_report)
 ├── ailienant-extension/         # VS Code extension (TypeScript + React)
 │   ├── src/
 │   │   ├── extension.ts         #     activation entry

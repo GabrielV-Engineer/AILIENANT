@@ -71,7 +71,7 @@ def apply_arm(arm: AblationArm) -> Iterator[None]:
     Use strictly as a ``with`` block wrapping exactly one task call. The patches
     restore the original symbols on exit, including on error.
     """
-    from tests.benchmark.strategies import (
+    from core.benchmark.strategies import (
         VectorOnlyRetrievalStrategy,
         ZeroShotRetrievalStrategy,
     )

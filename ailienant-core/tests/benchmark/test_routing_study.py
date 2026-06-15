@@ -18,17 +18,17 @@ import core.telemetry as telemetry
 from core.telemetry import log_routing_decision
 from core.token_ledger import token_ledger
 
-from tests.benchmark.arms import AblationArm
-from tests.benchmark.executors import SubprocessPythonExecutor
-from tests.benchmark.metrics import ProblemMetrics
-from tests.benchmark.oracle import BenchmarkOracle, load_corpus
-from tests.benchmark.problems import BenchmarkProblem
-from tests.benchmark.routing_study import (
+from core.benchmark.arms import AblationArm
+from core.benchmark.executors import SubprocessPythonExecutor
+from core.benchmark.metrics import ProblemMetrics
+from core.benchmark.oracle import BenchmarkOracle, load_corpus
+from core.benchmark.problems import BenchmarkProblem
+from core.benchmark.routing_study import (
     TCI_BUCKETS,
     bucket_for_tci,
     build_routing_study,
 )
-from tests.benchmark.runner import BenchmarkRunner, TaskRunner
+from core.benchmark.runner import BenchmarkRunner, TaskRunner
 
 _ROUTING = AblationArm.G4.value
 _BASELINE = AblationArm.G4_FORCE_CLOUD.value

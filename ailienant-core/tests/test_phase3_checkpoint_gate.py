@@ -19,7 +19,6 @@ Scope decisions (locked at planning):
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import sqlite3
 import statistics
@@ -60,7 +59,10 @@ from tools.validation.result import PipelineResult
 
 
 def _ws_hash(workspace_root: str) -> str:
-    return hashlib.sha256(workspace_root.encode("utf-8")).hexdigest()
+    # Mirror the production key derivation (project_id_for normalizes path casing/
+    # separators) so seeded rows match what the janitor and search paths query.
+    from core.storage_paths import project_id_for
+    return project_id_for(workspace_root)
 
 
 def _make_mission(outcome: str = "test outcome") -> MissionSpecification:

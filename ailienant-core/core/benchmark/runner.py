@@ -21,21 +21,21 @@ import json
 
 from core.token_ledger import token_ledger
 
-from tests.benchmark.arms import AblationArm, apply_arm
-from tests.benchmark.hygiene import (
+from core.benchmark.arms import AblationArm, apply_arm
+from core.benchmark.hygiene import (
     BenchmarkAbort,
     BenchmarkBudget,
     BudgetExceeded,
     assert_embeddings_live,
     disable_response_cache,
 )
-from tests.benchmark.metrics import BenchmarkMetricError, ProblemMetrics, collect_routing
-from tests.benchmark.problems import BenchmarkProblem
-from tests.benchmark.report import BenchmarkReport, build_report
-from tests.benchmark.routing_study import RoutingStudyTable, build_routing_study
+from core.benchmark.metrics import BenchmarkMetricError, ProblemMetrics, collect_routing
+from core.benchmark.problems import BenchmarkProblem
+from core.benchmark.report import BenchmarkReport, build_report
+from core.benchmark.routing_study import RoutingStudyTable, build_routing_study
 
 if TYPE_CHECKING:
-    from tests.benchmark.oracle import BenchmarkOracle
+    from core.benchmark.oracle import BenchmarkOracle
 
 # A task runner takes a unique session id and a problem, drives the pipeline, and
 # returns the candidate patch (path → new content). Injected so callers can
@@ -231,7 +231,7 @@ class BenchmarkRunner:
         indexing_time_s = 0.0
         if problem.corpus_root is not None and problem.project_id is not None:
             from core.indexer import LazyIndexer
-            from tests.benchmark.oracle import (
+            from core.benchmark.oracle import (
                 _assert_dependents_nonempty,
                 _await_index,
             )

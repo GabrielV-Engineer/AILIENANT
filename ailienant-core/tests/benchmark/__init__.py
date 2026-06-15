@@ -1,10 +1,8 @@
-"""In-process precision-benchmark and ablation harness.
+"""Test suite for the precision-benchmark and ablation harness.
 
-This package drives coding problems through the agent pipeline directly (no HTTP
-or WebSocket), collects raw per-problem metrics (tokens, complexity, context
-sufficiency), and degrades parts of the pipeline per ablation arm to attribute
-value to individual capabilities.
-
-The ablation toggles are applied purely at the harness boundary; the production
-code path is never modified and never reads a benchmark flag.
+The harness itself lives in ``core.benchmark`` so the production eval surface can
+import it without the test tree. These modules exercise that harness end-to-end
+(scaffold smoke, codegen Pass@1, oracle Resolve@k, ablation verdicts, routing
+study, reproducibility, report serialization). The ``report.schema.json`` fixture
+stays here because the schema-parity test reads it relative to its own location.
 """

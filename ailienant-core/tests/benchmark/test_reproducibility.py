@@ -13,11 +13,11 @@ import random
 from pathlib import Path
 from typing import List
 
-from tests.benchmark.arms import AblationArm
-from tests.benchmark.hygiene import SEED, TEMPERATURE, configure_determinism
-from tests.benchmark.metrics import ProblemMetrics
-from tests.benchmark.oracle import load_corpus
-from tests.benchmark.report import build_report, serialize_report
+from core.benchmark.arms import AblationArm
+from core.benchmark.hygiene import SEED, TEMPERATURE, configure_determinism
+from core.benchmark.metrics import ProblemMetrics
+from core.benchmark.oracle import load_corpus
+from core.benchmark.report import build_report, serialize_report
 
 _ARMS = [a.value for a in AblationArm]
 

@@ -43,12 +43,15 @@ _UNBOUND_ID = "_unbound"
 def project_id_for(workspace_root: str) -> str:
     """Derive the per-workspace project id the on-disk stores are keyed by.
 
-    The SHA-256 hex digest of the raw workspace root path. This mirrors the
-    editor's identity exactly (``PathResolver.resolveProjectId``); the caller
-    must pass the same absolute path the editor uses or the digest will not
-    match the indexed data.
+    The SHA-256 hex digest of the path after ``os.path.normcase(os.path.normpath(...))``
+    so that the same workspace produces the same id regardless of casing,
+    separator style or a trailing slash (``C:\\Proj\\`` and ``c:/proj`` hash
+    identically on Windows). The editor's ``PathResolver.computeProjectId`` applies
+    the byte-for-byte equivalent normalization, so the two sides agree on one host;
+    callers still pass the workspace's absolute path.
     """
-    return hashlib.sha256(workspace_root.encode("utf-8")).hexdigest()
+    normalized = os.path.normcase(os.path.normpath(workspace_root))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _projects_root() -> Path:

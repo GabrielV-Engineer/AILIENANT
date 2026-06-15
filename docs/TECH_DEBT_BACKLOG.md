@@ -60,7 +60,6 @@ Decision    Not a defect — see [DECISION] tier.
 | ID | Title (short) | Tier | Type | Target Phase | Schedule |
 |---|---|---|---|---|---|
 | DEBT-036 | Oracle executes on host (no sandbox) | HIGH | Security/Safety | 8.10.5 | Locked |
-| DEBT-034 | Gateway project_id path-format-fragile | HIGH | Correctness | 8.10.1 | Locked |
 | DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | 8.10.5 | Locked |
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
@@ -79,9 +78,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-053 | TaskStopTool uses SIGTERM only — no SIGKILL escalation after timeout | LOW | Reliability | post-8.8.6 | Floating |
 | DEBT-054 | todo_write / agent_todos channel unbound — no cognitive node wiring | LOW | Integration gap | future integration sprint | Floating |
 | DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
-| DEBT-040 | tool_search role resolution stale | MEDIUM | Correctness (bounded) | 8.8.5 | Locked |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
-| DEBT-038 | Benchmark service imports test tree | MEDIUM | Architecture | post-8.5/8.8 | Floating |
 | DEBT-035 | MultiPL-E TypeScript execution unsupported | MEDIUM | Feature gap | post-8.5/8.8 | Floating |
 | DEBT-028 (hooks half) | Hooks persisted but not executed | MEDIUM | Feature gap | dedicated 8.x slice | Floating |
 | DEBT-024 | HITL inline-diff O(N) transport | MEDIUM | Performance | future perf sub-phase | Floating |
@@ -116,16 +113,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** requires a sandbox tier that allows writing the corpus snapshot into a container-local temp dir (the current `SandboxCodegenExecutor` writes to the Docker ro mount's host side, which is sufficient for codegen but not for multi-file oracle isolation).
 - **Phase:** standalone benchmark-runtime hardening slice (before the definitive ablation sweep, post-8.5/8.8 when the system is feature-complete).
 - **Notes:** logged at 8.3.2 ship per CLAUDE.md §7.3. AST pre-flight (`_BLOCKED_IMPORTS` + Level-1 reflexivity blocklist) is the in-place mitigation.
-
-### DEBT-034 [HIGH · Floating] — Gateway project_id hashing is path-format-fragile (no normalization)
-
-- **Date:** 2026-06-12
-- **Reproduce:** call a gateway READ_ONLY verb (`query_memory`/`get_dependents`/`get_workspace_graph`) with a `workspace_root` whose casing/separators/trailing-slash differ from the exact path VS Code opened the folder under — e.g. `c:\projects\app\` vs `C:\Projects\app`. The derived `project_id = sha256(workspace_root)` mismatches the indexed key and the verb returns empty results.
-- **File(s):** `ailienant-core/gateway/handlers.py` (`project_id_for`); `ailienant-extension/src/core/PathResolver.ts` (`computeProjectId`).
-- **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The gateway intentionally mirrors the extension's *raw* `sha256(uri.fsPath)` so it hits the existing on-disk LanceDB/sqlite keys. Normalizing only in the gateway would diverge and orphan that data, so it was rejected.
-- **Blocked by:** nothing technical, but the fix is **cross-cutting**: it must apply `os.path.normcase(os.path.normpath(...))` in BOTH `project_id_for` and the extension's `computeProjectId` simultaneously, and it re-keys every existing index (the lazy indexer rebuilds them on next workspace open).
-- **Phase:** a standalone coordinated-normalization slice (extension + core, with a one-time re-index).
-- **Notes:** logged at 8.5.4 ship per CLAUDE.md §7.3. Until then the contract is "the caller passes the exact `uri.fsPath`"; documented in the 8.5.4 manifest row.
 
 ### DEBT-013 [HIGH · Floating] — Thinking-stream coding turns drop hard JSON-mode (`response_format`)
 
@@ -312,16 +299,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** Wave 2 / Analyst quality-lens (8.8.2), where search tooling becomes load-bearing for the Analyst.
 - **Notes:** logged at 8.8.1 ship per CLAUDE.md §11.3.
 
-### DEBT-040 [MEDIUM · Locked] — `tool_search` role resolution is stale across per-step role transitions
-
-- **Date:** 2026-06-13
-- **Reproduce:** inspect `tools/meta_tools.py:_resolve_active_role` — when no `RunnableConfig` is threaded, it falls back to the `_task_active_role` ContextVar, which `core/task_service.py` sets ONCE at task entry. The Orchestrator rewrites `active_role` per WBS step, so a turn that has transitioned (e.g. `planner → coder`) would resolve `tool_search` under the *initial* role.
-- **File(s):** `ailienant-core/tools/meta_tools.py`, `ailienant-core/tools/mcp_adapter.py` (`_task_active_role`), `ailienant-core/core/task_service.py` (set/reset block).
-- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §11.2)**. Resolution is config-first: when the call site threads `config.configurable["active_role"]` the live role wins (no staleness). The ContextVar is only the fallback. Because `tool_search` is READ_ONLY, a stale role can never escalate privilege — worst case it under/over-scopes a read-only discovery listing.
-- **Blocked by:** nothing structural; needs the coder's tool-dispatch call site to always thread the live role through `config.configurable` (or refresh the var at each Orchestrator step transition).
-- **Phase:** **8.8.5** (Role-Specific Coder Tools), where per-role tool gating becomes load-bearing.
-- **Notes:** logged at 8.8.0 ship per CLAUDE.md §11.3. Test `test_config_role_overrides_stale_contextvar` already proves the config-first path defeats a divergent ambient role.
-
 ### DEBT-039 [MEDIUM · Floating] — Benchmark report artifacts have no retention policy
 
 - **Date:** 2026-06-13
@@ -331,16 +308,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing structural; needs a retention policy decision (cap by count, age-prune, or LRU eviction on write).
 - **Phase:** standalone eval-surface hardening slice, post-8.5/8.8.
 - **Notes:** logged at 8.5.5 ship per CLAUDE.md §7.3.
-
-### DEBT-038 [MEDIUM · Floating] — Production benchmark service imports the harness from the test tree
-
-- **Date:** 2026-06-13
-- **Reproduce:** inspect `core/benchmark_service.py` — `run_benchmark` lazily imports `tests.benchmark.{oracle,problems,report,runner}` (a production module depending on a test package).
-- **File(s):** `ailienant-core/core/benchmark_service.py`, `ailienant-core/tests/benchmark/*`.
-- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The blueprint placed the Division 8.3 harness under `tests/benchmark/`, and ADR-759 has `run_benchmark` wrap that harness; so the eval-surface verb must reach into the test tree. Imports are lazy (kept out of module import time), but a production deployment that excludes `tests/` would break `run_benchmark`.
-- **Blocked by:** requires relocating the benchmark harness to a shippable package (e.g. `core/benchmark/`) and updating all `tests.benchmark` imports + the existing benchmark gates.
-- **Phase:** standalone harness-relocation slice, post-8.5/8.8 when the ablation track is stable.
-- **Notes:** logged at 8.5.5 ship per CLAUDE.md §7.3. The path/suite inputs are LFI-hardened at the `benchmark_service` boundary regardless of harness location.
 
 ### DEBT-035 [MEDIUM · Floating] — MultiPL-E TypeScript execution needs a Node-capable sandbox runtime
 
@@ -576,6 +543,9 @@ Decision    Not a defect — see [DECISION] tier.
 
 *(Entries here are compact summaries. Full resolution notes are in git history and in the entry's Resolution block before it was moved here.)*
 
+- **DEBT-034 — Gateway `project_id` hashing is path-format-fragile** — **RESOLVED 2026-06-15** (8.10.1). `project_id_for` (core/storage_paths.py) now hashes `os.path.normcase(os.path.normpath(workspace_root))`; `PathResolver.computeProjectId` mirrors it byte-for-byte via Node `path.win32/posix.normalize` + a trailing-separator strip that preserves the disk/UNC/POSIX root (a naive regex strip would corrupt `C:\`→`C:`). One-time lazy re-index on next workspace open.
+- **DEBT-038 — Production benchmark service imports the test tree** — **RESOLVED 2026-06-15** (8.10.1). Relocated the 11 harness modules (+ `corpus/` and `datasets/` fixtures) from `tests/benchmark/` to a shippable `core/benchmark/` package; repointed all `tests.benchmark.*` imports to `core.benchmark.*` (harness, 7 test files, `benchmark_service.py`, `test_gateway_eval_surface.py`). Reverse-dependency guard: zero `from tests` imports remain under `core/benchmark/`. `report.schema.json` stays in `tests/benchmark/` (read via the test's own `__file__`).
+- **DEBT-040 — `tool_search` role resolution stale across per-step transitions** — **RESOLVED 2026-06-15** (8.10.1) via Explicit State Augmentation. Root cause: the router never re-set `active_role` per step — it inherited the task-initial value. The `Send` payload now carries `active_role = step.target_role` (engine.py, both SWARM and RELAY sites), so the wired tool-selection path is per-step-correct; `_resolve_active_role` is config-first and the ambient `_task_active_role` ContextVar was removed entirely (def + task_service set/reset), eliminating staleness and cross-WS leakage. Residual: the agent-callable `tool_search` dispatch itself is still unwired (the DEBT-043/046/054 cluster) — this makes selection correct now and resolution correct when that dispatch lands.
 - **DEBT-064 — Agent organizes its own runtime files → OCC stale-apply** — **RESOLVED 2026-06-14** (8.10.x). The telemetry log isn't a code file, so it reached the agent via the workspace tree (`_build_tree`, a raw `os.walk` that lists hidden files); the "move" was a patch through `apply_patch_set`. Fixed at the source (filter the tree) + a write-layer guard dropping internal paths from the patch set + a VFS read-block on `.ailienant_telemetry.log*`. `is_ailienant_internal_path` (core/storage_paths.py) exempts the user-authored `.ailienant/AILIENANT.md`.
 - **DEBT-063 — Plan executes out of WBS order** — **RESOLVED 2026-06-14** (8.10.x). WBS steps carry only implicit `step_number` ordering (no dependency DAG), so the `tci>80` blanket SWARM fan-out (`planner.parallel_tasks`) ran dependent steps out of order. Set `parallel_tasks=[]` → always sequential RELAY; SWARM dispatch left dormant for a future explicit-dependency DAG.
 - **DEBT-065 — Auto-mode summary wording** — **RESOLVED 2026-06-14** (8.10.x). `_format_coding_summary` took only `plan_surface`; added a backward-compatible `auto_apply` branch so Auto reads "Applying N file change(s) directly…" instead of "review the diff and authorize."

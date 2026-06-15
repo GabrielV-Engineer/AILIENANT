@@ -20,12 +20,12 @@ import core.telemetry as telemetry
 from core.telemetry import log_routing_decision
 from core.token_ledger import token_ledger
 
-from tests.benchmark.arms import AblationArm
-from tests.benchmark.executors import SubprocessPythonExecutor
-from tests.benchmark.metrics import ProblemMetrics
-from tests.benchmark.oracle import BenchmarkOracle, load_corpus
-from tests.benchmark.problems import BenchmarkProblem
-from tests.benchmark.report import (
+from core.benchmark.arms import AblationArm
+from core.benchmark.executors import SubprocessPythonExecutor
+from core.benchmark.metrics import ProblemMetrics
+from core.benchmark.oracle import BenchmarkOracle, load_corpus
+from core.benchmark.problems import BenchmarkProblem
+from core.benchmark.report import (
     REPORT_SCHEMA,
     BenchmarkReport,
     build_report,
@@ -34,7 +34,7 @@ from tests.benchmark.report import (
     wilson_interval,
     write_report,
 )
-from tests.benchmark.runner import BenchmarkRunner, TaskRunner
+from core.benchmark.runner import BenchmarkRunner, TaskRunner
 
 _G1 = AblationArm.G1.value
 _G2 = AblationArm.G2.value
