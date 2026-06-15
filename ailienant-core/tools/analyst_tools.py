@@ -683,3 +683,53 @@ async def register_analyst_tools(store: ToolRAGStore) -> int:
     for schema in schemas:
         await store.register_schema(schema)
     return len(schemas)
+
+
+# =====================================================================
+# Factories — construct the search-backed tools with a live provider
+# =====================================================================
+
+
+def make_web_search_tool(
+    *,
+    search_fn: Optional[Callable[[str, int], Awaitable[str]]] = None,
+    boundary_provider: Optional[Callable[[], str]] = None,
+) -> WebSearchTool:
+    """Build a WebSearchTool wired to the brave-search MCP provider by default.
+
+    With no explicit ``search_fn`` the tool is backed by the lazily-resolved
+    brave-search session (see tools.mcp_adapter.make_brave_search_fn); the tool
+    still degrades to its "unavailable" string until that session connects.
+    """
+    if search_fn is None:
+        from tools.mcp_adapter import make_brave_search_fn  # local — avoid cycle
+
+        search_fn = make_brave_search_fn()
+    return WebSearchTool(search_fn=search_fn, boundary_provider=boundary_provider)
+
+
+def make_dependency_audit_tool(
+    *,
+    workspace_root: str,
+    path_provider: Callable[[], Awaitable[List[str]]],
+    ram_reader: Callable[[str], Optional[str]],
+    search_fn: Optional[Callable[[str, int], Awaitable[str]]] = None,
+    boundary_provider: Optional[Callable[[], str]] = None,
+) -> DependencyAuditTool:
+    """Build a DependencyAuditTool with CVE lookup wired to brave-search by default.
+
+    The manifest parse always runs; CVE enrichment becomes live the moment the
+    brave-search session connects. Passing an explicit ``search_fn`` overrides the
+    default (e.g. a stub in tests).
+    """
+    if search_fn is None:
+        from tools.mcp_adapter import make_brave_search_fn  # local — avoid cycle
+
+        search_fn = make_brave_search_fn()
+    return DependencyAuditTool(
+        workspace_root=workspace_root,
+        path_provider=path_provider,
+        ram_reader=ram_reader,
+        search_fn=search_fn,
+        boundary_provider=boundary_provider,
+    )

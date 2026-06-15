@@ -28,7 +28,17 @@ import logging
 import re
 import shlex
 from pathlib import PurePosixPath
-from typing import Any, Callable, FrozenSet, List, Optional, Tuple, Type
+from typing import (
+    Any,
+    Callable,
+    FrozenSet,
+    List,
+    MutableMapping,
+    NamedTuple,
+    Optional,
+    Tuple,
+    Type,
+)
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
@@ -147,6 +157,118 @@ async def _exec(command: str, timeout_s: float) -> Tuple[int, str]:
 
 
 # =====================================================================
+# Per-session HITL gate for EXECUTE-tier dispatch
+# =====================================================================
+
+# Human-in-the-loop approval ceiling for one gated command, in seconds. Mirrors
+# the MCP adapter's HITL timeout so both interactive command gates feel identical.
+_HITL_APPROVAL_TIMEOUT_SEC: float = 120.0
+
+
+class _SessionCtx(NamedTuple):
+    """Per-session execution context injected by the coder-tool factory.
+
+    Carries the identity + permission policy needed to route an EXECUTE-tier
+    command through the interactive HITL approval card, mirroring the gate the MCP
+    adapter applies. It travels explicitly on the tool instance — never through an
+    ambient ContextVar.
+    """
+
+    session_id: str
+    permission_mode: str
+
+
+async def _gated_exec(
+    command: str,
+    timeout_s: float,
+    *,
+    tool_name: str,
+    tier: ToolPrivilegeTier,
+    session_ctx: Optional[_SessionCtx],
+) -> Tuple[int, str]:
+    """Dispatch through the sandbox, optionally behind a per-session HITL gate.
+
+    With ``session_ctx`` present the command is admitted by the permission matrix
+    under the session's policy: DENY short-circuits (plan mode is read-only), HITL
+    routes through the interactive approval card before anything runs, and
+    ALLOW/already-trusted dispatches straight through. The trust-once valve skips a
+    re-prompt for a tool the operator approved earlier in the same session.
+
+    Without ``session_ctx`` the behavior is identical to :func:`_exec` — no gate,
+    zero change for existing callers.
+    """
+    if session_ctx is not None:
+        # Lazy local imports — avoid the api-layer import cycle (mirrors mcp_adapter).
+        from core.permissions import (
+            PermissionDecision,
+            PermissionMode,
+            evaluate_action,
+            session_mode_from_channel,
+        )
+        from tools.mcp_adapter import _grant_session_trust, _is_session_trusted
+
+        sid = session_ctx.session_id
+        if not (sid and _is_session_trusted(sid, tool_name)):
+            verdict = evaluate_action(
+                session_mode_from_channel(session_ctx.permission_mode),
+                tier,
+                PermissionMode.EDIT_EXECUTE_RBW,
+            )
+            if verdict is PermissionDecision.DENY:
+                return -1, f"[{tool_name}] DENIED — plan mode is read-only; command not run."
+            if verdict is PermissionDecision.HITL:
+                if not sid:
+                    return (
+                        -1,
+                        f"[{tool_name}] BLOCKED — approval required but no session is "
+                        "available to route the request; command not run.",
+                    )
+                from api.websocket_manager import vfs_manager  # lazy — no cycle
+
+                approval = await vfs_manager.request_human_approval(
+                    session_id=sid,
+                    action_description=f"COMMAND_EXEC: {tool_name}",
+                    proposed_content=command[:2000],
+                    request_kind="COMMAND_EXEC",
+                    timeout_s=_HITL_APPROVAL_TIMEOUT_SEC,
+                )
+                if not approval or not approval.get("approved"):
+                    return (
+                        -1,
+                        f"[{tool_name}] BLOCKED — command was not approved; command not run.",
+                    )
+                _grant_session_trust(sid, tool_name)
+
+    return await _exec(command, timeout_s)
+
+
+class _GatedExecTool(BaseTool):
+    """Base for EXECUTE-tier coder tools whose dispatch may be HITL-gated.
+
+    The factory injects a :class:`_SessionCtx` onto ``_session_ctx``; when present,
+    :meth:`_gated_dispatch` routes the command through the per-session approval gate.
+    When absent (the default — the schema-registration path) dispatch is the plain
+    sandbox call, so unfactoried construction is unchanged.
+    """
+
+    _session_ctx: Optional[_SessionCtx] = PrivateAttr(default=None)
+
+    async def _gated_dispatch(
+        self,
+        command: str,
+        timeout_s: float,
+        tier: ToolPrivilegeTier = ToolPrivilegeTier.EXECUTE,
+    ) -> Tuple[int, str]:
+        return await _gated_exec(
+            command,
+            timeout_s,
+            tool_name=self.name,
+            tier=tier,
+            session_ctx=self._session_ctx,
+        )
+
+
+# =====================================================================
 # qa_tester — RunTestsTool
 # =====================================================================
 
@@ -155,7 +277,7 @@ class RunTestsInput(BaseModel):
     target: str = Field(default=".", description="Project-relative path or pytest node id to run.")
 
 
-class RunTestsTool(BaseTool):
+class RunTestsTool(_GatedExecTool):
     """Run pytest against a project-relative target inside the sandbox."""
 
     name: str = "run_tests"
@@ -173,7 +295,7 @@ class RunTestsTool(BaseTool):
             safe = _safe_arg(target)
         except _ArgRejected as exc:
             return f"[run_tests] REJECTED: {exc}"
-        code, body = await _exec(f"pytest -q -- {safe}", _TEST_TIMEOUT_SEC)
+        code, body = await self._gated_dispatch(f"pytest -q -- {safe}", _TEST_TIMEOUT_SEC)
         return f"[run_tests] exit={code}\n{body}"
 
 
@@ -186,7 +308,7 @@ class GitStageInput(BaseModel):
     paths: List[str] = Field(description="Project-relative paths to stage.")
 
 
-class GitStageTool(BaseTool):
+class GitStageTool(_GatedExecTool):
     """Stage project-relative paths with ``git add``."""
 
     name: str = "git_stage"
@@ -206,7 +328,7 @@ class GitStageTool(BaseTool):
             safe = " ".join(_safe_arg(p) for p in paths)
         except _ArgRejected as exc:
             return f"[git_stage] REJECTED: {exc}"
-        code, body = await _exec(f"git add -- {safe}", _DEFAULT_TIMEOUT_SEC)
+        code, body = await self._gated_dispatch(f"git add -- {safe}", _DEFAULT_TIMEOUT_SEC)
         return f"[git_stage] exit={code}\n{body}"
 
 
@@ -216,7 +338,7 @@ class GitCommitInput(BaseModel):
     scope: Optional[str] = Field(default=None, description="Optional scope, e.g. 'core'.")
 
 
-class GitCommitTool(BaseTool):
+class GitCommitTool(_GatedExecTool):
     """Commit staged changes with a composed Conventional-Commit message."""
 
     name: str = "git_commit"
@@ -242,7 +364,9 @@ class GitCommitTool(BaseTool):
             return f"[git_commit] REJECTED: invalid scope {scope!r} (must match {_SCOPE_RE.pattern})"
         # Conditional composition — an omitted scope must never yield "feat(): ...".
         composed = f"{commit_type}({scope}): {subject}" if scope else f"{commit_type}: {subject}"
-        code, body = await _exec(f"git commit -m {shlex.quote(composed)}", _DEFAULT_TIMEOUT_SEC)
+        code, body = await self._gated_dispatch(
+            f"git commit -m {shlex.quote(composed)}", _DEFAULT_TIMEOUT_SEC
+        )
         return f"[git_commit] exit={code}\n{body}"
 
 
@@ -251,7 +375,7 @@ class GitDiffInput(BaseModel):
     paths: List[str] = Field(default_factory=list, description="Optional project-relative paths.")
 
 
-class GitDiffTool(BaseTool):
+class GitDiffTool(_GatedExecTool):
     """Show an on-disk git diff (worktree or staged)."""
 
     name: str = "git_diff"
@@ -278,7 +402,7 @@ class GitDiffTool(BaseTool):
         if safe_paths:
             parts.append("--")
             parts.extend(safe_paths)
-        code, body = await _exec(" ".join(parts), _DEFAULT_TIMEOUT_SEC)
+        code, body = await self._gated_dispatch(" ".join(parts), _DEFAULT_TIMEOUT_SEC)
         return f"[git_diff] exit={code}\n{body}"
 
 
@@ -391,7 +515,7 @@ class LinterAutoFixInput(BaseModel):
     )
 
 
-class LinterAutoFixTool(BaseTool):
+class LinterAutoFixTool(_GatedExecTool):
     """Run ruff over a target; show the fix as a diff or apply it in place."""
 
     name: str = "linter_autofix"
@@ -411,7 +535,9 @@ class LinterAutoFixTool(BaseTool):
         except _ArgRejected as exc:
             return f"[linter_autofix] REJECTED: {exc}"
         mode = "--fix" if apply else "--diff"
-        code, body = await _exec(f"ruff check {mode} -- {safe}", _DEFAULT_TIMEOUT_SEC)
+        code, body = await self._gated_dispatch(
+            f"ruff check {mode} -- {safe}", _DEFAULT_TIMEOUT_SEC
+        )
         return f"[linter_autofix] exit={code}\n{body}"
 
 
@@ -425,7 +551,7 @@ class DependencyInstallInput(BaseModel):
     version: Optional[str] = Field(default=None, description="Optional exact version, e.g. '1.2.3'.")
 
 
-class DependencyInstallTool(BaseTool):
+class DependencyInstallTool(_GatedExecTool):
     """Install a single PyPI package (optionally pinned) inside the sandbox."""
 
     name: str = "install_dependency"
@@ -447,7 +573,9 @@ class DependencyInstallTool(BaseTool):
         spec = f"{name}=={version}" if version else name
         # No "--" for pip (it does not honor end-of-options like git); the strict
         # regex + shlex.quote is the protection.
-        code, body = await _exec(f"python -m pip install {shlex.quote(spec)}", _INSTALL_TIMEOUT_SEC)
+        code, body = await self._gated_dispatch(
+            f"python -m pip install {shlex.quote(spec)}", _INSTALL_TIMEOUT_SEC
+        )
         return f"[install_dependency] exit={code}\n{body}"
 
 
@@ -505,7 +633,7 @@ class RunDataPipelineInput(BaseModel):
     pipeline_path: str = Field(description="Project-relative path to the pipeline script.")
 
 
-class DataPipelineRunTool(BaseTool):
+class DataPipelineRunTool(_GatedExecTool):
     """Execute a project-relative data-pipeline script inside the sandbox."""
 
     name: str = "run_data_pipeline"
@@ -524,7 +652,7 @@ class DataPipelineRunTool(BaseTool):
         except _ArgRejected as exc:
             return f"[run_data_pipeline] REJECTED: {exc}"
         # No "--" for python; the argument guard + shlex.quote is the protection.
-        code, body = await _exec(f"python {safe}", _PIPELINE_TIMEOUT_SEC)
+        code, body = await self._gated_dispatch(f"python {safe}", _PIPELINE_TIMEOUT_SEC)
         return f"[run_data_pipeline] exit={code}\n{body}"
 
 
@@ -732,3 +860,37 @@ async def register_coder_tools(store: ToolRAGStore) -> int:
     for schema in schemas:
         await store.register_schema(schema)
     return len(schemas)
+
+
+def make_coder_execute_tools(state: MutableMapping[str, Any]) -> List[BaseTool]:
+    """Construct the EXECUTE-tier coder tools bound to the session's HITL context.
+
+    Reads ``session_id`` + ``session_permission_mode`` from the live graph state and
+    injects them so each tool routes its command through the interactive approval
+    card under the session's policy (mirroring the sandbox_bash gate). The session
+    context travels explicitly on the instance — no ambient ContextVar.
+
+    ``guard_env_file`` is intentionally excluded: it already emits its own
+    content-hash-idempotent HITL gate and must not be double-gated. The read-only /
+    pure-Python tools (security_audit, validate_ast) and the WRITE-tier
+    generate_docstring need no command gate and are not built here.
+    """
+    ctx = _SessionCtx(
+        session_id=str(state.get("session_id") or ""),
+        permission_mode=str(state.get("session_permission_mode") or "DEFAULT"),
+    )
+    tools: List[BaseTool] = [
+        RunTestsTool(),
+        GitStageTool(),
+        GitCommitTool(),
+        GitDiffTool(),
+        LinterAutoFixTool(),
+        DependencyInstallTool(),
+        DataPipelineRunTool(),
+    ]
+    for tool in tools:
+        # Inject the per-session gate context onto the PrivateAttr declared by
+        # _GatedExecTool. BaseTool is the declared element type, so the attribute
+        # is invisible to mypy here.
+        tool._session_ctx = ctx  # type: ignore[attr-defined]
+    return tools

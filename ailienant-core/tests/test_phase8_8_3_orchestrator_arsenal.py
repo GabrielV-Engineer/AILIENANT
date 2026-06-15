@@ -394,3 +394,54 @@ async def test_token_ledger_tool_executes() -> None:
 
     payload = json.loads(await tool._arun(tier="all"))
     assert payload["local_tokens"] == 150.0
+
+
+# =====================================================================
+# G — DEBT-043: state-injecting factories bind the live state handle
+# =====================================================================
+
+
+@pytest.mark.anyio
+async def test_make_get_wbs_status_tool_binds_live_state() -> None:
+    from tools.agent_tools import make_get_wbs_status_tool
+
+    state: Dict[str, Any] = {
+        "mission_spec": _make_mission([_make_step(1, status="completed"), _make_step(2)])
+    }
+    tool = make_get_wbs_status_tool(state)
+    assert tool.name == "get_wbs_status"
+
+    payload = json.loads(await tool._arun(include_steps=False))
+    assert payload["status"] == "ok"
+    assert payload["total"] == 2
+    assert payload["active_step"] == 2  # reads the live mission off the bound state
+
+
+@pytest.mark.anyio
+async def test_make_emit_hitl_request_tool_binds_live_state() -> None:
+    from tools.agent_tools import make_emit_hitl_request_tool
+
+    state: Dict[str, Any] = {}
+    tool = make_emit_hitl_request_tool(state)
+    assert tool.name == "emit_hitl_request"
+
+    await tool._arun(target_role="devops_infra", trigger=".env")
+    # The append is visible through the SAME state dict the factory was handed.
+    assert state["hitl_approval_requests"][0]["flag"] == (
+        "HITL_APPROVAL_REQUIRED:devops_infra:.env"
+    )
+
+
+@pytest.mark.anyio
+async def test_build_orchestrator_tools_returns_bound_set() -> None:
+    from tools.agent_tools import build_orchestrator_tools
+
+    state: Dict[str, Any] = {"mission_spec": _make_mission([_make_step(1)])}
+    tools = {t.name: t for t in build_orchestrator_tools(state)}
+    assert set(tools) == {"get_wbs_status", "emit_hitl_request"}
+
+    # Both tools share the one live state handle.
+    await tools["emit_hitl_request"]._arun(target_role="secops", trigger="--force")
+    assert state["hitl_approval_requests"]
+    status = json.loads(await tools["get_wbs_status"]._arun(include_steps=False))
+    assert status["total"] == 1

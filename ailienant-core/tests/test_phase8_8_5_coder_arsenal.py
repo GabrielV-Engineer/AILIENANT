@@ -22,6 +22,7 @@ import json
 import struct
 from pathlib import Path
 from typing import Dict, List
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -397,3 +398,105 @@ async def test_validate_ast_wrapper() -> None:
     bad = json.loads(await tool._arun(file_path="a.py", content="def (:\n"))
     assert bad["is_valid"] is False
     assert bad["errors"]
+
+
+# =====================================================================
+# F — DEBT-046: session-injecting factory + per-session HITL command gate
+# =====================================================================
+
+
+def _gated_run_tests(state: Dict[str, object]) -> RunTestsTool:
+    from tools.coder_tools import make_coder_execute_tools
+
+    tools = {t.name: t for t in make_coder_execute_tools(state)}
+    tool = tools["run_tests"]
+    assert isinstance(tool, RunTestsTool)
+    return tool
+
+
+def _wire_gate(
+    monkeypatch: pytest.MonkeyPatch, fake: "_FakeAdapter", approval: object
+) -> AsyncMock:
+    from tools import mcp_adapter
+
+    monkeypatch.setattr("tools.coder_tools.get_active_adapter", lambda: fake)
+    approval_mock = AsyncMock(return_value=approval)
+    monkeypatch.setattr(
+        "api.websocket_manager.vfs_manager.request_human_approval", approval_mock
+    )
+    # Start from a clean per-session trust set so a prior test cannot pre-trust us.
+    mcp_adapter.clear_session_trust("sg")
+    return approval_mock
+
+
+@pytest.mark.anyio
+async def test_make_coder_execute_tools_excludes_guard_env_file() -> None:
+    from tools.coder_tools import make_coder_execute_tools
+
+    names = {t.name for t in make_coder_execute_tools({"session_id": "sg"})}
+    assert names == {
+        "run_tests", "git_stage", "git_commit", "git_diff",
+        "linter_autofix", "install_dependency", "run_data_pipeline",
+    }
+    assert "guard_env_file" not in names  # keeps its own content-hash HITL gate
+
+
+@pytest.mark.anyio
+async def test_gated_default_mode_prompts_then_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeAdapter()
+    approval_mock = _wire_gate(monkeypatch, fake, {"approved": True})
+    tool = _gated_run_tests({"session_id": "sg", "session_permission_mode": "DEFAULT"})
+
+    out = await tool._arun(target="tests/unit")
+    assert "exit=0" in out
+    assert fake.commands == ["pytest -q -- tests/unit"]
+    approval_mock.assert_awaited_once()
+    assert approval_mock.await_args is not None
+    assert approval_mock.await_args.kwargs["request_kind"] == "COMMAND_EXEC"
+
+
+@pytest.mark.anyio
+async def test_gated_reject_suppresses_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeAdapter()
+    _wire_gate(monkeypatch, fake, {"approved": False})
+    tool = _gated_run_tests({"session_id": "sg", "session_permission_mode": "DEFAULT"})
+
+    out = await tool._arun(target="tests/unit")
+    assert "BLOCKED" in out
+    assert fake.commands == []  # never armed — the gate denied it
+
+
+@pytest.mark.anyio
+async def test_gated_trust_once_skips_second_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeAdapter()
+    approval_mock = _wire_gate(monkeypatch, fake, {"approved": True})
+    tool = _gated_run_tests({"session_id": "sg", "session_permission_mode": "DEFAULT"})
+
+    await tool._arun(target="a")
+    await tool._arun(target="b")
+    approval_mock.assert_awaited_once()  # trusted after the first approval
+    assert fake.commands == ["pytest -q -- a", "pytest -q -- b"]
+
+
+@pytest.mark.anyio
+async def test_gated_plan_mode_denies(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeAdapter()
+    approval_mock = _wire_gate(monkeypatch, fake, {"approved": True})
+    tool = _gated_run_tests({"session_id": "sg", "session_permission_mode": "PLAN"})
+
+    out = await tool._arun(target="tests/unit")
+    assert "DENIED" in out
+    assert fake.commands == []
+    approval_mock.assert_not_awaited()  # plan mode short-circuits before any prompt
+
+
+@pytest.mark.anyio
+async def test_gated_auto_mode_runs_without_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeAdapter()
+    approval_mock = _wire_gate(monkeypatch, fake, {"approved": True})
+    tool = _gated_run_tests({"session_id": "sg", "session_permission_mode": "AUTO"})
+
+    out = await tool._arun(target="tests/unit")
+    assert "exit=0" in out
+    assert fake.commands == ["pytest -q -- tests/unit"]
+    approval_mock.assert_not_awaited()  # AUTO admits EXECUTE without HITL

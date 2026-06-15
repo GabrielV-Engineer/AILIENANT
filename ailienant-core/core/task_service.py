@@ -54,6 +54,12 @@ class ToolCallSpec:
 # Keeps WS frames < ~3 KB and avoids DOM bloat on the frontend.
 _TOOL_OUTPUT_TRUNC: int = 2000
 
+# Hard ceiling for a single patch hook command (seconds). The ceiling is passed
+# DOWN to the sandbox adapter's own timeout, which kills + reaps its subprocess on
+# expiry — we never wrap adapter.execute() in an outer wait_for, which would cancel
+# our await while orphaning the spawned child.
+_HOOK_TIMEOUT_SEC: float = 120.0
+
 
 def _truncate_tool_output(text: str, cap: int = _TOOL_OUTPUT_TRUNC) -> str:
     """Middle-truncate any tool output to ``cap`` chars with a marker."""
@@ -793,12 +799,29 @@ class TaskService:
                 gate.record_answer(len(notice.encode()))
                 await vfs_manager.broadcast_token(session_id, notice)
 
+            # pre_patch gate: a non-zero (or timed-out / un-runnable) pre_patch hook
+            # vetoes the write fail-closed — the patch never touches disk.
+            pre_ok, pre_msgs = await self._run_patch_hooks(session_id, "pre_patch")
+            if not pre_ok:
+                blocked = "Changes not applied — a pre_patch hook vetoed the write."
+                if pre_msgs:
+                    blocked += " " + "; ".join(pre_msgs[:3])
+                gate.record_answer(len(blocked.encode()))
+                await vfs_manager.broadcast_token(session_id, blocked)
+                await self._finalize_stream(session_id)
+                return
+
             # 4) Actuate via the VS Code applyEdit bridge (Python never writes to disk).
             from core.write_pipeline import apply_patch_set
             res = await apply_patch_set(session_id, patches_to_apply, base_hashes)
             if res.get("ok"):
                 applied = res.get("applied_files") or list(patches_to_apply)
                 result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
+                # post_patch hooks run after the write committed; a failure here is
+                # advisory only (the apply already landed) and is surfaced as a note.
+                _, post_msgs = await self._run_patch_hooks(session_id, "post_patch")
+                if post_msgs:
+                    result_msg += "\n_Post-patch hook notes:_ " + "; ".join(post_msgs[:3])
             elif res.get("stale_files"):
                 # Wrap paths in backticks so the markdown renderer treats them as
                 # inline code — bare paths with underscores (e.g. a *_telemetry.log)
@@ -834,6 +857,83 @@ class TaskService:
             _mcp_sid_var.reset(_mcp_sid_tok)
             _mcp_mode_var.reset(_mcp_mode_tok)
             clear_session_trust(session_id)
+
+    async def _run_patch_hooks(
+        self, session_id: str, event: str
+    ) -> Tuple[bool, List[str]]:
+        """Run enabled ``event`` hooks through the sandbox adapter.
+
+        Returns ``(ok, messages)``. ``ok`` is False only when a hook execution
+        fails (non-zero exit, timeout, or no adapter available for a gate) — the
+        caller treats a False from a ``pre_patch`` event as a veto and a False from
+        ``post_patch`` as advisory. Every hook fault is **non-fatal to the host**:
+        it is logged and folded into ``messages``, never raised into the task.
+
+        The per-hook ceiling is enforced by the adapter's own ``timeout_s`` (it
+        kills + reaps its subprocess on expiry); we never wrap ``execute()`` in an
+        outer ``wait_for``, which would cancel without reaping and orphan the child.
+        """
+        try:
+            from core.db import list_hooks  # local import — avoid a load-time cycle
+
+            rows = await list_hooks()
+        except Exception as exc:  # noqa: BLE001 — hook lookup must never crash a task
+            logger.warning(
+                "[Session: %s] %s hook lookup failed: %s",
+                session_id, event, exc, exc_info=True,
+            )
+            return True, []  # no hooks visible → never block the apply
+
+        commands = [
+            str(row.get("command") or "")
+            for row in rows
+            if row.get("event") == event
+            and row.get("enabled")
+            and str(row.get("command") or "").strip()
+        ]
+        if not commands:
+            return True, []
+
+        from core.sandbox import get_active_adapter
+        from tools.execution_tools import _sandbox_env
+
+        adapter = get_active_adapter()
+        if adapter is None:
+            # A gate that cannot run must fail closed for pre_patch; a post_patch
+            # config simply degrades to a logged warning (the write already landed).
+            msg = f"{event} hook(s) configured but no sandbox adapter is active"
+            logger.warning("[Session: %s] %s", session_id, msg)
+            return (event != "pre_patch"), [msg]
+
+        ok = True
+        messages: List[str] = []
+        for command in commands:
+            try:
+                result = await adapter.execute(
+                    command,
+                    timeout_s=_HOOK_TIMEOUT_SEC,
+                    cwd="",
+                    env_whitelist=_sandbox_env(),
+                )
+            except Exception as exc:  # noqa: BLE001 — a hook fault never crashes the host
+                logger.warning(
+                    "[Session: %s] %s hook raised for %r: %s",
+                    session_id, event, command, exc, exc_info=True,
+                )
+                ok = False
+                messages.append(f"{event} hook errored: {command}")
+                continue
+            if int(result.exit_code) != 0:
+                ok = False
+                tail = _truncate_tool_output((result.stdout or "") + (result.stderr or ""))
+                logger.warning(
+                    "[Session: %s] %s hook non-zero exit=%s cmd=%r\n%s",
+                    session_id, event, result.exit_code, command, tail,
+                )
+                messages.append(
+                    f"{event} hook failed (exit {result.exit_code}): {command}"
+                )
+        return ok, messages
 
     @staticmethod
     def _format_coding_summary(

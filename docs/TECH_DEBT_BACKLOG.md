@@ -64,10 +64,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
-| DEBT-043 | Orchestrator tools register but unbound in live graph node | MEDIUM | Integration gap | Graph-wiring sprint | Floating |
+| DEBT-066 | No runtime LLM tool-dispatch loop — registered orchestrator/coder/analyst tools never invoked (factories ready) | HIGH | Cognitive activation | Agency phase | Floating |
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
-| DEBT-046 | Coder EXECUTE/DANGEROUS wrappers rely on tier-gating, not sandbox_bash's interactive HITL card | MEDIUM | Integration gap | post-8.8.5 | Floating |
-| DEBT-042 | WebSearchTool / DependencyAuditTool search_fn unwired | MEDIUM | Feature gap | 8.8.x integration sprint | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
 | DEBT-048 | RunBenchmarkTool skips task_service.register_active_task — task_id not visible via check_task_status | MEDIUM | Integration gap | post-8.8.6 | Floating |
@@ -80,7 +78,6 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
 | DEBT-035 | MultiPL-E TypeScript execution unsupported | MEDIUM | Feature gap | post-8.5/8.8 | Floating |
-| DEBT-028 (hooks half) | Hooks persisted but not executed | MEDIUM | Feature gap | dedicated 8.x slice | Floating |
 | DEBT-024 | HITL inline-diff O(N) transport | MEDIUM | Performance | future perf sub-phase | Floating |
 | DEBT-037 | G2 retrieval isolation uses mock.patch | LOW | Test architecture | post-8.5/8.8 | Floating |
 | DEBT-033 | config.json key_ref round-trip | LOW | UX gap | 8.4.x or later | Floating |
@@ -173,15 +170,15 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** Phase 11.7 (FE) + Division 8.12 (backend hook).
 - **Notes:** analogous to Claude Code's `/compact` auto-compact. Addresses both DOM memory pressure AND context-window viability for local model sessions. Confirmed need 2026-06-14.
 
-### DEBT-043 [MEDIUM · Floating] — Orchestrator introspection tools register but are not bound into the live graph node
+### DEBT-066 [HIGH · Floating] — No runtime LLM tool-dispatch loop activates the registered tools
 
-- **Date:** 2026-06-13
-- **Reproduce:** `get_wbs_status` / `emit_hitl_request` register in `ToolRAGStore` and are retrievable by the orchestrator role, but no production code path constructs them with a live `state` handle or binds them into the orchestrator node's tool set. The orchestrator graph node still reads `state["mission_spec"]` directly and emits the `HITL_APPROVAL_REQUIRED` flag inline into `security_flags`. No runtime failure — the tools are simply not yet exercised by the engine.
-- **File(s):** `ailienant-core/tools/orchestrator_tools.py` (tool classes); wiring target is `ailienant-core/agents/orchestrator.py` + state-injecting factories in `ailienant-core/tools/agent_tools.py` (`make_get_wbs_status_tool`, `make_emit_hitl_request_tool` — not yet created).
-- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**, identical posture to 8.8.0/8.8.1/8.8.2 where tools register without a production boot hook. Migrating the orchestrator's direct state access onto the audited tools is a focused graph-wiring change.
-- **Blocked by:** nothing structural; needs the tool-set binding + factory plumbing in the orchestrator node.
-- **Phase:** dedicated graph-wiring sprint.
-- **Notes:** logged at 8.8.3 ship per CLAUDE.md §11.3.
+- **Date:** 2026-06-15
+- **Reproduce:** The orchestrator/coder/analyst tool *classes* register their schemas in the `ToolRAGStore` and (as of 8.10.2) have state/session/search-injecting factories, but no production code path runs an LLM tool-calling loop (no ReAct / `bind_tools` / `ToolNode`) that constructs and dispatches them. Only `execute_tracked_tool` dispatches a live tool, and it wires `sandbox_bash` exclusively. The agents make deterministic `LLMGateway.ainvoke` calls; the registered tools are retrievable but never invoked.
+- **File(s):** wiring target is a new cognitive dispatch surface (extend `core/task_service.py::execute_tracked_tool` or add a tool-calling node in `brain/`); consumes the 8.10.2 factories (`tools/agent_tools.py::build_orchestrator_tools`, `tools/coder_tools.py::make_coder_execute_tools`, `tools/analyst_tools.py::make_web_search_tool` / `make_dependency_audit_tool`).
+- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. 8.10.2 made tool construction correct-when-wired (state/session/search injected, HITL gates ready); the missing piece is the activation loop that lets a model select and call them.
+- **Blocked by:** nothing structural; needs the dispatch-loop design (deterministic-engine-compatible) — a focused intelligence-phase effort, not a rebuild.
+- **Phase:** later intelligence / Agency phase.
+- **Notes:** logged at 8.10.2 ship per CLAUDE.md §11.3. Supersedes the dispatch half of the former DEBT-043/046/042 and the DEBT-054 channel-wiring concern.
 
 ### DEBT-044 [MEDIUM · Floating] — ValidateWBSDependenciesTool detects forward-reference ordering violations only, not true DAG cycles
 
@@ -192,16 +189,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** additive `depends_on: Optional[List[int]] = None` field on `WBSStep` (`brain/state.py`) + migration in `docs/SCHEMA_EVOLUTION.MD`.
 - **Phase:** post-8.8.4 — schedule after `WBSStep` schema extension.
 - **Notes:** logged at 8.8.4 ship per CLAUDE.md §11.3.
-
-### DEBT-046 [MEDIUM · Floating] — Coder EXECUTE/DANGEROUS wrappers rely on tier-gating, not the interactive HITL card
-
-- **Date:** 2026-06-14
-- **Reproduce:** Invoke any `coder_tools` EXECUTE wrapper (e.g. `run_tests`, `install_dependency`) outside the graph dispatch. It dispatches through the sandbox adapter once tier-gating admits it, but unlike `sandbox_bash` it does NOT surface the `session_permission_mode` + `session_id` interactive approval card; there is no card channel on that path.
-- **File(s):** `ailienant-core/tools/coder_tools.py` (all EXECUTE/DANGEROUS `_arun` bodies).
-- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. The thin-wrapper reuse boundary stops at the adapter; tier-gating + the always-HITL DANGEROUS tier is the floor. `guard_env_file` already emits a content-hash-idempotent HITL gate, so secret mutation is covered.
-- **Blocked by:** a graph-wiring sprint that threads `session_id`/`session_permission_mode` into the coder tool factories (mirrors `sandbox_bash`).
-- **Phase:** post-8.8.5.
-- **Notes:** logged at 8.8.5 ship per CLAUDE.md §11.3.
 
 ### DEBT-047 [LOW · Floating] — generate_docstring is line-anchored, not a signature-aware renderer
 
@@ -279,16 +266,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future integration sprint.
 - **Notes:** logged at 8.8.7 ship per CLAUDE.md §11.3.
 
-### DEBT-042 [MEDIUM · Floating] — WebSearchTool and DependencyAuditTool search_fn injection point is unwired
-
-- **Date:** 2026-06-13
-- **Reproduce:** `WebSearchTool._search_fn` and `DependencyAuditTool._search_fn` are `None` in all current production construction paths. Both tools degrade gracefully (return "search provider unavailable" / `cve_checked=false`), so no runtime failure occurs.
-- **File(s):** `ailienant-core/tools/analyst_tools.py` (`WebSearchTool`, `DependencyAuditTool`). The wiring target is `core/mcp_registry.py` (`brave-search` `RegulatedServer`).
-- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §11.2)**. The injection point signature `(query: str, max_results: int) -> Awaitable[str]` is already compatible with the brave-search MCP `search` tool; connecting it requires threading the MCP session handle into tool construction, which belongs in an integration sprint.
-- **Blocked by:** `bootstrap_mcp_session` lifecycle and session handle propagation to tool factories.
-- **Phase:** dedicated MCP integration sprint (candidate: 8.8.x).
-- **Notes:** logged at 8.8.2 ship per CLAUDE.md §11.3.
-
 ### DEBT-041 [MEDIUM · Floating] — GrepTool reads catalog-only files sequentially without a content index
 
 - **Date:** 2026-06-13
@@ -318,16 +295,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing technical — needs a Node-capable sandbox tier (extend the image with Node/tsx, or a vetted host-Node executor behind explicit opt-in) without compromising the locked Docker security profile.
 - **Phase:** a standalone benchmark-runtime slice (before the definitive cross-language run, post-8.5/8.8).
 - **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. Until then TS Pass@1 is `unsupported_runtime`; the 8.3.1 DoD is met on the Python subset.
-
-### DEBT-028 [MEDIUM · Floating] — Hooks persisted but never executed *(skills half ✅ RESOLVED — 8.4.5)*
-
-- **Date:** 2026-06-10
-- **Reproduce:** create a `pre_patch`/`post_patch` hook via `POST /api/v1/hooks`; it is stored in the catalog DB (`hooks` table) and listed back, but is never run around task mutations.
-- **File(s):** `ailienant-core/core/db.py` (hooks table + CRUD — storage only); `ailienant-core/api/customizers.py` (~line 215 — hooks saved, not executed); no execution wiring in `core/task_service.py` or `tools/execution_tools.py`.
-- **Error:** wiring gap — the persistence + UI half exists; the hooks runtime application half does not.
-- **Blocked by:** none.
-- **Phase:** dedicated hooks-execution sub-phase (8.4.x or standalone).
-- **Notes:** skills half closed by **8.4.5** (dual-mode resolver + planner injection + frontend chip). Hooks deferred at user request; scope confirmed as `pre_patch`/`post_patch` command execution. Complements DEBT-027 (both are "configured-but-inert" gaps).
 
 ### DEBT-024 [MEDIUM · Floating] — HITL inline-diff transport ships full file content (O(N)) instead of a unified diff (O(Δ))
 
@@ -543,6 +510,10 @@ Decision    Not a defect — see [DECISION] tier.
 
 *(Entries here are compact summaries. Full resolution notes are in git history and in the entry's Resolution block before it was moved here.)*
 
+- **DEBT-043 — Orchestrator tools unbound to live state** — **RESOLVED 2026-06-15** (8.10.2). Added `make_get_wbs_status_tool` / `make_emit_hitl_request_tool` + `build_orchestrator_tools(state)` in `tools/agent_tools.py` — the canonical path that constructs the audited tools bound to the live graph state. The deterministic node's flag contract is left intact (§10); invocation moves to [DEBT-066].
+- **DEBT-046 — Coder EXECUTE wrappers lack the interactive HITL card** — **RESOLVED 2026-06-15** (8.10.2). New `_gated_exec` + `_GatedExecTool` base + `make_coder_execute_tools(state)` thread `session_id`/`session_permission_mode` so EXECUTE-tier commands route through `evaluate_action` → `request_human_approval` (mirrors the MCP gate), honoring the trust-once valve; `guard_env_file` excluded (own gate). Additive — unfactoried construction unchanged.
+- **DEBT-042 — Analyst search_fn unwired** — **RESOLVED 2026-06-15** (8.10.2). `tools/mcp_adapter.py::make_brave_search_fn()` resolves the brave-search session lazily and is resilience-wrapped (`wait_for` + broad except → degradation string, never raises); `make_web_search_tool` / `make_dependency_audit_tool` inject it by default. CVE/web search go live the moment the session connects.
+- **DEBT-028 (hooks half) — Hooks persisted but never executed** — **RESOLVED 2026-06-15** (8.10.2). `TaskService._run_patch_hooks` runs enabled `pre_patch`/`post_patch` commands through the sandbox adapter around the single `apply_patch_set` commit; the ceiling is delegated to the adapter's `timeout_s` (kills+reaps — no outer `wait_for` orphan). `pre_patch` non-zero/timeout/no-adapter fails-closed (vetoes); `post_patch` is advisory; every fault is non-fatal + logged. (Skills half closed earlier in 8.4.5.)
 - **DEBT-034 — Gateway `project_id` hashing is path-format-fragile** — **RESOLVED 2026-06-15** (8.10.1). `project_id_for` (core/storage_paths.py) now hashes `os.path.normcase(os.path.normpath(workspace_root))`; `PathResolver.computeProjectId` mirrors it byte-for-byte via Node `path.win32/posix.normalize` + a trailing-separator strip that preserves the disk/UNC/POSIX root (a naive regex strip would corrupt `C:\`→`C:`). One-time lazy re-index on next workspace open.
 - **DEBT-038 — Production benchmark service imports the test tree** — **RESOLVED 2026-06-15** (8.10.1). Relocated the 11 harness modules (+ `corpus/` and `datasets/` fixtures) from `tests/benchmark/` to a shippable `core/benchmark/` package; repointed all `tests.benchmark.*` imports to `core.benchmark.*` (harness, 7 test files, `benchmark_service.py`, `test_gateway_eval_surface.py`). Reverse-dependency guard: zero `from tests` imports remain under `core/benchmark/`. `report.schema.json` stays in `tests/benchmark/` (read via the test's own `__file__`).
 - **DEBT-040 — `tool_search` role resolution stale across per-step transitions** — **RESOLVED 2026-06-15** (8.10.1) via Explicit State Augmentation. Root cause: the router never re-set `active_role` per step — it inherited the task-initial value. The `Send` payload now carries `active_role = step.target_role` (engine.py, both SWARM and RELAY sites), so the wired tool-selection path is per-step-correct; `_resolve_active_role` is config-first and the ambient `_task_active_role` ContextVar was removed entirely (def + task_service set/reset), eliminating staleness and cross-WS leakage. Residual: the agent-callable `tool_search` dispatch itself is still unwired (the DEBT-043/046/054 cluster) — this makes selection correct now and resolution correct when that dispatch lands.

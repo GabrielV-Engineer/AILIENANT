@@ -712,3 +712,70 @@ def _reset_mcp_session_for_tests() -> None:
     """
     _exit_stacks.clear()
     _sessions.clear()
+
+
+# =====================================================================
+# Brave-search adapter — search callable for the analyst tools
+# =====================================================================
+
+_BRAVE_SERVER_NAME: str = "brave-search"
+_BRAVE_SEARCH_TOOL: str = "search"
+_SEARCH_TIMEOUT_SEC: float = float(os.environ.get("BRAVE_SEARCH_TIMEOUT_SEC", "20"))
+_SEARCH_RESULT_CAP: int = 8000
+# Match the analyst tools' own degradation string so a missing session reads the
+# same whether the search_fn is absent or merely unconnected.
+_SEARCH_UNAVAILABLE: str = "search provider unavailable"
+
+
+def _extract_mcp_text(result: Any) -> str:
+    """Flatten an MCP CallToolResult into plain text, tolerating odd shapes.
+
+    A well-formed result exposes ``.content`` as a list of content blocks whose
+    text blocks carry ``.text``. We never trust that shape blindly: a non-list, a
+    missing attribute, or a non-text block each degrade to ``str(...)`` rather than
+    raising.
+    """
+    content = getattr(result, "content", result)
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            text = getattr(item, "text", None)
+            parts.append(str(text) if text is not None else str(item))
+        return "\n".join(parts)
+    return str(content)
+
+
+def make_brave_search_fn(
+    server_name: str = _BRAVE_SERVER_NAME,
+) -> Callable[[str, int], Awaitable[str]]:
+    """Build a search callable backed by the brave-search MCP session.
+
+    The returned coroutine matches the analyst tools' injection signature
+    ``(query, max_results) -> str``. It resolves the live session lazily at call
+    time (so it tolerates connect/disconnect), bounds the result, and **degrades to
+    the standard "unavailable" string on a missing session OR any wire fault** — the
+    `await call_tool` is wrapped in a timeout + broad except so it can never raise
+    into the calling graph node. The transport child process is owned by the MCP
+    session (reaped at session teardown), so cancelling the RPC orphans nothing.
+    """
+
+    async def _search(query: str, max_results: int) -> str:
+        session = _sessions.get(server_name)
+        if session is None:
+            return _SEARCH_UNAVAILABLE
+        try:
+            result = await asyncio.wait_for(
+                session.call_tool(
+                    _BRAVE_SEARCH_TOOL,
+                    {"query": query, "count": max(1, min(int(max_results), 10))},
+                ),
+                timeout=_SEARCH_TIMEOUT_SEC,
+            )
+        except Exception as exc:  # noqa: BLE001 — resilience: never crash the node
+            logger.warning(
+                "make_brave_search_fn: search failed for %r: %s", query, exc, exc_info=True
+            )
+            return _SEARCH_UNAVAILABLE
+        return _extract_mcp_text(result)[:_SEARCH_RESULT_CAP]
+
+    return _search

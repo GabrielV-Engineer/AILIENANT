@@ -19,7 +19,7 @@
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.2 integration wiring |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.3 execute Division 8.2 |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -485,7 +485,7 @@
   - DEBT-040 (MEDIUM · Locked): close stale `tool_search` role resolution via Explicit State Augmentation — the per-step role rides in the `Send` payload (router sets `active_role = step.target_role`); `_resolve_active_role` is config-first; the ambient `_task_active_role` ContextVar is removed (no per-step staleness, no cross-WS leak).
   - **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
 
-- [ ] **8.10.2 — Integration wiring sprint**
+- [x] **8.10.2 — Integration wiring sprint**
   - DEBT-043 (MEDIUM): bind orchestrator tools into the live graph node — create `make_get_wbs_status_tool` / `make_emit_hitl_request_tool` factories in `tools/agent_tools.py`; wire into `agents/orchestrator.py` tool set.
   - DEBT-046 (MEDIUM): thread `session_id`/`session_permission_mode` into coder tool factories; EXECUTE-tier coder tools surface the HITL approval card (mirrors `sandbox_bash`).
   - DEBT-042 (MEDIUM): wire `WebSearchTool._search_fn` + `DependencyAuditTool._search_fn` to the brave-search MCP session handle via `bootstrap_mcp_session` lifecycle propagation.

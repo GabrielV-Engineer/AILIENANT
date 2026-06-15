@@ -619,3 +619,107 @@ def test_jailed_disk_read_missing_file_returns_none(tmp_path: Path) -> None:
     """FileNotFoundError is caught; returns None (caller decides semantics)."""
     result = _jailed_disk_read(str(tmp_path / "nonexistent.py"), str(tmp_path))
     assert result is None
+
+
+# =====================================================================
+# DEBT-042 — brave-search adapter + search-backed tool factories
+# =====================================================================
+
+
+@pytest.mark.anyio
+async def test_brave_search_fn_no_session_returns_unavailable() -> None:
+    from tools import mcp_adapter
+
+    mcp_adapter._sessions.pop("brave-search", None)
+    fn = mcp_adapter.make_brave_search_fn()
+    assert await fn("python cve", 5) == "search provider unavailable"
+
+
+@pytest.mark.anyio
+async def test_brave_search_fn_returns_bounded_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from tools import mcp_adapter
+
+    block = SimpleNamespace(text="result-A")
+    session = SimpleNamespace(
+        call_tool=AsyncMock(return_value=SimpleNamespace(content=[block]))
+    )
+    monkeypatch.setitem(mcp_adapter._sessions, "brave-search", session)
+
+    fn = mcp_adapter.make_brave_search_fn()
+    out = await fn("requests cve", 3)
+    assert out == "result-A"
+    # max_results maps to count; query forwarded verbatim.
+    assert session.call_tool.await_args is not None
+    name, args = session.call_tool.await_args.args[0], session.call_tool.await_args.args[1]
+    assert name == "search"
+    assert args == {"query": "requests cve", "count": 3}
+
+
+@pytest.mark.anyio
+async def test_brave_search_fn_clamps_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from tools import mcp_adapter
+
+    session = SimpleNamespace(
+        call_tool=AsyncMock(return_value=SimpleNamespace(content=[]))
+    )
+    monkeypatch.setitem(mcp_adapter._sessions, "brave-search", session)
+
+    await mcp_adapter.make_brave_search_fn()("q", 50)
+    assert session.call_tool.await_args is not None
+    assert session.call_tool.await_args.args[1]["count"] == 10  # clamped to the [1,10] cap
+
+
+@pytest.mark.anyio
+async def test_brave_search_fn_degrades_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from tools import mcp_adapter
+
+    session = SimpleNamespace(call_tool=AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setitem(mcp_adapter._sessions, "brave-search", session)
+
+    # Resilience: a wire fault never raises into the calling node.
+    assert await mcp_adapter.make_brave_search_fn()("q", 5) == "search provider unavailable"
+
+
+@pytest.mark.anyio
+async def test_make_web_search_tool_wires_search_fn() -> None:
+    from tools.analyst_tools import make_web_search_tool
+
+    async def stub(query: str, k: int) -> str:
+        return f"hits:{query}:{k}"
+
+    tool = make_web_search_tool(search_fn=stub)
+    out = await tool._arun(query="langgraph", max_results=2)
+    assert "hits:langgraph:2" in out
+
+
+@pytest.mark.anyio
+async def test_make_web_search_tool_defaults_to_brave(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools import mcp_adapter
+    from tools.analyst_tools import make_web_search_tool
+
+    mcp_adapter._sessions.pop("brave-search", None)
+    tool = make_web_search_tool()  # default brave-backed search_fn
+    out = await tool._arun(query="x", max_results=1)
+    assert "search provider unavailable" in out
+
+
+@pytest.mark.anyio
+async def test_make_dependency_audit_tool_injects_search_fn() -> None:
+    from tools.analyst_tools import make_dependency_audit_tool
+
+    async def stub(query: str, k: int) -> str:
+        return "cve-result"
+
+    async def _paths() -> List[str]:
+        return []
+
+    tool = make_dependency_audit_tool(
+        workspace_root="/ws",
+        path_provider=_paths,
+        ram_reader=lambda p: None,
+        search_fn=stub,
+    )
+    assert tool._search_fn is stub  # CVE lookup is wired when a provider is supplied

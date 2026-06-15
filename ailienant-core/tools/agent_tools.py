@@ -1,13 +1,15 @@
 # ailienant-core/tools/agent_tools.py
 #
-# Phase 2.20 — VFS-Sandboxed Agent Tool Factories.
-# Phase 5.3 — make_read_file_tool extended with offset/limit pagination + an
-#             optional `record_read` audit hook the orchestrator wires to
-#             populate state["read_files_state"] for the RBWE guard.
+# VFS-sandboxed agent tool factories.
 #
-# Factory functions inject the VFS instance via closure so LangChain's @tool
-# schema only exposes path/content arguments to the LLM. No internal service
-# objects (VFSMiddleware, os, open()) reach the tool schema.
+# Factory functions inject the VFS instance (and, where relevant, the shared
+# mutable graph state) via closure so LangChain's @tool schema only exposes the
+# model-chosen arguments. No internal service objects (VFSMiddleware, os,
+# open(), the state mapping) reach the tool schema.
+#
+# ``make_read_file_tool`` supports offset/limit pagination plus an optional
+# ``record_read`` audit hook the graph node wires to populate
+# state["read_files_state"] for the RBWE guard.
 
 from __future__ import annotations
 
@@ -36,8 +38,8 @@ def make_read_file_tool(
         vfs_read:    Callable e.g. vfs_middleware.read(path) → str | None.
         vfs_stat:    Optional. (path) → (blob_hash, document_version_id) | None.
                      Defaults to computing a blake2b hash + ISO8601 UTC timestamp.
-        record_read: Optional Phase 5.3 audit hook. When provided AND the read
-                     succeeds, the factory invokes record_read(path, VFSFile(...)).
+        record_read: Optional audit hook. When provided AND the read succeeds,
+                     the factory invokes record_read(path, VFSFile(...)).
                      The graph node wires this to update state["read_files_state"]
                      so the RBWE guard in core/permissions.py sees the entry.
     """
@@ -110,14 +112,14 @@ def make_write_file_tool(vfs_write: Callable[[str, str], None]) -> BaseTool:
 def make_run_command_tool() -> BaseTool:
     """Factory: returns a @tool stub for shell command execution.
 
-    Phase 4 replaces this with sandboxed subprocess execution.
-    Phase 2.20: raises NotImplementedError to surface the stub clearly.
+    Raises NotImplementedError to surface the stub clearly; sandboxed subprocess
+    execution is provided through the dedicated execution/coder tool paths.
     """
     @tool
     def run_command(command: str) -> str:
         """Execute a shell command in the sandboxed workspace environment."""
         raise NotImplementedError(
-            "run_command() stub — Phase 4 implements sandboxed subprocess execution. "
+            "run_command() stub — use the sandboxed execution/coder tool paths. "
             f"Command attempted: {command!r}"
         )
 
@@ -125,7 +127,7 @@ def make_run_command_tool() -> BaseTool:
 
 
 # ---------------------------------------------------------------------------
-# Phase 5.4 — Graph wiring: state-aware FileReadTool that populates RBWE audit
+# Graph wiring: state-aware FileReadTool that populates the RBWE audit channel
 # ---------------------------------------------------------------------------
 
 
@@ -137,10 +139,10 @@ def make_state_aware_read_file_tool(
 ) -> BaseTool:
     """Wire a record_read callback that populates state['read_files_state'].
 
-    Phase 5.1 rbwe_guard rejects WRITE/EXECUTE/DANGEROUS tools whose target_path
-    is not in state['read_files_state']. Phase 5.3 exposed the record_read audit
-    hook on make_read_file_tool. This helper builds the missing closure that
-    actually mutates state, completing the wiring.
+    The rbwe_guard rejects WRITE/EXECUTE/DANGEROUS tools whose target_path is not
+    in state['read_files_state']. make_read_file_tool exposes the record_read
+    audit hook; this helper builds the closure that actually mutates state,
+    completing the wiring.
 
     Agent / graph-node callers should swap make_read_file_tool(vfs_read) for
     make_state_aware_read_file_tool(state, vfs_read) — the returned BaseTool is
@@ -155,7 +157,7 @@ def make_state_aware_read_file_tool(
 
 
 # ---------------------------------------------------------------------------
-# Phase 5.5 / 5.6 — State-injecting factories for execution + control tools
+# State-injecting factories for execution + control tools
 # ---------------------------------------------------------------------------
 
 
@@ -201,3 +203,44 @@ def make_toggle_plan_mode_tool(state: MutableMapping[str, Any]) -> BaseTool:
     from tools.control_tools import TogglePlanModeTool
 
     return TogglePlanModeTool(state=state)
+
+
+# ---------------------------------------------------------------------------
+# State-injecting factories for the orchestrator introspection/control tools
+# ---------------------------------------------------------------------------
+
+
+def make_get_wbs_status_tool(state: MutableMapping[str, Any]) -> BaseTool:
+    """Build a GetWBSStatusTool bound to the live graph state.
+
+    The returned tool reads state['mission_spec'].tasks on each invocation and
+    never mutates state — a read-only WBS progress view.
+    """
+    from tools.orchestrator_tools import GetWBSStatusTool
+
+    return GetWBSStatusTool(state=state)
+
+
+def make_emit_hitl_request_tool(state: MutableMapping[str, Any]) -> BaseTool:
+    """Build an EmitHITLRequestTool bound to the live graph state.
+
+    The tool appends an idempotent audit entry to state['hitl_approval_requests']
+    and returns the canonical HITL gate flag on every invocation.
+    """
+    from tools.orchestrator_tools import EmitHITLRequestTool
+
+    return EmitHITLRequestTool(state=state)
+
+
+def build_orchestrator_tools(state: MutableMapping[str, Any]) -> list[BaseTool]:
+    """Canonical construction path for the orchestrator-scoped tool set.
+
+    Returns the orchestrator's audited introspection/control tools, each bound to
+    the live graph ``state`` handle. This is the single seam a tool-dispatch
+    surface (or the external MCP gateway) reuses so the tools are always
+    constructed with a live state handle rather than a detached one.
+    """
+    return [
+        make_get_wbs_status_tool(state),
+        make_emit_hitl_request_tool(state),
+    ]

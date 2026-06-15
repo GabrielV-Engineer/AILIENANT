@@ -12,12 +12,13 @@ hashes. Rejected ⇒ nothing is applied.
 """
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict
+from types import SimpleNamespace
+from typing import Any, AsyncIterator, Dict, List, Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.task_service import TaskService, TaskPayload
+from core.task_service import TaskService, TaskPayload, _HOOK_TIMEOUT_SEC
 from brain.state import MissionSpecification, WBSStep
 
 
@@ -255,3 +256,112 @@ async def test_sequential_per_file_modified_content_honored() -> None:
     assert apply_mock.await_args is not None
     _sid, contents, _bh = apply_mock.await_args.args[:3]
     assert contents == {"a.py": "EDITED-A\n", "b.py": "B\n"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DEBT-028 — pre_patch / post_patch hooks execute around the single apply commit.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class _FakeAdapter:
+    """Records dispatched commands and returns a canned exit code."""
+
+    def __init__(self, exit_code: int) -> None:
+        self.exit_code = exit_code
+        self.calls: List[Dict[str, Any]] = []
+
+    async def execute(
+        self, command: str, *, timeout_s: float, cwd: str, env_whitelist: Dict[str, str]
+    ) -> Any:
+        self.calls.append({"command": command, "timeout_s": timeout_s})
+        return SimpleNamespace(exit_code=self.exit_code, stdout="out", stderr="err")
+
+
+def _hook_patches(
+    apply_mock: AsyncMock,
+    hook_rows: List[Dict[str, Any]],
+    adapter: Optional[_FakeAdapter],
+):
+    decision = {"approved": True, "comment": None, "modified_content": None}
+    return [
+        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
+        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
+        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
+        patch(
+            "core.task_service.vfs_manager.request_human_approval",
+            new=AsyncMock(return_value=decision),
+        ),
+        patch("core.db.list_hooks", new=AsyncMock(return_value=hook_rows)),
+        patch("core.sandbox.get_active_adapter", return_value=adapter),
+        patch("tools.execution_tools._sandbox_env", return_value={}),
+    ]
+
+
+async def _run_with(ctxs) -> None:
+    for c in ctxs:
+        c.start()
+    try:
+        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
+    finally:
+        for c in ctxs:
+            c.stop()
+
+
+@pytest.mark.anyio
+async def test_pre_patch_nonzero_vetoes_apply() -> None:
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    adapter = _FakeAdapter(exit_code=1)
+    rows = [{"event": "pre_patch", "command": "ruff check .", "enabled": 1}]
+    await _run_with(_hook_patches(apply_mock, rows, adapter))
+
+    apply_mock.assert_not_awaited()  # veto — the write never reaches disk
+    # The ceiling is delegated to the adapter (no outer wait_for that would orphan).
+    assert adapter.calls and adapter.calls[0]["timeout_s"] == _HOOK_TIMEOUT_SEC
+
+
+@pytest.mark.anyio
+async def test_pre_patch_adapter_timeout_vetoes_apply() -> None:
+    # The adapter reaps its child and returns exit_code=-1 on its internal timeout;
+    # a pre_patch gate that cannot complete must fail closed.
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    adapter = _FakeAdapter(exit_code=-1)
+    rows = [{"event": "pre_patch", "command": "sleep 999", "enabled": 1}]
+    await _run_with(_hook_patches(apply_mock, rows, adapter))
+
+    apply_mock.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_pre_patch_no_adapter_vetoes_apply() -> None:
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    rows = [{"event": "pre_patch", "command": "ruff check .", "enabled": 1}]
+    await _run_with(_hook_patches(apply_mock, rows, adapter=None))
+
+    apply_mock.assert_not_awaited()  # fail-closed: gate cannot run → no write
+
+
+@pytest.mark.anyio
+async def test_post_patch_nonzero_only_warns() -> None:
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    adapter = _FakeAdapter(exit_code=1)
+    rows = [{"event": "post_patch", "command": "notify-fail", "enabled": 1}]
+    await _run_with(_hook_patches(apply_mock, rows, adapter))
+
+    apply_mock.assert_awaited_once()  # post hook failure is advisory — write landed
+    assert adapter.calls and adapter.calls[0]["command"] == "notify-fail"
+
+
+@pytest.mark.anyio
+async def test_disabled_and_other_event_hooks_are_skipped() -> None:
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    adapter = _FakeAdapter(exit_code=1)  # would veto IF it ran
+    rows = [
+        {"event": "pre_patch", "command": "would-fail", "enabled": 0},   # disabled
+        {"event": "on_save", "command": "unrelated", "enabled": 1},       # other event
+    ]
+    await _run_with(_hook_patches(apply_mock, rows, adapter))
+
+    apply_mock.assert_awaited_once()  # neither hook matched an active pre_patch gate
+    assert adapter.calls == []

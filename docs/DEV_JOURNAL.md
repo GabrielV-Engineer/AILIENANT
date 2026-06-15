@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.2: Integration Wiring Sprint — DEBT-043 / 046 / 042 / 028 — 2026-06-15
+**Status:** COMPLETE | **Gates:** mypy 0/343 · pytest 1527 passed (2 skipped)
+- Shipped: DEBT-043 — `make_get_wbs_status_tool` / `make_emit_hitl_request_tool` + `build_orchestrator_tools(state)` bind the audited orchestrator tools to live graph state. DEBT-046 — `_gated_exec` + `_GatedExecTool` base + `make_coder_execute_tools(state)` thread `session_id`/`session_permission_mode` so EXECUTE-tier coder commands route through `evaluate_action` → `request_human_approval` (trust-once honored; `guard_env_file` excluded). DEBT-042 — `make_brave_search_fn()` lazily resolves the brave-search MCP session and is resilience-wrapped; analyst factories inject it. DEBT-028 — `_run_patch_hooks` runs `pre_patch`/`post_patch` commands through the sandbox adapter around the single `apply_patch_set` commit.
+- Key decision: Scope = "correct-when-wired" (mirrors DEBT-040) — three tool classes are schema-registration-only with no LLM dispatch loop, so the factories make construction correct the moment dispatch lands; hooks delegate their ceiling to the adapter's own `timeout_s` (kills+reaps) rather than an outer `wait_for` that would orphan the child, and `pre_patch` fails closed on non-zero/timeout/no-adapter.
+- Deferred: DEBT-066 — new HIGH "Cognitive Tool Activation": no runtime LLM tool-dispatch loop invokes the registered tools (factories ready); scheduled for a later intelligence/Agency phase.
+
 ## 8.10.1: Deployment Readiness — DEBT-034 / 038 / 040 — 2026-06-15
 **Status:** COMPLETE | **Gates:** mypy 0/343 · pytest 1506 passed (2 skipped) · tsc 0 · eslint 0 errors
 - Shipped: DEBT-034 — `project_id_for` now hashes `os.path.normcase(os.path.normpath(...))` and `PathResolver.computeProjectId` mirrors it (Node `path.win32/posix.normalize` + a trailing-separator strip that preserves the disk/UNC/POSIX root), so casing/separator/trailing-slash variants of one workspace key the same index (one-time lazy re-index on next open). DEBT-038 — relocated the 11-module benchmark harness (+ `corpus/` and `datasets/` fixtures) from `tests/benchmark/` to a shippable `core/benchmark/` package and repointed all imports; `run_benchmark` no longer reaches into the test tree. DEBT-040 — Explicit State Augmentation: the router writes `active_role = step.target_role` onto each `Send` payload, `_resolve_active_role` is config-first, and the ambient `_task_active_role` ContextVar was removed entirely.
