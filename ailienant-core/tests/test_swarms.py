@@ -12,10 +12,10 @@
 #     4. CLOUD + parallel_tasks=[2 tasks] → list of ≥2 Send objects
 #
 #   run_planner_node (async, DEBUG_MODE=True):
-#     5. tci > 80 → parallel_tasks has ≥2 WBSStep entries
+#     5. tci > 80 → parallel_tasks is empty (sequential RELAY; no unsafe fan-out)
 #
 #   Full chain (async):
-#     6. planner(tci=90) → route_to_coders → ≥2 Sends for SWARM (MANUAL_PLANNING=False path)
+#     6. planner(tci=90) → route_to_coders → exactly 1 Send (sequential RELAY path)
 
 from unittest.mock import patch
 
@@ -82,19 +82,21 @@ def test_route_to_coders_emits_multiple_sends_in_swarm_mode() -> None:
 
 
 @pytest.mark.anyio
-async def test_planner_yields_parallel_tasks_for_high_tci() -> None:
-    """DEBUG_MODE=True, tci>80 → parallel_tasks contains ≥2 WBSSteps."""
+async def test_planner_sequential_for_high_tci() -> None:
+    """High-TCI plans no longer fan out: WBS steps carry only implicit step_number
+    ordering, so the planner yields no parallel_tasks and execution is sequential."""
     state = {"tci": 90.0, "css": 100.0}
     with patch("agents.planner.DEBUG_MODE", True):
         result = await run_planner_node(state)
-    assert len(result["parallel_tasks"]) >= 2, (
-        f"Expected ≥2 parallel tasks for tci=90, got {len(result['parallel_tasks'])}"
+    assert result["parallel_tasks"] == [], (
+        f"High-TCI plans must execute sequentially; got {len(result['parallel_tasks'])} parallel tasks"
     )
 
 
 @pytest.mark.anyio
-async def test_planner_plus_router_swarm_chain_emits_sends() -> None:
-    """Full MANUAL_PLANNING=False chain: planner(tci=90) → route_to_coders → ≥2 Sends."""
+async def test_planner_plus_router_yields_sequential_send() -> None:
+    """Full chain: planner(tci=90) → route_to_coders now takes the sequential RELAY
+    path (one Send), since the planner no longer populates parallel_tasks."""
     with patch("agents.planner.DEBUG_MODE", True):
         planner_result = await run_planner_node({"tci": 90.0, "css": 100.0})
 
@@ -104,6 +106,6 @@ async def test_planner_plus_router_swarm_chain_emits_sends() -> None:
         "mission_spec": planner_result["mission_spec"],
     }
     sends = route_to_coders(cast(AIlienantGraphState, router_state))
-    assert len(sends) >= 2, (
-        f"MANUAL_PLANNING=False chain must yield ≥2 Sends; got {len(sends)}"
+    assert len(sends) == 1, (
+        f"Sequential RELAY must yield exactly one Send; got {len(sends)}"
     )

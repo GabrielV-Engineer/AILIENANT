@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.x: Deferred Backlog Fixes — DEBT-064 / 063 / 065 — 2026-06-14
+**Status:** COMPLETE | **Gates:** mypy 0/341 · pytest 1499 passed · tsc 0 · eslint 0 errors
+- Shipped: DEBT-064 — AILIENANT no longer surfaces/moves its own runtime files: `_build_tree` filters them at the enumeration source, `_run_coding_task` drops internal paths from the patch set (with a user note), and the VFS firewall ignores `.ailienant_telemetry.log*`; shared `is_ailienant_internal_path` (core/storage_paths.py). DEBT-063 — `planner.parallel_tasks=[]` forces sequential RELAY execution (WBS steps have only implicit step_number ordering, so the `tci>80` blanket SWARM fan-out was unsafe). DEBT-065 — `_format_coding_summary` gains a backward-compatible `auto_apply` branch ("Applying…" vs "review/authorize").
+- Key decision: the telemetry log isn't a code file (not in `_EXT_LANG`), so it reached the agent via the workspace tree's raw `os.walk`, not the indexed catalog — the fix is the tree + write-layer guard, not a catalog filter. The VFS ignore is scoped to the log only (not `.ailienant/`) so the user-authored `.ailienant/AILIENANT.md` instructions stay readable.
+- Deferred: none new. SWARM dispatch left dormant for a future explicit-dependency-DAG (the only way to safely re-introduce parallelism).
+
 ## 8.10.0b: FE Regression Follow-up — HUD Height + Context Ring — 2026-06-14
 **Status:** COMPLETE | **Gates:** tsc 0 · eslint 0 errors · mypy 0/340 · pytest 1494 passed
 - Shipped (DEBT-062): fixed the HUD height regression DEBT-056 introduced (composer + telemetry share `--hud-rest-height`, equal at rest via `flex-end`); merged the OCC ring and context meter into one split donut (`OccContextRing` — left OCC palette, right `--accent-context` lavender deepening with occupancy); per-model context window resolved from litellm `get_model_info` instead of the flat 200k default; apply-result paths backtick-wrapped so `*_telemetry.log` no longer renders italic.

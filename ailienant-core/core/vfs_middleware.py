@@ -260,7 +260,16 @@ class VFSMiddleware:
         with _ignore_specs_lock:
             if project_id in _ignore_specs:
                 return _ignore_specs[project_id]
-            lines: List[str] = []
+            # Built-in default: the self-rewriting telemetry log is always ignored,
+            # independent of the project's .gitignore, so reading it for context (or
+            # to base a move patch on) fails closed. The `.ailienant/` home is NOT
+            # blanket-ignored here — its `AILIENANT.md` is shareable project guidance
+            # that the project-instructions reader must still read through this same
+            # firewall; the rest of the home is already hidden-dir-pruned + gitignored.
+            lines: List[str] = [
+                ".ailienant_telemetry.log",
+                ".ailienant_telemetry.log.*",
+            ]
             for fname in (".gitignore", ".ailienantignore"):
                 candidate = os.path.join(project_root, fname)
                 try:

@@ -225,8 +225,11 @@ async def run_planner_node(
             checks=["The file was read without throwing any exceptions."],
         )
 
-        # Extraemos parallel_tasks para High-TCI: todos los pasos son candidatos al fan-out.
-        parallel_tasks = mock_mission.tasks if tci > 80.0 else []
+        # WBS steps carry only implicit step_number ordering (no dependency graph),
+        # so parallel fan-out would run dependent steps out of order. Execute
+        # sequentially via RELAY; SWARM dispatch stays dormant until an explicit
+        # dependency DAG exists.
+        parallel_tasks: list[Any] = []
         result: dict[str, Any] = {
             "mission_spec": mock_mission,
             "parallel_tasks": parallel_tasks,
@@ -820,8 +823,11 @@ async def run_planner_node(
         merged = {**{str(k): str(v) for k, v in _gloss.items()}, **mission_plan.ubiquitous_language}
         mission_plan = mission_plan.model_copy(update={"ubiquitous_language": merged})
 
-    # For High-TCI, all WBSSteps are candidates for MapReduce fan-out.
-    parallel_tasks = mission_plan.tasks if tci > 80.0 else []
+    # WBS steps carry only implicit step_number ordering (no dependency graph), so
+    # parallel fan-out would run dependent steps out of order. Sequential RELAY
+    # execution preserves the displayed plan order; SWARM dispatch stays dormant
+    # until an explicit dependency DAG exists.
+    parallel_tasks = []
 
     result = {
         "mission_spec": mission_plan,

@@ -16,6 +16,7 @@ import logging
 
 if TYPE_CHECKING:
     from api.ws_contracts import PlanDocumentPayload
+from core.storage_paths import is_ailienant_internal_path
 from shared.persona import compose
 from transport.token_batcher import batch_tokens, NarrationGate
 
@@ -642,6 +643,26 @@ class TaskService:
             base_hashes: Dict[str, str] = dict(final_state.get("pending_base_hash") or {})
             errors: List[str] = list(final_state.get("errors") or [])
 
+            # Refuse to mutate AILIENANT's own runtime artifacts. The telemetry log
+            # self-rewrites mid-task, so any proposed move fails the host's
+            # optimistic-concurrency hash check and strands the whole batch. The
+            # workspace tree already hides these, but guard the write path too so a
+            # path reaching the patch set by any route can never be actuated.
+            _internal = [p for p in contents if is_ailienant_internal_path(p)]
+            if _internal:
+                for p in _internal:
+                    patches.pop(p, None)
+                    contents.pop(p, None)
+                    base_hashes.pop(p, None)
+                logger.info(
+                    "[Session: %s] dropped %d AILIENANT-internal path(s) from the patch set: %s",
+                    session_id, len(_internal), ", ".join(sorted(_internal)),
+                )
+                errors.append(
+                    "Skipped AILIENANT's own runtime files (they cannot be moved): "
+                    + ", ".join(f"`{p}`" for p in sorted(_internal))
+                )
+
             # 1) Surface the plan. The structured document and its one-line chat
             # pointer ride in a single message so the bubble and the rich Plan
             # panel land on one frontend state transition — two sequential
@@ -651,8 +672,14 @@ class TaskService:
             # Plan mode is the only surface where the rich Plan panel renders; in
             # Ask/Auto the diff is shown inline in the chat, so the pointer text
             # must not send the user to a panel that won't appear.
-            _is_plan = str(final_state.get("session_permission_mode") or "DEFAULT").lower() == "plan"
-            summary = self._format_coding_summary(mission, patches, errors, plan_surface=_is_plan)
+            _raw_mode = str(final_state.get("session_permission_mode") or "DEFAULT").lower()
+            _is_plan = _raw_mode == "plan"
+            # Auto mode applies without an authorize step, so the pointer must not
+            # tell the user to "review and authorize" a diff that never appears.
+            _is_auto = _raw_mode == "auto"
+            summary = self._format_coding_summary(
+                mission, patches, errors, plan_surface=_is_plan, auto_apply=_is_auto
+            )
             gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
             await vfs_manager.broadcast_plan_document(
                 session_id, self._build_plan_payload(mission, summary)
@@ -813,14 +840,21 @@ class TaskService:
 
     @staticmethod
     def _format_coding_summary(
-        mission: Any, patches: Dict[str, str], errors: List[str], *, plan_surface: bool
+        mission: Any,
+        patches: Dict[str, str],
+        errors: List[str],
+        *,
+        plan_surface: bool,
+        auto_apply: bool = False,
     ) -> str:
         """Render the one-line chat pointer for the proposed edits.
 
-        In plan mode the rich Plan panel holds the full breakdown + diffs, so the
-        bubble points there. In Ask/Auto that panel does not render — the diff is
-        shown inline in the chat — so the pointer must orient the user to the
-        in-chat surface instead of a panel that won't appear.
+        Wording follows the session mode so the pointer never over-promises:
+          * Plan  — the rich Plan panel holds the breakdown + diffs; point there.
+          * Auto  — edits apply without an authorize step, so announce the apply
+                    rather than asking the user to review/authorize a diff that
+                    never appears.
+          * Ask   — the diff renders inline in the chat for explicit authorization.
         """
         lines: List[str] = []
         if patches:
@@ -828,6 +862,10 @@ class TaskService:
                 lines.append(
                     f"Drafted a plan with {len(patches)} proposed file change(s) — "
                     "see the Plan panel for the full breakdown and diffs."
+                )
+            elif auto_apply:
+                lines.append(
+                    f"Applying {len(patches)} file change(s) directly…"
                 )
             else:
                 lines.append(

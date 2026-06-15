@@ -47,6 +47,18 @@ def test_summary_ask_mode_points_to_the_inline_diff_not_the_panel() -> None:
     assert "review the diff" in summary
 
 
+def test_summary_auto_mode_announces_apply_not_authorize() -> None:
+    # Auto mode applies without an authorize step, so the pointer must announce the
+    # apply rather than ask the user to review/authorize a diff that never appears.
+    summary = TaskService._format_coding_summary(
+        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [],
+        plan_surface=False, auto_apply=True,
+    )
+    assert "Applying" in summary
+    assert "authorize" not in summary
+    assert "Plan panel" not in summary
+
+
 def test_summary_empty_patches_branch_unchanged() -> None:
     summary = TaskService._format_coding_summary(_mission(), {}, [], plan_surface=True)
     assert "no concrete edits" in summary

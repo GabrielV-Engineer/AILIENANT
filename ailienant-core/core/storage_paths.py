@@ -158,3 +158,38 @@ def ensure_home() -> None:
 # Run the migration at import: this module is imported early (the gateway and
 # janitor both depend on it), well before any store connection is opened.
 ensure_home()
+
+
+# ── AILIENANT-internal runtime artifacts ─────────────────────────────────────
+
+# The workspace-root home directory and the tail-able telemetry sink. Kept in
+# sync with core.telemetry_log._LOG_FILENAME (hardcoded here to avoid importing
+# the logging machinery into this early-loaded leaf module).
+_INTERNAL_HOME_DIR = ".ailienant"
+_TELEMETRY_LOG_BASENAME = ".ailienant_telemetry.log"
+
+
+def is_ailienant_internal_path(path: str) -> bool:
+    """True when ``path`` is one of AILIENANT's own runtime artifacts.
+
+    These — the ``.ailienant/`` workspace home and the continuously-rewritten
+    ``.ailienant_telemetry.log`` (plus its rotated ``.1``/``.2`` siblings) — must
+    never be surfaced to the agent as user content: the log self-mutates mid-task,
+    so any proposed move fails the optimistic-concurrency hash check.
+
+    Format-agnostic by design: it is called both on bare tree filenames and on
+    absolute patch paths (Windows or POSIX separators), so it matches on the
+    basename and on a ``.ailienant`` directory segment rather than a path prefix.
+    """
+    if not path:
+        return False
+    norm = path.replace("\\", "/")
+    base = norm.rsplit("/", 1)[-1]
+    if base == _TELEMETRY_LOG_BASENAME or base.startswith(_TELEMETRY_LOG_BASENAME + "."):
+        return True
+    # The home dir as a path segment (`.ailienant/...`). `AILIENANT.md` inside it is
+    # user-authored, shareable project guidance — intentionally readable/editable, so
+    # it is never treated as internal.
+    if _INTERNAL_HOME_DIR in norm.split("/"):
+        return base != "AILIENANT.md"
+    return False

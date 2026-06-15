@@ -21,6 +21,7 @@ const GITIGNORE_END = '# <<< AILIENANT (managed) <<<';
 const GITIGNORE_BLOCK = [
     GITIGNORE_MARKER,
     '# Runtime and cache artifacts — never commit these.',
+    '.ailienant_telemetry.log*',
     '.ailienant/AGENTS.md',
     '.ailienant/.ailienant.json',
     '.ailienant/dreams/',

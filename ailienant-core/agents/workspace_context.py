@@ -22,6 +22,8 @@ import os
 from pathlib import Path
 from typing import List
 
+from core.storage_paths import is_ailienant_internal_path
+
 logger = logging.getLogger("WORKSPACE_CONTEXT")
 
 # Defaults — overridable per call but every call is still capped.
@@ -62,6 +64,10 @@ def _build_tree(root: Path, max_depth: int, max_files: int) -> List[str]:
         if depth > 0:
             lines.append(f"{indent}{os.path.basename(current)}/")
         for fname in sorted(filenames):
+            # Never expose AILIENANT's own runtime artifacts (telemetry log,
+            # rotated siblings) as organizable user content — they self-mutate.
+            if is_ailienant_internal_path(fname):
+                continue
             if files_seen >= max_files:
                 lines.append(f"{indent}  … (truncated at {max_files} files)")
                 return lines
