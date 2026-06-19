@@ -72,6 +72,7 @@ from core.rules import rule_manager
 from core.token_ledger import token_ledger
 from core.telemetry import recent_oom_events, recent_routing_decisions
 from core.telemetry_log import configure_telemetry_log, shutdown_telemetry_log
+from core.observability import configure_langsmith
 
 # --- IMPORTACIONES FASE 3.5 (Memory Janitor) ---
 from core.janitor import JanitorReport, run_janitor
@@ -183,6 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _wal.start()
     overnight_daemon.start()                 # on-demand memory consolidation (no timer)
     _publish_host_discovery()                # advertise loopback coords for the gateway
+    configure_langsmith()                    # opt-in tracing; no-op unless env-configured
     logger.info("🟢 AILIENANT startup complete (WAL mode active).")
 
     yield  # application handles requests

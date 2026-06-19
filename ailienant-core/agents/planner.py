@@ -27,8 +27,12 @@ from core.resource_manager import ResourceBroker
 from core.memory.context_auditor import (
     audit_task_complexity,
     derive_routing_decision,
+    hardware_reroute,
+    is_fast_track_eligible,
     RiskLevel,
 )
+from core.graph_weight import estimate_graph_weight
+from shared.config import check_cloud_availability
 from brain.retry_policy import PLANNER_MAX_RETRIES
 from tools.planner_tools import BudgetEstimatorTool, ValidateWBSDependenciesTool
 
@@ -248,6 +252,10 @@ async def run_planner_node(
     # 1. CONTEXT EXTRACTION (User Input and IDE)
     # =====================================================================
     user_input = state.get("user_input", "")
+    # Fast Track: a self-contained trivial query needs no workspace retrieval. Decided
+    # once here (pure, no I/O) so the expensive GraphRAG extraction below can be skipped
+    # and routing collapses to LOCAL_SMALL with context sufficient by decree.
+    _fast_track: bool = is_fast_track_eligible(user_input)
     # We safely extract the buffers (it may come as a dict or object depending on the serializer)
     ide_context = state.get("ide_context", {})
 
@@ -355,7 +363,7 @@ async def run_planner_node(
     # Captured boundary-free for the response-cache key (the assembled prompt
     # embeds a random per-turn nonce, so it can never key a stable cache).
     _deep_context_block: str = ""
-    if updated_context_metrics is not None:
+    if updated_context_metrics is not None and not _fast_track:
         try:
             # ── Fast-Boot: skip LanceDB embedding when AGENTS.md is fresh ─
             from core.state_manager import load_state_from_markdown
@@ -448,8 +456,19 @@ async def run_planner_node(
     # ── Context Meter Cascade (Early Exit + Mini-Judge) ──────────────────
     _cascade_routing: str = "LOCAL_SMALL"   # conservative safe default
     _cascade_provider: str = "LOCAL"        # safe default
+    _routing_warning: Optional[str] = None  # set only when hardware degrades routing
 
     try:
+        if _fast_track:
+            # Trivial query: GraphRAG was skipped, so CSS was never recomputed. Pin it
+            # high by decree — a self-contained query has sufficient context — so the
+            # uncomputed CSS=0 cannot trip the red-alert gate and abort the turn.
+            css = 100.0
+            if updated_context_metrics is not None:
+                updated_context_metrics = updated_context_metrics.model_copy(
+                    update={"css_total": 100.0, "is_red_alert": False}
+                )
+
         # Initialize ContextMeter on first invocation (context_metrics absent from state).
         if updated_context_metrics is None:
             # No retrieval ran on this cold path, so recency leans on edit-freshness
@@ -482,7 +501,18 @@ async def run_planner_node(
                 is_red_alert=css < 40.0,
             )
 
-        if updated_context_metrics.is_red_alert:
+        if _fast_track:
+            # Pre-RAG fast path: route LOCAL_SMALL and bypass the Mini-Judge LLM call
+            # entirely — a trivial query should not pay a classification round-trip.
+            _cascade_routing = derive_routing_decision(tci, css, fast_track=True)
+            _cascade_provider = "LOCAL"
+            from core.telemetry_log import log_node_transition
+            log_node_transition(session_id, "planner", "fast_track", "fast_track_pre_rag")
+            logger.info(
+                "Fast Track: trivial query → routing=%s (RAG skipped, Mini-Judge bypassed).",
+                _cascade_routing,
+            )
+        elif updated_context_metrics.is_red_alert:
             # O(1) early exit: context gap → bypass Mini-Judge, force CLOUD.
             _cascade_routing = "CLOUD"
             _cascade_provider = "CLOUD"
@@ -545,6 +575,50 @@ async def run_planner_node(
         )
     except Exception as _cascade_err:
         logger.warning("cascade failed (non-fatal): %s", _cascade_err)
+    # ────────────────────────────────────────────────────────────────────────────────────
+
+    # ── Hardware-aware graceful degradation (post-cascade) ───────────────
+    # A LOCAL_* decision that the host cannot run safely — VRAM below the cloud
+    # floor, or a state predicted to overflow the candidate local context window —
+    # is rerouted to cloud (or, with no cloud configured, degraded to LOCAL_SMALL
+    # with a user-facing warning). Hardware reality overrides the cheap-path
+    # preference. Non-fatal: any failure leaves the cascade decision intact.
+    try:
+        _hw_profile = state.get("hardware_profile")
+        _overflow_risk = False
+        if _cascade_routing.startswith("LOCAL"):
+            _llm_profile = state.get("active_llm_profile")
+            _ctx_window = int(getattr(_llm_profile, "context_window", 0) or 0)
+            if _ctx_window > 0:
+                _weight = estimate_graph_weight(
+                    state, model_context_window=_ctx_window
+                )
+                _overflow_risk = _weight.overflow_risk
+        _new_routing, _new_provider, _hw_warning = hardware_reroute(
+            _cascade_routing,
+            _cascade_provider,
+            _hw_profile,
+            cloud_available=check_cloud_availability(),
+            overflow_risk=_overflow_risk,
+        )
+        if _hw_warning is not None:
+            _cascade_routing, _cascade_provider = _new_routing, _new_provider
+            _routing_warning = _hw_warning
+            if updated_context_metrics is not None:
+                updated_context_metrics = updated_context_metrics.model_copy(
+                    update={"routing_decision": _cascade_routing}
+                )
+            from core.telemetry import log_routing_decision
+            log_routing_decision(
+                session_id,
+                "planner",
+                _cascade_routing,
+                reason="vram_floor_reroute",
+                hw=(getattr(_hw_profile, "gpu_name", None) or None),
+            )
+            logger.warning("Hardware reroute: %s", _hw_warning)
+    except Exception as _hw_err:
+        logger.warning("hardware reroute failed (non-fatal): %s", _hw_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
     await _emit("routing_decision")  # routing/cascade resolved.
@@ -838,6 +912,7 @@ async def run_planner_node(
         "provider": _cascade_provider,
         "planner_retry_count": retry_count,  # 0 on first-shot success
         "budget_estimate": _bud,  # None if loop exhausted; Dict after clean draft
+        "routing_warning": _routing_warning,  # non-None only on hardware degradation
     }
     if state.get("immutable_wbs") is None:
         result["immutable_wbs"] = mission_plan

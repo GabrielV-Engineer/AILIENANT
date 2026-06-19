@@ -295,6 +295,8 @@ Proyect_Ailienant/
 │   │   ├── project_instructions.py # freeform AILIENANT.md project-instructions reader (token-capped)
 │   │   ├── janitor.py           #     orphan-vector GC + MCTS purge
 │   │   ├── token_ledger.py      #     LOCAL/CLOUD token accounting
+│   │   ├── graph_weight.py      #     pre-execution context-OOM predictor (state tokens vs candidate window)
+│   │   ├── observability.py     #     env-gated LangSmith tracing bootstrap (no new sink)
 │   │   ├── deferred_tool_loader.py # eager-vs-deferred tool injection over ToolRAGStore (~10%-budget gate)
 │   │   ├── memory/              #     semantic, trajectory, graphrag_extractor, context_auditor,
 │   │   │                        #     docs_index (product-docs RAG — reserved LanceDB namespace)
@@ -334,6 +336,7 @@ Proyect_Ailienant/
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
 │   └── tests/                   #   pytest suite + per-phase checkpoint gates + chaos crucible
+│       ├── e2e/                 #     real HTTP/WS end-to-end (SSoT prompt→graph→WS→applied patch)
 │       └── benchmark/           #     hermetic gates for the core/benchmark harness (harness itself lives in core/)
 │           ├── test_ablation_verdicts.py  #  5-arm comparable verdicts, provider seam, drain, normalize
 │           ├── test_codegen_pass1.py      #  plain-codegen Pass@1 over the frozen dataset subset

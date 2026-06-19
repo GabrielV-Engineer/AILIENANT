@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.3: Division 8.2 — Resilience & Observability — 2026-06-19
+**Status:** COMPLETE | **Gates:** mypy 0/350 · pytest 1561 passed (2 skipped)
+- Shipped: Fast Track (`is_fast_track_eligible` pre-RAG skip → LOCAL_SMALL, CSS pinned so no false red-alert); env-gated `configure_langsmith()` (no new sink); config-driven VRAM gates + `hardware_reroute` (LOCAL_* below floor / predicted overflow → cloud, else LOCAL_SMALL+warning surfaced via `state["routing_warning"]` + `TelemetryPayload`); `core/graph_weight.py` OOM predictor judged against the candidate local window; chaos stress sim (synthetic profile injection); real HTTP/WS E2E that returns an applied patch.
+- Key decision: E2E seals the cognitive engine at the `alienant_app.astream` boundary (Gateway pattern) and keeps the transport + write-pipeline + ack loop real; sync TestClient on its portal thread avoids the event-loop deadlock.
+- Deferred: DEBT-067 — real RAM/VRAM stress-allocation script (the chaos sim uses synthetic injection).
+
 ## 8.10.2: Integration Wiring Sprint — DEBT-043 / 046 / 042 / 028 — 2026-06-15
 **Status:** COMPLETE | **Gates:** mypy 0/343 · pytest 1527 passed (2 skipped)
 - Shipped: DEBT-043 — `make_get_wbs_status_tool` / `make_emit_hitl_request_tool` + `build_orchestrator_tools(state)` bind the audited orchestrator tools to live graph state. DEBT-046 — `_gated_exec` + `_GatedExecTool` base + `make_coder_execute_tools(state)` thread `session_id`/`session_permission_mode` so EXECUTE-tier coder commands route through `evaluate_action` → `request_human_approval` (trust-once honored; `guard_env_file` excluded). DEBT-042 — `make_brave_search_fn()` lazily resolves the brave-search MCP session and is resilience-wrapped; analyst factories inject it. DEBT-028 — `_run_patch_hooks` runs `pre_patch`/`post_patch` commands through the sandbox adapter around the single `apply_patch_set` commit.

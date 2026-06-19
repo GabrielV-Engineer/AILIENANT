@@ -59,8 +59,12 @@ def _force_one_shot(step: Any) -> str:
     return "coder_agent"
 
 
-def _force_cloud_routing(tci: float, css: float) -> str:
-    """Replacement for derive_routing_decision that always returns the cloud tier."""
+def _force_cloud_routing(tci: float, css: float, fast_track: bool = False) -> str:
+    """Replacement for derive_routing_decision that always returns the cloud tier.
+
+    Mirrors the live signature — including the additive ``fast_track`` flag — so a
+    caller passing that keyword does not raise inside the G4_FORCE_CLOUD arm.
+    """
     return "CLOUD"
 
 

@@ -93,6 +93,10 @@ class TelemetryPayload(BaseModel):
     css_total: float
     task_complexity_index: float
     is_red_alert: bool
+    # Optional human-readable note when the router degraded for hardware reasons
+    # (VRAM floor / predicted context overflow), so the IDE can surface the cause
+    # of a slowdown. Additive and tolerant of absence for older clients.
+    routing_warning: Optional[str] = None
 
 
 class GraphMutationPayload(BaseModel):

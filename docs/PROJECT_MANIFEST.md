@@ -11,15 +11,16 @@
 |---|---|---|---|
 | 8.0 mypy --strict Campaign | ✅ CLOSED | 2026-06-08 | — |
 | 8.1 Operational Stabilization | ✅ CLOSED | 2026-06-08 | — |
-| 8.2 Resilience & Observability | ⬜ PENDING | — | 8.2.1 E2E tests |
+| 8.2 Resilience & Observability | ✅ CLOSED | 2026-06-19 | — |
+| 8.2.6 Cold-Start / Warm-up Mode | ⬜ PENDING | — | 8.2.6.1 corpus-presence routing |
 | 8.3 Benchmark Harness | ✅ CLOSED | 2026-06-13 | — |
 | 8.4 MCP Hardening | ✅ CLOSED | 2026-06-11 | — |
 | 8.5 External Gateway | ✅ CLOSED | 2026-06-13 | — |
-| 8.6 Phase 8 Checkpoint Gate | ⬜ PENDING | — | Awaits 8.2 |
+| 8.6 Phase 8 Checkpoint Gate | ⬜ PENDING | — | 8.6 Phase 8 gate (8.2 done) |
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.3 execute Division 8.2 |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.4 execute Division 8.6 |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -56,6 +57,7 @@
 | 7.18 | Six-Technique Enterprise Hardening Sweep | ✅ |
 | 7.19 | Agentic Execution Cell & Persistent Audit Trail | ✅ |
 | 8 | Testing, Refinement & Graceful Degradation | 🟡 Active |
+| 8.2.6 | Cold-Start / Warm-up Workspace Mode (5 sub-phases) | ⬜ |
 | 8.10 | Debt Reduction + Complete 8.2 + 8.6 (8 sub-phases) | ⬜ |
 | 8.11 | 7-Mode Permission System | ⬜ |
 | 8.12 | Five-Layer Context Compression Pipeline | ⬜ |
@@ -310,21 +312,42 @@
 
 ---
 
-### Division 8.2 — Resilience & Observability ⬜
+### Division 8.2 — Resilience & Observability ✅
 
 > Operational resilience and observability. Gates: 8.2.5 DoD-check (no gate — gate is Division 8.6). Builds on 7.13.3 telemetry channel — no new log sinks.
 
-- [ ] **8.2.1 — End-to-End Tests (`tests/e2e/`)**
+- [x] **8.2.1 — End-to-End Tests (`tests/e2e/`)**
   - Validate the full SSoT stack: Prompt → GraphRAG → LangGraph → MCP → WebSocket Response. **DoD:** one E2E case traverses the compiled graph over real HTTP/WS and returns an applied patch.
-- [ ] **8.2.2 — Fast Track + Observability**
+- [x] **8.2.2 — Fast Track + Observability**
   - Builds on the 7.13.3 telemetry channel (`telemetry_log` / `.ailienant_telemetry.log`); creates NO new sink. The Fast Track is the **TCI-0 pre-RAG path** inside `resolve_provider`/`derive_routing_decision` — not a parallel bypass. LangSmith traces over the existing channel. **DoD:** a trivial query skips GraphRAG via the existing routing engine; zero new sinks.
-- [ ] **8.2.3 — Hardware Fallbacks (Graceful Degradation)**
+- [x] **8.2.3 — Hardware Fallbacks (Graceful Degradation)**
   - VRAM threshold is config, not constant (reconcile `<16GB` vs `<1GB` from Phase 10.3); bypass to Cloud on insufficient VRAM. **DoD:** VRAM below the configured threshold routes to Cloud without crash.
-  - [ ] **8.2.3.1 — Graph Weight Calculator (Context OOM Predictor)**
+  - [x] **8.2.3.1 — Graph Weight Calculator (Context OOM Predictor)**
     - Algorithm that calculates State size (Tokens × Model) *before* executing the prompt — feeds the hardware semaphore from 7.5.3.
-- [ ] **8.2.4 — Hardware Stress Simulator (Chaos Engineering)**
+- [x] **8.2.4 — Hardware Stress Simulator (Chaos Engineering)**
   - Script that artificially consumes RAM/VRAM and validates that `hardware_profiler` triggers real fallbacks (pause indexing, switch to Cloud). **DoD:** synthetic pressure triggers the fallback observable in telemetry.
-- [ ] **8.2.5 — DoD-check** *(not the gate)* — resilience smoke green.
+- [x] **8.2.5 — DoD-check** *(not the gate)* — resilience smoke green.
+
+---
+
+### Division 8.2.6 — Cold-Start / Warm-up Workspace Mode ⬜
+
+> A cold or tiny, unstructured workspace currently behaves as the *most expensive* path: an empty corpus drives `CSS ≤ 20` → RED ALERT → forced CLOUD on every turn (Mini-Judge bypassed), plus a wasted embedding per turn and a full crawl on 1–5 file folders. Root cause is **routing conflating "no corpus to retrieve from" with "rich corpus but low coverage."** This division makes a cold/tiny workspace stay local-first and cheap, and lets a local endpoint dropping mid-session degrade gracefully. It is the **concrete realization of the empty-corpus discrimination that 8.2.2 (Fast Track / TCI-0 pre-RAG path) anticipated** — cross-reference, not duplication; 8.2.2 stays open for its LangSmith/observability scope. **Out of scope (rejected as over-engineering):** per-tier embeddings, a full capability registry (context-window/vision/tools), a persistent capability cache, moving the native-thinking allowlist into the registry.
+
+- [ ] **8.2.6.1 — Corpus-presence probe + empty-vs-low-coverage routing.**
+  [Add `SemanticMemoryManager.is_corpus_empty(workspace_hash)` — a cheap LanceDB table/row-count check, short-TTL cached, invalidated on index write. Extend `derive_routing_decision(tci, css, corpus_empty=False)` (additive optional param) to skip the `css<40 → CLOUD` red-alert floor when the corpus is empty, routing by TCI bands alone. In `agents/planner.py`: `is_red_alert = (css < 40.0) and not corpus_empty`; pass `corpus_empty` into the routing call. CSS stays truthful in telemetry — only the escalation decision changes. **DoD:** empty corpus + `tci<30` → `LOCAL_SMALL`; **regression guard:** non-empty corpus + `css<40` still → CLOUD. Target files: `core/memory/semantic_memory.py`, `core/memory/context_auditor.py`, `agents/planner.py`.]
+
+- [ ] **8.2.6.2 — Skip embedding on an empty store.**
+  [`SemanticMemoryManager.search_with_paths` short-circuits `return (0.0, [], [])` via `is_corpus_empty(workspace_hash)` before calling `_get_embedding`. Behavior is identical (an empty store returns `[]` anyway) but saves one embedding backend call per planner turn on a cold workspace. **DoD:** zero `_get_embedding` calls on a cold workspace (mock-asserted). Target file: `core/memory/semantic_memory.py`.]
+
+- [ ] **8.2.6.3 — Warm-up indexing gate.**
+  [`_WARMUP_MIN_FILES` constant (default 5): in `indexer._run`, when `0 < total < _WARMUP_MIN_FILES`, defer the full crawl, mark complete, and fire the complete event (log warm-up mode). Reactive indexing (7.13.5) still indexes real files on save as the project grows; the next `client_workspace_init` that sees `≥ _WARMUP_MIN_FILES` runs the full crawl. Safe because the crawl is recoverable and reactive coverage backfills. **DoD:** sub-threshold defers; threshold runs. Target file: `core/indexer.py`.]
+
+- [ ] **8.2.6.4 — Mid-session local-endpoint failover.**
+  [In the BYOM call path (`tools/llm_gateway.py`, `acomplete_byom`/`astream_byom`): on a non-OOM `APIConnectionError` where the resolved target `is_local`, resolve the next available target via the existing `model_resolver._directional_order(tier)` and retry **once** (guard with a `_failover_attempted` flag — no loops). If the directional neighbour is Cloud with no key configured, the fallback fails cleanly and the original error surfaces — never swallowed (CLAUDE.md §5.2). Inference retry is idempotent (read-only, no state mutation — §5.3). **DoD:** simulated local drop falls back to the next tier; a second failure re-raises without looping. Target file: `tools/llm_gateway.py`.]
+
+- [ ] **8.2.6.5 — Division 8.2.6 Checkpoint Gate.**
+  [`tests/test_phase8_2_6_warmup_gate.py` (sibling-file convention): `is_corpus_empty` True on a fresh store / False after a write; empty corpus + `tci<30` → LOCAL_SMALL with `is_red_alert` False; the non-empty `css<40` → CLOUD regression guard; `search_with_paths` makes zero embed calls on a cold store; warm-up defer vs run at the threshold; B4 single-retry then re-raise. **DoD:** `mypy .` 0 · `pytest` green. No FE surface, so `npm run compile` is not required (a "Warm-up mode" HUD badge is an optional Phase 11 follow-up). **SCHEMA_EVOLUTION note (record at implementation, not now):** `derive_routing_decision` gains an additive optional `corpus_empty` param (default `False`) — backward compatible, no contract break.]
 
 ---
 
@@ -492,7 +515,7 @@
   - DEBT-028 hooks (MEDIUM): execute stored `pre_patch`/`post_patch` hooks around task mutations in `core/task_service.py`.
   - **DoD:** `mypy .` 0 · `pytest` green.
 
-- [ ] **8.10.3 — Execute Division 8.2: Resilience & Observability**
+- [x] **8.10.3 — Execute Division 8.2: Resilience & Observability**
   Drives all five pending 8.2 sub-tasks:
   - 8.2.1: E2E tests — full SSoT stack over real HTTP/WS returning an applied patch.
   - 8.2.2: Fast Track + LangSmith observability (no new log sink; builds on 7.13.3).

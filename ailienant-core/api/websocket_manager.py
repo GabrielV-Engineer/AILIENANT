@@ -342,6 +342,7 @@ class ConnectionManager:
         css_total: float,
         task_complexity_index: float,
         is_red_alert: bool,
+        routing_warning: Optional[str] = None,
     ) -> None:
         """Push routing telemetry snapshot to the IDE status bar."""
         await self.send_personal_message(
@@ -353,6 +354,7 @@ class ConnectionManager:
                     css_total=css_total,
                     task_complexity_index=task_complexity_index,
                     is_red_alert=is_red_alert,
+                    routing_warning=routing_warning,
                 )
             ),
         )

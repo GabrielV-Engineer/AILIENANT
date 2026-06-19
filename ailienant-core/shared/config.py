@@ -42,6 +42,30 @@ def get_litellm_config() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# VRAM gating thresholds (effective GB) — configurable, not frozen constants.
+# The hardware detector reads the swarm gates from here so an operator can tune
+# the local/cloud frontier per machine without a code change. The cloud floor is
+# the point below which the routing engine bypasses local inference to the cloud
+# (graceful degradation): below it, even a small local model cannot run safely.
+# A malformed override degrades to the documented default rather than raising at
+# import time, since this is a foundational module on every startup path.
+# ---------------------------------------------------------------------------
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+VRAM_MICRO_SWARM_GB: float = _env_float("AILIENANT_VRAM_MICRO_SWARM_GB", 4.0)
+VRAM_FULL_SWARM_GB: float = _env_float("AILIENANT_VRAM_FULL_SWARM_GB", 12.0)
+VRAM_CLOUD_FLOOR_GB: float = _env_float("AILIENANT_VRAM_CLOUD_FLOOR_GB", 4.0)
+
+
+# ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)
 # ---------------------------------------------------------------------------
 # Mirrors the cloud env keys declared in core/config/provider_registry.py

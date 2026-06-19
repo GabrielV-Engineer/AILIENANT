@@ -5,8 +5,19 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-_MICRO_SWARM_MIN_GB = 4.0
-_FULL_SWARM_MIN_GB = 12.0
+from shared.config import VRAM_FULL_SWARM_GB, VRAM_MICRO_SWARM_GB
+
+
+def effective_vram_gb(profile: "HardwareProfile") -> float:
+    """Memory budget that gates swarm mode and cloud-reroute decisions.
+
+    Apple-Silicon unified memory exposes no discrete VRAM, so the available RAM
+    is the working budget; a discrete GPU contributes its free VRAM (total used).
+    Floored at zero so a stale used > total reading can never go negative.
+    """
+    if profile.is_apple_silicon:
+        return profile.ram_available_gb
+    return max(0.0, profile.vram_gb - profile.vram_used_gb)
 
 
 class HardwareProfile(BaseModel):
@@ -43,22 +54,7 @@ class HardwareDetector:
         vram_gb, vram_used_gb, gpu_name = HardwareDetector._detect_vram()
         cpu_name, cpu_cores, cpu_freq_mhz = HardwareDetector._detect_cpu()
 
-        # Effective memory for swarm mode gating:
-        # Apple Silicon unified memory → use RAM available;
-        # discrete GPU → use VRAM free (total − used).
-        if is_apple_silicon:
-            effective_gb = ram_available_gb
-        else:
-            effective_gb = max(0.0, vram_gb - vram_used_gb)
-
-        if effective_gb >= _FULL_SWARM_MIN_GB:
-            suggested_mode = "FULL_SWARM"
-        elif effective_gb >= _MICRO_SWARM_MIN_GB:
-            suggested_mode = "MICRO_SWARM"
-        else:
-            suggested_mode = "SEQUENTIAL"
-
-        return HardwareProfile(
+        profile = HardwareProfile(
             os_type=os_type,
             is_apple_silicon=is_apple_silicon,
             vram_gb=vram_gb,
@@ -69,8 +65,18 @@ class HardwareDetector:
             cpu_name=cpu_name,
             cpu_cores=cpu_cores,
             cpu_freq_mhz=cpu_freq_mhz,
-            suggested_mode=suggested_mode,
         )
+
+        # Swarm-mode gate from the configurable effective-memory thresholds.
+        effective_gb = effective_vram_gb(profile)
+        if effective_gb >= VRAM_FULL_SWARM_GB:
+            profile.suggested_mode = "FULL_SWARM"
+        elif effective_gb >= VRAM_MICRO_SWARM_GB:
+            profile.suggested_mode = "MICRO_SWARM"
+        else:
+            profile.suggested_mode = "SEQUENTIAL"
+
+        return profile
 
     @staticmethod
     def _detect_ram() -> tuple[float, float]:

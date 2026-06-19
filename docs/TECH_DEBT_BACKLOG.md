@@ -65,6 +65,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
 | DEBT-066 | No runtime LLM tool-dispatch loop — registered orchestrator/coder/analyst tools never invoked (factories ready) | HIGH | Cognitive activation | Agency phase | Floating |
+| DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
@@ -179,6 +180,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing structural; needs the dispatch-loop design (deterministic-engine-compatible) — a focused intelligence-phase effort, not a rebuild.
 - **Phase:** later intelligence / Agency phase.
 - **Notes:** logged at 8.10.2 ship per CLAUDE.md §11.3. Supersedes the dispatch half of the former DEBT-043/046/042 and the DEBT-054 channel-wiring concern.
+
+### DEBT-067 [LOW · Floating] — Hardware stress simulator uses synthetic injection, not real allocation
+
+- **Date:** 2026-06-19
+- **Reproduce:** `tests/chaos/test_hardware_stress_sim.py` applies memory pressure by injecting a starved `HardwareProfile` (monkeypatching `HardwareDetector.detect`) rather than actually allocating RAM/VRAM. The graceful-degradation reroute and its telemetry row are validated deterministically, but the detector's real probing path (pynvml / psutil under genuine pressure) is not exercised.
+- **File(s):** `ailienant-core/tests/chaos/test_hardware_stress_sim.py`; a future opt-in `scripts/hardware_stress_sim.py`.
+- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. Real allocation in CI is non-deterministic and can OOM the host; synthetic injection is the CI-safe equivalent for the routing/telemetry contract.
+- **Blocked by:** nothing structural; needs an env-gated standalone script (skipped in CI) that allocates real RAM (and VRAM where a GPU is present).
+- **Phase:** future chaos-engineering slice.
+- **Notes:** logged at 8.10.3 ship per CLAUDE.md §11.3; the user chose synthetic injection for this division.
 
 ### DEBT-044 [MEDIUM · Floating] — ValidateWBSDependenciesTool detects forward-reference ordering violations only, not true DAG cycles
 

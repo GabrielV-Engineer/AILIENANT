@@ -1,24 +1,27 @@
+import logging
 from typing import Dict, Optional, Tuple, Union
 from pydantic import BaseModel
 
-# --- 1. Contratos de Datos (Alineados con SCHEMA_EVOLUTION.MD) ---
+logger = logging.getLogger("ROUTING_ENGINE")
+
+# --- 1. Data contracts (aligned with SCHEMA_EVOLUTION.MD) ---
 
 
 class LLMProfile(BaseModel):
     model_name: str
-    parameters_b: float  # Capacidad cognitiva (ej. 8.0 para Llama-3 8B)
-    context_window: int  # Límite de tokens (ej. 8192)
-    is_local: bool  # True para modelos locales, False para APIs externas
+    parameters_b: float  # Cognitive capacity (e.g. 8.0 for Llama-3 8B)
+    context_window: int  # Token limit (e.g. 8192)
+    is_local: bool  # True for local models, False for external APIs
 
 
 class EnvironmentProfile(BaseModel):
     vram_gb: float
     models: Dict[
         str, LLMProfile
-    ]  # Roles esperados: "LOCAL_SMALL", "LOCAL_BIG", "CLOUD"
+    ]  # Expected roles: "LOCAL_SMALL", "LOCAL_BIG", "CLOUD"
 
 
-# --- 2. El Motor de Decisión Orientado a Objetos ---
+# --- 2. The object-oriented decision engine ---
 
 
 class RoutingEngine:
@@ -30,38 +33,38 @@ class RoutingEngine:
         env: EnvironmentProfile,
     ) -> str:
         """
-        Matriz 3D O(M): Determina el agente/modelo óptimo basándose en:
-        1. CSS (Contexto): ¿Es suficiente la información?
-        2. TCI (Complejidad): ¿Es difícil la tarea?
-        3. Capacidad: ¿El hardware soporta la carga y la ventana de contexto?
+        3D matrix O(M): selects the optimal agent/model based on:
+        1. CSS (context): is the available information sufficient?
+        2. TCI (complexity): how hard is the task?
+        3. Capacity: can the hardware carry the load and the context window?
         """
 
-        # 🔴 DIMENSIÓN 1: Filtro de Seguridad (CSS) -> Strict Local Mode
+        # Dimension 1: safety filter (CSS) -> strict local mode
         if css_score < 40.0:
-            print(
-                "[ALERTA] CSS deficiente. Faltan datos en GraphRAG. Activando Degradación Elegante."
+            logger.warning(
+                "Insufficient CSS — missing GraphRAG context; engaging graceful degradation."
             )
             return "HUMAN_REQUIRED"
 
-        # 🔵 DIMENSIÓN 2: Requerimiento cognitivo (TCI)
-        # TCI > 75: Arquitectura compleja -> requiere > 14B params
-        # TCI > 40: Lógica media -> requiere > 7B params
+        # Dimension 2: cognitive requirement (TCI)
+        # TCI > 75: complex architecture -> requires > 14B params
+        # TCI > 40: medium logic -> requires > 7B params
         min_params = 14.0 if tci_score > 75.0 else (7.0 if tci_score > 40.0 else 1.5)
 
-        # 🟢 DIMENSIÓN 3: Match de Capacidad de Hardware
-        selected_role = "CLOUD"  # Fallback por defecto si los locales fallan
+        # Dimension 3: hardware-capacity match
+        selected_role = "CLOUD"  # default fallback when no local model qualifies
 
         for role, profile in env.models.items():
             if not profile.is_local:
-                continue  # Protegemos la privacidad analizando solo locales primero
+                continue  # privacy-first: evaluate local models before any cloud target
 
-            # Filtro A: Riesgo de OOM (Dejamos 20% de margen para la respuesta)
+            # Filter A: OOM risk (reserve 20% headroom for the response)
             if estimated_tokens > (profile.context_window * 0.8):
                 continue
 
-            # Filtro B: Capacidad Cognitiva Suficiente
+            # Filter B: sufficient cognitive capacity
             if profile.parameters_b >= min_params:
-                # Nos quedamos con el modelo más ligero que pueda hacer el trabajo
+                # Keep the lightest model that can still do the job
                 if (
                     selected_role == "CLOUD"
                     or profile.parameters_b < env.models[selected_role].parameters_b
