@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.5: HIGH-tier architectural debts (DEBT-036 + DEBT-013) — 2026-06-19
+**Status:** COMPLETE | **Gates:** mypy 0/352 · pytest 1586 passed (2 skipped)
+- Shipped: DEBT-036 — additive `CodegenExecutor.run_workspace` moves oracle workspace materialization into the executor; the live path now isolates in the Docker sandbox (corpus+patch under the adapter mount, `python3 __oracle_main__.py` run by `cwd` so no host `sys.path` leaks) while the hermetic gate keeps the host subprocess. DEBT-013 — capability-gated streaming structured output: `astream_byom_thinking` preserves `response_format` for allow-listed providers (`{openai}`), self-healing degrade-once on rejection, sanitizer the universal fallback.
+- Key decision: source the oracle workspace root from `DockerSandboxAdapter.host_workspace` (the single mount authority) rather than oracle-injection; harden the live path with `PYTHONDONTWRITEBYTECODE=1` (no root-owned `__pycache__`) and a strictly lexical pre-I/O path-traversal guard.
+
 ## 8.10.4: Division 8.6 — Phase 8 Checkpoint Gate (ADR-760) — 2026-06-19
 **Status:** COMPLETE | **Gates:** mypy 0/351 · pytest 1574 passed (2 skipped) · npm compile 0
 - Shipped: `tests/test_phase8_checkpoint_gate.py` (13 rows, test-only) re-certifying the cross-division Phase 8 contract against shipped entry points — A: resilience (8.2 fast-track/reroute/OOM-predictor/observability), B: H₁/H₂+Wilson reporting engine (8.3, pure-function), C: MCP fail-closed (8.4 unknown-verb⇒DANGEROUS, PLAN/WRITE deny, AUTO/DANGEROUS still HITL, trust-once tool-scoped), D: gateway HITL-degrade (8.5 deny-report under a 2s deadline, anti-escalation, ledger fail-closed).

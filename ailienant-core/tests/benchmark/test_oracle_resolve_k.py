@@ -195,6 +195,9 @@ def test_safety_blocks_dangerous_import() -> None:
         async def run(self, *_: Any, **__: Any) -> Any:  # pragma: no cover
             raise AssertionError("executor must not be called after a safety block")
 
+        async def run_workspace(self, *_: Any, **__: Any) -> Any:  # pragma: no cover
+            raise AssertionError("executor must not be called after a safety block")
+
     oracle = BenchmarkOracle(corpus_root, _NeverCalledExecutor())  # type: ignore[arg-type]
     verdict = asyncio.run(oracle.run_oracle(problem, evil_patch))
     assert verdict.passed is False
@@ -287,3 +290,96 @@ def test_corpus_loads_pinned_sha_and_three_problems() -> None:
         seed_rel = p.dependency_seed.removeprefix("src/")
         seed_path = corpus_root / "src" / seed_rel
         assert seed_path.exists(), f"{p.dependency_seed!r} not found in corpus"
+
+
+# --------------------------------------------------------------------------- #
+# Sandbox isolation (DEBT-036): the live oracle path routes through the         #
+# sandbox adapter — the corpus snapshot lands inside the container's mount and  #
+# the program carries no host-visible sys.path.                                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_run_workspace_routes_through_sandbox_mount(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    from core.benchmark.executors import SandboxCodegenExecutor
+    from core.sandbox import DockerSandboxAdapter, SandboxResult
+
+    captured: Dict[str, Any] = {}
+
+    class _FakeDockerAdapter(DockerSandboxAdapter):
+        async def execute(
+            self,
+            command: str,
+            *,
+            timeout_s: float,
+            cwd: str,
+            env_whitelist: Dict[str, str],
+            session_id: Any = None,
+        ) -> SandboxResult:
+            # Inspect the materialized workspace while it still exists (the
+            # executor rmtrees it after this returns).
+            work = Path(cwd)
+            captured.update(
+                command=command,
+                cwd=cwd,
+                env=dict(env_whitelist),
+                has_entry=(work / "__oracle_main__.py").is_file(),
+                has_corpus=(work / "src").is_dir(),
+                has_patch=(work / "src" / "math_utils.py").is_file(),
+            )
+            return SandboxResult(exit_code=0, stdout="", stderr="")
+
+    adapter = _FakeDockerAdapter(host_workspace=str(tmp_path))
+
+    async def _noop_resolve() -> None:
+        return None
+
+    monkeypatch.setattr("core.sandbox.resolve_default_adapter", _noop_resolve)
+    monkeypatch.setattr("core.sandbox.get_active_tier", lambda: "DOCKER")
+    monkeypatch.setattr("core.sandbox.get_active_adapter", lambda: adapter)
+
+    corpus_root, problems = load_corpus("v1")
+    oracle = BenchmarkOracle(corpus_root, SandboxCodegenExecutor())
+    problem = problems[0]
+    patch = {"src/math_utils.py": "def clamp(v, lo, hi):\n    return v\n"}
+
+    verdict = asyncio.run(oracle.run_oracle(problem, patch))
+
+    assert verdict.passed is True
+    # No host-visible absolute path: the entry script is run by bare name.
+    assert captured["command"] == "python3 __oracle_main__.py"
+    # Materialized under the adapter's mount root (container-visible).
+    assert Path(captured["cwd"]).is_relative_to(tmp_path)
+    assert captured["has_entry"] and captured["has_corpus"] and captured["has_patch"]
+    # Critique #1: bytecode disabled so the root container leaves no root-owned
+    # __pycache__ the host could not delete.
+    assert captured["env"].get("PYTHONDONTWRITEBYTECODE") == "1"
+
+
+# --------------------------------------------------------------------------- #
+# Lexical path-traversal guard (DEBT-036, architect critique #3)                #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["../escape.py", "/abs.py", "C:\\drive.py", "a\\..\\b.py", "..", ""],
+)
+def test_safe_relative_rejects_traversal_lexically(bad: str) -> None:
+    from core.benchmark.executors import WorkspaceError, _safe_relative
+
+    with pytest.raises(WorkspaceError):
+        _safe_relative(bad)
+
+
+def test_run_workspace_unsafe_patch_yields_failed_verdict() -> None:
+    corpus_root, problems = load_corpus("v1")
+    oracle = _make_oracle(corpus_root)
+    # Passes the AST safety check (no blocked import) but escapes the workspace.
+    verdict = asyncio.run(
+        oracle.run_oracle(problems[0], {"../escape.py": "value = 1\n"})
+    )
+    assert verdict.passed is False

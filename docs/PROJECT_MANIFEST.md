@@ -20,7 +20,7 @@
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.5 HIGH-tier debts |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.6 MEDIUM perf/correctness debts |
 | 8.10.8 Tool Dispatch Activation | ⬜ PENDING | — | DEBT-066 runtime dispatch loop |
 | 8.10.9 Infrastructure Quality | ⬜ PENDING | — | DEBT-033 key_ref · DEBT-011 test |
 | 8.10.10 WBS Contract Correctness | ⬜ PENDING | — | DEBT-044 DAG cycles (pre-8.11) |
@@ -530,7 +530,7 @@
 - [x] **8.10.4 — Execute Division 8.6: Phase 8 Checkpoint Gate**
   Sibling gate re-certifying H₁/H₂ harness, MCP privilege fail-closed, HITL-degrade, and resilience. **DoD:** `pytest` green · `mypy .` 0 · gate green · `npm run compile` 0.
 
-- [ ] **8.10.5 — HIGH-tier architectural debts**
+- [x] **8.10.5 — HIGH-tier architectural debts**
   - DEBT-036 (HIGH): route `BenchmarkOracle` code execution through the sandbox adapter (Docker tier) for corpus isolation; replace `SubprocessPythonExecutor` direct host execution.
   - DEBT-013 (HIGH): add a gateway streaming branch that keeps `response_format` for providers supporting streaming structured output (OpenAI style); fall back to ADR-742 adaptive sanitizer only where unsupported.
   - **DoD:** `mypy .` 0 · `pytest` green.

@@ -212,6 +212,19 @@ class DockerSandboxAdapter(SandboxAdapter):
         self._lifecycle_lock: asyncio.Lock = asyncio.Lock()
         self._host_workspace: str = host_workspace or os.getcwd()
 
+    @property
+    def host_workspace(self) -> str:
+        """The host directory bind-mounted read-only at ``/workspace``.
+
+        The single authority for the mount root: any host path written under
+        this directory is visible inside the container and is translated into
+        ``/workspace/…`` by :meth:`_translate_cwd`. Consumers that must place a
+        file where the container can read it (e.g. the multi-file benchmark
+        oracle) materialize under this root rather than re-deriving the working
+        directory, which could drift from what was actually mounted.
+        """
+        return self._host_workspace
+
     # ── public API ──────────────────────────────────────────────────────────
 
     async def execute(

@@ -296,6 +296,28 @@ def _supports_native_thinking(model_name: str) -> bool:
     lowered = (model_name or "").lower()
     return any(hint in lowered for hint in _NATIVE_THINKING_MODEL_HINTS)
 
+
+# Streaming structured-output capability gate.
+# Providers that honour ``response_format`` *while streaming* (OpenAI-style JSON
+# mode on a streamed completion). Default-deny: anything not listed keeps the
+# prompt-enforced + sanitizer path, so a provider that would reject the param on
+# a stream (Anthropic has no response_format; some local/reasoner builds 400 on
+# it) is never sent it. This is the single tuning point — add a provider only
+# once its streaming JSON mode is verified.
+_STREAMING_STRUCTURED_PROVIDERS: frozenset[str] = frozenset({"openai"})
+
+
+def _supports_streaming_structured_output(target: Any) -> bool:
+    """True when the resolved target's provider streams ``response_format``.
+
+    Conservative by construction (see ``_STREAMING_STRUCTURED_PROVIDERS``): a
+    false negative simply keeps the existing sanitizer fallback (zero
+    regression); we never gamble a streamed structured call on an unverified
+    provider.
+    """
+    provider = getattr(target, "provider", "") or ""
+    return provider.lower() in _STREAMING_STRUCTURED_PROVIDERS
+
 # -------------------------------------------------------------------------
 # Heartbeat cache: {url: (is_alive, expiry_monotonic_time)}
 # Avoids hammering endpoints on every routing decision.
@@ -586,6 +608,7 @@ class LLMGateway:
         _alias_tier = model.split("/", 1)[1] if model.startswith("ailienant/") else "medium"
         tier = _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
 
+        target: Any = None
         want_stream = on_thinking is not None and enable_thinking
         if want_stream:
             from core.config.model_resolver import get_chat_target
@@ -608,9 +631,18 @@ class LLMGateway:
         # Streaming branch. on_thinking is guaranteed non-None by want_stream.
         if on_thinking is None:
             return ""  # unreachable by construction
+        assert target is not None  # narrowed: want_stream required a resolved target
         sink: Callable[[str], Awaitable[None]] = on_thinking
         buffer: List[str] = []
         sink_live = True
+        # Preserve provider-enforced JSON mode on the stream where the provider
+        # supports it; elsewhere it stays None and the sanitizer below recovers
+        # the JSON (DEBT-013).
+        stream_response_format = (
+            response_format
+            if response_format and _supports_streaming_structured_output(target)
+            else None
+        )
         async for delta in LLMGateway.astream_byom_thinking(
             messages,
             tier=tier,
@@ -620,6 +652,7 @@ class LLMGateway:
             session_id=session_id,
             enable_thinking=True,
             thinking_budget_tokens=thinking_budget_tokens,
+            response_format=stream_response_format,
         ):
             if delta.kind == "thinking":
                 # Best-effort: a dead sink must never abort generation.
@@ -807,6 +840,7 @@ class LLMGateway:
         *,
         enable_thinking: bool = True,
         thinking_budget_tokens: int = 4096,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator["StreamDelta"]:
         """Thinking-aware streaming completion against the active BYOM chat model.
 
@@ -844,6 +878,10 @@ class LLMGateway:
             # LiteLLM normalises Anthropic's ``thinking`` blocks (and open
             # reasoning models' equivalents) into ``delta.reasoning_content``.
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget_tokens}
+        # Provider-enforced JSON mode on the stream, only when the caller asked
+        # for it and the model has not already proven it rejects the param.
+        if response_format and target.model not in _RESPONSE_FORMAT_UNSUPPORTED:
+            kwargs["response_format"] = response_format
         logger.debug(
             "BYOM astream(thinking=%s) — model=%s base=%s trace=%s",
             thinking_on, target.model, target.api_base, trace_id,
@@ -851,7 +889,22 @@ class LLMGateway:
         prompt_tokens: int = 0
         completion_tokens: int = 0
         try:
-            response = await litellm.acompletion(**kwargs)
+            try:
+                response = await litellm.acompletion(**kwargs)
+            except Exception as exc:
+                # Mirror ainvoke's self-healing: a backend that rejects
+                # response_format is memoed and retried once without it, before
+                # any chunk is consumed (so a stream is never restarted mid-flight).
+                if "response_format" in kwargs and _is_response_format_error(exc):
+                    logger.warning(
+                        "Backend rejected streamed response_format; stripping + retrying once [trace=%s]",
+                        trace_id,
+                    )
+                    _remember_rf_unsupported(kwargs["model"])
+                    kwargs.pop("response_format", None)
+                    response = await litellm.acompletion(**kwargs)
+                else:
+                    raise
             async for chunk in response:
                 usage = getattr(chunk, "usage", None)
                 if usage is not None:

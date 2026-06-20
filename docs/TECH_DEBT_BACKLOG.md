@@ -59,8 +59,6 @@ Decision    Not a defect — see [DECISION] tier.
 
 | ID | Title (short) | Tier | Type | Target Phase | Schedule |
 |---|---|---|---|---|---|
-| DEBT-036 | Oracle executes on host (no sandbox) | HIGH | Security/Safety | 8.10.5 | Locked |
-| DEBT-013 | Thinking-stream drops JSON-mode | HIGH | Reliability | 8.10.5 | Locked |
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
@@ -102,38 +100,36 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
-### DEBT-036 [HIGH · Locked] — BenchmarkOracle executes candidate patches on the host (no sandbox isolation)
+### DEBT-036 [HIGH · RESOLVED 2026-06-19, 8.10.5] — BenchmarkOracle executed candidate patches on the host (no sandbox isolation)
 
-- **Date:** 2026-06-12
-- **Reproduce:** call `BenchmarkOracle.run_oracle(problem, candidate_patch)` with live LLM output — the patched files are written to a host `TemporaryDirectory` and run via `SubprocessPythonExecutor` (inherits the parent process environment).
-- **File(s):** `ailienant-core/tests/benchmark/oracle.py` (`BenchmarkOracle.run_oracle`, `SubprocessPythonExecutor`).
-- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The hermetic gate uses trusted golden/wrong fixtures; the AST pre-flight (`_check_patch_safety`) limits the blast radius for this MVP path. A fully isolated oracle (Docker sandbox + read-only corpus mount) is the Enterprise target.
-- **Blocked by:** requires a sandbox tier that allows writing the corpus snapshot into a container-local temp dir (the current `SandboxCodegenExecutor` writes to the Docker ro mount's host side, which is sufficient for codegen but not for multi-file oracle isolation).
-- **Phase:** standalone benchmark-runtime hardening slice (before the definitive ablation sweep, post-8.5/8.8 when the system is feature-complete).
-- **Notes:** logged at 8.3.2 ship per CLAUDE.md §7.3. AST pre-flight (`_BLOCKED_IMPORTS` + Level-1 reflexivity blocklist) is the in-place mitigation.
+- **Date:** 2026-06-12 · **Resolved:** 2026-06-19 (8.10.5)
+- **Was:** `BenchmarkOracle.run_oracle` assembled the workspace in a host `TemporaryDirectory` and emitted
+  `sys.path.insert(0, <host tmpdir>)`; that host path is invisible inside the Docker container, so the
+  multi-file oracle never actually isolated live model output.
+- **Resolution:** workspace materialization moved into the executor via an additive `CodegenExecutor.run_workspace`.
+  `SandboxCodegenExecutor.run_workspace` materializes the corpus snapshot + patch under the active
+  `DockerSandboxAdapter.host_workspace` mount (the single mount authority) and runs `python3 __oracle_main__.py`
+  with `cwd` = that dir, so Python puts the dir on `sys.path[0]` (no absolute path embedded; host/container
+  parity). Isolation: ro mount, `--network none`, env-whitelist `{PYTHONDONTWRITEBYTECODE=1}` (no root-owned
+  `__pycache__`), `rmtree(ignore_errors=True)` cleanup. The hermetic gate keeps `SubprocessPythonExecutor`
+  (trusted fixtures). Patch path-traversal is a strictly lexical pre-I/O guard (`_safe_relative`).
+- **Files:** `core/benchmark/executors.py`, `core/benchmark/oracle.py`, `core/sandbox.py`.
+- **Verified:** `tests/benchmark/test_oracle_resolve_k.py` (sandbox-routing + lexical-guard rows); mypy 0; full suite green.
 
-### DEBT-013 [HIGH · Floating] — Thinking-stream coding turns drop hard JSON-mode (`response_format`)
+### DEBT-013 [HIGH · RESOLVED 2026-06-19, 8.10.5] — Thinking-stream coding turns dropped hard JSON-mode (`response_format`)
 
-- **Date:** 2026-06-05
-- **Reproduce:** N/A (reliability trade-off, not an error). On a reasoning-capable model with native
-  thinking ON, `acomplete_with_thinking` takes the streaming branch, which **cannot** pass
-  `response_format={"type":"json_object"}` (no `astream*` gateway method supports it). The planner/coder
-  answer is therefore prompt-enforced JSON recovered via `_sanitize_json_response`, not provider-enforced
-  JSON-mode.
-- **File(s):** `ailienant-core/tools/llm_gateway.py` (`acomplete_with_thinking` streaming branch),
-  `ailienant-core/agents/coder.py` / `agents/planner.py` (callers).
-- **Error:** Not a defect — a **declared trade-off per CLAUDE.md §7.** Blast-radius is bounded: only
-  thinking-capable + thinking-ON turns take this path; every other turn keeps the exact
-  `ainvoke(response_format=json)` call (zero regression). Residual risk: marginally higher parse-failure
-  odds on those turns, already absorbed as **soft errors** (planner actor-critic retry; coder
-  step-failed → `error_correction`), and the fence-strip + the 7.18.2/ADR-742 adaptive sanitizer
-  recover the JSON.
-- **Blocked by:** Nothing technical — a deliberate scope cut to keep 7.17.0-B low-risk.
-- **Phase:** Spawned by **7.17.0-B (ADR-739)**. Enterprise refactor candidate: a gateway path that
-  streams reasoning **and** keeps `response_format` for providers that support streaming structured
-  outputs (e.g. OpenAI), falling back to the sanitizer only where unsupported.
-- **Notes:** Re-open if telemetry shows a material rise in planner/coder parse failures on reasoning
-  models; otherwise the soft-error handling makes this low-priority.
+- **Date:** 2026-06-05 · **Resolved:** 2026-06-19 (8.10.5)
+- **Was:** on a native-thinking model with thinking ON, `acomplete_with_thinking` took the streaming branch,
+  which could not pass `response_format`; planner/coder JSON was only prompt-enforced + sanitizer-recovered.
+- **Resolution:** `astream_byom_thinking` gained an optional `response_format`; `acomplete_with_thinking`
+  forwards it on the streaming branch only when `_supports_streaming_structured_output(target)` (default-deny
+  provider allowlist, currently `{openai}`). A backend that rejects the param degrades once — memoized in
+  `_RESPONSE_FORMAT_UNSUPPORTED` and retried without it before any chunk is consumed (mirrors `ainvoke`). The
+  ADR-742 sanitizer stays the universal fallback, so incapable providers (Anthropic, local reasoners) are
+  unchanged. The `{openai}` frozenset is the single tuning point as providers are verified.
+- **Files:** `ailienant-core/tools/llm_gateway.py`.
+- **Verified:** `tests/test_streaming_structured_output.py` (forward / drop+sanitize / degrade+memo / pre-strip);
+  existing 7.17 streaming + response-format suites green; mypy 0.
 
 ---
 

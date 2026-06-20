@@ -16,8 +16,6 @@ import ast
 import asyncio
 import json
 import re
-import shutil
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -309,11 +307,12 @@ class BenchmarkOracle:
     ) -> Verdict:
         """Apply ``candidate_patch`` and return the verdict.
 
-        Steps: (1) AST safety pre-flight, (2) create temp dir and copy corpus
-        src, (3) apply patch with path-traversal guard, (4) assemble runnable
-        test program, (5) execute and return Verdict.
+        Steps: (1) AST safety pre-flight, (2) delegate to the executor, which
+        materializes the corpus snapshot plus the patch inside its own isolation
+        envelope (a Docker container for live output, a reaped host subprocess
+        for the trusted hermetic gate) and runs the problem's test program.
         """
-        # 1. Safety pre-flight — no temp files are written on rejection.
+        # 1. Safety pre-flight — no workspace is materialized on rejection.
         for rel_path, content in candidate_patch.items():
             reason = _check_patch_safety(content, rel_path)
             if reason is not None:
@@ -323,39 +322,15 @@ class BenchmarkOracle:
                     failures=(f"[safety_blocked: {rel_path}: {reason}]",),
                 )
 
-        with tempfile.TemporaryDirectory() as _tmpdir:
-            tmpdir = Path(_tmpdir)
-
-            # 2. Copy corpus src into isolated temp workspace (non-blocking).
-            await asyncio.to_thread(
-                shutil.copytree,
-                str(self._corpus_root / "src"),
-                str(tmpdir / "src"),
-            )
-
-            # 3. Overlay patch files with path-traversal guard.
-            for rel_path, content in candidate_patch.items():
-                target = tmpdir / rel_path
-                try:
-                    target.resolve().relative_to(tmpdir.resolve())
-                except ValueError:
-                    return Verdict(
-                        task_id=problem.task_id,
-                        passed=False,
-                        failures=(f"[path_traversal: {rel_path!r}]",),
-                    )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
-
-            # 4. Assemble a standalone runnable program.
-            program = (
-                f"import sys\n"
-                f"sys.path.insert(0, {repr(str(tmpdir))})\n\n"
-                f"{problem.test_body}\n"
-            )
-
-            # 5. Execute.
-            outcome = await self._executor.run(program, Language.PYTHON, timeout_s)
+        # 2. Execute inside the isolation envelope. The executor owns workspace
+        # materialization, the lexical path-traversal guard, and cleanup.
+        outcome = await self._executor.run_workspace(
+            corpus_src=self._corpus_root / "src",
+            patch=candidate_patch,
+            test_body=problem.test_body,
+            language=Language.PYTHON,
+            timeout_s=timeout_s,
+        )
 
         failures = tuple(
             line
