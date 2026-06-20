@@ -22,7 +22,7 @@
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
 | 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.9 infrastructure quality |
 | 8.10.8 Tool Dispatch Activation | ✅ CLOSED | 2026-06-20 | — (substrate live on Analyst; remainder → 8.10.11) |
-| 8.10.9 Infrastructure Quality | ⬜ PENDING | — | DEBT-033 key_ref · DEBT-011 test |
+| 8.10.9 Infrastructure Quality | ✅ CLOSED | 2026-06-20 | — (DEBT-011/033/037 retired) |
 | 8.10.10 WBS Contract Correctness | ⬜ PENDING | — | DEBT-044 DAG cycles (pre-8.11) |
 | 8.10.11 Remaining-role Dispatch Wiring | ⬜ PENDING | — | DEBT-068 Coder/Planner/Orchestrator + HITL |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
@@ -554,7 +554,7 @@
   - DEBT-032 (LOW): Coder-side skill injection. `build_skill_directive_block` was wired to the planner in 8.4.5 but never extended to the coder path. Inject the active skill directive into `build_coder_system_prompt` from `core/skill_resolver.py` when a skill is active in state. *DoD:* a coder turn with an active skill includes the skill directive in the resolved prompt. Target files: `agents/coder.py`, `core/skill_resolver.py`.
   - **DoD:** `mypy .` 0 · `pytest` green; dispatch loop integration test green; coder skill directive assertion green.
 
-- [ ] **8.10.9 — Infrastructure & UX Quality**
+- [x] **8.10.9 — Infrastructure & UX Quality**
   Three floating debts tagged "Phase 8 slice" or "post-8.5/8.8" that have no blocker and clear DoDs.
   - DEBT-033 (LOW): `config.json` key_ref round-trip UX. On a fresh machine, importing a `config.json` with `key_ref` entries has no UI prompt to supply the missing secret — the import silently drops the credential. Add an import-time detection pass in `api/byom.py` or the `POST /mcp/import` endpoint that enumerates unresolved `key_ref` entries and returns a structured `missing_keys` list; the frontend surfaces a credential-entry dialog per missing ref before confirming the import. *DoD:* importing a config with an unresolved key_ref triggers the credential dialog rather than silently dropping it. Target files: `api/byom.py`, `core/mcp_config.py`, BYOM frontend panel.
   - DEBT-011 (LOW): tracemalloc heap-baseline test structurally broken. The test ceiling was set at 64 KB but real allocations are 212–237 KB; the test always fails or is skipped. Fix: replace the fixed ceiling with a calibrated baseline (measure the actual allocation in a warmup run, add a 20% headroom constant `_HEAP_HEADROOM_RATIO = 1.20`). *DoD:* `pytest tests/test_memory_baseline.py` (or equivalent) exits green with no skip markers. Target file: the specific tracemalloc test file under `tests/`.

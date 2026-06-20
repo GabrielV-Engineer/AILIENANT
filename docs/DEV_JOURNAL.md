@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.9: Infrastructure & UX quality — DEBT-011 · DEBT-037 · DEBT-033 — 2026-06-20
+**Status:** COMPLETE | **Gates:** mypy 0/356 · pytest 1622 passed (2 skipped) · pyright 0 (changed files) · tsc 0 · eslint 0 (changed files)
+- Shipped: DEBT-011 — heap-lifecycle test now self-calibrates (two-pass residual + `_HEAP_HEADROOM_RATIO`) instead of a fixed, unportable byte ceiling; green in isolation and in-suite. DEBT-037 — ablation retrieval degradation moved from `mock.patch` of internal class methods to dependency-injected callables (`graph_fn`/`planner_retrieval_fn`/`coder_retrieval_fn`) folded into `config["configurable"]`; agents fall back to their real methods when absent, so production is unchanged. DEBT-033 — extension gains an MCP config-import view with a credential dialog driven by the backend `needs_secret` signal (reuses the registry credential-store path).
+- Key decision: retrieval DI is keyed off the existing config seam the runner already uses, so the deterministic core gains an explicit injection point with zero behavioral change rather than a benchmark-only patch.
+- Deferred: none.
+
 ## 8.10.8: Runtime tool-dispatch activation (substrate + Analyst) + DEBT-032 — 2026-06-20
 **Status:** COMPLETE | **Gates:** mypy 0/356 · pytest 1622 passed (2 skipped) · ruff clean · pyright 0 (changed files)
 - Shipped: DEBT-066 — `core/tool_dispatch.py` (role-agnostic `ToolDispatcher`, `parse_tool_call_envelope`, `make_gateway_reasoner`) generalizing the agentic-cell prompt-enforced-JSON pattern; gated through `evaluate_action`; self-correcting (bad JSON / unknown tool → feedback turn, never a crash). Wired live on the Analyst via `build_analyst_tools(state)` + a bounded pre-grill loop in `run_analyst_node`; executed calls recorded on the additive `tool_dispatch_trace` channel. DEBT-032 — coder mirrors the planner skill-directive seam.

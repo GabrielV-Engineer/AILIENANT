@@ -7,7 +7,7 @@
 # retrieval (no LangChain bind_tools / ReAct) + single LLMGateway.ainvoke call.
 #
 # Glob/Grep tooling intentionally NOT bound here — GraphRAG already covers the
-# retrieval intent. If a future sub-phase surfaces a concrete gap, this is where
+# retrieval intent. If a future need surfaces a concrete gap, this is where
 # `make_glob_tool` / `make_grep_tool` factories would be wired in.
 
 from __future__ import annotations
@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from langchain_core.runnables import RunnableConfig
 
 from agents.prompts import build_safe_prompt
 from shared.config import MODEL_MEDIUM
@@ -43,7 +45,9 @@ _SKELETON_INSTRUCTION: str = (
 )
 
 
-async def run_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
+async def run_researcher_node(
+    state: Dict[str, Any], config: Optional[RunnableConfig] = None
+) -> Dict[str, Any]:
     """Read-only retrieval node — produces ``state["researcher_skeleton"]``.
 
     Decision tree:
@@ -65,6 +69,11 @@ async def run_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
     workspace_root: str = state.get("workspace_root") or ""
     project_id: str = state.get("project_id") or ""
     explicit_mentions: List[str] = state.get("explicit_mentions") or []
+    # Retrieval seams are injectable so a benchmark can degrade them explicitly;
+    # production omits these keys and the real bound methods below run unchanged.
+    _configurable = (config or {}).get("configurable", {})
+    _retrieval_fn = _configurable.get("planner_retrieval_fn")
+    _graph_fn = _configurable.get("graph_fn")
 
     # ── DEBUG bypass — mirrors planner.DEBUG_MODE for CI / UI smoke tests ──
     if DEBUG_MODE:
@@ -108,12 +117,14 @@ async def run_researcher_node(state: Dict[str, Any]) -> Dict[str, Any]:
             from core.memory.semantic_memory import SemanticMemoryManager
 
             sem = SemanticMemoryManager()
-            _score, top_k, _indexed_at = await sem.search_with_paths(
+            _search_with_paths = _retrieval_fn or sem.search_with_paths
+            _score, top_k, _indexed_at = await _search_with_paths(
                 user_input=user_input,
                 workspace_hash=project_id,
             )
             extractor = GraphRAGDynamicExtractor(project_id=project_id)
-            deep = await extractor.deep_parse(
+            _deep_parse = _graph_fn or extractor.deep_parse
+            deep = await _deep_parse(
                 seed_files=top_k,
                 workspace_root=workspace_root,
             )

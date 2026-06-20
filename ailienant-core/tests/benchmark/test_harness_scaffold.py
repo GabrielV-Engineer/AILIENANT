@@ -2,8 +2,9 @@
 
 Two layers keep the assertions honest:
 
-* toggle correctness exercises the *real* seams an arm patches (and proves they
-  restore on exit), independent of the pipeline, and
+* toggle correctness exercises the routing seams an arm patches (and proves they
+  restore on exit) and the retrieval overrides an arm injects, independent of the
+  pipeline, and
 * runner plumbing drives the runner with a lightweight model-layer stub so the
   real token-delta / unique-session / canonical-row logic runs without a model.
 
@@ -12,18 +13,21 @@ The runner stays real for a manual live smoke; only the model layer is stubbed.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Mapping
 
 import pytest
 
 import brain.engine as engine
 import core.telemetry as telemetry
-from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
-from core.memory.semantic_memory import SemanticMemoryManager
 from core.telemetry import log_routing_decision
 from core.token_ledger import token_ledger
 
-from core.benchmark.arms import ARM_TOGGLE_INVENTORY, AblationArm, apply_arm
+from core.benchmark.arms import (
+    ARM_TOGGLE_INVENTORY,
+    AblationArm,
+    apply_arm,
+    retrieval_overrides_for,
+)
 from core.benchmark.hygiene import BenchmarkAbort
 from core.benchmark.problems import DUMMY_PROBLEM, BenchmarkProblem
 from core.benchmark.runner import BenchmarkRunner
@@ -53,28 +57,24 @@ def test_g3_forces_one_shot_and_restores() -> None:
     assert engine._coder_target(step) == "agentic_cell"  # restored
 
 
-def test_g2_suppresses_graph_keeps_vector() -> None:
-    orig_graph = GraphRAGDynamicExtractor.deep_parse
-    orig_planner_vec = SemanticMemoryManager.search_with_paths
-    orig_coder_vec = SemanticMemoryManager.search_snippets
+def test_g2_injects_only_graph_override() -> None:
+    """G2 degrades the graph via an injected override and leaves the vector seams live.
+
+    Retrieval degradation is dependency-injected, not patched: the contract is the
+    set of override keys, and apply_arm touches no retrieval symbol.
+    """
+    assert set(retrieval_overrides_for(AblationArm.G2)) == {"graph_fn"}
     with apply_arm(AblationArm.G2):
-        assert GraphRAGDynamicExtractor.deep_parse is not orig_graph
-        assert SemanticMemoryManager.search_with_paths is orig_planner_vec
-        assert SemanticMemoryManager.search_snippets is orig_coder_vec
-    assert GraphRAGDynamicExtractor.deep_parse is orig_graph
+        pass  # no routing patch for a retrieval arm; nothing to assert on a symbol
 
 
-def test_g1_suppresses_all_retrieval_and_restores() -> None:
-    orig_graph = GraphRAGDynamicExtractor.deep_parse
-    orig_planner_vec = SemanticMemoryManager.search_with_paths
-    orig_coder_vec = SemanticMemoryManager.search_snippets
-    with apply_arm(AblationArm.G1):
-        assert GraphRAGDynamicExtractor.deep_parse is not orig_graph
-        assert SemanticMemoryManager.search_with_paths is not orig_planner_vec
-        assert SemanticMemoryManager.search_snippets is not orig_coder_vec
-    assert GraphRAGDynamicExtractor.deep_parse is orig_graph
-    assert SemanticMemoryManager.search_with_paths is orig_planner_vec
-    assert SemanticMemoryManager.search_snippets is orig_coder_vec
+def test_g1_injects_all_retrieval_overrides() -> None:
+    """G1 injects overrides for the graph and both vector seams."""
+    assert set(retrieval_overrides_for(AblationArm.G1)) == {
+        "graph_fn",
+        "planner_retrieval_fn",
+        "coder_retrieval_fn",
+    }
 
 
 def test_inventory_covers_the_four_groups() -> None:
@@ -92,7 +92,9 @@ async def _ok_preflight(self: Any) -> None:
 def _make_stub(tokens_per_call: int = 100) -> Any:
     """A model-layer stub: records token usage and emits one scored routing row."""
 
-    async def stub(session_id: str, problem: BenchmarkProblem) -> Dict[str, str]:
+    async def stub(
+        session_id: str, problem: BenchmarkProblem, _overrides: Mapping[str, Any]
+    ) -> Dict[str, str]:
         token_ledger.record_local(prompt=tokens_per_call, completion=tokens_per_call)
         log_routing_decision(
             session_id, "planner", "coder", "stub route", css=42.0, tci=63.0

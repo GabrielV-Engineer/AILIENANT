@@ -10,15 +10,15 @@ host. The gate proves:
 * project_id is identical across index and payload (benchmark-invalidating if wrong).
 * Background tasks are drained after a run without RuntimeError.
 * Absolute-path keys are relativized; escaping keys are dropped (not a crash).
-* VectorOnlyRetrievalStrategy patches only the graph seam, leaving vector live.
-* ZeroShotRetrievalStrategy patches all three retrieval seams.
+* VectorOnlyRetrievalStrategy injects only the graph override, leaving vector live.
+* ZeroShotRetrievalStrategy injects overrides for all three retrieval seams.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Mapping
 
 import pytest
 
@@ -27,14 +27,7 @@ import core.telemetry as telemetry
 from core.telemetry import log_routing_decision
 from core.token_ledger import token_ledger
 
-from core.benchmark.arms import (
-    AblationArm,
-    CODER_VECTOR_SEAM,
-    GRAPH_SEAM,
-    PLANNER_VECTOR_SEAM,
-    PROVIDER_SEAM,
-    apply_arm,
-)
+from core.benchmark.arms import AblationArm, apply_arm
 from core.benchmark.executors import SubprocessPythonExecutor
 from core.benchmark.oracle import BenchmarkOracle, load_corpus
 from core.benchmark.problems import BenchmarkProblem
@@ -103,7 +96,9 @@ def _golden_runner(problem: BenchmarkProblem) -> TaskRunner:
     assert problem.corpus_problem is not None
     golden = dict(problem.corpus_problem.golden_patch)
 
-    async def _run(session_id: str, _p: BenchmarkProblem) -> Dict[str, str]:
+    async def _run(
+        session_id: str, _p: BenchmarkProblem, _overrides: Mapping[str, Any]
+    ) -> Dict[str, str]:
         token_ledger.record_local(prompt=50, completion=50)
         log_routing_decision(
             session_id, "planner", "coder", "golden stub", css=70.0, tci=50.0
@@ -118,7 +113,9 @@ def _wrong_runner(problem: BenchmarkProblem) -> TaskRunner:
     assert problem.corpus_problem is not None
     keys = list(problem.corpus_problem.golden_patch.keys())
 
-    async def _run(session_id: str, _p: BenchmarkProblem) -> Dict[str, str]:
+    async def _run(
+        session_id: str, _p: BenchmarkProblem, _overrides: Mapping[str, Any]
+    ) -> Dict[str, str]:
         token_ledger.record_local(prompt=50, completion=50)
         log_routing_decision(
             session_id, "planner", "coder", "wrong stub", css=70.0, tci=50.0
@@ -218,7 +215,9 @@ def test_project_id_consistency(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) 
     problem = _load_first_problem()
     assert problem.project_id is not None
 
-    async def _stub(session_id: str, _p: BenchmarkProblem) -> Dict[str, str]:
+    async def _stub(
+        session_id: str, _p: BenchmarkProblem, _overrides: Mapping[str, Any]
+    ) -> Dict[str, str]:
         token_ledger.record_local(prompt=10, completion=10)
         log_routing_decision(session_id, "planner", "coder", "id-check", css=70.0, tci=50.0)
         return {}
@@ -296,46 +295,15 @@ def test_patch_keys_normalized_to_relative(tmp_path: Any) -> None:
 
 
 def test_vector_only_strategy_keeps_vector() -> None:
-    """VectorOnlyRetrievalStrategy patches the graph seam, leaves vector seams live."""
-    from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
-    from core.memory.semantic_memory import SemanticMemoryManager
+    """VectorOnlyRetrievalStrategy injects only the graph override; vector stays live.
 
-    orig_graph = GraphRAGDynamicExtractor.deep_parse
-    orig_planner_vec = SemanticMemoryManager.search_with_paths
-    orig_coder_vec = SemanticMemoryManager.search_snippets
-
-    strategy = VectorOnlyRetrievalStrategy()
-    import contextlib
-
-    with contextlib.ExitStack() as stack:
-        for patch in strategy.patches():
-            stack.enter_context(patch)
-        assert GraphRAGDynamicExtractor.deep_parse is not orig_graph
-        assert SemanticMemoryManager.search_with_paths is orig_planner_vec
-        assert SemanticMemoryManager.search_snippets is orig_coder_vec
-
-    assert GraphRAGDynamicExtractor.deep_parse is orig_graph
+    No internal symbol is patched — the contract is the set of injected config keys.
+    """
+    overrides = VectorOnlyRetrievalStrategy().overrides()
+    assert set(overrides) == {"graph_fn"}
 
 
 def test_zero_shot_strategy_suppresses_all() -> None:
-    """ZeroShotRetrievalStrategy patches all three retrieval seams."""
-    from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
-    from core.memory.semantic_memory import SemanticMemoryManager
-
-    orig_graph = GraphRAGDynamicExtractor.deep_parse
-    orig_planner_vec = SemanticMemoryManager.search_with_paths
-    orig_coder_vec = SemanticMemoryManager.search_snippets
-
-    strategy = ZeroShotRetrievalStrategy()
-    import contextlib
-
-    with contextlib.ExitStack() as stack:
-        for patch in strategy.patches():
-            stack.enter_context(patch)
-        assert GraphRAGDynamicExtractor.deep_parse is not orig_graph
-        assert SemanticMemoryManager.search_with_paths is not orig_planner_vec
-        assert SemanticMemoryManager.search_snippets is not orig_coder_vec
-
-    assert GraphRAGDynamicExtractor.deep_parse is orig_graph
-    assert SemanticMemoryManager.search_with_paths is orig_planner_vec
-    assert SemanticMemoryManager.search_snippets is orig_coder_vec
+    """ZeroShotRetrievalStrategy injects overrides for the graph and both vector seams."""
+    overrides = ZeroShotRetrievalStrategy().overrides()
+    assert set(overrides) == {"graph_fn", "planner_retrieval_fn", "coder_retrieval_fn"}

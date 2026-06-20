@@ -9,10 +9,14 @@ value to a specific capability:
 * G4 is the full pipeline (no toggle),
 * G4_FORCE_CLOUD is G4 with the cloud provider forced via the routing seam.
 
-The toggles are applied with scoped patches entered immediately before a single
-task run and exited immediately after. The production code never reads a
-benchmark flag. Because the patches are process-global, the runner executes
-problems serially so no concurrent coroutine can observe a patched symbol.
+Retrieval degradation (G1, G2) is delivered as dependency-injected override
+callables (``retrieval_overrides_for``) folded into ``config["configurable"]``: the
+agents read those keys and fall back to their real methods when absent, so no
+retrieval internal is monkeypatched. The routing toggles (G3, G4_FORCE_CLOUD) have
+no config seam and are still applied with scoped patches entered immediately before
+a single task run and exited immediately after. Because those patches are
+process-global, the runner executes problems serially so no concurrent coroutine
+can observe a patched symbol.
 """
 from __future__ import annotations
 
@@ -68,28 +72,39 @@ def _force_cloud_routing(tci: float, css: float, fast_track: bool = False) -> st
     return "CLOUD"
 
 
-@contextlib.contextmanager
-def apply_arm(arm: AblationArm) -> Iterator[None]:
-    """Apply an arm's degradation for the duration of a single task run.
+def retrieval_overrides_for(arm: AblationArm) -> Dict[str, Any]:
+    """Return the injectable retrieval-override callables for a retrieval arm.
 
-    Use strictly as a ``with`` block wrapping exactly one task call. The patches
-    restore the original symbols on exit, including on error.
+    The mapping is folded into ``config["configurable"]`` so the agents degrade
+    retrieval explicitly (no monkeypatching). Non-retrieval arms return ``{}``.
     """
     from core.benchmark.strategies import (
         VectorOnlyRetrievalStrategy,
         ZeroShotRetrievalStrategy,
     )
 
+    if arm is AblationArm.G2:
+        return VectorOnlyRetrievalStrategy().overrides()
+    if arm is AblationArm.G1:
+        return ZeroShotRetrievalStrategy().overrides()
+    return {}
+
+
+@contextlib.contextmanager
+def apply_arm(arm: AblationArm) -> Iterator[None]:
+    """Apply an arm's routing degradation for the duration of a single task run.
+
+    Use strictly as a ``with`` block wrapping exactly one task call. The patches
+    restore the original symbols on exit, including on error. Retrieval arms
+    (G1, G2) carry no patch here — their degradation is injected via
+    ``retrieval_overrides_for`` into the task config instead.
+    """
     patches: List[Any] = []
     if arm is AblationArm.G3:
         patches.append(mock.patch(CODER_TARGET_SEAM, _force_one_shot))
-    elif arm is AblationArm.G2:
-        patches = VectorOnlyRetrievalStrategy().patches()
-    elif arm is AblationArm.G1:
-        patches = ZeroShotRetrievalStrategy().patches()
     elif arm is AblationArm.G4_FORCE_CLOUD:
         patches.append(mock.patch(PROVIDER_SEAM, _force_cloud_routing))
-    # G4 applies no patches.
+    # G1, G2, G4 apply no routing patch.
     with contextlib.ExitStack() as stack:
         for patch in patches:
             stack.enter_context(patch)

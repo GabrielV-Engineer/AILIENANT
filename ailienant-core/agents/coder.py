@@ -111,18 +111,24 @@ def _parse_search_replace_blocks(text: str) -> list[dict[str, str]]:
 
 
 async def _fetch_rag_snippets(
-    target_file: str, description: str, project_id: str
+    target_file: str,
+    description: str,
+    project_id: str,
+    retrieval_fn: Any = None,
 ) -> list[tuple[str, str]]:
     """Single GraphRAG retrieval shared by the topology and style blocks.
 
     Fetching once (vs. once per block) avoids a redundant embedding call against
-    the vector store. Best-effort: returns [] on missing project or any failure.
+    the vector store. ``retrieval_fn`` is an optional injectable override (the
+    default is the real ``search_snippets``); a benchmark supplies a degraded
+    variant. Best-effort: returns [] on missing project or any failure.
     """
     if not project_id:
         return []
     try:
         from core.memory.semantic_memory import SemanticMemoryManager
-        return await SemanticMemoryManager().search_snippets(
+        _search_snippets = retrieval_fn or SemanticMemoryManager().search_snippets
+        return await _search_snippets(
             f"{target_file} {description}", workspace_hash=project_id, k=3
         )
     except Exception as exc:  # noqa: BLE001
@@ -240,6 +246,9 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     _on_thinking = (config or {}).get("configurable", {}).get("stream_thinking")
     _thinking_on = bool((config or {}).get("configurable", {}).get("enable_native_thinking"))
     _thinking_budget = int((config or {}).get("configurable", {}).get("thinking_budget_tokens") or 4096)
+    # Snippet retrieval is injectable so a benchmark can degrade it explicitly;
+    # production omits this key and the real bound method runs unchanged.
+    _coder_retrieval_fn = (config or {}).get("configurable", {}).get("coder_retrieval_fn")
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:
@@ -400,7 +409,9 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # convention exemplars) so the vector store is hit only once.
     _read_vfs = _make_vfs_reader(project_id, workspace_root, session_id)
     current_content = _read_vfs(target_file)
-    rag_snippets = await _fetch_rag_snippets(target_file, target_step.description, project_id)
+    rag_snippets = await _fetch_rag_snippets(
+        target_file, target_step.description, project_id, _coder_retrieval_fn
+    )
     rag_block = _build_rag_block(rag_snippets)
     style_block = _build_style_block(target_file, rag_snippets)
 

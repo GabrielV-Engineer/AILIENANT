@@ -15,13 +15,23 @@ import asyncio
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 import json
 
 from core.token_ledger import token_ledger
 
-from core.benchmark.arms import AblationArm, apply_arm
+from core.benchmark.arms import AblationArm, apply_arm, retrieval_overrides_for
 from core.benchmark.hygiene import (
     BenchmarkAbort,
     BenchmarkBudget,
@@ -37,10 +47,14 @@ from core.benchmark.routing_study import RoutingStudyTable, build_routing_study
 if TYPE_CHECKING:
     from core.benchmark.oracle import BenchmarkOracle
 
-# A task runner takes a unique session id and a problem, drives the pipeline, and
-# returns the candidate patch (path → new content). Injected so callers can
-# substitute a stub for the model layer without monkeypatching production code.
-TaskRunner = Callable[[str, BenchmarkProblem], Awaitable[Dict[str, str]]]
+# A task runner takes a unique session id, a problem, and the arm's injectable
+# config overrides (retrieval-degradation callables, possibly empty), drives the
+# pipeline, and returns the candidate patch (path → new content). Injected so
+# callers can substitute a stub for the model layer without monkeypatching
+# production code.
+TaskRunner = Callable[
+    [str, BenchmarkProblem, Mapping[str, Any]], Awaitable[Dict[str, str]]
+]
 
 _DEFAULT_BUDGET_USD = 25.0
 _DEFAULT_INDEXER_TIMEOUT_S = 300.0
@@ -84,11 +98,16 @@ def _normalize_patch(raw: Dict[str, str], workspace_root: Path) -> Dict[str, str
     return normalized
 
 
-async def _default_task_runner(session_id: str, problem: BenchmarkProblem) -> Dict[str, str]:
+async def _default_task_runner(
+    session_id: str,
+    problem: BenchmarkProblem,
+    configurable_overrides: Mapping[str, Any],
+) -> Dict[str, str]:
     """Drive the real pipeline via TaskService. Returns an empty patch dict.
 
-    TaskService.process_task does not expose pending_contents. Use
-    _graph_task_runner for live ablation runs that need verdict scoring.
+    TaskService.process_task does not expose pending_contents (nor a config seam),
+    so ``configurable_overrides`` is unused here. Use _graph_task_runner for live
+    ablation runs that need verdict scoring under degraded retrieval.
     """
     from core.task_service import TaskPayload, TaskService
 
@@ -101,13 +120,18 @@ async def _default_task_runner(session_id: str, problem: BenchmarkProblem) -> Di
     return {}
 
 
-async def _graph_task_runner(session_id: str, problem: BenchmarkProblem) -> Dict[str, str]:
+async def _graph_task_runner(
+    session_id: str,
+    problem: BenchmarkProblem,
+    configurable_overrides: Mapping[str, Any],
+) -> Dict[str, str]:
     """Headless graph runner for live ablation runs.
 
     Builds a minimal TaskPayload, invokes the compiled graph directly, drains
-    background tasks, and returns the normalized pending_contents patch. This
-    runner is live-only and requires a wired model backend; use an injected
-    stub for hermetic gate tests.
+    background tasks, and returns the normalized pending_contents patch. The arm's
+    ``configurable_overrides`` (retrieval-degradation callables) are folded into the
+    graph config so the agents degrade retrieval via DI. This runner is live-only
+    and requires a wired model backend; use an injected stub for hermetic gate tests.
     """
     import agents.coder
     from brain.cell_dispatcher import NullCellDispatcher
@@ -135,6 +159,7 @@ async def _graph_task_runner(session_id: str, problem: BenchmarkProblem) -> Dict
             "narrate": _noop,
             "stream_thinking": _noop,
             "cell_dispatcher": NullCellDispatcher(),
+            **configurable_overrides,
         }
     }
     final_state: Dict[str, Any] = await alienant_app.ainvoke(
@@ -179,8 +204,9 @@ class BenchmarkRunner:
         disable_response_cache()
         before = token_ledger.snapshot()
         started = time.perf_counter()
+        overrides = retrieval_overrides_for(arm)
         with apply_arm(arm):
-            candidate_patch = await self._run_task(session_id, problem)
+            candidate_patch = await self._run_task(session_id, problem, overrides)
         latency = time.perf_counter() - started
         after = token_ledger.snapshot()
         tci, css = collect_routing(session_id)

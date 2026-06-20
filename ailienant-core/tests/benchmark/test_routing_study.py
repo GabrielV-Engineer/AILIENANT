@@ -9,8 +9,7 @@ routing and forced-cloud is a live-only property and is not faked here.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 import pytest
 
@@ -290,7 +289,9 @@ def _golden_runner(problem: BenchmarkProblem, tci: float) -> TaskRunner:
     assert problem.corpus_problem is not None
     golden = dict(problem.corpus_problem.golden_patch)
 
-    async def _run(session_id: str, _p: BenchmarkProblem) -> Dict[str, str]:
+    async def _run(
+        session_id: str, _p: BenchmarkProblem, _overrides: Mapping[str, Any]
+    ) -> Dict[str, str]:
         token_ledger.record_local(prompt=50, completion=50)
         log_routing_decision(
             session_id, "planner", "coder", "golden stub", css=70.0, tci=tci

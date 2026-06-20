@@ -1,8 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ChangeEvent } from 'react';
 
 interface McpServer { id: string; name: string; uri: string; transport: string; enabled: boolean; }
 interface McpTestResult { reachable: boolean; tool_count: number; error?: string; }
 interface Skill { id: string; name: string; body: string; }
+interface ImportResult {
+    ok: boolean;
+    imported: string[];
+    updated: string[];
+    skipped: { name: string; reason: string }[];
+    needs_secret: string[];
+    error?: string;
+}
 interface RegistryServer {
     name: string;
     display_name: string;
@@ -16,7 +24,7 @@ interface RegistryServer {
 }
 
 type SubTab = 'mcp' | 'skills';
-type McpView = 'browse' | 'installed' | 'manual';
+type McpView = 'browse' | 'installed' | 'manual' | 'import';
 
 // The official, source-reviewable ecosystem pages. Discovery opens these in the
 // external browser; in-IDE install stays restricted to the curated cards.
@@ -118,6 +126,144 @@ function RegistryCard(
     );
 }
 
+function ConfigImportView(
+    { registry, onChanged }: { registry: RegistryServer[] | null; onChanged: () => void },
+): JSX.Element {
+    const [result, setResult] = useState<ImportResult | null>(null);
+    const [pending, setPending] = useState<string[]>([]);
+    const [secretInputs, setSecretInputs] = useState<Record<string, Record<string, string>>>({});
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [fileName, setFileName] = useState<string | null>(null);
+
+    // The export only emits a key_ref for regulated servers, so a server flagged
+    // `needs_secret` is present in the curated registry — its declared secret names
+    // drive the credential prompt below.
+    const secretsFor = (name: string): string[] =>
+        registry?.find(r => r.name.toLowerCase() === name.toLowerCase())?.secrets ?? [];
+
+    const onFile = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
+        const file = e.target.files?.[0];
+        e.target.value = '';  // allow re-importing the same file
+        if (!file) { return; }
+        setFileName(file.name);
+        setError(null);
+        setResult(null);
+        setPending([]);
+        setBusy(true);
+        let payload: unknown;
+        try {
+            payload = JSON.parse(await file.text());
+        } catch {
+            setBusy(false);
+            setError('Not a valid JSON file.');
+            return;
+        }
+        const res = await sendJson<ImportResult>('/api/v1/mcp/config/import', 'POST', payload);
+        setBusy(false);
+        if (!res) {
+            setError('Import failed — the file may be malformed or declare an unsupported version.');
+            return;
+        }
+        setResult(res);
+        setPending(res.needs_secret ?? []);
+        setSecretInputs({});
+        onChanged();
+    };
+
+    const saveSecret = async (name: string): Promise<void> => {
+        setBusy(true);
+        setError(null);
+        const res = await sendJson<{ ok: boolean; error?: string }>(
+            '/api/v1/mcp/registry/install', 'POST',
+            { name, secrets: secretInputs[name] ?? {} });
+        setBusy(false);
+        if (res?.ok) { setPending(p => p.filter(n => n !== name)); onChanged(); }
+        else { setError(res?.error ?? `Failed to store credential for ${name}.`); }
+    };
+
+    return (
+        <div className="db-card">
+            <div className="db-card-title">Import server config</div>
+            <div className="db-muted" style={{ marginBottom: 10 }}>
+                Import a <code>config.json</code> projection of MCP servers. A server that needs a
+                credential is imported but flagged below until you supply the secret — it is never
+                silently dropped.
+            </div>
+            <input
+                type="file"
+                accept="application/json,.json"
+                className="db-input"
+                onChange={e => void onFile(e)}
+            />
+            {fileName && <div className="db-muted" style={{ fontSize: 11, marginTop: 4 }}>{fileName}</div>}
+            {busy && <div className="db-muted" style={{ marginTop: 8 }}>Working…</div>}
+            {error && <div className="db-muted" style={{ color: '#F85149', marginTop: 8 }}>{error}</div>}
+
+            {result && (
+                <div className="db-col" style={{ gap: 6, marginTop: 12 }}>
+                    <div className="db-muted" style={{ fontSize: 11 }}>
+                        Imported {result.imported.length} · updated {result.updated.length}
+                        {result.skipped.length > 0 ? ` · skipped ${result.skipped.length}` : ''}
+                    </div>
+                    {result.skipped.map(s => (
+                        <div key={s.name} className="db-muted" style={{ fontSize: 11, color: '#d6a534' }}>
+                            Skipped {s.name || '(unnamed)'}: {s.reason}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {pending.length > 0 && (
+                <div className="db-col" style={{ gap: 10, marginTop: 12 }}>
+                    <div className="db-card-title" style={{ fontSize: 12 }}>Credentials required</div>
+                    {pending.map(name => {
+                        const secrets = secretsFor(name);
+                        return (
+                            <div
+                                key={name}
+                                className="db-audit-row"
+                                style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}
+                            >
+                                <div style={{ fontWeight: 600, fontSize: 12 }}>{name}</div>
+                                {secrets.length === 0 ? (
+                                    <div className="db-muted" style={{ fontSize: 11 }}>
+                                        This server needs a credential. Install it from the curated
+                                        registry to supply the secret.
+                                    </div>
+                                ) : (
+                                    <>
+                                        {secrets.map(sn => (
+                                            <input
+                                                key={sn}
+                                                className="db-input"
+                                                type="password"
+                                                placeholder={sn}
+                                                value={secretInputs[name]?.[sn] ?? ''}
+                                                onChange={e => setSecretInputs(v => ({
+                                                    ...v,
+                                                    [name]: { ...(v[name] ?? {}), [sn]: e.target.value },
+                                                }))}
+                                            />
+                                        ))}
+                                        <button
+                                            className="db-btn db-btn-primary"
+                                            disabled={busy}
+                                            onClick={() => void saveSecret(name)}
+                                        >
+                                            Save credential
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function McpTab(): JSX.Element {
     const [view, setView] = useState<McpView>('browse');
     const [servers, setServers] = useState<McpServer[] | null>(null);
@@ -166,6 +312,7 @@ function McpTab(): JSX.Element {
                 <button className={view === 'browse' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('browse')}>Browse registry</button>
                 <button className={view === 'installed' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('installed')}>Installed</button>
                 <button className={view === 'manual' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('manual')}>Add manually</button>
+                <button className={view === 'import' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('import')}>Import config</button>
             </div>
 
             {view === 'browse' && (
@@ -232,6 +379,8 @@ function McpTab(): JSX.Element {
                     </div>
                 </div>
             )}
+
+            {view === 'import' && <ConfigImportView registry={registry} onChanged={refreshAll} />}
         </div>
     );
 }

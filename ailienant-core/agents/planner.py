@@ -5,7 +5,7 @@ import logging
 import os as _os
 import time as _time
 import uuid
-from typing import Optional, Any
+from typing import Optional, Any, cast
 
 from langchain_core.runnables import RunnableConfig
 
@@ -154,6 +154,11 @@ async def run_planner_node(
     _on_thinking = (config or {}).get("configurable", {}).get("stream_thinking")
     _thinking_on = bool((config or {}).get("configurable", {}).get("enable_native_thinking"))
     _thinking_budget = int((config or {}).get("configurable", {}).get("thinking_budget_tokens") or 4096)
+    # Retrieval seams are injectable so a benchmark can degrade them explicitly;
+    # production omits these keys and the real bound methods below run unchanged.
+    _configurable = (config or {}).get("configurable", {})
+    _planner_retrieval_fn = _configurable.get("planner_retrieval_fn")
+    _graph_fn = _configurable.get("graph_fn")
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:
@@ -376,7 +381,7 @@ async def run_planner_node(
             _extractor = GraphRAGDynamicExtractor(project_id=state.get("project_id") or "")
 
             if _fast_boot is not None:
-                logger.info("Phase 3.6 Fast-Boot: using cached context, skipping LanceDB search.")
+                logger.info("Fast-Boot: using cached context, skipping LanceDB search.")
                 _sem_score = (
                     _fast_boot.context_metrics.semantic_similarity
                     if _fast_boot.context_metrics else 0.0
@@ -387,12 +392,14 @@ async def run_planner_node(
                 _indexed_at = []
             else:
                 _sem_mgr = SemanticMemoryManager()
-                _sem_score, _top_k_files, _indexed_at = await _sem_mgr.search_with_paths(
+                _retrieval_fn = _planner_retrieval_fn or _sem_mgr.search_with_paths
+                _sem_score, _top_k_files, _indexed_at = await _retrieval_fn(
                     user_input=user_input,
                     workspace_hash=state.get("project_id") or "",
                 )
             # ─────────────────────────────────────────────────────────────────────────
-            _deep_result = await _extractor.deep_parse(
+            _deep_parse = _graph_fn or _extractor.deep_parse
+            _deep_result = await _deep_parse(
                 seed_files=_top_k_files,
                 workspace_root=state.get("workspace_root", ""),
             )
@@ -829,7 +836,7 @@ async def run_planner_node(
                     # in-place mutation) so LangGraph reducers persist it. Advisory only
                     # — a budget overage is logged but does not consume a retry.
                     _bud_tool = BudgetEstimatorTool(state=state)
-                    _bud = json.loads(await _bud_tool._arun())
+                    _bud = cast(dict, json.loads(await _bud_tool._arun()))
                     if not _bud.get("fits_within_budget", True):
                         await _emit("plan_budget_overage_advisory")
                         logger.warning(

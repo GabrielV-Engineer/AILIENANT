@@ -215,7 +215,7 @@ def build_full_swarm(
 
     g = StateGraph(AIlienantGraphState)
     g.add_node("verify_environment", verify_environment_node)
-    g.add_node("researcher_agent", run_researcher_node)
+    g.add_node("researcher_agent", run_researcher_node)         # type: ignore[type-var]
     g.add_node("planner_agent", run_planner_node)               # type: ignore[type-var]
     g.add_node("orchestrator_agent", run_orchestrator_node)
     # Pass the compiled MICRO_SWARM directly as a sub-graph node. LangGraph

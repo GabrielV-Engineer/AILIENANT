@@ -73,13 +73,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-054 | todo_write / agent_todos channel unbound — no cognitive node wiring | LOW | Integration gap | future integration sprint | Floating |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
 | DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
-| DEBT-037 | G2 retrieval isolation uses mock.patch | LOW | Test architecture | post-8.5/8.8 | Floating |
-| DEBT-033 | config.json key_ref round-trip | LOW | UX gap | 8.4.x or later | Floating |
 | DEBT-027 | MCP servers not auto-connected at launch | LOW | Feature gap | dedicated slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
-| DEBT-011 | tracemalloc heap-baseline test broken | LOW | Test design | Phase 8 slice | Floating |
 | DEBT-007 | Auto-accept pays full HITL round-trip | LOW | Performance | Phase 11 | Floating |
 | DEBT-005 | interior brain/agents strict-mode debt | LOW | Type hygiene | — | Unscheduled |
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
@@ -338,24 +335,20 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** post-8.8.4 — calibration pass after session telemetry is available.
 - **Notes:** logged at 8.8.4 ship per CLAUDE.md §11.3.
 
-### DEBT-037 [LOW · Floating] — G2 retrieval isolation uses mock.patch, not a production DI seam
+### DEBT-037 [LOW · RESOLVED 2026-06-20, 8.10.9] — retrieval ablation uses mock.patch, not a production DI seam
 
-- **Date:** 2026-06-12
-- **Reproduce:** inspect `tests/benchmark/strategies.py:VectorOnlyRetrievalStrategy.patches()` — it returns `[mock.patch(GRAPH_SEAM, _no_graph)]`, a process-global monkey-patch scoped to one task run.
-- **File(s):** `ailienant-core/tests/benchmark/strategies.py`, `ailienant-core/tests/benchmark/arms.py`.
-- **Error:** not a runtime defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The patch-based mechanism is the harness-boundary approach established at 8.3.0; no production code is changed. The enterprise alternative is a `RetrievalStrategy` injected via a DI seam in `GraphRAGDynamicExtractor` so the strategy boundary is visible in production profiling and A/B testing, not only in benchmark runs.
-- **Blocked by:** requires a production DI refactor of `GraphRAGDynamicExtractor` and its callers (planner + researcher). Out of scope for the 8.3.x measurement track.
-- **Phase:** standalone retrieval-DI slice, post-8.5/8.8 when the ablation sweep is complete and the architecture is stable.
-- **Notes:** logged at 8.3.3 ship per CLAUDE.md §7.3. The patch-based mechanism is hermetically verified by `test_ablation_verdicts.py` gate tests.
+- **Date:** 2026-06-12 · **Resolved:** 2026-06-20 (8.10.9)
+- **Premise correction:** the original note attributed the `search_with_paths` patch to the G2 arm. In fact G2 (`VectorOnlyRetrievalStrategy`) patched only the graph seam; it was G1 (`ZeroShotRetrievalStrategy`) that patched the vector seams (`search_with_paths` / `search_snippets`). The substance held: both arms degraded retrieval by `mock.patch`-ing internal class methods (in `core/benchmark/strategies.py`, not `tests/`).
+- **Resolved:** retrieval degradation now flows through a dependency-injection seam. The strategy objects expose `overrides()` returning callables keyed `graph_fn` / `planner_retrieval_fn` / `coder_retrieval_fn`; `arms.retrieval_overrides_for(arm)` maps each arm to its overrides; the runner folds them into `config["configurable"]`, and the planner/researcher/coder read those keys and fall back to their real bound methods when absent. Production behavior is unchanged (keys never present off-benchmark); the ablation tests assert on the override set with no `mock.patch` of retrieval internals.
+- **Notes:** the routing arms (G3 `_coder_target`, G4_FORCE_CLOUD `derive_routing_decision`) are not retrieval and intentionally remain on the scoped `apply_arm` patch.
 
-### DEBT-033 [LOW · Floating] — config.json ↔ MCP secret-store `key_ref` round-trip (fresh-machine import prompt)
+### DEBT-033 [LOW · RESOLVED 2026-06-20, 8.10.9] — config.json ↔ MCP secret-store `key_ref` round-trip (fresh-machine import prompt)
 
-- **Date:** 2026-06-11
-- **Reproduce:** export `.ailienant/config.json` on a machine with installed credentialed servers, then import it on a fresh machine — the server rows reconcile but their secrets do not travel (correctly: secrets never enter the JSON), and there is no flow that re-prompts for the missing credential. The dashboard also has no import/export buttons surfacing `core/mcp_config.py`.
-- **Error:** not a defect — a deferred polish slice. 8.4.6 landed the secret VALUE store + connect-time env injection (closing the load-bearing half of the former DEBT-031), and `core/mcp_config.py` already redacts on export + emits `key_ref` placeholders. What remains is wiring the placeholder round-trip to the new `mcp_secrets` store: on import, detect a `key_ref` whose value is absent locally and prompt for it; expose import/export in the dashboard.
-- **Blocked by:** nothing.
-- **Phase:** a standalone config-portability slice (8.4.x or a later polish pass).
-- **Notes:** logged at 8.4.6 ship per CLAUDE.md §7.3. Export already prevents credential leakage (userinfo redaction + no secret in JSON), so this is a usability gap, not a security one. Substrate is the backend-mask store (`core/config/mcp_secrets.py`), consistent with the ADR-757 amendment.
+- **Date:** 2026-06-11 · **Resolved:** 2026-06-20 (8.10.9)
+- **Premise correction:** the original note described a backend wiring gap. Exploration revealed the backend was already fully shipped: `import_mcp_config` already emits a `needs_secret` list (tested in `tests/test_mcp_config_roundtrip.py`). The real gap was **frontend-only** — no MCP config-import surface existed in the extension, so `needs_secret` was never acted on.
+- **Reproduce (original):** export `.ailienant/config.json` on a machine with installed credentialed servers, import on a fresh machine — server rows reconcile but there was no UI to re-prompt for missing credentials.
+- **Resolved:** `ConfigImportView` added to `ailienant-extension/src/dashboard/panels/ExtensionsPanel.tsx` — native file-pick → `POST /api/v1/mcp/config/import` → credential dialog driven by `needs_secret` (cross-references the loaded registry for declared secret env-var names) → `POST /api/v1/mcp/registry/install`. Servers in `needs_secret` not present in the registry receive an informational note. Backend unchanged.
+- **Notes:** Export already prevented credential leakage (userinfo redaction + no secret in JSON). This closes the usability gap end-to-end.
 
 ### DEBT-032 [LOW · RESOLVED 2026-06-20, 8.10.8] — Coder-side skill injection (planner-only shipped in 8.4.5)
 
@@ -440,28 +433,13 @@ Decision    Not a defect — see [DECISION] tier.
 - **Notes:** Alternative: keep word-diff and run a second, fragment-level tokenization pass keyed by
   `(line, fragmentRange)` — heavier; the offset-intersection approach reuses the existing host AST.
 
-### DEBT-011 [LOW · Floating] — test_v3_tracemalloc heap-baseline ceiling is structurally broken (red in the Phase 3.7 gate)
+### DEBT-011 [LOW · RESOLVED 2026-06-20, 8.10.9] — test_v3_tracemalloc heap-baseline ceiling is structurally broken
 
-- **Date:** 2026-06-04
-- **Reproduce:** `cd ailienant-core && .\venv\Scripts\python -m pytest tests/test_phase3_checkpoint_gate.py::test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline -q`
-- **File(s):** `tests/test_phase3_checkpoint_gate.py:418-452` (`test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline`).
-- **Error:** Pre-existing test-design defect, not a product bug. The test takes the `tracemalloc`
-  baseline snapshot **immediately after** `tracemalloc.start()`, so `baseline_bytes ≈ 0`; the ceiling
-  `int(baseline_bytes * 0.05) + 65_536` therefore collapses to a fixed ~64 KB. Allocating 50
-  `MCTSNode` + 50 `MissionSpecification` (Pydantic v2) objects retains ~210-240 KB (validator/core-schema
-  caches + node dict), so the assertion `delta_bytes < ceiling` always fails (observed 212-237 KB).
-  The `prune_branch` + `del tree` cleanup does not (and cannot) reclaim Pydantic's process-wide schema
-  caches, so the "returns to baseline" premise is unmeetable as written.
-- **Blocked by:** None — fixable now, but **out of scope for 7.18.1** (recency); deliberately deferred
-  per the Continuous Registry Protocol rather than fixed in-place.
-- **Phase:** A future test-hardening slice (Phase 8 / gate maintenance).
-- **Notes:** Remediation options: (a) call `gc.collect()` before *both* snapshots and warm Pydantic by
-  constructing one `MissionSpecification` before the baseline so its schema cache is already resident;
-  (b) replace the baseline-relative ceiling with a fixed absolute budget sized for 50 nodes (e.g.
-  ~512 KB) since the real claim is "bounded growth," not "returns to zero"; (c) measure only the
-  `MCTSTree`/RAM-VFS delta via `snapshot.filter_traces` on `brain/mcts/tree.py` + `core/vfs_middleware.py`
-  rather than the whole-process `"filename"` sum. Option (b)+(c) together best preserve the original
-  intent (heap-leak guard on the MCTS lifecycle) without the brittle near-zero baseline.
+- **Date:** 2026-06-04 · **Resolved:** 2026-06-20 (8.10.9)
+- **Reproduce (original):** `cd ailienant-core && .\venv\Scripts\python -m pytest tests/test_phase3_checkpoint_gate.py::test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline -q`
+- **File(s):** `tests/test_phase3_checkpoint_gate.py` (`test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline`).
+- **Error (original):** The test took the `tracemalloc` baseline snapshot immediately after `tracemalloc.start()`, collapsing the ceiling to ~64 KB while 50 `MCTSNode` + 50 `MissionSpecification` objects retained ~210-240 KB (Pydantic schema caches irrecoverable after first use). Assertion always failed.
+- **Resolved:** replaced the absolute ceiling with a **self-calibrated two-pass approach** — a calibration lifecycle run measures the one-time interpreter/schema-cache residual (`calibrated_delta`); the test-cycle run then asserts `delta_bytes <= int(max(calibrated_delta, 0) * _HEAP_HEADROOM_RATIO) + _HEAP_NOISE_FLOOR_BYTES` (`_HEAP_HEADROOM_RATIO = 1.20`, floor = 64 KB). A real allocation leak still shows a monotonically growing delta across passes; one-time process-wide cache churn is absorbed by the calibration. Test is green with no skip marker.
 
 ### DEBT-007 [LOW · Floating] — Auto-accept low-risk edits pays a full HITL round-trip (shift-left candidate)
 
