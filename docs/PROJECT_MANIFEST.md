@@ -16,11 +16,11 @@
 | 8.3 Benchmark Harness | ✅ CLOSED | 2026-06-13 | — |
 | 8.4 MCP Hardening | ✅ CLOSED | 2026-06-11 | — |
 | 8.5 External Gateway | ✅ CLOSED | 2026-06-13 | — |
-| 8.6 Phase 8 Checkpoint Gate | ⬜ PENDING | — | 8.6 Phase 8 gate (8.2 done) |
+| 8.6 Phase 8 Checkpoint Gate | ✅ CLOSED | 2026-06-19 | — |
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.4 execute Division 8.6 |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.5 HIGH-tier debts |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -397,7 +397,7 @@
 
 ---
 
-### Division 8.6 — Phase 8 Checkpoint Gate — [ADR-760] ⬜
+### Division 8.6 — Phase 8 Checkpoint Gate — [ADR-760] ✅
 
 > Single phase gate (sibling-file convention): re-certifies resilience + precision (H₁/H₂ harness runs) + MCP privilege fail-closed + external HITL-degrade. **DoD:** `pytest` green · `mypy .` 0 · gate green · `npm run compile` 0.
 
@@ -524,7 +524,7 @@
   - 8.2.5: DoD-check — resilience smoke green.
   - **DoD:** `mypy .` 0 · `pytest` green.
 
-- [ ] **8.10.4 — Execute Division 8.6: Phase 8 Checkpoint Gate**
+- [x] **8.10.4 — Execute Division 8.6: Phase 8 Checkpoint Gate**
   Sibling gate re-certifying H₁/H₂ harness, MCP privilege fail-closed, HITL-degrade, and resilience. **DoD:** `pytest` green · `mypy .` 0 · gate green · `npm run compile` 0.
 
 - [ ] **8.10.5 — HIGH-tier architectural debts**

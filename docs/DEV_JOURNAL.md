@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.4: Division 8.6 — Phase 8 Checkpoint Gate (ADR-760) — 2026-06-19
+**Status:** COMPLETE | **Gates:** mypy 0/351 · pytest 1574 passed (2 skipped) · npm compile 0
+- Shipped: `tests/test_phase8_checkpoint_gate.py` (13 rows, test-only) re-certifying the cross-division Phase 8 contract against shipped entry points — A: resilience (8.2 fast-track/reroute/OOM-predictor/observability), B: H₁/H₂+Wilson reporting engine (8.3, pure-function), C: MCP fail-closed (8.4 unknown-verb⇒DANGEROUS, PLAN/WRITE deny, AUTO/DANGEROUS still HITL, trust-once tool-scoped), D: gateway HITL-degrade (8.5 deny-report under a 2s deadline, anti-escalation, ledger fail-closed).
+- Key decision: the gate certifies the benchmark *reporting engine* (`build_report`), not the runner I/O — airtight & O(ms); every row pure/in-memory with isolated cleanup (unique `sid`+`try/finally`, `tmp_path` ledger, env `delenv`).
+
 ## 8.10.3: Division 8.2 — Resilience & Observability — 2026-06-19
 **Status:** COMPLETE | **Gates:** mypy 0/350 · pytest 1561 passed (2 skipped)
 - Shipped: Fast Track (`is_fast_track_eligible` pre-RAG skip → LOCAL_SMALL, CSS pinned so no false red-alert); env-gated `configure_langsmith()` (no new sink); config-driven VRAM gates + `hardware_reroute` (LOCAL_* below floor / predicted overflow → cloud, else LOCAL_SMALL+warning surfaced via `state["routing_warning"]` + `TelemetryPayload`); `core/graph_weight.py` OOM predictor judged against the candidate local window; chaos stress sim (synthetic profile injection); real HTTP/WS E2E that returns an applied patch.
