@@ -21,6 +21,9 @@
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
 | 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.5 HIGH-tier debts |
+| 8.10.8 Tool Dispatch Activation | ⬜ PENDING | — | DEBT-066 runtime dispatch loop |
+| 8.10.9 Infrastructure Quality | ⬜ PENDING | — | DEBT-033 key_ref · DEBT-011 test |
+| 8.10.10 WBS Contract Correctness | ⬜ PENDING | — | DEBT-044 DAG cycles (pre-8.11) |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -58,7 +61,7 @@
 | 7.19 | Agentic Execution Cell & Persistent Audit Trail | ✅ |
 | 8 | Testing, Refinement & Graceful Degradation | 🟡 Active |
 | 8.2.6 | Cold-Start / Warm-up Workspace Mode (5 sub-phases) | ⬜ |
-| 8.10 | Debt Reduction + Complete 8.2 + 8.6 (8 sub-phases) | ⬜ |
+| 8.10 | Debt Reduction + Complete 8.2 + 8.6 (11 sub-phases) | ⬜ |
 | 8.11 | 7-Mode Permission System | ⬜ |
 | 8.12 | Five-Layer Context Compression Pipeline | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
@@ -542,6 +545,25 @@
 
 - [ ] **8.10.7 — Pre-launch gap audit (docs-only)**
   Update `DEVELOPERS.md` honest list to reflect completions (56-tool catalog, MCP wiring, orchestrator/researcher nodes), remaining deferrals (Wasm default, full MCTS, autonomous dreaming, auth), and planned implementations (prompt caching → Phase 13.1). **DoD:** honest list accurate; no code changes.
+
+- [ ] **8.10.8 — Runtime Tool Dispatch Activation**
+  The tool factories created in 8.10.2 are never invoked at runtime — the LLM cannot call registered orchestrator/coder/analyst tools from inside the agent loop. This sub-phase closes the activation gap.
+  - DEBT-066 (HIGH): Wire the runtime LLM tool-dispatch loop. The `orchestrator`, `coder`, and `analyst` tool sets are registered via `deferred_tool_loader` but the compiled LangGraph nodes never invoke the dispatch hook. Wire the call site in `brain/engine.py` (or the relevant graph node) so the LLM can execute registered tools during inference. No new tool schemas required — factories are ready. *DoD:* an orchestrator node invocation exercises at least one registered tool end-to-end; integration test asserts non-empty tool call in the graph trace. Target files: `brain/engine.py`, `core/deferred_tool_loader.py`, `agents/orchestrator.py`.
+  - DEBT-032 (LOW): Coder-side skill injection. `build_skill_directive_block` was wired to the planner in 8.4.5 but never extended to the coder path. Inject the active skill directive into `build_coder_system_prompt` from `core/skill_resolver.py` when a skill is active in state. *DoD:* a coder turn with an active skill includes the skill directive in the resolved prompt. Target files: `agents/coder.py`, `core/skill_resolver.py`.
+  - **DoD:** `mypy .` 0 · `pytest` green; dispatch loop integration test green; coder skill directive assertion green.
+
+- [ ] **8.10.9 — Infrastructure & UX Quality**
+  Three floating debts tagged "Phase 8 slice" or "post-8.5/8.8" that have no blocker and clear DoDs.
+  - DEBT-033 (LOW): `config.json` key_ref round-trip UX. On a fresh machine, importing a `config.json` with `key_ref` entries has no UI prompt to supply the missing secret — the import silently drops the credential. Add an import-time detection pass in `api/byom.py` or the `POST /mcp/import` endpoint that enumerates unresolved `key_ref` entries and returns a structured `missing_keys` list; the frontend surfaces a credential-entry dialog per missing ref before confirming the import. *DoD:* importing a config with an unresolved key_ref triggers the credential dialog rather than silently dropping it. Target files: `api/byom.py`, `core/mcp_config.py`, BYOM frontend panel.
+  - DEBT-011 (LOW): tracemalloc heap-baseline test structurally broken. The test ceiling was set at 64 KB but real allocations are 212–237 KB; the test always fails or is skipped. Fix: replace the fixed ceiling with a calibrated baseline (measure the actual allocation in a warmup run, add a 20% headroom constant `_HEAP_HEADROOM_RATIO = 1.20`). *DoD:* `pytest tests/test_memory_baseline.py` (or equivalent) exits green with no skip markers. Target file: the specific tracemalloc test file under `tests/`.
+  - DEBT-037 (LOW): G2 retrieval isolation uses `mock.patch`. The G2 ablation arm patches `semantic_memory.search_with_paths` at import time, coupling the test to the internal module path. Replace with a production DI seam — pass an injectable `retrieval_fn` parameter to the G2 runner — so the test uses the real interface without patching internals. *DoD:* G2 ablation test runs without `mock.patch`; the retrieval function is supplied via DI. Target files: `core/benchmark/strategies.py`, `tests/benchmark/`.
+  - **DoD:** `mypy .` 0 · `pytest` green; all three debt assertions verified.
+
+- [ ] **8.10.10 — WBS Contract Correctness (pre-8.11 prep)**
+  Two correctness gaps in the planning and role contracts that 8.11 (7-Mode Permission System) will build on top of. Accelerated from Phase 13.2 and Phase 13.3 respectively — closing these in 8.10 prevents 8.11 from inheriting a broken WBS contract or a missing role-isolation field. Phase 13.2 and 13.3 references to these debts will be updated to reflect early closure when this sub-phase completes.
+  - DEBT-044 (MEDIUM): `ValidateWBSDependenciesTool` detects step-ordering violations only; it cannot detect true DAG cycles (steps that depend on each other circularly through `depends_on` links). Add `depends_on: Optional[List[int]] = None` additively to `WBSStep` in `brain/state.py` (default `None` is backward-compatible; existing checkpoints deserialize safely). Update `ValidateWBSDependenciesTool` to run a topological sort over `depends_on` links and reject plans containing a cycle before the Planner commits. Add a `SCHEMA_EVOLUTION.MD §15` versioned entry for the additive field. *DoD:* a `MissionSpecification` draft with a circular `depends_on` is rejected at validation; linear chains pass. Target files: `brain/state.py`, `tools/` (validation bundle), `docs/SCHEMA_EVOLUTION.MD`. *(Accelerated from Phase 13.2.)*
+  - DEBT-051 (LOW): `list_tasks` / `TaskListTool` returns all active tasks to every caller regardless of role; the orchestrator sees tasks owned by the coder. Add `owner_role: Optional[str] = None` additively to the task entry schema; set it from `active_role` at `task_create` time. `TaskListTool._execute` filters by `owner_role == caller_role` for non-orchestrator callers; the orchestrator retains full visibility. *DoD:* a coder-role call to `list_tasks` sees only its own tasks; an orchestrator-role call sees all. Target files: `tools/` (control bundle), `brain/state.py`. *(Accelerated from Phase 13.3.)*
+  - **DoD:** `mypy .` 0 · `pytest` green; DAG cycle rejection test green; cross-role visibility filter test green.
 
 ---
 
