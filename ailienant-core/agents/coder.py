@@ -405,6 +405,19 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     style_block = _build_style_block(target_file, rag_snippets)
 
     boundary = uuid.uuid4().hex
+
+    # User skill injection — skills the user saved and either explicitly invoked
+    # or that matched this task semantically, resolved once at task init and
+    # threaded on state. Wrapped in the same ephemeral boundary as the planner so
+    # the coder honors the same standing directives. Mirrors agents/planner.py.
+    _skills = state.get("active_skills") or []
+    if _skills:
+        from core.skill_resolver import build_skill_directive_block
+
+        _skill_block = build_skill_directive_block(_skills, boundary)
+        if _skill_block:
+            system_prompt += f"\n\n{_skill_block}"
+
     if current_content is not None:
         file_block = f'<{boundary} filepath="{target_file}">\n{current_content}\n</{boundary}>'
     else:

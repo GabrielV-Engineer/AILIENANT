@@ -30,12 +30,15 @@ import os
 import pathlib
 from difflib import unified_diff
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
+    Dict,
     FrozenSet,
     List,
     Literal,
+    Mapping,
     Optional,
     Type,
 )
@@ -47,6 +50,9 @@ from core.permissions import ToolPrivilegeTier
 from core.token_ledger import TokenLedger
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.quarantine import wrap_boundary
+
+if TYPE_CHECKING:
+    from core.tool_dispatch import RegisteredTool
 
 logger = logging.getLogger("ANALYST_TOOLS")
 
@@ -733,3 +739,71 @@ def make_dependency_audit_tool(
         search_fn=search_fn,
         boundary_provider=boundary_provider,
     )
+
+
+# =====================================================================
+# Callable registry — the name → executable map for the dispatch loop
+# =====================================================================
+
+
+def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]:
+    """Construct the six analyst tools bound to live session context.
+
+    Mirrors the coder's ``make_coder_execute_tools``: the metadata-only schemas
+    registered in the RAG store are inert; this is where the executable callables
+    are instantiated with their state-injected providers and paired with the tier
+    + role metadata the dispatch gate consults. Returns a ``name → RegisteredTool``
+    map keyed by the same names ``register_analyst_tools`` registers.
+
+    Heavy providers resolve lazily (no DB/network I/O at construction): the VFS
+    RAM reader, the RAM ∪ catalog path provider, and the brave-search callable
+    all defer their work to first use.
+    """
+    from core.tool_dispatch import RegisteredTool
+    from core.token_ledger import token_ledger
+    from core.vfs_middleware import VFSMiddleware
+    from tools.researcher_tools import make_vfs_path_provider
+
+    workspace_root = str(state.get("workspace_root") or "")
+    project_id = str(state.get("project_id") or "")
+
+    vfs = VFSMiddleware()
+    ram_reader = vfs.read_ram_only
+    path_provider = make_vfs_path_provider(project_id, vfs=vfs)
+
+    return {
+        "run_linter": RegisteredTool(
+            RunLinterTool(workspace_root=workspace_root, ram_reader=ram_reader),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_ROLES,
+        ),
+        "analyze_complexity": RegisteredTool(
+            ComplexityAnalysisTool(workspace_root=workspace_root, ram_reader=ram_reader),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_ROLES,
+        ),
+        "diff_changes": RegisteredTool(
+            CodeDiffTool(workspace_root=workspace_root, ram_reader=ram_reader),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_ROLES,
+        ),
+        "audit_dependencies": RegisteredTool(
+            make_dependency_audit_tool(
+                workspace_root=workspace_root,
+                path_provider=path_provider,
+                ram_reader=ram_reader,
+            ),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_ROLES,
+        ),
+        "web_search": RegisteredTool(
+            make_web_search_tool(),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_ROLES,
+        ),
+        "read_token_ledger": RegisteredTool(
+            TokenLedgerReadTool(ledger=token_ledger),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_AND_ORCHESTRATOR,
+        ),
+    }

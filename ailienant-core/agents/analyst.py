@@ -46,6 +46,11 @@ _AGREEMENT_SIGNALS = frozenset([
 # Strong reference set: prevents GC from destroying broadcast tasks mid-flight.
 _background_tasks: Set[asyncio.Task[Any]] = set()
 
+# Upper bound on reason→call→observe cycles the analyst spends gathering read-only
+# diagnostics before it must commit to its next question. Bounded so a chatty model
+# cannot stall the Socratic turn.
+_ANALYST_TOOL_MAX_ITERS: int = 3
+
 _CLOSE_HINT = (
     "\n> To summarize the plan, respond with 'OK', 'Proceed', or 'Go'."
 )
@@ -165,6 +170,7 @@ async def run_analyst_node(
 
     from api.websocket_manager import vfs_manager  # deferred: avoids circular import
 
+    dispatch_trace: List[Dict[str, Any]] = []
     if DEBUG_MODE:
         if not has_prior:
             question = (
@@ -194,6 +200,14 @@ async def run_analyst_node(
         # stream here (await) before returning hitl_pending=True — the graph
         # suspends on return, so a backgrounded stream would be truncated.
         context_block = await _assemble_socratic_context(state)
+        # Before committing to the question, optionally call READ_ONLY diagnostic
+        # tools to ground it in the user's real code. Best-effort and bounded; any
+        # failure degrades to the context-only question.
+        grounding, dispatch_trace = await _gather_tool_grounding(state, config, task_id)
+        if grounding:
+            context_block = (
+                f"{context_block}\n\n{grounding}" if context_block else grounding
+            )
         parts: List[str] = []
         try:
             async for chunk in _stream_question_llm(
@@ -215,11 +229,16 @@ async def run_analyst_node(
 
     new_messages.append({"role": "assistant", "content": question})
 
-    return {
+    result: Dict[str, Any] = {
         "hitl_pending": True,
         "shared_understanding_reached": False,
         "messages": new_messages,
     }
+    # Append the executed-tool record only when the loop actually ran a tool, so
+    # the read-only no-tool turn keeps its minimal state-delta contract.
+    if dispatch_trace:
+        result["tool_dispatch_trace"] = dispatch_trace
+    return result
 
 
 async def _assemble_socratic_context(state: Dict[str, Any]) -> str:
@@ -244,6 +263,74 @@ async def _assemble_socratic_context(state: Dict[str, Any]) -> str:
     except Exception as exc:  # noqa: BLE001 — context assembly is best-effort
         logger.debug("Socratic context assembly failed (degrading): %s", exc)
         return ""
+
+
+async def _gather_tool_grounding(
+    state: Dict[str, Any],
+    config: Optional[RunnableConfig],
+    task_id: str,
+) -> tuple[str, List[Dict[str, Any]]]:
+    """Run a bounded READ_ONLY tool loop to ground the next Socratic question.
+
+    The analyst may call its diagnostic tools (lint, complexity, diff, dependency
+    audit) over the user's real code before asking, so the question references
+    concrete findings rather than guessing. Every call is gated through the same
+    permission matrix as the rest of the system; the analyst's tools are all
+    READ_ONLY, so the gate is friction-free here. Best-effort: skipped when there
+    is no workspace to inspect, and any failure degrades to no grounding (the
+    analyst must never crash the graph).
+
+    Returns the grounding text block (possibly empty) and the trace of executed
+    tool calls (name + args per entry) for the state delta.
+    """
+    if not (state.get("workspace_root") or state.get("active_file_path")):
+        return "", []
+    try:
+        from core.permissions import session_mode_from_channel
+        from core.tool_dispatch import ToolCall, ToolDispatcher, make_gateway_reasoner
+        from shared.rbac import PermissionMode
+        from tools.analyst_tools import build_analyst_tools
+
+        tools = build_analyst_tools(state)
+        dispatcher = ToolDispatcher(
+            tools,
+            active_role="analyst",
+            session_mode=session_mode_from_channel(state.get("session_permission_mode")),
+            state=state,
+            agent_permission=PermissionMode.READ_ONLY,
+        )
+        configurable = (config or {}).get("configurable", {})
+        reasoner = configurable.get("analyst_tool_reasoner") or make_gateway_reasoner(
+            tools, session_id=task_id
+        )
+        seed = (
+            "Before asking your next Socratic question, you MAY call READ_ONLY "
+            "diagnostic tools to ground it in the user's real code. Call only what "
+            "helps; emit {} to skip."
+        )
+        loop_messages: List[Dict[str, Any]] = [{"role": "user", "content": seed}]
+        trace: List[ToolCall] = []
+        await dispatcher.run_loop(
+            loop_messages, reasoner, max_iters=_ANALYST_TOOL_MAX_ITERS, trace=trace
+        )
+        observations = [
+            str(m.get("content", ""))
+            for m in loop_messages
+            if m.get("role") == "system"
+            and str(m.get("content", "")).startswith("[tool observations]")
+        ]
+        block = (
+            "## Read-only diagnostics gathered for this question\n"
+            + "\n\n".join(observations)
+            if observations
+            else ""
+        )
+        return block, [{"name": c.name, "args": c.args} for c in trace]
+    except Exception as exc:  # noqa: BLE001 — analyst must never crash the graph
+        logger.warning(
+            "Analyst tool grounding failed [%s: %s]", type(exc).__name__, exc
+        )
+        return "", []
 
 
 async def _stream_question_llm(

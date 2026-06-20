@@ -577,6 +577,11 @@ class AIlienantGraphState(TypedDict):
     mcp_server_endpoint: Optional[str]
     rbwe_violations: Annotated[List[str], operator.add]
 
+    # tool_dispatch_trace: append-only record of tool calls a cognitive node
+    # actually executed through the runtime dispatch loop (name + args per entry).
+    # Lets the graph and tests observe that a registered tool was invoked end-to-end.
+    tool_dispatch_trace: Annotated[List[Dict[str, Any]], operator.add]
+
     # --- Phase 6 — Operational Safety Layer channels (PHASE_6_BLUEPRINT §1) ---
     # All scalar overwrite (no reducer) with safe defaults — Phase 5.7 checkpoints
     # deserialise unchanged. Landed in Phase 6.3 (OOM Cascade needs

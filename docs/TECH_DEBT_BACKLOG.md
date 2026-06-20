@@ -62,7 +62,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
-| DEBT-066 | No runtime LLM tool-dispatch loop — registered orchestrator/coder/analyst tools never invoked (factories ready) | HIGH | Cognitive activation | Agency phase | Floating |
+| DEBT-068 | Dispatch loop wired only on the Analyst (READ_ONLY) — Coder/Planner/Orchestrator + HITL routing pending; Researcher needs node promotion | HIGH | Cognitive activation | 8.10.11 | Floating |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
@@ -75,7 +75,6 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
 | DEBT-037 | G2 retrieval isolation uses mock.patch | LOW | Test architecture | post-8.5/8.8 | Floating |
 | DEBT-033 | config.json key_ref round-trip | LOW | UX gap | 8.4.x or later | Floating |
-| DEBT-032 | Coder-side skill injection | LOW | Feature gap | 8.4.x or 8.8+ | Floating |
 | DEBT-027 | MCP servers not auto-connected at launch | LOW | Feature gap | dedicated slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
@@ -162,15 +161,23 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** Phase 11.7 (FE) + Division 8.12 (backend hook).
 - **Notes:** analogous to Claude Code's `/compact` auto-compact. Addresses both DOM memory pressure AND context-window viability for local model sessions. Confirmed need 2026-06-14.
 
-### DEBT-066 [HIGH · Floating] — No runtime LLM tool-dispatch loop activates the registered tools
+### DEBT-066 [HIGH · RESOLVED 2026-06-20, 8.10.8] — No runtime LLM tool-dispatch loop activates the registered tools
 
-- **Date:** 2026-06-15
-- **Reproduce:** The orchestrator/coder/analyst tool *classes* register their schemas in the `ToolRAGStore` and (as of 8.10.2) have state/session/search-injecting factories, but no production code path runs an LLM tool-calling loop (no ReAct / `bind_tools` / `ToolNode`) that constructs and dispatches them. Only `execute_tracked_tool` dispatches a live tool, and it wires `sandbox_bash` exclusively. The agents make deterministic `LLMGateway.ainvoke` calls; the registered tools are retrievable but never invoked.
-- **File(s):** wiring target is a new cognitive dispatch surface (extend `core/task_service.py::execute_tracked_tool` or add a tool-calling node in `brain/`); consumes the 8.10.2 factories (`tools/agent_tools.py::build_orchestrator_tools`, `tools/coder_tools.py::make_coder_execute_tools`, `tools/analyst_tools.py::make_web_search_tool` / `make_dependency_audit_tool`).
-- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. 8.10.2 made tool construction correct-when-wired (state/session/search injected, HITL gates ready); the missing piece is the activation loop that lets a model select and call them.
-- **Blocked by:** nothing structural; needs the dispatch-loop design (deterministic-engine-compatible) — a focused intelligence-phase effort, not a rebuild.
-- **Phase:** later intelligence / Agency phase.
-- **Notes:** logged at 8.10.2 ship per CLAUDE.md §11.3. Supersedes the dispatch half of the former DEBT-043/046/042 and the DEBT-054 channel-wiring concern.
+- **Date:** 2026-06-15 · **Resolved:** 2026-06-20 (8.10.8)
+- **Reproduce (original):** The orchestrator/coder/analyst tool *classes* register their schemas in the `ToolRAGStore` and (as of 8.10.2) have state/session/search-injecting factories, but no production code path ran an LLM tool-calling loop that constructs and dispatches them. The agents made deterministic `LLMGateway.ainvoke` calls; the registered tools were retrievable but never invoked.
+- **Resolved:** built the role-agnostic dispatch substrate `core/tool_dispatch.py` (`ToolCall`, `parse_tool_call_envelope`, `ToolDispatcher`, `make_gateway_reasoner`) generalizing the agentic-cell prompt-enforced-JSON pattern (the gateway returns text, no `bind_tools`). Every dispatch is gated through the same pure `evaluate_action` matrix; the loop is self-correcting (malformed JSON / unknown tool → feedback observation, never a crash). Wired live on the Analyst node (`build_analyst_tools(state)` + a bounded pre-grill loop in `run_analyst_node`), whose six tools are all READ_ONLY → friction-free gate. Executed calls recorded on the additive `tool_dispatch_trace` state channel.
+- **Continuation:** the loop is proven on one role only. Extending it to the Coder/Planner/Orchestrator (and adding HITL approval routing for mutating tiers, which the READ_ONLY Analyst path never exercised) is tracked as **DEBT-068**. The Researcher additionally needs node promotion first.
+- **Notes:** scope deliberately bounded to substrate + one-node proof so the activation lands with zero mutation blast radius before mutating roles are wired. Supersedes the dispatch half of the former DEBT-043/046/042 and the DEBT-054 channel-wiring concern.
+
+### DEBT-068 [HIGH · Floating] — Tool-dispatch loop wired only on the Analyst; mutating roles + HITL routing pending
+
+- **Date:** 2026-06-20
+- **Reproduce:** `core/tool_dispatch.py` (the substrate from 8.10.8) is invoked only by `run_analyst_node`. The Coder, Planner, and Orchestrator nodes still make single-shot `LLMGateway` calls and never construct a `ToolDispatcher`, so their registered tools (including the mutating coder arsenal) remain unreachable by the model. `ToolDispatcher.dispatch` returns a "requires human approval" stub for the HITL decision rather than routing to `request_human_approval`, because the only live consumer is READ_ONLY.
+- **File(s):** wiring targets `agents/coder.py`, `agents/planner.py`, `agents/orchestrator.py`, `brain/engine.py`; HITL routing seam in `core/tool_dispatch.py::ToolDispatcher.dispatch`; consumes the existing 8.10.2 factories. Researcher promotion to a first-class graph node is a prerequisite for wiring its loop (its skeleton is consumed as optional Planner context today).
+- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**: 8.10.8 bounded scope to a READ_ONLY proof so the substrate ships before mutating dispatch.
+- **Blocked by:** nothing structural; needs the HITL-routing wiring + per-role tool registries + the Researcher node promotion.
+- **Phase:** 8.10.11 (Remaining-role Tool Dispatch Wiring).
+- **Notes:** logged at 8.10.8 ship per CLAUDE.md §11.3 as the continuation of DEBT-066.
 
 ### DEBT-067 [LOW · Floating] — Hardware stress simulator uses synthetic injection, not real allocation
 
@@ -350,15 +357,12 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** a standalone config-portability slice (8.4.x or a later polish pass).
 - **Notes:** logged at 8.4.6 ship per CLAUDE.md §7.3. Export already prevents credential leakage (userinfo redaction + no secret in JSON), so this is a usability gap, not a security one. Substrate is the backend-mask store (`core/config/mcp_secrets.py`), consistent with the ADR-757 amendment.
 
-### DEBT-032 [LOW · Floating] — Coder-side skill injection (planner-only shipped in 8.4.5)
+### DEBT-032 [LOW · RESOLVED 2026-06-20, 8.10.8] — Coder-side skill injection (planner-only shipped in 8.4.5)
 
-- **Date:** 2026-06-11
-- **Reproduce:** submit a task with a saved skill active — the skill directive block appears in the planner system prompt (and therefore in the `mission_spec` the coder receives) but is **not** re-injected into the coder's own system prompt. For skills that express a coding style or pattern constraint, the planner-mediated injection is sufficient; for skills that must survive across multi-step coder turns or whose instruction is structurally important to coder generation, a coder-side injection would be more robust.
-- **File(s):** `ailienant-core/agents/planner.py` (injection seam, 8.4.5) — the coder (`agents/coder.py`) has no equivalent injection.
-- **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The planner bakes skill directives into the `mission_spec` that the coder receives, so one seam shapes the whole task with zero TypedDict churn and the lowest blast radius for 8.4.5.
-- **Blocked by:** nothing; requires reading `state.get("active_skills")` in the coder's system-prompt construction and calling `build_skill_directive_block` there (same seam pattern as the planner).
-- **Phase:** a standalone coder-side injection slice (8.4.x or a bundled polish pass).
-- **Notes:** logged at 8.4.5 ship as required by CLAUDE.md §7.3 (every MVP must surface a tracked follow-up). The planner-only path covers the vast majority of skill-directive use cases.
+- **Date:** 2026-06-11 · **Resolved:** 2026-06-20 (8.10.8)
+- **Reproduce (original):** submit a task with a saved skill active — the skill directive block appeared in the planner system prompt (and therefore in the `mission_spec` the coder receives) but was **not** re-injected into the coder's own system prompt.
+- **Resolved:** `agents/coder.py` now mirrors the planner seam — after the per-turn boundary UUID is minted, it reads `state.get("active_skills")` and appends `build_skill_directive_block(_skills, boundary)` to the coder system prompt (same ephemeral XML boundary as every other injected directive). No new state field — `active_skills` is already populated at task init.
+- **Notes:** the planner-mediated path still shapes the whole task; the coder-side injection makes skill directives robust across multi-step coder turns.
 
 ### DEBT-027 [LOW · Floating] — MCP servers testable but not auto-connected at task launch
 

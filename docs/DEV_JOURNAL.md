@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.8: Runtime tool-dispatch activation (substrate + Analyst) + DEBT-032 — 2026-06-20
+**Status:** COMPLETE | **Gates:** mypy 0/356 · pytest 1622 passed (2 skipped) · ruff clean · pyright 0 (changed files)
+- Shipped: DEBT-066 — `core/tool_dispatch.py` (role-agnostic `ToolDispatcher`, `parse_tool_call_envelope`, `make_gateway_reasoner`) generalizing the agentic-cell prompt-enforced-JSON pattern; gated through `evaluate_action`; self-correcting (bad JSON / unknown tool → feedback turn, never a crash). Wired live on the Analyst via `build_analyst_tools(state)` + a bounded pre-grill loop in `run_analyst_node`; executed calls recorded on the additive `tool_dispatch_trace` channel. DEBT-032 — coder mirrors the planner skill-directive seam.
+- Key decision: scope bounded to substrate + one READ_ONLY node (Analyst) so activation lands with zero mutation blast radius; prompt-enforced JSON chosen because the gateway returns text (no `bind_tools`).
+- Deferred: DEBT-068 — wire Coder/Planner/Orchestrator + HITL routing (Researcher needs node promotion first) → 8.10.11.
+
 ## 8.10.7: Pre-launch gap audit (docs-only) — 2026-06-20
 **Status:** COMPLETE | **Gates:** docs-only (no code, no type/test gates)
 - Shipped: `DEVELOPERS.md` honest list updated — MCP adapter wiring marked shipped with floating deferrals (DEBT-029, DEBT-066) called out; tool catalog corrected from "16 of ~56" to ~50 built across six waves with DEBT-066 as the remaining cognitive-activation gap; Researcher and Orchestrator sections reflect built tool bundles and wired factories; prompt caching noted as planned for the pre-launch innovation sprint.
