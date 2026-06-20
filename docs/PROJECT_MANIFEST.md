@@ -544,7 +544,7 @@
   - DEBT-035 re-scoped out of this sub-phase → **Division 8.13** (polyglot devcontainer execution layer): the "extend our image with node:20-slim" approach was rejected as a TS/Python runtime bias; the polyglot devcontainer adapter resolves it instead.
   - **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` + `npm run lint` 0 (DEBT-024 host).
 
-- [ ] **8.10.7 — Pre-launch gap audit (docs-only)**
+- [x] **8.10.7 — Pre-launch gap audit (docs-only)**
   Update `DEVELOPERS.md` honest list to reflect completions (56-tool catalog, MCP wiring, orchestrator/researcher nodes), remaining deferrals (Wasm default, full MCTS, autonomous dreaming, auth), and planned implementations (prompt caching → Phase 13.1). **DoD:** honest list accurate; no code changes.
 
 - [ ] **8.10.8 — Runtime Tool Dispatch Activation**

@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.7: Pre-launch gap audit (docs-only) — 2026-06-20
+**Status:** COMPLETE | **Gates:** docs-only (no code, no type/test gates)
+- Shipped: `DEVELOPERS.md` honest list updated — MCP adapter wiring marked shipped with floating deferrals (DEBT-029, DEBT-066) called out; tool catalog corrected from "16 of ~56" to ~50 built across six waves with DEBT-066 as the remaining cognitive-activation gap; Researcher and Orchestrator sections reflect built tool bundles and wired factories; prompt caching noted as planned for the pre-launch innovation sprint.
+
+---
+
 ## 8.10.6: MEDIUM debts (four) + carve-out of Division 8.13 — 2026-06-20
 **Status:** COMPLETE | **Gates:** mypy 0/354 · pytest 1603 passed (2 skipped) · npm compile 0 · npm lint 0
 - Shipped: DEBT-024 — O(Δ) HITL transport (`ProposedFile.unified_diff`, `new_content` deprecated `Optional=None` §10-safe; server reads old via the VFS reader, EOL-normalizes, emits a `difflib` diff; host reconstructs via `applyPatch`, drift→stale). DEBT-041 — FTS5 **trigram** `file_lines` index (stdlib, feature-detected) populated by `LazyIndexer`; `GrepTool` superset-narrows the catalog (RAM ∪ FTS-hits ∪ index-lag) then regex-confirms, with a per-line cap + scan deadline. DEBT-048/050 — `get_task_service()`/`reset_task_service()` accessor; `RunBenchmarkTool` charges `ledger.consume_budget` upfront and `register_active_task(task_id)` with refund/release compensation. DEBT-053 — `BackgroundTaskManager.stop` async SIGTERM→5 s grace→SIGKILL/`taskkill /T /F`.
