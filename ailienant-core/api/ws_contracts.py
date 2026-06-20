@@ -122,7 +122,14 @@ class ProposedFile(BaseModel):
     """
 
     file_path: str
-    new_content: str
+    # O(Δ) transport: the server computes a unified diff and the host reconstructs
+    # the post-edit content via the `diff` library's applyPatch. The full content
+    # is no longer shipped per file.
+    unified_diff: Optional[str] = None
+    # Deprecated — the server no longer populates this; the host reconstructs the
+    # new side from `unified_diff`. Kept (Optional, default None) so the wire
+    # contract stays additive (§10) and any legacy reader degrades gracefully.
+    new_content: Optional[str] = None
     base_hash: Optional[str] = None
 
 

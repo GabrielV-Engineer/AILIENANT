@@ -1049,7 +1049,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 case 'server_hitl_approval_request': {
                     const req = msg.payload as HITLIntervention & {
                         files?: DiffBlockShape[];
-                        proposed_files?: Array<{ file_path: string; new_content: string; base_hash?: string | null }>;
+                        proposed_files?: Array<{ file_path: string; unified_diff?: string; new_content?: string; base_hash?: string | null }>;
                     };
                     // Soft-permission fast path: when the user enabled auto-accept
                     // and every risk metric is low (or none was attached), approve
@@ -1088,7 +1088,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             patch_id: req.approval_id,
                             file_path: f.file_path,
                             old_content: '',
-                            new_content: f.new_content,
+                            // Host preview faulted: the webview has no old side to
+                            // reconstruct the O(Δ) diff against, so the new side may be
+                            // empty here. The card still mounts; the user can authorize
+                            // and the host's apply-time guard remains authoritative.
+                            new_content: f.new_content ?? '',
                             status: (f.base_hash ? 'edit' : 'create') as 'edit' | 'create',
                         }));
                     if (blocks.length > 0) {

@@ -14,6 +14,7 @@ import asyncio
 import functools
 import json
 import logging
+import os
 import uuid
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Type
 
@@ -73,6 +74,35 @@ def _cleanup_benchmark(task: "asyncio.Task[None]", suite: str) -> None:
         )
 
 
+# Internal agents invoking run_benchmark are billed against a single synthetic
+# caller bucket so their compute is accounted for in the same ledger the external
+# gateway charges. A distinct id keeps internal spend separable from any external
+# caller's budget.
+_INTERNAL_CALLER_ID: str = "internal:agent"
+
+
+def _benchmark_cost() -> float:
+    """Flat budget cost charged per benchmark run (env-configurable).
+
+    Reads the same env var as the gateway handler so internal and external runs
+    are priced identically, without importing the heavy gateway.handlers module.
+    """
+    try:
+        return float(os.environ.get("AILIENANT_GATEWAY_BENCHMARK_COST", "1.0"))
+    except ValueError:
+        return 1.0
+
+
+async def _safe_refund(caller_id: str, amount: float) -> None:
+    """Refund a prior charge, never raising — a refund fault must not mask a caller error."""
+    from gateway import ledger  # deferred — keeps module-load cheap
+
+    try:
+        await ledger.consume_budget(caller_id, -amount)
+    except Exception as refund_error:  # noqa: BLE001 — log and move on, never re-raise
+        logger.error("benchmark budget refund failed: %s", refund_error)
+
+
 # =====================================================================
 # A — RunBenchmarkTool
 # =====================================================================
@@ -105,6 +135,8 @@ class RunBenchmarkTool(BaseTool):
 
     async def _arun(self, suite: str = "v1") -> str:
         from core import benchmark_service  # deferred — avoids heavy import at load time
+        from core.task_service import get_task_service
+        from gateway import ledger
 
         try:
             reserved = benchmark_service.try_reserve(suite)
@@ -114,6 +146,16 @@ class RunBenchmarkTool(BaseTool):
         if not reserved:
             return json.dumps({"status": "busy", "reason": "benchmark_busy"})
 
+        # Pay upfront before dispatch so a crash between dispatch and charge can never
+        # hand out a free, expensive run. Refund on any downstream failure. Mirrors
+        # the external gateway handler so internal runs are billed identically.
+        cost = _benchmark_cost()
+        try:
+            await ledger.consume_budget(_INTERNAL_CALLER_ID, cost)
+        except BaseException:
+            benchmark_service.release_flight()
+            raise
+
         task_id = uuid.uuid4().hex
         try:
             runner: asyncio.Task[None] = asyncio.create_task(
@@ -121,16 +163,32 @@ class RunBenchmarkTool(BaseTool):
                 name=f"run_benchmark:{task_id}",
             )
         except BaseException:
+            # The task never existed, so its done-callback can never fire — release
+            # the slot here and refund the upfront charge.
+            await _safe_refund(_INTERNAL_CALLER_ID, cost)
             benchmark_service.release_flight()
             raise
 
         _active_benchmark_tasks.add(runner)
         runner.add_done_callback(functools.partial(_cleanup_benchmark, suite=suite))
+
+        # Register so check_task_status observes the run as in flight; the task's own
+        # done-callback auto-deregisters on completion. The benchmark uuid is a
+        # distinct key namespace from UI session ids, so this cannot clobber an active
+        # generation. On registration failure, cancel the runner (its done-callback
+        # performs the single slot release) and refund.
+        try:
+            get_task_service().register_active_task(task_id, runner)
+        except BaseException:
+            runner.cancel()
+            await _safe_refund(_INTERNAL_CALLER_ID, cost)
+            raise
+
         return json.dumps(
             {
                 "task_id": task_id,
                 "status": "submitted",
-                "poll": "task_get",
+                "poll": "check_task_status",
                 "then": "get_benchmark_report",
             }
         )
@@ -327,7 +385,7 @@ class TaskStopInput(BaseModel):
 
 
 class TaskStopTool(BaseTool):
-    """Send SIGTERM to a running background task.
+    """Terminate a running background task (soft signal, grace, then force-kill).
 
     Returns 'cancelled' if found and terminated, 'not_found_or_completed' if the
     task was already done or the ID is unknown.
@@ -335,8 +393,9 @@ class TaskStopTool(BaseTool):
 
     name: str = "task_stop"
     description: str = (
-        "Send SIGTERM to a background task spawned via task_create. "
-        "Returns 'cancelled' on success or 'not_found_or_completed' if already done."
+        "Terminate a background task spawned via task_create (SIGTERM, then SIGKILL "
+        "after a grace period). Returns 'cancelled' on success or "
+        "'not_found_or_completed' if already done."
     )
     args_schema: Type[BaseModel] = TaskStopInput
 
@@ -350,7 +409,7 @@ class TaskStopTool(BaseTool):
         raise NotImplementedError("TaskStopTool is async-only — use _arun().")
 
     async def _arun(self, task_id: str) -> str:
-        stopped = self._manager.stop(task_id)
+        stopped = await self._manager.stop(task_id)
         if not stopped:
             return json.dumps({"status": "not_found_or_completed", "task_id": task_id})
         return json.dumps({"status": "cancelled", "task_id": task_id})

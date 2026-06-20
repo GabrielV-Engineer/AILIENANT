@@ -1,11 +1,16 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { applyPatch } from 'diff';
 import type { ASTToken } from '../shared/config';
 
 interface WorkspaceEditItem {
     file_path: string;
-    new_content: string;
+    // O(Δ) transport (DEBT-024): the HITL preview carries a server-computed unified
+    // diff and the host reconstructs the new side via applyPatch. The apply-write
+    // path still carries full new_content. Exactly one of the two is populated.
+    unified_diff?: string;
+    new_content?: string;
     base_hash?: string | null;
 }
 
@@ -76,6 +81,27 @@ export class PatchActuator {
         return root ? vscode.Uri.joinPath(root, filePath) : vscode.Uri.file(filePath);
     }
 
+    /**
+     * Resolve the post-edit content for an item against its live old side.
+     *
+     * Returns full new_content verbatim when the backend shipped it (the apply
+     * path). Otherwise reconstructs it from the O(Δ) unified diff (the HITL
+     * preview): applyPatch returns `false` when the diff's context does not match
+     * the host's old side (server-old vs host-old drift), which we surface as
+     * `null` so callers degrade to a stale-file notice rather than write/show
+     * corrupt content. A normalized old side keeps the match EOL-stable.
+     */
+    private static _effectiveNewContent(item: WorkspaceEditItem, oldContent: string): string | null {
+        if (typeof item.new_content === 'string') {
+            return item.new_content;
+        }
+        if (typeof item.unified_diff === 'string') {
+            const patched = applyPatch(PatchActuator._normalizeEol(oldContent), item.unified_diff);
+            return patched === false ? null : patched;
+        }
+        return null;
+    }
+
     private static async _openExisting(uri: vscode.Uri): Promise<vscode.TextDocument | null> {
         try {
             return await vscode.workspace.openTextDocument(uri);
@@ -100,11 +126,18 @@ export class PatchActuator {
             // the pending approval. Coerce to strings up front and degrade a read
             // failure to an empty old side rather than throwing.
             const filePath = typeof item.file_path === 'string' ? item.file_path : String(item.file_path ?? '');
-            const newContent = typeof item.new_content === 'string' ? item.new_content : String(item.new_content ?? '');
             try {
                 const uri = PatchActuator._resolveUri(filePath);
                 const doc = await PatchActuator._openExisting(uri);
                 const oldContent = doc ? doc.getText() : '';
+                const newContent = PatchActuator._effectiveNewContent(item, oldContent);
+                if (newContent === null) {
+                    // Diff could not be reconstructed against the live old side
+                    // (drift). Skip this file's inline render rather than show a
+                    // corrupt diff — the approval card still appears, and the
+                    // apply path's base_hash guard catches the drift definitively.
+                    continue;
+                }
                 diffs.push({
                     file_path: filePath,
                     old_content: PatchActuator._normalizeEol(oldContent),
@@ -112,8 +145,13 @@ export class PatchActuator {
                     status: doc ? 'edit' : 'create',
                 });
             } catch {
-                // Could not resolve/read the file — show it as a create against an
-                // empty base so the user still sees (and can authorize) the change.
+                // Could not resolve/read the file — reconstruct against an empty
+                // base and show it as a create so the user still sees (and can
+                // authorize) the change. If even that fails to apply, skip its render.
+                const newContent = PatchActuator._effectiveNewContent(item, '');
+                if (newContent === null) {
+                    continue;
+                }
                 diffs.push({
                     file_path: filePath,
                     old_content: '',
@@ -138,17 +176,30 @@ export class PatchActuator {
             const toSave: vscode.Uri[] = [];
 
             // Pass 1 — resolve + stale guard for every file (atomic: any stale aborts all).
-            const resolved: Array<{ uri: vscode.Uri; doc: vscode.TextDocument | null; item: WorkspaceEditItem }> = [];
+            // The effective new side is resolved here too: full new_content when the
+            // backend shipped it, else reconstructed from the unified diff. A diff that
+            // cannot be reconstructed against the live old side is a drift — treated as
+            // stale so the whole set aborts rather than writing corrupt content.
+            const resolved: Array<{ uri: vscode.Uri; doc: vscode.TextDocument | null; item: WorkspaceEditItem; newContent: string }> = [];
             for (const item of payload.edits) {
                 const uri = PatchActuator._resolveUri(item.file_path);
                 const doc = await PatchActuator._openExisting(uri);
+                const oldContent = doc ? doc.getText() : '';
                 const currentHash = doc ? PatchActuator._hash(doc.getText()) : PatchActuator._hash('');
                 // A real base_hash is always a 64-char sha256 (never empty); skip the
                 // guard only when it's genuinely absent.
                 if (item.base_hash && currentHash !== item.base_hash) {
                     result.stale_files.push(item.file_path);
+                    resolved.push({ uri, doc, item, newContent: '' });
+                    continue;
                 }
-                resolved.push({ uri, doc, item });
+                const newContent = PatchActuator._effectiveNewContent(item, oldContent);
+                if (newContent === null) {
+                    result.stale_files.push(item.file_path);
+                    resolved.push({ uri, doc, item, newContent: '' });
+                    continue;
+                }
+                resolved.push({ uri, doc, item, newContent });
             }
 
             if (result.stale_files.length > 0) {
@@ -162,22 +213,22 @@ export class PatchActuator {
             // The pre-edit text (doc.getText()) is captured here for the inline diff the
             // webview renders — the actuator is the only place that holds both sides.
             const diffs: PatchedFileDiff[] = [];
-            for (const { uri, doc, item } of resolved) {
+            for (const { uri, doc, item, newContent } of resolved) {
                 const oldContent = doc ? doc.getText() : '';
                 if (!doc) {
                     edit.createFile(uri, { ignoreIfExists: true });
-                    edit.insert(uri, new vscode.Position(0, 0), item.new_content);
+                    edit.insert(uri, new vscode.Position(0, 0), newContent);
                 } else {
                     const fullRange = new vscode.Range(
                         new vscode.Position(0, 0),
                         doc.lineAt(Math.max(doc.lineCount - 1, 0)).range.end
                     );
-                    edit.replace(uri, fullRange, item.new_content);
+                    edit.replace(uri, fullRange, newContent);
                 }
                 diffs.push({
                     file_path: item.file_path,
                     old_content: PatchActuator._normalizeEol(oldContent),
-                    new_content: PatchActuator._normalizeEol(item.new_content),
+                    new_content: PatchActuator._normalizeEol(newContent),
                     status: doc ? 'edit' : 'create',
                 });
                 toSave.push(uri);

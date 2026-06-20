@@ -22,6 +22,7 @@ from core.compute_pool import compute_pool
 from core.db import (
     get_indexed_count,
     get_indexed_hash,
+    index_file_lines,
     purge_file_nodes,
     upsert_dependencies,
     upsert_indexed_file,
@@ -504,6 +505,15 @@ class ReactiveIndexer:
                 await upsert_dependencies(result.file_path, result.imports, project_id)
                 on_deps_changed()
             await upsert_indexed_file(filepath, project_id, content_hash=digest)
+            try:
+                # Accelerator-only: a failed line-index write must never block the
+                # canonical index/embed flow. The superset narrowing treats an
+                # un-indexed file as a full-scan candidate, so correctness holds.
+                await index_file_lines(filepath, resolved, project_id)
+            except Exception as line_exc:  # noqa: BLE001 — log and continue; index is a pre-filter
+                logger.warning(
+                    "ReactiveIndexer: line-index write failed for %s: %s", filepath, line_exc
+                )
             embedded = await self._semantic_upsert(filepath, resolved, project_id)
             if embedded:
                 self._breaker.record_success(key)

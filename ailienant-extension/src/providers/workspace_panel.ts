@@ -615,7 +615,7 @@ export class WorkspacePanelManager {
             // plain forward below.
             if (msg.event_type === 'server_hitl_approval_request') {
                 const reqData = msg.data as HITLApprovalRequestPayload & {
-                    proposed_files?: Array<{ file_path: string; new_content: string; base_hash?: string | null }>;
+                    proposed_files?: Array<{ file_path: string; unified_diff?: string; new_content?: string; base_hash?: string | null }>;
                 };
                 hitlNotifier.onApprovalRequest(reqData);
                 const proposed = reqData.proposed_files;
@@ -633,6 +633,7 @@ export class WorkspacePanelManager {
                             diffs = await PatchActuator.preview(
                                 proposed.map(f => ({
                                     file_path: f.file_path,
+                                    unified_diff: f.unified_diff,
                                     new_content: f.new_content,
                                     base_hash: f.base_hash,
                                 })),

@@ -67,17 +67,12 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
-| DEBT-048 | RunBenchmarkTool skips task_service.register_active_task — task_id not visible via check_task_status | MEDIUM | Integration gap | post-8.8.6 | Floating |
 | DEBT-049 | SkillInvokeTool passes embed_fn=None — semantic skill auto-matching disabled | LOW | Feature gap | post-8.8.6 | Floating |
-| DEBT-050 | RunBenchmarkTool does not charge ledger.consume_budget — internal benchmarks unbudgeted | MEDIUM | Correctness gap | post-8.8.6 | Floating |
 | DEBT-051 | list_tasks cross-role visibility — orchestrator sees all tasks regardless of originating role | LOW | Feature gap | post-8.8.6 | Floating |
 | DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | DB-layer async migration | Floating |
-| DEBT-053 | TaskStopTool uses SIGTERM only — no SIGKILL escalation after timeout | LOW | Reliability | post-8.8.6 | Floating |
 | DEBT-054 | todo_write / agent_todos channel unbound — no cognitive node wiring | LOW | Integration gap | future integration sprint | Floating |
-| DEBT-041 | GrepTool sequential scan (no content index) | MEDIUM | Performance | 8.8.x | Floating |
 | DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
-| DEBT-035 | MultiPL-E TypeScript execution unsupported | MEDIUM | Feature gap | post-8.5/8.8 | Floating |
-| DEBT-024 | HITL inline-diff O(N) transport | MEDIUM | Performance | future perf sub-phase | Floating |
+| DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
 | DEBT-037 | G2 retrieval isolation uses mock.patch | LOW | Test architecture | post-8.5/8.8 | Floating |
 | DEBT-033 | config.json key_ref round-trip | LOW | UX gap | 8.4.x or later | Floating |
 | DEBT-032 | Coder-side skill injection | LOW | Feature gap | 8.4.x or 8.8+ | Floating |
@@ -207,8 +202,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** post-8.8.5.
 - **Notes:** logged at 8.8.5 ship per CLAUDE.md §11.3.
 
-### DEBT-048 [MEDIUM · Floating] — RunBenchmarkTool skips task_service.register_active_task
+### DEBT-048 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — RunBenchmarkTool skips task_service.register_active_task
 
+- **Resolved:** added a module-level `get_task_service()` accessor (the DI seam the blocker named) + `reset_task_service()` for test isolation; `RunBenchmarkTool._arun` now `register_active_task(task_id, runner)` (benchmark uuid is a distinct key namespace from UI session ids → no abort-mesh clobber), mirroring the host submit endpoint. `check_task_status`/`get_task_status` now report the run as running.
 - **Date:** 2026-06-14
 - **Reproduce:** Submit a benchmark via `run_benchmark` tool and then poll `check_task_status` with the returned task_id. `check_task_status` routes through `task_service.get_task_status()` which only knows about tasks registered via `register_active_task`. Since the tool bypasses that call, it returns `{"status": "unknown"}`. `get_benchmark_report` still works (it reads the artifact file directly).
 - **File(s):** `ailienant-core/tools/gateway_tools.py` (`RunBenchmarkTool._arun`).
@@ -227,8 +223,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** post-8.8.6.
 - **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
 
-### DEBT-050 [MEDIUM · Floating] — RunBenchmarkTool does not charge ledger.consume_budget
+### DEBT-050 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — RunBenchmarkTool does not charge ledger.consume_budget
 
+- **Resolved:** `RunBenchmarkTool._arun` charges `ledger.consume_budget("internal:agent", cost)` upfront before dispatch (cost via a local `_benchmark_cost()` reading the same env var as the gateway handler), with refund-on-failure and slot-release compensation on every edge. Charge only — budget-ceiling *enforcement* stays the gateway handler's job.
 - **Date:** 2026-06-14
 - **Reproduce:** Internal agents invoking `run_benchmark` tool bypass the `ledger.consume_budget()` call that the external gateway handler applies. Benchmark compute cost is unaccounted for in the token ledger.
 - **File(s):** `ailienant-core/tools/gateway_tools.py` (`RunBenchmarkTool._arun`); compare `gateway/handlers.py` (`handle_run_benchmark`).
@@ -255,8 +252,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** DB-layer async migration.
 - **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
 
-### DEBT-053 [LOW · Floating] — TaskStopTool uses SIGTERM only, no SIGKILL escalation
+### DEBT-053 [LOW · RESOLVED 2026-06-20, 8.10.6] — TaskStopTool uses SIGTERM only, no SIGKILL escalation
 
+- **Resolved:** `BackgroundTaskManager.stop` is now async — commits `cancelled`, sends the soft signal, polls `returncode` to a 5 s grace deadline (no double-await against `_watch`'s `communicate()`), then escalates: POSIX `proc.kill()` (SIGKILL), Windows `taskkill /PID … /T /F` (tree, via the non-blocking asyncio subprocess). Sole caller `TaskStopTool._arun` was already async.
 - **Date:** 2026-06-14
 - **Reproduce:** Use `task_stop` on a process that traps SIGTERM. The process ignores the signal and keeps running; `_registry["status"]` is "cancelled" but the PID is still alive.
 - **File(s):** `ailienant-core/tools/execution_tools.py` (`BackgroundTaskManager.stop`).
@@ -273,8 +271,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future integration sprint.
 - **Notes:** logged at 8.8.7 ship per CLAUDE.md §11.3.
 
-### DEBT-041 [MEDIUM · Floating] — GrepTool reads catalog-only files sequentially without a content index
+### DEBT-041 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — GrepTool reads catalog-only files sequentially without a content index
 
+- **Resolved:** added an FTS5 **trigram** line index (`file_lines`, stdlib `sqlite3`, feature-detected — no new dep) populated by `LazyIndexer` at index time. `GrepTool` gains a `narrow_provider` that lifts a safe literal from the pattern and pre-filters the catalog to a SUPERSET of true matches (RAM buffers + FTS hits + un-indexed index-lag files), then regex-confirms — so a match is never dropped. ReDoS bound: per-line input cap + wall-clock scan deadline that returns partial results. Narrowing activates when `GrepTool` is constructed with the provider (`make_fts_narrow_provider`); the index population is live now.
 - **Date:** 2026-06-13
 - **Reproduce:** `GrepTool._arun` iterates `path_provider()` and calls `content_reader(path)` per file via the firewalled `read_safe` reader. The mandatory O(max_matches) short-circuit limits total matches, but on a large workspace every pre-filter file still incurs a disk read until a match is found. No inverted index exists.
 - **File(s):** `ailienant-core/tools/researcher_tools.py` (`GrepTool._scan`).
@@ -299,12 +298,13 @@ Decision    Not a defect — see [DECISION] tier.
 - **Reproduce:** run a TypeScript codegen problem through `SandboxCodegenExecutor.run(program, Language.TYPESCRIPT, …)` — it returns `ExecOutcome(passed=False, exit_code=-2, stderr="[unsupported_runtime: ...]")` instead of executing.
 - **File(s):** `ailienant-core/tests/benchmark/executors.py` (`SandboxCodegenExecutor`); `ailienant-core/core/sandbox.py` (`_DOCKERFILE_TEXT`, `python:3.13-slim`).
 - **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The shared sandbox image is Python-only (no Node/tsc), so MultiPL-E TS cannot be executed in-container. 8.3.1 ships the full TS *adapter* (loader, prompt, extraction, assembly, Pass@1 wiring); only the TS *execution backend* is deferred. Python (HumanEval) Pass@1 is real.
-- **Blocked by:** nothing technical — needs a Node-capable sandbox tier (extend the image with Node/tsx, or a vetted host-Node executor behind explicit opt-in) without compromising the locked Docker security profile.
-- **Phase:** a standalone benchmark-runtime slice (before the definitive cross-language run, post-8.5/8.8).
-- **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. Until then TS Pass@1 is `unsupported_runtime`; the 8.3.1 DoD is met on the Python subset.
+- **Blocked by:** nothing technical — needs a Node-capable sandbox tier without compromising the locked Docker security profile.
+- **Phase:** **RE-SCOPED → Division 8.13** (Polyglot Devcontainer Execution Layer, blueprint `docs/PHASE_8.13_BLUEPRINT.md`). The "extend our image with node:20-slim" approach was rejected as a TS/Python runtime bias (O(N)-runtime maintenance trap). Instead, the polyglot **devcontainer** adapter resolves it for the agent's *trusted* project execution, delegating image build/caching to the user's local Docker daemon; the untrusted benchmark TS lane stays `unsupported_runtime` (the devcontainer never runs untrusted model output — split-by-trust, §4).
+- **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. Until 8.13 lands, TS Pass@1 is `unsupported_runtime`; the Python subset DoD holds.
 
-### DEBT-024 [MEDIUM · Floating] — HITL inline-diff transport ships full file content (O(N)) instead of a unified diff (O(Δ))
+### DEBT-024 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — HITL inline-diff transport ships full file content (O(N)) instead of a unified diff (O(Δ))
 
+- **Resolved:** `ProposedFile` carries a server-computed `unified_diff` (additive; `new_content` demoted to deprecated `Optional[str]=None`, §10-safe); `task_service` reads the old side via the VFS-safe reader, EOL-normalizes both sides, and emits a `difflib` unified diff. The host (`PatchActuator`) reconstructs via the `diff` library's `applyPatch`; an `applyPatch` failure (server-old vs host-old drift) degrades to a stale-file notice, with the base-hash OCC guard still authoritative on apply. The apply-write path (`WorkspaceEditItem` full content) is unchanged.
 - **Date:** 2026-06-08
 - **Files:**
   - `ailienant-core/api/ws_contracts.py` — `ProposedFile.new_content` (full post-edit content).

@@ -27,6 +27,7 @@ import pytest
 
 from core.permissions import SessionPermissionMode, ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
+import tools.execution_tools as execution_tools
 from tools.execution_tools import (
     BackgroundTaskManager,
     _EXECUTE_ROLES,
@@ -58,6 +59,21 @@ from tools.gateway_tools import (
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_task_service() -> Any:
+    """Reset the process-wide TaskService around every test (R2).
+
+    The singleton retains its active-task registry for the life of the process;
+    without this, a benchmark registration in one case would leak into the next
+    and produce order-dependent flakes.
+    """
+    from core.task_service import reset_task_service
+
+    reset_task_service()
+    yield
+    reset_task_service()
 
 
 def _isolated_store(tmp_path: Path) -> ToolRAGStore:
@@ -342,7 +358,10 @@ async def test_run_benchmark_unknown_suite_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_run_benchmark_happy_path_wires_callback(tmp_path: Path) -> None:
+async def test_run_benchmark_happy_path_charges_registers_and_wires_callback(
+    tmp_path: Path,
+) -> None:
+    """DEBT-050: upfront ledger charge · DEBT-048: register_active_task · callback wired."""
     tool = RunBenchmarkTool()
     captured_callbacks: List[Any] = []
 
@@ -350,20 +369,61 @@ async def test_run_benchmark_happy_path_wires_callback(tmp_path: Path) -> None:
         def add_done_callback(self, cb: Any) -> None:
             captured_callbacks.append(cb)
 
+        def cancel(self) -> None:  # pragma: no cover — not reached on the happy path
+            pass
+
     async def _noop_run(task_id: str, suite: str = "v1") -> None:
         return None
+
+    charged: List[Any] = []
+
+    async def _fake_consume(caller_id: str, amount: float) -> None:
+        charged.append((caller_id, amount))
+
+    registered: List[Any] = []
+    fake_ts = MagicMock()
+    fake_ts.register_active_task.side_effect = lambda tid, t: registered.append((tid, t))
 
     with (
         patch("core.benchmark_service.try_reserve", return_value=True),
         patch("core.benchmark_service.run_benchmark", side_effect=_noop_run),
-        patch("asyncio.create_task", return_value=_FakeTask()) as mock_ct,
+        patch("asyncio.create_task", return_value=_FakeTask()),
+        patch("gateway.ledger.consume_budget", side_effect=_fake_consume),
+        patch("core.task_service.get_task_service", return_value=fake_ts),
     ):
         result = await tool._arun(suite="v1")
 
     payload = json.loads(result)
     assert payload["status"] == "submitted"
     assert "task_id" in payload
-    assert len(captured_callbacks) == 1  # _cleanup_benchmark partial wired
+    assert payload["poll"] == "check_task_status"  # task_get reads a different registry
+    assert len(captured_callbacks) == 1  # only _cleanup_benchmark (registration is mocked)
+    assert charged and charged[0][0] == "internal:agent"  # DEBT-050 upfront charge
+    assert registered and registered[0][0] == payload["task_id"]  # DEBT-048 registration
+
+
+@pytest.mark.anyio
+async def test_run_benchmark_refunds_and_releases_on_spawn_failure(tmp_path: Path) -> None:
+    """A spawn failure after the upfront charge must refund and release the slot."""
+    tool = RunBenchmarkTool()
+    consume_calls: List[Any] = []
+
+    async def _fake_consume(caller_id: str, amount: float) -> None:
+        consume_calls.append((caller_id, amount))
+
+    with (
+        patch("core.benchmark_service.try_reserve", return_value=True),
+        patch("core.benchmark_service.release_flight") as mock_release,
+        patch("asyncio.create_task", side_effect=RuntimeError("loop gone")),
+        patch("gateway.ledger.consume_budget", side_effect=_fake_consume),
+    ):
+        with pytest.raises(RuntimeError):
+            await tool._arun(suite="v1")
+
+    # Charged once (+cost), then refunded once (-cost); slot released.
+    assert len(consume_calls) == 2
+    assert consume_calls[0][1] == -consume_calls[1][1]
+    mock_release.assert_called_once()
 
 
 @pytest.mark.anyio
@@ -464,15 +524,18 @@ async def test_background_task_manager_stop_sets_cancelled_before_terminate(
     manager._registry[task_id] = {"status": "running"}
 
     class _OrderedProc:
+        returncode: Optional[int] = None
+
         def terminate(self) -> None:
             order.append("terminate")
             # status must already be "cancelled" at this point
             assert manager._registry[task_id]["status"] == "cancelled", (
                 "status must be committed to 'cancelled' before terminate() is called"
             )
+            self.returncode = 0  # exits cleanly within the grace window — no escalation
 
     manager._procs[task_id] = _OrderedProc()  # type: ignore[assignment]
-    result = manager.stop(task_id)
+    result = await manager.stop(task_id)
     assert result is True
     assert "terminate" in order
     assert manager._registry[task_id]["status"] == "cancelled"
@@ -488,10 +551,46 @@ async def test_background_task_manager_stop_survives_dead_process(tmp_path: Path
     fake_proc.terminate.side_effect = ProcessLookupError("already gone")
     manager._procs[task_id] = fake_proc
 
-    result = manager.stop(task_id)
+    result = await manager.stop(task_id)
     assert result is True
     assert manager._registry[task_id]["status"] == "cancelled"
     assert task_id not in manager._procs  # guaranteed by finally block
+
+
+@pytest.mark.anyio
+async def test_background_task_manager_stop_escalates_to_force_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process that ignores the soft signal is force-killed after the grace window."""
+    monkeypatch.setattr(execution_tools, "_STOP_GRACE_S", 0.05)
+    monkeypatch.setattr(execution_tools, "_STOP_POLL_INTERVAL_S", 0.01)
+    manager = _make_manager()
+    task_id = uuid.uuid4().hex
+    manager._registry[task_id] = {"status": "running"}
+
+    class _TrappingProc:
+        returncode: Optional[int] = None  # never exits on its own
+        pid = 4321
+
+        def terminate(self) -> None:
+            pass  # traps the soft signal
+
+    proc = _TrappingProc()
+    manager._procs[task_id] = proc  # type: ignore[assignment]
+
+    killed: List[Any] = []
+
+    async def _fake_force_kill(p: Any) -> None:
+        killed.append(p)
+
+    monkeypatch.setattr(
+        BackgroundTaskManager, "_force_kill", staticmethod(_fake_force_kill)
+    )
+
+    result = await manager.stop(task_id)
+    assert result is True
+    assert killed == [proc]  # escalated after the grace window elapsed
+    assert task_id not in manager._procs
 
 
 @pytest.mark.anyio

@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import shlex
+import sys
 import uuid
 from datetime import datetime, timezone
 from typing import (
@@ -72,6 +73,13 @@ TASK_OUTPUT_TRUNC: int = 2000
 
 _DEFAULT_BASH_TIMEOUT_SEC: float = 30.0
 _DEFAULT_TYPECHECK_TIMEOUT_SEC: float = 120.0
+
+# Cooperative-stop escalation window: a cancelled task gets a grace period to
+# exit on the soft signal (SIGTERM / TerminateProcess) before it is force-killed
+# (SIGKILL / taskkill tree). A process that traps the soft signal can no longer
+# survive a stop request and strand its PID.
+_STOP_GRACE_S: float = 5.0
+_STOP_POLL_INTERVAL_S: float = 0.1
 
 # Execute-tier HITL approvals use a tighter window than the 300 s default: a
 # forgotten approval card must not pin the awaiting task (and its session slot)
@@ -354,27 +362,66 @@ class BackgroundTaskManager:
             for task_id, entry in self._registry.items()
         }
 
-    def stop(self, task_id: str) -> bool:
-        """Send SIGTERM to a running background process and mark it cancelled.
+    async def stop(self, task_id: str) -> bool:
+        """Terminate a running background process: soft signal, grace, then force-kill.
 
         Returns False when no running proc is tracked (already completed or unknown).
-        Commits 'cancelled' status BEFORE calling terminate so _watch() respects the
-        race guard even if it wakes up first. The _procs pop is in a finally block to
-        guarantee cleanup regardless of what terminate() raises.
+        Commits 'cancelled' status BEFORE signalling so _watch() respects the race
+        guard even if it wakes up first. Sends the soft signal (SIGTERM / Windows
+        TerminateProcess), waits up to ``_STOP_GRACE_S`` for the process to exit, then
+        escalates to a force-kill (SIGKILL / ``taskkill /T /F`` tree) — a process that
+        traps the soft signal can no longer survive a stop and strand its PID. The
+        _procs pop is in a finally block to guarantee cleanup regardless of escalation.
         """
         proc = self._procs.get(task_id)
         if proc is None:
             return False
         entry = self._registry.get(task_id)
         if entry:
-            entry["status"] = "cancelled"  # committed before terminate; _watch respects it
+            entry["status"] = "cancelled"  # committed before signal; _watch respects it
         try:
-            proc.terminate()
-        except (ProcessLookupError, OSError):
-            pass  # process already exited on Windows or POSIX
+            try:
+                proc.terminate()  # SIGTERM (POSIX) / TerminateProcess (Windows)
+            except (ProcessLookupError, OSError):
+                return True  # already exited; nothing to escalate
+
+            # Grace period. Poll ``returncode`` rather than awaiting ``proc.wait()``:
+            # the _watch task already owns ``proc.communicate()`` (which awaits the
+            # same exit), so a second awaiter is avoided.
+            waited = 0.0
+            while proc.returncode is None and waited < _STOP_GRACE_S:
+                await asyncio.sleep(_STOP_POLL_INTERVAL_S)
+                waited += _STOP_POLL_INTERVAL_S
+
+            if proc.returncode is None:
+                await self._force_kill(proc)
         finally:
             self._procs.pop(task_id, None)  # guaranteed cleanup; prevents zombie reference
         return True
+
+    @staticmethod
+    async def _force_kill(proc: asyncio.subprocess.Process) -> None:
+        """Force-terminate a process that survived the soft signal + grace window.
+
+        POSIX sends SIGKILL via ``proc.kill()``. Windows shells out to ``taskkill
+        /T /F`` (via the non-blocking asyncio subprocess — never ``subprocess.run``)
+        to reap the whole process tree, since ``proc.kill()`` is single-PID there.
+        """
+        if sys.platform == "win32":
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await killer.wait()
+            except (ProcessLookupError, OSError):
+                pass  # process or taskkill already gone
+        else:
+            try:
+                proc.kill()  # SIGKILL
+            except (ProcessLookupError, OSError):
+                pass
 
 
 class TaskCreateInput(BaseModel):

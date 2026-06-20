@@ -135,7 +135,17 @@ async def test_hitl_request_carries_proposed_files() -> None:
     assert proposed is not None and len(proposed) == 1
     pf = proposed[0]
     assert pf.file_path == "calc.py"
-    assert pf.new_content == _FINAL_STATE["pending_contents"]["calc.py"]
+    # DEBT-024: the server ships an O(Δ) unified diff, not the full content.
+    assert pf.new_content is None
+    assert pf.unified_diff
+    # No VFS buffer exists for calc.py in this test, so the old side is empty and
+    # the whole new body arrives as added (+) lines.
+    added = "".join(
+        ln[1:]
+        for ln in pf.unified_diff.splitlines(keepends=True)
+        if ln.startswith("+") and not ln.startswith("+++")
+    )
+    assert added == _FINAL_STATE["pending_contents"]["calc.py"]
     assert pf.base_hash == _FINAL_STATE["pending_base_hash"]["calc.py"]
 
 

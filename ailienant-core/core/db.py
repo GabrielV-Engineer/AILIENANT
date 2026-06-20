@@ -88,6 +88,49 @@ _DDL = [
     )""",
 ]
 
+# ── Content line-index (FTS5 trigram) ────────────────────────────────────────
+# An inverted line index so content search can pre-filter candidate files instead
+# of reading every catalog file from disk. The trigram tokenizer enables
+# case-insensitive SUBSTRING matching (MATCH on any run of >=3 chars), so a single
+# literal lifted from a regex narrows the file set without dropping a true match.
+# Created out of band from _DDL because a SQLite build without FTS5 (or without the
+# trigram tokenizer) would otherwise fail init_db; we feature-detect and degrade to
+# a full scan instead.
+_FILE_LINES_DDL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS file_lines USING fts5("
+    "content, project_id UNINDEXED, file_path UNINDEXED, lineno UNINDEXED, "
+    "tokenize='trigram')"
+)
+
+# Token hygiene: never let one pathological file flood the index.
+_FILE_LINES_MAX_LINES: int = 5000
+_FILE_LINES_MAX_LINE_CHARS: int = 1000
+
+_fts5_supported: Optional[bool] = None
+
+
+def _fts5_available() -> bool:
+    """True when the SQLite build supports FTS5 with the trigram tokenizer.
+
+    Probed once against a throwaway in-memory database and cached. A build missing
+    either makes every line-index call a no-op so content search transparently
+    falls back to the full scan.
+    """
+    global _fts5_supported
+    if _fts5_supported is None:
+        try:
+            probe = sqlite3.connect(":memory:")
+            try:
+                probe.execute(
+                    "CREATE VIRTUAL TABLE t USING fts5(c, tokenize='trigram')"
+                )
+                _fts5_supported = True
+            finally:
+                probe.close()
+        except sqlite3.Error:
+            _fts5_supported = False
+    return _fts5_supported
+
 # ── Sync connection (for use from VFSMiddleware.read_safe) ───────────────────
 
 _sync_conn: Optional[sqlite3.Connection] = None
@@ -148,6 +191,8 @@ async def init_db() -> None:
         for stmt in _DDL:
             await db.execute(stmt)
         await _apply_column_migrations(db)
+        if _fts5_available():
+            await db.execute(_FILE_LINES_DDL)
         await db.commit()
     _get_sync_conn()  # warm up sync connection too
 
@@ -428,6 +473,73 @@ async def list_indexed_files(project_id: str = "") -> List[str]:
             return [r[0] for r in rows]
 
 
+# ── Content line-index writers / readers (FTS5 trigram) ──────────────────────
+
+async def index_file_lines(
+    file_path: str, content: str, project_id: str = ""
+) -> None:
+    """(Re)index a file's lines into the FTS5 content index.
+
+    Replaces any prior rows for the file, then inserts one row per line (capped for
+    token hygiene). A no-op when FTS5 is unavailable, so callers need no guard. The
+    line index is a pure pre-filter accelerator — its absence only costs latency,
+    never correctness.
+    """
+    if not _fts5_available():
+        return
+    lines = content.splitlines()[:_FILE_LINES_MAX_LINES]
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "DELETE FROM file_lines WHERE project_id=? AND file_path=?",
+            (project_id, file_path),
+        )
+        await db.executemany(
+            "INSERT INTO file_lines (content, project_id, file_path, lineno) "
+            "VALUES (?,?,?,?)",
+            [
+                (line[:_FILE_LINES_MAX_LINE_CHARS], project_id, file_path, n)
+                for n, line in enumerate(lines, start=1)
+            ],
+        )
+        await db.commit()
+
+
+async def fts_narrow_catalog(
+    project_id: str, literal: str, catalog_paths: List[str]
+) -> Optional[List[str]]:
+    """Narrow a catalog path list to those that may match a regex via its literal.
+
+    Returns ``None`` when narrowing cannot guarantee a SUPERSET of the true matches
+    (FTS5 unavailable, empty/short literal, or a query error) — the caller must then
+    full-scan. Otherwise returns a superset: every catalog file the trigram index
+    reports as containing ``literal`` (case-insensitive substring), UNION every
+    catalog file the index does not yet cover (index lag), so a true match in an
+    un-indexed file is never dropped. The caller still regex-confirms each candidate.
+    """
+    if not literal or len(literal) < 3 or not _fts5_available():
+        return None
+    catalog_set = set(catalog_paths)
+    # FTS5 phrase-quote the literal so its characters are never read as operators.
+    fts_query = '"' + literal.replace('"', '""') + '"'
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT DISTINCT file_path FROM file_lines WHERE project_id=?",
+            (project_id,),
+        ) as cur:
+            covered = {r[0] for r in await cur.fetchall()}
+        try:
+            async with db.execute(
+                "SELECT DISTINCT file_path FROM file_lines "
+                "WHERE project_id=? AND file_lines MATCH ?",
+                (project_id, fts_query),
+            ) as cur:
+                hits = {r[0] for r in await cur.fetchall()}
+        except (aiosqlite.OperationalError, sqlite3.OperationalError):
+            return None  # malformed FTS query → fall back to a full scan
+    uncovered = catalog_set - covered  # index lag: never narrow these away
+    return sorted((hits & catalog_set) | uncovered)
+
+
 async def get_ppr_scores_bulk(
     file_paths: List[str], project_id: str = ""
 ) -> Dict[str, float]:
@@ -524,6 +636,11 @@ async def purge_file_nodes(filepath: str, project_id: str = "") -> None:
                 "DELETE FROM dependency_graph WHERE source_file = ? AND project_id = ?",
                 (filepath, project_id),
             )
+            if _fts5_available():
+                await db.execute(
+                    "DELETE FROM file_lines WHERE file_path = ? AND project_id = ?",
+                    (filepath, project_id),
+                )
             await db.commit()
 
 

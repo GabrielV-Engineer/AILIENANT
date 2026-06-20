@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.6: MEDIUM debts (four) + carve-out of Division 8.13 — 2026-06-20
+**Status:** COMPLETE | **Gates:** mypy 0/354 · pytest 1603 passed (2 skipped) · npm compile 0 · npm lint 0
+- Shipped: DEBT-024 — O(Δ) HITL transport (`ProposedFile.unified_diff`, `new_content` deprecated `Optional=None` §10-safe; server reads old via the VFS reader, EOL-normalizes, emits a `difflib` diff; host reconstructs via `applyPatch`, drift→stale). DEBT-041 — FTS5 **trigram** `file_lines` index (stdlib, feature-detected) populated by `LazyIndexer`; `GrepTool` superset-narrows the catalog (RAM ∪ FTS-hits ∪ index-lag) then regex-confirms, with a per-line cap + scan deadline. DEBT-048/050 — `get_task_service()`/`reset_task_service()` accessor; `RunBenchmarkTool` charges `ledger.consume_budget` upfront and `register_active_task(task_id)` with refund/release compensation. DEBT-053 — `BackgroundTaskManager.stop` async SIGTERM→5 s grace→SIGKILL/`taskkill /T /F`.
+- Key decision: DEBT-035 re-scoped out (devcontainer overengineering/runtime-bias) → new **Division 8.13** (polyglot devcontainer execution layer, `docs/PHASE_8.13_BLUEPRINT.md`); split-by-trust keeps the untrusted oracle's locked Docker cage while the trusted agent execution moves to the extension-owned devcontainer adapter (§4 manifest amendment).
+- Deferred: DEBT-035 → Division 8.13 (planned; adapter not yet implemented).
+
 ## 8.10.5: HIGH-tier architectural debts (DEBT-036 + DEBT-013) — 2026-06-19
 **Status:** COMPLETE | **Gates:** mypy 0/352 · pytest 1586 passed (2 skipped)
 - Shipped: DEBT-036 — additive `CodegenExecutor.run_workspace` moves oracle workspace materialization into the executor; the live path now isolates in the Docker sandbox (corpus+patch under the adapter mount, `python3 __oracle_main__.py` run by `cwd` so no host `sys.path` leaks) while the hermetic gate keeps the host subprocess. DEBT-013 — capability-gated streaming structured output: `astream_byom_thinking` preserves `response_format` for allow-listed providers (`{openai}`), self-healing degrade-once on rejection, sanitizer the universal fallback.

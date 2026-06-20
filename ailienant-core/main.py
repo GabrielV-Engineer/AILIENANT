@@ -37,7 +37,7 @@ from core import storage_paths
 from core.config_generator import discover_models
 from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
-from core.task_service import TaskPayload, TaskService
+from core.task_service import TaskPayload, get_task_service
 from core.config.byom_config import stream_watchdog_ms
 from core.config.host_discovery import clear_run_state, write_run_state
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -329,8 +329,9 @@ app.include_router(skills_router)
 # Phase 7.11.8 — Time-travel: GET /api/v1/sessions/{thread_id}/checkpoints
 app.include_router(sessions_router)
 
-# Instanciamos nuestra capa de servicio (Inyección de Dependencias)
-task_service = TaskService()
+# Service layer instance (dependency injection). Sourced from the shared
+# singleton accessor so in-process tools resolve the same instance the host wires.
+task_service = get_task_service()
 
 # Phase 7.11.6 — wire TaskService.cleanup_session into the WS disconnect path
 # so the Rich Tool Chips registry is purged when a client drops. The hook bus

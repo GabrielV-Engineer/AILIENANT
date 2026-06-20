@@ -20,12 +20,13 @@
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.6 MEDIUM perf/correctness debts |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.7 pre-launch gap audit (docs) |
 | 8.10.8 Tool Dispatch Activation | ⬜ PENDING | — | DEBT-066 runtime dispatch loop |
 | 8.10.9 Infrastructure Quality | ⬜ PENDING | — | DEBT-033 key_ref · DEBT-011 test |
 | 8.10.10 WBS Contract Correctness | ⬜ PENDING | — | DEBT-044 DAG cycles (pre-8.11) |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
+| 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | ⬜ PENDING | — | 11.0 Design system |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
@@ -535,13 +536,13 @@
   - DEBT-013 (HIGH): add a gateway streaming branch that keeps `response_format` for providers supporting streaming structured output (OpenAI style); fall back to ADR-742 adaptive sanitizer only where unsupported.
   - **DoD:** `mypy .` 0 · `pytest` green.
 
-- [ ] **8.10.6 — MEDIUM performance & correctness debts**
+- [x] **8.10.6 — MEDIUM performance & correctness debts**
   - DEBT-024 (MEDIUM): compute unified diff server-side in `task_service.py`; transport O(Δ) patch; client reconstructs both sides via existing `applyPatch`. Shared `PatchedFileDiff`/`DiffBlockShape` contract updated.
-  - DEBT-035 (MEDIUM): TypeScript sandbox execution — extend Docker image with `node:20-slim`; `SandboxCodegenExecutor` routes `Language.TYPESCRIPT` to Node tier.
   - DEBT-041 (MEDIUM): GrepTool inverted-content-index — async index at index time; `GrepTool._scan` becomes O(matches) not O(files); ReDoS-bounded regex evaluator.
   - DEBT-048 + DEBT-050 (MEDIUM): `RunBenchmarkTool` registers with `task_service.register_active_task` and charges `ledger.consume_budget()`.
   - DEBT-053 (LOW→pre-release): `TaskStopTool` SIGTERM → wait 5 s → SIGKILL escalation.
-  - **DoD:** `mypy .` 0 · `pytest` green.
+  - DEBT-035 re-scoped out of this sub-phase → **Division 8.13** (polyglot devcontainer execution layer): the "extend our image with node:20-slim" approach was rejected as a TS/Python runtime bias; the polyglot devcontainer adapter resolves it instead.
+  - **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` + `npm run lint` 0 (DEBT-024 host).
 
 - [ ] **8.10.7 — Pre-launch gap audit (docs-only)**
   Update `DEVELOPERS.md` honest list to reflect completions (56-tool catalog, MCP wiring, orchestrator/researcher nodes), remaining deferrals (Wasm default, full MCTS, autonomous dreaming, auth), and planned implementations (prompt caching → Phase 13.1). **DoD:** honest list accurate; no code changes.
@@ -612,6 +613,25 @@
   `api/websocket_manager.py`: new event type `{"type": "STATE_COMPACTED", "summary": "...", "turns_compressed": N}`; consumed by Phase 11.7 `SessionSummaryCard` frontend (not yet shipped — wired in Phase 11).
 - [ ] **8.12.4 — Division 8.12 Checkpoint Gate.**
   `tests/test_context_pipeline.py`: Layer 1–3 are never evicted; Layer 4 FIFO eviction fires when the budget is exceeded; `STATE_COMPACTED` event is emitted. **DoD:** `mypy .` 0 · `pytest` green.
+
+---
+
+### Division 8.13 — Polyglot Devcontainer Execution Layer ⬜
+
+> Resolves DEBT-035 and the broader TS/Python runtime bias by delegating environment provisioning to the **devcontainer specification** (built/cached by the user's local Docker daemon via standard VS Code infrastructure) instead of hardcoding language runtimes into a single image. Binding blueprint: `docs/PHASE_8.13_BLUEPRINT.md`. Three locked decisions: **(1) split by trust** — the new tier serves the agent's *trusted* project execution; the benchmark oracle keeps the locked Docker cage for *untrusted* model output (the §4 invariant is preserved, not dissolved); **(2) extension-owned lifecycle** — VS Code-native; the backend executes through a host bridge; **(3) `@devcontainers/cli` is a soft/optional dependency** (probe + degrade), justified by "standardization over invention" (§9). ADR to be assigned.
+
+- [ ] **8.13.1 — Blueprint + ADR.**
+  Author/ratify `docs/PHASE_8.13_BLUEPRINT.md`: trust-split model, extension-owned lifecycle, backend host-bridge contract, CLI probe/degrade order, security model for the trusted tier, §9 dependency justification.
+- [ ] **8.13.2 — `DevcontainerSandboxAdapter` backend tier.**
+  New `SandboxAdapter` subclass in `core/sandbox.py`; `execute()` / `open_session()` route the command over the host bridge rather than shelling Docker. Selected by `select/resolve` only for *trusted* execution; the locked `DockerSandboxAdapter` oracle path is untouched. Files: `core/sandbox.py`.
+- [ ] **8.13.3 — Extension lifecycle owner.**
+  Probe order: Dev Containers extension (`ms-vscode-remote.remote-containers`) → bundled `@devcontainers/cli` (`devcontainer up` / `exec`) → degrade. Non-blocking build (lazy, single-flight, idempotent) with a timeout degrade; provisioning status surfaced in `RuntimePanel.tsx`. Files: `ailienant-extension/src/` (provisioning driver), `RuntimePanel.tsx`, `package.json` (pinned optional dep).
+- [ ] **8.13.4 — Host execution-bridge wire contract.**
+  Additive WS messages for the command bridge (request/stream/exit) + provisioning status. `docs/SCHEMA_EVOLUTION.MD` versioned entry; additive-only (§10). Files: `api/ws_contracts.py`, `api/websocket_manager.py`, `docs/SCHEMA_EVOLUTION.MD`.
+- [ ] **8.13.5 — execution_tools / MCP tier-selection wiring (AST-aware) + scaffold.**
+  `tools/execution_tools.py` selects the devcontainer tier for trusted execution via granular AST-aware edits; optional `devcontainer.json` scaffold/fallback ties into the Division 8.9 `.ailienant/` provisioning + `workspace_provisioning.ts`.
+- [ ] **8.13.6 — Division 8.13 Checkpoint Gate.**
+  Trusted execution routes through the devcontainer when present; the untrusted oracle keeps the locked cage; CLI-absent and build-timeout degrade paths covered. **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
 
 ---
 

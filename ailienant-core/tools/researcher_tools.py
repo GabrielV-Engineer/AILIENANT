@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Awaitable, Callable, FrozenSet, Iterable, List, Optional, Type
 
 from langchain_core.tools import BaseTool
@@ -42,6 +43,18 @@ _GLOB_MAX_RESULTS = 200
 _GREP_MAX_MATCHES = 50
 _GREP_MAX_LINE_CHARS = 200
 _WORKSPACE_MAX_NODES = 300
+
+# ── Grep ReDoS bounds ─────────────────────────────────────────────────────────
+# A pathological regex on adversarial content can blow up super-linearly. The
+# stdlib `re` engine has no per-call timeout and a third-party engine is rejected
+# (§9). We bound the damage two ways: cap the bytes any single line presents to
+# the matcher, and abort the whole scan past a wall-clock deadline (returning the
+# matches found so far rather than hanging the worker thread).
+_GREP_SEARCH_INPUT_CAP = 10_000
+_GREP_SCAN_DEADLINE_S = 5.0
+
+# Regex metacharacters that terminate a literal run during FTS-literal extraction.
+_REGEX_META = set(".^$*+?()[]{}\\|")
 
 # ── Role assignment ────────────────────────────────────────────────────────────
 _RESEARCHER_ROLES: FrozenSet[str] = frozenset({"researcher"})
@@ -88,6 +101,67 @@ def make_vfs_path_provider(
         return sorted(ram_paths | db_paths)
 
     return _provider
+
+
+# ── FTS narrowing factory (DEBT-041) ─────────────────────────────────────────
+
+def _extract_fts_literal(pattern: str) -> Optional[str]:
+    """Lift the longest contiguous literal substring that must appear in every match.
+
+    Used as a trigram pre-filter token. Returns None when no literal of >=3 chars can
+    be guaranteed, so the caller full-scans rather than narrow unsafely. Conservative:
+    bails on alternation (one literal cannot cover every branch) and ends a run before
+    any character made optional by a following ``?``/``*``/``{`` quantifier.
+    """
+    if "|" in pattern:
+        return None
+    best = ""
+    run: List[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        nxt = pattern[i + 1] if i + 1 < n else ""
+        if ch in _REGEX_META or nxt in ("?", "*", "{"):
+            if len(run) > len(best):
+                best = "".join(run)
+            run = []
+            i += 1
+            continue
+        run.append(ch)
+        i += 1
+    if len(run) > len(best):
+        best = "".join(run)
+    return best if len(best) >= 3 else None
+
+
+def make_fts_narrow_provider(
+    project_id: str,
+    *,
+    vfs: Any = None,
+) -> Callable[[str, List[str]], Awaitable[Optional[List[str]]]]:
+    """Return an async narrower: ``(literal, paths) -> Optional[superset]``.
+
+    Wraps ``core.db.fts_narrow_catalog`` and force-includes the live RAM buffers:
+    a buffer's in-memory bytes can differ from its last-indexed revision, so the
+    line index can never authorize excluding it. Returns None to signal the caller
+    to full-scan (FTS unavailable or no safe literal). The returned set is always a
+    SUPERSET of the true matches — the caller still regex-confirms every candidate.
+    """
+    from core.db import fts_narrow_catalog
+    from core.vfs_middleware import VFSMiddleware
+
+    _vfs = vfs if vfs is not None else VFSMiddleware()
+
+    async def _narrow(literal: str, paths: List[str]) -> Optional[List[str]]:
+        narrowed = await fts_narrow_catalog(project_id, literal, paths)
+        if narrowed is None:
+            return None
+        ram = {_canon(p) for p in _vfs.snapshot_paths()}
+        keep = set(narrowed)
+        keep.update(p for p in paths if _canon(p) in ram)
+        return sorted(keep)
+
+    return _narrow
 
 
 # =====================================================================
@@ -194,6 +268,9 @@ class GrepTool(BaseTool):
     _path_provider: Callable[[], Awaitable[List[str]]] = PrivateAttr()
     _content_reader: Callable[[str], Optional[str]] = PrivateAttr()
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
+    _narrow_provider: Optional[
+        Callable[[str, List[str]], Awaitable[Optional[List[str]]]]
+    ] = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -201,12 +278,16 @@ class GrepTool(BaseTool):
         path_provider: Callable[[], Awaitable[List[str]]],
         content_reader: Callable[[str], Optional[str]],
         boundary_provider: Optional[Callable[[], str]] = None,
+        narrow_provider: Optional[
+            Callable[[str, List[str]], Awaitable[Optional[List[str]]]]
+        ] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._path_provider = path_provider
         self._content_reader = content_reader
         self._boundary_provider = boundary_provider
+        self._narrow_provider = narrow_provider
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("GrepTool is async-only — use _arun().")
@@ -230,17 +311,32 @@ class GrepTool(BaseTool):
         if file_glob != "*":
             paths = [p for p in paths if fnmatch.fnmatch(p, file_glob)]
 
+        # Pre-filter to candidate files via the content index when a safe literal can
+        # be lifted from the pattern. The narrower returns a SUPERSET of the true
+        # matches (or None to full-scan), so the regex confirm below never misses one.
+        if self._narrow_provider is not None:
+            literal = _extract_fts_literal(pattern)
+            if literal is not None:
+                narrowed = await self._narrow_provider(literal, paths)
+                if narrowed is not None:
+                    paths = narrowed
+
         rows: List[str] = []
 
-        def _scan() -> List[str]:
+        def _scan(deadline: float) -> List[str]:
             """Run in asyncio.to_thread — all sync I/O stays off the event loop."""
             result: List[str] = []
             for path in paths:
+                # ReDoS / runaway guard: abort past the wall-clock deadline and
+                # return what was found rather than pinning the worker thread.
+                if time.monotonic() > deadline:
+                    break
                 content = self._content_reader(path)
                 if content is None:
                     continue
                 for lineno, line in enumerate(content.splitlines(), start=1):
-                    if compiled.search(line):
+                    # Bound the bytes any single line presents to the matcher.
+                    if compiled.search(line[:_GREP_SEARCH_INPUT_CAP]):
                         truncated = line[:_GREP_MAX_LINE_CHARS]
                         result.append(f"{path}:{lineno}:{truncated}")
                         # O(L) short-circuit — break as soon as cap is hit
@@ -248,7 +344,7 @@ class GrepTool(BaseTool):
                             return result
             return result
 
-        rows = await asyncio.to_thread(_scan)
+        rows = await asyncio.to_thread(_scan, time.monotonic() + _GREP_SCAN_DEADLINE_S)
 
         if not rows:
             text = f"[grep] No matches for pattern {pattern!r}."

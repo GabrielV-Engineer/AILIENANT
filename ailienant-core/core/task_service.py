@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import hashlib
 import json
 import os
@@ -21,6 +22,32 @@ from shared.persona import compose
 from transport.token_batcher import batch_tokens, NarrationGate
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_eol(text: str) -> str:
+    """Collapse CRLF / CR line endings to LF.
+
+    Both the server-side ``difflib`` producer and the host ``applyPatch`` consumer
+    are line-ending sensitive; normalizing both sides to ``\\n`` before the diff is
+    computed keeps a Windows working copy from desyncing the reconstruction. The
+    editor re-maps the EOL to the workspace convention when it writes the file.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def compute_unified_diff(old: str, new: str, path: str) -> str:
+    """Return an EOL-normalized unified diff transporting only the change (O(Δ)).
+
+    The host reconstructs the post-edit content from its own old side via the
+    ``diff`` library's ``applyPatch``; on any context mismatch it falls back to a
+    stale-file notice rather than writing corrupt content (the base-hash OCC guard
+    still protects the apply).
+    """
+    old_lines = _normalize_eol(old).splitlines(keepends=True)
+    new_lines = _normalize_eol(new).splitlines(keepends=True)
+    return "".join(
+        difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}")
+    )
 
 
 # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: in-memory tool-call registry.
@@ -737,20 +764,35 @@ class TaskService:
 
             if verdict is PermissionDecision.HITL:
                 from api.ws_contracts import ProposedFile
+                from core.vfs_middleware import make_safe_reader
+
+                # Old-side reader for the server-computed diff: RAM-buffer-first,
+                # firewalled. A new file (or unreadable path) reads as empty, so its
+                # diff is a pure addition.
+                _old_reader = make_safe_reader(
+                    final_state.get("project_id"),
+                    (final_state.get("workspace_root") or "") or None,
+                    session_id,
+                    vfs=self.vfs,
+                )
 
                 # Strictly sequential approval: one file at a time. Only a single
                 # approval is ever in flight, so the chat shows one card; each file
                 # gets its own approval_id and an independent decision — rejecting
-                # one never discards the others. The proposed diff and post-edit
-                # content ride inside each request so the inline card can never
-                # desync from its authorization. The accepted subset is applied once
-                # after the loop. No wall-clock deadline (the wait is bounded by the
-                # connection: a disconnect wakes the waiter).
+                # one never discards the others. The proposed diff rides inside each
+                # request as a unified diff (O(Δ) on the wire) so the inline card can
+                # never desync from its authorization; the host reconstructs both
+                # sides. The accepted subset is applied once after the loop. No
+                # wall-clock deadline (the wait is bounded by the connection: a
+                # disconnect wakes the waiter).
                 ordered_paths = list(patches_to_apply)
                 total = len(ordered_paths)
                 accepted: Dict[str, str] = {}
                 revise_comment: Optional[str] = None
                 for idx, path in enumerate(ordered_paths, start=1):
+                    unified_diff = compute_unified_diff(
+                        _old_reader(path) or "", patches_to_apply[path], path
+                    )
                     approval = await vfs_manager.request_human_approval(
                         session_id=session_id,
                         action_description=f"Apply change to {path} ({idx} of {total})",
@@ -759,7 +801,7 @@ class TaskService:
                         proposed_files=[
                             ProposedFile(
                                 file_path=path,
-                                new_content=patches_to_apply[path],
+                                unified_diff=unified_diff,
                                 base_hash=base_hashes.get(path),
                             )
                         ],
@@ -1714,3 +1756,36 @@ class TaskService:
         for k in keys:
             del self._tool_call_registry[k]
         return len(keys)
+
+
+# =====================================================================
+# Process-wide singleton accessor
+# =====================================================================
+
+_TASK_SERVICE_SINGLETON: Optional[TaskService] = None
+
+
+def get_task_service() -> TaskService:
+    """Return the process-wide :class:`TaskService`, creating it on first use.
+
+    The dependency-injection seam for callers outside the FastAPI request scope
+    — notably in-process tools (e.g. the benchmark tool) that must register an
+    active task so status polling can observe it, but have no path to the
+    instance the host wires at lifespan startup. The host binds its module-level
+    ``task_service`` from this accessor, so every consumer shares one instance.
+    """
+    global _TASK_SERVICE_SINGLETON
+    if _TASK_SERVICE_SINGLETON is None:
+        _TASK_SERVICE_SINGLETON = TaskService()
+    return _TASK_SERVICE_SINGLETON
+
+
+def reset_task_service() -> None:
+    """Drop the singleton so the next :func:`get_task_service` builds a fresh one.
+
+    Test-isolation hook only: a single process (pytest) would otherwise carry the
+    active-task registry across cases and produce order-dependent flakes. Not for
+    runtime use — the host builds the instance once at startup.
+    """
+    global _TASK_SERVICE_SINGLETON
+    _TASK_SERVICE_SINGLETON = None
