@@ -297,7 +297,7 @@ class BackgroundTaskManager:
         self._procs: Dict[str, asyncio.subprocess.Process] = {}
 
     async def create(
-        self, command: str, working_dir: Optional[str] = None
+        self, command: str, working_dir: Optional[str] = None, owner_role: Optional[str] = None
     ) -> str:
         task_id = uuid.uuid4().hex
         proc = await asyncio.create_subprocess_shell(
@@ -314,6 +314,7 @@ class BackgroundTaskManager:
             "started_at": _now_iso(),
             "completed_at": None,
             "exit_code": None,
+            "owner_role": owner_role,
             "truncated_stdout": "",
             "truncated_stderr": "",
         }
@@ -349,18 +350,24 @@ class BackgroundTaskManager:
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         return self._registry.get(task_id)
 
-    def list_tasks(self) -> Dict[str, Dict[str, Any]]:
-        """Snapshot of all registered tasks excluding raw output for token hygiene.
+    def list_tasks(self, caller_role: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+        """Snapshot of registered tasks excluding raw output for token hygiene.
 
-        The orchestrator (the sole role-holder of task_list) is a cognitive superuser
-        and sees all tasks regardless of originating role. See DEBT-051 for a future
-        owner_role filtering extension.
+        Non-orchestrator callers see only tasks stamped with their own owner_role.
+        The orchestrator retains full visibility across all roles. When caller_role
+        is None the full snapshot is returned (backward-compatible default).
         """
         _SKIP = frozenset({"truncated_stdout", "truncated_stderr"})
-        return {
+        snapshot = {
             task_id: {k: v for k, v in entry.items() if k not in _SKIP}
             for task_id, entry in self._registry.items()
         }
+        if caller_role and caller_role != "orchestrator":
+            snapshot = {
+                tid: entry for tid, entry in snapshot.items()
+                if entry.get("owner_role") == caller_role
+            }
+        return snapshot
 
     async def stop(self, task_id: str) -> bool:
         """Terminate a running background process: soft signal, grace, then force-kill.
@@ -431,6 +438,13 @@ class TaskCreateInput(BaseModel):
     working_dir: Optional[str] = Field(
         default=None, description="Optional cwd override for the subprocess."
     )
+    owner_role: Optional[str] = Field(
+        default=None,
+        description=(
+            "Role that owns this task. Pass the caller's active_role so task_list "
+            "can scope results by role for non-orchestrator callers."
+        ),
+    )
 
 
 class TaskCreateTool(BaseTool):
@@ -459,8 +473,8 @@ class TaskCreateTool(BaseTool):
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("TaskCreateTool is async-only — use _arun().")
 
-    async def _arun(self, command: str, working_dir: Optional[str] = None) -> str:
-        task_id = await self._manager.create(command, working_dir=working_dir)
+    async def _arun(self, command: str, working_dir: Optional[str] = None, owner_role: Optional[str] = None) -> str:
+        task_id = await self._manager.create(command, working_dir=working_dir, owner_role=owner_role)
         return f"[task_create] OK task_id={task_id}"
 
 

@@ -20,7 +20,7 @@
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.9 infrastructure quality |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.11 remaining-role dispatch wiring |
 | 8.10.8 Tool Dispatch Activation | ✅ CLOSED | 2026-06-20 | — (substrate live on Analyst; remainder → 8.10.11) |
 | 8.10.9 Infrastructure Quality | ✅ CLOSED | 2026-06-20 | — (DEBT-011/033/037 retired) |
 | 8.10.10 WBS Contract Correctness | ⬜ PENDING | — | DEBT-044 DAG cycles (pre-8.11) |
@@ -561,7 +561,7 @@
   - DEBT-037 (LOW): G2 retrieval isolation uses `mock.patch`. The G2 ablation arm patches `semantic_memory.search_with_paths` at import time, coupling the test to the internal module path. Replace with a production DI seam — pass an injectable `retrieval_fn` parameter to the G2 runner — so the test uses the real interface without patching internals. *DoD:* G2 ablation test runs without `mock.patch`; the retrieval function is supplied via DI. Target files: `core/benchmark/strategies.py`, `tests/benchmark/`.
   - **DoD:** `mypy .` 0 · `pytest` green; all three debt assertions verified.
 
-- [ ] **8.10.10 — WBS Contract Correctness (pre-8.11 prep)**
+- [x] **8.10.10 — WBS Contract Correctness (pre-8.11 prep)**
   Two correctness gaps in the planning and role contracts that 8.11 (7-Mode Permission System) will build on top of. Accelerated from Phase 13.2 and Phase 13.3 respectively — closing these in 8.10 prevents 8.11 from inheriting a broken WBS contract or a missing role-isolation field. Phase 13.2 and 13.3 references to these debts will be updated to reflect early closure when this sub-phase completes.
   - DEBT-044 (MEDIUM): `ValidateWBSDependenciesTool` detects step-ordering violations only; it cannot detect true DAG cycles (steps that depend on each other circularly through `depends_on` links). Add `depends_on: Optional[List[int]] = None` additively to `WBSStep` in `brain/state.py` (default `None` is backward-compatible; existing checkpoints deserialize safely). Update `ValidateWBSDependenciesTool` to run a topological sort over `depends_on` links and reject plans containing a cycle before the Planner commits. Add a `SCHEMA_EVOLUTION.MD §15` versioned entry for the additive field. *DoD:* a `MissionSpecification` draft with a circular `depends_on` is rejected at validation; linear chains pass. Target files: `brain/state.py`, `tools/` (validation bundle), `docs/SCHEMA_EVOLUTION.MD`. *(Accelerated from Phase 13.2.)*
   - DEBT-051 (LOW): `list_tasks` / `TaskListTool` returns all active tasks to every caller regardless of role; the orchestrator sees tasks owned by the coder. Add `owner_role: Optional[str] = None` additively to the task entry schema; set it from `active_role` at `task_create` time. `TaskListTool._execute` filters by `owner_role == caller_role` for non-orchestrator callers; the orchestrator retains full visibility. *DoD:* a coder-role call to `list_tasks` sees only its own tasks; an orchestrator-role call sees all. Target files: `tools/` (control bundle), `brain/state.py`. *(Accelerated from Phase 13.3.)*
@@ -718,10 +718,10 @@
 
 - [ ] **13.1 — Provider-Native Prompt Caching (~90% input-token discount).**
   Structure LangGraph message assembly so the stable high-volume prefix (system prompt → tool/MCP schemas → GraphRAG context) is byte-identical and front-loaded across coder/planner iterations; tag `cache_control` breakpoints for Anthropic/OpenAI providers; measure per-session savings in telemetry. Files: `tools/llm_gateway.py`, `agents/planner.py`, `agents/coder.py`. **DoD:** tokens-saved metric > 0 in session telemetry.
-- [ ] **13.2 — WBSStep `depends_on` Schema Extension (closes DEBT-044).**
-  Add `depends_on: Optional[List[int]] = None` to `WBSStep`; update `ValidateWBSDependenciesTool` to detect true DAG cycles; add SCHEMA_EVOLUTION.MD §15 entry.
+- [x] **13.2 — WBSStep `depends_on` Schema Extension (closes DEBT-044).**
+  Accelerated and closed in 8.10.10: `depends_on: Optional[List[int]] = None` added to `WBSStep`; `ValidateWBSDependenciesTool` Pass 5 (Kahn's BFS) detects DAG cycles; `SCHEMA_EVOLUTION.MD §18` entry added.
 - [ ] **13.3 — Remaining Integration DEBTs Sprint.**
-  Close DEBT-049 (`SkillInvokeTool` embedder injection via graph-level factory), DEBT-054 (`agent_todos` channel runtime wiring into a cognitive node), DEBT-051 (`task_list` owner-scoped visibility for non-orchestrator roles).
+  Close DEBT-049 (`SkillInvokeTool` embedder injection via graph-level factory), DEBT-054 (`agent_todos` channel runtime wiring into a cognitive node). *(DEBT-051 `task_list` owner-scoped visibility accelerated and closed in 8.10.10.)*
 - [ ] **13.4 — Pre-Launch Innovation Gate.** Prompt caching tokens-saved metric > 0; DEBT-049/054/051 closed; `pytest` green · `mypy .` 0 · `npm run compile` 0.
 
 ---

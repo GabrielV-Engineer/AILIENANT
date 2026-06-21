@@ -186,15 +186,11 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future chaos-engineering slice.
 - **Notes:** logged at 8.10.3 ship per CLAUDE.md §11.3; the user chose synthetic injection for this division.
 
-### DEBT-044 [MEDIUM · Floating] — ValidateWBSDependenciesTool detects forward-reference ordering violations only, not true DAG cycles
+### DEBT-044 [MEDIUM · RESOLVED 2026-06-20, 8.10.10] — ValidateWBSDependenciesTool detects forward-reference ordering violations only, not true DAG cycles
 
-- **Date:** 2026-06-14
-- **Reproduce:** Construct a `MissionSpecification` with two mutually-dependent steps where file A is consumed by step 2 (which produces file B) and file B is consumed by step 1 (which produces file A). The tool reports the step with the smaller index as a forward-reference, but cannot report the full cycle because `WBSStep` carries no `depends_on` field — dependency edges must be inferred from `target_file`/`action` patterns alone.
-- **File(s):** `ailienant-core/tools/planner_tools.py` (`ValidateWBSDependenciesTool._arun`, Pass 2).
-- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. The dominant planning error class (forward-reference ordering) is caught; true cross-file cycles require schema surgery on `WBSStep`.
-- **Blocked by:** additive `depends_on: Optional[List[int]] = None` field on `WBSStep` (`brain/state.py`) + migration in `docs/SCHEMA_EVOLUTION.MD`.
-- **Phase:** post-8.8.4 — schedule after `WBSStep` schema extension.
-- **Notes:** logged at 8.8.4 ship per CLAUDE.md §11.3.
+- **Date:** 2026-06-14 · **Resolved:** 2026-06-20 (8.10.10)
+- **Resolved:** `WBSStep.depends_on: Optional[List[int]] = None` added additively to `brain/state.py` (backward-compatible; existing checkpoints deserialize as `None`). `ValidateWBSDependenciesTool._arun()` gains Pass 5 — Kahn's BFS topological sort over `depends_on` links; a cycle or invalid reference becomes a blocking issue (`"dependency_cycle"` / `"invalid_depends_on"`, both setting `valid = False`). `SCHEMA_EVOLUTION.MD §18` documents the new field and its contract. Note: the original debt spec referenced §15 — corrected to §18 (§15 was already taken by External Gateway Catalog).
+- **Notes:** Pass 5 is a no-op when no step declares `depends_on`, preserving all existing test behavior.
 
 ### DEBT-047 [LOW · Floating] — generate_docstring is line-anchored, not a signature-aware renderer
 
@@ -237,14 +233,11 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** post-8.8.6.
 - **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
 
-### DEBT-051 [LOW · Floating] — task_list cross-role visibility (orchestrator sees all tasks)
+### DEBT-051 [LOW · RESOLVED 2026-06-20, 8.10.10] — task_list cross-role visibility (orchestrator sees all tasks)
 
-- **Date:** 2026-06-14
-- **Reproduce:** Multiple roles (e.g. qa_tester, devops_infra) use `task_create`; the orchestrator's `task_list` shows all of them with no owner attribution.
-- **File(s):** `ailienant-core/tools/execution_tools.py` (`BackgroundTaskManager.list_tasks`), `ailienant-core/tools/gateway_tools.py` (`TaskListTool._arun`).
-- **Error:** not a defect — the orchestrator is a cognitive superuser in the current model. A future `owner_role` field on registry entries would allow scope-filtered listing.
-- **Phase:** post-8.8.6.
-- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+- **Date:** 2026-06-14 · **Resolved:** 2026-06-20 (8.10.10)
+- **Resolved:** `BackgroundTaskManager.create()` now accepts `owner_role: Optional[str] = None` and stamps it into the task registry entry. `list_tasks(caller_role)` filters the snapshot so non-orchestrator callers see only their own tasks; `caller_role="orchestrator"` or `None` returns the full view (backward-compatible default). `TaskCreateInput` gains `owner_role` field; `TaskCreateTool._arun()` threads it to the manager. `TaskListInput` gains `caller_role` field; `TaskListTool._arun()` passes it to `list_tasks()`. Changes are additive — callers that don't supply the new fields get unchanged behavior.
+- **Notes:** accelerated from Phase 13.3 to close before 8.11 inherits the gap.
 
 ### DEBT-052 [LOW · Floating] — resolve_active_skills may execute synchronous LanceDB queries
 

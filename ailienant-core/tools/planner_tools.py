@@ -225,9 +225,48 @@ class ValidateWBSDependenciesTool(BaseTool):
             elif action in {"read_file", "run_command", "edit_file"}:
                 last_consumer[target] = num
 
+        # ── Pass 5: DAG cycle detection (Kahn's BFS topological sort) ────────
+        # Only runs when at least one step declares depends_on links.
+        steps_with_deps = [s for s in tasks_to_check if getattr(s, "depends_on", None)]
+        if steps_with_deps:
+            step_nums = {getattr(s, "step_number", 0) for s in tasks_to_check}
+            in_degree: Dict[int, int] = {getattr(s, "step_number", 0): 0 for s in tasks_to_check}
+            adj: Dict[int, List[int]] = {getattr(s, "step_number", 0): [] for s in tasks_to_check}
+            for step in tasks_to_check:
+                num = getattr(step, "step_number", 0)
+                for dep in (getattr(step, "depends_on", None) or []):
+                    if dep not in step_nums:
+                        issues.append({
+                            "type": "invalid_depends_on",
+                            "step": num,
+                            "missing_dep": dep,
+                            "message": (
+                                f"Step {num} depends_on step {dep} which does not exist in this plan."
+                            ),
+                        })
+                        continue
+                    adj[dep].append(num)
+                    in_degree[num] += 1
+            queue: List[int] = [n for n, deg in in_degree.items() if deg == 0]
+            processed = 0
+            while queue:
+                node = queue.pop(0)
+                processed += 1
+                for neighbor in adj[node]:
+                    in_degree[neighbor] -= 1
+                    if in_degree[neighbor] == 0:
+                        queue.append(neighbor)
+            if processed < len(tasks_to_check):
+                cycle_nodes = sorted(n for n, deg in in_degree.items() if deg > 0)
+                issues.append({
+                    "type": "dependency_cycle",
+                    "cycle_steps": cycle_nodes,
+                    "message": f"Circular dependency detected among steps: {cycle_nodes}.",
+                })
+
         # ── Cap, classify, summarise ──────────────────────────────────────────
         issues = issues[:_MAX_ISSUES_RETURNED]
-        blocking_types = {"forward_reference", "out_of_scope"}
+        blocking_types = {"forward_reference", "out_of_scope", "dependency_cycle", "invalid_depends_on"}
         valid = not any(i["type"] in blocking_types for i in issues)
 
         parts = []

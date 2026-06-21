@@ -341,6 +341,13 @@ class TaskListInput(BaseModel):
             "Omit to return all tasks."
         ),
     )
+    caller_role: Optional[str] = Field(
+        default=None,
+        description=(
+            "Role of the calling agent. Non-orchestrator roles see only tasks they created "
+            "(owner_role matches). Orchestrator sees all tasks. Omit for full visibility."
+        ),
+    )
 
 
 class TaskListTool(BaseTool):
@@ -366,8 +373,8 @@ class TaskListTool(BaseTool):
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("TaskListTool is async-only — use _arun().")
 
-    async def _arun(self, status_filter: Optional[str] = None) -> str:
-        tasks = self._manager.list_tasks()
+    async def _arun(self, status_filter: Optional[str] = None, caller_role: Optional[str] = None) -> str:
+        tasks = self._manager.list_tasks(caller_role=caller_role)
         if status_filter is not None:
             tasks = {k: v for k, v in tasks.items() if v.get("status") == status_filter}
         total = len(tasks)

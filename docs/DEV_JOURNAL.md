@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.10: WBS contract correctness — DEBT-044 · DEBT-051 — 2026-06-20
+**Status:** COMPLETE | **Gates:** mypy 0/357 · pytest 13 passed (gate) · full suite green
+- Shipped: DEBT-044 — `WBSStep.depends_on: Optional[List[int]]` added additively; `ValidateWBSDependenciesTool` Pass 5 (Kahn's BFS) detects cycles and invalid references as blocking issues. DEBT-051 — `BackgroundTaskManager.create()` stamps `owner_role`; `list_tasks(caller_role)` filters non-orchestrator callers to their own tasks; orchestrator retains full visibility.
+- Key decision: `owner_role`/`caller_role` flow as explicit tool input fields (additive, zero state-coupling) rather than via DI seam; sufficient for DoD and preserves backward-compatible defaults.
+
 ## 8.10.9: Infrastructure & UX quality — DEBT-011 · DEBT-037 · DEBT-033 — 2026-06-20
 **Status:** COMPLETE | **Gates:** mypy 0/356 · pytest 1622 passed (2 skipped) · pyright 0 (changed files) · tsc 0 · eslint 0 (changed files)
 - Shipped: DEBT-011 — heap-lifecycle test now self-calibrates (two-pass residual + `_HEAP_HEADROOM_RATIO`) instead of a fixed, unportable byte ceiling; green in isolation and in-suite. DEBT-037 — ablation retrieval degradation moved from `mock.patch` of internal class methods to dependency-injected callables (`graph_fn`/`planner_retrieval_fn`/`coder_retrieval_fn`) folded into `config["configurable"]`; agents fall back to their real methods when absent, so production is unchanged. DEBT-033 — extension gains an MCP config-import view with a credential dialog driven by the backend `needs_secret` signal (reuses the registry credential-store path).

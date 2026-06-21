@@ -674,3 +674,17 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 
 **Native Thinking:**
 `server_thinking_chunk`
+
+---
+
+## §18 — WBSStep Dependency Graph Field
+
+**Field:** `WBSStep.depends_on: Optional[List[int]] = None`
+**Location:** `ailienant-core/brain/state.py` — `WBSStep` Pydantic model
+**Schema version:** additive (no version bump required; default `None` is backward-compatible with all existing checkpoints)
+
+**Contract:**
+- When present, each integer must reference a `step_number` that exists in the same `MissionSpecification.tasks` list.
+- The directed graph formed by `depends_on` links must be acyclic (a DAG).
+- `ValidateWBSDependenciesTool` (Pass 5, Kahn's BFS) enforces both constraints before the plan is committed; violations produce blocking issue types `"dependency_cycle"` or `"invalid_depends_on"`.
+- Consumers that do not read `depends_on` are unaffected — the field is optional and defaults to `None`.

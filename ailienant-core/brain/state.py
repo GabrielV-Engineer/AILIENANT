@@ -68,17 +68,15 @@ def _coerce_str_list(value: Any) -> Any:
 
 
 class WBSStep(BaseModel):
-    """
-    Un paso individual, atómico y ejecutable de la misión.
-    Refactor (Fase 4): Integra su propio 'status' y reemplaza agentes por roles dinámicos.
+    """A single, atomic, executable step within a MissionSpecification.
 
-    Phase 4.1.4 widening: target_role Literal accepts both legacy (5) and new (8)
-    values. A model_validator(mode="before") normalises legacy strings to new
-    canonical names at construction, so the stored value is always one of the 8 NEW.
+    The target_role Literal accepts both legacy (5) and new (8) canonical values.
+    A model_validator(mode="before") normalises legacy strings to canonical names
+    at construction, so the stored value is always one of the 8 canonical names.
     """
 
     step_number: int = Field(
-        description="El orden secuencial de ejecución (1, 2, 3...)."
+        description="Sequential execution order (1, 2, 3...)."
     )
     target_role: Literal[
         # Legacy 5 (deprecated, auto-migrated to the new vocabulary):
@@ -91,17 +89,17 @@ class WBSStep(BaseModel):
         description="The RBAC role the CoderAgent assumes for this step (Phase 4.1.4).",
     )
     action: Literal["read_file", "write_file", "edit_file", "run_command"] = Field(
-        description="Tipo de acción estricta permitida para este paso."
+        description="Strict action type for this step."
     )
     target_file: str = Field(
-        description="Ruta exacta del archivo afectado (ej. 'src/routes/auth.py') o comando a ejecutar."
+        description="Exact path of the affected file (e.g. 'src/routes/auth.py') or command to run."
     )
     description: str = Field(
-        description="Instrucción detallada de lo que el CoderAgent debe hacer en este paso."
+        description="Detailed instruction for the CoderAgent to execute at this step."
     )
     status: Literal["pending", "in_progress", "completed", "failed"] = Field(
         default="pending",
-        description="Estado actual de la tarea. El Orchestrator muta esto durante la ejecución.",
+        description="Current task state. The Orchestrator mutates this field during execution.",
     )
     requires_iteration: bool = Field(
         default=False,
@@ -111,6 +109,15 @@ class WBSStep(BaseModel):
             "coder path. Set for multi-step debugging / test-fix / iterate-until-green "
             "work; leave False for trivial single-shot edits and commands. Additive and "
             "backward-compatible: older plans without the field default to the one-shot path."
+        ),
+    )
+    depends_on: Optional[List[int]] = Field(
+        default=None,
+        description=(
+            "Optional list of step_numbers this step depends on. When present, "
+            "ValidateWBSDependenciesTool enforces that the resulting graph is acyclic "
+            "and that every referenced step_number exists in the same plan. Additive "
+            "and backward-compatible: older plans without this field deserialize as None."
         ),
     )
 
@@ -127,8 +134,8 @@ class WBSStep(BaseModel):
             legacy = data.get("target_role")
             if isinstance(legacy, str) and legacy in _LEGACY_TO_NEW_ROLE:
                 data["target_role"] = _LEGACY_TO_NEW_ROLE[legacy]
-            # Phase 7.12 — coerce a hallucinated, out-of-vocabulary role to the
-            # safe default instead of raising a Literal ValidationError.
+            # Coerce an out-of-vocabulary role to the safe default instead of
+            # raising a Literal ValidationError.
             role = data.get("target_role")
             if isinstance(role, str) and role not in _CANONICAL_ROLES:
                 data["target_role"] = _DEFAULT_ROLE
