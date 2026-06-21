@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.11: Mutating-tier dispatch HITL routing — DEBT-068 — 2026-06-21
+**Status:** COMPLETE | **Gates:** mypy 0/358 · pytest 9 passed (gate) · full suite 1644 passed / 2 skipped
+- Shipped: `ToolDispatcher.dispatch` gains an injectable `approval_fn` (deny-with-report when absent/denied/raising) plus a `make_websocket_approval_fn` factory; the agentic cell's `run_terminal` now routes EXECUTE→HITL through the approval card via `_admit_execute` instead of treating HITL as ALLOW; `request_human_approval` default deadline raised 300s→86400s.
+- Key decision: scope re-shaped to where mutation actually happens — Orchestrator (no LLM/reasoner) and Planner (PLAN-only, READ_ONLY) carry no dispatchable mutating surface, so HITL was proven on the existing coder ReAct loop (agentic cell) rather than bolting a parallel loop onto `coder.py`.
+- Deferred: DEBT-069 — Researcher node promotion + its dispatch loop (8.10.12); DEBT-070 — replace async-sleep HITL waits with native LangGraph Suspend & Resume interrupts.
+
 ## 8.10.10: WBS contract correctness — DEBT-044 · DEBT-051 — 2026-06-20
 **Status:** COMPLETE | **Gates:** mypy 0/357 · pytest 13 passed (gate) · full suite green
 - Shipped: DEBT-044 — `WBSStep.depends_on: Optional[List[int]]` added additively; `ValidateWBSDependenciesTool` Pass 5 (Kahn's BFS) detects cycles and invalid references as blocking issues. DEBT-051 — `BackgroundTaskManager.create()` stamps `owner_role`; `list_tasks(caller_role)` filters non-orchestrator callers to their own tasks; orchestrator retains full visibility.

@@ -20,11 +20,12 @@
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.11 remaining-role dispatch wiring |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.10.12 researcher node promotion |
 | 8.10.8 Tool Dispatch Activation | ✅ CLOSED | 2026-06-20 | — (substrate live on Analyst; remainder → 8.10.11) |
 | 8.10.9 Infrastructure Quality | ✅ CLOSED | 2026-06-20 | — (DEBT-011/033/037 retired) |
-| 8.10.10 WBS Contract Correctness | ⬜ PENDING | — | DEBT-044 DAG cycles (pre-8.11) |
-| 8.10.11 Remaining-role Dispatch Wiring | ⬜ PENDING | — | DEBT-068 Coder/Planner/Orchestrator + HITL |
+| 8.10.10 WBS Contract Correctness | ✅ CLOSED | 2026-06-20 | — (DEBT-044/051 retired) |
+| 8.10.11 Mutating-tier Dispatch HITL | ✅ CLOSED | 2026-06-21 | — (DEBT-068 retired; orch/researcher → 8.10.12) |
+| 8.10.12 Researcher Node Promotion | ⬜ PENDING | — | DEBT-069 promote researcher + its loop |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
@@ -567,10 +568,15 @@
   - DEBT-051 (LOW): `list_tasks` / `TaskListTool` returns all active tasks to every caller regardless of role; the orchestrator sees tasks owned by the coder. Add `owner_role: Optional[str] = None` additively to the task entry schema; set it from `active_role` at `task_create` time. `TaskListTool._execute` filters by `owner_role == caller_role` for non-orchestrator callers; the orchestrator retains full visibility. *DoD:* a coder-role call to `list_tasks` sees only its own tasks; an orchestrator-role call sees all. Target files: `tools/` (control bundle), `brain/state.py`. *(Accelerated from Phase 13.3.)*
   - **DoD:** `mypy .` 0 · `pytest` green; DAG cycle rejection test green; cross-role visibility filter test green.
 
-- [ ] **8.10.11 — Remaining-role Tool Dispatch Wiring**
+- [x] **8.10.11 — Remaining-role Tool Dispatch Wiring**
   8.10.8 proved the runtime dispatch substrate (`core/tool_dispatch.py`) live on the Analyst, whose tools are all READ_ONLY. This sub-phase extends the proven substrate to the remaining tool-bearing roles, gated on the Analyst substrate having proven stable.
   - DEBT-068 (HIGH): Wire the dispatch loop onto the Coder, Planner, and Orchestrator nodes via the same `ToolDispatcher`; add human-in-the-loop approval routing for WRITE/EXECUTE/DANGEROUS tiers (the Analyst path only exercised READ_ONLY, which short-circuits to ALLOW). The Researcher additionally requires promotion to a first-class graph node before it can host a loop — today its skeleton is consumed only as optional Planner context. *DoD:* a coder node invocation executes at least one mutating tool through the HITL-gated dispatch loop; an integration test asserts the gate routes a WRITE tier to approval; the Researcher-node promotion is scoped (or split to its own item). Target files: `agents/coder.py`, `agents/planner.py`, `agents/orchestrator.py`, `brain/engine.py`, `core/tool_dispatch.py`.
   - **DoD:** `mypy .` 0 · `pytest` green; mutating-tool dispatch + HITL-routing integration tests green.
+
+- [ ] **8.10.12 — Researcher Node Promotion + Dispatch Loop**
+  Carved out of 8.10.11 (DEBT-069). The Researcher is not yet a first-class graph node — its skeleton is consumed only as optional Planner context via a deterministic single-shot call — so it cannot host a dispatch loop until promoted. (The Orchestrator was evaluated and excluded permanently: it is a deterministic O(1) node with no LLM/reasoner, so a dispatch loop has nothing to drive; the Planner is PLAN-only with READ_ONLY tools, so a loop adds no HITL value. Both are recorded under the DEBT-068 resolution.)
+  - DEBT-069 (MEDIUM): Promote the Researcher to a first-class graph node with its own bounded dispatch loop (READ_ONLY retrieval tools — glob/grep/AST), reusing the `ToolDispatcher` substrate. *DoD:* a researcher node invocation drives the dispatch loop over at least one READ_ONLY tool; an integration test asserts the skeleton is produced through the loop; routing into/out of the node is wired in `brain/engine.py`. Target files: `agents/researcher.py`, `tools/researcher_tools.py`, `brain/engine.py`.
+  - **DoD:** `mypy .` 0 · `pytest` green; researcher dispatch-loop integration test green.
 
 ---
 

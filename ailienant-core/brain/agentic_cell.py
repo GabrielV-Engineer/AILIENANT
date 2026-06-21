@@ -272,7 +272,7 @@ async def sweep_orphaned_sessions(live_task_ids: Sequence[str]) -> int:
     node's ``finally``). The turn-level ``try/finally`` already covers normal terminal exits;
     this sweep is the safety net for cancellation.
     """
-    # TODO(7.19.6): tie this sweep to the LangGraph Run lifecycle / WS disconnect collector
+    # TODO: tie this sweep to the LangGraph Run lifecycle / WS disconnect collector
     # so an aborted run is reaped immediately rather than on the next sweep tick.
     live = set(live_task_ids)
     orphans = [tid for tid in list(_session_registry) if tid not in live]
@@ -546,13 +546,15 @@ async def run_agentic_cell_node(
                 continue
 
             if call.name == "run_terminal":
-                if not _execute_gate_allows(state):
-                    security_flags.append("EXECUTE_TIER_DENIED")
+                command = str(call.args.get("command", ""))
+                admitted, deny_flag = await _admit_execute(state, command, configurable)
+                if not admitted:
+                    if deny_flag:
+                        security_flags.append(deny_flag)
                     continue
                 cell.last_snapshot = await push_vfs_to_surface(
                     cell.surface, vfs_files, blob_storage, version_ids
                 )
-                command = str(call.args.get("command", ""))
                 _iter = iteration  # capture for the lambda closure
                 cell._chunk_hook = lambda chunk, _i=_iter: dispatcher.emit_pty_chunk(
                     iteration=_i,
@@ -751,16 +753,74 @@ def _occ_diagnostic(path: str) -> Dict[str, str]:
     }
 
 
-def _execute_gate_allows(state: Dict[str, Any]) -> bool:
-    """Honor the execute-tier permission gate (PLAN denies)."""
-    from core.permissions import PermissionDecision, SessionPermissionMode, gate_execute_action
+async def _request_terminal_approval(session_id: str, command: str) -> bool:
+    """Route one terminal command through the interactive HITL approval card.
 
-    raw = str(state.get("session_permission_mode", "DEFAULT"))
-    try:
-        mode = SessionPermissionMode(raw.lower())
-    except ValueError:
-        mode = SessionPermissionMode.DEFAULT
-    return gate_execute_action(mode) is not PermissionDecision.DENY
+    Reuses the canonical approval channel (``request_human_approval``) plus the
+    trust-once valve, so a command the operator already approved this session runs
+    without re-prompting. No deadline is passed (24-hour default applies). An empty
+    session denies without hanging.
+    """
+    if not session_id:
+        return False
+    from tools.mcp_adapter import _grant_session_trust, _is_session_trusted
+
+    if _is_session_trusted(session_id, "run_terminal"):
+        return True
+    from api.websocket_manager import vfs_manager
+
+    approval = await vfs_manager.request_human_approval(
+        session_id=session_id,
+        action_description=f"COMMAND_EXEC: {command[:200]}",
+        proposed_content=command[:2000],
+        request_kind="COMMAND_EXEC",
+    )
+    if approval and approval.get("approved"):
+        _grant_session_trust(session_id, "run_terminal")
+        return True
+    return False
+
+
+async def _admit_execute(
+    state: Dict[str, Any],
+    command: str,
+    configurable: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    """Admit (or refuse) an EXECUTE-tier terminal command under the session policy.
+
+    Honors the same three-axis matrix every other call site consults: PLAN denies
+    outright, AUTO admits friction-free, and DEFAULT resolves EXECUTE to HITL —
+    which is routed through the approval card (or an injected ``cell_approval_fn``
+    for tests) rather than run silently. Returns ``(admitted, security_flag)`` with
+    the flag set only on refusal.
+    """
+    from core.permissions import (
+        PermissionDecision,
+        PermissionMode,
+        ToolPrivilegeTier,
+        evaluate_action,
+        session_mode_from_channel,
+    )
+
+    verdict = evaluate_action(
+        session_mode_from_channel(state.get("session_permission_mode")),
+        ToolPrivilegeTier.EXECUTE,
+        PermissionMode.EDIT_EXECUTE_RBW,
+    )
+    if verdict is PermissionDecision.DENY:
+        return False, "EXECUTE_TIER_DENIED"
+    if verdict is PermissionDecision.ALLOW:
+        return True, None
+
+    # HITL — consult the injected approval seam (tests) or the live approval card.
+    approval_fn = configurable.get("cell_approval_fn")
+    if approval_fn is not None:
+        approved = await approval_fn(command)
+    else:
+        approved = await _request_terminal_approval(
+            str(state.get("task_id") or ""), command
+        )
+    return (True, None) if approved else (False, "EXECUTE_TIER_HITL_DENIED")
 
 
 def _read_file_ast(content: str, path: str) -> str:

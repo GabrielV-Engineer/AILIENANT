@@ -91,6 +91,12 @@ class DispatchResult:
 # without a live model.
 Reasoner = Callable[[Sequence[Dict[str, Any]]], Awaitable[str]]
 
+# An approval callback decides whether a tool whose tier resolved to HITL may run.
+# It receives the proposed call and its privilege metadata and returns True to
+# admit, False to deny. Returning False (or no callback at all) degrades to a
+# deny-with-report observation — an admission gate must never hang the turn.
+ApprovalFn = Callable[["ToolCall", "RegisteredTool"], Awaitable[bool]]
+
 
 def parse_tool_call_envelope(text: str) -> Tuple[List[ToolCall], Optional[str]]:
     """Extract tool calls from a model reply.
@@ -176,12 +182,18 @@ class ToolDispatcher:
         session_mode: SessionPermissionMode,
         state: Mapping[str, Any],
         agent_permission: PermissionMode,
+        approval_fn: Optional[ApprovalFn] = None,
     ) -> None:
         self._tools = tools
         self._active_role = active_role
         self._session_mode = session_mode
         self._state = state
         self._agent_permission = agent_permission
+        # When a tier resolves to HITL the dispatcher consults this callback; with
+        # no callback wired, a HITL tier degrades to deny-with-report (the safe
+        # default for a non-interactive context). READ_ONLY consumers never reach
+        # this branch, so omitting it is the friction-free path.
+        self._approval_fn = approval_fn
 
     async def dispatch(self, call: ToolCall) -> DispatchResult:
         """Resolve, gate, and execute one tool call.
@@ -222,15 +234,32 @@ class ToolDispatcher:
                 executed=False,
             )
         if decision is PermissionDecision.HITL:
-            # Human-in-the-loop routing for mutating tiers is intentionally not
-            # wired in this first cut; the only live consumers are READ_ONLY.
-            return DispatchResult(
-                observation=(
-                    f"[dispatch] '{call.name}' requires human approval, which is "
-                    f"not available in this context — skipped."
-                ),
-                executed=False,
-            )
+            if self._approval_fn is None:
+                # No interactive approval channel wired — degrade to deny-with-report
+                # rather than hang. The model sees the denial and moves on.
+                return DispatchResult(
+                    observation=(
+                        f"[dispatch] '{call.name}' ({reg.tier.value}) requires human "
+                        f"approval, but no approval channel is available — denied."
+                    ),
+                    executed=False,
+                )
+            try:
+                approved = await self._approval_fn(call, reg)
+            except Exception as exc:  # noqa: BLE001 — an approval-channel fault must not crash the turn
+                logger.warning(
+                    "Approval channel failed for '%s': %s", call.name, exc, exc_info=True
+                )
+                return DispatchResult(
+                    observation=f"[dispatch] '{call.name}' approval channel failed: {exc}",
+                    executed=False,
+                )
+            if not approved:
+                return DispatchResult(
+                    observation=f"[dispatch] '{call.name}' was not approved — skipped.",
+                    executed=False,
+                )
+            # Approved — fall through to execute below.
 
         try:
             result = await reg.tool._arun(**call.args)
@@ -342,3 +371,38 @@ def make_gateway_reasoner(
             return ""
 
     return _reason
+
+
+def make_websocket_approval_fn(session_id: str) -> ApprovalFn:
+    """Build an ApprovalFn that routes a HITL tier through the interactive card.
+
+    Mirrors ``coder_tools._gated_exec``: a tool the operator already approved this
+    session is admitted without re-prompting (trust-once valve); otherwise the call
+    suspends on ``request_human_approval`` until the operator decides. No explicit
+    deadline is passed, so the 24-hour default applies — the card outlives a short
+    absence. An empty ``session_id`` (no live channel) denies without hanging.
+    """
+
+    async def _approve(call: "ToolCall", reg: "RegisteredTool") -> bool:
+        if not session_id:
+            return False
+        # Lazy imports — the api/transport layers import this module, so resolving
+        # them at call time avoids the construction-time cycle (mirrors _gated_exec).
+        from tools.mcp_adapter import _grant_session_trust, _is_session_trusted
+
+        if _is_session_trusted(session_id, call.name):
+            return True
+        from api.websocket_manager import vfs_manager
+
+        approval = await vfs_manager.request_human_approval(
+            session_id=session_id,
+            action_description=f"TOOL_CALL: {call.name} ({reg.tier.value})",
+            proposed_content=json.dumps(call.args, default=str)[:2000],
+            request_kind="COMMAND_EXEC",
+        )
+        if approval and approval.get("approved"):
+            _grant_session_trust(session_id, call.name)
+            return True
+        return False
+
+    return _approve

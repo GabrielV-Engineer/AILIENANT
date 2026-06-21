@@ -62,7 +62,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
-| DEBT-068 | Dispatch loop wired only on the Analyst (READ_ONLY) — Coder/Planner/Orchestrator + HITL routing pending; Researcher needs node promotion | HIGH | Cognitive activation | 8.10.11 | Floating |
+| DEBT-070 | Async-sleep HITL waits block a coroutine until timeout/response — replace with native LangGraph Suspend & Resume state interrupts | HIGH | Architecture | future HITL slice | Floating |
+| DEBT-069 | Researcher is not a graph node — needs promotion before it can host a dispatch loop | MEDIUM | Cognitive activation | 8.10.12 | Floating |
+| DEBT-068 | ~~Dispatch loop wired only on the Analyst — mutating-tier HITL routing pending~~ | HIGH | Cognitive activation | 8.10.11 | RESOLVED 2026-06-21 |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
@@ -166,15 +168,34 @@ Decision    Not a defect — see [DECISION] tier.
 - **Continuation:** the loop is proven on one role only. Extending it to the Coder/Planner/Orchestrator (and adding HITL approval routing for mutating tiers, which the READ_ONLY Analyst path never exercised) is tracked as **DEBT-068**. The Researcher additionally needs node promotion first.
 - **Notes:** scope deliberately bounded to substrate + one-node proof so the activation lands with zero mutation blast radius before mutating roles are wired. Supersedes the dispatch half of the former DEBT-043/046/042 and the DEBT-054 channel-wiring concern.
 
-### DEBT-068 [HIGH · Floating] — Tool-dispatch loop wired only on the Analyst; mutating roles + HITL routing pending
+### DEBT-068 [HIGH · RESOLVED 2026-06-21, 8.10.11] — Tool-dispatch loop wired only on the Analyst; mutating-tier HITL routing pending
 
-- **Date:** 2026-06-20
-- **Reproduce:** `core/tool_dispatch.py` (the substrate from 8.10.8) is invoked only by `run_analyst_node`. The Coder, Planner, and Orchestrator nodes still make single-shot `LLMGateway` calls and never construct a `ToolDispatcher`, so their registered tools (including the mutating coder arsenal) remain unreachable by the model. `ToolDispatcher.dispatch` returns a "requires human approval" stub for the HITL decision rather than routing to `request_human_approval`, because the only live consumer is READ_ONLY.
-- **File(s):** wiring targets `agents/coder.py`, `agents/planner.py`, `agents/orchestrator.py`, `brain/engine.py`; HITL routing seam in `core/tool_dispatch.py::ToolDispatcher.dispatch`; consumes the existing 8.10.2 factories. Researcher promotion to a first-class graph node is a prerequisite for wiring its loop (its skeleton is consumed as optional Planner context today).
-- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**: 8.10.8 bounded scope to a READ_ONLY proof so the substrate ships before mutating dispatch.
-- **Blocked by:** nothing structural; needs the HITL-routing wiring + per-role tool registries + the Researcher node promotion.
-- **Phase:** 8.10.11 (Remaining-role Tool Dispatch Wiring).
+- **Date:** 2026-06-20 · **Resolved:** 2026-06-21 (8.10.11)
+- **Reproduce (original):** `core/tool_dispatch.py` (the 8.10.8 substrate) was invoked only by `run_analyst_node`; `ToolDispatcher.dispatch` returned a "requires human approval" stub for the HITL decision rather than routing to a real approval channel, because the only live consumer was READ_ONLY.
+- **Resolved:** `ToolDispatcher.__init__` gains an injectable `approval_fn`; `dispatch` now consults it on a HITL tier (deny-with-report when absent, denied, or raising — never hangs the turn), with a `make_websocket_approval_fn(session_id)` factory wrapping `request_human_approval` + the trust-once valve. The live mutating proof is the coder's existing ReAct loop: `brain/agentic_cell.py::run_terminal` previously treated HITL as ALLOW; a new `_admit_execute` runs the three-axis matrix and routes EXECUTE→HITL through the approval card (PLAN still denies, AUTO still admits). `request_human_approval`'s default deadline raised 300s→86400s.
+- **Scope correction (CLAUDE.md §4):** the literal target list did not match the architecture. The **Orchestrator** is a deterministic O(1) node with no LLM/reasoner — a dispatch loop has nothing to drive (permanently excluded). The **Planner** is PLAN-only with READ_ONLY tools — a loop adds no HITL value (excluded). The coder's mutation surface is the agentic cell, not a second `coder.py` loop. The **Researcher** needs node promotion first → carved to **DEBT-069**.
+- **File(s):** `core/tool_dispatch.py`, `brain/agentic_cell.py`, `api/websocket_manager.py`; gate `tests/test_phase8_10_11_checkpoint_gate.py`.
 - **Notes:** logged at 8.10.8 ship per CLAUDE.md §11.3 as the continuation of DEBT-066.
+
+### DEBT-070 [HIGH · Floating] — Async-sleep HITL waits block a coroutine until timeout/response
+
+- **Date:** 2026-06-21
+- **Reproduce:** every HITL gate (`request_human_approval`, the coder/exec command gates, FinOps, sandbox tiers) suspends the calling coroutine on an `asyncio.Event`/`wait_for` until the human responds or a wall-clock deadline fires. The 8.10.11 mitigation raised the default deadline to 24h so a card no longer dies under an absent operator, but the underlying pattern still pins a coroutine (and, transitively, the graph super-step) for the duration.
+- **File(s):** `api/websocket_manager.py::request_human_approval`; callers in `tools/coder_tools.py`, `tools/execution_tools.py`, `brain/finops.py`, `brain/agentic_cell.py`, `core/tool_dispatch.py`.
+- **Error:** architectural — interim mitigation shipped (24h default); the structural fix is to replace async-sleep waits with native LangGraph **Suspend & Resume** state interrupts so an awaiting approval checkpoints the graph and frees the runtime instead of holding a live coroutine.
+- **Blocked by:** nothing structural; needs a LangGraph interrupt/resume design pass over the HITL channel.
+- **Phase:** future HITL slice.
+- **Notes:** carved at 8.10.11 ship per CLAUDE.md §11.3, on user directive.
+
+### DEBT-069 [MEDIUM · Floating] — Researcher is not a graph node; needs promotion before it can host a dispatch loop
+
+- **Date:** 2026-06-21
+- **Reproduce:** `agents/researcher.py` is a deterministic single-shot retrieval + one `LLMGateway.ainvoke`; its skeleton is consumed only as optional Planner context and it is not registered as a first-class node in `brain/engine.py`, so it cannot host a `ToolDispatcher` loop.
+- **File(s):** `agents/researcher.py`, `tools/researcher_tools.py`, `brain/engine.py`.
+- **Error:** not a runtime defect — carved from DEBT-068 because node promotion is a prerequisite, not a wiring step.
+- **Blocked by:** Researcher node promotion (graph registration + routing edges).
+- **Phase:** 8.10.12 (Researcher Node Promotion + Dispatch Loop).
+- **Notes:** carved at 8.10.11 ship per CLAUDE.md §11.3 as the deferred remainder of DEBT-068.
 
 ### DEBT-067 [LOW · Floating] — Hardware stress simulator uses synthetic injection, not real allocation
 
