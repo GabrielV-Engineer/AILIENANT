@@ -354,7 +354,7 @@
 - [x] **8.2.6.4 — Mid-session local-endpoint failover.**
   [In the BYOM call path (`tools/llm_gateway.py`, `acomplete_byom`/`astream_byom`): on a non-OOM `APIConnectionError` where the resolved target `is_local`, resolve the next available target via the existing `model_resolver._directional_order(tier)` and retry **once** (guard with a `_failover_attempted` flag — no loops). If the directional neighbour is Cloud with no key configured, the fallback fails cleanly and the original error surfaces — never swallowed (CLAUDE.md §5.2). Inference retry is idempotent (read-only, no state mutation — §5.3). **DoD:** simulated local drop falls back to the next tier; a second failure re-raises without looping. Target file: `tools/llm_gateway.py`.]
 
-- [ ] **8.2.6.5 — Division 8.2.6 Checkpoint Gate.**
+- [x] **8.2.6.5 — Division 8.2.6 Checkpoint Gate.**
   [`tests/test_phase8_2_6_warmup_gate.py` (sibling-file convention): `is_corpus_empty` True on a fresh store / False after a write; empty corpus + `tci<30` → LOCAL_SMALL with `is_red_alert` False; the non-empty `css<40` → CLOUD regression guard; `search_with_paths` makes zero embed calls on a cold store; warm-up defer vs run at the threshold; B4 single-retry then re-raise. **DoD:** `mypy .` 0 · `pytest` green. No FE surface, so `npm run compile` is not required (a "Warm-up mode" HUD badge is an optional Phase 11 follow-up). **SCHEMA_EVOLUTION note (record at implementation, not now):** `derive_routing_decision` gains an additive optional `corpus_empty` param (default `False`) — backward compatible, no contract break.]
 
 ---
