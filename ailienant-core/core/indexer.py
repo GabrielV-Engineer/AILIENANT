@@ -35,6 +35,7 @@ logger = logging.getLogger("LAZY_INDEXER")
 _BATCH_SIZE: int = 8
 _BATCH_SLEEP_S: float = 0.1
 _INDEX_THRESHOLD: float = 0.05  # skip full crawl if >= (1 - 0.05) * total already indexed
+_WARMUP_MIN_FILES: int = 5  # defer full crawl when eligible count is below this threshold
 _SKIP_DIRS = frozenset({".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"})
 
 # Reactive-index circuit breaker tuning. A file that fails this many times in a
@@ -198,11 +199,11 @@ class LazyIndexer:
         """
         Verify the embedding backend is reachable before touching any files.
 
-        Provider-agnostic (Phase 7.9.B.12): resolves the active embedding target
-        from the BYOM preset and validates it per provider — local engines are
-        probed; cloud providers are gated on key presence (never a local-port
-        ping). Returns None if OK, else a human-readable, actionable reason.
-        Resets _is_running so a later retry (after the user fixes config) re-enters.
+        Resolves the active embedding target from the BYOM preset and validates
+        it per provider — local engines are probed; cloud providers are gated on
+        key presence (never a local-port ping). Returns None if OK, else a
+        human-readable, actionable reason. Resets _is_running so a later retry
+        (after the user fixes config) re-enters.
         """
         import httpx
         from core.config.embedding_resolver import get_embedding_target
@@ -314,6 +315,17 @@ class LazyIndexer:
                 if self._complete_event is not None:
                     self._complete_event.set()
                 return
+
+            if 0 < self._total < _WARMUP_MIN_FILES:
+                logger.info(
+                    "LazyIndexer: warm-up mode — %d eligible file(s) below threshold %d; "
+                    "deferring full crawl until workspace grows.",
+                    self._total, _WARMUP_MIN_FILES,
+                )
+                if self._complete_event is not None:
+                    self._complete_event.set()
+                await vfs_manager.broadcast_indexing_complete(session_id)
+                return  # _is_complete stays False; next session retries when workspace grows
 
             # Skip full crawl if enough files are already indexed (crash-resume)
             already = await get_indexed_count(project_id)

@@ -13,6 +13,10 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.2.6.3: Warm-up indexing gate — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/364 · pyright 0 · pytest 1671 passed
+- Shipped: `_WARMUP_MIN_FILES = 5` constant in `core/indexer.py`; `LazyIndexer._run` defers the full crawl when `0 < total < _WARMUP_MIN_FILES` — fires `complete_event` and `broadcast_indexing_complete` but leaves `_is_complete = False` so the next session retries when the workspace grows; 2 hermetic async tests assert sub-threshold defers and at-threshold runs; Boy-Scout: stale phase reference scrubbed from `_preflight_check` docstring.
+
 ## 8.2.6.2: Skip embedding on an empty store — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/363 · pyright 0 · pytest 1669 passed
 - Shipped: `search_with_paths` and `search_snippets` short-circuit via `is_corpus_empty(workspace_hash)` before `_get_embedding`, eliminating one embedding backend round-trip per turn on a cold workspace (behavior-preserving — the query path returns empty on an empty store either way); 3 new hermetic tests assert zero embeds on the cold path and a 2-embed regression guard on a populated corpus.

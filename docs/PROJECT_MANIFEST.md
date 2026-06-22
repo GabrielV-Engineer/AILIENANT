@@ -348,7 +348,7 @@
 - [x] **8.2.6.2 — Skip embedding on an empty store.**
   [`SemanticMemoryManager.search_with_paths` short-circuits `return (0.0, [], [])` via `is_corpus_empty(workspace_hash)` before calling `_get_embedding`. Behavior is identical (an empty store returns `[]` anyway) but saves one embedding backend call per planner turn on a cold workspace. **DoD:** zero `_get_embedding` calls on a cold workspace (mock-asserted). Target file: `core/memory/semantic_memory.py`.]
 
-- [ ] **8.2.6.3 — Warm-up indexing gate.**
+- [x] **8.2.6.3 — Warm-up indexing gate.**
   [`_WARMUP_MIN_FILES` constant (default 5): in `indexer._run`, when `0 < total < _WARMUP_MIN_FILES`, defer the full crawl, mark complete, and fire the complete event (log warm-up mode). Reactive indexing (7.13.5) still indexes real files on save as the project grows; the next `client_workspace_init` that sees `≥ _WARMUP_MIN_FILES` runs the full crawl. Safe because the crawl is recoverable and reactive coverage backfills. **DoD:** sub-threshold defers; threshold runs. Target file: `core/indexer.py`.]
 
 - [ ] **8.2.6.4 — Mid-session local-endpoint failover.**
