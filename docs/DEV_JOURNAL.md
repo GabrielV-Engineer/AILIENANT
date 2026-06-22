@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.2.6.4: Mid-session local-endpoint failover — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/365 · pyright 0 new (10 pre-existing union-type) · pytest 1682 passed
+- Shipped: new `model_resolver.get_failover_target(tier, exclude_model)` walks the capability ladder nearest-first for the next callable target; `acomplete_byom`/`astream_byom` fail over once on a non-OOM `APIConnectionError` from a local endpoint, leaving OOM-class drops to the existing cascade and re-raising on a second failure or when no viable neighbour exists; 11 hermetic tests cover resolution, drop-then-recover, persistent-drop-no-loop, and OOM/cloud exclusion.
+- Key decision: streaming failover binds to the initial connect only (pre-first-yield) since a partially streamed answer cannot be re-rolled; `astream_byom_thinking` left untouched per strict DoD scope.
+
 ## 8.2.6.3: Warm-up indexing gate — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/364 · pyright 0 · pytest 1671 passed
 - Shipped: `_WARMUP_MIN_FILES = 5` constant in `core/indexer.py`; `LazyIndexer._run` defers the full crawl when `0 < total < _WARMUP_MIN_FILES` — fires `complete_event` and `broadcast_indexing_complete` but leaves `_is_complete = False` so the next session retries when the workspace grows; 2 hermetic async tests assert sub-threshold defers and at-threshold runs; Boy-Scout: stale phase reference scrubbed from `_preflight_check` docstring.

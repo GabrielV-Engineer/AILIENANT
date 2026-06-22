@@ -741,20 +741,41 @@ class LLMGateway:
         timeout: float = 60.0,
         session_id: Optional[str] = None,
     ) -> str:
-        """Non-streaming completion against the active BYOM chat model (direct)."""
-        from core.config.model_resolver import get_chat_target  # deferred — load order
+        """Non-streaming completion against the active BYOM chat model (direct).
+
+        On a non-OOM transport drop of a *local* endpoint, fails over once to the
+        next callable target on the capability ladder (see ``get_failover_target``).
+        The retry is bounded to a single attempt: a second failure re-raises.
+        """
+        from core.config.model_resolver import get_chat_target, get_failover_target  # deferred — load order
         target = get_chat_target(tier)
         if target is None:
             raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
         trace_id = session_id or str(uuid.uuid4())
         _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
-        kwargs = LLMGateway._byom_kwargs(
-            target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=_effective_timeout, max_retries=LLM_MAX_TRANSPORT_RETRIES,
-        )
-        logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
-        resp: ModelResponse = await litellm.acompletion(**kwargs)
-        return resp.choices[0].message.content or ""
+        attempted_failover = False
+        while True:
+            kwargs = LLMGateway._byom_kwargs(
+                target, messages, temperature=temperature, max_tokens=max_tokens,
+                timeout=_effective_timeout, max_retries=LLM_MAX_TRANSPORT_RETRIES,
+            )
+            logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
+            try:
+                resp: ModelResponse = await litellm.acompletion(**kwargs)
+                return resp.choices[0].message.content or ""
+            except APIConnectionError as exc:
+                if attempted_failover or not target.is_local or _looks_like_oom(exc):
+                    raise  # OOM, cloud drop, or already retried — surface it
+                nxt = get_failover_target(tier, exclude_model=target.model)
+                if nxt is None:
+                    raise  # nothing to fall back to — original drop surfaces
+                logger.warning(
+                    "BYOM local endpoint dropped [model=%s trace=%s]; failing over to %s",
+                    target.model, trace_id, nxt.model,
+                )
+                target = nxt
+                _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+                attempted_failover = True
 
     @staticmethod
     async def astream_byom(
@@ -780,22 +801,43 @@ class LLMGateway:
         a no-op by the ledger contract; the abort path is unaffected either
         way (token accounting NEVER blocks cancel propagation).
         """
-        from core.config.model_resolver import get_chat_target  # deferred — load order
+        from core.config.model_resolver import get_chat_target, get_failover_target  # deferred — load order
         target = get_chat_target(tier)
         if target is None:
             raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
         trace_id = session_id or str(uuid.uuid4())
         _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
-        kwargs = LLMGateway._byom_kwargs(
-            target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
-        )
-        kwargs.setdefault("stream_options", {"include_usage": True})
-        logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
         prompt_tokens: int = 0
         completion_tokens: int = 0
         try:
-            response = await litellm.acompletion(**kwargs)
+            # Bounded single failover on the INITIAL connect only — a partially
+            # streamed answer cannot be re-rolled, so the retry must land before the
+            # first yield. A non-OOM transport drop of a local endpoint falls over
+            # once to the next callable ladder target; a second failure re-raises.
+            attempted_failover = False
+            while True:
+                kwargs = LLMGateway._byom_kwargs(
+                    target, messages, temperature=temperature, max_tokens=max_tokens,
+                    timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
+                )
+                kwargs.setdefault("stream_options", {"include_usage": True})
+                logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
+                try:
+                    response = await litellm.acompletion(**kwargs)
+                    break
+                except APIConnectionError as exc:
+                    if attempted_failover or not target.is_local or _looks_like_oom(exc):
+                        raise  # OOM, cloud drop, or already retried — surface it
+                    nxt = get_failover_target(tier, exclude_model=target.model)
+                    if nxt is None:
+                        raise  # nothing to fall back to — original drop surfaces
+                    logger.warning(
+                        "BYOM local endpoint dropped [model=%s trace=%s]; failing over to %s",
+                        target.model, trace_id, nxt.model,
+                    )
+                    target = nxt
+                    _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+                    attempted_failover = True
             async for chunk in response:
                 # Final-chunk shape (include_usage): `usage` populated, `choices`
                 # may be empty. Pre-final chunks: `usage=None`, content in choices[0].delta.

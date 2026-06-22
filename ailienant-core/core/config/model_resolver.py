@@ -86,6 +86,31 @@ def get_chat_target(tier: str = "medium") -> Optional[ModelTarget]:
     return _normalize_for_chat(targets[first_key])
 
 
+def get_failover_target(tier: str, exclude_model: str) -> Optional[ModelTarget]:
+    """Next callable chat target after ``exclude_model`` dropped, ladder nearest-first.
+
+    Walks ``_directional_order(tier)`` and returns the first configured target whose
+    model differs from ``exclude_model`` AND is actually callable — a cloud neighbour
+    with no api_key is skipped, because there is nothing to fail over to. Returns
+    None when no viable alternative exists, so the caller re-raises the original
+    transport drop instead of swallowing it.
+    """
+    targets = _load()
+    if not targets:
+        return None
+    for t in _directional_order(tier):
+        cand = targets.get(t)
+        if cand is None:
+            continue
+        norm = _normalize_for_chat(cand)
+        if norm.model == exclude_model:
+            continue
+        if not norm.is_local and not norm.api_key:
+            continue  # cloud neighbour with no key — not callable
+        return norm
+    return None
+
+
 def refresh() -> None:
     """Clear the cached chat targets. Called after a BYOM preset is applied."""
     global _cached
