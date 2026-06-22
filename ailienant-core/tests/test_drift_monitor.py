@@ -2,12 +2,16 @@
 #
 # DoD: pytest tests/test_drift_monitor.py -v must pass with 0 failures.
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from api.websocket_manager import vfs_manager
-from brain.drift_monitor import _DRIFT_THRESHOLD, _plan_similarity, run_drift_monitor_node
+from brain.drift_monitor import (
+    _DRIFT_THRESHOLD,
+    _plan_similarity,
+    run_drift_compute_node,
+    run_drift_gate_node,
+)
 from brain.state import MissionSpecification, WBSStep
 
 
@@ -55,60 +59,69 @@ def test_completely_different_plans_have_low_similarity() -> None:
 
 
 # ---------------------------------------------------------------------------
-# run_drift_monitor_node — async node tests
+# drift_compute / drift_gate — split-node tests (8.10.14)
+#
+# The gate's approval is native interrupt() (request_graph_approval); unit tests patch
+# that seam to return the resume verdict directly, so they exercise the gate's delta
+# logic without a live graph run. The real interrupt/resume round-trip is covered by
+# tests/test_phase8_10_14_checkpoint_gate.py.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
 async def test_no_drift_on_identical_plans() -> None:
-    """If mission_spec is identical to immutable_wbs, node returns {} (no HITL)."""
+    """Identical plans → drift_compute closes the gate; drift_gate is a no-op."""
     spec = _make_spec("Refactor auth module", ["Read auth.py", "Write tests"])
     state = {"immutable_wbs": spec, "mission_spec": spec, "task_id": "t1"}
-    result = await run_drift_monitor_node(state)
-    assert result == {}, f"Expected no-op dict, got {result}"
+    compute = await run_drift_compute_node(state)
+    assert compute == {"drift_gate_open": False}
+    assert await run_drift_gate_node({**state, **compute}) == {}
 
 
 @pytest.mark.anyio
 async def test_no_drift_on_first_turn() -> None:
-    """If immutable_wbs is None (first turn), node must return {} unconditionally."""
+    """First turn (immutable_wbs None) → gate closed unconditionally."""
     spec = _make_spec("Deploy service", ["Write Dockerfile"])
     state = {"immutable_wbs": None, "mission_spec": spec, "task_id": "t2"}
-    result = await run_drift_monitor_node(state)
-    assert result == {}
+    assert await run_drift_compute_node(state) == {"drift_gate_open": False}
 
 
 @pytest.mark.anyio
-async def test_drift_detected_triggers_hitl_and_approved() -> None:
-    """Divergent plans trigger HITL; if user approves, immutable_wbs is updated."""
+async def test_drift_compute_opens_gate_then_gate_approves() -> None:
+    """Divergent plans → drift_compute opens the gate (committing the decision);
+    drift_gate then suspends and, on approval, updates immutable_wbs."""
     baseline = _make_spec("Refactor auth module", ["Read auth.py", "Write tests for auth"])
     revised = _make_spec("Deploy Kubernetes cluster", ["Configure helm chart", "Run kubectl"])
+    state = {"immutable_wbs": baseline, "mission_spec": revised, "task_id": "t3"}
 
-    mock_response = {"approved": True, "comment": "OK, proceed"}
+    compute = await run_drift_compute_node(state)
+    assert compute["drift_gate_open"] is True
+    assert compute["drift_similarity"] < _DRIFT_THRESHOLD
 
-    with patch.object(
-        vfs_manager, "request_human_approval", new=AsyncMock(return_value=mock_response)
+    with patch(
+        "core.hitl.request_graph_approval",
+        return_value={"approved": True, "comment": "OK, proceed"},
     ):
-        state = {"immutable_wbs": baseline, "mission_spec": revised, "task_id": "t3"}
-        result = await run_drift_monitor_node(state)
+        result = await run_drift_gate_node({**state, **compute})
 
     assert result.get("hitl_response") == "approved"
-    assert result.get("immutable_wbs") == revised, "immutable_wbs must be updated to approved plan"
+    assert result.get("immutable_wbs") == revised
     assert result.get("hitl_pending") is False
 
 
 @pytest.mark.anyio
-async def test_drift_detected_triggers_hitl_and_rejected() -> None:
-    """If user rejects drift, errors list must be populated."""
+async def test_drift_gate_rejected_propagates_error() -> None:
+    """On rejection the gate emits an error and does NOT update immutable_wbs."""
     baseline = _make_spec("Refactor auth module", ["Read auth.py", "Write tests for auth"])
     revised = _make_spec("Deploy Kubernetes cluster", ["Configure helm chart", "Run kubectl"])
+    state = {"immutable_wbs": baseline, "mission_spec": revised, "task_id": "t4"}
 
-    mock_response = {"approved": False, "comment": "No, revert"}
-
-    with patch.object(
-        vfs_manager, "request_human_approval", new=AsyncMock(return_value=mock_response)
+    compute = await run_drift_compute_node(state)
+    with patch(
+        "core.hitl.request_graph_approval",
+        return_value={"approved": False, "comment": "No, revert"},
     ):
-        state = {"immutable_wbs": baseline, "mission_spec": revised, "task_id": "t4"}
-        result = await run_drift_monitor_node(state)
+        result = await run_drift_gate_node({**state, **compute})
 
     assert result.get("hitl_response") == "rejected"
     assert len(result.get("errors", [])) > 0

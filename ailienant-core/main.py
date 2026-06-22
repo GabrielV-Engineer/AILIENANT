@@ -1117,12 +1117,27 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 )
 
             elif valid_event.event_type == "client_hitl_response":
-                vfs_manager.resolve_human_approval(
-                    approval_id=valid_event.data.approval_id,
-                    approved=valid_event.data.approved,
-                    comment=valid_event.data.comment,
-                    modified_content=valid_event.data.modified_content,
-                )
+                # Two HITL transports: a paused graph (native interrupt) resumes via
+                # Command(resume=…); everything else (MCP adapter, post-graph file-write
+                # apply loop) still resolves the in-memory approval Event. resume_graph
+                # pops the paused entry first, so a duplicate reply is a harmless no-op.
+                if task_service.has_paused_graph(client_id):
+                    _approval = {
+                        "approved": valid_event.data.approved,
+                        "comment": valid_event.data.comment,
+                    }
+                    # Background task — never block the WS receive loop on the resume.
+                    _resume_t = asyncio.create_task(
+                        task_service.resume_graph(client_id, _approval)
+                    )
+                    task_service.register_active_task(client_id, _resume_t)
+                else:
+                    vfs_manager.resolve_human_approval(
+                        approval_id=valid_event.data.approval_id,
+                        approved=valid_event.data.approved,
+                        comment=valid_event.data.comment,
+                        modified_content=valid_event.data.modified_content,
+                    )
                 # Confirm receipt so a response from a hidden/torn-down webview is
                 # never silently orphaned.
                 await vfs_manager.broadcast_hitl_ack(

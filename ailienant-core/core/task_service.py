@@ -241,6 +241,10 @@ class TaskService:
         # MUST register its OWN current_task() (NEVER the WS receive loop's
         # task — that would kill the socket on cancel; see plan W1).
         self._active_tasks: Dict[str, "asyncio.Task[Any]"] = {}
+        # Native HITL Suspend & Resume — sessions whose graph paused on an interrupt(),
+        # keyed by session_id → (payload, execution_mode). resume_graph re-enters the
+        # same thread with Command(resume=…). One pending interrupt per session at a time.
+        self._paused_tasks: Dict[str, Tuple["TaskPayload", str]] = {}
         # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: tracked tool-call
         # registry keyed by (session_id, tool_call_id). Side-bag (NOT in
         # AIlienantGraphState) so agents stay isolated from this transport-tier
@@ -510,7 +514,8 @@ class TaskService:
         return True
 
     async def _run_coding_task(
-        self, session_id: str, payload: TaskPayload, execution_mode: str
+        self, session_id: str, payload: TaskPayload, execution_mode: str,
+        resume_value: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Drive the compiled LangGraph engine to propose patches, then apply via the HITL bridge.
 
@@ -522,32 +527,46 @@ class TaskService:
         but does not touch disk (its apply node is inert); the actual write stays
         here behind the HITL approval card so the transport/permission boundary
         is never pushed into a cognitive node.
+
+        When ``resume_value`` is set this is a **native HITL resume**: the graph
+        re-enters from its checkpoint via ``Command(resume=…)`` rather than a fresh
+        seed, so the state build / skill resolve / MCP connect are skipped (they ran on
+        the initial turn). The post-graph processing — interrupt re-detection and the
+        patches/apply path — is shared verbatim across the initial and resume entries.
         """
         from brain.engine import alienant_app  # deferred — avoids import cycle
         from brain.state import AIlienantGraphState
+        from brain.checkpoint import hybrid_checkpointer
+        from core.hitl import extract_pending_interrupt
         from langchain_core.runnables import RunnableConfig
+        from langgraph.types import Command
 
-        state = self._build_initial_state(session_id, payload, execution_mode)
+        if resume_value is None:
+            state = self._build_initial_state(session_id, payload, execution_mode)
 
-        # Resolve the user-authored skills that apply to this task (auto-matched by
-        # description plus any explicitly invoked one) and thread them as a loose
-        # state key the planner reads at prompt assembly. The resolver never raises
-        # and returns [] when no skill is relevant, so this adds no cost to the
-        # common case of a user with no skills.
-        from core.skill_resolver import resolve_active_skills
-        state["active_skills"] = await resolve_active_skills(
-            user_input=payload.task_prompt,
-            workspace_root=payload.workspace_root or "",
-            invoked_skill_id=payload.invoked_skill_id,
-        )
+            # Resolve the user-authored skills that apply to this task (auto-matched by
+            # description plus any explicitly invoked one) and thread them as a loose
+            # state key the planner reads at prompt assembly. The resolver never raises
+            # and returns [] when no skill is relevant, so this adds no cost to the
+            # common case of a user with no skills.
+            from core.skill_resolver import resolve_active_skills
+            state["active_skills"] = await resolve_active_skills(
+                user_input=payload.task_prompt,
+                workspace_root=payload.workspace_root or "",
+                invoked_skill_id=payload.invoked_skill_id,
+            )
 
-        # MCP servers connect once at host startup; this lazy guard only fires on a
-        # cold first task when startup connected nothing (idempotent — the bootstrap
-        # skips servers already in the registry, so there is no per-task DB cost in
-        # steady state).
-        from tools.mcp_adapter import _sessions, autoconnect_enabled_mcp_servers
-        if not _sessions:
-            await autoconnect_enabled_mcp_servers(state)
+            # MCP servers connect once at host startup; this lazy guard only fires on a
+            # cold first task when startup connected nothing (idempotent — the bootstrap
+            # skips servers already in the registry, so there is no per-task DB cost in
+            # steady state).
+            from tools.mcp_adapter import _sessions, autoconnect_enabled_mcp_servers
+            if not _sessions:
+                await autoconnect_enabled_mcp_servers(state)
+        else:
+            # Resume: durable state lives in the checkpoint; this local is only the
+            # abort-marker target on the CancelledError path below.
+            state = {}
 
         # Phase 7.10.2 (ADR-702): granular sub-step narration over server_pipeline_step.
         # A NarrationGate keeps narration <= 15% of streamed volume once the answer is
@@ -620,8 +639,15 @@ class TaskService:
                 # starts emitting per-step status mutations. Reuses the existing
                 # server_plan_document event; an empty summary marks it seed-only.
                 _plan_seeded = False
+                # Initial run seeds the full state; a resume re-enters the checkpointed
+                # thread with Command(resume=…). Same stream_mode ("values") either way.
+                graph_input: Any = (
+                    Command(resume=resume_value)
+                    if resume_value is not None
+                    else cast(AIlienantGraphState, state)
+                )
                 async for snapshot in alienant_app.astream(
-                    cast(AIlienantGraphState, state), config=cfg, stream_mode="values"
+                    graph_input, config=cfg, stream_mode="values"
                 ):
                     final_state = snapshot
                     if not _plan_seeded:
@@ -642,6 +668,21 @@ class TaskService:
                     "I couldn't run the planning engine — make sure a BYOM preset is "
                     f"active and its engine is running. ({exc})",
                 )
+                await self._finalize_stream(session_id)
+                return
+
+            # Native HITL pause: a node called interrupt(). astream ended *naturally*
+            # (the engine swallows GraphInterrupt + checkpoints) — so a pause is detected
+            # here from state, never via except. Surface the approval card, remember the
+            # turn so resume_graph can re-enter the same thread, and release the runtime.
+            pending_interrupt = await extract_pending_interrupt(cfg)
+            if pending_interrupt is not None:
+                self._paused_tasks[session_id] = (payload, execution_mode)
+                await self._emit_interrupt_card(session_id, pending_interrupt)
+                try:
+                    hybrid_checkpointer.promote(session_id)
+                except Exception as exc:  # noqa: BLE001 — promote is best-effort; L1 holds the pause
+                    logger.debug("interrupt promote skipped for %s: %s", session_id, exc)
                 await self._finalize_stream(session_id)
                 return
 
@@ -899,6 +940,56 @@ class TaskService:
             _mcp_sid_var.reset(_mcp_sid_tok)
             _mcp_mode_var.reset(_mcp_mode_tok)
             clear_session_trust(session_id)
+
+    async def _emit_interrupt_card(
+        self, session_id: str, payload: Dict[str, Any]
+    ) -> None:
+        """Surface a native-interrupt approval as the standard HITL card.
+
+        Reuses ``ServerHITLApprovalRequestEvent`` so the frontend renders the same card
+        whether the approval came from the event channel or a graph interrupt; the
+        client echoes the cosmetic ``approval_id`` back on ``client_hitl_response``.
+        """
+        from api.ws_contracts import (
+            HITLApprovalRequestPayload,
+            ServerHITLApprovalRequestEvent,
+        )
+
+        data = HITLApprovalRequestPayload(
+            session_id=str(payload.get("session_id") or session_id),
+            approval_id=str(payload.get("approval_id") or ""),
+            action_description=str(payload.get("action_description") or "Approve to continue?"),
+            proposed_content=payload.get("proposed_content"),
+            request_kind=payload.get("request_kind"),
+            proposed_files=None,
+        )
+        await vfs_manager.send_personal_message(
+            session_id, ServerHITLApprovalRequestEvent(data=data)
+        )
+
+    def has_paused_graph(self, session_id: str) -> bool:
+        """True if ``session_id`` has a graph paused on a native HITL interrupt."""
+        return session_id in self._paused_tasks
+
+    async def resume_graph(self, session_id: str, approval: Dict[str, Any]) -> None:
+        """Resume a graph paused on a native HITL interrupt with the operator's decision.
+
+        Re-enters ``_run_coding_task`` with ``resume_value`` so the checkpointed thread
+        advances via ``Command(resume=…)``. Idempotent under a double reply: the paused
+        entry is popped before re-entry, so a second ``client_hitl_response`` finds none
+        and is a no-op.
+        """
+        entry = self._paused_tasks.pop(session_id, None)
+        if entry is None:
+            logger.warning(
+                "resume_graph: no paused graph for session %s — ignoring duplicate/late reply.",
+                session_id,
+            )
+            return
+        payload, execution_mode = entry
+        await self._run_coding_task(
+            session_id, payload, execution_mode, resume_value=approval
+        )
 
     async def _run_patch_hooks(
         self, session_id: str, event: str

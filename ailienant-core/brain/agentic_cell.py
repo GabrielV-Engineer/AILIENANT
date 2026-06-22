@@ -490,6 +490,67 @@ async def run_agentic_cell_node(
             cell.collector = asyncio.ensure_future(_collect_into(cell))
             _session_registry[task_id] = cell
 
+        # ── Exec-approval phase ──────────────────────────────────────────────────
+        # A prior iteration deferred a HITL-gated command. interrupt() is the FIRST
+        # action here (only the idempotent session-reuse precedes it), so a replay
+        # before resume is side-effect-free and the command runs exactly once after
+        # the operator approves.
+        pending_cmd: Optional[str] = state.get("pending_exec_command")
+        if pending_cmd:
+            approved = await _approve_exec(state, pending_cmd, configurable)
+            rec: Dict[str, Any] = {
+                "iteration": iteration, "edits": [], "occ_conflicts": [],
+                "exit_code": None, "diagnostics": "",
+            }
+            if not approved:
+                rec["status"] = "continue"
+                return {
+                    "agentic_iteration": iteration + 1,
+                    "agentic_trajectory": [
+                        rec,
+                        {"role": "system", "content": (
+                            "Tool denied: the run_terminal command was not approved by the "
+                            "operator. Choose a different approach.")},
+                    ],
+                    "pending_exec_command": None,
+                    "security_flags": ["EXECUTE_TIER_HITL_DENIED"],
+                }
+            # Approved → push the committed edits (idempotent full-content), run once, pull.
+            ef_vfs: Dict[str, VFSFile] = dict(state.get("vfs_buffer") or {})
+            ef_vids: Dict[str, str] = {p: vf.document_version_id for p, vf in ef_vfs.items()}
+            cell.last_snapshot = await push_vfs_to_surface(
+                cell.surface, ef_vfs, blob_storage, ef_vids
+            )
+            _ei = iteration
+            cell._chunk_hook = lambda chunk, _i=_ei: dispatcher.emit_pty_chunk(
+                iteration=_i, text=chunk.decode("utf-8", errors="replace")
+            )
+            try:
+                exit_code, output = await _run_on_surface(
+                    cell, pending_cmd, _RUN_TERMINAL_TIMEOUT_S
+                )
+            finally:
+                cell._chunk_hook = None
+            rec["exit_code"] = exit_code
+            rec["diagnostics"] = _structured_verdict(pending_cmd, output)
+            new_files, conflicts, _deleted = await pull_surface_to_vfs(
+                cell.surface, cell.last_snapshot, ef_vids, blob_storage
+            )
+            occ_msgs: List[Dict[str, str]] = [_occ_diagnostic(p) for p in conflicts]
+            for p in conflicts:
+                rec["occ_conflicts"].append(p)
+            success = exit_code == 0
+            rec["status"] = "green" if success else "continue"
+            terminal = success
+            ef_delta: Dict[str, Any] = {
+                "agentic_iteration": iteration + 1,
+                "agentic_trajectory": [rec, *occ_msgs],
+                "pending_exec_command": None,
+            }
+            if new_files:
+                ef_delta["vfs_buffer"] = {p: vf for p, vf in new_files.items()}
+            return ef_delta
+
         # ── Working VFS for this turn (clean base for transactional MCTS) ────────
         vfs_files: Dict[str, VFSFile] = dict(state.get("vfs_buffer") or {})
         version_ids: Dict[str, str] = {
@@ -547,11 +608,35 @@ async def run_agentic_cell_node(
 
             if call.name == "run_terminal":
                 command = str(call.args.get("command", ""))
-                admitted, deny_flag = await _admit_execute(state, command, configurable)
-                if not admitted:
-                    if deny_flag:
-                        security_flags.append(deny_flag)
+                verdict = _classify_execute(state)
+                if verdict == "deny":
+                    security_flags.append("EXECUTE_TIER_DENIED")
                     continue
+                if verdict == "hitl":
+                    # Defer to the interrupt-first exec-approval phase (next super-step):
+                    # do NOT run the command, and stop processing further calls so no side
+                    # effect precedes the approval. Edits computed so far are committed in
+                    # this delta and re-pushed (idempotent full-content) on re-entry; the
+                    # 'continue' status routes the cell back to itself for the gate.
+                    defer_rec: Dict[str, Any] = {
+                        "iteration": iteration, "edits": list(record["edits"]),
+                        "occ_conflicts": [], "exit_code": None, "diagnostics": "",
+                        "status": "continue",
+                    }
+                    defer_delta: Dict[str, Any] = {
+                        "agentic_iteration": iteration + 1,
+                        "agentic_trajectory": [defer_rec],
+                        "pending_exec_command": command,
+                    }
+                    if edited_paths:
+                        defer_delta["vfs_buffer"] = {p: vfs_files[p] for p in edited_paths}
+                    if pending_contents:
+                        defer_delta["pending_contents"] = pending_contents
+                    if audit_entries:
+                        defer_delta["permission_audit_log"] = audit_entries
+                    if security_flags:
+                        defer_delta["security_flags"] = security_flags
+                    return defer_delta
                 cell.last_snapshot = await push_vfs_to_surface(
                     cell.surface, vfs_files, blob_storage, version_ids
                 )
@@ -753,46 +838,14 @@ def _occ_diagnostic(path: str) -> Dict[str, str]:
     }
 
 
-async def _request_terminal_approval(session_id: str, command: str) -> bool:
-    """Route one terminal command through the interactive HITL approval card.
+def _classify_execute(state: Dict[str, Any]) -> str:
+    """Classify an EXECUTE-tier terminal command under the session policy.
 
-    Reuses the canonical approval channel (``request_human_approval``) plus the
-    trust-once valve, so a command the operator already approved this session runs
-    without re-prompting. No deadline is passed (24-hour default applies). An empty
-    session denies without hanging.
-    """
-    if not session_id:
-        return False
-    from tools.mcp_adapter import _grant_session_trust, _is_session_trusted
-
-    if _is_session_trusted(session_id, "run_terminal"):
-        return True
-    from api.websocket_manager import vfs_manager
-
-    approval = await vfs_manager.request_human_approval(
-        session_id=session_id,
-        action_description=f"COMMAND_EXEC: {command[:200]}",
-        proposed_content=command[:2000],
-        request_kind="COMMAND_EXEC",
-    )
-    if approval and approval.get("approved"):
-        _grant_session_trust(session_id, "run_terminal")
-        return True
-    return False
-
-
-async def _admit_execute(
-    state: Dict[str, Any],
-    command: str,
-    configurable: Dict[str, Any],
-) -> Tuple[bool, Optional[str]]:
-    """Admit (or refuse) an EXECUTE-tier terminal command under the session policy.
-
-    Honors the same three-axis matrix every other call site consults: PLAN denies
-    outright, AUTO admits friction-free, and DEFAULT resolves EXECUTE to HITL —
-    which is routed through the approval card (or an injected ``cell_approval_fn``
-    for tests) rather than run silently. Returns ``(admitted, security_flag)`` with
-    the flag set only on refusal.
+    Returns ``"allow"`` / ``"deny"`` / ``"hitl"`` from the same three-axis matrix every
+    other call site consults (PLAN denies, AUTO admits, DEFAULT → HITL). Pure and
+    state-sourced, so the cell's run/defer decision is replay-stable: it never performs
+    the approval itself — a HITL verdict triggers the deferral, and the approval happens
+    interrupt-first in the next super-step's exec-approval phase.
     """
     from core.permissions import (
         PermissionDecision,
@@ -808,19 +861,36 @@ async def _admit_execute(
         PermissionMode.EDIT_EXECUTE_RBW,
     )
     if verdict is PermissionDecision.DENY:
-        return False, "EXECUTE_TIER_DENIED"
+        return "deny"
     if verdict is PermissionDecision.ALLOW:
-        return True, None
+        return "allow"
+    return "hitl"
 
-    # HITL — consult the injected approval seam (tests) or the live approval card.
+
+async def _approve_exec(
+    state: Dict[str, Any],
+    command: str,
+    configurable: Dict[str, Any],
+) -> bool:
+    """Approve a deferred command — the FIRST action of the exec-approval phase.
+
+    Uses the injected ``cell_approval_fn`` seam in tests, else native
+    ``request_graph_approval`` (LangGraph ``interrupt()``) so the graph suspends and
+    the runtime is freed until the operator replies. Trust-once is intentionally not
+    applied here — each gated command resumes through its own interrupt.
+    """
     approval_fn = configurable.get("cell_approval_fn")
     if approval_fn is not None:
-        approved = await approval_fn(command)
-    else:
-        approved = await _request_terminal_approval(
-            str(state.get("task_id") or ""), command
-        )
-    return (True, None) if approved else (False, "EXECUTE_TIER_HITL_DENIED")
+        return bool(await approval_fn(command))
+    from core.hitl import request_graph_approval
+
+    resp = request_graph_approval(
+        session_id=str(state.get("task_id") or ""),
+        action_description=f"COMMAND_EXEC: {command[:200]}",
+        proposed_content=command[:2000],
+        request_kind="COMMAND_EXEC",
+    )
+    return bool(resp.get("approved"))
 
 
 def _read_file_ast(content: str, path: str) -> str:

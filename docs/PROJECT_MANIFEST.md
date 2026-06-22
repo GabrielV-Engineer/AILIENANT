@@ -27,6 +27,7 @@
 | 8.10.11 Mutating-tier Dispatch HITL | ✅ CLOSED | 2026-06-21 | — (DEBT-068 retired; orch/researcher → 8.10.12) |
 | 8.10.12 Researcher Node + Routing Consolidation | ✅ CLOSED | 2026-06-21 | — (DEBT-069 retired; SRP: researcher owns retrieval+routing) |
 | 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
+| 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
@@ -585,6 +586,12 @@
   - State lifecycle: the Planner (sole reader) clears `researcher_skeleton` after consuming it, so it stops serializing into downstream coder / agentic-cell super-step checkpoints. `mission_spec` is left intact (the Coder needs it).
   - DEBT-071 (MEDIUM): logged the codebase-wide LangGraph `add_node` / langchain `args_schema` pyright errors for a dedicated typing slice (mypy gate is clean).
   - **DoD:** `mypy .` 0 · `pytest` green; ceiling truncation + skeleton-cleared tests green.
+
+- [x] **8.10.14 — Native LangGraph Suspend & Resume HITL (DEBT-070)**
+  Replaced inline async-blocking in-graph HITL with native `interrupt()` / `Command(resume=…)` so an awaiting approval checkpoints the graph and frees the runtime instead of pinning a coroutine.
+  - DEBT-070 (HIGH): `core/hitl.py` substrate; FinOps converted (single node, committed-state gate); DriftMonitor split into `drift_compute`→`drift_gate` (interrupt-bearing node decides on committed, replay-stable state); the agentic cell defers a HITL-gated command to an interrupt-first exec-approval phase (no replayed side effect, command runs once); `task_service` post-`astream` pause detection + `resume_graph`; WS `client_hitl_response` routes graph-paused sessions to resume. Non-graph HITL (MCP, post-graph apply loop) stays on the event channel.
+  - DEBT-072 (MEDIUM): logged pending-interrupt restart-durability (`recover()` must restore L2 pending writes).
+  - **DoD:** `mypy .` 0 · `pytest` green; a graph HITL gate interrupts (runtime freed) and resumes via `Command(resume=…)`; the cell does not re-run the reasoner or a prior command across an interrupt/resume; AUTO-mode suites unbroken.
 
 ---
 

@@ -3,24 +3,19 @@
 # Phase 2.18 DoD: pytest tests/test_finops.py -v → 0 failures.
 #
 # Coverage:
-#   run_finops_node (async):
-#     1. Budget within ceiling → pass-through, HITL never called
-#     2. Budget exceeded → request_human_approval called exactly once
+#   run_finops_node (async): the budget gate now suspends via native interrupt()
+#   (request_graph_approval) instead of a wall-clock-bounded asyncio.Event, so there is
+#   no timeout branch — a resume always carries a decision.
+#     1. Budget within ceiling → pass-through, approval never requested
+#     2. Budget exceeded → request_graph_approval called exactly once → approved
 #     3. Budget exceeded, user rejects → budget_rejected + errors
-#     4. Budget exceeded, HITL timeout → budget_timeout + errors (fail-safe)
 #
-#   route_after_finops (sync):
-#     5. "budget_rejected" → "__end__"
-#     6. "budget_timeout"  → "__end__"
-#     7. "approved"        → "apply_patch"
-#     8. None              → "apply_patch" (normal budget-OK path)
-#     9. drift_monitor values ("rejected"/"timeout"/"approved") → "apply_patch" (collision guard)
+#   route_after_finops (sync): unchanged; "budget_rejected" → END, others → apply_patch.
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from api.websocket_manager import vfs_manager
 from brain.finops import run_finops_node, route_after_finops
 
 
@@ -31,12 +26,11 @@ from brain.finops import run_finops_node, route_after_finops
 
 @pytest.mark.anyio
 async def test_finops_pass_through_when_within_budget() -> None:
-    """cost <= max_budget → empty dict returned; HITL gate must never fire."""
+    """cost <= max_budget → empty dict returned; the approval must never fire."""
     state = {"task_id": "t1", "current_cost_usd": 0.50, "max_budget_usd": 10.00}
-    with patch.object(
-        vfs_manager,
-        "request_human_approval",
-        new=AsyncMock(side_effect=AssertionError("HITL must NOT be called within budget")),
+    with patch(
+        "core.hitl.request_graph_approval",
+        side_effect=AssertionError("approval must NOT be requested within budget"),
     ):
         result = await run_finops_node(state)
     assert result == {}
@@ -44,22 +38,24 @@ async def test_finops_pass_through_when_within_budget() -> None:
 
 @pytest.mark.anyio
 async def test_finops_triggers_hitl_when_budget_exceeded() -> None:
-    """cost > max_budget → request_human_approval called exactly once."""
+    """cost > max_budget → request_graph_approval called exactly once; approve continues."""
     state = {"task_id": "t2", "current_cost_usd": 15.00, "max_budget_usd": 10.00}
-    mock_approval = AsyncMock(return_value={"approved": True})
-    with patch.object(vfs_manager, "request_human_approval", new=mock_approval):
-        await run_finops_node(state)
-    mock_approval.assert_called_once()
+    with patch(
+        "core.hitl.request_graph_approval", return_value={"approved": True, "comment": None}
+    ) as approve:
+        result = await run_finops_node(state)
+    approve.assert_called_once()
+    assert result["hitl_response"] == "approved"
+    assert result["hitl_pending"] is False
 
 
 @pytest.mark.anyio
 async def test_finops_rejected_returns_budget_rejected_and_errors() -> None:
-    """HITL rejection → hitl_response='budget_rejected', errors list non-empty."""
+    """Rejection → hitl_response='budget_rejected', errors list non-empty."""
     state = {"task_id": "t3", "current_cost_usd": 20.00, "max_budget_usd": 5.00}
-    with patch.object(
-        vfs_manager,
-        "request_human_approval",
-        new=AsyncMock(return_value={"approved": False, "comment": "Stop, budget exhausted."}),
+    with patch(
+        "core.hitl.request_graph_approval",
+        return_value={"approved": False, "comment": "Stop, budget exhausted."},
     ):
         result = await run_finops_node(state)
     assert result["hitl_response"] == "budget_rejected", (
@@ -67,23 +63,6 @@ async def test_finops_rejected_returns_budget_rejected_and_errors() -> None:
     )
     assert result["hitl_pending"] is False
     assert len(result.get("errors", [])) > 0, "errors list must be non-empty on rejection"
-
-
-@pytest.mark.anyio
-async def test_finops_timeout_returns_budget_timeout_as_failsafe() -> None:
-    """HITL timeout (None) → hitl_response='budget_timeout', errors non-empty (fail-safe)."""
-    state = {"task_id": "t4", "current_cost_usd": 12.00, "max_budget_usd": 10.00}
-    with patch.object(
-        vfs_manager, "request_human_approval", new=AsyncMock(return_value=None)
-    ):
-        result = await run_finops_node(state)
-    assert result["hitl_response"] == "budget_timeout", (
-        f"Expected 'budget_timeout', got {result.get('hitl_response')!r}"
-    )
-    assert result["hitl_pending"] is False
-    assert len(result.get("errors", [])) > 0, (
-        "errors list must be non-empty on timeout so guardrail has context"
-    )
 
 
 # ---------------------------------------------------------------------------

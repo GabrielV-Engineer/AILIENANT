@@ -21,17 +21,18 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("FINOPS_GATE")
 
-# Seconds to wait for a HITL response before treating as a timeout.
-# Shorter than drift_monitor (300s) — budget decisions should be fast.
-_FINOPS_HITL_TIMEOUT_S: float = 120.0
-
 
 async def run_finops_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """LangGraph node: enforce the FinOps budget ceiling.
 
     Reads current_cost_usd and max_budget_usd from state. If within budget,
-    returns {} immediately (zero-cost pass-through). If budget exceeded,
-    surfaces a HITL approval request.
+    returns {} immediately (zero-cost pass-through). If budget exceeded, suspends the
+    graph for a human approval via native ``interrupt()`` (no coroutine is pinned — the
+    run checkpoints and frees the runtime until the user replies).
+
+    The gate decides on already-committed state (cost vs. budget), so a node replay on
+    resume re-reaches the same ``interrupt()`` deterministically; nothing irreversible
+    happens before it.
 
     Returns:
         {}
@@ -40,8 +41,6 @@ async def run_finops_node(state: Dict[str, Any]) -> Dict[str, Any]:
             — budget exceeded but user approved continuing.
         {"hitl_response": "budget_rejected", "hitl_pending": False, "errors": [...]}
             — user rejected the overrun; route_after_finops sends this to END.
-        {"hitl_response": "budget_timeout", "hitl_pending": False, "errors": [...]}
-            — HITL timed out; fail-safe route to END prevents silent budget overflow.
     """
     current_cost: float = state.get("current_cost_usd", 0.0)
     max_budget: float = state.get("max_budget_usd", float("inf"))
@@ -59,10 +58,11 @@ async def run_finops_node(state: Dict[str, Any]) -> Dict[str, Any]:
         current_cost, max_budget, state.get("task_id", "unknown"),
     )
 
-    # Deferred import mirrors drift_monitor.py pattern (avoids circular import at module init).
-    from api.websocket_manager import vfs_manager
+    # Native suspend: interrupt() checkpoints the graph and frees the runtime until the
+    # user replies — no coroutine is pinned on a wall-clock deadline.
+    from core.hitl import request_graph_approval
 
-    response: Optional[Dict[str, Any]] = await vfs_manager.request_human_approval(
+    response: Dict[str, Any] = request_graph_approval(
         session_id=state.get("task_id", ""),
         action_description=(
             f"Budget ceiling exceeded: ${current_cost:.4f} USD spent, "
@@ -70,27 +70,8 @@ async def run_finops_node(state: Dict[str, Any]) -> Dict[str, Any]:
             f"Approve to continue (cost will increase further)?"
         ),
         proposed_content=f"Current spend: ${current_cost:.4f} | Budget: ${max_budget:.4f}",
-        timeout_s=int(_FINOPS_HITL_TIMEOUT_S),
         request_kind="BUDGET_CEILING",
     )
-
-    if response is None:
-        # Timeout — fail-safe: route to END; do NOT silently proceed past budget.
-        logger.error(
-            "FinOps: HITL gate TIMED OUT after %.0fs for task=%s "
-            "(cost=%.4f, budget=%.4f) — routing to END as fail-safe.",
-            _FINOPS_HITL_TIMEOUT_S, state.get("task_id", "unknown"),
-            current_cost, max_budget,
-        )
-        return {
-            "hitl_response": "budget_timeout",
-            "hitl_pending": False,
-            "errors": [
-                f"FinOps: HITL timeout after {_FINOPS_HITL_TIMEOUT_S:.0f}s — "
-                f"halted to prevent silent budget overflow "
-                f"(cost=${current_cost:.4f}, budget=${max_budget:.4f})."
-            ],
-        }
 
     if response.get("approved"):
         logger.info("FinOps: budget overrun approved by user — continuing execution.")

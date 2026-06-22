@@ -62,8 +62,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
+| DEBT-072 | Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart | MEDIUM | Durability | future HITL slice | Floating |
 | DEBT-071 | LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance) | MEDIUM | Type hygiene | dedicated typing slice | Floating |
-| DEBT-070 | Async-sleep HITL waits block a coroutine until timeout/response — replace with native LangGraph Suspend & Resume state interrupts | HIGH | Architecture | future HITL slice | Floating |
+| DEBT-070 | ~~Async-sleep HITL waits block a coroutine — replace with native LangGraph Suspend & Resume~~ | HIGH | Architecture | 8.10.14 | RESOLVED 2026-06-22 |
 | DEBT-069 | ~~Researcher is not a graph node — needs promotion~~ | MEDIUM | Cognitive activation | 8.10.12 | RESOLVED 2026-06-21 |
 | DEBT-068 | ~~Dispatch loop wired only on the Analyst — mutating-tier HITL routing pending~~ | HIGH | Cognitive activation | 8.10.11 | RESOLVED 2026-06-21 |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
@@ -188,15 +189,23 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** dedicated typing slice.
 - **Notes:** logged at 8.10.13 ship per CLAUDE.md §11.3; surfaced during the 8.10.12 review (the new `researcher_agent` node + researcher-tool factory are consistent instances of the same pre-existing pattern, not new error classes).
 
-### DEBT-070 [HIGH · Floating] — Async-sleep HITL waits block a coroutine until timeout/response
+### DEBT-072 [MEDIUM · Floating] — Pending-interrupt restart-durability
 
-- **Date:** 2026-06-21
-- **Reproduce:** every HITL gate (`request_human_approval`, the coder/exec command gates, FinOps, sandbox tiers) suspends the calling coroutine on an `asyncio.Event`/`wait_for` until the human responds or a wall-clock deadline fires. The 8.10.11 mitigation raised the default deadline to 24h so a card no longer dies under an absent operator, but the underlying pattern still pins a coroutine (and, transitively, the graph super-step) for the duration.
-- **File(s):** `api/websocket_manager.py::request_human_approval`; callers in `tools/coder_tools.py`, `tools/execution_tools.py`, `brain/finops.py`, `brain/agentic_cell.py`, `core/tool_dispatch.py`.
-- **Error:** architectural — interim mitigation shipped (24h default); the structural fix is to replace async-sleep waits with native LangGraph **Suspend & Resume** state interrupts so an awaiting approval checkpoints the graph and frees the runtime instead of holding a live coroutine.
-- **Blocked by:** nothing structural; needs a LangGraph interrupt/resume design pass over the HITL channel.
+- **Date:** 2026-06-22
+- **Reproduce:** a native HITL interrupt (8.10.14) pauses the graph in L1 (`MemorySaver`) and frees the runtime; the pause survives within a server lifetime. But `HybridCheckpointer.promote()` persists the checkpoint + pending writes to L2 while `recover()` restores only the checkpoint values — not `hybrid_writes_l2` — so a server restart mid-interrupt loses the pending-interrupt task marker and the resume is orphaned. (No worse than the pre-8.10.14 in-memory Event, which a restart also lost.)
+- **File(s):** `brain/checkpoint.py::recover` (restore pending writes), `core/task_service.py` (re-detect a restored pause on reconnect).
+- **Error:** durability gap — interrupt/resume is correct within a lifetime; cross-restart durability needs the L2 pending-writes round-trip.
+- **Blocked by:** nothing structural; needs `recover()` to read+seed `hybrid_writes_l2`.
 - **Phase:** future HITL slice.
-- **Notes:** carved at 8.10.11 ship per CLAUDE.md §11.3, on user directive.
+- **Notes:** carved at 8.10.14 ship per CLAUDE.md §11.3.
+
+### DEBT-070 [HIGH · RESOLVED 2026-06-22, 8.10.14] — Async-sleep HITL waits block a coroutine until timeout/response
+
+- **Date:** 2026-06-21 · **Resolved:** 2026-06-22 (8.10.14)
+- **Reproduce (original):** every in-graph HITL gate suspended the calling coroutine on an `asyncio.Event`/`wait_for` until the human responded or a wall-clock deadline fired, pinning the graph super-step for the duration.
+- **Resolved:** added a native Suspend & Resume substrate (`core/hitl.py::request_graph_approval` → LangGraph `interrupt()`; `extract_pending_interrupt` via `aget_state`). `task_service` detects the pause post-`astream` (the generator ends naturally; never via `except`), emits the approval card, and frees the runtime; `resume_graph` re-enters the checkpointed thread with `Command(resume=…)`. Converted: FinOps (single node — gate on committed state), DriftMonitor (split `drift_compute`→`drift_gate` so the interrupt-bearing node decides on already-committed, replay-stable state), and the agentic cell (defer the gated command → interrupt-first exec-approval phase, so no side effect is replayed and the command runs once). The dormant `tool_dispatch.make_websocket_approval_fn` seam was re-pointed for the first future consumer.
+- **File(s):** `core/hitl.py` (new), `brain/finops.py`, `brain/drift_monitor.py`, `brain/agentic_cell.py`, `brain/engine.py`, `brain/state.py`, `core/task_service.py`, `core/tool_dispatch.py`, `main.py`.
+- **Notes:** non-graph HITL (MCP adapter, post-graph file-write apply loop) intentionally stays on the `request_human_approval` event path — `interrupt()` only works inside a running graph node. Restart-durability of a pending interrupt is carved as DEBT-072.
 
 ### DEBT-069 [MEDIUM · RESOLVED 2026-06-21, 8.10.12] — Researcher is not a graph node; needs promotion before it can host a dispatch loop
 

@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.14: Native LangGraph Suspend & Resume HITL — DEBT-070 — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/362 · pytest full green (gate 5 + finops/drift/cell suites migrated)
+- Shipped: `core/hitl.py` substrate (`request_graph_approval` → `interrupt()`, `extract_pending_interrupt` via `aget_state`); in-graph HITL now suspends the graph and frees the runtime instead of pinning a coroutine. FinOps → single-node interrupt (committed-state gate); DriftMonitor → split `drift_compute`(commits the gate decision)→`drift_gate`(interrupt-first); agentic cell → defer the HITL-gated command to an interrupt-first exec-approval phase (no side effect replayed, command runs once). `task_service` detects the pause post-`astream` and `resume_graph` re-enters with `Command(resume=…)`; the WS `client_hitl_response` routes graph-paused sessions to resume.
+- Key decision: a node that calls `interrupt()` commits no pre-interrupt writes and `astream` swallows `GraphInterrupt` (ends naturally) — so the interrupt-decision must come from a prior committed node (drift split) and detection is post-loop via state, never via `except`. Non-graph HITL (MCP, post-graph file-write apply loop) intentionally stays on the `request_human_approval` event channel.
+- Deferred: DEBT-072 — pending-interrupt restart-durability (`recover()` must restore L2 pending writes).
+
 ## 8.10.13: Post-8.10.12 hardening — skeleton ceiling + state lifecycle — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/360 · pytest full green (gate 3 + suites)
 - Shipped: explicit `_SKELETON_MAX_CHARS` truncation guard on the Researcher's skeleton output (defense-in-depth above `max_tokens=2048`); the Planner now clears the consumed `researcher_skeleton` from state so it no longer serializes into downstream coder / agentic-cell checkpoints.

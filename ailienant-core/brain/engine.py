@@ -32,7 +32,7 @@ from agents.researcher import run_researcher_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
 from brain.summarizer import run_summarize_node  # noqa: E402
 from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
-from brain.drift_monitor import run_drift_monitor_node  # noqa: E402
+from brain.drift_monitor import run_drift_compute_node, run_drift_gate_node  # noqa: E402
 from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
 from agents.contract_guard import run_contract_guard_node  # noqa: E402 — Phase 2.23
@@ -215,7 +215,11 @@ workflow.add_node("summarize_history", _instrument_node("summarize_history", run
 # suppression the bare node functions still need.
 workflow.add_node("researcher_agent", _instrument_node("researcher_agent", dead_letter_decorator("researcher_agent")(run_researcher_node)))
 workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))
-workflow.add_node("drift_monitor", _instrument_node("drift_monitor", run_drift_monitor_node))
+# DriftMonitor is split: drift_compute commits the (non-deterministic) similarity gate
+# decision; drift_gate reads that committed decision and is the interrupt-bearing node
+# (interrupt-first → replay-safe). See brain/drift_monitor.py.
+workflow.add_node("drift_compute", _instrument_node("drift_compute", run_drift_compute_node))
+workflow.add_node("drift_gate", _instrument_node("drift_gate", run_drift_gate_node))
 # coder_agent is also wrapped by reflexion_guard (INSIDE the DLQ decorator): a fresh,
 # in-budget failure becomes a healing signal routed to error_correction; an exhausted
 # budget re-raises into the DLQ.
@@ -362,8 +366,9 @@ workflow.add_conditional_edges(
     "ideation_loop", route_after_ideation, {"planner_agent": "researcher_agent", END: END}
 )
 workflow.add_edge("researcher_agent", "planner_agent")
-workflow.add_edge("planner_agent", "drift_monitor")
-workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent", "agentic_cell"])
+workflow.add_edge("planner_agent", "drift_compute")
+workflow.add_edge("drift_compute", "drift_gate")
+workflow.add_conditional_edges("drift_gate", route_to_coders, ["coder_agent", "agentic_cell"])
 # The ReAct cell loops back onto itself while its latest verdict says "continue" (each
 # loop-back is a graph super-step → a Rewind-able checkpoint), and rejoins the normal
 # downstream at contract_guard once it goes green or the iteration budget is spent.

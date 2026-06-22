@@ -404,6 +404,14 @@ class AIlienantGraphState(TypedDict):
     hitl_pending: bool              # True while the graph is awaiting human approval
     hitl_response: Optional[str]   # "approved" | "rejected" + optional comment from HITL response
     shared_understanding_reached: bool  # Phase 2.21: True once analyst confirms Socratic dialogue complete
+    # Drift gate decision committed by drift_compute and read by the interrupt-bearing
+    # drift_gate (split so the gate decides on already-committed, replay-stable state).
+    drift_gate_open: Optional[bool]
+    drift_similarity: Optional[float]
+    # Agentic-cell exec-approval deferral: the command awaiting human approval, set when
+    # the cell defers a HITL-gated run_terminal so the interrupt happens in a clean,
+    # side-effect-free re-entry rather than mid-iteration.
+    pending_exec_command: Optional[str]
 
     # --- Planificación Inmutable (SDD) ---
     # Reemplaza 'immutable_wbs' y 'completed_steps'.

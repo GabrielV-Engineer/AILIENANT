@@ -9,9 +9,10 @@ Group 2 (agentic cell): run_terminal honors the three-axis permission matrix —
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock
 
+import pytest
 from langchain_core.tools import BaseTool
 
 import brain.agentic_cell as ac
@@ -178,7 +179,18 @@ def _reasoner_one_terminal(command: str = "pytest -q") -> ac.CellReasoner:
     return _reason
 
 
-def _run_cell(mode: str, **extra: Any) -> Dict[str, Any]:
+@pytest.fixture(autouse=True)
+def _clear_cell_registry() -> Any:
+    """The cell session registry is a process-singleton; a deferral leaves a session
+    open (terminal=False), so clear it between tests to keep them isolated."""
+    ac._session_registry.clear()
+    yield
+    ac._session_registry.clear()
+
+
+def _run_cell(
+    mode: str, *, state_extra: Optional[Dict[str, Any]] = None, **extra: Any
+) -> Dict[str, Any]:
     adapter = _StubAdapter(_StubSession(exit_code=0), _StubSyncSurface())
     configurable: Dict[str, Any] = {
         "cell_adapter": adapter,
@@ -197,6 +209,8 @@ def _run_cell(mode: str, **extra: Any) -> Dict[str, Any]:
         "current_cost_usd": 0.0,
         "max_budget_usd": 100.0,
     }
+    if state_extra:
+        state.update(state_extra)
     return asyncio.run(run_agentic_cell_node(state, {"configurable": configurable}))
 
 
@@ -204,33 +218,62 @@ def _record(delta: Dict[str, Any]) -> Dict[str, Any]:
     return (delta.get("agentic_trajectory") or [{}])[0]
 
 
-def test_cell_default_mode_routes_to_approval_and_runs() -> None:
+def test_cell_default_mode_defers_without_running_or_approving() -> None:
+    # DEFAULT → EXECUTE resolves to HITL → the cell DEFERS: it captures the command,
+    # runs nothing, and does NOT request approval yet (that happens interrupt-first in
+    # the next super-step). The 'continue' status routes the cell back to itself.
     approve = AsyncMock(return_value=True)
     delta = _run_cell("DEFAULT", cell_approval_fn=approve)
+    approve.assert_not_awaited()
+    assert delta.get("pending_exec_command") == "pytest -q"
+    assert _record(delta).get("exit_code") is None
+    assert _record(delta).get("status") == "continue"
+
+
+def test_cell_exec_phase_runs_command_once_on_approval() -> None:
+    # Re-entry with pending_exec_command set = the exec-approval phase: approval is the
+    # FIRST action, then the command runs exactly once. The reasoner is NOT re-invoked.
+    approve = AsyncMock(return_value=True)
+    calls = {"n": 0}
+
+    async def _counting(_m: Any) -> List[CellToolCall]:
+        calls["n"] += 1
+        return [CellToolCall(name="run_terminal", args={"command": "pytest -q"})]
+
+    delta = _run_cell(
+        "DEFAULT",
+        state_extra={"pending_exec_command": "pytest -q"},
+        cell_approval_fn=approve,
+        cell_reasoner=_counting,
+    )
     approve.assert_awaited_once()
-    assert _record(delta).get("exit_code") == 0  # command actually ran
-    assert "EXECUTE_TIER_HITL_DENIED" not in (delta.get("security_flags") or [])
+    assert _record(delta).get("exit_code") == 0
+    assert delta.get("pending_exec_command") is None
+    assert calls["n"] == 0, "the reasoner must NOT run in the exec-approval phase"
 
 
-def test_cell_default_mode_denied_blocks_command() -> None:
+def test_cell_exec_phase_denied_blocks_command() -> None:
     deny = AsyncMock(return_value=False)
-    delta = _run_cell("DEFAULT", cell_approval_fn=deny)
+    delta = _run_cell(
+        "DEFAULT", state_extra={"pending_exec_command": "pytest -q"}, cell_approval_fn=deny
+    )
     deny.assert_awaited_once()
     assert "EXECUTE_TIER_HITL_DENIED" in (delta.get("security_flags") or [])
     assert _record(delta).get("exit_code") is None  # command never ran
+    assert delta.get("pending_exec_command") is None
 
 
 def test_cell_plan_mode_denies() -> None:
     approve = AsyncMock(return_value=True)
     delta = _run_cell("PLAN", cell_approval_fn=approve)
-    approve.assert_not_awaited()  # DENY short-circuits before any approval
+    approve.assert_not_awaited()  # DENY short-circuits before any defer/approval
     assert "EXECUTE_TIER_DENIED" in (delta.get("security_flags") or [])
     assert _record(delta).get("exit_code") is None
 
 
 def test_cell_auto_mode_runs_without_approval() -> None:
     # No cell_approval_fn injected — AUTO must not require one (regression guard for
-    # the existing 7.19 cell suites, which all run under AUTO).
+    # the existing 7.19 cell suites, which all run under AUTO): runs inline, one shot.
     delta = _run_cell("AUTO")
     assert _record(delta).get("exit_code") == 0
     flags = delta.get("security_flags") or []

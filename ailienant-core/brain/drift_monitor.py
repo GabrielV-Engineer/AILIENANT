@@ -22,10 +22,6 @@ logger = logging.getLogger("DRIFT_MONITOR")
 # 0.70 means ~30% combined drift (text + structure) is flagged.
 _DRIFT_THRESHOLD: float = 0.70
 
-# Seconds to wait for a HITL response before timing out and proceeding.
-# Reduce this value if long HITL waits are blocking the graph unexpectedly.
-_DRIFT_TIMEOUT_S: int = 300
-
 
 def _plan_similarity(a: MissionSpecification, b: MissionSpecification) -> float:
     """Hybrid similarity score combining textual and structural plan dimensions.
@@ -68,74 +64,82 @@ def _plan_similarity(a: MissionSpecification, b: MissionSpecification) -> float:
     return combined
 
 
-async def run_drift_monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """LangGraph node: compare current plan against the frozen baseline.
+async def run_drift_compute_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """LangGraph node: compute plan-drift similarity ONCE and commit the gate decision.
 
-    Pass-through on first turn (immutable_wbs not yet set) or when plans
-    are sufficiently similar. Triggers vfs_manager.request_human_approval()
-    when semantic drift exceeds _DRIFT_THRESHOLD.
+    Split from the gate so the interrupt-bearing node (``drift_gate``) decides on
+    already-committed state. A node that calls ``interrupt()`` discards its own
+    pre-interrupt writes, and the similarity score (SequenceMatcher + Jaccard over a
+    possibly reordered task set) is not bitwise-stable across a replay — recomputing it
+    in the interrupting node could straddle the threshold and orphan the resume. So the
+    decision is produced here and committed to the checkpoint before the gate runs.
 
     Returns:
-        {}                           — no drift, or first turn pass-through
-        {"hitl_response": "timeout"} — HITL gate timed out; proceed with warning
-        {"immutable_wbs": ..., ...}  — drift approved; new anchor written
-        {"errors": [...], ...}       — drift rejected; error propagated to guardrail
+        {"drift_gate_open": False}                          — first turn or within threshold
+        {"drift_gate_open": True, "drift_similarity": float} — drift flagged; gate will ask
     """
     immutable_wbs: Optional[MissionSpecification] = state.get("immutable_wbs")
     current_spec: Optional[MissionSpecification] = state.get("mission_spec")
 
     # First turn: immutable_wbs not yet frozen, nothing to compare.
     if immutable_wbs is None or current_spec is None:
-        return {}
+        return {"drift_gate_open": False}
 
     sim = _plan_similarity(immutable_wbs, current_spec)
-
     if sim >= _DRIFT_THRESHOLD:
         logger.debug("DriftMonitor: plan similarity=%.2f — within threshold.", sim)
-        return {}
+        return {"drift_gate_open": False}
 
     logger.warning(
         "DriftMonitor: semantic drift detected (similarity=%.2f < threshold=%.2f). "
-        "Routing to HITL gate.",
+        "Gate will request human approval.",
         sim,
         _DRIFT_THRESHOLD,
     )
+    return {"drift_gate_open": True, "drift_similarity": sim}
 
-    # Deferred import to avoid circular dependency at module init time.
-    from api.websocket_manager import vfs_manager
 
-    response = await vfs_manager.request_human_approval(
+async def run_drift_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """LangGraph node: suspend for human approval when ``drift_compute`` opened the gate.
+
+    Reads the **committed** ``drift_gate_open`` / ``drift_similarity`` (deterministic on
+    replay) and, when open, makes ``interrupt()`` its first action — so a replay before
+    resume is side-effect-free and the approval resumes cleanly.
+
+    Returns:
+        {}                              — gate closed (no drift / first turn)
+        {"immutable_wbs": ..., ...}     — drift approved; new anchor written
+        {"errors": [...], ...}          — drift rejected; error propagated to guardrail
+    """
+    if not state.get("drift_gate_open"):
+        return {}
+
+    sim = float(state.get("drift_similarity") or 0.0)
+    current_spec: Optional[MissionSpecification] = state.get("mission_spec")
+
+    # Native suspend (interrupt-first): checkpoints the graph and frees the runtime.
+    from core.hitl import request_graph_approval
+
+    response = request_graph_approval(
         session_id=state.get("task_id", ""),
         action_description=(
             f"Plan drift detected (similarity={sim:.0%}). "
             f"The revised plan significantly deviates from the original. "
             f"Approve to continue with the new direction?"
         ),
-        proposed_content=f"Revised outcome: {current_spec.outcome}",
-        timeout_s=_DRIFT_TIMEOUT_S,
+        proposed_content=(
+            f"Revised outcome: {current_spec.outcome}" if current_spec is not None else None
+        ),
         request_kind="DRIFT_DETECTED",
     )
 
-    if response is None:
-        # HITL gate timed out — log at ERROR so this is not missed in production.
-        logger.error(
-            "DriftMonitor: HITL gate TIMED OUT after %ds for task=%s (similarity=%.2f) — "
-            "proceeding with revised plan. To reduce silent bypasses, lower _DRIFT_TIMEOUT_S "
-            "or investigate client connectivity.",
-            _DRIFT_TIMEOUT_S,
-            state.get("task_id", "unknown"),
-            sim,
-        )
-        return {"hitl_response": "timeout"}
-
     if response.get("approved"):
-        logger.info(
-            "DriftMonitor: drift approved by user — resetting immutable_wbs anchor."
-        )
+        logger.info("DriftMonitor: drift approved by user — resetting immutable_wbs anchor.")
         return {
             "immutable_wbs": current_spec,
             "hitl_response": "approved",
             "hitl_pending": False,
+            "drift_gate_open": False,
         }
 
     # Rejected: propagate an error so the guardrail can route gracefully to END.
@@ -143,6 +147,7 @@ async def run_drift_monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "hitl_response": "rejected",
         "hitl_pending": False,
+        "drift_gate_open": False,
         "errors": [
             f"Plan drift rejected by user (similarity={sim:.2f}). "
             "Re-planning required before proceeding."

@@ -73,7 +73,7 @@ START
        yes → ideation_loop  (Socratic clarification)         → END (suspend on HITL)
        no  → researcher_agent  (owns retrieval + routing cascade; emits skeleton + context_metrics)
                → planner_agent  (pure WBS engine; consumes the routing signal)
-               → drift_monitor              (compare to immutable_wbs)
+               → drift_compute → drift_gate (compare to immutable_wbs; HITL via native interrupt/resume)
                  → route_to_coders          (SWARM if cloud, RELAY if local)
                    → coder_agent (×N parallel in cloud)
                      → contract_guard       (assert workspace state before write)
@@ -101,7 +101,7 @@ async def run_<node>_node(state, config) -> dict:
 
 ## The agents
 
-Five named agents (Researcher → Planner → Orchestrator → Coder → Analyst) plus a deterministic safety/execution mesh (`drift_monitor`, `error_correction`, `agentic_cell`, `contract_guard`, `finops_gate`, `supervisor`, `validate_output`). Researcher, Planner and Coder are the fully-wired cognitive core; the Analyst is shipped; the Orchestrator remains emerging (see the [honest list](#honest-list-of-what-is-not-implemented)).
+Five named agents (Researcher → Planner → Orchestrator → Coder → Analyst) plus a deterministic safety/execution mesh (`drift_compute`/`drift_gate`, `error_correction`, `agentic_cell`, `contract_guard`, `finops_gate`, `supervisor`, `validate_output`). Researcher, Planner and Coder are the fully-wired cognitive core; the Analyst is shipped; the Orchestrator remains emerging (see the [honest list](#honest-list-of-what-is-not-implemented)). In-graph HITL gates (FinOps budget, drift, agentic-cell command) suspend the graph via native LangGraph `interrupt()` and resume on `Command(resume=…)` — no coroutine is pinned awaiting a human.
 
 ### Researcher — [agents/researcher.py](ailienant-core/agents/researcher.py)
 

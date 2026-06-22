@@ -708,3 +708,18 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 - The Researcher owns all retrieval (GraphRAG, fast-boot, @-mention bypass), recency, the Context Meter Cascade (CSS → red-alert → mini-judge → routing), and the hardware reroute. The Planner is a pure analytical WBS engine that consumes the resolved signal.
 - The Researcher always emits a non-None `context_metrics` (including on its error path); the Planner retains a defensive cold-default init so a Researcher bypass can never propagate `None` into routing.
 - `routing_decision` is read via `context_metrics.routing_decision` — never as a top-level key.
+
+---
+
+## §20 — HITL Transport: In-Graph Approvals via LangGraph Suspend & Resume
+
+**Change:** in-graph human approvals now ride LangGraph's native `interrupt()` / `Command(resume=…)` channel instead of an inline `asyncio.Event` (`request_human_approval`).
+**Location:** `ailienant-core/core/hitl.py` (`request_graph_approval`, `extract_pending_interrupt`); consumed by `brain/finops.py`, `brain/drift_monitor.py` (`drift_gate`), `brain/agentic_cell.py`; resumed by `core/task_service.py::resume_graph` + the `main.py` WS handler.
+**Schema version:** additive. The `ServerHITLApprovalRequestEvent` / `client_hitl_response` wire contracts are unchanged; the `approval_id` is cosmetic (card correlation), never the resume key.
+
+**Contract:**
+- A paused graph is detected from state (`aget_state(cfg).interrupts` / non-empty `.next`) after `astream` ends naturally — LangGraph swallows the `GraphInterrupt`, so a pause is never observed as a raised exception or a graph failure.
+- Resume correlation is LangGraph-native (positional within the task); the resume value is `Command(resume={"approved": bool, "comment": str|None})`.
+- New `AIlienantGraphState` channels (additive, last-value): `drift_gate_open: Optional[bool]`, `drift_similarity: Optional[float]` (committed by `drift_compute`, read by `drift_gate`); `pending_exec_command: Optional[str]` (the agentic cell's deferred HITL-gated command).
+- Non-graph HITL (MCP adapter, post-graph file-write apply loop) stays on the `request_human_approval` event channel — `interrupt()` only works inside a running graph node.
+- A node that interrupts commits no pre-interrupt writes; the interrupt-decision must be produced by a prior committed node (drift split) and no non-idempotent side effect may precede the interrupt (cell defer → interrupt-first exec phase).

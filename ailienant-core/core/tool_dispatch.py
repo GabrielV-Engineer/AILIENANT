@@ -374,33 +374,35 @@ def make_gateway_reasoner(
 
 
 def make_websocket_approval_fn(session_id: str) -> ApprovalFn:
-    """Build an ApprovalFn that routes a HITL tier through the interactive card.
+    """Build an ApprovalFn that routes a HITL tier through native Suspend & Resume.
 
-    Mirrors ``coder_tools._gated_exec``: a tool the operator already approved this
-    session is admitted without re-prompting (trust-once valve); otherwise the call
-    suspends on ``request_human_approval`` until the operator decides. No explicit
-    deadline is passed, so the 24-hour default applies — the card outlives a short
-    absence. An empty ``session_id`` (no live channel) denies without hanging.
+    A tool the operator already approved this session is admitted without re-prompting
+    (trust-once valve); otherwise the call suspends the graph via ``request_graph_approval``
+    (LangGraph ``interrupt()``), freeing the runtime until the operator replies. An empty
+    ``session_id`` (no live channel) denies without hanging. Dormant today (no mutating
+    ``ToolDispatcher`` consumer — Analyst/Researcher are READ_ONLY); re-pointed so the
+    first such consumer inherits the native path. A future consumer that interrupts
+    mid-loop must adopt the cell's defer-then-interrupt-first pattern for replay safety.
     """
 
     async def _approve(call: "ToolCall", reg: "RegisteredTool") -> bool:
         if not session_id:
             return False
-        # Lazy imports — the api/transport layers import this module, so resolving
-        # them at call time avoids the construction-time cycle (mirrors _gated_exec).
+        # Lazy import — the api/transport layers import this module, so resolving at
+        # call time avoids the construction-time cycle.
         from tools.mcp_adapter import _grant_session_trust, _is_session_trusted
 
         if _is_session_trusted(session_id, call.name):
             return True
-        from api.websocket_manager import vfs_manager
+        from core.hitl import request_graph_approval
 
-        approval = await vfs_manager.request_human_approval(
+        resp = request_graph_approval(
             session_id=session_id,
             action_description=f"TOOL_CALL: {call.name} ({reg.tier.value})",
             proposed_content=json.dumps(call.args, default=str)[:2000],
             request_kind="COMMAND_EXEC",
         )
-        if approval and approval.get("approved"):
+        if resp.get("approved"):
             _grant_session_trust(session_id, call.name)
             return True
         return False

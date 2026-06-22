@@ -51,6 +51,14 @@ class _SealedGraph:
             "hitl_pending": False,
         }
 
+    async def aget_state(self, config: Any) -> Any:
+        """Satisfy the post-stream interrupt check: no pending interrupts."""
+        class _Snap:
+            interrupts: list = []
+            tasks: list = []
+            next: list = []
+        return _Snap()
+
 
 def test_ssot_apply_patch_over_real_http_ws(e2e_client, tmp_path, monkeypatch) -> None:
     import main
