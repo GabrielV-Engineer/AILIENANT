@@ -242,24 +242,34 @@ def _planner_mocks(sem: float = 0.2, coverage: float = 0.1) -> Tuple[AsyncMock, 
     return search, deep, audit, llm
 
 
+async def _noop_reasoner(_m: Any) -> str:
+    """Grounding-loop reasoner that runs no tools (cascade tests stay focused)."""
+    return "{}"
+
+
+# Routing/retrieval now live in the Researcher node; these cascade vectors drive
+# run_researcher_node with the grounding loop neutralized.
+from langchain_core.runnables import RunnableConfig  # noqa: E402
+
+_RCFG: RunnableConfig = {"configurable": {"researcher_tool_reasoner": _noop_reasoner}}
+
+
 async def test_planner_fast_track_skips_graphrag_and_routes_local_small() -> None:
     search, deep, audit, llm = _planner_mocks()
     state = _state("hello, what is recursion?")
 
-    with patch("agents.planner.DEBUG_MODE", False), \
+    with patch("agents.researcher.DEBUG_MODE", False), \
          patch("core.state_manager.load_state_from_markdown", return_value=None), \
          patch("core.state_manager.dump_state_to_markdown", return_value=True), \
-         patch("agents.planner.audit_task_complexity", new=audit), \
-         patch("agents.planner.SemanticMemoryManager") as sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as extr_cls, \
-         patch("agents.planner.TrajectoryMemoryManager") as traj_cls, \
-         patch("agents.planner.LLMGateway.ainvoke", new=llm):
-        traj_cls.return_value.search = AsyncMock(return_value=[])
+         patch("agents.researcher.audit_task_complexity", new=audit), \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as extr_cls, \
+         patch("agents.researcher.LLMGateway.ainvoke", new=llm):
         extr_cls.return_value.deep_parse = deep
         sem_cls.return_value.search_with_paths = search
 
-        from agents.planner import run_planner_node
-        result = await run_planner_node(state)
+        from agents.researcher import run_researcher_node
+        result = await run_researcher_node(state)  # fast_track skips the grounding loop
 
     search.assert_not_called()
     deep.assert_not_called()
@@ -282,21 +292,20 @@ async def test_planner_low_vram_reroutes_local_to_cloud() -> None:
             context_window=8192, quantization="q4_0"),
     )
 
-    with patch("agents.planner.DEBUG_MODE", False), \
+    with patch("agents.researcher.DEBUG_MODE", False), \
          patch("core.state_manager.load_state_from_markdown", return_value=None), \
          patch("core.state_manager.dump_state_to_markdown", return_value=True), \
-         patch("agents.planner.audit_task_complexity", new=audit), \
-         patch("agents.planner.check_cloud_availability", return_value=True), \
-         patch("agents.planner.SemanticMemoryManager") as sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as extr_cls, \
-         patch("agents.planner.TrajectoryMemoryManager") as traj_cls, \
-         patch("agents.planner.LLMGateway.ainvoke", new=llm):
-        traj_cls.return_value.search = AsyncMock(return_value=[])
+         patch("agents.researcher.audit_task_complexity", new=audit), \
+         patch("agents.researcher.check_cloud_availability", return_value=True), \
+         patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as extr_cls, \
+         patch("agents.researcher.LLMGateway.ainvoke", new=llm):
         extr_cls.return_value.deep_parse = deep
         sem_cls.return_value.search_with_paths = search
 
-        from agents.planner import run_planner_node
-        result = await run_planner_node(state)
+        from agents.researcher import run_researcher_node
+        result = await run_researcher_node(state, _RCFG)
 
     assert result["context_metrics"].routing_decision == "CLOUD"
     assert result["routing_warning"] is not None

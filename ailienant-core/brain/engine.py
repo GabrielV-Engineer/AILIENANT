@@ -28,6 +28,7 @@ workflow = StateGraph(AIlienantGraphState)
 # =====================================================================
 # Importaciones diferidas para evitar dependencias circulares en el startup.
 from agents.planner import run_planner_node  # noqa: E402
+from agents.researcher import run_researcher_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
 from brain.summarizer import run_summarize_node  # noqa: E402
 from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
@@ -212,6 +213,7 @@ workflow.add_node("summarize_history", _instrument_node("summarize_history", run
 # summarize_history / drift_monitor / contract_guard / finops_gate are left bare.
 # The decorator's Callable[...] return satisfies add_node without the type-var
 # suppression the bare node functions still need.
+workflow.add_node("researcher_agent", _instrument_node("researcher_agent", dead_letter_decorator("researcher_agent")(run_researcher_node)))
 workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))
 workflow.add_node("drift_monitor", _instrument_node("drift_monitor", run_drift_monitor_node))
 # coder_agent is also wrapped by reflexion_guard (INSIDE the DLQ decorator): a fresh,
@@ -344,16 +346,22 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 # =====================================================================
 workflow.add_edge(START, "summarize_history")
 workflow.add_edge("summarize_history", "session_delta_aggregator")
+# The ResearcherAgent is spliced in front of every PlannerAgent entry: the router
+# verdicts are unchanged ("planner_agent"), but the path-map reroutes that verdict
+# through researcher_agent first, which owns all retrieval + the routing cascade and
+# emits the signal the Planner consumes. researcher_agent → planner_agent closes it.
 workflow.add_conditional_edges(
-    "session_delta_aggregator", route_after_summarize, ["planner_agent", "ideation_loop"]
+    "session_delta_aggregator", route_after_summarize,
+    {"planner_agent": "researcher_agent", "ideation_loop": "ideation_loop"},
 )
 # The ideation loop no longer dead-ends: once the Socratic dialogue is distilled it
 # hands the brief to the Actor-Critic PlannerAgent (run once, downstream of ideation
 # and with planner_mode_active=False, so it never re-enters the loop). A mid-dialogue
 # turn still suspends to END to await the next user response.
 workflow.add_conditional_edges(
-    "ideation_loop", route_after_ideation, ["planner_agent", END]
+    "ideation_loop", route_after_ideation, {"planner_agent": "researcher_agent", END: END}
 )
+workflow.add_edge("researcher_agent", "planner_agent")
 workflow.add_edge("planner_agent", "drift_monitor")
 workflow.add_conditional_edges("drift_monitor", route_to_coders, ["coder_agent", "agentic_cell"])
 # The ReAct cell loops back onto itself while its latest verdict says "continue" (each

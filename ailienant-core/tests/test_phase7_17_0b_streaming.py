@@ -352,23 +352,14 @@ async def test_n3_planner_forwards_seam_and_validates() -> None:
         "stream_thinking": sink, "enable_native_thinking": True, "thinking_budget_tokens": 1024,
     }}
 
+    # Planner is a pure WBS engine (no retrieval/cascade); it consumes context_metrics
+    # from state. This test pins the thinking-seam forwarding on the WBS draft call.
     with patch("agents.planner.DEBUG_MODE", False), \
-         patch("core.state_manager.load_state_from_markdown", return_value=None), \
-         patch("agents.planner.SemanticMemoryManager") as sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as ext_cls, \
          patch("agents.planner.TrajectoryMemoryManager") as traj_cls, \
          patch("tools.llm_gateway.LLMGateway.acomplete_with_thinking", new=gw), \
          patch("agents.planner.ResourceBroker.acquire_or_resolve", new=AsyncMock(return_value=decision)), \
-         patch("agents.planner.ResourceBroker.release", new=AsyncMock(return_value=None)), \
-         patch("core.state_manager.dump_state_to_markdown", return_value=True), \
-         patch("agents.planner.audit_task_complexity",
-               new=AsyncMock(return_value=__import__("core.memory.context_auditor",
-                                                     fromlist=["RiskLevel"]).RiskLevel.NONE)):
+         patch("agents.planner.ResourceBroker.release", new=AsyncMock(return_value=None)):
         traj_cls.return_value.search = AsyncMock(return_value=[])
-        ext_cls.return_value.deep_parse = AsyncMock(return_value=MagicMock(
-            coverage_ratio=0.6, context_block="", parsed_files=["s.py"], target_files=["s.py"],
-        ))
-        sem_cls.return_value.search_with_paths = AsyncMock(return_value=(0.8, ["s.py"], [""]))
 
         from agents.planner import run_planner_node
         result = await run_planner_node(state, config)

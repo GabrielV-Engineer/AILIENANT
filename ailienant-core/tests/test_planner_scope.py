@@ -7,7 +7,8 @@ These tests pin the two guards that contain that behaviour.
 """
 from __future__ import annotations
 
-from agents.planner import _DEEP_CONTEXT_MIN_SIM, _SCOPE_DISCIPLINE_DIRECTIVE
+from agents.planner import _SCOPE_DISCIPLINE_DIRECTIVE
+from agents.researcher import _DEEP_CONTEXT_MIN_SIM
 
 
 def test_scope_directive_constrains_to_requested_files() -> None:

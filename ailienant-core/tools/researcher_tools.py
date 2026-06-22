@@ -22,12 +22,25 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import functools
 import json
 import logging
 import os
 import re
 import time
-from typing import Any, Awaitable, Callable, FrozenSet, Iterable, List, Optional, Type
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Type,
+)
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
@@ -35,6 +48,9 @@ from pydantic import BaseModel, Field, PrivateAttr
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.quarantine import wrap_boundary
+
+if TYPE_CHECKING:
+    from core.tool_dispatch import RegisteredTool
 
 logger = logging.getLogger("RESEARCHER_TOOLS")
 
@@ -639,3 +655,70 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
     for schema in schemas:
         await store.register_schema(schema)
     return len(schemas)
+
+
+# =====================================================================
+# Callable registry — the name → executable map for the dispatch loop
+# =====================================================================
+
+
+def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]:
+    """Construct the five researcher tools bound to live session context.
+
+    Mirrors ``analyst_tools.build_analyst_tools``: the metadata-only schemas in the
+    RAG store are inert; this is where the executable callables are instantiated
+    with their state-injected providers and paired with the tier + role metadata the
+    dispatch gate consults. Returns a ``name → RegisteredTool`` map keyed by the same
+    names ``register_researcher_tools`` registers (the read_file schema is execution-
+    backed elsewhere and is not built here).
+
+    Heavy providers resolve lazily (no DB/network at construction): the RAM ∪ catalog
+    path provider, the firewalled content reader, the FTS narrower, the GraphRAG
+    extractor, and the dependents lookup all defer their work to first use.
+    """
+    from core.db import get_dependents
+    from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
+    from core.tool_dispatch import RegisteredTool
+    from core.vfs_middleware import make_safe_reader
+
+    workspace_root = str(state.get("workspace_root") or "")
+    project_id = str(state.get("project_id") or "")
+    session_id = str(state.get("task_id") or "")
+
+    path_provider = make_vfs_path_provider(project_id)
+    content_reader = make_safe_reader(project_id, workspace_root, session_id)
+    narrow_provider = make_fts_narrow_provider(project_id)
+    extractor = GraphRAGDynamicExtractor(project_id=project_id)
+    dependents_fn = functools.partial(get_dependents, project_id=project_id)
+
+    return {
+        "glob": RegisteredTool(
+            GlobTool(path_provider=path_provider),
+            ToolPrivilegeTier.READ_ONLY,
+            _RESEARCHER_ROLES,
+        ),
+        "grep": RegisteredTool(
+            GrepTool(
+                path_provider=path_provider,
+                content_reader=content_reader,
+                narrow_provider=narrow_provider,
+            ),
+            ToolPrivilegeTier.READ_ONLY,
+            _RESEARCHER_ROLES,
+        ),
+        "workspace_structure": RegisteredTool(
+            WorkspaceStructureTool(path_provider=path_provider),
+            ToolPrivilegeTier.READ_ONLY,
+            _RESEARCHER_AND_PLANNER,
+        ),
+        "query_graphrag": RegisteredTool(
+            GraphRAGQueryTool(extractor=extractor, workspace_root=workspace_root),
+            ToolPrivilegeTier.READ_ONLY,
+            _RESEARCHER_ROLES,
+        ),
+        "get_dependents": RegisteredTool(
+            GetDependentsTool(get_dependents=dependents_fn),
+            ToolPrivilegeTier.READ_ONLY,
+            _RESEARCHER_AND_PLANNER,
+        ),
+    }

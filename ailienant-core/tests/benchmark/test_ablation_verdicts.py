@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterator, List, Mapping
 
 import pytest
 
-import agents.planner
+import agents.researcher
 import core.telemetry as telemetry
 from core.telemetry import log_routing_decision
 from core.token_ledger import token_ledger
@@ -132,13 +132,13 @@ def _wrong_runner(problem: BenchmarkProblem) -> TaskRunner:
 
 def test_g4_force_cloud_patches_provider_seam() -> None:
     """G4_FORCE_CLOUD rebinds derive_routing_decision to always return 'CLOUD'."""
-    original = agents.planner.derive_routing_decision
+    original = agents.researcher.derive_routing_decision
     with apply_arm(AblationArm.G4_FORCE_CLOUD):
-        patched = agents.planner.derive_routing_decision
+        patched = agents.researcher.derive_routing_decision
         assert patched is not original
         assert patched(0.0, 0.0) == "CLOUD"
         assert patched(99.0, 99.0) == "CLOUD"
-    assert agents.planner.derive_routing_decision is original
+    assert agents.researcher.derive_routing_decision is original
 
 
 # --------------------------------------------------------------------------- #

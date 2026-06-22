@@ -171,6 +171,18 @@ def _planner_patches(
     return mock_search, mock_deep, mock_audit
 
 
+async def _noop_researcher_reasoner(_m: Any) -> str:
+    """A grounding-loop reasoner that runs no tools (keeps the cascade tests focused)."""
+    return "{}"
+
+
+# Routing/retrieval moved from the Planner to the Researcher node; these cascade
+# vectors now drive run_researcher_node with the grounding loop neutralized.
+from langchain_core.runnables import RunnableConfig  # noqa: E402
+
+_RCFG: RunnableConfig = {"configurable": {"researcher_tool_reasoner": _noop_researcher_reasoner}}
+
+
 @pytest.fixture(autouse=True)
 def _reset_ledger() -> Any:
     """Isolate token-ledger state between tests."""
@@ -233,20 +245,19 @@ async def test_v1_scenario_a_low_css_triggers_red_alert_and_cloud_route() -> Non
     sdd_json: str = _make_mission("low-css outcome").model_dump_json()
     mock_llm_response = _fake_llm_response(sdd_json, prompt_tokens=1, completion_tokens=1)
 
-    with patch("agents.planner.DEBUG_MODE", False), \
+    with patch("agents.researcher.DEBUG_MODE", False), \
          patch("core.state_manager.load_state_from_markdown", return_value=None), \
          patch("core.state_manager.dump_state_to_markdown", return_value=True), \
-         patch("agents.planner.audit_task_complexity", new=mock_audit), \
-         patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.planner.TrajectoryMemoryManager") as mock_traj_cls, \
-         patch("agents.planner.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
-        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+         patch("agents.researcher.audit_task_complexity", new=mock_audit), \
+         patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
+         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
 
-        from agents.planner import run_planner_node
-        result = await run_planner_node(state)
+        from agents.researcher import run_researcher_node
+        result = await run_researcher_node(state, _RCFG)
 
     final_ctx: ContextMeter = result["context_metrics"]
     assert final_ctx.is_red_alert is True, f"expected red alert, got css={final_ctx.css_total}"
@@ -284,20 +295,19 @@ async def test_v1_scenario_b_mid_css_judge_medium_escalates_route() -> None:
     sdd_json: str = _make_mission("mid-css outcome").model_dump_json()
     mock_llm_response = _fake_llm_response(sdd_json)
 
-    with patch("agents.planner.DEBUG_MODE", False), \
+    with patch("agents.researcher.DEBUG_MODE", False), \
          patch("core.state_manager.load_state_from_markdown", return_value=None), \
          patch("core.state_manager.dump_state_to_markdown", return_value=True), \
-         patch("agents.planner.audit_task_complexity", new=mock_audit), \
-         patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.planner.TrajectoryMemoryManager") as mock_traj_cls, \
-         patch("agents.planner.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
-        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+         patch("agents.researcher.audit_task_complexity", new=mock_audit), \
+         patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
+         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
 
-        from agents.planner import run_planner_node
-        result = await run_planner_node(state)
+        from agents.researcher import run_researcher_node
+        result = await run_researcher_node(state, _RCFG)
 
     final_ctx: ContextMeter = result["context_metrics"]
     assert final_ctx.is_red_alert is False
@@ -539,21 +549,20 @@ async def test_v4_fast_boot_intercepts_lancedb_call(tmp_path: Path) -> None:
     sdd_json: str = _make_mission("fast-boot path").model_dump_json()
     mock_llm_response = _fake_llm_response(sdd_json)
 
-    with patch("agents.planner.DEBUG_MODE", False), \
+    with patch("agents.researcher.DEBUG_MODE", False), \
          patch("core.state_manager.load_state_from_markdown", return_value=cached), \
-         patch("agents.planner.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)), \
-         patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.planner.TrajectoryMemoryManager") as mock_traj_cls, \
-         patch("agents.planner.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
-        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+         patch("agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)), \
+         patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
+         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
 
-        from agents.planner import run_planner_node
-        result = await run_planner_node(state)  # must not raise
+        from agents.researcher import run_researcher_node
+        result = await run_researcher_node(state, _RCFG)  # must not raise
 
-    assert "mission_spec" in result
+    assert "researcher_skeleton" in result
     mock_search.assert_not_called()
     # deep_parse still runs (cheap, picks up real file changes on disk).
     mock_deep.assert_awaited_once()
@@ -595,20 +604,19 @@ async def test_v4_stale_agents_md_falls_back_to_full_retrieval(tmp_path: Path) -
     sdd_json: str = _make_mission("stale-fallback").model_dump_json()
     mock_llm_response = _fake_llm_response(sdd_json)
 
-    with patch("agents.planner.DEBUG_MODE", False), \
-         patch("agents.planner.audit_task_complexity", new=mock_audit), \
-         patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.planner.TrajectoryMemoryManager") as mock_traj_cls, \
-         patch("agents.planner.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
-        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+    with patch("agents.researcher.DEBUG_MODE", False), \
+         patch("agents.researcher.audit_task_complexity", new=mock_audit), \
+         patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
+         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
 
-        from agents.planner import run_planner_node
-        await run_planner_node(state)
+        from agents.researcher import run_researcher_node
+        await run_researcher_node(state, _RCFG)
 
-    # Stale cache → planner must hit LanceDB.
+    # Stale cache → researcher must hit LanceDB.
     mock_search.assert_awaited_once()
 
 

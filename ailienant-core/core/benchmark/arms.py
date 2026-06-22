@@ -55,7 +55,7 @@ GRAPH_SEAM = "core.memory.graphrag_extractor.GraphRAGDynamicExtractor.deep_parse
 PLANNER_VECTOR_SEAM = "core.memory.semantic_memory.SemanticMemoryManager.search_with_paths"
 CODER_VECTOR_SEAM = "core.memory.semantic_memory.SemanticMemoryManager.search_snippets"
 CODER_TARGET_SEAM = "brain.engine._coder_target"
-PROVIDER_SEAM = "agents.planner.derive_routing_decision"
+PROVIDER_SEAM = "agents.researcher.derive_routing_decision"
 
 
 def _force_one_shot(step: Any) -> str:

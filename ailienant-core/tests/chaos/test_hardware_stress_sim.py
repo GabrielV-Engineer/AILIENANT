@@ -79,25 +79,32 @@ async def test_synthetic_vram_pressure_triggers_observable_fallback(tmp_path: An
             coverage_ratio=0.9, context_block="", parsed_files=["a.py"], target_files=["a.py"]))
         audit = AsyncMock(return_value=RiskLevel.NONE)
         llm = AsyncMock(return_value=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(
-                content=_mission().model_dump_json()))],
+            choices=[SimpleNamespace(message=SimpleNamespace(content="## Skeleton"))],
             usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1)))
 
-        with patch("agents.planner.DEBUG_MODE", False), \
+        async def _noop_reasoner(_m: Any) -> str:
+            return "{}"
+
+        # The VRAM-floor reroute now lives in the Researcher node (it owns the routing
+        # cascade + hardware degradation); the Planner is a pure consumer.
+        with patch("agents.researcher.DEBUG_MODE", False), \
+             patch("agents.researcher.is_fast_track_eligible", return_value=False), \
              patch("core.state_manager.load_state_from_markdown", return_value=None), \
              patch("core.state_manager.dump_state_to_markdown", return_value=True), \
-             patch("agents.planner.audit_task_complexity", new=audit), \
-             patch("agents.planner.check_cloud_availability", return_value=True), \
-             patch("agents.planner.SemanticMemoryManager") as sem_cls, \
-             patch("agents.planner.GraphRAGDynamicExtractor") as extr_cls, \
-             patch("agents.planner.TrajectoryMemoryManager") as traj_cls, \
-             patch("agents.planner.LLMGateway.ainvoke", new=llm):
-            traj_cls.return_value.search = AsyncMock(return_value=[])
+             patch("agents.researcher.audit_task_complexity", new=audit), \
+             patch("agents.researcher.check_cloud_availability", return_value=True), \
+             patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
+             patch("core.memory.semantic_memory.SemanticMemoryManager") as sem_cls, \
+             patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as extr_cls, \
+             patch("agents.researcher.LLMGateway.ainvoke", new=llm):
             extr_cls.return_value.deep_parse = deep
             sem_cls.return_value.search_with_paths = search
 
-            from agents.planner import run_planner_node
-            result = await run_planner_node(_state(_starved_profile()))
+            from agents.researcher import run_researcher_node
+            result = await run_researcher_node(
+                _state(_starved_profile()),
+                {"configurable": {"researcher_tool_reasoner": _noop_reasoner}},
+            )
 
         # Fallback fired: LOCAL decision degraded to CLOUD with a user-facing warning.
         assert result["context_metrics"].routing_decision == "CLOUD"

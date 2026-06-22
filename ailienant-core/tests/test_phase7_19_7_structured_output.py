@@ -108,23 +108,12 @@ async def test_planner_instruction_carries_wbs_seed_directive() -> None:
     WBS-seed directive in the instruction, so it honors the user's plan."""
     user_input = "1. Read config.py\n2. Add a logger\n3. Run pytest"
     mock_ainvoke = AsyncMock(return_value=_make_response(_valid_mission_json()))
-    mock_search = AsyncMock(return_value=(0.8, ["test/scope.py"], [""]))
-    mock_deep_parse = AsyncMock(
-        return_value=MagicMock(
-            coverage_ratio=0.6,
-            context_block="",
-            parsed_files=["test/scope.py"],
-            target_files=["test/scope.py"],
-        )
-    )
     mock_acquire = AsyncMock(return_value=_broker_decision())
     mock_release = AsyncMock(return_value=None)
 
+    # The Planner is a pure WBS engine now; it no longer performs retrieval/cascade,
+    # so it consumes context_metrics from state instead of computing it.
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "core.state_manager.load_state_from_markdown", return_value=None
-    ), patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, patch(
-        "agents.planner.GraphRAGDynamicExtractor"
-    ) as mock_extractor_cls, patch(
         "agents.planner.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
         "agents.planner.LLMGateway.ainvoke", mock_ainvoke
@@ -132,19 +121,8 @@ async def test_planner_instruction_carries_wbs_seed_directive() -> None:
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
         "agents.planner.ResourceBroker.release", mock_release
-    ), patch(
-        "core.state_manager.dump_state_to_markdown", return_value=True
-    ), patch(
-        "agents.planner.audit_task_complexity",
-        AsyncMock(
-            return_value=__import__(
-                "core.memory.context_auditor", fromlist=["RiskLevel"]
-            ).RiskLevel.NONE
-        ),
     ):
         mock_traj_cls.return_value.search = AsyncMock(return_value=[])
-        mock_extractor_cls.return_value.deep_parse = mock_deep_parse
-        mock_sem_cls.return_value.search_with_paths = mock_search
 
         from agents.planner import run_planner_node
 

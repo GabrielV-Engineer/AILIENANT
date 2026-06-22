@@ -63,7 +63,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
 | DEBT-070 | Async-sleep HITL waits block a coroutine until timeout/response — replace with native LangGraph Suspend & Resume state interrupts | HIGH | Architecture | future HITL slice | Floating |
-| DEBT-069 | Researcher is not a graph node — needs promotion before it can host a dispatch loop | MEDIUM | Cognitive activation | 8.10.12 | Floating |
+| DEBT-069 | ~~Researcher is not a graph node — needs promotion~~ | MEDIUM | Cognitive activation | 8.10.12 | RESOLVED 2026-06-21 |
 | DEBT-068 | ~~Dispatch loop wired only on the Analyst — mutating-tier HITL routing pending~~ | HIGH | Cognitive activation | 8.10.11 | RESOLVED 2026-06-21 |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
 | DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
@@ -187,15 +187,13 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future HITL slice.
 - **Notes:** carved at 8.10.11 ship per CLAUDE.md §11.3, on user directive.
 
-### DEBT-069 [MEDIUM · Floating] — Researcher is not a graph node; needs promotion before it can host a dispatch loop
+### DEBT-069 [MEDIUM · RESOLVED 2026-06-21, 8.10.12] — Researcher is not a graph node; needs promotion before it can host a dispatch loop
 
-- **Date:** 2026-06-21
-- **Reproduce:** `agents/researcher.py` is a deterministic single-shot retrieval + one `LLMGateway.ainvoke`; its skeleton is consumed only as optional Planner context and it is not registered as a first-class node in `brain/engine.py`, so it cannot host a `ToolDispatcher` loop.
-- **File(s):** `agents/researcher.py`, `tools/researcher_tools.py`, `brain/engine.py`.
-- **Error:** not a runtime defect — carved from DEBT-068 because node promotion is a prerequisite, not a wiring step.
-- **Blocked by:** Researcher node promotion (graph registration + routing edges).
-- **Phase:** 8.10.12 (Researcher Node Promotion + Dispatch Loop).
-- **Notes:** carved at 8.10.11 ship per CLAUDE.md §11.3 as the deferred remainder of DEBT-068.
+- **Date:** 2026-06-21 · **Resolved:** 2026-06-21 (8.10.12)
+- **Reproduce (original):** `agents/researcher.py` was a deterministic single-shot retrieval + one `LLMGateway.ainvoke`; its skeleton was consumed only as optional Planner context and it was not registered as a node in `brain/engine.py`, so it could not host a `ToolDispatcher` loop.
+- **Resolved:** promoted to a first-class node (`researcher_agent`, spliced before `planner_agent` via the dict path-map remap) with a bounded READ_ONLY `ToolDispatcher` grounding loop (`tools/researcher_tools.build_researcher_tools`). Scope was expanded (user-directed) to full SRP consolidation: all retrieval + the Context Meter Cascade + hardware reroute were relocated from the Planner to the Researcher, which now emits the routing signal (`context_metrics`/`css`/`tci`/`provider`/`routing_warning`) + a dense AST skeleton; the Planner became a pure WBS engine. SCHEMA_EVOLUTION.MD §19 documents the producer move.
+- **File(s):** `agents/researcher.py`, `agents/planner.py`, `tools/researcher_tools.py`, `brain/engine.py`; gate `tests/test_phase8_10_12_checkpoint_gate.py` + ~17 migrated routing/cascade/fast-boot tests.
+- **Notes:** the routing-spine math was relocated verbatim (same thresholds/order) so behavior is identical; carved from DEBT-068 at 8.10.11.
 
 ### DEBT-067 [LOW · Floating] — Hardware stress simulator uses synthetic injection, not real allocation
 

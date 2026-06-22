@@ -71,7 +71,8 @@ START
   → session_delta_aggregator
   → [planner_mode_active?]
        yes → ideation_loop  (Socratic clarification)         → END (suspend on HITL)
-       no  → planner_agent
+       no  → researcher_agent  (owns retrieval + routing cascade; emits skeleton + context_metrics)
+               → planner_agent  (pure WBS engine; consumes the routing signal)
                → drift_monitor              (compare to immutable_wbs)
                  → route_to_coders          (SWARM if cloud, RELAY if local)
                    → coder_agent (×N parallel in cloud)
@@ -100,11 +101,11 @@ async def run_<node>_node(state, config) -> dict:
 
 ## The agents
 
-Five named agents (Researcher → Planner → Orchestrator → Coder → Analyst) plus a deterministic safety/execution mesh (`drift_monitor`, `error_correction`, `agentic_cell`, `contract_guard`, `finops_gate`, `supervisor`, `validate_output`). Planner and Coder are the fully-wired cognitive core; the others range from shipped (Analyst) to emerging (Researcher/Orchestrator — see the [honest list](#honest-list-of-what-is-not-implemented)).
+Five named agents (Researcher → Planner → Orchestrator → Coder → Analyst) plus a deterministic safety/execution mesh (`drift_monitor`, `error_correction`, `agentic_cell`, `contract_guard`, `finops_gate`, `supervisor`, `validate_output`). Researcher, Planner and Coder are the fully-wired cognitive core; the Analyst is shipped; the Orchestrator remains emerging (see the [honest list](#honest-list-of-what-is-not-implemented)).
 
 ### Researcher — [agents/researcher.py](ailienant-core/agents/researcher.py)
 
-Builds a **skeleton map** of the workspace — struct/function signatures and cross-module relationships — so the Planner reasons over real structure. *Emerging:* today its output is consumed as the optional `researcher_skeleton` state field by the Planner rather than as a standalone graph node; promotion to a first-class node and its READ_ONLY tool arsenal (`glob`, `grep`, `workspace_structure`, `graphrag_query`, `get_dependents`) are scoped in [División 8.8](docs/PROJECT_MANIFEST.md).
+A **first-class graph node** (`researcher_agent`, spliced before `planner_agent`) that owns the entire information-retrieval domain: a bounded READ_ONLY `ToolDispatcher` grounding loop (`glob`, `grep`, `workspace_structure`, `query_graphrag`, `get_dependents`), GraphRAG deep-context, fast-boot, @-mention bypass, recency, the Context Meter Cascade (CSS → red-alert → mini-judge → routing) and the hardware reroute. It emits the routing signal (`context_metrics`, `css`, `tci`, `provider`, `routing_warning`) plus a dense AST **skeleton map** that the Planner consumes as its structural view of the codebase. This is the SRP split: the Researcher gathers, the Planner reasons.
 
 ### Planner — [agents/planner.py](ailienant-core/agents/planner.py)
 

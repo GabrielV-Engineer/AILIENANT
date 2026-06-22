@@ -197,13 +197,15 @@ def test_record_merge_event_noop_when_missing(tmp_path: Path) -> None:
     assert result is False
 
 
-# ── Test 8 (anyio): planner skips LanceDB when AGENTS.md is fresh ─────────────
+# ── Test 8 (anyio): researcher skips LanceDB when AGENTS.md is fresh ──────────
 
 @pytest.mark.anyio
-async def test_planner_skips_lancedb_when_cache_fresh() -> None:
-    """Prove that run_planner_node calls load_state_from_markdown and, when it
+async def test_researcher_skips_lancedb_when_cache_fresh() -> None:
+    """Prove that run_researcher_node calls load_state_from_markdown and, when it
     returns a valid CachedAgentState, SemanticMemoryManager.search_with_paths is
-    NOT called."""
+    NOT called. Fast-boot retrieval moved from the Planner to the Researcher."""
+    from core.memory.context_auditor import RiskLevel
+
     cached = CachedAgentState(
         mission_spec=_make_mission("cached plan"),
         context_metrics=_make_context(),
@@ -212,29 +214,22 @@ async def test_planner_skips_lancedb_when_cache_fresh() -> None:
         generated_at="2026-05-16T00:00:00+00:00",
     )
 
-    # Minimal LangGraph state that satisfies planner pre-conditions
     state: dict[str, Any] = {
         "task_id": "t1",
         "user_input": "add a feature",
         "workspace_root": "/ws",
         "project_id": "abc123",
         "context_metrics": _make_context(),
-        "mission_spec": None,
-        "immutable_wbs": None,
+        "explicit_mentions": [],
         "errors": [],
-        "retry_count": 0,
-        "current_cost_usd": 0.0,
-        "max_budget_usd": 10.0,
-        "vfs_buffer": {},
-        "terminal_output": "",
-        "parallel_tasks": [],
         "tci": 45.0,
         "css": 78.5,
-        "provider": "LOCAL",
-        "current_step_id": None,
         "dirty_buffers": [],
         "ide_context": "",
     }
+
+    async def _noop_reasoner(_m: Any) -> str:
+        return "{}"
 
     mock_search = AsyncMock(return_value=(0.8, ["brain/state.py"], [""]))
     mock_deep_parse = AsyncMock(
@@ -247,23 +242,24 @@ async def test_planner_skips_lancedb_when_cache_fresh() -> None:
     )
     mock_llm_response = MagicMock()
     mock_llm_response.choices = [
-        MagicMock(message=MagicMock(content=_make_mission("llm plan").model_dump_json()))
+        MagicMock(message=MagicMock(content="## Skeleton"))
     ]
 
-    with patch("agents.planner.DEBUG_MODE", False), \
+    with patch("agents.researcher.DEBUG_MODE", False), \
+         patch("agents.researcher.is_fast_track_eligible", return_value=False), \
+         patch("agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)), \
+         patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
          patch("core.state_manager.load_state_from_markdown", return_value=cached), \
-         patch("agents.planner.SemanticMemoryManager") as mock_sem_cls, \
-         patch("agents.planner.GraphRAGDynamicExtractor") as mock_extractor_cls, \
-         patch("agents.planner.LLMGateway.ainvoke", return_value=mock_llm_response), \
-         patch("agents.planner.TrajectoryMemoryManager") as mock_traj_cls, \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extractor_cls, \
+         patch("agents.researcher.LLMGateway.ainvoke", return_value=mock_llm_response), \
          patch("core.state_manager.dump_state_to_markdown", return_value=True):
 
-        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
         mock_extractor_cls.return_value.deep_parse = mock_deep_parse
         mock_sem_cls.return_value.search_with_paths = mock_search
 
-        from agents.planner import run_planner_node
-        await run_planner_node(state)
+        from agents.researcher import run_researcher_node
+        await run_researcher_node(state, {"configurable": {"researcher_tool_reasoner": _noop_reasoner}})
 
     # LanceDB search must NOT have been called — fast-boot served the context
     mock_search.assert_not_called()

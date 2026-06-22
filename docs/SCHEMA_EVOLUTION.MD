@@ -688,3 +688,23 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 - The directed graph formed by `depends_on` links must be acyclic (a DAG).
 - `ValidateWBSDependenciesTool` (Pass 5, Kahn's BFS) enforces both constraints before the plan is committed; violations produce blocking issue types `"dependency_cycle"` or `"invalid_depends_on"`.
 - Consumers that do not read `depends_on` are unaffected — the field is optional and defaults to `None`.
+
+---
+
+## §19 — Routing Signal Producer: Researcher Node
+
+**Change:** the cognitive routing signal is now **emitted by the Researcher node**, not the Planner.
+**Location:** producer moved from `ailienant-core/agents/planner.py` to `ailienant-core/agents/researcher.py`.
+**Schema version:** additive (no field shape change) — every channel below already existed; only the producing node changed. The `researcher_agent` graph node is spliced before `planner_agent`.
+
+**Channels the Researcher emits (Planner + downstream consume):**
+- `context_metrics: ContextMeter` — carries `semantic_similarity`, `graph_coverage`, `recency_score`, `css_total`, `task_complexity_index`, `routing_decision` (a field on this model: `"CLOUD" | "LOCAL_SMALL" | "LOCAL_BIG"`), `is_red_alert`.
+- `css: float`, `tci: float` — top-level mirrors of `css_total` / `task_complexity_index`.
+- `provider: str` — `"CLOUD" | "LOCAL"`, consumed by `route_to_coders` (SWARM/RELAY) and coder model selection.
+- `routing_warning: Optional[str]` — a **distinct** channel, non-None only on hardware (VRAM-floor) reroute. Not a synonym for `routing_decision`.
+- `researcher_skeleton: str` — the dense AST skeleton the Planner consumes in place of the deleted deep-context prompt block.
+
+**Contract:**
+- The Researcher owns all retrieval (GraphRAG, fast-boot, @-mention bypass), recency, the Context Meter Cascade (CSS → red-alert → mini-judge → routing), and the hardware reroute. The Planner is a pure analytical WBS engine that consumes the resolved signal.
+- The Researcher always emits a non-None `context_metrics` (including on its error path); the Planner retains a defensive cold-default init so a Researcher bypass can never propagate `None` into routing.
+- `routing_decision` is read via `context_metrics.routing_decision` — never as a top-level key.

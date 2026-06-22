@@ -215,7 +215,6 @@ async def test_planner_dirty_buffer_bypass_and_clean_cache_hit() -> None:
     from unittest.mock import MagicMock as MM
     from core.response_cache import response_cache
     from brain.state import MissionSpecification, WBSStep
-    from core.memory.context_auditor import RiskLevel
 
     response_cache.clear()
 
@@ -235,10 +234,6 @@ async def test_planner_dirty_buffer_bypass_and_clean_cache_hit() -> None:
     ).model_dump_json()
 
     mock_ainvoke = AsyncMock(return_value=_make_response(mission_json))
-    mock_search = AsyncMock(return_value=(0.8, ["s.py"], [""]))
-    mock_deep_parse = AsyncMock(return_value=MM(
-        coverage_ratio=0.6, context_block="", parsed_files=["s.py"], target_files=["s.py"],
-    ))
     mock_acquire = AsyncMock(return_value=_broker_decision())
 
     # The planner extracts dirty_buffers from ide_context (not the top-level key).
@@ -261,20 +256,10 @@ async def test_planner_dirty_buffer_bypass_and_clean_cache_hit() -> None:
 
     with ExitStack() as stack:
         stack.enter_context(patch("agents.planner.DEBUG_MODE", False))
-        stack.enter_context(patch("core.state_manager.load_state_from_markdown", return_value=None))
-        sem_cls = stack.enter_context(patch("agents.planner.SemanticMemoryManager"))
-        ext_cls = stack.enter_context(patch("agents.planner.GraphRAGDynamicExtractor"))
         traj_cls = stack.enter_context(patch("agents.planner.TrajectoryMemoryManager"))
         stack.enter_context(patch("agents.planner.LLMGateway.ainvoke", mock_ainvoke))
         stack.enter_context(patch("agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire))
         stack.enter_context(patch("agents.planner.ResourceBroker.release", AsyncMock()))
-        stack.enter_context(patch("core.state_manager.dump_state_to_markdown", return_value=True))
-        stack.enter_context(patch(
-            "agents.planner.audit_task_complexity",
-            AsyncMock(return_value=RiskLevel.NONE),
-        ))
-        sem_cls.return_value.search_with_paths = mock_search
-        ext_cls.return_value.deep_parse = mock_deep_parse
         traj_cls.return_value.search = AsyncMock(return_value=[])
 
         # Dirty: two identical turns both invoke the LLM (bypass)

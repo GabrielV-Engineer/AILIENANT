@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.memory.context_auditor import RiskLevel
+
 
 def _base_state(**overrides: Any) -> Dict[str, Any]:
     state: Dict[str, Any] = {
@@ -58,6 +60,12 @@ async def test_researcher_emits_hard_context_envelope_for_each_mention() -> None
     state = _base_state(explicit_mentions=["src/alpha.ts", "src/beta.ts"])
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
+        "agents.researcher.is_fast_track_eligible", return_value=False
+    ), patch(
+        "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
+    ), patch(
+        "core.state_manager.dump_state_to_markdown", return_value=None
+    ), patch(
         "core.vfs_middleware.VFSMiddleware", return_value=mock_vfs_instance
     ), patch("agents.researcher.LLMGateway.ainvoke", mock_ainvoke):
         from agents.researcher import run_researcher_node
@@ -99,6 +107,12 @@ async def test_researcher_skips_missing_mentions_without_raising() -> None:
     state = _base_state(explicit_mentions=["src/ghost.ts", "src/real.ts"])
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
+        "agents.researcher.is_fast_track_eligible", return_value=False
+    ), patch(
+        "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
+    ), patch(
+        "core.state_manager.dump_state_to_markdown", return_value=None
+    ), patch(
         "core.vfs_middleware.VFSMiddleware", return_value=mock_vfs_instance
     ), patch("agents.researcher.LLMGateway.ainvoke", mock_ainvoke):
         from agents.researcher import run_researcher_node

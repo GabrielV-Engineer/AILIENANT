@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.12: Researcher node promotion + retrieval/routing consolidation — DEBT-069 — 2026-06-21
+**Status:** COMPLETE | **Gates:** mypy 0/359 · pytest 1650 passed / 2 skipped (gate 6 + ~17 migrated)
+- Shipped: promoted the Researcher to a first-class graph node (`researcher_agent`, spliced before `planner_agent`) with a bounded READ_ONLY `ToolDispatcher` grounding loop (`build_researcher_tools`); relocated all retrieval + the Context Meter Cascade + hardware reroute from the Planner to the Researcher, which now emits the routing signal (`context_metrics`/`css`/`tci`/`provider`/`routing_warning`) + a dense AST skeleton. The Planner is now a pure WBS engine that consumes that signal.
+- Key decision: full single-shot SRP consolidation (user-directed) — the routing-spine math was relocated verbatim (same thresholds/order) so behavior is identical; the Planner keeps a defensive cold-default `context_metrics` so a Researcher bypass never propagates None. SCHEMA_EVOLUTION.MD §19 records the producer move.
+- Deferred: none (DEBT-069 closed; Orchestrator dispatch-wiring remains permanently void per the DEBT-068 resolution).
+
 ## 8.10.11: Mutating-tier dispatch HITL routing — DEBT-068 — 2026-06-21
 **Status:** COMPLETE | **Gates:** mypy 0/358 · pytest 9 passed (gate) · full suite 1644 passed / 2 skipped
 - Shipped: `ToolDispatcher.dispatch` gains an injectable `approval_fn` (deny-with-report when absent/denied/raising) plus a `make_websocket_approval_fn` factory; the agentic cell's `run_terminal` now routes EXECUTE→HITL through the approval card via `_admit_execute` instead of treating HITL as ALLOW; `request_human_approval` default deadline raised 300s→86400s.
