@@ -98,7 +98,7 @@ class DocumentParserTool(BaseTool):
         "touching disk. Returns the extracted text wrapped in the Cognitive "
         "Quarantine tag. PDF column order and DOCX tables are best-effort."
     )
-    args_schema: Type[BaseModel] = DocumentParserInput
+    args_schema: Type[BaseModel] = DocumentParserInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
 
@@ -210,7 +210,7 @@ class InspectASTNodeTool(BaseTool):
         "Extract the source code of a class or function in a workspace file by "
         "its symbol name. Returns clean source with oversized docstrings truncated."
     )
-    args_schema: Type[BaseModel] = InspectASTInput
+    args_schema: Type[BaseModel] = InspectASTInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _vfs_read: Callable[[str], Optional[str]] = PrivateAttr()
     _ast_engine: Any = PrivateAttr()
@@ -328,7 +328,7 @@ class GetSymbolReferencesTool(BaseTool):
         "Return files in the workspace that import a given file (1-hop "
         "backward edges). Replaces shell `grep` for refactor impact analysis."
     )
-    args_schema: Type[BaseModel] = GetSymbolReferencesInput
+    args_schema: Type[BaseModel] = GetSymbolReferencesInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _get_dependents: Callable[[str, str], Any] = PrivateAttr()
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
@@ -382,7 +382,7 @@ class TraceDataFlowTool(BaseTool):
         "k-hop forward + backward reachability over the dependency graph. "
         "Use before refactors to predict collateral impact across files."
     )
-    args_schema: Type[BaseModel] = TraceDataFlowInput
+    args_schema: Type[BaseModel] = TraceDataFlowInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _extractor: Any = PrivateAttr()
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
@@ -440,7 +440,7 @@ class WebFetchTool(BaseTool):
         "clean Markdown; other content types returned as truncated raw text. "
         "Hard 5-second timeout."
     )
-    args_schema: Type[BaseModel] = WebFetchInput
+    args_schema: Type[BaseModel] = WebFetchInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
 

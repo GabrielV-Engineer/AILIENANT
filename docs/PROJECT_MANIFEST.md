@@ -28,6 +28,7 @@
 | 8.10.12 Researcher Node + Routing Consolidation | ✅ CLOSED | 2026-06-21 | — (DEBT-069 retired; SRP: researcher owns retrieval+routing) |
 | 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
 | 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
+| 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
@@ -592,6 +593,10 @@
   - DEBT-070 (HIGH): `core/hitl.py` substrate; FinOps converted (single node, committed-state gate); DriftMonitor split into `drift_compute`→`drift_gate` (interrupt-bearing node decides on committed, replay-stable state); the agentic cell defers a HITL-gated command to an interrupt-first exec-approval phase (no replayed side effect, command runs once); `task_service` post-`astream` pause detection + `resume_graph`; WS `client_hitl_response` routes graph-paused sessions to resume. Non-graph HITL (MCP, post-graph apply loop) stays on the event channel.
   - DEBT-072 (MEDIUM): logged pending-interrupt restart-durability (`recover()` must restore L2 pending writes).
   - **DoD:** `mypy .` 0 · `pytest` green; a graph HITL gate interrupts (runtime freed) and resumes via `Command(resume=…)`; the cell does not re-run the reasoner or a prior command across an interrupt/resume; AUTO-mode suites unbroken.
+
+- [x] **8.10.15 — Pyright Typing Pass (DEBT-071)**
+  Codebase-wide pyright surface clean-up. `reportArgumentType` on 14 `workflow.add_node(...)` calls in `brain/engine.py` (LangGraph's `StateNode` generic cannot be statically resolved through the `cast`-based wrapper stack; mypy gate unaffected). `reportIncompatibleVariableOverride` on 47 `args_schema` overrides across 13 `tools/*.py` files (LangChain base declares the field as invariant `ArgsSchema | None`; subclass specialization to `Type[BaseModel]` is semantically correct). One stale DLQ comment scrubbed; one pre-existing `reportGeneralTypeIssues` in `mcp_adapter.py` suppressed (Boy Scout).
+  - **DoD:** `npx pyright brain/engine.py` 0 errors · `npx pyright tools/*.py` 0 errors · `mypy .` 0/366 · `pytest` green.
 
 ---
 

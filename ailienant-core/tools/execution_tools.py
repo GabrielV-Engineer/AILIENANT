@@ -185,7 +185,7 @@ class SandboxBashTool(BaseTool):
         "matching the dangerous-pattern list (rm -rf, sudo, drop table, ...) "
         "are intercepted and routed to a HITL approval flow."
     )
-    args_schema: Type[BaseModel] = SandboxBashInput
+    args_schema: Type[BaseModel] = SandboxBashInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("SandboxBashTool is async-only — use _arun().")
@@ -462,7 +462,7 @@ class TaskCreateTool(BaseTool):
         "Returns a UUID task_id; status and truncated output are polled "
         "via task_get."
     )
-    args_schema: Type[BaseModel] = TaskCreateInput
+    args_schema: Type[BaseModel] = TaskCreateInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _manager: BackgroundTaskManager = PrivateAttr()
 
@@ -495,7 +495,7 @@ class TaskGetTool(BaseTool):
         "Read the status (running / completed / failed) and 2000-char-truncated "
         "stdout+stderr of a background task spawned via task_create."
     )
-    args_schema: Type[BaseModel] = TaskGetInput
+    args_schema: Type[BaseModel] = TaskGetInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _manager: BackgroundTaskManager = PrivateAttr()
 
@@ -536,7 +536,7 @@ class CheckTypeIntegrityTool(BaseTool):
         "Run mypy --strict (Python) or tsc --noEmit -p (TypeScript) against "
         "the target directory; output is 2000-char-truncated."
     )
-    args_schema: Type[BaseModel] = CheckTypeIntegrityInput
+    args_schema: Type[BaseModel] = CheckTypeIntegrityInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(

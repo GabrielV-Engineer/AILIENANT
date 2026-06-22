@@ -101,7 +101,7 @@ class ValidateWBSDependenciesTool(BaseTool):
         "forward references, out-of-scope files, and redundant writes. "
         "Returns {valid, issues, summary}. Call before committing the plan."
     )
-    args_schema: Type[BaseModel] = ValidateWBSDependenciesInput
+    args_schema: Type[BaseModel] = ValidateWBSDependenciesInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _state: MutableMapping[str, Any] = PrivateAttr()
 
@@ -316,7 +316,7 @@ class BudgetEstimatorTool(BaseTool):
         "against the remaining session budget. Returns {estimated_cost_usd, "
         "remaining_budget_usd, fits_within_budget, confidence, margin_usd, step_count}."
     )
-    args_schema: Type[BaseModel] = BudgetEstimatorInput
+    args_schema: Type[BaseModel] = BudgetEstimatorInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _state: MutableMapping[str, Any] = PrivateAttr()
 

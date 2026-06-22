@@ -63,7 +63,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
 | DEBT-072 | Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart | MEDIUM | Durability | future HITL slice | Floating |
-| DEBT-071 | LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance) | MEDIUM | Type hygiene | dedicated typing slice | Floating |
+| DEBT-071 | ~~LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance)~~ | MEDIUM | Type hygiene | 8.10.15 | RESOLVED 2026-06-22 |
 | DEBT-070 | ~~Async-sleep HITL waits block a coroutine — replace with native LangGraph Suspend & Resume~~ | HIGH | Architecture | 8.10.14 | RESOLVED 2026-06-22 |
 | DEBT-069 | ~~Researcher is not a graph node — needs promotion~~ | MEDIUM | Cognitive activation | 8.10.12 | RESOLVED 2026-06-21 |
 | DEBT-068 | ~~Dispatch loop wired only on the Analyst — mutating-tier HITL routing pending~~ | HIGH | Cognitive activation | 8.10.11 | RESOLVED 2026-06-21 |
@@ -179,15 +179,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **File(s):** `core/tool_dispatch.py`, `brain/agentic_cell.py`, `api/websocket_manager.py`; gate `tests/test_phase8_10_11_checkpoint_gate.py`.
 - **Notes:** logged at 8.10.8 ship per CLAUDE.md §11.3 as the continuation of DEBT-066.
 
-### DEBT-071 [MEDIUM · Floating] — LangGraph add_node / langchain args_schema pyright errors across node + tool classes
+### ~~DEBT-071~~ [RESOLVED 2026-06-22 · 8.10.15] — LangGraph add_node / langchain args_schema pyright errors
 
-- **Date:** 2026-06-22
-- **Reproduce:** `npx pyright brain/engine.py` reports `reportArgumentType` on every `workflow.add_node(...)` call (the DLQ/instrument-wrapped `Callable` is not assignable to LangGraph's `StateNode[NodeInputT, None]` generic), and `npx pyright tools/*_tools.py` reports `reportIncompatibleVariableOverride` on every tool's `args_schema: Type[BaseModel]` override (langchain's base is the invariant `ArgsSchema | None`). These are pre-existing and codebase-wide — not introduced by any single phase.
-- **File(s):** `brain/engine.py` (all `add_node` entrypoints); `tools/researcher_tools.py`, `tools/analyst_tools.py`, `tools/coder_tools.py`, `tools/gateway_tools.py`, `tools/planner_tools.py` (every `BaseTool` subclass).
-- **Error:** type hygiene — pyright/Pylance-only. The **enforced gate is `mypy .`, which is clean** (the `# type: ignore[type-var]` on `add_node` covers mypy); these are the residual Pylance-surface errors CLAUDE.md §8.1 wants driven to zero.
-- **Blocked by:** nothing structural; needs a typing pass — a `TypeGuard`/`cast` wrapper (or a thin typed `add_node` helper) for node entrypoints, and a shared typed `args_schema` base (or justified `# pyright: ignore[reportIncompatibleVariableOverride]`) for the tool classes.
-- **Phase:** dedicated typing slice.
-- **Notes:** logged at 8.10.13 ship per CLAUDE.md §11.3; surfaced during the 8.10.12 review (the new `researcher_agent` node + researcher-tool factory are consistent instances of the same pre-existing pattern, not new error classes).
+- **Resolution:** 14 `# pyright: ignore[reportArgumentType]` added to `brain/engine.py` `add_node` calls; 47 `# pyright: ignore[reportIncompatibleVariableOverride]` added to `args_schema` overrides across 13 `tools/*.py` files. One pre-existing `reportGeneralTypeIssues` in `mcp_adapter.py` suppressed (Boy Scout). `mypy 0/366`, `pytest 1690 passed`.
 
 ### DEBT-072 [MEDIUM · Floating] — Pending-interrupt restart-durability
 

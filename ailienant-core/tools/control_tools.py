@@ -127,7 +127,7 @@ class AskUserQuestionTool(BaseTool):
         "detects the populated channel and suspends the turn. Cleared when "
         "the WebView posts a structured hitl_response."
     )
-    args_schema: Type[BaseModel] = AskUserQuestionInput
+    args_schema: Type[BaseModel] = AskUserQuestionInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _state: MutableMapping[str, Any] = PrivateAttr()
 
@@ -183,7 +183,7 @@ class TogglePlanModeTool(BaseTool):
         "for routine work, DEFAULT to reset. The Permission Engine consults "
         "this channel on every tool dispatch."
     )
-    args_schema: Type[BaseModel] = TogglePlanModeInput
+    args_schema: Type[BaseModel] = TogglePlanModeInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _state: MutableMapping[str, Any] = PrivateAttr()
 

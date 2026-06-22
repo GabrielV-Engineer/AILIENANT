@@ -148,9 +148,9 @@ class McpToolAdapter(BaseTool):
         to prevent Event Loop blocking on slow or unresponsive MCP servers.
     """
 
-    name: str
+    name: str  # pyright: ignore[reportGeneralTypeIssues]
     description: str
-    args_schema: Type[BaseModel] = _McpToolInput
+    args_schema: Type[BaseModel] = _McpToolInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     mcp_tool_name: str = Field(description="Canonical name of the MCP tool on the server.")
     server_name: Optional[str] = Field(

@@ -209,39 +209,38 @@ def route_after_coder(state: Dict[str, Any]) -> str:
 workflow.add_node("summarize_history", _instrument_node("summarize_history", run_summarize_node))  # type: ignore[type-var]
 # DLQ-wrapped node entrypoints. An unhandled exception promotes
 # L1→L2 and persists a dead_letter_tasks row before re-raising (see
-# core/dead_letter.py). The 4 wrapped nodes are the state-bearing entrypoints;
-# summarize_history / drift_monitor / contract_guard / finops_gate are left bare.
-# The decorator's Callable[...] return satisfies add_node without the type-var
-# suppression the bare node functions still need.
-workflow.add_node("researcher_agent", _instrument_node("researcher_agent", dead_letter_decorator("researcher_agent")(run_researcher_node)))
-workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))
+# core/dead_letter.py). The wrapper stack (_instrument_node, dead_letter_decorator,
+# reflexion_guard) all use cast() or functools.wraps, which erases Generic precision;
+# pyright: ignore[reportArgumentType] on each call is the accepted trade-off.
+workflow.add_node("researcher_agent", _instrument_node("researcher_agent", dead_letter_decorator("researcher_agent")(run_researcher_node)))  # pyright: ignore[reportArgumentType]
+workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))  # pyright: ignore[reportArgumentType]
 # DriftMonitor is split: drift_compute commits the (non-deterministic) similarity gate
 # decision; drift_gate reads that committed decision and is the interrupt-bearing node
 # (interrupt-first → replay-safe). See brain/drift_monitor.py.
-workflow.add_node("drift_compute", _instrument_node("drift_compute", run_drift_compute_node))
-workflow.add_node("drift_gate", _instrument_node("drift_gate", run_drift_gate_node))
+workflow.add_node("drift_compute", _instrument_node("drift_compute", run_drift_compute_node))  # pyright: ignore[reportArgumentType]
+workflow.add_node("drift_gate", _instrument_node("drift_gate", run_drift_gate_node))  # pyright: ignore[reportArgumentType]
 # coder_agent is also wrapped by reflexion_guard (INSIDE the DLQ decorator): a fresh,
 # in-budget failure becomes a healing signal routed to error_correction; an exhausted
 # budget re-raises into the DLQ.
-workflow.add_node("coder_agent", _instrument_node("coder_agent", dead_letter_decorator("coder_agent")(reflexion_guard("coder_agent")(run_coder_node))))
-workflow.add_node("error_correction", _instrument_node("error_correction", dead_letter_decorator("error_correction")(run_error_correction_node)))
-workflow.add_node("apply_patch", _instrument_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_patch_node)))
-workflow.add_node("validate_output", _instrument_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node)))
-workflow.add_node("finops_gate", _instrument_node("finops_gate", run_finops_node))
-workflow.add_node("ideation_loop", ideation_graph)
-workflow.add_node("session_delta_aggregator", _instrument_node("session_delta_aggregator", run_session_delta_aggregator_node))
-workflow.add_node("contract_guard", _instrument_node("contract_guard", run_contract_guard_node))  # Phase 2.23
+workflow.add_node("coder_agent", _instrument_node("coder_agent", dead_letter_decorator("coder_agent")(reflexion_guard("coder_agent")(run_coder_node))))  # pyright: ignore[reportArgumentType]
+workflow.add_node("error_correction", _instrument_node("error_correction", dead_letter_decorator("error_correction")(run_error_correction_node)))  # pyright: ignore[reportArgumentType]
+workflow.add_node("apply_patch", _instrument_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_patch_node)))  # pyright: ignore[reportArgumentType]
+workflow.add_node("validate_output", _instrument_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node)))  # pyright: ignore[reportArgumentType]
+workflow.add_node("finops_gate", _instrument_node("finops_gate", run_finops_node))  # pyright: ignore[reportArgumentType]
+workflow.add_node("ideation_loop", ideation_graph)  # pyright: ignore[reportArgumentType]
+workflow.add_node("session_delta_aggregator", _instrument_node("session_delta_aggregator", run_session_delta_aggregator_node))  # pyright: ignore[reportArgumentType]
+workflow.add_node("contract_guard", _instrument_node("contract_guard", run_contract_guard_node))  # pyright: ignore[reportArgumentType]
 # deterministic FinOps Supervisor spliced between finops_gate and
 # apply_patch. DLQ-wrapped an AuditChainBrokenError becomes a
 # recoverable dead_letter_tasks episode rather than a silent graph death.
-workflow.add_node(
+workflow.add_node(  # pyright: ignore[reportArgumentType]
     "supervisor_node",
     _instrument_node("supervisor_node", dead_letter_decorator("supervisor_node")(run_supervisor_node)),
 )
 # Autonomous ReAct cell — same wrapper stack as coder_agent (DLQ + instrumentation).
 # A non-converging loop concedes gracefully inside the node, so it does not need the
 # reflexion guard; an unexpected fault still promotes to the DLQ.
-workflow.add_node(
+workflow.add_node(  # pyright: ignore[reportArgumentType]
     "agentic_cell",
     _instrument_node("agentic_cell", dead_letter_decorator("agentic_cell")(run_agentic_cell_node)),
 )

@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.15: Pyright Typing Pass — DEBT-071 retired — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/366 · pyright 0 · pytest 1690 passed
+- Shipped: 14 `# pyright: ignore[reportArgumentType]` on `brain/engine.py` `add_node` calls; 47 `# pyright: ignore[reportIncompatibleVariableOverride]` on `args_schema` overrides across 13 `tools/*.py` files; stale DLQ comment corrected; pre-existing `mcp_adapter.py` `reportGeneralTypeIssues` suppressed (Boy Scout).
+
+---
+
 ## 8.2.6.5: Division 8.2.6 Checkpoint Gate — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/366 · pyright 0 · pytest 1690 passed
 - Shipped: `tests/test_phase8_2_6_warmup_gate.py` — 8-row sibling gate certifying A1/A2 corpus-presence probe, B1 empty-corpus routing (LOCAL_SMALL + is_red_alert=False), B2 non-empty css<40 regression guard (CLOUD), C1 cold-store zero-embed assert, D1/D2 warm-up defer/run, E1 single-retry-then-re-raise; all rows isolated and hermetic.

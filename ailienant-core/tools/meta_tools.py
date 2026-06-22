@@ -117,7 +117,7 @@ class ToolSearchTool(BaseTool):
         "and descriptions. To actually use a returned tool, name it explicitly in "
         "your next plan or output so its full schema is injected on the next turn."
     )
-    args_schema: Type[BaseModel] = ToolSearchInput
+    args_schema: Type[BaseModel] = ToolSearchInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _store: ToolRAGStore = PrivateAttr()
 

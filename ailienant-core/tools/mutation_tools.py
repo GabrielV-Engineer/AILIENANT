@@ -88,7 +88,7 @@ class AtomicCodePatchTool(BaseTool):
         "threshold; validates Python files via ast.parse before write. "
         "Provide expected_hash for OCC; on mismatch the patch is rejected."
     )
-    args_schema: Type[BaseModel] = AtomicCodePatchInput
+    args_schema: Type[BaseModel] = AtomicCodePatchInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _vfs_read: Callable[[str], Optional[str]] = PrivateAttr()
     _vfs_write: Callable[[str, str], None] = PrivateAttr()
@@ -177,7 +177,7 @@ class BatchSemanticEditTool(BaseTool):
         "the whole batch is rejected if ANY version is stale or ANY patch fails "
         "AST/fuzzy validation. No partial mutation can ever leak to the VFS."
     )
-    args_schema: Type[BaseModel] = BatchSemanticEditInput
+    args_schema: Type[BaseModel] = BatchSemanticEditInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _vfs_read: Callable[[str], Optional[str]] = PrivateAttr()
     _vfs_write: Callable[[str, str], None] = PrivateAttr()
@@ -301,7 +301,7 @@ class FileWriteTool(BaseTool):
         "untouched. Provide expected_hash for OCC on overwrites; omit when "
         "creating a new file. RBWE is enforced upstream by rbwe_guard."
     )
-    args_schema: Type[BaseModel] = FileWriteInput
+    args_schema: Type[BaseModel] = FileWriteInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _vfs_read: Callable[[str], Optional[str]] = PrivateAttr()
     _vfs_write: Callable[[str, str], None] = PrivateAttr()

@@ -285,7 +285,7 @@ class RunTestsTool(_GatedExecTool):
         "Run the pytest suite against a project-relative target (path or node id). "
         "Output is truncated to 2000 chars. Exclusive to the qa_tester role."
     )
-    args_schema: Type[BaseModel] = RunTestsInput
+    args_schema: Type[BaseModel] = RunTestsInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("RunTestsTool is async-only — use _arun().")
@@ -316,7 +316,7 @@ class GitStageTool(_GatedExecTool):
         "Stage one or more project-relative paths for commit (git add). "
         "Exclusive to the vcs_manager role."
     )
-    args_schema: Type[BaseModel] = GitStageInput
+    args_schema: Type[BaseModel] = GitStageInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("GitStageTool is async-only — use _arun().")
@@ -347,7 +347,7 @@ class GitCommitTool(_GatedExecTool):
         "message is composed in Conventional-Commit format; invalid parts are rejected "
         "before anything runs. Exclusive to the vcs_manager role."
     )
-    args_schema: Type[BaseModel] = GitCommitInput
+    args_schema: Type[BaseModel] = GitCommitInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("GitCommitTool is async-only — use _arun().")
@@ -385,7 +385,7 @@ class GitDiffTool(_GatedExecTool):
         "edits currently in your RAM VFS — use diff_changes (CodeDiffTool) for pending RAM "
         "changes. Output is truncated. Exclusive to the vcs_manager role."
     )
-    args_schema: Type[BaseModel] = GitDiffInput
+    args_schema: Type[BaseModel] = GitDiffInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("GitDiffTool is async-only — use _arun().")
@@ -431,7 +431,7 @@ class DocstringGeneratorTool(BaseTool):
         "The new content is AST-validated before it is written. Exclusive to the "
         "doc_manager role."
     )
-    args_schema: Type[BaseModel] = GenerateDocstringInput
+    args_schema: Type[BaseModel] = GenerateDocstringInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _vfs_read: Callable[[str], Optional[str]] = PrivateAttr()
     _vfs_write: Callable[[str, str], None] = PrivateAttr()
@@ -524,7 +524,7 @@ class LinterAutoFixTool(_GatedExecTool):
         "proposed fix is shown as a diff; with apply=True the fix is written in place. "
         "Available to the secops and qa_tester roles."
     )
-    args_schema: Type[BaseModel] = LinterAutoFixInput
+    args_schema: Type[BaseModel] = LinterAutoFixInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("LinterAutoFixTool is async-only — use _arun().")
@@ -560,7 +560,7 @@ class DependencyInstallTool(_GatedExecTool):
         "version. The name/version are strictly validated; URLs, VCS refs, and editable "
         "installs are rejected. Exclusive to the devops_infra role."
     )
-    args_schema: Type[BaseModel] = DependencyInstallInput
+    args_schema: Type[BaseModel] = DependencyInstallInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("DependencyInstallTool is async-only — use _arun().")
@@ -604,7 +604,7 @@ class GuardEnvFileTool(BaseTool):
         "and routed to a human-in-the-loop approval gate instead of being written. "
         "Exclusive to the devops_infra role."
     )
-    args_schema: Type[BaseModel] = GuardEnvFileInput
+    args_schema: Type[BaseModel] = GuardEnvFileInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("GuardEnvFileTool is async-only — use _arun().")
@@ -641,7 +641,7 @@ class DataPipelineRunTool(_GatedExecTool):
         "Run a project-relative Python data-pipeline script inside the sandbox. Output is "
         "truncated. Exclusive to the data_ml_engineer role."
     )
-    args_schema: Type[BaseModel] = RunDataPipelineInput
+    args_schema: Type[BaseModel] = RunDataPipelineInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("DataPipelineRunTool is async-only — use _arun().")
@@ -687,7 +687,7 @@ class SecurityAuditTool(BaseTool):
         "eval/exec, subprocess shell=True, insecure pickle, unsafe yaml.load, and dynamic "
         "SQL. Returns a capped findings list. Exclusive to the secops role."
     )
-    args_schema: Type[BaseModel] = SecurityAuditInput
+    args_schema: Type[BaseModel] = SecurityAuditInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("SecurityAuditTool is async-only — use _arun().")
@@ -730,7 +730,7 @@ class ASTValidateTool(BaseTool):
         "engine; other extensions pass through). Returns {is_valid, errors}. Available to "
         "every code-producing role."
     )
-    args_schema: Type[BaseModel] = ASTValidateInput
+    args_schema: Type[BaseModel] = ASTValidateInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("ASTValidateTool is async-only — use _arun().")

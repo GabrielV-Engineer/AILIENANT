@@ -126,7 +126,7 @@ class RunLinterTool(BaseTool):
         "Returns a JSON object with is_valid, error count, and up to "
         f"{_LINT_MAX_ERRORS} diagnostics. Degrades gracefully when linters are absent."
     )
-    args_schema: Type[BaseModel] = RunLinterInput
+    args_schema: Type[BaseModel] = RunLinterInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _workspace_root: str = PrivateAttr()
     _ram_reader: Callable[[str], Optional[str]] = PrivateAttr()
@@ -232,7 +232,7 @@ class ComplexityAnalysisTool(BaseTool):
         "Returns module CC, max nesting depth, and per-function CC breakdown as JSON. "
         "Non-.py files receive a line-count summary only."
     )
-    args_schema: Type[BaseModel] = ComplexityInput
+    args_schema: Type[BaseModel] = ComplexityInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _workspace_root: str = PrivateAttr()
     _ram_reader: Callable[[str], Optional[str]] = PrivateAttr()
@@ -321,7 +321,7 @@ class CodeDiffTool(BaseTool):
         "Compares the in-memory (dirty) buffer against the saved on-disk version. "
         "New files show a full addition diff; unchanged files report no pending changes."
     )
-    args_schema: Type[BaseModel] = CodeDiffInput
+    args_schema: Type[BaseModel] = CodeDiffInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _workspace_root: str = PrivateAttr()
     _ram_reader: Callable[[str], Optional[str]] = PrivateAttr()
@@ -442,7 +442,7 @@ class DependencyAuditTool(BaseTool):
         "and return a structured list of dependencies. Optionally checks each dep for "
         f"CVEs when a search provider is available (capped at {_CVE_MAX_DEPS} deps)."
     )
-    args_schema: Type[BaseModel] = DependencyAuditInput
+    args_schema: Type[BaseModel] = DependencyAuditInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _workspace_root: str = PrivateAttr()
     _path_provider: Callable[[], Awaitable[List[str]]] = PrivateAttr()
@@ -555,7 +555,7 @@ class WebSearchTool(BaseTool):
         "Search the web for up-to-date information, CVEs, API docs, or release notes. "
         "Requires a search provider to be configured; degrades gracefully when unavailable."
     )
-    args_schema: Type[BaseModel] = WebSearchInput
+    args_schema: Type[BaseModel] = WebSearchInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _search_fn: Optional[Callable[[str, int], Awaitable[str]]] = PrivateAttr(default=None)
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
@@ -606,7 +606,7 @@ class TokenLedgerReadTool(BaseTool):
         "Read live token usage and estimated cost from the TokenLedger. "
         "Tier 'all' returns full stats; 'local' or 'cloud' returns filtered counters."
     )
-    args_schema: Type[BaseModel] = TokenLedgerInput
+    args_schema: Type[BaseModel] = TokenLedgerInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _ledger: TokenLedger = PrivateAttr()
 

@@ -84,7 +84,7 @@ class TodoWriteTool(BaseTool):
         "it, set items 'completed' as you finish, and send an empty list to clear the panel "
         "once everything is done."
     )
-    args_schema: Type[BaseModel] = TodoWriteInput
+    args_schema: Type[BaseModel] = TodoWriteInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("TodoWriteTool is async-only — use _arun().")

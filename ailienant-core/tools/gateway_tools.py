@@ -128,7 +128,7 @@ class RunBenchmarkTool(BaseTool):
         "Returns task_id immediately; poll task_get, then get_benchmark_report. "
         "Responds with 'busy' when another run is already in flight."
     )
-    args_schema: Type[BaseModel] = RunBenchmarkInput
+    args_schema: Type[BaseModel] = RunBenchmarkInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("RunBenchmarkTool is async-only — use _arun().")
@@ -217,7 +217,7 @@ class GetBenchmarkReportTool(BaseTool):
         "Returns status='running' while in flight, 'completed' with the full report "
         "when done, or 'failed'/'not_found' for error states."
     )
-    args_schema: Type[BaseModel] = GetBenchmarkReportInput
+    args_schema: Type[BaseModel] = GetBenchmarkReportInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("GetBenchmarkReportTool is async-only — use _arun().")
@@ -256,7 +256,7 @@ class ListCapabilitiesTool(BaseTool):
         "(name, description, privilege tier, async flag). "
         "Deprecated capabilities are excluded by default."
     )
-    args_schema: Type[BaseModel] = ListCapabilitiesInput
+    args_schema: Type[BaseModel] = ListCapabilitiesInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("ListCapabilitiesTool is async-only — use _arun().")
@@ -305,7 +305,7 @@ class SkillInvokeTool(BaseTool):
         "skill_id, or omit skill_id for auto-matching (semantic matching is "
         "currently disabled — see DEBT-049). Returns a JSON list capped at 20."
     )
-    args_schema: Type[BaseModel] = SkillInvokeInput
+    args_schema: Type[BaseModel] = SkillInvokeInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("SkillInvokeTool is async-only — use _arun().")
@@ -362,7 +362,7 @@ class TaskListTool(BaseTool):
         "List all background tasks (spawned via task_create) with their status and "
         "metadata. Raw output is excluded. Results are capped at 50 entries."
     )
-    args_schema: Type[BaseModel] = TaskListInput
+    args_schema: Type[BaseModel] = TaskListInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _manager: BackgroundTaskManager = PrivateAttr()
 
@@ -404,7 +404,7 @@ class TaskStopTool(BaseTool):
         "after a grace period). Returns 'cancelled' on success or "
         "'not_found_or_completed' if already done."
     )
-    args_schema: Type[BaseModel] = TaskStopInput
+    args_schema: Type[BaseModel] = TaskStopInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _manager: BackgroundTaskManager = PrivateAttr()
 

@@ -75,7 +75,7 @@ class GetWBSStatusTool(BaseTool):
         "Report Work Breakdown Structure progress: per-status counts, the active "
         "step, and (optionally) per-step rows. Read-only view of the live mission."
     )
-    args_schema: Type[BaseModel] = WBSStatusInput
+    args_schema: Type[BaseModel] = WBSStatusInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _state: MutableMapping[str, Any] = PrivateAttr()
 
@@ -178,7 +178,7 @@ class EmitHITLRequestTool(BaseTool):
         "trigger. Emits the canonical HITL_APPROVAL_REQUIRED flag and records an "
         "idempotent audit entry. Use before a sensitive action proceeds."
     )
-    args_schema: Type[BaseModel] = EmitHITLRequestInput
+    args_schema: Type[BaseModel] = EmitHITLRequestInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _state: MutableMapping[str, Any] = PrivateAttr()
 

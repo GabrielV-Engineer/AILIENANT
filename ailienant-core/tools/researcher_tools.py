@@ -208,7 +208,7 @@ class GlobTool(BaseTool):
         "Searches the in-memory VFS buffer set and the indexed file catalog. "
         "No direct disk access. Results capped at 200."
     )
-    args_schema: Type[BaseModel] = GlobInput
+    args_schema: Type[BaseModel] = GlobInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _path_provider: Callable[[], Awaitable[List[str]]] = PrivateAttr()
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
@@ -279,7 +279,7 @@ class GrepTool(BaseTool):
         "(zero I/O), then falls back to the indexed file catalog via the firewalled "
         "reader. Results are capped at 50 matches; each line truncated to 200 chars."
     )
-    args_schema: Type[BaseModel] = GrepInput
+    args_schema: Type[BaseModel] = GrepInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _path_provider: Callable[[], Awaitable[List[str]]] = PrivateAttr()
     _content_reader: Callable[[str], Optional[str]] = PrivateAttr()
@@ -400,7 +400,7 @@ class WorkspaceStructureTool(BaseTool):
         "indexed catalog). Filter by subtree prefix or fnmatch pattern. "
         "Capped at 300 nodes. No direct disk access."
     )
-    args_schema: Type[BaseModel] = WorkspaceStructureInput
+    args_schema: Type[BaseModel] = WorkspaceStructureInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _path_provider: Callable[[], Awaitable[List[str]]] = PrivateAttr()
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
@@ -488,7 +488,7 @@ class GraphRAGQueryTool(BaseTool):
         "expansion + VFS read + Tree-sitter parse). Returns a compact context block "
         "with signatures and relationships. Provide workspace-relative file paths."
     )
-    args_schema: Type[BaseModel] = GraphRAGQueryInput
+    args_schema: Type[BaseModel] = GraphRAGQueryInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _extractor: Any = PrivateAttr()
     _workspace_root: str = PrivateAttr()
@@ -549,7 +549,7 @@ class GetDependentsTool(BaseTool):
         "dependency edges). Use for impact analysis before a refactor. "
         "Returns {\"target\": ..., \"dependents\": [...]}."
     )
-    args_schema: Type[BaseModel] = GetDependentsInput
+    args_schema: Type[BaseModel] = GetDependentsInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     # Context-bound callable: functools.partial(core.db.get_dependents, project_id=...)
     _get_dependents: Callable[..., Awaitable[List[str]]] = PrivateAttr()
