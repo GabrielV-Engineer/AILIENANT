@@ -723,3 +723,20 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 - New `AIlienantGraphState` channels (additive, last-value): `drift_gate_open: Optional[bool]`, `drift_similarity: Optional[float]` (committed by `drift_compute`, read by `drift_gate`); `pending_exec_command: Optional[str]` (the agentic cell's deferred HITL-gated command).
 - Non-graph HITL (MCP adapter, post-graph file-write apply loop) stays on the `request_human_approval` event channel — `interrupt()` only works inside a running graph node.
 - A node that interrupts commits no pre-interrupt writes; the interrupt-decision must be produced by a prior committed node (drift split) and no non-idempotent side effect may precede the interrupt (cell defer → interrupt-first exec phase).
+
+---
+
+## §21 — Corpus-Presence Probe: Additive `corpus_empty` Param to `derive_routing_decision`
+
+**Change:** `derive_routing_decision` gains one new optional parameter `corpus_empty: bool = False`.
+**Location:** `ailienant-core/core/memory/context_auditor.py`
+**Schema version:** additive, backward-compatible — default `False` preserves the original behavior for all existing callers.
+
+**Semantics:**
+- When `corpus_empty=True` the `css < 40.0 → CLOUD` red-alert floor is **skipped**; routing falls through to the TCI bands.
+- When `corpus_empty=False` (default) behavior is identical to the pre-change signature: `css < 40.0` still forces CLOUD.
+- The `fast_track` short-circuit is evaluated before `corpus_empty`; a fast-track call is unaffected.
+
+**Produced by:** Researcher node (`agents/researcher.py`) via `await SemanticMemoryManager.is_corpus_empty(workspace_hash)`.
+**New method:** `SemanticMemoryManager.is_corpus_empty(workspace_hash: str) -> bool` — short-TTL module-level cached (`_CORPUS_PRESENCE_TTL_S = 30.0`), invalidated on every corpus write (`_write_record`, `_delete_record`).
+**ContextMeter.is_red_alert:** now computed as `(css < 40.0) and not corpus_empty` — semantically unchanged for non-empty workspaces; always `False` on an empty corpus regardless of CSS, so telemetry stays truthful (CSS is not altered).

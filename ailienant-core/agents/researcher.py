@@ -294,6 +294,11 @@ async def run_researcher_node(
     # CSS is fully recomputed here.
     _deep_context_block: str = ""
     _top_k_files: list[str] = []
+    # Distinguishes a cold/empty workspace (nothing to retrieve) from a rich-but-low-
+    # coverage one: an empty corpus must not trip the red-alert CLOUD floor. Defaults
+    # to False (treat as non-empty) so the fast-track / @-mention paths — which skip
+    # retrieval — and any probe failure keep the conservative escalation behavior.
+    _corpus_empty: bool = False
     if not _fast_track and not explicit_mentions:
         try:
             from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
@@ -307,6 +312,9 @@ async def run_researcher_node(
             _sem_score: float
             _indexed_at: list[str]
             _extractor = GraphRAGDynamicExtractor(project_id=state.get("project_id") or "")
+            # Single manager instance, reused for retrieval and the corpus-presence
+            # probe below (no-arg ctor resolves the bound project's LanceDB partition).
+            _sem_mgr = SemanticMemoryManager()
 
             if _fast_boot is not None:
                 logger.info("Fast-Boot: using cached context, skipping LanceDB search.")
@@ -319,7 +327,6 @@ async def run_researcher_node(
                 # and the session heatmap instead.
                 _indexed_at = []
             else:
-                _sem_mgr = SemanticMemoryManager()
                 _retrieval = _retrieval_fn or _sem_mgr.search_with_paths
                 _sem_score, _top_k_files, _indexed_at = await _retrieval(
                     user_input=user_input,
@@ -333,6 +340,10 @@ async def run_researcher_node(
             )
             # ── Session-Heatmap Recency ──────────────────────────────────
             _project_id: str = state.get("project_id") or ""
+            # Cheap, short-TTL cached probe: did this workspace index anything? An
+            # empty corpus makes a low CSS a cold-start artifact, not a coverage gap,
+            # so the red-alert escalation below must not fire on it.
+            _corpus_empty = await _sem_mgr.is_corpus_empty(_project_id)
             session_heatmap.bump(_project_id, _top_k_files)
             _buffer_paths: list[str] = (
                 [_active_path] if _active_path else []
@@ -362,7 +373,7 @@ async def run_researcher_node(
                     "graph_coverage": _deep_result.coverage_ratio,
                     "recency_score": _recency,
                     "css_total": _new_css,
-                    "is_red_alert": _new_css < 40.0,
+                    "is_red_alert": (_new_css < 40.0) and not _corpus_empty,
                 }
             )
             css = _new_css
@@ -426,7 +437,7 @@ async def run_researcher_node(
         else:
             _risk: RiskLevel = await audit_task_complexity(user_input, session_id=session_id)
             _math_routing: str = derive_routing_decision(
-                tci, updated_context_metrics.css_total
+                tci, updated_context_metrics.css_total, corpus_empty=_corpus_empty
             )
 
             if _risk == RiskLevel.HIGH:

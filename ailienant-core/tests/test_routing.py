@@ -43,6 +43,37 @@ def test_css_boundary_at_40() -> None:
 
 
 # ---------------------------------------------------------------------------
+# derive_routing_decision — empty-corpus discrimination
+# ---------------------------------------------------------------------------
+
+def test_empty_corpus_skips_red_alert_floor() -> None:
+    """An empty corpus + simple task routes LOCAL_SMALL despite a low CSS.
+
+    A cold/tiny workspace has nothing to retrieve, so a low CSS is a cold-start
+    artifact — not a coverage gap — and must not escalate to CLOUD.
+    """
+    from core.memory.context_auditor import derive_routing_decision
+
+    assert derive_routing_decision(tci=20.0, css=10.0, corpus_empty=True) == "LOCAL_SMALL"
+
+
+def test_non_empty_corpus_low_css_still_clouds() -> None:
+    """Regression guard: a real corpus with low coverage keeps the CLOUD red-alert floor."""
+    from core.memory.context_auditor import derive_routing_decision
+
+    assert derive_routing_decision(tci=20.0, css=10.0, corpus_empty=False) == "CLOUD"
+    # Default (param omitted) must preserve the original red-alert behavior.
+    assert derive_routing_decision(tci=20.0, css=10.0) == "CLOUD"
+
+
+def test_empty_corpus_does_not_override_high_tci_band() -> None:
+    """Skipping the CSS floor only defers to the TCI bands — TCI≥75 still routes CLOUD."""
+    from core.memory.context_auditor import derive_routing_decision
+
+    assert derive_routing_decision(tci=80.0, css=10.0, corpus_empty=True) == "CLOUD"
+
+
+# ---------------------------------------------------------------------------
 # resolve_provider — Vision Bypass
 # ---------------------------------------------------------------------------
 

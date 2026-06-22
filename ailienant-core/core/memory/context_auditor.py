@@ -139,7 +139,9 @@ def is_fast_track_eligible(user_input: str) -> bool:
     return True
 
 
-def derive_routing_decision(tci: float, css: float, fast_track: bool = False) -> str:
+def derive_routing_decision(
+    tci: float, css: float, fast_track: bool = False, corpus_empty: bool = False
+) -> str:
     """Map TCI + CSS to ContextMeter routing_decision tier string.
 
     Thresholds align with RoutingEngine CSS/TCI matrix (brain/routing_engine.py):
@@ -152,10 +154,16 @@ def derive_routing_decision(tci: float, css: float, fast_track: bool = False) ->
     A fast-track query short-circuits to LOCAL_SMALL before the CSS floor: its
     context is sufficient by decree (nothing to retrieve), so the red-alert gate
     must not fire on the uncomputed CSS=0 of a skipped retrieval.
+
+    corpus_empty distinguishes "no corpus to retrieve from" from "rich corpus but
+    low coverage": both yield a low CSS, but only the latter warrants escalating to
+    CLOUD. When the corpus is empty the red-alert floor is skipped and routing falls
+    to the TCI bands alone, keeping a cold/tiny workspace local-first and cheap. CSS
+    stays truthful in telemetry — only this escalation decision changes.
     """
     if fast_track:
         return "LOCAL_SMALL"
-    if css < 40.0:
+    if css < 40.0 and not corpus_empty:
         return "CLOUD"
     if tci < 30.0:
         return "LOCAL_SMALL"

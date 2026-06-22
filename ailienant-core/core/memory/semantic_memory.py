@@ -1,11 +1,11 @@
 # core/memory/semantic_memory.py
-"""Phase 3.1 — Vector Memory Engine (LanceDB Multi-tenancy & Semantic Upsert).
+"""Vector Memory Engine (LanceDB multi-tenancy & semantic upsert).
 
 Embeds every successfully indexed file into a shared LanceDB table
 (workspace_embeddings), isolated per workspace via workspace_hash.
 
-semantic_upsert  — called by LazyIndexer after each file is indexed.
-search           — called by PlannerAgent to compute ContextMeter.semantic_similarity.
+semantic_upsert  — called by the reactive indexer after each file is indexed.
+search           — computes ContextMeter.semantic_similarity for routing.
 
 Blocking LanceDB operations run inside asyncio.to_thread.
 Embedding generation uses litellm.aembedding() (already async).
@@ -16,6 +16,8 @@ import asyncio
 import logging
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,6 +47,17 @@ _MAX_EMBED_TOKENS: int = 8191  # ada-002 context limit
 
 # Strict allowlist — prevents SQL injection in the native .where() predicate.
 _SAFE_ID_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+
+# ── Corpus-presence probe cache ───────────────────────────────────────────
+# A cold/empty workspace must not be mistaken for a rich-but-low-coverage one by
+# the router. is_corpus_empty answers "does this workspace have any indexed rows?"
+# cheaply and is consulted once per planner turn, so a short-TTL module-level cache
+# (shared across the stateless, per-call manager instances) avoids a redundant
+# LanceDB round-trip every turn. Keyed by (lancedb_path, workspace_hash); the lock
+# is never held across an await; entries are invalidated on every corpus write.
+_CORPUS_PRESENCE_TTL_S: float = 30.0
+_corpus_presence_cache: Dict[Tuple[str, str], Tuple[float, bool]] = {}
+_corpus_presence_lock = threading.Lock()
 
 _WORKSPACE_SCHEMA: pa.Schema = pa.schema([
     pa.field("file_path",       pa.utf8()),
@@ -160,6 +173,61 @@ class SemanticMemoryManager:
         tbl = db.open_table(_TABLE_NAME)
         safe_path = file_path.replace("'", "''")  # standard SQL single-quote escape
         tbl.delete(f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'")
+        self._invalidate_corpus_presence(workspace_hash)
+
+    # ── Corpus-presence probe ─────────────────────────────────────────
+    async def is_corpus_empty(self, workspace_hash: str) -> bool:
+        """True when the workspace has no indexed rows (nothing to retrieve from).
+
+        Lets the router distinguish "no corpus" from "rich corpus, low coverage":
+        only the latter warrants escalating to CLOUD. Short-TTL cached and
+        invalidated on every corpus write, so a cold workspace pays one cheap
+        count per TTL rather than per turn.
+
+        A blank or non-allowlisted workspace_hash returns False (treated as
+        non-empty) so the conservative CLOUD escalation is never dropped by
+        accident — the probe must never be the reason a low-CSS turn stays local.
+        """
+        if not workspace_hash or not _SAFE_ID_RE.match(workspace_hash):
+            return False
+
+        key = (self._lancedb_path, workspace_hash)
+        now = time.monotonic()
+
+        # Fast path: fresh cache hit. Lock is released before the await below.
+        with _corpus_presence_lock:
+            cached = _corpus_presence_cache.get(key)
+            if cached is not None and (now - cached[0]) <= _CORPUS_PRESENCE_TTL_S:
+                return cached[1]
+
+        empty = await asyncio.to_thread(self._is_corpus_empty_sync, workspace_hash)
+
+        # Double-checked locking: a concurrent caller may have populated a fresh
+        # entry while we were off-thread — prefer it, then store ours otherwise.
+        with _corpus_presence_lock:
+            cached = _corpus_presence_cache.get(key)
+            after = time.monotonic()
+            if cached is not None and (after - cached[0]) <= _CORPUS_PRESENCE_TTL_S:
+                return cached[1]
+            _corpus_presence_cache[key] = (after, empty)
+            return empty
+
+    def _is_corpus_empty_sync(self, workspace_hash: str) -> bool:
+        """Blocking row-count probe for the workspace. Runs inside to_thread."""
+        db = lancedb.connect(self._lancedb_path)
+        if _TABLE_NAME not in db.table_names():
+            return True
+        tbl = db.open_table(_TABLE_NAME)
+        # Per-workspace filter is essential: the table is shared across workspaces,
+        # so an unfiltered count would mis-report a fresh workspace as non-empty
+        # whenever any other workspace holds rows.
+        count: int = tbl.count_rows(filter=f"workspace_hash = '{workspace_hash}'")
+        return count == 0
+
+    def _invalidate_corpus_presence(self, workspace_hash: str) -> None:
+        """Drop the cached presence verdict after a corpus mutation."""
+        with _corpus_presence_lock:
+            _corpus_presence_cache.pop((self._lancedb_path, workspace_hash), None)
 
     async def search(
         self,
@@ -249,6 +317,7 @@ class SemanticMemoryManager:
             tbl.delete(f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'")
 
         tbl.add([record])
+        self._invalidate_corpus_presence(workspace_hash)
 
         try:
             tbl.create_index(
@@ -277,7 +346,10 @@ class SemanticMemoryManager:
         if _TABLE_NAME not in db.table_names():
             return []
 
-        tbl = db.open_table(_TABLE_NAME)
+        # `tbl: Any` — the lancedb stub omits LanceQueryBuilder.metric; the runtime
+        # method exists. Annotating the handle avoids a false reportAttributeAccessIssue
+        # without masking real typing on the surrounding code.
+        tbl: Any = db.open_table(_TABLE_NAME)
         query = tbl.search(vector).metric("cosine").limit(k)
 
         # Pre-filter pushdown: DataFusion applies the predicate during HNSW
@@ -310,7 +382,10 @@ class SemanticMemoryManager:
         if _TABLE_NAME not in db.table_names():
             return []
 
-        tbl = db.open_table(_TABLE_NAME)
+        # `tbl: Any` — the lancedb stub omits LanceQueryBuilder.metric; the runtime
+        # method exists. Annotating the handle avoids a false reportAttributeAccessIssue
+        # without masking real typing on the surrounding code.
+        tbl: Any = db.open_table(_TABLE_NAME)
         query = tbl.search(vector).metric("cosine").limit(k)
 
         if workspace_hash and _SAFE_ID_RE.match(workspace_hash):
@@ -388,7 +463,10 @@ class SemanticMemoryManager:
         if _TABLE_NAME not in db.table_names():
             return []
 
-        tbl = db.open_table(_TABLE_NAME)
+        # `tbl: Any` — the lancedb stub omits LanceQueryBuilder.metric; the runtime
+        # method exists. Annotating the handle avoids a false reportAttributeAccessIssue
+        # without masking real typing on the surrounding code.
+        tbl: Any = db.open_table(_TABLE_NAME)
         query = tbl.search(vector).metric("cosine").limit(k)
 
         if workspace_hash and _SAFE_ID_RE.match(workspace_hash):

@@ -255,6 +255,10 @@ async def test_v1_scenario_a_low_css_triggers_red_alert_and_cloud_route() -> Non
          patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
+        # Simulate a non-empty corpus: these tests exercise coverage-based routing,
+        # not the empty-corpus cold-start path. Default AsyncMock returns a truthy
+        # MagicMock, which would incorrectly suppress the red-alert floor.
+        mock_sem_cls.return_value.is_corpus_empty = AsyncMock(return_value=False)
 
         from agents.researcher import run_researcher_node
         result = await run_researcher_node(state, _RCFG)
@@ -305,6 +309,10 @@ async def test_v1_scenario_b_mid_css_judge_medium_escalates_route() -> None:
          patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
+        # Simulate a non-empty corpus: these tests exercise coverage-based routing,
+        # not the empty-corpus cold-start path. Default AsyncMock returns a truthy
+        # MagicMock, which would incorrectly suppress the red-alert floor.
+        mock_sem_cls.return_value.is_corpus_empty = AsyncMock(return_value=False)
 
         from agents.researcher import run_researcher_node
         result = await run_researcher_node(state, _RCFG)
@@ -558,6 +566,10 @@ async def test_v4_fast_boot_intercepts_lancedb_call(tmp_path: Path) -> None:
          patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
+        # Simulate a non-empty corpus: these tests exercise coverage-based routing,
+        # not the empty-corpus cold-start path. Default AsyncMock returns a truthy
+        # MagicMock, which would incorrectly suppress the red-alert floor.
+        mock_sem_cls.return_value.is_corpus_empty = AsyncMock(return_value=False)
 
         from agents.researcher import run_researcher_node
         result = await run_researcher_node(state, _RCFG)  # must not raise
@@ -612,6 +624,10 @@ async def test_v4_stale_agents_md_falls_back_to_full_retrieval(tmp_path: Path) -
          patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
+        # Simulate a non-empty corpus: these tests exercise coverage-based routing,
+        # not the empty-corpus cold-start path. Default AsyncMock returns a truthy
+        # MagicMock, which would incorrectly suppress the red-alert floor.
+        mock_sem_cls.return_value.is_corpus_empty = AsyncMock(return_value=False)
 
         from agents.researcher import run_researcher_node
         await run_researcher_node(state, _RCFG)
