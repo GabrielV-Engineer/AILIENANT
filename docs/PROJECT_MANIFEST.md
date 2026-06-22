@@ -345,7 +345,7 @@
 - [x] **8.2.6.1 — Corpus-presence probe + empty-vs-low-coverage routing.**
   [Add `SemanticMemoryManager.is_corpus_empty(workspace_hash)` — a cheap LanceDB table/row-count check, short-TTL cached, invalidated on index write. Extend `derive_routing_decision(tci, css, corpus_empty=False)` (additive optional param) to skip the `css<40 → CLOUD` red-alert floor when the corpus is empty, routing by TCI bands alone. In `agents/researcher.py` (which owns retrieval + the Context Meter Cascade since the Researcher-node consolidation): `is_red_alert = (css < 40.0) and not corpus_empty`; pass `corpus_empty` into the routing call. CSS stays truthful in telemetry — only the escalation decision changes. **DoD:** empty corpus + `tci<30` → `LOCAL_SMALL`; **regression guard:** non-empty corpus + `css<40` still → CLOUD. Target files: `core/memory/semantic_memory.py`, `core/memory/context_auditor.py`, `agents/researcher.py`.]
 
-- [ ] **8.2.6.2 — Skip embedding on an empty store.**
+- [x] **8.2.6.2 — Skip embedding on an empty store.**
   [`SemanticMemoryManager.search_with_paths` short-circuits `return (0.0, [], [])` via `is_corpus_empty(workspace_hash)` before calling `_get_embedding`. Behavior is identical (an empty store returns `[]` anyway) but saves one embedding backend call per planner turn on a cold workspace. **DoD:** zero `_get_embedding` calls on a cold workspace (mock-asserted). Target file: `core/memory/semantic_memory.py`.]
 
 - [ ] **8.2.6.3 — Warm-up indexing gate.**

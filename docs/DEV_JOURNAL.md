@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.2.6.2: Skip embedding on an empty store — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/363 · pyright 0 · pytest 1669 passed
+- Shipped: `search_with_paths` and `search_snippets` short-circuit via `is_corpus_empty(workspace_hash)` before `_get_embedding`, eliminating one embedding backend round-trip per turn on a cold workspace (behavior-preserving — the query path returns empty on an empty store either way); 3 new hermetic tests assert zero embeds on the cold path and a 2-embed regression guard on a populated corpus.
+- Key decision: folded `search_snippets` (live-chat GraphRAG-injection path) into the same fix rather than deferring an identical optimization the DoD named only for `search_with_paths`.
+
 ## 8.2.6.1: Corpus-presence probe + empty-vs-low-coverage routing — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/363 · pyright 0 · pytest 1666 passed
 - Shipped: `SemanticMemoryManager.is_corpus_empty(workspace_hash)` (30 s TTL, write-invalidated); `derive_routing_decision` gains `corpus_empty=False` additive param that skips the `css<40 → CLOUD` red-alert floor on empty workspaces; Researcher node probes and threads the flag; test_corpus_presence.py (5 rows) + 3 new routing assertions; Boy-Scout: pre-existing pyright `.metric` stub errors closed.

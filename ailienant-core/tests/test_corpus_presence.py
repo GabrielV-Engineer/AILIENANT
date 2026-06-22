@@ -6,12 +6,17 @@
 # DoD: pytest tests/test_corpus_presence.py -v must pass with 0 failures.
 
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.memory import semantic_memory
 from core.memory.semantic_memory import SemanticMemoryManager
+
+# Synthetic in-dim vector matching the dimension seeded by _seed_row, so a patched
+# embedder can drive the real query path on a non-empty store.
+_FAKE_VECTOR: List[float] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 
 _WS = "ws_corpus_probe_001"
 
@@ -91,3 +96,41 @@ async def test_cache_hit_avoids_requery(tmp_path, monkeypatch) -> None:
     assert await mgr.is_corpus_empty(_WS) is True
     assert await mgr.is_corpus_empty(_WS) is True
     assert calls["n"] == 1  # second call hit the cache
+
+
+# ── 8.2.6.2: embed-skip on a cold store ─────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_search_with_paths_skips_embed_on_cold_store(tmp_path, monkeypatch) -> None:
+    """A cold workspace returns the empty shape WITHOUT spending an embedding call."""
+    mgr = SemanticMemoryManager(lancedb_path=str(tmp_path / "lance"))
+    embed = AsyncMock(return_value=_FAKE_VECTOR)
+    monkeypatch.setattr(semantic_memory, "_get_embedding", embed)
+
+    assert await mgr.search_with_paths("any query", _WS) == (0.0, [], [])
+    assert embed.await_count == 0  # DoD: zero embeds on a cold workspace
+
+
+@pytest.mark.anyio
+async def test_search_snippets_skips_embed_on_cold_store(tmp_path, monkeypatch) -> None:
+    """The live-chat injection path also skips the embed on a cold workspace."""
+    mgr = SemanticMemoryManager(lancedb_path=str(tmp_path / "lance"))
+    embed = AsyncMock(return_value=_FAKE_VECTOR)
+    monkeypatch.setattr(semantic_memory, "_get_embedding", embed)
+
+    assert await mgr.search_snippets("any query", _WS) == []
+    assert embed.await_count == 0
+
+
+@pytest.mark.anyio
+async def test_non_empty_store_still_embeds(tmp_path, monkeypatch) -> None:
+    """Regression guard: a populated corpus must still embed (short-circuit off)."""
+    mgr = SemanticMemoryManager(lancedb_path=str(tmp_path / "lance"))
+    _seed_row(mgr)  # write invalidates the presence cache -> is_corpus_empty False
+    embed = AsyncMock(return_value=_FAKE_VECTOR)
+    monkeypatch.setattr(semantic_memory, "_get_embedding", embed)
+
+    await mgr.search_with_paths("any query", _WS)
+    await mgr.search_snippets("any query", _WS)
+    assert embed.await_count == 2  # one per method — neither short-circuited

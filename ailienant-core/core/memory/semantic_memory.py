@@ -420,10 +420,17 @@ class SemanticMemoryManager:
         Avoids the double embedding call that separate search() + search_files()
         would require. The third element carries each retrieved file's ISO
         ``indexed_at`` (parallel to file_paths) so the recency meter gets a
-        time signal without a second query. Returns (0.0, [], []) on empty input
-        or any failure.
+        time signal without a second query. Returns (0.0, [], []) on empty input,
+        an empty corpus (nothing to retrieve), or any failure.
         """
         if not user_input.strip():
+            return 0.0, [], []
+
+        # Cold/empty workspace: nothing to retrieve, so skip the embedding round-trip.
+        # An empty store returns [] from the query path anyway — this only drops the
+        # wasted backend call. is_corpus_empty is short-TTL cached and returns False for
+        # a blank/unsafe hash, so the safe default never skips a real search.
+        if await self.is_corpus_empty(workspace_hash):
             return 0.0, [], []
 
         try:
@@ -453,7 +460,7 @@ class SemanticMemoryManager:
         indexed_at = [ts for _, _, ts in triples]
         return score, file_paths, indexed_at
 
-    # ── Phase 7.9.B.15: snippet retrieval for live-chat GraphRAG injection ─────
+    # ── Snippet retrieval for live-chat GraphRAG injection ─────
 
     def _query_snippets(
         self, vector: List[float], workspace_hash: str, k: int
@@ -493,9 +500,15 @@ class SemanticMemoryManager:
         """Return (file_path, content_snippet) pairs most relevant to user_input.
 
         Powers invisible GraphRAG context injection into the live chat system
-        prompt. Returns [] on empty input or any failure (non-fatal).
+        prompt. Returns [] on empty input, an empty corpus (nothing to retrieve),
+        or any failure (non-fatal).
         """
         if not user_input.strip():
+            return []
+
+        # Cold/empty workspace: skip the embedding round-trip — the query path would
+        # return [] anyway. Cached presence probe; safe default (False) on a blank hash.
+        if await self.is_corpus_empty(workspace_hash):
             return []
 
         try:
@@ -512,7 +525,7 @@ class SemanticMemoryManager:
             logger.warning("SemanticMemory.search_snippets: query failed (non-fatal): %s", query_err)
             return []
 
-    # ── Phase 7.9.B.1: Vector-map dump (dashboard GraphRAG viewer) ─────
+    # ── Vector-map dump (dashboard GraphRAG viewer) ─────
 
     async def dump_vectors(
         self,
