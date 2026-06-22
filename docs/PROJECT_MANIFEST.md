@@ -26,6 +26,7 @@
 | 8.10.10 WBS Contract Correctness | ✅ CLOSED | 2026-06-20 | — (DEBT-044/051 retired) |
 | 8.10.11 Mutating-tier Dispatch HITL | ✅ CLOSED | 2026-06-21 | — (DEBT-068 retired; orch/researcher → 8.10.12) |
 | 8.10.12 Researcher Node + Routing Consolidation | ✅ CLOSED | 2026-06-21 | — (DEBT-069 retired; SRP: researcher owns retrieval+routing) |
+| 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
 | 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
@@ -577,6 +578,13 @@
   Carved out of 8.10.11 (DEBT-069). The Researcher is not yet a first-class graph node — its skeleton is consumed only as optional Planner context via a deterministic single-shot call — so it cannot host a dispatch loop until promoted. (The Orchestrator was evaluated and excluded permanently: it is a deterministic O(1) node with no LLM/reasoner, so a dispatch loop has nothing to drive; the Planner is PLAN-only with READ_ONLY tools, so a loop adds no HITL value. Both are recorded under the DEBT-068 resolution.)
   - DEBT-069 (MEDIUM): Promote the Researcher to a first-class graph node with its own bounded dispatch loop (READ_ONLY retrieval tools — glob/grep/AST), reusing the `ToolDispatcher` substrate. *DoD:* a researcher node invocation drives the dispatch loop over at least one READ_ONLY tool; an integration test asserts the skeleton is produced through the loop; routing into/out of the node is wired in `brain/engine.py`. Target files: `agents/researcher.py`, `tools/researcher_tools.py`, `brain/engine.py`.
   - **DoD:** `mypy .` 0 · `pytest` green; researcher dispatch-loop integration test green.
+
+- [x] **8.10.13 — Post-8.10.12 Hardening (skeleton ceiling + state lifecycle + typing debt)**
+  Risk review of the Researcher/Planner split. Verified: state-bloat/OCC concern is overstated (last-value channels overwrite; researcher→planner is sequential; `brain/summarizer.py` already windows messages) and skeleton saturation is already bounded by `max_tokens=2048`. Two targeted hardening changes + one debt log.
+  - Skeleton ceiling: explicit `_SKELETON_MAX_CHARS` truncation guard on the Researcher's output buffer (defense-in-depth above the generation cap).
+  - State lifecycle: the Planner (sole reader) clears `researcher_skeleton` after consuming it, so it stops serializing into downstream coder / agentic-cell super-step checkpoints. `mission_spec` is left intact (the Coder needs it).
+  - DEBT-071 (MEDIUM): logged the codebase-wide LangGraph `add_node` / langchain `args_schema` pyright errors for a dedicated typing slice (mypy gate is clean).
+  - **DoD:** `mypy .` 0 · `pytest` green; ceiling truncation + skeleton-cleared tests green.
 
 ---
 

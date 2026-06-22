@@ -620,6 +620,10 @@ async def run_planner_node(
         "parallel_tasks": parallel_tasks,
         "planner_retry_count": retry_count,  # 0 on first-shot success
         "budget_estimate": _bud,  # None if loop exhausted; Dict after clean draft
+        # The Planner is the sole reader of researcher_skeleton; clear it once consumed
+        # so the (potentially large) skeleton stops serializing into every downstream
+        # coder / agentic-cell super-step checkpoint. A new turn re-runs the Researcher.
+        "researcher_skeleton": None,
     }
     if state.get("immutable_wbs") is None:
         result["immutable_wbs"] = mission_plan

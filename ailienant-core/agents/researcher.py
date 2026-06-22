@@ -48,6 +48,11 @@ _DEEP_CONTEXT_MIN_SIM: float = 0.20
 # commit to the skeleton. Bounded so a chatty model cannot stall the node.
 _RESEARCHER_TOOL_MAX_ITERS: int = 3
 
+# Hard ceiling (chars) on the skeleton handed to the Planner — a defensive cap above
+# the ~2048-token generation bound, so an oversized buffer can never saturate the
+# Planner's context window. ~16000 chars ≈ ~4k tokens; normal skeletons pass untouched.
+_SKELETON_MAX_CHARS: int = 16000
+
 _SKELETON_INSTRUCTION: str = (
     "You are the ResearcherAgent. Output a dense, technical 'Skeleton Map' that is "
     "the PlannerAgent's primary structural view of the codebase. It MUST contain: "
@@ -556,6 +561,15 @@ async def run_researcher_node(
             session_id=session_id,
         )
         skeleton = (response.choices[0].message.content or "").strip()
+        # Hard ceiling on the buffer handed to the Planner. max_tokens above is the
+        # primary bound; this is a defensive post-generation cap so a pathological or
+        # future-reconfigured generation can never saturate the Planner's context.
+        if len(skeleton) > _SKELETON_MAX_CHARS:
+            logger.warning(
+                "Researcher: skeleton exceeded ceiling (%d > %d chars) — truncating.",
+                len(skeleton), _SKELETON_MAX_CHARS,
+            )
+            skeleton = skeleton[:_SKELETON_MAX_CHARS] + "\n…[skeleton truncated]"
         logger.info("Researcher: skeleton produced (%d chars).", len(skeleton))
     except Exception as err:  # noqa: BLE001 — surface to state.errors for retry policy
         logger.error("Researcher: LLM call failed: %s", err)

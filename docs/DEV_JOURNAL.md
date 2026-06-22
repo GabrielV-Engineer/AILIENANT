@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.13: Post-8.10.12 hardening — skeleton ceiling + state lifecycle — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/360 · pytest full green (gate 3 + suites)
+- Shipped: explicit `_SKELETON_MAX_CHARS` truncation guard on the Researcher's skeleton output (defense-in-depth above `max_tokens=2048`); the Planner now clears the consumed `researcher_skeleton` from state so it no longer serializes into downstream coder / agentic-cell checkpoints.
+- Key decision: a 3-point risk review found the state-bloat/OCC concern overstated (last-value channels overwrite; researcher→planner is sequential; `summarizer.py` already windows messages) and skeleton saturation already bounded by max_tokens — so only the one real bloat kernel (consumed skeleton lingering downstream) + an explicit ceiling were actioned. `mission_spec` is not pruned (the Coder needs it).
+- Deferred: DEBT-071 — codebase-wide LangGraph `add_node` / langchain `args_schema` pyright errors (mypy gate clean; a dedicated typing slice).
+
 ## 8.10.12: Researcher node promotion + retrieval/routing consolidation — DEBT-069 — 2026-06-21
 **Status:** COMPLETE | **Gates:** mypy 0/359 · pytest 1650 passed / 2 skipped (gate 6 + ~17 migrated)
 - Shipped: promoted the Researcher to a first-class graph node (`researcher_agent`, spliced before `planner_agent`) with a bounded READ_ONLY `ToolDispatcher` grounding loop (`build_researcher_tools`); relocated all retrieval + the Context Meter Cascade + hardware reroute from the Planner to the Researcher, which now emits the routing signal (`context_metrics`/`css`/`tci`/`provider`/`routing_warning`) + a dense AST skeleton. The Planner is now a pure WBS engine that consumes that signal.
