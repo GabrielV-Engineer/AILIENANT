@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.12.1: ContextPipeline — 5-layer context assembler — 2026-06-23
+**Status:** COMPLETE | **Gates:** mypy 0/370 · pytest 1998 passed · pyright 0
+- Shipped: `brain/context_pipeline.py` — `ContextChunk` (moved from `agents/`), `ContextLayer` ABC, 5 concrete layers (Foundation/Project/Memory/Conversation/Execution), `ContextPipeline` with dynamic budget (L1-L3 anchor; safety buffer; L4 FIFO batch-eviction; L5 token-exact tail-truncation), `ContextAssemblyResult` observable return; `broadcast_state_compacted()` added to websocket_manager via `StateCompactedPayload`.
+- Key decision: `ContextChunk` moved to `brain/` (not `agents/`) so `brain.context_pipeline` is a foundation-layer import; agents/ imports brain/, never the reverse — circular import eliminated structurally.
+
 ## 8.11.5: YOLO Guard + Matrix Combined Gate — 2026-06-23
 **Status:** COMPLETE | **Gates:** mypy 0/369 · pytest 1998 passed · pyright 0 · npm compile 0
 - Shipped: `test_yolo_guard_integration.py` asserts the composed `evaluate_action → risk_intercept_guard` pipeline across all 7 modes × risk categories — locking no-double-interception in the 5 non-permissive modes, ALLOW→HITL upgrade in FULL_AUTO/STANDARD, and legacy-alias dormancy. Closes Division 8.11.

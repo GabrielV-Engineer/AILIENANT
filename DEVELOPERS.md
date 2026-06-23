@@ -275,6 +275,7 @@ Proyect_Ailienant/
 │   │   ├── fast_path.py         #     SEQUENTIAL bypass
 │   │   ├── state.py             #     AIlienantGraphState, MissionSpecification, reducers
 │   │   ├── routing_engine.py    #     CSS × TCI matrix
+│   │   ├── context_pipeline.py  #     5-layer context assembler (ContextChunk, ContextPipeline)
 │   │   ├── agentic_cell.py      #     bounded ReAct cell + contained MCTS candidate selection
 │   │   ├── iteration_governor.py #    multi-axis circuit breaker
 │   │   ├── retry_policy.py      #     centralized retry/correction budgets

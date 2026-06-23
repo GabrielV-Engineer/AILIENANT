@@ -27,9 +27,10 @@ from typing import Any, AsyncIterator, List
 import pytest
 
 from agents.analyst_context import (
-    ContextChunk, ContextBudgetManager, assemble_analyst_context,
+    ContextBudgetManager, assemble_analyst_context,
     _ANALYST_BUDGET_BY_TIER,
 )
+from brain.context_pipeline import ContextChunk
 from tools.token_counter import PrecisionTokenCounter
 
 pytestmark = pytest.mark.anyio

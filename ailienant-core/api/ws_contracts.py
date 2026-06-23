@@ -1011,6 +1011,26 @@ class ServerCellGovernorTickEvent(BaseModel):
 
 
 # =====================================================================
+# 17b. Context Pipeline — Layer 4 FIFO compaction event
+# =====================================================================
+
+
+class StateCompactedPayload(BaseModel):
+    """System notification emitted when Layer 4 FIFO eviction trims the conversation
+    window. ``compaction_message`` is a status line, not an AI-generated prose summary
+    (that arrives separately from brain/summarizer via the session_delta channel)."""
+
+    session_id: str
+    compaction_message: str
+    turns_compressed: int
+
+
+class ServerStateCompactedEvent(BaseModel):
+    event_type: Literal["state_compacted"] = "state_compacted"
+    data: StateCompactedPayload
+
+
+# =====================================================================
 # 18. THE MASTER CONTRACT O(1)
 # =====================================================================
 
@@ -1075,4 +1095,5 @@ WebSocketMessage = Union[
     ServerCellPtyChunkEvent,         # cell glass-box: PTY output chunk (streaming)
     ServerCellAstDiffEvent,          # cell glass-box: AST mutation applied
     ServerCellGovernorTickEvent,     # cell glass-box: budget governor tick
+    ServerStateCompactedEvent,       # context pipeline: Layer 4 FIFO eviction
 ]

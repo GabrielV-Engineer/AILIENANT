@@ -20,12 +20,12 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agents.workspace_context import build_workspace_overview
+from brain.context_pipeline import ContextChunk  # canonical home; agents/ imports brain/
 from core import readme_digest
 from core.ast_engine import ASTEngine
 from core.vfs_middleware import VFSMiddleware, make_safe_reader
@@ -55,20 +55,6 @@ _LADDER: Dict[str, int] = {"codex": 0, "file": 1, "graphrag": 2, "docs": 3, "rea
 _PINNED_BRAINS = frozenset({"codex", "file"})
 _ACTIVE_FILE_CAP_RATIO: float = 0.60   # active files may take at most 60% of the budget
 _SOFT_CAP_RATIO: float = 0.60          # no single competing brain over 60% of the rest
-
-
-@dataclass
-class ContextChunk:
-    """One indivisible unit of analyst context, packed whole or not at all."""
-
-    body: str
-    brain: str
-    label: str
-    tokens: int = field(default=0)
-
-    def measure(self) -> "ContextChunk":
-        self.tokens = PrecisionTokenCounter.count(self.body)
-        return self
 
 
 class ContextBudgetManager:

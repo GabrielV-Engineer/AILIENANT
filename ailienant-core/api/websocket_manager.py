@@ -42,6 +42,7 @@ from api.ws_contracts import (
     ServerCellPtyChunkEvent, CellPtyChunkPayload,
     ServerCellAstDiffEvent, CellAstDiffPayload,
     ServerCellGovernorTickEvent, CellGovernorTickPayload,
+    ServerStateCompactedEvent, StateCompactedPayload,
 )
 
 from core.telemetry_log import log_ws_payload
@@ -826,6 +827,24 @@ class ConnectionManager:
                     cost_usd=cost_usd,
                     elapsed_s=elapsed_s,
                     axis=axis,
+                )
+            ),
+        )
+
+    async def broadcast_state_compacted(
+        self,
+        session_id: str,
+        compaction_message: str,
+        turns_compressed: int,
+    ) -> None:
+        """Notify the IDE that the Layer 4 conversation window was trimmed by FIFO eviction."""
+        await self.send_personal_message(
+            session_id,
+            ServerStateCompactedEvent(
+                data=StateCompactedPayload(
+                    session_id=session_id,
+                    compaction_message=compaction_message,
+                    turns_compressed=turns_compressed,
                 )
             ),
         )

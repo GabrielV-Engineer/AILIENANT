@@ -646,7 +646,7 @@
 | 4 | Conversation | Recent turns, WBS status, HITL decisions | FIFO window, explicit eviction | 30% |
 | 5 | Execution | Tool results, diffs, benchmark reports (on-demand) | Volatile per-turn, not persisted | 15% |
 
-- [ ] **8.12.1 — `brain/context_pipeline.py` + assembler.**
+- [x] **8.12.1 — `brain/context_pipeline.py` + assembler.**
   `ContextLayer` ABC + `ContextPipeline` assembler; Layer 4 FIFO eviction emits `STATE_COMPACTED` event over WS when entries are dropped. Existing `brain/summarizer.py` becomes Layer 3's compression backend (no rename). Existing `agents/analyst_context.py:ContextBudgetManager` becomes Layer 4's budget.
 - [ ] **8.12.2 — Agent integration.**
   `agents/planner.py` / `agents/coder.py` consume `ContextPipeline` instead of ad-hoc injection. Guarantee: a task exceeding 100K tokens never silently truncates Layers 1–3.
