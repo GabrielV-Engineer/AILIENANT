@@ -37,6 +37,7 @@
 | 8.11.5 YOLO Guard + Matrix Combined Gate | ✅ CLOSED | 2026-06-23 | — (composed pipeline; no-double-interception locked; test-only) |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
+| 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.1 blast-radius mapper (core/blast_radius.py) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | ⬜ PENDING | — | 11.0 Design system |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
@@ -75,6 +76,7 @@
 | 8.10 | Debt Reduction + Complete 8.2 + 8.6 (11 sub-phases) | ⬜ |
 | 8.11 | 7-Mode Permission System | ✅ |
 | 8.12 | Five-Layer Context Compression Pipeline | ⬜ |
+| 8.14 | Graph Intelligence Upgrade (5 sub-phases) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
 | 11 | Web Dashboard Enterprise Redesign (9 sub-phases) | ⬜ |
@@ -674,6 +676,23 @@
 
 ---
 
+### Division 8.14 — Graph Intelligence Upgrade ⬜
+
+> Selective uplift of the retrieval/graph layer, scoped to net-new capability whose substrate already exists. Three engineering items ship; one is a decision spike; two blocked ideas live in the backlog. The graph engine itself is **not** rewritten — multi-hop traversal already exists (`_bfs_k_hop`, `core/memory/graphrag_extractor.py`); only orthogonal capabilities that the existing `dependency_graph` and `.ailienant/` substrate make cheap are added.
+
+- [ ] **8.14.1 — Git blast-radius mapper (pre-apply validator).**
+  `core/blast_radius.py`: given the file set of a pending diff, traverse `dependency_graph` for transitive *dependents* up to depth=3 with cycle detection. Reuse the existing `_bfs_k_hop` traversal pattern (`core/memory/graphrag_extractor.py`) — do not hand-roll a new walker. **Integration point: pre-apply (post-generation)** — the diff already exists, so this slots into the existing `pre_patch` hook gate / HITL escalation in `core/task_service.py`; escalate to HITL when the radius exceeds a configurable threshold. Pre-generation planner integration (consult at `MissionSpecification` time, before spending generation tokens) is deferred as a later enhancement — it touches the planner, more scope/risk. The traversal MUST run off the event loop (`asyncio.to_thread` / compute pool) — see the 8.14.5 stress gate. **DoD:** `pytest tests/test_blast_radius.py` (direct dependents · 3-hop transitive · cycle graph must not diverge · empty graph) · `mypy .` 0 · `npx pyright` 0.
+- [ ] **8.14.2 — Shared memory snapshot export/import.**
+  Export command serializing `dependency_graph` + catalog metadata to `.ailienant/memory.db.zst`. New dependency `zstandard` (pinned; §9 justification — small, audited, no heavy transitive tree). Import bootstrap: if the artifact is present and no local DB exists, import before full index. **Snapshot isolation:** export reads MUST run inside a single SQLite transaction (`BEGIN DEFERRED`) so a concurrent `ReactiveIndexer` write cannot yield a half-updated graph; the shared read lock is non-blocking for the indexer's WAL writes but guarantees a consistent snapshot. **Windows-safe atomic write** — close the handle before `os.replace`, use `pathlib` (§5.6). Auto-generate `.gitattributes` with `merge=ours` for the artifact. Reuse `core/storage_paths.py` for path resolution. **DoD:** round-trip test (export→import→graph equality) + concurrent-writer test (indexer write mid-export → exported graph internally consistent, not torn) · `mypy .` 0 · `npx pyright` 0.
+- [ ] **8.14.3 — Dead-code detection (analyst tool).**
+  Zero-in-degree, non-entrypoint nodes from `dependency_graph` degree data (reuse `in_degree` from `api/memory_dashboard.py` / `brain/memory.py`). **Allowlist strategy:** a hardcoded initial set (FastAPI `@app.*` routes, pytest `test_*`/fixtures, `__main__`, `@tool` MCP handlers, dynamic dispatch) **plus** user extension via `.ailienant/dead-code-allowlist.json` — a flat array of glob patterns matching qualified function/class names (covers `@click.command`, `@celery.task`, etc. without an AILIENANT code change). If the config file is absent, only the hardcoded set applies. Surface in the analyst pipeline. **DoD:** `pytest` with fixtures covering hardcoded-entrypoint exclusion · JSON-allowlist extension · true-orphan detection · gates 0.
+- [ ] **8.14.4 — ADR-as-graph design spike (DECISION — no implementation).**
+  Resolve the comment/documentation-policy tension before any code: should ADRs become live system state (`architecture_decisions` table + `REFERENCES` edges read by the analyst, influencing agent behavior), or remain timeless Markdown? Deliverable: a decision recorded in `docs/SCHEMA_EVOLUTION.MD` (or a blueprint) + a charter amendment **or** a rejection rationale. If GO, spawn an implementation sub-phase; if NO-GO, close the spike. **No schema/code lands under this item.**
+- [ ] **8.14.5 — Division 8.14 Checkpoint Gate.**
+  `tests/test_phase8_14_checkpoint_gate.py` (sibling convention, test-only) asserting the invariants of the shipped items (8.14.1–8.14.3): blast-radius cycle safety · snapshot round-trip + concurrent-writer consistency · dead-code allowlist (hardcoded + JSON) honored. **Stress assertion:** blast-radius on a synthetic graph (5K nodes, 15K edges, depth=3) completes in <500 ms wall-clock and does not block the asyncio event loop (runs inside `asyncio.to_thread` / compute pool). **DoD:** `mypy .` 0 · `pytest` green · `npx pyright` 0.
+
+---
+
 ## PHASE 9 — Native Thinking (Real-Time Reasoning Stream) ✅
 
 > Real-time native model reasoning exposed in a collapsible Thought Box (Claude Extended Thinking / open reasoning models via `reasoning_content`). Strictly transport/orchestration/UI layers — `agents/` untouched.
@@ -710,7 +729,8 @@
   Active project selector (project name + path) pinned to the top bar; `project_id` propagated to all polling hooks (`HardwarePanel`, `TelemetryPanel`, `OverviewPanel`, `AuditPanel`, `RuntimePanel`, `RecoveryPanel`); global config panels (`BYOMPanel`, `ExtensionsPanel`, `RulesPanel`) show active project badge; backend dashboard endpoints gain `?project_id=` filter param. **DoD:** switching projects re-scopes all widget data.
 - [ ] **11.2 — GraphRAG Knowledge Visualization (flagship — highest priority).**
   Full enterprise visualization for `MemoryManagement` panel demonstrating AILIENANT's cognitive depth.
-  - *Force-directed graph (D3.js / Cytoscape.js):* node types with distinct shapes + colors (`file`=circle, `function/method`=diamond, `class`=hexagon, `module`=square, `external dep`=triangle); node sizes scaled by PPR score; **god nodes** (top-K centrality) highlighted with gold ring + star badge; **community clusters** (Louvain) as colored halos with click-to-filter; edge types (imports/calls/inherits) as distinct line styles with legend toggle; cross-community nodes get multi-color rings; click-to-inspect side panel (symbol, file, code snippet via VFS, PPR rank, community, degree, last indexed); graph search with matched-node pulse animation.
+  - *Force-directed graph (2D D3.js / Cytoscape.js, or 3D `react-force-graph-3d`):* node types with distinct shapes + colors (`file`=circle, `function/method`=diamond, `class`=hexagon, `module`=square, `external dep`=triangle); node sizes scaled by PPR score; **god nodes** (top-K centrality) highlighted with gold ring + star badge; **community clusters** (Louvain/Leiden) as colored halos with click-to-filter; edge types (imports/calls/inherits) as distinct line styles with legend toggle; cross-community nodes get multi-color rings; click-to-inspect side panel (symbol, file, code snippet via VFS, PPR rank, community, degree, last indexed); graph search with matched-node pulse animation.
+    - *3D option (cognitive-depth upgrade):* a 3D force-directed layer (`react-force-graph-3d`, wraps `three.js`) disambiguates community topology that 2D renders as a hairball. **No backend change** — `api/memory_dashboard.py` already emits `leiden_community_id`, `ppr_score`, `in_degree`, `out_degree`, `is_god_node`. Current 2D renderer is `ailienant-extension/src/dashboard/panels/memory/CodeGraphLayer.tsx` (ReactFlow); `regl-scatterplot` is already a dependency, `three` is not (~+400 KB gz, acceptable given the regl WebGL precedent). **Design-time gate:** choose 2D vs 3D by typical workspace node count — the existing LOD machinery in `CodeGraphLayer` implies sizable graphs; ~>500 nodes is where 3D earns its bundle cost.
   - *Vector map layer (2D projection):* UMAP/t-SNE of LanceDB embeddings as density heatmap; each point = a doc chunk colored by cluster; hover shows chunk text preview, source file, and embedding distance; clicking a region zooms the graph layer to that cluster's files.
   - *Doc chunk browser (list layer):* paginated list of all indexed chunks (content preview, source file, vector ID, last-access timestamp — recency of RAG retrieval); sortable by recency / PPR score / embedding norm; Purge button with HITL confirmation for stale eviction.
 - [ ] **11.3 — Real-time Monitoring Panels Redesign.**

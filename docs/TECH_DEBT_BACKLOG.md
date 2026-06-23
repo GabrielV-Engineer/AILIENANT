@@ -184,6 +184,24 @@ Decision    Not a defect — see [DECISION] tier.
 
 - **Resolution:** 14 `# pyright: ignore[reportArgumentType]` added to `brain/engine.py` `add_node` calls; 47 `# pyright: ignore[reportIncompatibleVariableOverride]` added to `args_schema` overrides across 13 `tools/*.py` files. One pre-existing `reportGeneralTypeIssues` in `mcp_adapter.py` suppressed (Boy Scout). `mypy 0/366`, `pytest 1690 passed`.
 
+### DEBT-074 [MEDIUM · Blocked] — `pre_file_read` GraphRAG-injection hook bypasses cost accounting
+
+- **Date:** 2026-06-23
+- **Reproduce:** the `hooks` table (`core/db.py`) supports only `pre_patch` / `post_patch` events, dispatched in `core/task_service.py`. A proposed `pre_file_read` event would inject a file's dependency subgraph into the agent's context automatically at read time.
+- **Error:** tokens injected laterally by such a hook never pass through the CSS×TCI router (`core/memory/context_auditor.py`) or the token ledger (`core/token_ledger.py`), so they escape the FinOps gate and corrupt `savings_usd` accounting. It also turns structural context implicit (non-deterministic, hard to debug) versus the current explicit `pre_patch`/`post_patch` artifacts the agent knows are present.
+- **Blocked by:** no accounting path for hook-injected context. Re-evaluate only once the router meters laterally-injected tokens.
+- **Phase:** future graph-intelligence slice (post-8.14).
+- **Notes:** carved at 8.14 planning per CLAUDE.md §11.3. Rejected sibling: the recursive-CTE k-hop rewrite — multi-hop BFS already exists (`_bfs_k_hop`, `_K_HOP={CLOUD:3,…}`), so it is a refactor of working code, not a missing capability; revisit only if `_bfs_k_hop` becomes a measured bottleneck at scale.
+
+### DEBT-075 [LOW · Unscheduled] — Syntactic-only symbol extraction; no LSP-style type resolution
+
+- **Date:** 2026-06-23
+- **Reproduce:** the indexer extracts symbols and dependencies by name via tree-sitter; it does not resolve types. When the coder needs a function's return type, the LLM must infer it from the file rather than reading a resolved type.
+- **Error:** capability gap vs a real Language Server (generic substitution, parameter binding, return-type / JSDoc inference). Cheaper, lower-precision retrieval context for type-dependent reasoning.
+- **Blocked by:** nothing structural; cost is the barrier — would mean running a real LSP subprocess (pylsp / tsserver / rust-analyzer) inside the indexer.
+- **Phase:** long-term; relates to existing DEBT-005.
+- **Notes:** carved at 8.14 planning per CLAUDE.md §11.3.
+
 ### DEBT-073 [LOW · Floating] — `plan_mode` string literal appears 4× in `Workspace.tsx` (DRY)
 
 - **Date:** 2026-06-23
