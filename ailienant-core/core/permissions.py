@@ -33,9 +33,32 @@ if TYPE_CHECKING:
 class SessionPermissionMode(str, Enum):
     """Session-wide HITL policy. Mutated by user toggle or TogglePlanModeTool."""
 
-    DEFAULT = "default"   # HITL on every WRITE / EXECUTE / DANGEROUS not pre-approved.
-    PLAN = "plan"         # Blocks everything that is not READ_ONLY.
-    AUTO = "auto"         # Uninterrupted execution; DANGEROUS still goes through HITL.
+    # Canonical vocabulary, severity-ordered permissive -> restrictive. Each member
+    # names a distinct (mode, tier) -> ALLOW | HITL | DENY posture resolved by the
+    # permission matrix.
+    FULL_AUTO = "full_auto"      # No HITL for any tier; all tools execute immediately.
+    STANDARD = "standard"        # HITL for DANGEROUS only.
+    CAUTIOUS = "cautious"        # HITL for EXECUTE + DANGEROUS; READ_ONLY auto-admitted.
+    ASK_EXECUTE = "ask_execute"  # Ask before any non-READ_ONLY tool; deny DANGEROUS.
+    ASK_ALL = "ask_all"          # Ask before every tool call, including READ_ONLY.
+    READ_ONLY = "read_only"      # Only READ_ONLY tier admitted; EXECUTE/DANGEROUS blocked.
+    PLAN_ONLY = "plan_only"      # Planning only; no execution.
+
+    # Deprecated legacy aliases, retained so persisted checkpoints keep resolving.
+    # _LEGACY_MODE_MIGRATION maps each onto its behavior-faithful canonical member.
+    DEFAULT = "default"   # Deprecated -> CAUTIOUS. HITL on every WRITE / EXECUTE / DANGEROUS.
+    PLAN = "plan"         # Deprecated -> PLAN_ONLY. Blocks everything that is not READ_ONLY.
+    AUTO = "auto"         # Deprecated -> STANDARD. Uninterrupted; DANGEROUS still HITL.
+
+
+# Behavior-faithful migration of the deprecated legacy modes onto the canonical
+# vocabulary. Each target preserves the legacy mode's real gating behavior, so a
+# checkpoint resume never silently loosens or tightens an existing session.
+_LEGACY_MODE_MIGRATION: Dict[SessionPermissionMode, SessionPermissionMode] = {
+    SessionPermissionMode.DEFAULT: SessionPermissionMode.CAUTIOUS,
+    SessionPermissionMode.AUTO: SessionPermissionMode.STANDARD,
+    SessionPermissionMode.PLAN: SessionPermissionMode.PLAN_ONLY,
+}
 
 
 class ToolPrivilegeTier(str, Enum):

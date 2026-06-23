@@ -29,7 +29,8 @@
 | 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
 | 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
 | 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
-| 8.11 7-Mode Permission System | ⬜ PENDING | — | ADR + mode resolver |
+| 8.11 7-Mode Permission System | 🟡 IN PROGRESS | — | resolver (8.11.2) + UI (8.11.3) |
+| 8.11.1 session_mode enum extension | ✅ CLOSED | 2026-06-22 | — (additive 7-mode vocabulary; behavior-inert) |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -602,20 +603,20 @@
 
 ### Division 8.11 — 7-Mode Permission System ⬜
 
-> Extend the current 3-mode `session_mode` (DEFAULT / PLAN / READ_ONLY) to a 7-mode execution permission matrix, modeled on Claude Code's Allow/Ask/Deny granularity adapted to AILIENANT's privilege-tier model. ADR to be assigned.
+> Extend the current 3-mode `session_mode` (DEFAULT / PLAN / AUTO) to a 7-mode execution permission matrix, modeled on Claude Code's Allow/Ask/Deny granularity adapted to AILIENANT's privilege-tier model. ADR to be assigned. Authoritative contract: `docs/SCHEMA_EVOLUTION.MD §22`.
 
 | Mode | Name | Behavior |
 |------|------|----------|
 | 1 | FULL_AUTO | No HITL for any tier; all tools execute immediately |
-| 2 | STANDARD | HITL for DANGEROUS only (current DEFAULT) |
-| 3 | CAUTIOUS | HITL for EXECUTE + DANGEROUS; READ_ONLY auto-admitted |
+| 2 | STANDARD | HITL for DANGEROUS only (current AUTO) |
+| 3 | CAUTIOUS | HITL for EXECUTE + DANGEROUS; READ_ONLY auto-admitted (current DEFAULT) |
 | 4 | ASK_EXECUTE | Ask before any non-READ_ONLY tool; deny DANGEROUS |
 | 5 | ASK_ALL | Ask before every tool call (including READ_ONLY) |
 | 6 | READ_ONLY | Only READ_ONLY tier admitted; EXECUTE/DANGEROUS blocked |
 | 7 | PLAN_ONLY | Planning only; no execution (current PLAN) |
 
-- [ ] **8.11.1 — ADR + `session_mode` enum extension.**
-  Additive extension: `session_mode` gains 4 new enum values; DEFAULT maps to STANDARD (2); PLAN maps to PLAN_ONLY (7); READ_ONLY maps to READ_ONLY (6). No existing checkpoint breaks. SCHEMA_EVOLUTION.MD versioned entry. Files: `brain/state.py`, `docs/SCHEMA_EVOLUTION.MD`.
+- [x] **8.11.1 — ADR + `session_mode` enum extension.**
+  Additive extension: `SessionPermissionMode` gains the canonical 7-mode vocabulary; the 3 originals stay as deprecated aliases. Behavior-faithful legacy migration — DEFAULT maps to CAUTIOUS (3); AUTO maps to STANDARD (2); PLAN maps to PLAN_ONLY (7). No existing checkpoint breaks; behavior-inert until the 8.11.2 resolver. SCHEMA_EVOLUTION.MD §22 versioned entry. Files: `core/permissions.py`, `brain/state.py`, `docs/SCHEMA_EVOLUTION.MD`.
 - [ ] **8.11.2 — `evaluate_action` resolver rewrite.**
   `gateway/governance.py:evaluate_action` maps `(mode, tier) → ALLOW | ASK | DENY` per the 7×3 matrix. Files: `gateway/governance.py`, `core/task_service.py` (ambient mode propagation).
 - [ ] **8.11.3 — Frontend mode switcher (7 modes).**

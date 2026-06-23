@@ -740,3 +740,35 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 **Produced by:** Researcher node (`agents/researcher.py`) via `await SemanticMemoryManager.is_corpus_empty(workspace_hash)`.
 **New method:** `SemanticMemoryManager.is_corpus_empty(workspace_hash: str) -> bool` — short-TTL module-level cached (`_CORPUS_PRESENCE_TTL_S = 30.0`), invalidated on every corpus write (`_write_record`, `_delete_record`).
 **ContextMeter.is_red_alert:** now computed as `(css < 40.0) and not corpus_empty` — semantically unchanged for non-empty workspaces; always `False` on an empty corpus regardless of CSS, so telemetry stays truthful (CSS is not altered).
+
+---
+
+## §22 — 7-Mode Session Permission Vocabulary (Additive `SessionPermissionMode` Members)
+
+**Change:** `SessionPermissionMode` grows from 3 members to a canonical 7-mode vocabulary; the 3 original members are retained as deprecated aliases. The `session_permission_mode` state channel Literal widens to the union of both.
+**Location:** `ailienant-core/core/permissions.py` (`SessionPermissionMode`, `_LEGACY_MODE_MIGRATION`); `ailienant-core/brain/state.py` (`AIlienantGraphState.session_permission_mode`).
+**Schema version:** additive, backward-compatible. No member is removed or repurposed; every persisted checkpoint string (`"DEFAULT" | "PLAN" | "AUTO"`) remains a valid value. This change is **behavior-inert** — no runtime path emits a canonical member yet; the resolver matrix that consumes them lands separately, and the UI that selects them lands after that.
+
+**Canonical members** (severity-ordered, permissive → restrictive):
+
+| # | Member | Value | Behavior (resolved by the matrix) |
+|---|--------|-------|-----------------------------------|
+| 1 | `FULL_AUTO` | `full_auto` | No HITL for any tier; all tools execute immediately. |
+| 2 | `STANDARD` | `standard` | HITL for DANGEROUS only. |
+| 3 | `CAUTIOUS` | `cautious` | HITL for EXECUTE + DANGEROUS; READ_ONLY auto-admitted. |
+| 4 | `ASK_EXECUTE` | `ask_execute` | Ask before any non-READ_ONLY tool; deny DANGEROUS. |
+| 5 | `ASK_ALL` | `ask_all` | Ask before every tool call, including READ_ONLY. |
+| 6 | `READ_ONLY` | `read_only` | Only READ_ONLY tier admitted; EXECUTE/DANGEROUS blocked. |
+| 7 | `PLAN_ONLY` | `plan_only` | Planning only; no execution. |
+
+**Deprecated legacy members** — retained for checkpoint back-compat, resolved onto the canonical vocabulary by `_LEGACY_MODE_MIGRATION`. The mapping is **behavior-faithful**: each target preserves the legacy mode's real gating behavior, never a silent privilege change on resume.
+
+| Legacy member | Real legacy behavior | Canonical target |
+|---------------|----------------------|------------------|
+| `DEFAULT` — `Deprecated:` | HITL on WRITE + EXECUTE + DANGEROUS | `CAUTIOUS` (3) |
+| `AUTO` — `Deprecated:` | HITL on DANGEROUS only | `STANDARD` (2) |
+| `PLAN` — `Deprecated:` | Blocks all non-READ_ONLY | `PLAN_ONLY` (7) |
+
+There is no legacy `READ_ONLY` *session* mode — `READ_ONLY` (6) is a new canonical member with no legacy source. (The pre-existing `READ_ONLY` is a `ToolPrivilegeTier`, an orthogonal axis.)
+
+**Consumers (unchanged this revision):** `evaluate_action`, `gate_execute_action`, `rbwe_guard`, `session_mode_from_channel`, `session_mode_from_frontend` all continue to operate on the legacy members exactly as before. The canonical-native resolver rewrite and the migration enforcement (routing the legacy fallback through `_LEGACY_MODE_MIGRATION`) are a separate, later revision.

@@ -575,7 +575,10 @@ class AIlienantGraphState(TypedDict):
     workspace_active: bool
 
     # --- Phase 5.1 — Permission Engine & Cognitive Quarantine channels ---
-    # session_permission_mode: per-mission HITL policy (DEFAULT / PLAN / AUTO).
+    # session_permission_mode: per-mission HITL policy. Canonical 7-mode vocabulary
+    # (FULL_AUTO / STANDARD / CAUTIOUS / ASK_EXECUTE / ASK_ALL / READ_ONLY / PLAN_ONLY)
+    # plus the deprecated legacy aliases (DEFAULT / PLAN / AUTO) kept for checkpoint
+    # back-compat. Stored UPPERCASE; SessionPermissionMode.value is lowercase.
     # boundary_id: per-turn uuid4().hex used by the Cognitive Quarantine axiom.
     # tool_registry_active: names of tools surfaced to the model this turn (Tool RAG).
     # permission_audit_log: append-only ledger of every permission decision.
@@ -583,7 +586,10 @@ class AIlienantGraphState(TypedDict):
     # background_tasks: registry of long-running asyncio tasks keyed by task_id.
     # mcp_server_endpoint: active MCP ClientSession URI (None = local-only).
     # rbwe_violations: append-only list of "tool::target" RBWE rejections.
-    session_permission_mode: Literal["DEFAULT", "PLAN", "AUTO"]
+    session_permission_mode: Literal[
+        "FULL_AUTO", "STANDARD", "CAUTIOUS", "ASK_EXECUTE", "ASK_ALL", "READ_ONLY", "PLAN_ONLY",
+        "DEFAULT", "PLAN", "AUTO",
+    ]
     boundary_id: Optional[str]
     tool_registry_active: List[str]
     permission_audit_log: Annotated[List[Dict[str, Any]], operator.add]

@@ -13,6 +13,13 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.11.1: 7-Mode session_mode Enum Extension — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/366 · pyright 0 · pytest 1753 passed
+- Shipped: additive `SessionPermissionMode` 7-mode vocabulary + 3 deprecated legacy aliases; widened `session_permission_mode` state Literal; SCHEMA_EVOLUTION §22; behavior-inert (resolver is 8.11.2).
+- Key decision: behavior-faithful legacy migration (DEFAULT→CAUTIOUS, AUTO→STANDARD, PLAN→PLAN_ONLY) — not the manifest's literal DEFAULT→STANDARD, which would silently loosen existing strict sessions.
+
+---
+
 ## 8.10.15: Pyright Typing Pass — DEBT-071 retired — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/366 · pyright 0 · pytest 1690 passed
 - Shipped: 14 `# pyright: ignore[reportArgumentType]` on `brain/engine.py` `add_node` calls; 47 `# pyright: ignore[reportIncompatibleVariableOverride]` on `args_schema` overrides across 13 `tools/*.py` files; stale DLQ comment corrected; pre-existing `mcp_adapter.py` `reportGeneralTypeIssues` suppressed (Boy Scout).
