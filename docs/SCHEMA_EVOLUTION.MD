@@ -675,6 +675,9 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 **Native Thinking:**
 `server_thinking_chunk`
 
+**Context pipeline:**
+`state_compacted` (see §25)
+
 ---
 
 ## §18 — WBSStep Dependency Graph Field
@@ -867,3 +870,35 @@ Populated only when `request_kind == "RISK_INTERCEPT"`. Additive field — absen
 **New `request_kind` value:** `"RISK_INTERCEPT"` — emitted when the YOLO Guard upgrades the decision. Existing `request_kind` values (`FILE_WRITE`, `BUDGET_OVERFLOW`, `SANDBOX_DEGRADED_EXEC`, `MCP_TOOL_CALL`, `COMMAND_EXEC`) are unaffected.
 
 **Frontend:** `HITLInterventionCard.tsx` renders `RISK_INTERCEPT` cards with the `alert` icon and the matched pattern labels. The `HITLIntervention` interface gains `risk_patterns_matched?: string[] | null`.
+
+---
+
+## §25 — Context Pipeline `STATE_COMPACTED` Wire Contract
+
+**Change:** additive WS server event emitted when the five-layer `ContextPipeline`
+(`brain/context_pipeline.py`) FIFO-evicts Layer 4 (Conversation) turns to fit the token budget.
+
+**New WS event** `ServerStateCompactedEvent` (`api/ws_contracts.py`), discriminator
+`event_type="state_compacted"`, payload:
+```python
+class StateCompactedPayload(BaseModel):
+    session_id: str
+    compaction_message: str   # system status line — NOT AI-generated prose
+    turns_compressed: int
+```
+
+**Producer:** `WebSocketConnectionManager.broadcast_state_compacted(session_id, compaction_message, turns_compressed)` (`api/websocket_manager.py`), wired to the pipeline's `on_compacted` async callback via `functools.partial` with `session_id` bound (callback arity `(compaction_message, turns_compressed)`).
+
+**Field-name ratification (`summary` → `compaction_message`):** the originating plan named the
+payload field `summary`. It ships as `compaction_message` because the value is a deterministic
+system status line ("Compacted N conversation turn(s) to fit the context window."), not an
+AI-generated narrative summary — the eventual prose summary is a separate concern owned by
+`brain/summarizer.py`. Naming the field `compaction_message` prevents a future consumer from
+rendering a status string where it expects model prose.
+
+**Consumer:** none yet on the wire — the frontend `SessionSummaryCard` is a later milestone.
+Per the additive-only contract discipline (CLAUDE.md §10), existing consumers tolerate the
+unknown event; the new variant is purely additive to the `WebSocketMessage` union.
+
+**Backward-compat:** additive event + additive union member. No existing event, field, or
+checkpoint shape is altered.

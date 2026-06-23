@@ -62,6 +62,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
+| DEBT-078 | Frontend contract mirror for `state_compacted` + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet) | LOW | FE Architecture | Phase 11.7 (see DEBT-059) | Floating |
+| DEBT-077 | Unify analyst `ContextBudgetManager` onto `ContextPipeline` — analyst still runs its own tier-ladder packer (ladder keys don't map to pipeline layer labels) | MEDIUM | Architecture | future context slice | Floating |
+| DEBT-076 | Live `STATE_COMPACTED` emission — wire `ContextPipeline.on_compacted` into the conversation-accrual path (summarizer/task_service) so it fires in production, not only at the 8.12.4 gate | MEDIUM | Observability | Phase 11.7 (see DEBT-059) | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if 7-mode UI ever adds more modes | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
 | DEBT-072 | Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart | MEDIUM | Durability | future HITL slice | Floating |
 | DEBT-071 | ~~LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance)~~ | MEDIUM | Type hygiene | 8.10.15 | RESOLVED 2026-06-22 |

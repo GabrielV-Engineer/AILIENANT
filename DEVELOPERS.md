@@ -276,6 +276,7 @@ Proyect_Ailienant/
 │   │   ├── state.py             #     AIlienantGraphState, MissionSpecification, reducers
 │   │   ├── routing_engine.py    #     CSS × TCI matrix
 │   │   ├── context_pipeline.py  #     5-layer context assembler (ContextChunk, ContextPipeline)
+│   │   ├── agent_context.py     #     budget-guard over ContextPipeline (build_agent_context)
 │   │   ├── agentic_cell.py      #     bounded ReAct cell + contained MCTS candidate selection
 │   │   ├── iteration_governor.py #    multi-axis circuit breaker
 │   │   ├── retry_policy.py      #     centralized retry/correction budgets

@@ -35,7 +35,7 @@
 | 8.11.3 Shadow Mapping + YOLO Guard | ✅ CLOSED | 2026-06-23 | — (canonical shadow map; risk_intercept_guard; RISK_INTERCEPT card; DEBT-073 logged) |
 | 8.11.4 Division 8.11 Checkpoint Gate | ✅ CLOSED | 2026-06-23 | — (exhaustive 7×4 matrix lock vs §23 contract; test-only) |
 | 8.11.5 YOLO Guard + Matrix Combined Gate | ✅ CLOSED | 2026-06-23 | — (composed pipeline; no-double-interception locked; test-only) |
-| 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
+| 8.12 Five-Layer Context Pipeline | ✅ CLOSED | 2026-06-23 | context_pipeline.py + agent_context.py budget-guard; STATE_COMPACTED wire contract; gate test_context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
 | 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.1 blast-radius mapper (core/blast_radius.py) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -75,7 +75,7 @@
 | 8.2.6 | Cold-Start / Warm-up Workspace Mode (5 sub-phases) | ⬜ |
 | 8.10 | Debt Reduction + Complete 8.2 + 8.6 (11 sub-phases) | ⬜ |
 | 8.11 | 7-Mode Permission System | ✅ |
-| 8.12 | Five-Layer Context Compression Pipeline | ⬜ |
+| 8.12 | Five-Layer Context Compression Pipeline | ✅ |
 | 8.14 | Graph Intelligence Upgrade (5 sub-phases) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
@@ -634,7 +634,7 @@
 
 ---
 
-### Division 8.12 — Five-Layer Context Compression Pipeline ⬜
+### Division 8.12 — Five-Layer Context Compression Pipeline ✅
 
 > Formalize context management into a typed 5-layer pipeline preventing silent mid-task context loss. Inspired by Claude Code's 6-layer context window architecture. Emits `STATE_COMPACTED` WS events consumed by Phase 11.7 chat compaction. ADR to be assigned.
 
@@ -648,11 +648,11 @@
 
 - [x] **8.12.1 — `brain/context_pipeline.py` + assembler.**
   `ContextLayer` ABC + `ContextPipeline` assembler; Layer 4 FIFO eviction emits `STATE_COMPACTED` event over WS when entries are dropped. Existing `brain/summarizer.py` becomes Layer 3's compression backend (no rename). Existing `agents/analyst_context.py:ContextBudgetManager` becomes Layer 4's budget.
-- [ ] **8.12.2 — Agent integration.**
+- [x] **8.12.2 — Agent integration.**
   `agents/planner.py` / `agents/coder.py` consume `ContextPipeline` instead of ad-hoc injection. Guarantee: a task exceeding 100K tokens never silently truncates Layers 1–3.
-- [ ] **8.12.3 — WS `STATE_COMPACTED` event contract.**
+- [x] **8.12.3 — WS `STATE_COMPACTED` event contract.**
   `api/websocket_manager.py`: new event type `{"type": "STATE_COMPACTED", "summary": "...", "turns_compressed": N}`; consumed by Phase 11.7 `SessionSummaryCard` frontend (not yet shipped — wired in Phase 11).
-- [ ] **8.12.4 — Division 8.12 Checkpoint Gate.**
+- [x] **8.12.4 — Division 8.12 Checkpoint Gate.**
   `tests/test_context_pipeline.py`: Layer 1–3 are never evicted; Layer 4 FIFO eviction fires when the budget is exceeded; `STATE_COMPACTED` event is emitted. **DoD:** `mypy .` 0 · `pytest` green.
 
 ---

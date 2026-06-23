@@ -13,6 +13,21 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.12.4: Division 8.12 Checkpoint Gate — 2026-06-23
+**Status:** COMPLETE | **Gates:** mypy 0/372 · pytest 2014 passed · pyright 0
+- Shipped: `test_context_pipeline.py` (16 tests, test-only) locks the division invariants — L1-L3 never evicted (hard `ContextBudgetError` only), L4 FIFO drops oldest in order, `on_compacted` fires once on eviction and is silent otherwise, L5 tail-truncation stays token-exact within budget, plus the `broadcast_state_compacted` wire-event shape via a hermetic stubbed manager. Closes Division 8.12.
+
+## 8.12.3: STATE_COMPACTED wire contract — 2026-06-23
+**Status:** COMPLETE | **Gates:** mypy 0/372 · pytest 2014 passed · pyright 0
+- Shipped: documented the already-coded `state_compacted` server event in `SCHEMA_EVOLUTION.MD §25` (+ §17 event list); ratified the `summary → compaction_message` field rename (system status line, not AI prose).
+- Deferred: DEBT-078 — frontend contract mirror + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet).
+
+## 8.12.2: Agent integration — context budget-guard — 2026-06-23
+**Status:** COMPLETE | **Gates:** mypy 0/372 · pytest 2014 passed · pyright 0
+- Shipped: `brain/agent_context.py` (`build_agent_context` + shared `resolve_context_budget`/`AMNESIA_ALERT`); planner and coder now route their durable context (identity/rules/memory) and volatile IDE content through the pipeline so L5 is trimmed first and L1-L3 are never silently dropped.
+- Key decision: focused budget-guard (not full pipeline ownership) — agents keep their boundary-tag sandbox and response-cache keys; the resolved budget is folded into the cache key so a local↔cloud reroute can't serve a stale trim. On budget exhaustion the node degrades to identity-only plus an amnesia alert rather than crashing.
+- Deferred: DEBT-076 (live STATE_COMPACTED emission from the conversation-accrual path) · DEBT-077 (unify analyst `ContextBudgetManager` onto the pipeline).
+
 ## 8.12.1: ContextPipeline — 5-layer context assembler — 2026-06-23
 **Status:** COMPLETE | **Gates:** mypy 0/370 · pytest 1998 passed · pyright 0
 - Shipped: `brain/context_pipeline.py` — `ContextChunk` (moved from `agents/`), `ContextLayer` ABC, 5 concrete layers (Foundation/Project/Memory/Conversation/Execution), `ContextPipeline` with dynamic budget (L1-L3 anchor; safety buffer; L4 FIFO batch-eviction; L5 token-exact tail-truncation), `ContextAssemblyResult` observable return; `broadcast_state_compacted()` added to websocket_manager via `StateCompactedPayload`.

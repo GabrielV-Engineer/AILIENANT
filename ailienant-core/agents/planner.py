@@ -14,6 +14,12 @@ from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retai
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
 from agents.prompts import build_safe_prompt
+from brain.agent_context import (
+    AMNESIA_ALERT,
+    build_agent_context,
+    resolve_context_budget,
+)
+from brain.context_pipeline import ContextBudgetError
 from agents.workspace_context import build_workspace_overview
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
@@ -272,14 +278,23 @@ async def run_planner_node(
     # =====================================================================
     # 3. PROMPT CONSTRUCTION (RBAC and Spec-Driven Development)
     # =====================================================================
-    # We built the System Prompt using the strict role of the Planner
-    system_prompt_text = build_safe_prompt(
-        agent_identity=PLANNER_IDENTITY, context_str=context_str, boundary=boundary
+    # The durable instruction context (identity, rules, project instructions,
+    # skills, memory) and the volatile IDE context are mapped onto the five-layer
+    # ContextPipeline below. Identity carries the cognitive-quarantine framing but
+    # NOT the volatile file content — that is routed to the Execution layer (L5) so
+    # it is trimmed first under budget pressure, while identity/rules/memory (L1-L3)
+    # are never silently dropped. The SAME `boundary` nonce threads through both the
+    # L1 framing and the L5 chunk so the prompt-injection seal stays end-to-end.
+    _l1_identity = build_safe_prompt(
+        agent_identity=PLANNER_IDENTITY,
+        context_str=(
+            f"<{boundary}>IDE context is provided in the user turn below, under this "
+            f"same secure boundary.</{boundary}>"
+        ),
+        boundary=boundary,
     )
 
     _rules = rule_manager.get_combined_rules(state.get("workspace_root", ""))
-    if _rules:
-        system_prompt_text += f"\n\n{_rules}"
 
     # Freeform project instructions (AILIENANT.md) — standing prose guidance that
     # complements the machine-checkable .ailienant.json rules above.
@@ -288,20 +303,17 @@ async def run_planner_node(
         state.get("workspace_root", ""),
         state.get("task_id", ""),
     )
-    if _project_instructions:
-        system_prompt_text += f"\n\n{_project_instructions}"
 
     # ── User Skill Injection ───────────────────────────────
     # Skills the user saved and either explicitly invoked or that matched this task
     # semantically. Resolved upstream and threaded on the loose state dict; wrapped in
     # the same ephemeral boundary as other injected directives.
+    _skill_block = ""
     _skills = state.get("active_skills") or []
     if _skills:
         from core.skill_resolver import build_skill_directive_block
 
-        _skill_block = build_skill_directive_block(_skills, boundary)
-        if _skill_block:
-            system_prompt_text += f"\n\n{_skill_block}"
+        _skill_block = build_skill_directive_block(_skills, boundary) or ""
 
     # ── Trajectory Memory Injection ────────────────────────
     _traj_mgr = TrajectoryMemoryManager()
@@ -309,8 +321,9 @@ async def run_planner_node(
         user_input=user_input,
         project_id=state.get("project_id") or "",
     )
+    _trajectory_block = ""
     if _past_trajectories:
-        system_prompt_text += f"\n\n{format_trajectories_for_prompt(_past_trajectories)}"
+        _trajectory_block = format_trajectories_for_prompt(_past_trajectories)
         logger.info(
             "TrajectoryMemory: injected %d past trajectories into planner context.",
             len(_past_trajectories),
@@ -350,12 +363,41 @@ async def run_planner_node(
             len(researcher_skeleton),
         )
 
+    # ── Budget-guarded assembly (five-layer ContextPipeline) ──
+    # L1 identity+rules / L2 project-instructions+skills / L3 trajectory+skeleton are
+    # the durable instruction context (never silently truncated). The volatile IDE
+    # context (active file, dirty buffers, workspace overview) is the Execution layer
+    # (L5) — trimmed first when the window is tight. on_compacted is omitted: a
+    # single-shot planner turn carries no running conversation list, so L4 stays empty.
+    _budget = resolve_context_budget(state)
+    try:
+        _agent_ctx = await build_agent_context(
+            total_token_budget=_budget,
+            foundation=[_l1_identity, _rules],
+            project=[_project_instructions, _skill_block],
+            memory=[_trajectory_block, skeleton_block],
+            execution=[context_str],
+        )
+        system_prompt_text = _agent_ctx.foundation_block
+        _ide_context_block = _agent_ctx.execution_block
+    except ContextBudgetError:
+        # L1-L3 alone exhaust the window. Never silently drop pinned context: degrade
+        # to identity-only and make the model aware of its partial amnesia so it cannot
+        # invent rules/style/Git policy it can no longer see. Plain assignment — never a
+        # re-entrant build, so this cannot loop even if identity alone exceeds budget.
+        logger.warning(
+            "Planner context budget exhausted by L1-L3 (budget=%d); degrading to "
+            "identity-only prompt with an explicit context-loss alert.",
+            _budget, exc_info=True,
+        )
+        system_prompt_text = _l1_identity
+        _ide_context_block = f"{context_str}\n\n{AMNESIA_ALERT}"
+
     # Human instruction: Here we mentally force the model to respect the SDD contract.
     instruction = (
         f"User requirement: '{user_input}'.\n\n"
         f"IDE context (The files are encapsulated under the secure label) <{boundary}>):\n"
-        f"{context_str}\n"
-        f"{skeleton_block}"
+        f"{_ide_context_block}\n"
         "You are the Architect (The Planner). You are PROHIBITED from writing implementation code.\n"
         "Your only task is to generate a complete and logical technical specification (MissionSpecification)."
         "Strictly define the Outcome, Scope, Constraints, Decisions, and sequential Tasks (WBS)"
@@ -412,6 +454,10 @@ async def run_planner_node(
         if researcher_skeleton:
             cache_ctx.append(("<researcher_skeleton>", researcher_skeleton))
         cache_ctx.append(("<css>", f"{updated_context_metrics.css_total:.1f}"))
+        # Fold the resolved token budget into the key: the same inputs produce a
+        # different budget-trimmed prompt under a different context window (local↔cloud
+        # reroute), so a budget-blind key could serve a stale trim.
+        cache_ctx.append(("<budget>", str(_budget)))
         planner_cache_key = response_cache.build_key(
             intent=user_input,
             context=cache_ctx,
