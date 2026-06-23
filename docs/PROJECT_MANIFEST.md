@@ -29,10 +29,12 @@
 | 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
 | 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
 | 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
-| 8.11 7-Mode Permission System | 🟡 IN PROGRESS | — | shadow map (8.11.3) + gate (8.11.4/5) |
+| 8.11 7-Mode Permission System | ✅ CLOSED | 2026-06-23 | — (7-mode matrix + shadow map + YOLO Guard; division gates locked) |
 | 8.11.1 session_mode enum extension | ✅ CLOSED | 2026-06-22 | — (additive 7-mode vocabulary; behavior-inert) |
 | 8.11.2 evaluate_action resolver rewrite | ✅ CLOSED | 2026-06-22 | — (7×3 matrix; governance.py verified-unchanged) |
 | 8.11.3 Shadow Mapping + YOLO Guard | ✅ CLOSED | 2026-06-23 | — (canonical shadow map; risk_intercept_guard; RISK_INTERCEPT card; DEBT-073 logged) |
+| 8.11.4 Division 8.11 Checkpoint Gate | ✅ CLOSED | 2026-06-23 | — (exhaustive 7×4 matrix lock vs §23 contract; test-only) |
+| 8.11.5 YOLO Guard + Matrix Combined Gate | ✅ CLOSED | 2026-06-23 | — (composed pipeline; no-double-interception locked; test-only) |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -71,7 +73,7 @@
 | 8 | Testing, Refinement & Graceful Degradation | 🟡 Active |
 | 8.2.6 | Cold-Start / Warm-up Workspace Mode (5 sub-phases) | ⬜ |
 | 8.10 | Debt Reduction + Complete 8.2 + 8.6 (11 sub-phases) | ⬜ |
-| 8.11 | 7-Mode Permission System | ⬜ |
+| 8.11 | 7-Mode Permission System | ✅ |
 | 8.12 | Five-Layer Context Compression Pipeline | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
@@ -603,7 +605,7 @@
 
 ---
 
-### Division 8.11 — 7-Mode Permission System ⬜
+### Division 8.11 — 7-Mode Permission System ✅
 
 > Extend the current 3-mode `session_mode` (DEFAULT / PLAN / AUTO) to a 7-mode execution permission matrix, modeled on Claude Code's Allow/Ask/Deny granularity adapted to AILIENANT's privilege-tier model. ADR to be assigned. Authoritative contract: `docs/SCHEMA_EVOLUTION.MD §22`.
 
@@ -623,9 +625,9 @@
   `core/permissions.py:evaluate_action` maps `(mode, tier) → ALLOW | HITL | DENY` (ASK == HITL) via an authoritative 7×3 `_DECISION_MATRIX`, with legacy modes normalized through `_LEGACY_MODE_MIGRATION` and the identity floor preserved. `FULL_AUTO×DANGEROUS=ALLOW`, `CAUTIOUS×WRITE=HITL`. Seed propagation widened in `core/task_service.py` to accept any valid mode value. `gateway/governance.py` audited and confirmed unchanged (its AUTO/DEFAULT postures are preserved by migration). Contract: `docs/SCHEMA_EVOLUTION.MD §23`. Files: `core/permissions.py`, `core/task_service.py`.
 - [x] **8.11.3 — Shadow Mapping + YOLO Guard.**
   Shadow map 3 UI buttons to canonical modes (`automatic→STANDARD`, `ask_before_edits→CAUTIOUS`, `plan_mode→PLAN_ONLY`). `risk_intercept_guard()` upgrades ALLOW→HITL for high-risk commands in FULL_AUTO/STANDARD sessions. `RISK_INTERCEPT` HITL card variant. 55 test cases. SCHEMA_EVOLUTION.MD §24. Files: `core/permissions.py`, `api/ws_contracts.py`, `api/websocket_manager.py`, `core/hitl.py`, `core/task_service.py`, `tools/execution_tools.py`, `tools/coder_tools.py`, `brain/agentic_cell.py`, `gateway/governance.py`, `main.py`, `HITLInterventionCard.tsx`, `tests/test_yolo_guard.py`.
-- [ ] **8.11.4 — Division 8.11 Checkpoint Gate.**
+- [x] **8.11.4 — Division 8.11 Checkpoint Gate.**
   `tests/test_permission_modes.py`: 7 × 3 tier matrix asserted (ALLOW/ASK/DENY per mode per tier). **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
-- [ ] **8.11.5 — YOLO Guard + Matrix Combined Gate Test.**
+- [x] **8.11.5 — YOLO Guard + Matrix Combined Gate Test.**
   Parametrized integration tests: YOLO Guard behavior at each of the 7 session modes × risky command categories; verify no double-interception in non-permissive modes. Files: `tests/test_yolo_guard_integration.py`.
 
 ---

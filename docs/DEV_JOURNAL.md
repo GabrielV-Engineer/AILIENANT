@@ -13,6 +13,16 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.11.5: YOLO Guard + Matrix Combined Gate — 2026-06-23
+**Status:** COMPLETE | **Gates:** mypy 0/369 · pytest 1998 passed · pyright 0 · npm compile 0
+- Shipped: `test_yolo_guard_integration.py` asserts the composed `evaluate_action → risk_intercept_guard` pipeline across all 7 modes × risk categories — locking no-double-interception in the 5 non-permissive modes, ALLOW→HITL upgrade in FULL_AUTO/STANDARD, and legacy-alias dormancy. Closes Division 8.11.
+- Key decision: the gate runs the *composed* pipeline (matrix verdict then content post-filter) rather than the guard in isolation, so the short-circuit that prevents an amber RISK_INTERCEPT card in "Ask" mode is verified end-to-end.
+
+## 8.11.4: Division 8.11 Checkpoint Gate — 2026-06-23
+**Status:** COMPLETE | **Gates:** mypy 0/369 · pytest 1998 passed · pyright 0 · npm compile 0
+- Shipped: `test_permission_modes.py` locks the full 7-mode × 4-tier decision surface against an independent contract table transcribed from SCHEMA_EVOLUTION §23, plus identity floor, ASK==HITL, legacy-migration equivalence, and wire-value round-trip (171 cases with 8.11.5).
+- Key decision: the contract table is hand-transcribed and deliberately NOT imported from `_DECISION_MATRIX`, so source and gate must agree — a one-sided edit fails the gate.
+
 ## 8.11.3: Shadow Mapping + YOLO Guard — 2026-06-23
 **Status:** COMPLETE | **Gates:** mypy 0/367 · pytest 1827 passed · npm compile 0
 - Shipped: `_FRONTEND_MODE_TO_SESSION` now targets canonical modes (`automatic→STANDARD`, `ask_before_edits→CAUTIOUS`, `plan_mode→PLAN_ONLY`); `risk_intercept_guard()` upgrades ALLOW→HITL for 5 risky command categories in FULL_AUTO/STANDARD sessions; `RISK_INTERCEPT` HITL card variant in `HITLInterventionCard.tsx`; 55-case `test_yolo_guard.py`; SCHEMA_EVOLUTION §24.
