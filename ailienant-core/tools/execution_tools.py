@@ -208,11 +208,14 @@ class SandboxBashTool(BaseTool):
             from core.permissions import (  # deferred — keeps the tool import light
                 PermissionDecision,
                 gate_execute_action,
+                risk_intercept_guard,
                 session_mode_from_channel,
             )
 
             session_mode = session_mode_from_channel(session_permission_mode)
             verdict = gate_execute_action(session_mode)
+            # YOLO Guard: upgrade ALLOW -> HITL for high-risk commands in permissive modes.
+            verdict, _risk_labels = risk_intercept_guard(command, verdict, session_mode)
 
             if verdict is PermissionDecision.DENY:
                 return (
@@ -234,12 +237,14 @@ class SandboxBashTool(BaseTool):
                 # tighter execute timeout fires; the loop is never busy-spun.
                 # Every refusal path returns before get_active_adapter(), so no
                 # subprocess is spawned while (or because) we are awaiting.
+                _kind = "RISK_INTERCEPT" if _risk_labels else "COMMAND_EXECUTE"
                 approval = await vfs_manager.request_human_approval(
                     session_id=session_id,
                     action_description=f"COMMAND_EXECUTE: {command}",
                     proposed_content=command,
-                    request_kind="COMMAND_EXECUTE",
+                    request_kind=_kind,
                     timeout_s=_EXEC_HITL_TIMEOUT_SEC,
+                    risk_patterns_matched=_risk_labels or None,
                 )
                 if not approval or not approval.get("approved"):
                     return (

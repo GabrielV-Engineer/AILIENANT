@@ -1,6 +1,4 @@
-"""Phase 5.1 — Permission Engine (3-axis model + RBWE).
-
-See docs/PHASE_5_BLUEPRINT.md §2 for the architectural contract.
+"""Permission Engine — 3-axis model + RBWE + YOLO Guard.
 
 Three orthogonal axes:
     1. AgentIdentity.permission_mode  — per-agent (shared/rbac.py, unchanged)
@@ -10,6 +8,9 @@ Three orthogonal axes:
 evaluate_action() composes all three into a single PermissionDecision via a pure,
 O(1), lru_cached pure function — no I/O, no LLM. rbwe_guard() enforces
 Read-Before-Write by consulting state["read_files_state"] (existing channel).
+risk_intercept_guard() is a content-aware post-filter: it upgrades ALLOW -> HITL
+when a proposed command matches a curated high-risk pattern, even in permissive
+session modes (FULL_AUTO / STANDARD). It never downgrades HITL or DENY.
 """
 
 from __future__ import annotations
@@ -85,21 +86,23 @@ class PermissionDecision(str, Enum):
     DENY = "deny"
 
 
-# Frontend mode selector → session-wide permission policy. The UI offers a
-# three-way choice; each maps to one session mode: Auto runs uninterrupted,
-# Ask gates every write through HITL, Plan blocks all non-read-only actions.
+# Frontend mode selector -> session-wide permission policy. The 3-button UI
+# (Auto / Ask / Plan) maps directly to canonical modes; legacy enum members
+# (AUTO / DEFAULT / PLAN) are still retained only for checkpoint back-compat.
 _FRONTEND_MODE_TO_SESSION = {
-    "automatic": SessionPermissionMode.AUTO,
-    "ask_before_edits": SessionPermissionMode.DEFAULT,
-    "plan_mode": SessionPermissionMode.PLAN,
+    "automatic":        SessionPermissionMode.STANDARD,   # canonical: was AUTO (deprecated)
+    "ask_before_edits": SessionPermissionMode.CAUTIOUS,   # canonical: was DEFAULT (deprecated)
+    "plan_mode":        SessionPermissionMode.PLAN_ONLY,  # canonical: was PLAN (deprecated)
 }
 
 
 def session_mode_from_frontend(mode: Optional[str]) -> Optional[SessionPermissionMode]:
-    """Map a frontend selector string to a session policy; None if unrecognized.
+    """Map a frontend selector string to the canonical 7-mode session policy.
 
-    An unrecognized or absent value returns None so callers fall back to the
-    per-session settings-file seed rather than silently forcing a policy.
+    Maps directly to canonical vocabulary; legacy enum members (AUTO/DEFAULT/PLAN)
+    remain in the enum only for checkpoint deserialization and are no longer
+    produced by the frontend. Returns None on unrecognized input so callers fall
+    back to the per-session settings-file seed rather than silently forcing a policy.
     """
     return _FRONTEND_MODE_TO_SESSION.get((mode or "").strip().lower())
 
@@ -375,3 +378,74 @@ def rbwe_guard(
             "Call FileReadTool first, then retry."
         ),
     )
+
+
+# =====================================================================
+# 5. YOLO Guard — content-aware risk interceptor
+# =====================================================================
+#
+# Applies AFTER evaluate_action(). If the session matrix said ALLOW but the
+# proposed command content matches a high-risk pattern, the guard upgrades the
+# decision to HITL so the operator can review before execution.
+#
+# Only fires for FULL_AUTO and STANDARD — the matrix already gates CAUTIOUS /
+# ASK_EXECUTE / ASK_ALL through HITL for non-read-only tiers, so re-scanning
+# their content would be redundant and confusing.
+
+# Curated high-risk patterns keyed by human-readable category label.
+# Labels are forwarded to the frontend via risk_patterns_matched for display.
+_RISK_PATTERNS: Dict[str, re.Pattern[str]] = {
+    "privilege_escalation": re.compile(
+        r"\bsudo\b|\bsu\s+-\b|\bsu\s+root\b|\bdoas\b", re.IGNORECASE
+    ),
+    "mass_deletion": re.compile(
+        r"\brm\s+[^\n]*-[^\s]*[rf]\b|rmdir\s+/s\b|del\s+/[sqf]\b", re.IGNORECASE
+    ),
+    "network_egress": re.compile(
+        r"\b(curl|wget|nc|netcat|socat)\s", re.IGNORECASE
+    ),
+    "secret_access": re.compile(
+        r"\.env\b|api[_-]?key\b|secret[_-]?key\b|aws_secret\b|private[_-]?key\b",
+        re.IGNORECASE,
+    ),
+    "package_install": re.compile(
+        r"\b(npm|pip|pip3|apt|apt-get|brew|cargo|gem)\s+install\b", re.IGNORECASE
+    ),
+}
+
+# Session modes where the YOLO Guard is active. Modes not listed here already
+# gate non-read-only tiers through HITL via the matrix, so interception would
+# be redundant.
+_INTERCEPT_MODES: frozenset[SessionPermissionMode] = frozenset({
+    SessionPermissionMode.FULL_AUTO,
+    SessionPermissionMode.STANDARD,
+})
+
+
+def risk_intercept_guard(
+    proposed_content: Optional[str],
+    decision: PermissionDecision,
+    session_mode: SessionPermissionMode,
+) -> tuple[PermissionDecision, List[str]]:
+    """Scan proposed tool content for high-risk patterns.
+
+    Returns (effective_decision, matched_labels). Upgrades ALLOW -> HITL when a
+    risk pattern matches in a permissive session mode (FULL_AUTO or STANDARD).
+    Never downgrades HITL or DENY decisions already made by the matrix.
+    matched_labels is empty when no interception occurs.
+    """
+    if (
+        decision is not PermissionDecision.ALLOW
+        or session_mode not in _INTERCEPT_MODES
+        or not proposed_content
+    ):
+        return decision, []
+
+    matched: List[str] = [
+        label
+        for label, pattern in _RISK_PATTERNS.items()
+        if pattern.search(proposed_content)
+    ]
+    if matched:
+        return PermissionDecision.HITL, matched
+    return decision, []

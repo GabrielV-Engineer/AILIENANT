@@ -802,4 +802,68 @@ There is no legacy `READ_ONLY` *session* mode — `READ_ONLY` (6) is a new canon
 - `FULL_AUTO × DANGEROUS = ALLOW` — the sole mode that auto-runs irreversible operations unprompted. It is opt-in and identity-floored (only `EDIT_EXECUTE_RBW` reaches it). Every other mode keeps DANGEROUS at HITL or DENY; the legacy "AUTO must never auto-approve DANGEROUS" invariant survives because legacy `AUTO`→`STANDARD` (DANGEROUS=HITL).
 - `CAUTIOUS × WRITE = HITL` — `CAUTIOUS` gates WRITE as well as EXECUTE/DANGEROUS, making it the faithful target of legacy `DEFAULT`.
 
-**Seed propagation:** `core/task_service.py` validates a settings-file `permission_mode` preference against `_VALID_SESSION_MODE_VALUES` (every canonical + legacy value) rather than the former hardcoded `("DEFAULT","PLAN","AUTO")` tuple, so a canonical mode seeded via settings propagates into state instead of being silently dropped. The frontend-selector mapping (`session_mode_from_frontend`) still surfaces only the legacy 3-way choice — its 7-mode expansion lands with the UI switcher.
+**Seed propagation:** `core/task_service.py` validates a settings-file `permission_mode` preference against `_VALID_SESSION_MODE_VALUES` (every canonical + legacy value) rather than the former hardcoded `("DEFAULT","PLAN","AUTO")` tuple, so a canonical mode seeded via settings propagates into state instead of being silently dropped. The frontend-selector mapping (`session_mode_from_frontend`) still surfaced only the legacy 3-way choice — its canonical mapping lands in §24 below.
+
+---
+
+## §24 — Shadow Mapping (Canonical Frontend→Backend) + YOLO Guard Wire Contract
+
+**Change:** Two co-shipped updates to the permission surface:
+
+### 24a — Shadow Mapping: `_FRONTEND_MODE_TO_SESSION` points at canonical targets
+
+`session_mode_from_frontend` now maps the 3 UI selector strings directly to canonical `SessionPermissionMode` members rather than the deprecated aliases.
+
+**Location:** `ailienant-core/core/permissions.py` (`_FRONTEND_MODE_TO_SESSION`).
+
+| UI string | Old target (deprecated) | New target (canonical) |
+|-----------|------------------------|------------------------|
+| `"automatic"` | `AUTO` | `STANDARD` |
+| `"ask_before_edits"` | `DEFAULT` | `CAUTIOUS` |
+| `"plan_mode"` | `PLAN` | `PLAN_ONLY` |
+
+**Backward-compat:** deprecated legacy members remain in the enum. No checkpoint that serialized `"default"` / `"auto"` / `"plan"` is affected — those strings are deserialized by `session_mode_from_channel`, not `session_mode_from_frontend`. The shadow mapping only affects *new* submissions from the UI.
+
+**Gateway posture update:** `gateway/governance.py` `INTERNAL_TASK_MODE` changed from `SessionPermissionMode.DEFAULT` to `SessionPermissionMode.CAUTIOUS`. Semantics are identical (HITL on WRITE + EXECUTE + DANGEROUS per the §23 matrix); `CAUTIOUS` is the canonical replacement for `DEFAULT`. The module-load invariant in `gateway/handlers.py` (`session_mode_from_frontend("ask_before_edits") is INTERNAL_TASK_MODE`) is preserved.
+
+**`main.py` plan-mode routing:** the `plan_mode` detection that raises `planner_mode_active` now checks against `PLAN_ONLY` (was: `PLAN`).
+
+### 24b — YOLO Guard: `risk_intercept_guard()` content-aware post-filter
+
+**Location:** `ailienant-core/core/permissions.py` (`_RISK_PATTERNS`, `_INTERCEPT_MODES`, `risk_intercept_guard`).
+
+**Signature:**
+```python
+def risk_intercept_guard(
+    proposed_content: Optional[str],
+    decision: PermissionDecision,
+    session_mode: SessionPermissionMode,
+) -> tuple[PermissionDecision, List[str]]: ...
+```
+
+**Semantics:** upgrades `ALLOW → HITL` when `proposed_content` matches one or more high-risk patterns AND `session_mode` is in `_INTERCEPT_MODES` (`FULL_AUTO`, `STANDARD`). Returns `(effective_decision, matched_labels)`. Always a no-op when `decision` is already `HITL` or `DENY`.
+
+**Pattern registry** (`_RISK_PATTERNS` — extendable dict):
+
+| Label | Matches |
+|-------|---------|
+| `privilege_escalation` | `sudo`, `su -`, `su root`, `doas` |
+| `mass_deletion` | `rm -rf`, `rm -r`, `rmdir /s`, `del /s/q/f` |
+| `network_egress` | `curl`, `wget`, `nc`, `netcat`, `socat` |
+| `secret_access` | `.env`, `api_key`, `secret_key`, `aws_secret`, `private_key` |
+| `package_install` | `npm install`, `pip install`, `apt-get install`, `brew install`, `cargo install`, `gem install` |
+
+**Integration sites:**
+- `tools/execution_tools.py` — after `gate_execute_action()`, before HITL emission.
+- `tools/coder_tools.py` — after `evaluate_action()`, before HITL emission.
+- `brain/agentic_cell.py` — in the main tool-call loop after `_classify_execute()` returns `"allow"`, and in `_approve_exec()` to determine `request_kind`.
+
+**Wire contract additions to `HITLApprovalRequestPayload`** (`api/ws_contracts.py`):
+```python
+risk_patterns_matched: Optional[List[str]] = None
+```
+Populated only when `request_kind == "RISK_INTERCEPT"`. Additive field — absent on all prior HITL cards; consumers tolerate its absence.
+
+**New `request_kind` value:** `"RISK_INTERCEPT"` — emitted when the YOLO Guard upgrades the decision. Existing `request_kind` values (`FILE_WRITE`, `BUDGET_OVERFLOW`, `SANDBOX_DEGRADED_EXEC`, `MCP_TOOL_CALL`, `COMMAND_EXEC`) are unaffected.
+
+**Frontend:** `HITLInterventionCard.tsx` renders `RISK_INTERCEPT` cards with the `alert` icon and the matched pattern labels. The `HITLIntervention` interface gains `risk_patterns_matched?: string[] | null`.

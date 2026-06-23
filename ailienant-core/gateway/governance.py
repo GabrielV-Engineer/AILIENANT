@@ -39,10 +39,12 @@ logger = logging.getLogger("GATEWAY_GOVERNANCE")
 # This is NOT the mode a spawned task runs in — see INTERNAL_TASK_MODE.
 _INVOCATION_GATE_MODE = SessionPermissionMode.AUTO
 
-# The conservative mode a gateway-submitted task runs under. DEFAULT — never AUTO —
-# so the spawned agent's WRITE/EXECUTE/DANGEROUS actions gate (and, with no human in
-# an external caller's loop, degrade to deny). External callers cannot raise it.
-INTERNAL_TASK_MODE = SessionPermissionMode.DEFAULT
+# The conservative mode a gateway-submitted task runs under. CAUTIOUS — never
+# FULL_AUTO or STANDARD — so the spawned agent's WRITE/EXECUTE/DANGEROUS actions
+# gate through HITL (and, with no human in an external caller's loop, degrade to
+# deny). External callers cannot raise this posture. Matches the canonical mode
+# the "ask_before_edits" frontend key resolves to.
+INTERNAL_TASK_MODE = SessionPermissionMode.CAUTIOUS
 
 # Keys a caller might try to pass to escalate the spawned task's posture. All ignored.
 _ESCALATION_KEYS = (

@@ -29,9 +29,10 @@
 | 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
 | 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
 | 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
-| 8.11 7-Mode Permission System | 🟡 IN PROGRESS | — | resolver (8.11.2) + UI (8.11.3) |
+| 8.11 7-Mode Permission System | 🟡 IN PROGRESS | — | shadow map (8.11.3) + gate (8.11.4/5) |
 | 8.11.1 session_mode enum extension | ✅ CLOSED | 2026-06-22 | — (additive 7-mode vocabulary; behavior-inert) |
 | 8.11.2 evaluate_action resolver rewrite | ✅ CLOSED | 2026-06-22 | — (7×3 matrix; governance.py verified-unchanged) |
+| 8.11.3 Shadow Mapping + YOLO Guard | ✅ CLOSED | 2026-06-23 | — (canonical shadow map; risk_intercept_guard; RISK_INTERCEPT card; DEBT-073 logged) |
 | 8.12 Five-Layer Context Pipeline | ⬜ PENDING | — | context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -620,10 +621,12 @@
   Additive extension: `SessionPermissionMode` gains the canonical 7-mode vocabulary; the 3 originals stay as deprecated aliases. Behavior-faithful legacy migration — DEFAULT maps to CAUTIOUS (3); AUTO maps to STANDARD (2); PLAN maps to PLAN_ONLY (7). No existing checkpoint breaks; behavior-inert until the 8.11.2 resolver. SCHEMA_EVOLUTION.MD §22 versioned entry. Files: `core/permissions.py`, `brain/state.py`, `docs/SCHEMA_EVOLUTION.MD`.
 - [x] **8.11.2 — `evaluate_action` resolver rewrite.**
   `core/permissions.py:evaluate_action` maps `(mode, tier) → ALLOW | HITL | DENY` (ASK == HITL) via an authoritative 7×3 `_DECISION_MATRIX`, with legacy modes normalized through `_LEGACY_MODE_MIGRATION` and the identity floor preserved. `FULL_AUTO×DANGEROUS=ALLOW`, `CAUTIOUS×WRITE=HITL`. Seed propagation widened in `core/task_service.py` to accept any valid mode value. `gateway/governance.py` audited and confirmed unchanged (its AUTO/DEFAULT postures are preserved by migration). Contract: `docs/SCHEMA_EVOLUTION.MD §23`. Files: `core/permissions.py`, `core/task_service.py`.
-- [ ] **8.11.3 — Frontend mode switcher (7 modes).**
-  Extend `ModeSwitcher.tsx` to surface all 7 modes with descriptions. Persist selection in `workspaceStore`. Files: `ailienant-extension/src/webview/components/ModeSwitcher.tsx`.
+- [x] **8.11.3 — Shadow Mapping + YOLO Guard.**
+  Shadow map 3 UI buttons to canonical modes (`automatic→STANDARD`, `ask_before_edits→CAUTIOUS`, `plan_mode→PLAN_ONLY`). `risk_intercept_guard()` upgrades ALLOW→HITL for high-risk commands in FULL_AUTO/STANDARD sessions. `RISK_INTERCEPT` HITL card variant. 55 test cases. SCHEMA_EVOLUTION.MD §24. Files: `core/permissions.py`, `api/ws_contracts.py`, `api/websocket_manager.py`, `core/hitl.py`, `core/task_service.py`, `tools/execution_tools.py`, `tools/coder_tools.py`, `brain/agentic_cell.py`, `gateway/governance.py`, `main.py`, `HITLInterventionCard.tsx`, `tests/test_yolo_guard.py`.
 - [ ] **8.11.4 — Division 8.11 Checkpoint Gate.**
   `tests/test_permission_modes.py`: 7 × 3 tier matrix asserted (ALLOW/ASK/DENY per mode per tier). **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
+- [ ] **8.11.5 — YOLO Guard + Matrix Combined Gate Test.**
+  Parametrized integration tests: YOLO Guard behavior at each of the 7 session modes × risky command categories; verify no double-interception in non-permissive modes. Files: `tests/test_yolo_guard_integration.py`.
 
 ---
 

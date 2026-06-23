@@ -932,6 +932,7 @@ class ConnectionManager:
         timeout_s: Optional[float] = 86400.0,
         request_kind: Optional[str] = None,
         proposed_files: Optional[List[ProposedFile]] = None,
+        risk_patterns_matched: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Suspend the calling coroutine until the human responds or the timeout fires.
@@ -972,6 +973,7 @@ class ConnectionManager:
                         proposed_content=proposed_content,
                         request_kind=request_kind,
                         proposed_files=proposed_files,
+                        risk_patterns_matched=risk_patterns_matched,
                     )
                 ),
             )

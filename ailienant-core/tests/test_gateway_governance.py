@@ -77,7 +77,7 @@ def test_resolve_caller_id_anonymous(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_internal_task_mode_is_never_auto() -> None:
-    assert governance.INTERNAL_TASK_MODE is SessionPermissionMode.DEFAULT
+    assert governance.INTERNAL_TASK_MODE is SessionPermissionMode.CAUTIOUS
     assert governance.INTERNAL_TASK_MODE is not SessionPermissionMode.AUTO
 
 
@@ -91,7 +91,7 @@ def test_resolve_internal_task_mode_ignores_escalation() -> None:
     }
     assert (
         governance.resolve_internal_task_mode(escalation)
-        is SessionPermissionMode.DEFAULT
+        is SessionPermissionMode.CAUTIOUS
     )
 
 

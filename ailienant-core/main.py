@@ -555,7 +555,7 @@ async def submit_task(
     # also raise planner_mode_active — the read-only stance and the questioning
     # stance go together. Auto/Ask leave the planner flag as resolved above.
     from core.permissions import SessionPermissionMode, session_mode_from_frontend
-    if session_mode_from_frontend(payload.execution_mode) is SessionPermissionMode.PLAN:
+    if session_mode_from_frontend(payload.execution_mode) is SessionPermissionMode.PLAN_ONLY:
         payload.planner_mode_active = True
 
     # Idempotent submit: a duplicate request_id (a reconnect-driven resubmit, or

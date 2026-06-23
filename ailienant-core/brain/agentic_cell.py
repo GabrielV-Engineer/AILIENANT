@@ -609,6 +609,18 @@ async def run_agentic_cell_node(
             if call.name == "run_terminal":
                 command = str(call.args.get("command", ""))
                 verdict = _classify_execute(state)
+                if verdict == "allow":
+                    # YOLO Guard: upgrade to HITL for high-risk commands even in
+                    # permissive session modes (FULL_AUTO / STANDARD).
+                    from core.permissions import (
+                        PermissionDecision,
+                        risk_intercept_guard,
+                        session_mode_from_channel,
+                    )
+                    _cell_mode = session_mode_from_channel(state.get("session_permission_mode"))
+                    _eff, _ = risk_intercept_guard(command, PermissionDecision.ALLOW, _cell_mode)
+                    if _eff is PermissionDecision.HITL:
+                        verdict = "hitl"
                 if verdict == "deny":
                     security_flags.append("EXECUTE_TIER_DENIED")
                     continue
@@ -883,12 +895,20 @@ async def _approve_exec(
     if approval_fn is not None:
         return bool(await approval_fn(command))
     from core.hitl import request_graph_approval
+    from core.permissions import (
+        PermissionDecision,
+        risk_intercept_guard,
+        session_mode_from_channel,
+    )
 
+    _mode = session_mode_from_channel(state.get("session_permission_mode"))
+    _, _risk_labels = risk_intercept_guard(command[:2000], PermissionDecision.ALLOW, _mode)
     resp = request_graph_approval(
         session_id=str(state.get("task_id") or ""),
         action_description=f"COMMAND_EXEC: {command[:200]}",
         proposed_content=command[:2000],
-        request_kind="COMMAND_EXEC",
+        request_kind="RISK_INTERCEPT" if _risk_labels else "COMMAND_EXEC",
+        risk_patterns_matched=_risk_labels or None,
     )
     return bool(resp.get("approved"))
 

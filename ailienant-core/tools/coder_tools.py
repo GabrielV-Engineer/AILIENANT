@@ -203,17 +203,21 @@ async def _gated_exec(
             PermissionDecision,
             PermissionMode,
             evaluate_action,
+            risk_intercept_guard,
             session_mode_from_channel,
         )
         from tools.mcp_adapter import _grant_session_trust, _is_session_trusted
 
         sid = session_ctx.session_id
         if not (sid and _is_session_trusted(sid, tool_name)):
+            _sess_mode = session_mode_from_channel(session_ctx.permission_mode)
             verdict = evaluate_action(
-                session_mode_from_channel(session_ctx.permission_mode),
+                _sess_mode,
                 tier,
                 PermissionMode.EDIT_EXECUTE_RBW,
             )
+            # YOLO Guard: upgrade ALLOW -> HITL for high-risk commands in permissive modes.
+            verdict, _risk_labels = risk_intercept_guard(command[:2000], verdict, _sess_mode)
             if verdict is PermissionDecision.DENY:
                 return -1, f"[{tool_name}] DENIED — plan mode is read-only; command not run."
             if verdict is PermissionDecision.HITL:
@@ -225,12 +229,14 @@ async def _gated_exec(
                     )
                 from api.websocket_manager import vfs_manager  # lazy — no cycle
 
+                _kind = "RISK_INTERCEPT" if _risk_labels else "COMMAND_EXEC"
                 approval = await vfs_manager.request_human_approval(
                     session_id=sid,
                     action_description=f"COMMAND_EXEC: {tool_name}",
                     proposed_content=command[:2000],
-                    request_kind="COMMAND_EXEC",
+                    request_kind=_kind,
                     timeout_s=_HITL_APPROVAL_TIMEOUT_SEC,
+                    risk_patterns_matched=_risk_labels or None,
                 )
                 if not approval or not approval.get("approved"):
                     return (

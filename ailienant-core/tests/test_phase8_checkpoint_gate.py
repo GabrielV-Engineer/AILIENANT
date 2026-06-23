@@ -232,10 +232,10 @@ def test_D_dangerous_verb_deny_reports_without_hanging(
 
 
 def test_D_internal_task_mode_never_escalates() -> None:
-    # An external caller cannot raise the spawned task's posture above DEFAULT.
+    # An external caller cannot raise the spawned task's posture above CAUTIOUS.
     mode = resolve_internal_task_mode({"mode": "auto", "execution_mode": "auto",
                                        "session_permission_mode": "auto"})
-    assert mode is SessionPermissionMode.DEFAULT
+    assert mode is SessionPermissionMode.CAUTIOUS
 
 
 def test_D_ledger_rate_fail_closed(iso_ledger: Any, monkeypatch: pytest.MonkeyPatch) -> None:

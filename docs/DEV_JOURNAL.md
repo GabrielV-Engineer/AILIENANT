@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.11.3: Shadow Mapping + YOLO Guard — 2026-06-23
+**Status:** COMPLETE | **Gates:** mypy 0/367 · pytest 1827 passed · npm compile 0
+- Shipped: `_FRONTEND_MODE_TO_SESSION` now targets canonical modes (`automatic→STANDARD`, `ask_before_edits→CAUTIOUS`, `plan_mode→PLAN_ONLY`); `risk_intercept_guard()` upgrades ALLOW→HITL for 5 risky command categories in FULL_AUTO/STANDARD sessions; `RISK_INTERCEPT` HITL card variant in `HITLInterventionCard.tsx`; 55-case `test_yolo_guard.py`; SCHEMA_EVOLUTION §24.
+- Key decision: YOLO Guard is a per-call post-filter only — it never mutates session mode and never fires in modes (CAUTIOUS/ASK_EXECUTE/ASK_ALL) where the matrix already gates commands through HITL, avoiding double-interception.
+- Deferred: DEBT-073 — 4× `"plan_mode"` literal in `Workspace.tsx` (DRY) (UI unchanged this sub-phase, no real duplication today).
+
+---
+
 ## 8.11.2: evaluate_action 7×3 Resolver Rewrite — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/366 · pyright 0 · pytest 1772 passed
 - Shipped: canonical-native `evaluate_action` over an authoritative 7×3 `_DECISION_MATRIX` with legacy normalization via `_LEGACY_MODE_MIGRATION`; identity floor preserved; signature unchanged so all consumers untouched. Seed allowlist in `core/task_service.py` widened to all valid modes; SCHEMA_EVOLUTION §23.

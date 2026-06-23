@@ -9,9 +9,13 @@ export interface HITLIntervention {
     risk_metrics?: Array<{ label: string; level: 'low' | 'medium' | 'high' }>;
     proposed_content?: string;
     /** Classifier string forwarded from the backend payload.  Known values:
-     *  FILE_WRITE, BUDGET_OVERFLOW, SANDBOX_DEGRADED_EXEC, MCP_TOOL_CALL.
+     *  FILE_WRITE, BUDGET_OVERFLOW, SANDBOX_DEGRADED_EXEC, MCP_TOOL_CALL,
+     *  RISK_INTERCEPT (YOLO Guard — risky command in a permissive session).
      *  Unknown / absent values degrade gracefully to the generic card layout. */
     request_kind?: string | null;
+    /** YOLO Guard: pattern category labels matched against the command content.
+     *  Present only when request_kind === 'RISK_INTERCEPT'. */
+    risk_patterns_matched?: string[] | null;
 }
 
 interface Props {
@@ -49,20 +53,32 @@ export function HITLInterventionCard({ intervention, nattName, onResolved }: Pro
     }, [respond, editMode, editedContent]);
 
     const isMcpCall = intervention.request_kind === 'MCP_TOOL_CALL';
+    const isRiskIntercept = intervention.request_kind === 'RISK_INTERCEPT';
 
     return (
         <div ref={cardRef} className="ws-hitl-card ai-card" role="alertdialog" aria-live="assertive">
             <div className="ws-hitl-head">
-                <Icon name={isMcpCall ? 'plug' : 'key'} size={16} color="var(--accent-warn)" />
+                <Icon
+                    name={isMcpCall ? 'plug' : isRiskIntercept ? 'alert' : 'key'}
+                    size={16}
+                    color={isRiskIntercept ? 'var(--accent-error)' : 'var(--accent-warn)'}
+                />
                 <span className="ws-hitl-title">
                     {isMcpCall
                         ? `MCP tool call — ${nattName} requires your authorization`
-                        : `${nattName} requires your authorization`}
+                        : isRiskIntercept
+                            ? `Auto mode intercepted — risky pattern detected`
+                            : `${nattName} requires your authorization`}
                 </span>
             </div>
             {isMcpCall && (
                 <div className="ws-hitl-section" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                     Approving once trusts this tool for the remainder of the current task session.
+                </div>
+            )}
+            {isRiskIntercept && intervention.risk_patterns_matched && intervention.risk_patterns_matched.length > 0 && (
+                <div className="ws-hitl-section" style={{ fontSize: 11, color: 'var(--accent-error)' }}>
+                    Detected: {intervention.risk_patterns_matched.join(', ')}
                 </div>
             )}
 

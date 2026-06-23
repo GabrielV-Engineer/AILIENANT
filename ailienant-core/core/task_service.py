@@ -967,6 +967,7 @@ class TaskService:
             proposed_content=payload.get("proposed_content"),
             request_kind=payload.get("request_kind"),
             proposed_files=None,
+            risk_patterns_matched=payload.get("risk_patterns_matched"),
         )
         await vfs_manager.send_personal_message(
             session_id, ServerHITLApprovalRequestEvent(data=data)

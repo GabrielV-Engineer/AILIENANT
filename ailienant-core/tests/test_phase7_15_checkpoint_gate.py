@@ -115,9 +115,9 @@ def test_rb1_rbac_matrix_gates_the_write_edge() -> None:
 
 
 def test_rb2_frontend_mode_maps_to_session_policy() -> None:
-    assert session_mode_from_frontend("automatic") is SessionPermissionMode.AUTO
-    assert session_mode_from_frontend("ask_before_edits") is SessionPermissionMode.DEFAULT
-    assert session_mode_from_frontend("plan_mode") is SessionPermissionMode.PLAN
+    assert session_mode_from_frontend("automatic") is SessionPermissionMode.STANDARD
+    assert session_mode_from_frontend("ask_before_edits") is SessionPermissionMode.CAUTIOUS
+    assert session_mode_from_frontend("plan_mode") is SessionPermissionMode.PLAN_ONLY
     # Unknown → None so the caller falls back to the settings seed, never a guess.
     assert session_mode_from_frontend("bogus") is None
 

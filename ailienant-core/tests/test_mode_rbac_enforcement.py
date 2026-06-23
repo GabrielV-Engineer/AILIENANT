@@ -216,10 +216,10 @@ async def test_auto_mode_auto_applies_without_card_and_announces() -> None:
 @pytest.mark.parametrize(
     "frontend, expected",
     [
-        ("automatic", SessionPermissionMode.AUTO),
-        ("ask_before_edits", SessionPermissionMode.DEFAULT),
-        ("plan_mode", SessionPermissionMode.PLAN),
-        ("PLAN_MODE", SessionPermissionMode.PLAN),  # case-insensitive
+        ("automatic", SessionPermissionMode.STANDARD),
+        ("ask_before_edits", SessionPermissionMode.CAUTIOUS),
+        ("plan_mode", SessionPermissionMode.PLAN_ONLY),
+        ("PLAN_MODE", SessionPermissionMode.PLAN_ONLY),  # case-insensitive
         ("nonsense", None),
         ("", None),
         (None, None),

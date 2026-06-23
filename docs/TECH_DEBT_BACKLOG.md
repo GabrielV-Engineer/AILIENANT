@@ -62,6 +62,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
+| DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if 7-mode UI ever adds more modes | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
 | DEBT-072 | Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart | MEDIUM | Durability | future HITL slice | Floating |
 | DEBT-071 | ~~LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance)~~ | MEDIUM | Type hygiene | 8.10.15 | RESOLVED 2026-06-22 |
 | DEBT-070 | ~~Async-sleep HITL waits block a coroutine — replace with native LangGraph Suspend & Resume~~ | HIGH | Architecture | 8.10.14 | RESOLVED 2026-06-22 |
@@ -182,6 +183,16 @@ Decision    Not a defect — see [DECISION] tier.
 ### ~~DEBT-071~~ [RESOLVED 2026-06-22 · 8.10.15] — LangGraph add_node / langchain args_schema pyright errors
 
 - **Resolution:** 14 `# pyright: ignore[reportArgumentType]` added to `brain/engine.py` `add_node` calls; 47 `# pyright: ignore[reportIncompatibleVariableOverride]` added to `args_schema` overrides across 13 `tools/*.py` files. One pre-existing `reportGeneralTypeIssues` in `mcp_adapter.py` suppressed (Boy Scout). `mypy 0/366`, `pytest 1690 passed`.
+
+### DEBT-073 [LOW · Floating] — `plan_mode` string literal appears 4× in `Workspace.tsx` (DRY)
+
+- **Date:** 2026-06-23
+- **Reproduce:** `grep -n "plan_mode" ailienant-extension/src/workspace/Workspace.tsx` — 4 hits (mode picker guard, HITL routing, plan-doc slot, keyboard shortcut). Each checks the raw string `=== 'plan_mode'`.
+- **File(s):** `ailienant-extension/src/workspace/Workspace.tsx` (lines ~1392, ~1672, ~1865, ~1919).
+- **Error:** DRY violation. Zero real duplication today because the UI has exactly one `plan_mode` string. Becomes load-bearing debt if a future sub-phase adds `full_auto` or `ask_execute` as a distinct UI button — 4 switch sites must be updated in sync.
+- **Blocked by:** nothing — 3-button UI is unchanged and the fix is a 1-line `isPlanMode(mode)` helper. Deferred because 8.11.3 scope explicitly keeps the UI unchanged.
+- **Phase:** whichever future sub-phase expands the mode picker beyond 3 buttons.
+- **Notes:** logged at 8.11.3 ship per CLAUDE.md §11.3.
 
 ### DEBT-072 [MEDIUM · Floating] — Pending-interrupt restart-durability
 

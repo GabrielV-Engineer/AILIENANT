@@ -148,10 +148,13 @@ class HITLApprovalRequestPayload(BaseModel):
     # Backward-compatible: pre - payloads omit this field and pydantic
     # treats it as None. Known kinds today: BUDGET_OVERFLOW, TOKEN_SPIKE,
     # SANDBOX_DEGRADED_EXEC, DRIFT_DETECTED, BUDGET_CEILING, RESOURCE_CONTENTION,
-    # FILE_WRITE. Kept as a plain string (not a Literal[...]) so future emitters
-    # can add new kinds without a schema bump; unknown kinds fall back to
-    # info-level on the frontend.
+    # FILE_WRITE, COMMAND_EXEC, COMMAND_EXECUTE, RISK_INTERCEPT.
+    # Kept as a plain string (not a Literal[...]) so future emitters can add new
+    # kinds without a schema bump; unknown kinds fall back to info-level on the frontend.
     request_kind: Optional[str] = None
+    # YOLO Guard: when request_kind == "RISK_INTERCEPT", lists the matched pattern
+    # category labels (e.g. ["privilege_escalation", "network_egress"]). None otherwise.
+    risk_patterns_matched: Optional[List[str]] = None
 
 
 class HITLResponsePayload(BaseModel):

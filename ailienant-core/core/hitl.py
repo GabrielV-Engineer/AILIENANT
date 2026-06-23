@@ -33,6 +33,7 @@ def request_graph_approval(
     proposed_content: Optional[str] = None,
     request_kind: str,
     proposed_files: Optional[List[Any]] = None,
+    risk_patterns_matched: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Suspend the running graph for a human approval via native ``interrupt()``.
 
@@ -51,6 +52,7 @@ def request_graph_approval(
         "proposed_content": proposed_content,
         "request_kind": request_kind,
         "proposed_files": proposed_files,
+        "risk_patterns_matched": risk_patterns_matched,
     }
     resumed: Any = interrupt(payload)
     if isinstance(resumed, dict):
