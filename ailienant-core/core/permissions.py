@@ -60,6 +60,13 @@ _LEGACY_MODE_MIGRATION: Dict[SessionPermissionMode, SessionPermissionMode] = {
     SessionPermissionMode.PLAN: SessionPermissionMode.PLAN_ONLY,
 }
 
+# Every accepted session-mode wire value (canonical 7 + deprecated legacy aliases),
+# lowercased. Callers seeding state from untrusted preference strings validate
+# against this set so an unrecognized value is dropped rather than propagated.
+_VALID_SESSION_MODE_VALUES: frozenset[str] = frozenset(
+    mode.value for mode in SessionPermissionMode
+)
+
 
 class ToolPrivilegeTier(str, Enum):
     """Per-tool privilege classification. Declared at registration time."""
@@ -217,8 +224,60 @@ class PermissionDeniedError(Exception):
 
 
 # =====================================================================
-# 3. evaluate_action — pure O(1) 3-axis matrix
+# 3. evaluate_action — pure O(1) (mode x tier) decision matrix
 # =====================================================================
+#
+# Authoritative mapping of (canonical session mode, tool tier) -> decision.
+# The identity floor is applied first in evaluate_action(); this table assumes a
+# mutation-capable identity (or a READ_ONLY tier, which clears the floor). Every
+# legacy member resolves through _LEGACY_MODE_MIGRATION before lookup, so the
+# table only ever needs the seven canonical rows.
+_DECISION_MATRIX: Dict[
+    SessionPermissionMode, Dict[ToolPrivilegeTier, PermissionDecision]
+] = {
+    SessionPermissionMode.FULL_AUTO: {
+        ToolPrivilegeTier.READ_ONLY: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.WRITE: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.EXECUTE: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.DANGEROUS: PermissionDecision.ALLOW,
+    },
+    SessionPermissionMode.STANDARD: {
+        ToolPrivilegeTier.READ_ONLY: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.WRITE: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.EXECUTE: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.DANGEROUS: PermissionDecision.HITL,
+    },
+    SessionPermissionMode.CAUTIOUS: {
+        ToolPrivilegeTier.READ_ONLY: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.WRITE: PermissionDecision.HITL,
+        ToolPrivilegeTier.EXECUTE: PermissionDecision.HITL,
+        ToolPrivilegeTier.DANGEROUS: PermissionDecision.HITL,
+    },
+    SessionPermissionMode.ASK_EXECUTE: {
+        ToolPrivilegeTier.READ_ONLY: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.WRITE: PermissionDecision.HITL,
+        ToolPrivilegeTier.EXECUTE: PermissionDecision.HITL,
+        ToolPrivilegeTier.DANGEROUS: PermissionDecision.DENY,
+    },
+    SessionPermissionMode.ASK_ALL: {
+        ToolPrivilegeTier.READ_ONLY: PermissionDecision.HITL,
+        ToolPrivilegeTier.WRITE: PermissionDecision.HITL,
+        ToolPrivilegeTier.EXECUTE: PermissionDecision.HITL,
+        ToolPrivilegeTier.DANGEROUS: PermissionDecision.HITL,
+    },
+    SessionPermissionMode.READ_ONLY: {
+        ToolPrivilegeTier.READ_ONLY: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.WRITE: PermissionDecision.DENY,
+        ToolPrivilegeTier.EXECUTE: PermissionDecision.DENY,
+        ToolPrivilegeTier.DANGEROUS: PermissionDecision.DENY,
+    },
+    SessionPermissionMode.PLAN_ONLY: {
+        ToolPrivilegeTier.READ_ONLY: PermissionDecision.ALLOW,
+        ToolPrivilegeTier.WRITE: PermissionDecision.DENY,
+        ToolPrivilegeTier.EXECUTE: PermissionDecision.DENY,
+        ToolPrivilegeTier.DANGEROUS: PermissionDecision.DENY,
+    },
+}
 
 
 @lru_cache(maxsize=None)
@@ -227,29 +286,26 @@ def evaluate_action(
     tool_tier: ToolPrivilegeTier,
     agent_permission: PermissionMode,
 ) -> PermissionDecision:
-    """Compose the 3-axis matrix into a single decision.
+    """Compose session mode, tool tier, and agent identity into one decision.
 
-    See PHASE_5_BLUEPRINT §2.2 for the matrix. The agent_permission acts as a
-    floor: identities locked to PLAN_ONLY / READ_ONLY / ROUTING_ONLY cannot
-    escalate above READ_ONLY tools regardless of session mode.
+    Resolution order:
+      1. Normalize a deprecated legacy mode onto the canonical vocabulary.
+      2. Identity floor — an identity not granted EDIT_EXECUTE_RBW (Planner /
+         Researcher / routing-only) can never exceed the READ_ONLY tier, in any
+         session mode. READ_ONLY tier clears the floor unconditionally so its
+         per-mode posture (e.g. ASK_ALL gates reads) is honored by the matrix.
+      3. (mode, tier) lookup against the authoritative _DECISION_MATRIX.
     """
 
-    if tool_tier is ToolPrivilegeTier.READ_ONLY:
-        return PermissionDecision.ALLOW
+    mode = _LEGACY_MODE_MIGRATION.get(session_mode, session_mode)
 
-    if agent_permission is not PermissionMode.EDIT_EXECUTE_RBW:
+    if (
+        tool_tier is not ToolPrivilegeTier.READ_ONLY
+        and agent_permission is not PermissionMode.EDIT_EXECUTE_RBW
+    ):
         return PermissionDecision.DENY
 
-    if session_mode is SessionPermissionMode.PLAN:
-        return PermissionDecision.DENY
-
-    if tool_tier is ToolPrivilegeTier.DANGEROUS:
-        return PermissionDecision.HITL
-
-    if session_mode is SessionPermissionMode.AUTO:
-        return PermissionDecision.ALLOW
-
-    return PermissionDecision.HITL
+    return _DECISION_MATRIX[mode][tool_tier]
 
 
 def session_mode_from_channel(raw: Optional[str]) -> SessionPermissionMode:

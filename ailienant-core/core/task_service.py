@@ -359,10 +359,13 @@ class TaskService:
         # The per-task execution-mode selector takes precedence over the global
         # settings-file preference: the selector reflects the user's intent for
         # THIS turn, while the settings file is only a session-wide default. The
-        # channel stores the uppercase Literal["DEFAULT","PLAN","AUTO"]; readers
-        # lowercase before constructing the SessionPermissionMode enum (whose
-        # values are lowercase), guarded by a ValueError → DEFAULT fallback.
-        from core.permissions import session_mode_from_frontend
+        # channel stores the session mode UPPERCASE; readers lowercase before
+        # constructing the SessionPermissionMode enum (whose values are lowercase),
+        # guarded by a ValueError → DEFAULT fallback.
+        from core.permissions import (
+            _VALID_SESSION_MODE_VALUES,
+            session_mode_from_frontend,
+        )
         _selector = session_mode_from_frontend(payload.execution_mode)
         if _selector is not None:
             initial_state["session_permission_mode"] = _selector.value.upper()
@@ -370,7 +373,9 @@ class TaskService:
             try:
                 from api.system_settings import _read_settings as _read_sys_settings
                 _pref_mode = str(_read_sys_settings().get("permission_mode", "default")).upper()
-                if _pref_mode in ("DEFAULT", "PLAN", "AUTO"):
+                # Accept any valid SessionPermissionMode value (canonical 7 + legacy
+                # aliases); an unrecognized preference is dropped, not propagated.
+                if _pref_mode.lower() in _VALID_SESSION_MODE_VALUES:
                     initial_state["session_permission_mode"] = _pref_mode
             except Exception:  # noqa: BLE001 — preference seeding must never block a task
                 pass

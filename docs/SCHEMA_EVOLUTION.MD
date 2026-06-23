@@ -772,3 +772,34 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 There is no legacy `READ_ONLY` *session* mode — `READ_ONLY` (6) is a new canonical member with no legacy source. (The pre-existing `READ_ONLY` is a `ToolPrivilegeTier`, an orthogonal axis.)
 
 **Consumers (unchanged this revision):** `evaluate_action`, `gate_execute_action`, `rbwe_guard`, `session_mode_from_channel`, `session_mode_from_frontend` all continue to operate on the legacy members exactly as before. The canonical-native resolver rewrite and the migration enforcement (routing the legacy fallback through `_LEGACY_MODE_MIGRATION`) are a separate, later revision.
+
+---
+
+## §23 — 7×3 Permission Resolver: `evaluate_action` Canonical Matrix
+
+**Change:** `evaluate_action` becomes canonical-native — it resolves every `(session_mode, tool_tier)` pair through an authoritative 7×3 decision matrix instead of the prior legacy-only branch ladder. Deprecated legacy modes are normalized through `_LEGACY_MODE_MIGRATION` (§22) before lookup.
+**Location:** `ailienant-core/core/permissions.py` (`_DECISION_MATRIX`, `evaluate_action`, `_VALID_SESSION_MODE_VALUES`); seed propagation in `ailienant-core/core/task_service.py`.
+**Schema version:** additive/behavior-preserving for legacy modes — `DEFAULT`/`AUTO`/`PLAN` produce the identical decision they always did (verified by the unchanged matrix-contract tests). The function **signature is unchanged**, so all consumers (`gateway/governance.py`, `core/tool_dispatch.py`, `brain/agentic_cell.py`, `agents/*`, `tools/*`) are untouched. `gateway/governance.py` was audited and confirmed unchanged: its `AUTO` invocation gate (→`STANDARD`) and `DEFAULT` internal-task mode (→`CAUTIOUS`) preserve their documented postures exactly.
+
+**Resolution order:**
+1. **Legacy normalization** — `mode = _LEGACY_MODE_MIGRATION.get(session_mode, session_mode)`.
+2. **Identity floor** — a non-`EDIT_EXECUTE_RBW` identity (Planner / Researcher / routing-only) is `DENY` for any non-READ_ONLY tier, in every mode. READ_ONLY tier clears the floor unconditionally, so its per-mode posture (e.g. `ASK_ALL` gating reads) is honored.
+3. **Matrix lookup** — `_DECISION_MATRIX[mode][tier]`.
+
+**Authoritative matrix** (`PermissionDecision`: ALLOW / HITL / DENY — "ASK" in product language == `HITL`):
+
+| Mode \ Tier | READ_ONLY | WRITE | EXECUTE | DANGEROUS |
+|-------------|-----------|-------|---------|-----------|
+| `FULL_AUTO`   | ALLOW | ALLOW | ALLOW | ALLOW |
+| `STANDARD`    | ALLOW | ALLOW | ALLOW | HITL |
+| `CAUTIOUS`    | ALLOW | HITL | HITL | HITL |
+| `ASK_EXECUTE` | ALLOW | HITL | HITL | DENY |
+| `ASK_ALL`     | HITL | HITL | HITL | HITL |
+| `READ_ONLY`   | ALLOW | DENY | DENY | DENY |
+| `PLAN_ONLY`   | ALLOW | DENY | DENY | DENY |
+
+**Two decided cells (vs. the prior 3-mode engine):**
+- `FULL_AUTO × DANGEROUS = ALLOW` — the sole mode that auto-runs irreversible operations unprompted. It is opt-in and identity-floored (only `EDIT_EXECUTE_RBW` reaches it). Every other mode keeps DANGEROUS at HITL or DENY; the legacy "AUTO must never auto-approve DANGEROUS" invariant survives because legacy `AUTO`→`STANDARD` (DANGEROUS=HITL).
+- `CAUTIOUS × WRITE = HITL` — `CAUTIOUS` gates WRITE as well as EXECUTE/DANGEROUS, making it the faithful target of legacy `DEFAULT`.
+
+**Seed propagation:** `core/task_service.py` validates a settings-file `permission_mode` preference against `_VALID_SESSION_MODE_VALUES` (every canonical + legacy value) rather than the former hardcoded `("DEFAULT","PLAN","AUTO")` tuple, so a canonical mode seeded via settings propagates into state instead of being silently dropped. The frontend-selector mapping (`session_mode_from_frontend`) still surfaces only the legacy 3-way choice — its 7-mode expansion lands with the UI switcher.

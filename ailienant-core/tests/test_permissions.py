@@ -39,17 +39,84 @@ _NON_READ_TIERS = [
 _ALL_SESSIONS = list(SessionPermissionMode)
 _ALL_IDENTITIES = [PLANNER_IDENTITY, LOGIC_IDENTITY, RESEARCHER_IDENTITY]
 
+# ASK_ALL is the sole mode that gates READ_ONLY tier through HITL; every other
+# mode (including all legacy aliases) auto-admits reads.
+_READ_ALLOW_SESSIONS = [s for s in _ALL_SESSIONS if s is not SessionPermissionMode.ASK_ALL]
 
-@pytest.mark.parametrize("session", _ALL_SESSIONS)
+
+@pytest.mark.parametrize("session", _READ_ALLOW_SESSIONS)
 @pytest.mark.parametrize("identity", _ALL_IDENTITIES)
-def test_evaluate_action_read_only_always_allows(
+def test_evaluate_action_read_only_allows_outside_ask_all(
     session: SessionPermissionMode, identity: object
 ) -> None:
-    """READ_ONLY tier is ALLOW regardless of session mode or agent identity."""
+    """READ_ONLY tier is ALLOW in every mode except ASK_ALL, for any identity."""
     decision = evaluate_action(
         session, ToolPrivilegeTier.READ_ONLY, identity.permission_mode  # type: ignore[attr-defined]
     )
     assert decision is PermissionDecision.ALLOW
+
+
+@pytest.mark.parametrize("identity", _ALL_IDENTITIES)
+def test_evaluate_action_ask_all_gates_reads(identity: object) -> None:
+    """ASK_ALL routes even READ_ONLY tier through HITL, regardless of identity."""
+    decision = evaluate_action(
+        SessionPermissionMode.ASK_ALL,
+        ToolPrivilegeTier.READ_ONLY,
+        identity.permission_mode,  # type: ignore[attr-defined]
+    )
+    assert decision is PermissionDecision.HITL
+
+
+# Canonical 7-mode matrix smoke. A representative cell per mode for a
+# mutation-capable identity; the exhaustive 7x3 sweep is the Division checkpoint
+# gate. ALLOW=a, HITL=h, DENY=d.
+_A = PermissionDecision.ALLOW
+_H = PermissionDecision.HITL
+_D = PermissionDecision.DENY
+_CANONICAL_ROWS = [
+    (SessionPermissionMode.FULL_AUTO, _A, _A, _A, _A),
+    (SessionPermissionMode.STANDARD, _A, _A, _A, _H),
+    (SessionPermissionMode.CAUTIOUS, _A, _H, _H, _H),
+    (SessionPermissionMode.ASK_EXECUTE, _A, _H, _H, _D),
+    (SessionPermissionMode.ASK_ALL, _H, _H, _H, _H),
+    (SessionPermissionMode.READ_ONLY, _A, _D, _D, _D),
+    (SessionPermissionMode.PLAN_ONLY, _A, _D, _D, _D),
+]
+
+
+@pytest.mark.parametrize("mode, ro, wr, ex, dg", _CANONICAL_ROWS)
+def test_evaluate_action_canonical_matrix_rows(
+    mode: SessionPermissionMode,
+    ro: PermissionDecision,
+    wr: PermissionDecision,
+    ex: PermissionDecision,
+    dg: PermissionDecision,
+) -> None:
+    """Each canonical mode resolves its (tier -> decision) row for a coder identity."""
+    coder = PermissionMode.EDIT_EXECUTE_RBW
+    assert evaluate_action(mode, ToolPrivilegeTier.READ_ONLY, coder) is ro
+    assert evaluate_action(mode, ToolPrivilegeTier.WRITE, coder) is wr
+    assert evaluate_action(mode, ToolPrivilegeTier.EXECUTE, coder) is ex
+    assert evaluate_action(mode, ToolPrivilegeTier.DANGEROUS, coder) is dg
+
+
+@pytest.mark.parametrize(
+    "legacy, canonical",
+    [
+        (SessionPermissionMode.DEFAULT, SessionPermissionMode.CAUTIOUS),
+        (SessionPermissionMode.AUTO, SessionPermissionMode.STANDARD),
+        (SessionPermissionMode.PLAN, SessionPermissionMode.PLAN_ONLY),
+    ],
+)
+@pytest.mark.parametrize("tier", list(ToolPrivilegeTier))
+def test_evaluate_action_legacy_matches_canonical_target(
+    legacy: SessionPermissionMode,
+    canonical: SessionPermissionMode,
+    tier: ToolPrivilegeTier,
+) -> None:
+    """A deprecated legacy mode resolves identically to its migration target."""
+    coder = PermissionMode.EDIT_EXECUTE_RBW
+    assert evaluate_action(legacy, tier, coder) is evaluate_action(canonical, tier, coder)
 
 
 @pytest.mark.parametrize("tier", _NON_READ_TIERS)

@@ -13,6 +13,13 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.11.2: evaluate_action 7×3 Resolver Rewrite — 2026-06-22
+**Status:** COMPLETE | **Gates:** mypy 0/366 · pyright 0 · pytest 1772 passed
+- Shipped: canonical-native `evaluate_action` over an authoritative 7×3 `_DECISION_MATRIX` with legacy normalization via `_LEGACY_MODE_MIGRATION`; identity floor preserved; signature unchanged so all consumers untouched. Seed allowlist in `core/task_service.py` widened to all valid modes; SCHEMA_EVOLUTION §23.
+- Key decision: `FULL_AUTO×DANGEROUS=ALLOW` (sole unprompted-irreversible mode) and `CAUTIOUS×WRITE=HITL` (faithful target of legacy DEFAULT); `gateway/governance.py` audited and confirmed unchanged.
+
+---
+
 ## 8.11.1: 7-Mode session_mode Enum Extension — 2026-06-22
 **Status:** COMPLETE | **Gates:** mypy 0/366 · pyright 0 · pytest 1753 passed
 - Shipped: additive `SessionPermissionMode` 7-mode vocabulary + 3 deprecated legacy aliases; widened `session_permission_mode` state Literal; SCHEMA_EVOLUTION §22; behavior-inert (resolver is 8.11.2).
