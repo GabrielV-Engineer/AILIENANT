@@ -704,7 +704,7 @@ async def resume_task(task_id: str) -> Dict[str, object]:
         return {"resumed": False, "reason": "no_dlq_episode"}
 
     episode = pending[0]  # newest unresolved
-    checkpoint_manager.recover(episode.thread_id)  # seed L1 from the L2 snapshot
+    await checkpoint_manager.arecover(episode.thread_id)  # seed L1 from L2 (offloaded sqlite I/O)
     config: RunnableConfig = {"configurable": {"thread_id": episode.thread_id}}
     # Partial-state update merged into the resumed checkpoint; cast satisfies the
     # ainvoke() overload (full state lives in the L2 checkpoint being resumed).
@@ -1212,6 +1212,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 task_service.restore_conversation(
                     client_id, [m.model_dump() for m in valid_event.data.messages]
                 )
+                # Re-surface a HITL interrupt that was suspended before a server restart:
+                # restore the checkpoint + pending writes and re-emit the approval card so
+                # the operator can still resume. No-op for a live or non-paused session.
+                await task_service.rehydrate_paused_interrupt(client_id)
 
             elif valid_event.event_type == "client_analyst_query":
                 # Phase 7.9.B.13 — Natt analyst pane bridge (live BYOM completion).

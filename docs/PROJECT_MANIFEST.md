@@ -29,7 +29,7 @@
 | 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
 | 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
 | 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
-| 8.10.16 DEBT-072: HITL Restart-Durability | ⬜ PENDING | — | HybridCheckpointer restore pending-write state on recover |
+| 8.10.16 DEBT-072: HITL Restart-Durability | ✅ CLOSED | 2026-06-24 | recover() restores pending writes + wall-clock ordering; reconnect re-surfaces the interrupt |
 | 8.10.17 DEBT-077: Unify ContextBudgetManager | ⬜ PENDING | — | analyst routes via build_agent_context → single budget system |
 | 8.10.18 DEBT-076: Live STATE_COMPACTED | ⬜ PENDING | — | wire on_compacted into conversation-accrual path |
 | 8.10.19 DEBT-005: brain/ strict typing | ⬜ PENDING | — | 4 errors in brain/engine.py; mypy brain/ --strict → 0 |
@@ -615,7 +615,7 @@
   Codebase-wide pyright surface clean-up. `reportArgumentType` on 14 `workflow.add_node(...)` calls in `brain/engine.py` (LangGraph's `StateNode` generic cannot be statically resolved through the `cast`-based wrapper stack; mypy gate unaffected). `reportIncompatibleVariableOverride` on 47 `args_schema` overrides across 13 `tools/*.py` files (LangChain base declares the field as invariant `ArgsSchema | None`; subclass specialization to `Type[BaseModel]` is semantically correct). One stale DLQ comment scrubbed; one pre-existing `reportGeneralTypeIssues` in `mcp_adapter.py` suppressed (Boy Scout).
   - **DoD:** `npx pyright brain/engine.py` 0 errors · `npx pyright tools/*.py` 0 errors · `mypy .` 0/366 · `pytest` green.
 
-- [ ] **8.10.16 — DEBT-072: HybridCheckpointer HITL Restart-Durability**
+- [x] **8.10.16 — DEBT-072: HybridCheckpointer HITL Restart-Durability**
   `core/checkpointer.py`: on recovery, restore `hybrid_writes_l2` pending-write state so a HITL interrupt that was suspended before a server restart re-surfaces to the user. Companion test asserts recovered checkpointer carries pending interrupt flag. **DoD:** `mypy .` 0 · `pytest` green.
 
 - [ ] **8.10.17 — DEBT-077: Unify `ContextBudgetManager` onto `ContextPipeline`**

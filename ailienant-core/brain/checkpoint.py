@@ -9,11 +9,12 @@ Lifecycle (wired to FastAPI lifespan):
     shutdown → checkpoint_manager.close()        # after WALCheckpointer.force_truncate()
 """
 
+import asyncio
 import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import CheckpointTuple
@@ -144,29 +145,38 @@ class HybridCheckpointer(MemorySaver):
 
         ckpt_type, ckpt_blob = self.serde.dumps_typed(ct.checkpoint)
         meta_type, meta_blob = self.serde.dumps_typed(ct.metadata)
-        cid: str = ct.config["configurable"]["checkpoint_id"]
-        ns: str = ct.config["configurable"].get("checkpoint_ns", "")
-        parent_id: Optional[str] = (
-            ct.parent_config["configurable"].get("checkpoint_id")
-            if ct.parent_config else None
+        # `configurable` is NotRequired on RunnableConfig; read it through a local so the
+        # type checker is satisfied (the engine always populates it on a stored tuple).
+        conf: Dict[str, Any] = ct.config.get("configurable") or {}
+        cid: str = conf["checkpoint_id"]
+        ns: str = conf.get("checkpoint_ns", "")
+        parent_conf: Dict[str, Any] = (
+            (ct.parent_config.get("configurable") or {}) if ct.parent_config else {}
         )
+        parent_id: Optional[str] = parent_conf.get("checkpoint_id")
 
         self._is_writing = True
         try:
             with self._conn:
+                # Wall-clock epoch (NOT time.monotonic) so promoted_at stays comparable
+                # across a process restart — recover()/list_checkpoints() order by it, and
+                # a monotonic clock resets on restart, scrambling "latest" selection.
                 self._conn.execute(
                     "INSERT OR REPLACE INTO hybrid_checkpoints VALUES (?,?,?,?,?,?,?,?,?)",
                     (thread_id, ns, cid, parent_id,
                      ckpt_type, ckpt_blob, meta_type, meta_blob,
-                     time.monotonic()),
+                     time.time()),
                 )
                 if ct.pending_writes:
-                    for pw in ct.pending_writes:
+                    # Enumerate write_idx so multiple writes sharing a task_id get distinct
+                    # primary keys (a fixed 0 collides on the PK and clobbers all but the
+                    # last via INSERT OR REPLACE). recover() replays in write_idx order.
+                    for write_idx, pw in enumerate(ct.pending_writes):
                         task_id, channel, value = pw[0], pw[1], pw[2]
                         vt, vb = self.serde.dumps_typed(value)
                         self._conn.execute(
                             "INSERT OR REPLACE INTO hybrid_writes_l2 VALUES (?,?,?,?,?,?,?,?,?)",
-                            (thread_id, ns, cid, task_id, 0, channel, vt, vb, ""),
+                            (thread_id, ns, cid, task_id, write_idx, channel, vt, vb, ""),
                         )
         finally:
             self._is_writing = False
@@ -176,14 +186,21 @@ class HybridCheckpointer(MemorySaver):
 
         Called when a client reconnects after a server restart. Seeds L1 so the
         graph can resume from the last promoted checkpoint without hitting L2 again.
+
+        Restores both the checkpoint blob AND its pending writes: a LangGraph
+        ``interrupt()`` (a paused HITL approval) lives as a pending write, so without
+        re-seeding them ``aget_state`` would report no interrupt after a restart and the
+        suspended approval would be silently lost.
         """
         if self._conn is None:
             return
+        # Tie-break on checkpoint_id (LangGraph ids are sortable) so two rows promoted in
+        # the same wall-clock tick resolve deterministically to the genuinely-latest head.
         row = self._conn.execute(
             "SELECT checkpoint_ns, checkpoint_id, parent_id, "
             "ckpt_type, ckpt_blob, meta_type, meta_blob "
             "FROM hybrid_checkpoints WHERE thread_id=? "
-            "ORDER BY promoted_at DESC LIMIT 1",
+            "ORDER BY promoted_at DESC, checkpoint_id DESC LIMIT 1",
             (thread_id,),
         ).fetchone()
         if row is None:
@@ -198,6 +215,8 @@ class HybridCheckpointer(MemorySaver):
         }}
         self.put(restore_config, checkpoint, metadata,
                  checkpoint.get("channel_versions", {}))
+        # Re-seed the pending writes (incl. a paused interrupt) for the restored head.
+        self._restore_pending_writes(thread_id, ns, cid, restore_config)
         if parent_id:
             parent_config: RunnableConfig = {"configurable": {
                 "thread_id": thread_id,
@@ -205,6 +224,41 @@ class HybridCheckpointer(MemorySaver):
                 "checkpoint_id": parent_id,
             }}
             self.put(parent_config, checkpoint, metadata, {})
+
+    def _restore_pending_writes(
+        self, thread_id: str, ns: str, cid: str, write_config: RunnableConfig,
+    ) -> None:
+        """Replay the L2 pending writes for ``cid`` back into L1 via ``put_writes``.
+
+        Only the restored head (``cid``) carries resumable writes; the parent put is a
+        lineage seed, so it is intentionally left without writes. Writes are grouped by
+        ``task_id`` and replayed in ``write_idx`` order so a multi-write task round-trips
+        in sequence. The channel string is preserved verbatim — MemorySaver derives the
+        canonical inner index for special channels (e.g. ``__interrupt__``) from it, which
+        is what makes ``aget_state`` surface the pending interrupt.
+        """
+        if self._conn is None:
+            return
+        try:
+            rows = self._conn.execute(
+                "SELECT task_id, channel, val_type, val_blob FROM hybrid_writes_l2 "
+                "WHERE thread_id=? AND checkpoint_ns=? AND checkpoint_id=? "
+                "ORDER BY task_id, write_idx",
+                (thread_id, ns, cid),
+            ).fetchall()
+            if not rows:
+                return
+            grouped: Dict[str, List[Tuple[str, Any]]] = {}
+            for task_id, channel, val_type, val_blob in rows:
+                value = self.serde.loads_typed((val_type, val_blob))
+                grouped.setdefault(task_id, []).append((channel, value))
+            for task_id, writes in grouped.items():
+                self.put_writes(write_config, writes, task_id)
+        except Exception:  # noqa: BLE001 — a corrupt write row must never break resume.
+            logger.warning(
+                "recover: failed to restore pending writes for %s/%s",
+                thread_id, cid, exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Phase 7.11.8 (ADR-706 §4.5g) — Time-travel API
@@ -340,7 +394,7 @@ class HybridCheckpointer(MemorySaver):
                     "(?,?,?,?,?,?,?,?,?)",
                     (new_thread_id, ns, from_checkpoint_id, from_checkpoint_id,
                      ckpt_type, ckpt_blob, meta_type, meta_blob,
-                     time.monotonic()),
+                     time.time()),
                 )
         finally:
             self._is_writing = False
@@ -362,6 +416,24 @@ class HybridCheckpointer(MemorySaver):
                 new_thread_id, from_checkpoint_id, exc,
             )
         return True
+
+    # ------------------------------------------------------------------
+    # Async offload wrappers
+    # ------------------------------------------------------------------
+    # promote()/recover() are synchronous raw-sqlite3 calls (blob SELECTs + a
+    # put_writes loop). Calling them directly inside a FastAPI/WebSocket coroutine
+    # blocks the event loop, starving other clients and risking dropped WS
+    # heartbeats under DB contention. Async callers MUST use these wrappers, which
+    # offload the blocking I/O to a worker thread. The connection is opened with
+    # check_same_thread=False, so cross-thread use is safe.
+
+    async def arecover(self, thread_id: str) -> None:
+        """Event-loop-safe ``recover`` — offloads the blocking sqlite work to a thread."""
+        await asyncio.to_thread(self.recover, thread_id)
+
+    async def apromote(self, thread_id: str) -> None:
+        """Event-loop-safe ``promote`` — offloads the blocking sqlite work to a thread."""
+        await asyncio.to_thread(self.promote, thread_id)
 
     @property
     def conn(self) -> Optional[sqlite3.Connection]:

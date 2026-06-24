@@ -66,7 +66,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-077 | Unify analyst `ContextBudgetManager` onto `ContextPipeline` — analyst still runs its own tier-ladder packer (ladder keys don't map to pipeline layer labels) | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-076 | Live `STATE_COMPACTED` emission — wire `ContextPipeline.on_compacted` into the conversation-accrual path (summarizer/task_service) so it fires in production, not only at the 8.12.4 gate | MEDIUM | Observability | Phase 11.7 (see DEBT-059) | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if 7-mode UI ever adds more modes | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
-| DEBT-072 | Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart | MEDIUM | Durability | future HITL slice | Floating |
+| DEBT-072 | ~~Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart~~ | MEDIUM | Durability | 8.10.16 | RESOLVED 2026-06-24 |
+| DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; orchestration mode + security posture recovered from checkpoint state) — the exact original payload is not persisted | LOW | Durability | future HITL slice | Floating |
 | DEBT-071 | ~~LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance)~~ | MEDIUM | Type hygiene | 8.10.15 | RESOLVED 2026-06-22 |
 | DEBT-070 | ~~Async-sleep HITL waits block a coroutine — replace with native LangGraph Suspend & Resume~~ | HIGH | Architecture | 8.10.14 | RESOLVED 2026-06-22 |
 | DEBT-069 | ~~Researcher is not a graph node — needs promotion~~ | MEDIUM | Cognitive activation | 8.10.12 | RESOLVED 2026-06-21 |
@@ -215,15 +216,22 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** whichever future sub-phase expands the mode picker beyond 3 buttons.
 - **Notes:** logged at 8.11.3 ship per CLAUDE.md §11.3.
 
-### DEBT-072 [MEDIUM · Floating] — Pending-interrupt restart-durability
+### DEBT-072 [MEDIUM · RESOLVED 2026-06-24, 8.10.16] — Pending-interrupt restart-durability
 
-- **Date:** 2026-06-22
-- **Reproduce:** a native HITL interrupt (8.10.14) pauses the graph in L1 (`MemorySaver`) and frees the runtime; the pause survives within a server lifetime. But `HybridCheckpointer.promote()` persists the checkpoint + pending writes to L2 while `recover()` restores only the checkpoint values — not `hybrid_writes_l2` — so a server restart mid-interrupt loses the pending-interrupt task marker and the resume is orphaned. (No worse than the pre-8.10.14 in-memory Event, which a restart also lost.)
-- **File(s):** `brain/checkpoint.py::recover` (restore pending writes), `core/task_service.py` (re-detect a restored pause on reconnect).
-- **Error:** durability gap — interrupt/resume is correct within a lifetime; cross-restart durability needs the L2 pending-writes round-trip.
-- **Blocked by:** nothing structural; needs `recover()` to read+seed `hybrid_writes_l2`.
+- **Date:** 2026-06-22 · **Resolved:** 2026-06-24 (8.10.16)
+- **Reproduce (original):** a native HITL interrupt (8.10.14) pauses the graph in L1 (`MemorySaver`) and frees the runtime; the pause survives within a server lifetime. But `HybridCheckpointer.promote()` persisted the checkpoint + pending writes to L2 while `recover()` restored only the checkpoint values — not `hybrid_writes_l2` — so a server restart mid-interrupt lost the pending-interrupt task marker and orphaned the resume.
+- **Fix:** `recover()` now re-seeds the pending writes (incl. the paused `interrupt()`) via `put_writes` (`_restore_pending_writes`); `promoted_at` switched `time.monotonic()`→`time.time()` (+ `checkpoint_id` tie-break) so cross-restart ordering can't resurrect a stale interrupt after a resume re-promotes the cleared head; `write_idx` enumerated to stop multi-write PK collisions; `arecover`/`apromote` async offload wrappers keep the FastAPI/WS event loop unblocked; `task_service.rehydrate_paused_interrupt` (wired at `client_restore_history`) re-arms `_paused_tasks` and re-emits the approval card on reopen, and the resume branch seeds `session_permission_mode` from the recovered checkpoint so the out-of-graph MCP gate honors the saved posture.
+- **File(s):** `brain/checkpoint.py`, `core/task_service.py`, `main.py`; gate `tests/test_phase8_10_16_checkpoint_gate.py` (5 rows).
+- **Notes:** carved at 8.10.14 ship per CLAUDE.md §11.3. Exact original `TaskPayload`/thinking-config fidelity across a restart is the declared MVP boundary → DEBT-079.
+
+### DEBT-079 [LOW · Floating] — Cross-restart HITL resume reconstructs a minimal TaskPayload
+
+- **Date:** 2026-06-24
+- **Reproduce:** after a server restart, `rehydrate_paused_interrupt` re-arms the paused task with a minimal `TaskPayload(task_prompt="", dirty_buffers=[])`; the orchestration mode and security posture are recovered from the checkpoint, but the original prompt/attachments and thinking-config (`enable_native_thinking`, `thinking_budget_tokens`) fall back to defaults for any *new* reasoning turns produced after the resume.
+- **Error:** fidelity gap, not a correctness/security gap — the durable work-in-progress and the permission posture are faithful (both come from the checkpoint); only post-resume thinking-config defaults.
+- **Blocked by:** nothing; deliberately deferred to avoid persisting a serialized `TaskPayload` to L2 (schema growth + §6.3 secrets-hygiene risk).
 - **Phase:** future HITL slice.
-- **Notes:** carved at 8.10.14 ship per CLAUDE.md §11.3.
+- **Notes:** declared MVP boundary of 8.10.16 per CLAUDE.md §11.3.
 
 ### DEBT-070 [HIGH · RESOLVED 2026-06-22, 8.10.14] — Async-sleep HITL waits block a coroutine until timeout/response
 

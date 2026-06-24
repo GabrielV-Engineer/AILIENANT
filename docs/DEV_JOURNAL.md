@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.16: HITL Restart-Durability — DEBT-072 — 2026-06-24
+**Status:** COMPLETE | **Gates:** mypy 0/373 · pyright 0 · pytest green (gate 5 rows + checkpoint/session/dlq/resume suites)
+- Shipped: `HybridCheckpointer.recover()` now re-seeds `hybrid_writes_l2` pending writes (incl. a paused `interrupt()`) via `put_writes`, so a HITL approval suspended before a restart survives it; `promoted_at` switched from `time.monotonic()` to `time.time()` (+ `checkpoint_id` tie-break) so cross-restart ordering can't resurrect a stale interrupt; `write_idx` enumerated to stop multi-write PK collisions; `arecover`/`apromote` async offload wrappers added and routed at the DLQ-resume + interrupt-promote sites; `task_service.rehydrate_paused_interrupt` re-arms `_paused_tasks` and re-emits the card on session reopen.
+- Key decision: the durable security posture (`session_permission_mode`) is read back from the recovered checkpoint and seeded into the resume-branch state — closing the out-of-graph MCP-gate "DEFAULT downgrade" for both cross-restart and in-process resumes — with no new L2 schema and no `TaskPayload` serialization (FinOps/secrets-hygiene preserved).
+- Deferred: DEBT-079 — exact original `TaskPayload`/thinking-config fidelity on a cross-restart resume (reconstructed-minimal payload is the declared MVP).
+
 ## 8.12.4: Division 8.12 Checkpoint Gate — 2026-06-23
 **Status:** COMPLETE | **Gates:** mypy 0/372 · pytest 2014 passed · pyright 0
 - Shipped: `test_context_pipeline.py` (16 tests, test-only) locks the division invariants — L1-L3 never evicted (hard `ContextBudgetError` only), L4 FIFO drops oldest in order, `on_compacted` fires once on eviction and is silent otherwise, L5 tail-truncation stays token-exact within budget, plus the `broadcast_state_compacted` wire-event shape via a hermetic stubbed manager. Closes Division 8.12.

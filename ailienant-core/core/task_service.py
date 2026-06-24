@@ -569,9 +569,21 @@ class TaskService:
             if not _sessions:
                 await autoconnect_enabled_mcp_servers(state)
         else:
-            # Resume: durable state lives in the checkpoint; this local is only the
-            # abort-marker target on the CancelledError path below.
+            # Resume: durable state lives in the checkpoint. Seed the local dict with the
+            # security posture (and orchestration mode) read back from that checkpoint so
+            # the out-of-graph MCP permission gate below honors the mode the user set on the
+            # initial turn — otherwise an empty local state silently degrades a CAUTIOUS /
+            # ASK_ALL session to DEFAULT on every resume (in-process and cross-restart alike).
             state = {}
+            _seed_cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
+            _snap = await alienant_app.aget_state(_seed_cfg)
+            if _snap is not None and _snap.values:
+                _posture = _snap.values.get("session_permission_mode")
+                if _posture:
+                    state["session_permission_mode"] = _posture
+                _exec = _snap.values.get("execution_mode")
+                if _exec:
+                    state["execution_mode"] = _exec
 
         # Phase 7.10.2 (ADR-702): granular sub-step narration over server_pipeline_step.
         # A NarrationGate keeps narration <= 15% of streamed volume once the answer is
@@ -685,7 +697,7 @@ class TaskService:
                 self._paused_tasks[session_id] = (payload, execution_mode)
                 await self._emit_interrupt_card(session_id, pending_interrupt)
                 try:
-                    hybrid_checkpointer.promote(session_id)
+                    await hybrid_checkpointer.apromote(session_id)  # offloaded — never block the loop
                 except Exception as exc:  # noqa: BLE001 — promote is best-effort; L1 holds the pause
                     logger.debug("interrupt promote skipped for %s: %s", session_id, exc)
                 await self._finalize_stream(session_id)
@@ -976,6 +988,59 @@ class TaskService:
     def has_paused_graph(self, session_id: str) -> bool:
         """True if ``session_id`` has a graph paused on a native HITL interrupt."""
         return session_id in self._paused_tasks
+
+    async def rehydrate_paused_interrupt(self, session_id: str) -> bool:
+        """Re-surface a HITL interrupt that was suspended before a server restart.
+
+        Called on session reopen. If the graph for ``session_id`` paused on a native
+        ``interrupt()`` and the process has since restarted (so ``_paused_tasks`` is empty
+        and L1 is cold), this restores the checkpoint + pending writes from L2, re-arms the
+        paused-task registry so ``resume_graph`` can re-enter the thread, and re-emits the
+        approval card. Idempotent: a no-op when nothing is paused, when the thread is still
+        live in this process, or when the pause is already armed this lifetime.
+
+        Returns ``True`` when an interrupt was (re-)surfaced.
+        """
+        from brain.engine import alienant_app  # deferred — avoids import cycle
+        from brain.checkpoint import hybrid_checkpointer
+        from core.hitl import extract_pending_interrupt
+        from langchain_core.runnables import RunnableConfig
+
+        cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
+
+        # Already armed this lifetime — just re-emit the card; never re-recover.
+        if self.has_paused_graph(session_id):
+            pending = await extract_pending_interrupt(cfg)
+            if pending is not None:
+                await self._emit_interrupt_card(session_id, pending)
+                return True
+            return False
+
+        # Warm L1 means the thread is still live in this process (no restart for it).
+        # recover() overwrites L1 from the last L2 snapshot, so it must only run when L1
+        # is genuinely cold — never clobber an in-flight session on an ordinary reopen.
+        if hybrid_checkpointer.get_tuple(cfg) is not None:
+            return False
+
+        await hybrid_checkpointer.arecover(session_id)  # offloaded sqlite I/O
+        snapshot = await alienant_app.aget_state(cfg)
+        if snapshot is None or not snapshot.interrupts:
+            return False
+
+        # Re-arm with the orchestration mode recovered from the checkpoint (not a hardcoded
+        # literal). The reconstructed payload is intentionally minimal: the resume drives the
+        # graph via Command(resume=…), so the original prompt/buffers are never re-injected —
+        # the durable work-in-progress already lives in the recovered checkpoint.
+        recovered_exec = str(snapshot.values.get("execution_mode") or "SEQUENTIAL")
+        self._paused_tasks[session_id] = (
+            TaskPayload(task_prompt="", dirty_buffers=[]),
+            recovered_exec,
+        )
+        interrupt_value = snapshot.interrupts[0].value
+        payload = interrupt_value if isinstance(interrupt_value, dict) else {"value": interrupt_value}
+        await self._emit_interrupt_card(session_id, payload)
+        logger.info("Re-surfaced a restart-durable HITL interrupt for session %s.", session_id)
+        return True
 
     async def resume_graph(self, session_id: str, approval: Dict[str, Any]) -> None:
         """Resume a graph paused on a native HITL interrupt with the operator's decision.
