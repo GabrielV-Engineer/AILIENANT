@@ -20,7 +20,7 @@
 | 8.7 Analyst Tri-Brain | ✅ CLOSED | 2026-06-11 | — |
 | 8.8 Tool Parity Matrix | ✅ CLOSED | 2026-06-14 | — |
 | 8.9 Portable Workspace Home | ✅ CLOSED | 2026-06-14 | — |
-| 8.10 Debt Reduction + 8.2 + 8.6 | ⬜ PENDING | — | 8.11 7-mode permission system |
+| 8.10 Debt Reduction + 8.2 + 8.6 | ✅ CLOSED | 2026-06-23 | 8.10.0–8.10.15 shipped; 8.10.16–8.10.25 pre-8.13 sprint |
 | 8.10.8 Tool Dispatch Activation | ✅ CLOSED | 2026-06-20 | — (substrate live on Analyst; remainder → 8.10.11) |
 | 8.10.9 Infrastructure Quality | ✅ CLOSED | 2026-06-20 | — (DEBT-011/033/037 retired) |
 | 8.10.10 WBS Contract Correctness | ✅ CLOSED | 2026-06-20 | — (DEBT-044/051 retired) |
@@ -29,6 +29,16 @@
 | 8.10.13 Post-8.10.12 Hardening | ✅ CLOSED | 2026-06-22 | — (skeleton ceiling + lifecycle clear; DEBT-071 logged) |
 | 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
 | 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
+| 8.10.16 DEBT-072: HITL Restart-Durability | ⬜ PENDING | — | HybridCheckpointer restore pending-write state on recover |
+| 8.10.17 DEBT-077: Unify ContextBudgetManager | ⬜ PENDING | — | analyst routes via build_agent_context → single budget system |
+| 8.10.18 DEBT-076: Live STATE_COMPACTED | ⬜ PENDING | — | wire on_compacted into conversation-accrual path |
+| 8.10.19 DEBT-005: brain/ strict typing | ⬜ PENDING | — | 4 errors in brain/engine.py; mypy brain/ --strict → 0 |
+| 8.10.20 DEBT-039: Benchmark retention | ⬜ PENDING | — | max-artifacts cap + LRU eviction; configurable via .ailienant.json |
+| 8.10.21 FE: contracts.ts WS union | ⬜ PENDING | — | typed discriminated union for all WS events (45+ branches) |
+| 8.10.22 FE: logger.ts implementation | ⬜ PENDING | — | VS Code output channel + host-side console.* migration |
+| 8.10.23 FE: Error Boundaries | ⬜ PENDING | — | workspace root + message-row boundaries; key={m.id} fix |
+| 8.10.24 FE: STATE_COMPACTED handler | ⬜ PENDING | — | system notification chip + aria-live accessibility |
+| 8.10.25 FE: Workspace extraction | ⬜ PENDING | — | 45-branch switch → useWSMessageHandler hook; <800 lines |
 | 8.11 7-Mode Permission System | ✅ CLOSED | 2026-06-23 | — (7-mode matrix + shadow map + YOLO Guard; division gates locked) |
 | 8.11.1 session_mode enum extension | ✅ CLOSED | 2026-06-22 | — (additive 7-mode vocabulary; behavior-inert) |
 | 8.11.2 evaluate_action resolver rewrite | ✅ CLOSED | 2026-06-22 | — (7×3 matrix; governance.py verified-unchanged) |
@@ -73,7 +83,7 @@
 | 7.19 | Agentic Execution Cell & Persistent Audit Trail | ✅ |
 | 8 | Testing, Refinement & Graceful Degradation | 🟡 Active |
 | 8.2.6 | Cold-Start / Warm-up Workspace Mode (5 sub-phases) | ⬜ |
-| 8.10 | Debt Reduction + Complete 8.2 + 8.6 (11 sub-phases) | ⬜ |
+| 8.10 | Debt Reduction + Complete 8.2 + 8.6 (26 sub-phases) | ✅ |
 | 8.11 | 7-Mode Permission System | ✅ |
 | 8.12 | Five-Layer Context Compression Pipeline | ✅ |
 | 8.14 | Graph Intelligence Upgrade (5 sub-phases) | ⬜ |
@@ -505,7 +515,7 @@
 
 ---
 
-## Division 8.10 — Aggressive Debt Reduction & Path to 8.2 + 8.6 ⬜
+## Division 8.10 — Aggressive Debt Reduction & Path to 8.2 + 8.6 ✅
 
 > Closes the full open DEBT backlog aggressively before enterprise initiatives begin. Ordered so that 8.2 and 8.6 complete cleanly mid-phase. Eight sub-phases.
 
@@ -604,6 +614,36 @@
 - [x] **8.10.15 — Pyright Typing Pass (DEBT-071)**
   Codebase-wide pyright surface clean-up. `reportArgumentType` on 14 `workflow.add_node(...)` calls in `brain/engine.py` (LangGraph's `StateNode` generic cannot be statically resolved through the `cast`-based wrapper stack; mypy gate unaffected). `reportIncompatibleVariableOverride` on 47 `args_schema` overrides across 13 `tools/*.py` files (LangChain base declares the field as invariant `ArgsSchema | None`; subclass specialization to `Type[BaseModel]` is semantically correct). One stale DLQ comment scrubbed; one pre-existing `reportGeneralTypeIssues` in `mcp_adapter.py` suppressed (Boy Scout).
   - **DoD:** `npx pyright brain/engine.py` 0 errors · `npx pyright tools/*.py` 0 errors · `mypy .` 0/366 · `pytest` green.
+
+- [ ] **8.10.16 — DEBT-072: HybridCheckpointer HITL Restart-Durability**
+  `core/checkpointer.py`: on recovery, restore `hybrid_writes_l2` pending-write state so a HITL interrupt that was suspended before a server restart re-surfaces to the user. Companion test asserts recovered checkpointer carries pending interrupt flag. **DoD:** `mypy .` 0 · `pytest` green.
+
+- [ ] **8.10.17 — DEBT-077: Unify `ContextBudgetManager` onto `ContextPipeline`**
+  `agents/analyst_context.py`: retire tier-ladder packer, route analyst CODEX/file/GraphRAG/docs/readme through `build_agent_context` (Foundation=CODEX+rules, Project=readme+GraphRAG, Execution=file+docs). Per-tier budget becomes `total_token_budget` resolved from analyst tier config. Existing `test_analyst_brains.py` mandates stay green. **DoD:** `mypy .` 0 · `pytest` green · analyst respects tier budgets.
+
+- [ ] **8.10.18 — DEBT-076: Live `STATE_COMPACTED` emission**
+  Wire `ContextPipeline.on_compacted` into conversation-accrual path (summarizer/task_service). Pass `functools.partial(ws_manager.broadcast_state_compacted, session_id)` so IDE receives real event during long task, not only in gate test. **DoD:** `mypy .` 0 · `pytest` green (8.12.4 gate passes).
+
+- [ ] **8.10.19 — DEBT-005: `brain/` strict-mode typing pass**
+  Fix 4 confirmed strict-mode errors in `brain/engine.py` (and surface errors in other `brain/` files touched by 8.12). Target: `mypy brain/ --strict` exits 0. Do NOT propagate `--strict` to transitive imports outside `brain/`. **DoD:** `mypy .` 0 · no new pyright warnings in `brain/`.
+
+- [ ] **8.10.20 — DEBT-039: Benchmark artifact retention policy**
+  `core/benchmark/`: implement configurable max-artifacts cap (default 20 runs) with LRU eviction on write. Configurable via `.ailienant.json` (`benchmark.max_stored_runs`). Cap enforced atomically (lock + prune + write). **DoD:** `mypy .` 0 · `pytest` green · oracle cage volume bounded across benchmark runs.
+
+- [ ] **8.10.21 — FE: `api/contracts.ts` typed WS contract layer**
+  Implement typed discriminated union for all server→client WS events in `ailienant-extension/src/api/contracts.ts` (currently 0 bytes). Mirror backend `WebSocketMessage` union: minimum events handled by `Workspace.tsx` (45 branches) + `state_compacted`. Use `event_type` discriminant. Replace `_onWSMessage(msg: any)` cast in `brain/session.ts:190` with typed union. Runtime no-op; type-check only. **DoD:** `npm run compile` 0 · `npm run lint` 0 · no new `any` in changed files.
+
+- [ ] **8.10.22 — FE: `shared/logger.ts` implementation + host-side migration**
+  Implement `shared/logger.ts` (currently 0 bytes): wrapper around named VS Code output channel (`vscode.window.createOutputChannel("AILIENANT")`) with `log/warn/error/debug` methods. Migrate all 12 bare `console.*` calls in host side (`extension.ts`, `ws_client.ts`, `workspace_provisioning.ts`, `brain/session.ts`, `providers/workspace_panel.ts`, `providers/mirror.ts`, `api/api_client.ts`) to logger. Webview-side React `console.*` out of scope. **DoD:** `npm run compile` 0 · `npm run lint` 0 · zero bare `console.*` in host modules.
+
+- [ ] **8.10.23 — FE: React Error Boundaries in webview**
+  Add `ErrorBoundary` components to `ailienant-extension/src/workspace/` (zero exist). Minimum: one at `Workspace.tsx` root (catch-all, render "reload panel" recovery) + one around each message row (single malformed message never crashes transcript). Reusable `ErrorBoundary` class with `fallback` prop. Also fix array-index key (`key={i}`) → `key={m.id}` on message rows to prevent full-list reconciliation on append. **DoD:** `npm run compile` 0 · manual smoke: thrown render error shows fallback, not blank.
+
+- [ ] **8.10.24 — FE: `STATE_COMPACTED` handler + streaming footer `aria-live`**
+  `Workspace.tsx` message switch: add `state_compacted` case → system notification row ("Context window compacted — N turn(s) summarized.") as muted info chip. Consumes `ServerStateCompactedEvent` shipped 8.12.1. Add `aria-live="polite"` to toast stack wrapper + `aria-live="off"` + `aria-atomic="true"` on streaming-tokens footer. **DoD:** `npm run compile` 0 · `npm run lint` 0 · `STATE_COMPACTED` → system chip renders.
+
+- [ ] **8.10.25 — FE: `Workspace.tsx` message-handler extraction**
+  Extract 45-branch WS message dispatch switch from `Workspace.tsx` (1,944 lines) → standalone reducer `workspace/hooks/useWSMessageHandler.ts`. Hook receives typed WS message (via 8.10.21), React state setters; returns nothing (pure dispatch). `Workspace.tsx` becomes layout host calling hook. No features; no behaviour change; tests stay green. Target: `Workspace.tsx` < 800 lines. **DoD:** `npm run compile` 0 · `npm run lint` 0 · FE golden-path smoke-test.
 
 ---
 
