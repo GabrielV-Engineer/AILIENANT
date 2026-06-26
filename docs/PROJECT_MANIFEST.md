@@ -47,7 +47,7 @@
 | 8.11.5 YOLO Guard + Matrix Combined Gate | ✅ CLOSED | 2026-06-23 | — (composed pipeline; no-double-interception locked; test-only) |
 | 8.12 Five-Layer Context Pipeline | ✅ CLOSED | 2026-06-23 | context_pipeline.py + agent_context.py budget-guard; STATE_COMPACTED wire contract; gate test_context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
-| 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.1 blast-radius mapper (core/blast_radius.py) |
+| 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.0 polyglot dependency-extraction registry (Python + TS/JS); then 8.14.1 blast-radius mapper |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | ⬜ PENDING | — | 11.0 Design system |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
@@ -86,7 +86,7 @@
 | 8.10 | Debt Reduction + Complete 8.2 + 8.6 (26 sub-phases) | ✅ |
 | 8.11 | 7-Mode Permission System | ✅ |
 | 8.12 | Five-Layer Context Compression Pipeline | ✅ |
-| 8.14 | Graph Intelligence Upgrade (5 sub-phases) | ⬜ |
+| 8.14 | Graph Intelligence Upgrade (6 sub-phases) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
 | 11 | Web Dashboard Enterprise Redesign (9 sub-phases) | ⬜ |
@@ -718,8 +718,42 @@
 
 ### Division 8.14 — Graph Intelligence Upgrade ⬜
 
-> Selective uplift of the retrieval/graph layer, scoped to net-new capability whose substrate already exists. Three engineering items ship; one is a decision spike; two blocked ideas live in the backlog. The graph engine itself is **not** rewritten — multi-hop traversal already exists (`_bfs_k_hop`, `core/memory/graphrag_extractor.py`); only orthogonal capabilities that the existing `dependency_graph` and `.ailienant/` substrate make cheap are added.
+> Selective uplift of the retrieval/graph layer, scoped to net-new capability whose substrate already exists. Four engineering items ship; one is a decision spike; two blocked ideas live in the backlog. The graph engine itself is **not** rewritten — multi-hop traversal already exists (`_bfs_k_hop`, `core/memory/graphrag_extractor.py`); only orthogonal capabilities that the existing `dependency_graph` and `.ailienant/` substrate make cheap are added. Note: the `dependency_graph` substrate currently carries edges for Python only (`_extract_python_imports`); 8.14.0 generalizes edge extraction to a language-dispatched registry (Python + TypeScript/JavaScript shipped) so the graph-reading items below (8.14.1 blast-radius, 8.14.3 dead-code) are polyglot rather than silently Python-only.
 
+- [ ] **8.14.0 — Polyglot dependency extraction (import-extractor registry).**
+  Generalize the Python-only dependency-edge extractor into a `language_id`-dispatched
+  registry so the `dependency_graph` that feeds GraphRAG (`_bfs_k_hop`, PPR), 8.14.1
+  blast-radius and 8.14.3 dead-code is no longer Python-only. Refactor `_extract_python_imports`
+  (`brain/memory.py`) into `IMPORT_EXTRACTORS: dict[str, Callable[[Any, IndexingRequest], list[str]]]`
+  keyed by VS Code `language_id` — the callable receives `(tree, req)` so a language can
+  lexically resolve relative specifiers (file path) and apply the workspace guard
+  (`req.workspace_root`); Python ignores `req`. `index_file_sync` dispatches via
+  `IMPORT_EXTRACTORS.get(req.language_id)` (O(1)), preserving the existing `tree is not None`
+  guard and replacing only the hardcoded `== "python"` clause; best-effort `[]` for any
+  unregistered language (no exception — mirror the worker's never-raise contract). Verify the
+  exact tree-sitter node-type names against the installed `tree_sitter_typescript`/`_javascript`
+  grammars before wiring (grammars differ subtly). **python** — existing logic moved verbatim
+  (signature widened to accept+ignore `req`). **typescript/javascript** — *recursive* tree walk
+  (dynamic imports + `require` are nested, not top-level) capturing static `import … from '…'`,
+  re-export sources `export { x } from './file'`, dynamic `import('…')`, and `require('…')` call
+  expressions; per specifier: bare/package (`react`) → emit as-is → `INFERRED`; relative
+  (`./`, `../`) → *lexically* normalize (`os.path.normpath(join(dirname(req.file_path), spec))`,
+  forward-slash, **no disk**) to a single extensionless workspace path, then drop the edge if it
+  escapes `req.workspace_root`. **resolver (`_resolve_edge_confidence`) — contained additive
+  enhancement (no disk):** before the existing stem fallback, expand an unmatched target into
+  in-memory candidates (`+.ts/.tsx/.js/.jsx`, then `+/index.{ts,tsx,js,jsx}`) and test membership
+  against `indexed`; first hit → `EXTRACTED` with the resolved path. No `dependency_graph` schema
+  change (edges stay flat); additive `IndexingRequest.workspace_root` only (additive-only,
+  picklable, default `""`). **Performance:** O(1) dispatch · O(V+E) single AST walk · lexical
+  in-memory resolution (no disk, never O(V×M)) · O(K) registry space. **Expansion policy
+  (binding):** further languages are a single registry entry + one extractor function, added only
+  when a corpus/benchmark exercises them — not speculatively. **DoD:** `pytest
+  tests/test_polyglot_imports.py` (python parity with pre-refactor output · TS
+  static/re-export/dynamic-`import()`/`require()` edges · TS relative specifier → `EXTRACTED`
+  resolved path incl. a `dir/index.ts` case · TS bare specifier → `INFERRED` ·
+  `../../../etc/passwd`-style escape dropped · extractor performs zero filesystem calls (spy on
+  `os.path.exists`) · unregistered language → `[]` no raise · O(1) dispatch) · `mypy .` 0 ·
+  `npx pyright` 0.
 - [ ] **8.14.1 — Git blast-radius mapper (pre-apply validator).**
   `core/blast_radius.py`: given the file set of a pending diff, traverse `dependency_graph` for transitive *dependents* up to depth=3 with cycle detection. Reuse the existing `_bfs_k_hop` traversal pattern (`core/memory/graphrag_extractor.py`) — do not hand-roll a new walker. **Integration point: pre-apply (post-generation)** — the diff already exists, so this slots into the existing `pre_patch` hook gate / HITL escalation in `core/task_service.py`; escalate to HITL when the radius exceeds a configurable threshold. Pre-generation planner integration (consult at `MissionSpecification` time, before spending generation tokens) is deferred as a later enhancement — it touches the planner, more scope/risk. The traversal MUST run off the event loop (`asyncio.to_thread` / compute pool) — see the 8.14.5 stress gate. **DoD:** `pytest tests/test_blast_radius.py` (direct dependents · 3-hop transitive · cycle graph must not diverge · empty graph) · `mypy .` 0 · `npx pyright` 0.
 - [ ] **8.14.2 — Shared memory snapshot export/import.**
@@ -729,7 +763,7 @@
 - [ ] **8.14.4 — ADR-as-graph design spike (DECISION — no implementation).**
   Resolve the comment/documentation-policy tension before any code: should ADRs become live system state (`architecture_decisions` table + `REFERENCES` edges read by the analyst, influencing agent behavior), or remain timeless Markdown? Deliverable: a decision recorded in `docs/SCHEMA_EVOLUTION.MD` (or a blueprint) + a charter amendment **or** a rejection rationale. If GO, spawn an implementation sub-phase; if NO-GO, close the spike. **No schema/code lands under this item.**
 - [ ] **8.14.5 — Division 8.14 Checkpoint Gate.**
-  `tests/test_phase8_14_checkpoint_gate.py` (sibling convention, test-only) asserting the invariants of the shipped items (8.14.1–8.14.3): blast-radius cycle safety · snapshot round-trip + concurrent-writer consistency · dead-code allowlist (hardcoded + JSON) honored. **Stress assertion:** blast-radius on a synthetic graph (5K nodes, 15K edges, depth=3) completes in <500 ms wall-clock and does not block the asyncio event loop (runs inside `asyncio.to_thread` / compute pool). **DoD:** `mypy .` 0 · `pytest` green · `npx pyright` 0.
+  `tests/test_phase8_14_checkpoint_gate.py` (sibling convention, test-only) asserting the invariants of the shipped items (8.14.0–8.14.3): polyglot registry dispatch — python parity + TS relative-specifier `EXTRACTED` resolution (incl. `dir/index.ts`) + workspace-escape edge dropped + extractor disk-free + unregistered-language no-raise · blast-radius cycle safety · snapshot round-trip + concurrent-writer consistency · dead-code allowlist (hardcoded + JSON) honored. **Stress assertion:** blast-radius on a synthetic graph (5K nodes, 15K edges, depth=3) completes in <500 ms wall-clock and does not block the asyncio event loop (runs inside `asyncio.to_thread` / compute pool). **DoD:** `mypy .` 0 · `pytest` green · `npx pyright` 0.
 
 ---
 

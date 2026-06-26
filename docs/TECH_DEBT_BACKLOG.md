@@ -68,6 +68,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if 7-mode UI ever adds more modes | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
 | DEBT-072 | ~~Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart~~ | MEDIUM | Durability | 8.10.16 | RESOLVED 2026-06-24 |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; orchestration mode + security posture recovered from checkpoint state) — the exact original payload is not persisted | LOW | Durability | future HITL slice | Floating |
+| DEBT-080 | Dependency-graph edge extraction is Python-only (`brain/memory.py` `if req.language_id=="python"`); non-Python files index with zero edges, so GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | Planned |
 | DEBT-071 | ~~LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance)~~ | MEDIUM | Type hygiene | 8.10.15 | RESOLVED 2026-06-22 |
 | DEBT-070 | ~~Async-sleep HITL waits block a coroutine — replace with native LangGraph Suspend & Resume~~ | HIGH | Architecture | 8.10.14 | RESOLVED 2026-06-22 |
 | DEBT-069 | ~~Researcher is not a graph node — needs promotion~~ | MEDIUM | Cognitive activation | 8.10.12 | RESOLVED 2026-06-21 |
@@ -232,6 +233,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing; deliberately deferred to avoid persisting a serialized `TaskPayload` to L2 (schema growth + §6.3 secrets-hygiene risk).
 - **Phase:** future HITL slice.
 - **Notes:** declared MVP boundary of 8.10.16 per CLAUDE.md §11.3.
+
+### DEBT-080 [MEDIUM · Planned, 8.14.0] — Dependency-graph edge extraction is Python-only
+
+- **Date:** 2026-06-24
+- **Reproduce:** index a TypeScript/Go/Rust file — it lands in `indexed_files` with a symbol count and FTS-grep coverage, but `index_file_sync` (`brain/memory.py`) extracts import edges only under `if tree is not None and req.language_id == "python"`, so `dependency_graph` gains **zero edges** for it. GraphRAG's relational layer (`_bfs_k_hop`, PPR centrality) and every graph-reading capability — 8.14.1 blast-radius, 8.14.3 dead-code — are therefore silently Python-only.
+- **Error:** architectural coverage gap, not a defect. Detection (`_EXT_LANG`, 21 langs), AST parsing (tree-sitter, polyglot), and symbol/grep indexing are already language-agnostic; only dependency-edge extraction is language-bound to Python.
+- **Resolution (scheduled, 8.14.0):** a `language_id`-dispatched `IMPORT_EXTRACTORS` registry (Python refactor + TS/JS reference); relative-specifier resolution is **lexical and disk-free** in the extractor (the per-file `ProcessPool` worker has no view of the file tree), with extension/`index.*` candidate expansion done in `_resolve_edge_confidence` against the `indexed` set (no phantom edges, no `dependency_graph` schema change); a workspace-boundary guard drops cross-root edges via an additive `IndexingRequest.workspace_root`. Further languages are additive registry entries, demand-gated (Phase 12 corpus), not speculative.
+- **Distinct from DEBT-075:** 080 is about graph **edges** (dependency topology); 075 is about **symbol typing** (LSP-style type resolution). Independent.
+- **Phase:** 8.14.0.
+- **Notes:** logged at 8.14 planning per CLAUDE.md §11.3; resolves the latent Python-only assumption under Division 8.14's "substrate already exists" premise.
 
 ### DEBT-070 [HIGH · RESOLVED 2026-06-22, 8.10.14] — Async-sleep HITL waits block a coroutine until timeout/response
 
