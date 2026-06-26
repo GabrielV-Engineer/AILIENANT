@@ -149,14 +149,21 @@ Used when the main graph enters `collaborative` planning strategy and `planner_m
 
 Used before triggering Manual Dreaming (`client_dreaming_run`) to anchor the memory consolidation pass to the current user goal.
 
-**Context assembly (tri-brain):**
+**Context assembly:**
 
-Context is packed by `ContextBudgetManager` from three sources ranked by retention priority (see `SCHEMA_EVOLUTION.MD §16`):
-1. **Brain 1 — GraphRAG** (`"graphrag"` brain): `SemanticMemoryManager.search_snippets()` — code-level knowledge
-2. **Brain 2 — README digest** (`"readme"` brain): `core/readme_digest.py` — workspace overview, 5 KB cap, 7 s debounce invalidation
-3. **Brain 3 — Docs-RAG** (`"docs"` brain): `core/memory/docs_index.py` — indexed `HowItWorks.md`, `HowToUseIt.md`, `README.md`
+`assemble_analyst_context()` routes its sources onto the shared five-layer `ContextPipeline`
+via `build_agent_context` (`brain/context_pipeline.py`, `brain/agent_context.py`):
+- **Foundation** — the AILIENANT Codex self-knowledge slice (pinned).
+- **Project** — the README digest (`core/readme_digest.py`, 5 KB cap, debounced invalidation)
+  and GraphRAG code snippets (`SemanticMemoryManager.search_snippets()`); pinned, dropped
+  wholesale only when the pinned layers exhaust the window.
+- **Execution** — the indexed product docs (`core/memory/docs_index.py`: `HowItWorks.md`,
+  `HowToUseIt.md`, `README.md`) and the active file(s); tail-truncated first under pressure,
+  with the G3 sandbox boundary repaired if a file block is cut.
 
-Model tier is user-selectable from Natt HUD (`analystTier` in `workspaceStore.ts`); budget follows `ContextBudgetManager` tiers (1500–8000 tokens).
+Model tier is user-selectable from Natt HUD (`analystTier` in `workspaceStore.ts`); the
+per-tier budget (1500–8000 tokens, `_ANALYST_BUDGET_BY_TIER`) is passed as the pipeline's
+`total_token_budget`.
 
 **WS protocol:** `client_analyst_query` → `server_natt_message` (full response) | `server_natt_token` (streaming delta) | `server_natt_stream_end`
 

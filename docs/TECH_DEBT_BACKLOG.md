@@ -63,12 +63,13 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
 | DEBT-078 | Frontend contract mirror for `state_compacted` + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet) | LOW | FE Architecture | Phase 11.7 (see DEBT-059) | Floating |
-| DEBT-077 | Unify analyst `ContextBudgetManager` onto `ContextPipeline` — analyst still runs its own tier-ladder packer (ladder keys don't map to pipeline layer labels) | MEDIUM | Architecture | future context slice | Floating |
+| DEBT-077 | ~~Unify analyst `ContextBudgetManager` onto `ContextPipeline` — analyst still runs its own tier-ladder packer (ladder keys don't map to pipeline layer labels)~~ | MEDIUM | Architecture | 8.10.17 | RESOLVED 2026-06-26 |
 | DEBT-076 | Live `STATE_COMPACTED` emission — wire `ContextPipeline.on_compacted` into the conversation-accrual path (summarizer/task_service) so it fires in production, not only at the 8.12.4 gate | MEDIUM | Observability | Phase 11.7 (see DEBT-059) | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if 7-mode UI ever adds more modes | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
 | DEBT-072 | ~~Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart~~ | MEDIUM | Durability | 8.10.16 | RESOLVED 2026-06-24 |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; orchestration mode + security posture recovered from checkpoint state) — the exact original payload is not persisted | LOW | Durability | future HITL slice | Floating |
 | DEBT-080 | Dependency-graph edge extraction is Python-only (`brain/memory.py` `if req.language_id=="python"`); non-Python files index with zero edges, so GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | Planned |
+| DEBT-081 | Analyst context under-fills the tier budget — on the 5-layer pipeline the empty L4 (conversation) reserves 2/3 of the post-foundation budget, squeezing file+docs into the L5 third; the Project-layer degrade also drops README+GraphRAG wholesale where the retired packer shed them gradually | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-071 | ~~LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance)~~ | MEDIUM | Type hygiene | 8.10.15 | RESOLVED 2026-06-22 |
 | DEBT-070 | ~~Async-sleep HITL waits block a coroutine — replace with native LangGraph Suspend & Resume~~ | HIGH | Architecture | 8.10.14 | RESOLVED 2026-06-22 |
 | DEBT-069 | ~~Researcher is not a graph node — needs promotion~~ | MEDIUM | Cognitive activation | 8.10.12 | RESOLVED 2026-06-21 |
@@ -243,6 +244,23 @@ Decision    Not a defect — see [DECISION] tier.
 - **Distinct from DEBT-075:** 080 is about graph **edges** (dependency topology); 075 is about **symbol typing** (LSP-style type resolution). Independent.
 - **Phase:** 8.14.0.
 - **Notes:** logged at 8.14 planning per CLAUDE.md §11.3; resolves the latent Python-only assumption under Division 8.14's "substrate already exists" premise.
+
+### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
+
+- **Resolved:** 2026-06-26 (8.10.17)
+- **Reproduce (original):** the analyst ran its own `ContextBudgetManager` tier-ladder packer (priority-drop with per-brain 60% soft-caps) in `agents/analyst_context.py`, parallel to the canonical five-layer `ContextPipeline` planner/coder use; ladder brain keys did not map to pipeline layer labels.
+- **Fix:** `assemble_analyst_context` now routes its sources through `build_agent_context` — CODEX→Foundation, README+GraphRAG→Project, docs+active-file→Execution — with the per-tier budget passed as `total_token_budget`. `ContextBudgetManager` and the ladder/soft-cap constants were deleted; a `ContextBudgetError` path drops the Project layer wholesale on overflow; a G3 repair guard re-appends the file block's closing boundary tag when Execution-layer truncation cuts it; a `_G3_OVERHEAD_TOKENS` reserve keeps the post-assembly raw-data clause + repair tag within the tier budget.
+- **File(s):** `agents/analyst_context.py`; tests migrated in `tests/test_analyst_brains.py`; `brain/context_pipeline.py` (docstring), `docs/SYSTEM_PROMPTS.md`.
+- **Notes:** the pipeline has no soft-cap layer, so anti-starvation became "pinned L1-L3 + degrade". The behavioral residue (budget under-fill, coarse degrade) is tracked as DEBT-081.
+
+### DEBT-081 [MEDIUM · Floating] — Analyst context under-fills the tier budget on the shared pipeline
+
+- **Date:** 2026-06-26
+- **Reproduce:** `assemble_analyst_context(tier="medium")` with a large active file returns a block using only `foundation + project + ~1/3 of the post-foundation remainder`. `ContextPipeline.assemble` (`brain/context_pipeline.py`) splits the post-anchor remainder L4=2/3 / L5=1/3 with no reallocation when L4 is empty — and the single-shot analyst has no Conversation (L4) layer, so ~2/3 of its budget is unusable and file+docs (L5) are squeezed into the third.
+- **Error:** efficiency + prioritization regression vs the retired packer, not a correctness defect — output is always ≤ budget and never crashes. Facets: (a) empty-L4 under-fill; (b) the Project-layer `ContextBudgetError` degrade drops README+GraphRAG wholesale where the old per-brain 60% soft-cap shed them gradually; (c) L5 truncates file+docs at one uniform ratio so the active file cannot be prioritized over docs.
+- **Blocked by:** nothing; deferred to keep DEBT-077 a contained consolidation.
+- **Phase:** future context slice. Candidate fixes: reallocate an empty layer's budget to its siblings in `ContextPipeline`, or analyst-tuned layer fractions.
+- **Notes:** carved at 8.10.17 ship per CLAUDE.md §11.3.
 
 ### DEBT-070 [HIGH · RESOLVED 2026-06-22, 8.10.14] — Async-sleep HITL waits block a coroutine until timeout/response
 

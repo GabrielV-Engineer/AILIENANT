@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.17: Unify analyst budget onto ContextPipeline — DEBT-077 — 2026-06-26
+**Status:** COMPLETE | **Gates:** mypy 0/373 · pyright 0 (prod) · pytest 2019 passed
+- Shipped: `assemble_analyst_context` now routes its sources through the shared `build_agent_context` (CODEX→Foundation, README+GraphRAG→Project, docs+active-file→Execution); the bespoke `ContextBudgetManager` tier-ladder packer + soft-cap constants are deleted, a `ContextBudgetError` path drops the Project layer wholesale on overflow, a `_G3_OVERHEAD_TOKENS` reserve keeps the post-assembly raw-data clause within the tier budget, and a G3 repair guard re-appends the file block's closing boundary tag if Execution-layer truncation cuts it.
+- Key decision: the pipeline has no soft-cap layer, so anti-starvation is replaced by "pinned L1-L3 + degrade"; the single active-file region keeps one boundary tag pair (single-file `path=` attribute form preserved for the existing G3 sandbox tests) so truncation can corrupt at most one trailing tag.
+- Deferred: DEBT-081 — the empty Conversation (L4) layer reserves 2/3 of the post-foundation budget, under-filling the single-shot analyst and squeezing file+docs into the L5 third.
+
 ## 8.10.16: HITL Restart-Durability — DEBT-072 — 2026-06-24
 **Status:** COMPLETE | **Gates:** mypy 0/373 · pyright 0 · pytest green (gate 5 rows + checkpoint/session/dlq/resume suites)
 - Shipped: `HybridCheckpointer.recover()` now re-seeds `hybrid_writes_l2` pending writes (incl. a paused `interrupt()`) via `put_writes`, so a HITL approval suspended before a restart survives it; `promoted_at` switched from `time.monotonic()` to `time.time()` (+ `checkpoint_id` tie-break) so cross-restart ordering can't resurrect a stale interrupt; `write_idx` enumerated to stop multi-write PK collisions; `arecover`/`apromote` async offload wrappers added and routed at the DLQ-resume + interrupt-promote sites; `task_service.rehydrate_paused_interrupt` re-arms `_paused_tasks` and re-emits the card on session reopen.

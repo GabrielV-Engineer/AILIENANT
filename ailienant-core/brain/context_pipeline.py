@@ -35,9 +35,8 @@ _log = logging.getLogger(__name__)
 class ContextChunk:
     """One indivisible unit of context packed whole or not at all.
 
-    ``brain`` is a provenance tag used by ContextBudgetManager's retention
-    ladder in agents/analyst_context.py; the pipeline itself treats it as
-    an opaque identifier for logging only.
+    ``brain`` is an opaque provenance/label tag (e.g. the producing layer or
+    source); the pipeline treats it as an identifier for logging only.
     """
 
     body: str

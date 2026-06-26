@@ -30,7 +30,7 @@
 | 8.10.14 Native HITL Suspend & Resume | ✅ CLOSED | 2026-06-22 | — (DEBT-070 retired; interrupt/resume for in-graph gates; DEBT-072 logged) |
 | 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
 | 8.10.16 DEBT-072: HITL Restart-Durability | ✅ CLOSED | 2026-06-24 | recover() restores pending writes + wall-clock ordering; reconnect re-surfaces the interrupt |
-| 8.10.17 DEBT-077: Unify ContextBudgetManager | ⬜ PENDING | — | analyst routes via build_agent_context → single budget system |
+| 8.10.17 DEBT-077: Unify ContextBudgetManager | ✅ CLOSED | 2026-06-26 | analyst routes via build_agent_context → single budget system; DEBT-081 logged |
 | 8.10.18 DEBT-076: Live STATE_COMPACTED | ⬜ PENDING | — | wire on_compacted into conversation-accrual path |
 | 8.10.19 DEBT-005: brain/ strict typing | ⬜ PENDING | — | 4 errors in brain/engine.py; mypy brain/ --strict → 0 |
 | 8.10.20 DEBT-039: Benchmark retention | ⬜ PENDING | — | max-artifacts cap + LRU eviction; configurable via .ailienant.json |
@@ -618,7 +618,7 @@
 - [x] **8.10.16 — DEBT-072: HybridCheckpointer HITL Restart-Durability**
   `core/checkpointer.py`: on recovery, restore `hybrid_writes_l2` pending-write state so a HITL interrupt that was suspended before a server restart re-surfaces to the user. Companion test asserts recovered checkpointer carries pending interrupt flag. **DoD:** `mypy .` 0 · `pytest` green.
 
-- [ ] **8.10.17 — DEBT-077: Unify `ContextBudgetManager` onto `ContextPipeline`**
+- [x] **8.10.17 — DEBT-077: Unify `ContextBudgetManager` onto `ContextPipeline`**
   `agents/analyst_context.py`: retire tier-ladder packer, route analyst CODEX/file/GraphRAG/docs/readme through `build_agent_context` (Foundation=CODEX+rules, Project=readme+GraphRAG, Execution=file+docs). Per-tier budget becomes `total_token_budget` resolved from analyst tier config. Existing `test_analyst_brains.py` mandates stay green. **DoD:** `mypy .` 0 · `pytest` green · analyst respects tier budgets.
 
 - [ ] **8.10.18 — DEBT-076: Live `STATE_COMPACTED` emission**
