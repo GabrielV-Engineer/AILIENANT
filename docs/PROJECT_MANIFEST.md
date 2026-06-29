@@ -34,8 +34,8 @@
 | 8.10.18 DEBT-076: Live STATE_COMPACTED | ✅ CLOSED | 2026-06-28 | on_state_compacted partial wired via configurable → summarizer; 8.12.4 gate 3/3 |
 | 8.10.19 DEBT-005: brain/ strict typing | ✅ CLOSED | 2026-06-29 | 2 strict errors in agentic_cell.py cleared; mypy brain/ --strict 0/33 |
 | 8.10.20 DEBT-039: Benchmark retention | ✅ CLOSED | 2026-06-29 | max-artifacts cap (default 20) + LRU-by-mtime eviction under asyncio+FileLock; mypy . 0/375 · pytest 2041 passed |
-| 8.10.21 FE: contracts.ts WS union | ⬜ PENDING | — | typed discriminated union for all WS events (45+ branches) |
-| 8.10.22 FE: logger.ts implementation | ⬜ PENDING | — | VS Code output channel + host-side console.* migration |
+| 8.10.21 FE: contracts.ts WS union | ✅ CLOSED | 2026-06-29 | 58-variant event_type union (35 server + 23 client); session.ts _onWSMessage typed; npm compile 0 · lint 0 |
+| 8.10.22 FE: logger.ts implementation | ✅ CLOSED | 2026-06-29 | AILIENANT output-channel logger; 13 host console.* migrated across 7 modules; npm compile 0 · lint 0 |
 | 8.10.23 FE: Error Boundaries | ⬜ PENDING | — | workspace root + message-row boundaries; key={m.id} fix |
 | 8.10.24 FE: STATE_COMPACTED handler | ⬜ PENDING | — | system notification chip + aria-live accessibility |
 | 8.10.25 FE: Workspace extraction | ⬜ PENDING | — | 45-branch switch → useWSMessageHandler hook; <800 lines |
@@ -630,10 +630,10 @@
 - [x] **8.10.20 — DEBT-039: Benchmark artifact retention policy**
   `core/benchmark/`: implement configurable max-artifacts cap (default 20 runs) with LRU eviction on write. Configurable via `.ailienant.json` (`benchmark.max_stored_runs`). Cap enforced atomically (lock + prune + write). **DoD:** `mypy .` 0 · `pytest` green · oracle cage volume bounded across benchmark runs.
 
-- [ ] **8.10.21 — FE: `api/contracts.ts` typed WS contract layer**
+- [x] **8.10.21 — FE: `api/contracts.ts` typed WS contract layer**
   Implement typed discriminated union for all server→client WS events in `ailienant-extension/src/api/contracts.ts` (currently 0 bytes). Mirror backend `WebSocketMessage` union: minimum events handled by `Workspace.tsx` (45 branches) + `state_compacted`. Use `event_type` discriminant. Replace `_onWSMessage(msg: any)` cast in `brain/session.ts:190` with typed union. Runtime no-op; type-check only. **DoD:** `npm run compile` 0 · `npm run lint` 0 · no new `any` in changed files.
 
-- [ ] **8.10.22 — FE: `shared/logger.ts` implementation + host-side migration**
+- [x] **8.10.22 — FE: `shared/logger.ts` implementation + host-side migration**
   Implement `shared/logger.ts` (currently 0 bytes): wrapper around named VS Code output channel (`vscode.window.createOutputChannel("AILIENANT")`) with `log/warn/error/debug` methods. Migrate all 12 bare `console.*` calls in host side (`extension.ts`, `ws_client.ts`, `workspace_provisioning.ts`, `brain/session.ts`, `providers/workspace_panel.ts`, `providers/mirror.ts`, `api/api_client.ts`) to logger. Webview-side React `console.*` out of scope. **DoD:** `npm run compile` 0 · `npm run lint` 0 · zero bare `console.*` in host modules.
 
 - [ ] **8.10.23 — FE: React Error Boundaries in webview**

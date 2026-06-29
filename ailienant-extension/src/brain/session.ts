@@ -3,6 +3,8 @@ import { VFSReader } from '../editor/vfs_reader';
 import { APIClient, TaskPayload } from '../api/api_client';
 import { PathResolver } from '../core/PathResolver';
 import { WSClient } from '../api/ws_client';
+import { ServerWSMessage } from '../api/contracts';
+import { logger } from '../shared/logger';
 
 // Phase 7.12.9 (Fix 3) — hard cap on active-file content forwarded to the Planner.
 // ~10k chars ≈ ~2.5k tokens: stays within ADR-703's context budget and prevents an
@@ -23,8 +25,13 @@ export class SessionManager {
     private constructor(sessionId: string) {
         this.sessionId = sessionId;
         // React to THIS session's graph mutations only — the WSClient demuxes by
-        // session id, so the OCC check fires for this session's writes alone.
-        WSClient.getInstance().onMessage(this.sessionId, this._onWSMessage.bind(this));
+        // session id, so the OCC check fires for this session's writes alone. The
+        // transport hands back `unknown`; narrow to the typed wire union with a
+        // single cast at this boundary so the handler body stays fully typed.
+        WSClient.getInstance().onMessage(
+            this.sessionId,
+            (m) => this._onWSMessage(m as ServerWSMessage),
+        );
     }
 
     /**
@@ -146,14 +153,14 @@ export class SessionManager {
                 invoked_skill_id: opts?.invoked_skill_id,
             };
 
-            // 5. Emitir la Misión (Boca) al API Gateway
+            // 5. Emit the mission to the API Gateway.
             const apiClient = APIClient.getInstance();
 
-            // Phase 7.12 — analysis start is already signalled by the streaming UI;
-            // a host toast on every directive spams the VS Code event loop.
-            console.debug(`[SessionManager] Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
+            // Analysis start is already signalled by the streaming UI; a host toast
+            // on every directive spams the VS Code event loop.
+            logger.debug(`[SessionManager] Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
 
-            // Disparamos la petición. Si falla, el catch local lo maneja.
+            // Fire the request. On failure, the local catch handles it.
             // The 202 carries `stream_watchdog_ms` — the backend-governed timeout the
             // UI arms its stall watchdog with (longer for slow local engines).
             const ack = await apiClient.submitTask(this.sessionId, payload) as
@@ -163,22 +170,21 @@ export class SessionManager {
 
         } catch (error: any) {
             if (error.name !== 'AbortError') {
-                vscode.window.showErrorMessage(`AILIENANT: Colapso en la red neuronal. Verifica la conexión con el core.`);
-                console.error("[SessionManager] Error de orquestación:", error);
+                vscode.window.showErrorMessage(`AILIENANT: Neural network collapse. Check the connection to the core.`);
+                logger.error("[SessionManager] Orchestration error:", error);
             }
         }
     }
 
     /**
-     * Botón de Pánico (Human-In-The-Loop)
-     * Aborta la petición HTTP en vuelo.
+     * Panic button (Human-In-The-Loop): aborts the in-flight HTTP request.
      */
     public abortCurrentTask(): void {
         APIClient.getInstance().cancelTask(this.sessionId);
         vscode.window.showWarningMessage("AILIENANT: Mission aborted by user.");
     }
 
-    // Exponemos el SessionID por si la UI lo necesita para renderizar algo
+    // Expose the session id for the UI to use when it needs to render against it.
     public getSessionId(): string {
         return this.sessionId;
     }
@@ -187,8 +193,8 @@ export class SessionManager {
     // OCC — Optimistic Concurrency Control (Phase 1.5)
     // -------------------------------------------------------------------------
 
-    private _onWSMessage(msg: any): void {
-        if (msg?.event_type === 'server_graph_mutation') {
+    private _onWSMessage(msg: ServerWSMessage): void {
+        if (msg.event_type === 'server_graph_mutation') {
             this._checkOCC();
         }
     }

@@ -13,6 +13,16 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.22: Host logger + console migration — `shared/logger.ts` — 2026-06-29
+**Status:** COMPLETE | **Gates:** npm compile 0 · npm lint 0 errors
+- Shipped: filled the 0-byte `src/shared/logger.ts` with a lazy "AILIENANT" output-channel logger (`debug/log/warn/error`, Error-stack + JSON arg formatting); migrated all 13 bare `console.*` calls across the 7 host modules (`extension.ts`, `ws_client.ts`, `workspace_provisioning.ts`, `brain/session.ts`, `providers/workspace_panel.ts`, `providers/mirror.ts`, `api/api_client.ts`) to it. Webview/React `console.*` left out of scope.
+- Key decision: `logger.ts` lives in `shared/` but is host-only (imports `vscode`); safe because all 7 targets already import `vscode`, so webview-bundle reachability is unchanged. Boy-scout: translated Spanish comments/log strings and fixed a stray bare-string statement at `api_client.ts:1`.
+
+## 8.10.21: Typed WS contract layer — `api/contracts.ts` — 2026-06-29
+**Status:** COMPLETE | **Gates:** npm compile 0 · npm lint 0 (no new errors)
+- Shipped: filled the 0-byte `src/api/contracts.ts` with the full wire union mirroring backend `ws_contracts.py` — 58 `event_type`-discriminated variants (35 server→client `ServerWSMessage`, 23 client→server `ClientWSMessage`, + `WSMessage` alias and an `isServerEvent` guard); typed `SessionManager._onWSMessage` against `ServerWSMessage` with a single boundary cast at the `onMessage` registration. Runtime no-op.
+- Key decision: membership is split by message origin, not the `event_type` string prefix — `state_compacted` is a server event without the `server_` prefix, so it is enumerated explicitly in both the union and the guard set.
+
 ## 8.10.20: Benchmark artifact retention — DEBT-039 — 2026-06-29
 **Status:** COMPLETE | **Gates:** mypy . 0/375 · pyright 0 · pytest 2041 passed, 2 skipped
 - Shipped: configurable max-artifacts cap (default 20) with LRU-by-mtime eviction at the write site — `prune_artifacts` in `core/benchmark/report.py` and `_persist_with_retention` in `core/benchmark_service.py`, which reads `benchmark.max_stored_runs` from the global `~/.ailienant/.ailienant.json`; new gate `tests/benchmark/test_retention.py` (19 tests).
