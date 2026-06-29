@@ -89,7 +89,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
 | DEBT-007 | Auto-accept pays full HITL round-trip | LOW | Performance | Phase 11 | Floating |
-| DEBT-005 | interior brain/agents strict-mode debt | LOW | Type hygiene | — | Unscheduled |
+| DEBT-005 | ~~interior brain/agents strict-mode debt~~ | LOW | Type hygiene | 8.10.19 | RESOLVED 2026-06-29 |
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
 
 ---
@@ -555,7 +555,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **Notes:** The conservative risk gate (any medium/high metric forces the manual card) must be
   preserved if/when this moves server-side.
 
-### DEBT-005 [LOW · Unscheduled] — Multiple brain/ + agents/ interior nodes: unknown strict debt
+### ~~DEBT-005~~ [RESOLVED 2026-06-29 · 8.10.19] — Multiple brain/ + agents/ interior nodes: unknown strict debt
 
 - **Date:** 2026-05-31
 - **Updated:** 2026-06-13 — Phases 8.4 and 8.7 shipped. Verification confirms **4 errors remain**

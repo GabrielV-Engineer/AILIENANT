@@ -32,7 +32,7 @@
 | 8.10.16 DEBT-072: HITL Restart-Durability | ✅ CLOSED | 2026-06-24 | recover() restores pending writes + wall-clock ordering; reconnect re-surfaces the interrupt |
 | 8.10.17 DEBT-077: Unify ContextBudgetManager | ✅ CLOSED | 2026-06-26 | analyst routes via build_agent_context → single budget system; DEBT-081 logged |
 | 8.10.18 DEBT-076: Live STATE_COMPACTED | ✅ CLOSED | 2026-06-28 | on_state_compacted partial wired via configurable → summarizer; 8.12.4 gate 3/3 |
-| 8.10.19 DEBT-005: brain/ strict typing | ⬜ PENDING | — | 4 errors in brain/engine.py; mypy brain/ --strict → 0 |
+| 8.10.19 DEBT-005: brain/ strict typing | ✅ CLOSED | 2026-06-29 | 2 strict errors in agentic_cell.py cleared; mypy brain/ --strict 0/33 |
 | 8.10.20 DEBT-039: Benchmark retention | ⬜ PENDING | — | max-artifacts cap + LRU eviction; configurable via .ailienant.json |
 | 8.10.21 FE: contracts.ts WS union | ⬜ PENDING | — | typed discriminated union for all WS events (45+ branches) |
 | 8.10.22 FE: logger.ts implementation | ⬜ PENDING | — | VS Code output channel + host-side console.* migration |
@@ -624,7 +624,7 @@
 - [x] **8.10.18 — DEBT-076: Live `STATE_COMPACTED` emission**
   Wire `ContextPipeline.on_compacted` into conversation-accrual path (summarizer/task_service). Pass `functools.partial(ws_manager.broadcast_state_compacted, session_id)` so IDE receives real event during long task, not only in gate test. **DoD:** `mypy .` 0 · `pytest` green (8.12.4 gate passes).
 
-- [ ] **8.10.19 — DEBT-005: `brain/` strict-mode typing pass**
+- [x] **8.10.19 — DEBT-005: `brain/` strict-mode typing pass**
   Fix 4 confirmed strict-mode errors in `brain/engine.py` (and surface errors in other `brain/` files touched by 8.12). Target: `mypy brain/ --strict` exits 0. Do NOT propagate `--strict` to transitive imports outside `brain/`. **DoD:** `mypy .` 0 · no new pyright warnings in `brain/`.
 
 - [ ] **8.10.20 — DEBT-039: Benchmark artifact retention policy**

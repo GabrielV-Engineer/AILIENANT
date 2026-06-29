@@ -13,20 +13,20 @@ from brain.state import AIlienantGraphState
 from brain.checkpoint import checkpoint_manager
 from brain.failure_breaker import failure_breaker, normalize_signature
 from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
-from core.dead_letter import dead_letter_decorator  # Phase 6.4 — DLQ node wrap
+from core.dead_letter import dead_letter_decorator  # DLQ node wrapper
 from core.telemetry_log import log_node_transition
 
 logger = logging.getLogger("AILIENANT_ENGINE")
 
 # =====================================================================
-# 1. INICIALIZACIÓN DEL GRAFO
+# 1. GRAPH INITIALIZATION
 # =====================================================================
 workflow = StateGraph(AIlienantGraphState)
 
 # =====================================================================
-# 2. NODOS DEL GRAFO (Phase 2)
+# 2. GRAPH NODES
 # =====================================================================
-# Importaciones diferidas para evitar dependencias circulares en el startup.
+# Deferred imports to avoid circular dependencies at startup.
 from agents.planner import run_planner_node  # noqa: E402
 from agents.researcher import run_researcher_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
@@ -35,8 +35,8 @@ from brain.guardrails import run_validate_output_node, route_after_validation  #
 from brain.drift_monitor import run_drift_compute_node, run_drift_gate_node  # noqa: E402
 from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
-from agents.contract_guard import run_contract_guard_node  # noqa: E402 — Phase 2.23
-from core.supervisor import run_supervisor_node, route_after_supervisor  # noqa: E402 — Phase 6.5
+from agents.contract_guard import run_contract_guard_node  # noqa: E402
+from core.supervisor import run_supervisor_node, route_after_supervisor  # noqa: E402
 from agents.error_correction import run_error_correction_node  # noqa: E402 — self-healing reflexion node
 # Autonomous ReAct execution cell. engine.py imports the node only — the MCTS edge it uses
 # for branch governance lives entirely inside brain.agentic_cell, so the live graph spine

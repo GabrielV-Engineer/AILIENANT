@@ -139,7 +139,7 @@ async def _default_reasoner(messages: Sequence[Dict[str, str]]) -> List[ToolCall
     convo: List[Dict[str, Any]] = [{"role": "system", "content": schema_hint}, *messages]
     try:
         response = await LLMGateway.ainvoke(messages=convo, model=MODEL_BIG, temperature=0.0)
-        text = response.choices[0].message.content or ""  # type: ignore[union-attr,index]
+        text = response.choices[0].message.content or ""
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end <= start:
             return []
@@ -859,7 +859,7 @@ def _classify_execute(state: Dict[str, Any]) -> str:
     the approval itself — a HITL verdict triggers the deferral, and the approval happens
     interrupt-first in the next super-step's exec-approval phase.
     """
-    from core.permissions import (
+    from core.permissions import (  # type: ignore[attr-defined]  # noqa: attr-defined — PermissionMode re-exported without __all__
         PermissionDecision,
         PermissionMode,
         ToolPrivilegeTier,

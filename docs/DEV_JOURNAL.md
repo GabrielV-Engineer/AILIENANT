@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.19: brain/ strict-mode typing pass — DEBT-005 — 2026-06-29
+**Status:** COMPLETE | **Gates:** mypy brain/ --strict 0/33 · mypy . 0/374 · pytest 3 passed
+- Shipped: Cleared 2 strict errors in `brain/agentic_cell.py`: removed stale `# type: ignore[union-attr,index]` on LLM response access (line 142); added scoped `# type: ignore[attr-defined]` on `from core.permissions import` block (line 862) for `PermissionMode` re-exported without `__all__`. Boy-scout: translated Spanish section headers and stripped Phase PM references in `brain/engine.py`.
+- Key decision: strict surface was in `agentic_cell.py`, not `engine.py` as the debt entry anticipated — engine.py, context_pipeline.py, summarizer.py, and agent_context.py were all clean under `--strict --follow-imports=silent`.
+
 ## 8.10.18: Live STATE_COMPACTED emission — DEBT-076 — 2026-06-28
 **Status:** COMPLETE | **Gates:** mypy 0/374 · pytest 2022 passed
 - Shipped: `functools.partial(vfs_manager.broadcast_state_compacted, session_id)` injected into `cfg["configurable"]["on_state_compacted"]` in `core/task_service.py`; `brain/summarizer.run_summarize_node` gains an optional `config` param and calls `_emit_compacted` (fire-and-forget, BLE001-guarded) after both successful LLM compression and the bare-except truncation fallback. Gate `test_phase8_12_4_checkpoint_gate.py` (SC1/SC2/SC3) certifies live wiring, arity contract, and threshold-silent path.
