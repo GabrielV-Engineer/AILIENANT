@@ -13,6 +13,13 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.24: STATE_COMPACTED chip + streaming footer aria-live — 2026-06-29
+**Status:** COMPLETE | **Gates:** npm compile 0 (check-types 0 · lint 0 errors · esbuild ok)
+- Shipped: `Message` refactored into a discriminated union (`ConversationMessage | SystemMessage`) with `streaming?: never; toolCalls?: never` on the system arm to satisfy generic constraints; `state_compacted` WS handler pushes a `SystemMessage` chip with a streaming-tail guard; chip renders via early JS return before ErrorBoundary (bypasses the full row structure); filtered from PERSIST_TRANSCRIPT via type-predicate `.filter((m): m is ConversationMessage => m.role !== 'system')`; `aria-live="off" aria-atomic="true"` added to streaming token footer; `.ws-system-chip` CSS follows the `.ws-thinking` inline-trace pattern.
+- Key decision: toast stack container did NOT receive `aria-live` — individual `role="alert"` children already create assertive live regions; adding a polite container live region would cause double-reads in NVDA/VoiceOver/JAWS.
+
+---
+
 ## 8.10.23: Webview React error boundaries — 2026-06-29
 **Status:** COMPLETE | **Gates:** npm compile 0 (check-types 0 · lint 0 errors · esbuild ok)
 - Shipped: new reusable `src/workspace/components/ErrorBoundary.tsx` (class boundary, node-or-render-prop `fallback`, `resetKeys` auto-clear, console diagnostic); a root catch-all in `main.tsx` (`WorkspaceCrashPanel` with Try-again/Reload actions) and a per-message-row boundary in `Workspace.tsx` so one malformed turn degrades to an inline notice instead of blanking the transcript; row key switched from array index to `m.id ?? row-${i}`.

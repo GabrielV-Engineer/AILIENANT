@@ -37,7 +37,7 @@
 | 8.10.21 FE: contracts.ts WS union | ✅ CLOSED | 2026-06-29 | 58-variant event_type union (35 server + 23 client); session.ts _onWSMessage typed; npm compile 0 · lint 0 |
 | 8.10.22 FE: logger.ts implementation | ✅ CLOSED | 2026-06-29 | AILIENANT output-channel logger; 13 host console.* migrated across 7 modules; npm compile 0 · lint 0 |
 | 8.10.23 FE: Error Boundaries | ✅ CLOSED | 2026-06-29 | reusable ErrorBoundary class (fallback + resetKeys); root crash panel + per-message-row boundary; key={m.id ?? i}; npm compile 0 |
-| 8.10.24 FE: STATE_COMPACTED handler | ⬜ PENDING | — | system notification chip + aria-live accessibility |
+| 8.10.24 FE: STATE_COMPACTED handler | ✅ CLOSED | 2026-06-29 | discriminated union Message type; state_compacted chip; streaming footer aria-live="off"; npm compile 0 · lint 0 |
 | 8.10.25 FE: Workspace extraction | ⬜ PENDING | — | 45-branch switch → useWSMessageHandler hook; <800 lines |
 | 8.11 7-Mode Permission System | ✅ CLOSED | 2026-06-23 | — (7-mode matrix + shadow map + YOLO Guard; division gates locked) |
 | 8.11.1 session_mode enum extension | ✅ CLOSED | 2026-06-22 | — (additive 7-mode vocabulary; behavior-inert) |
@@ -639,7 +639,7 @@
 - [x] **8.10.23 — FE: React Error Boundaries in webview**
   Add `ErrorBoundary` components to `ailienant-extension/src/workspace/` (zero exist). Minimum: one at `Workspace.tsx` root (catch-all, render "reload panel" recovery) + one around each message row (single malformed message never crashes transcript). Reusable `ErrorBoundary` class with `fallback` prop. Also fix array-index key (`key={i}`) → `key={m.id}` on message rows to prevent full-list reconciliation on append. **DoD:** `npm run compile` 0 · manual smoke: thrown render error shows fallback, not blank.
 
-- [ ] **8.10.24 — FE: `STATE_COMPACTED` handler + streaming footer `aria-live`**
+- [x] **8.10.24 — FE: `STATE_COMPACTED` handler + streaming footer `aria-live`**
   `Workspace.tsx` message switch: add `state_compacted` case → system notification row ("Context window compacted — N turn(s) summarized.") as muted info chip. Consumes `ServerStateCompactedEvent` shipped 8.12.1. Add `aria-live="polite"` to toast stack wrapper + `aria-live="off"` + `aria-atomic="true"` on streaming-tokens footer. **DoD:** `npm run compile` 0 · `npm run lint` 0 · `STATE_COMPACTED` → system chip renders.
 
 - [ ] **8.10.25 — FE: `Workspace.tsx` message-handler extraction**

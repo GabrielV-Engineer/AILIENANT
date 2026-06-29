@@ -158,82 +158,63 @@ function mergeById<T extends { id?: string; streaming?: boolean }>(host: T[], lo
     return [...spine, ...tail];
 }
 
-export interface Message {
-    // Phase 7.12 — stable per-turn id (client-minted via crypto.randomUUID at
-    // creation). Display-layer only: it keys the REHYDRATE_TRANSCRIPT merge so a
-    // tab re-reveal never clobbers a live in-flight turn. Never sent to the core.
+/** Rich conversation turn (user or assistant). All fields beyond the three required
+ *  ones are optional — most are ephemeral display data excluded from PERSIST_TRANSCRIPT. */
+export interface ConversationMessage {
+    // Stable per-turn id (client-minted via crypto.randomUUID at creation). Keys the
+    // REHYDRATE_TRANSCRIPT merge so a tab re-reveal never clobbers a live in-flight turn.
     id?: string;
     role: 'user' | 'assistant';
     content: string;
     streaming?: boolean;
-    steps?: string[];      // pipeline node trace for this assistant turn (Phase 7.9.B.14)
+    steps?: string[];      // pipeline node trace for this assistant turn
     stepsDone?: boolean;   // true after server_stream_end → ✓ + auto-collapse
-    // Phase 7.11.5 (ADR-706 §4.5e) — incremental markdown parser state. Live
-    // only while streaming; cleared on `server_stream_end` so the renderer's
-    // stable fast path takes over. Transient — explicitly stripped before
-    // PERSIST_TRANSCRIPT (see destructure below).
+    // Incremental markdown parser state — live only while streaming; cleared on
+    // server_stream_end so the renderer's stable fast path takes over. Transient —
+    // explicitly stripped before PERSIST_TRANSCRIPT.
     parserState?: MdParserState;
-    // Host-tokenized syntax spans for this turn's fenced code blocks, keyed by
-    // hashCodeBlock(lang, code). Requested on stream-end via the round-trip to the
-    // host grammar engine and merged in on the CODE_TOKENS reply. Ephemeral and
-    // re-derivable — deliberately excluded from PERSIST_TRANSCRIPT.
+    // Host-tokenized syntax spans keyed by hashCodeBlock(lang, code). Ephemeral.
     codeTokens?: Record<string, ASTToken[][]>;
-    // Streaming partial AST keyed by fence ordinal (0, 1, 2…) and line index.
-    // The host pushes per-line token spans as each code line completes. This is
-    // the during-stream overlay; the final hash-keyed codeTokens supersedes it
-    // on stream-end. Ephemeral — excluded from PERSIST_TRANSCRIPT.
+    // Per-line streaming AST overlay; superseded by codeTokens on stream-end. Ephemeral.
     streamingCodeTokens?: Record<number, ASTToken[][]>;
-    // Phase 7.11.6 (ADR-706 §4.5f) — tool-chip artifacts attached to this turn.
-    // Each entry is built incrementally from server_tool_start, _stream_chunk
-    // and _result events keyed by tool_call_id.
+    // Tool-chip artifacts built incrementally from server_tool_* events.
     toolCalls?: ToolCallShape[];
-    // Glass-box telemetry for the autonomous agentic cell, built incrementally from
-    // the four server_cell_* deltas and keyed by iteration. Display-only forensic
-    // data (the durable audit ledger lives in the core) — explicitly stripped before
-    // PERSIST_TRANSCRIPT.
+    // Glass-box agentic-cell telemetry. Display-only; stripped before PERSIST_TRANSCRIPT.
     cellRun?: CellRunShape;
-    // Progressive execution checklist: the WBS seeded from server_plan_document, its
-    // per-step status flipped live by server_graph_mutation. DURABLE audit evidence —
-    // unlike cellRun it IS carried through PERSIST_TRANSCRIPT so a reload preserves
-    // the record of which steps the agent completed.
+    // Progressive WBS checklist — durable audit evidence, carried through PERSIST_TRANSCRIPT.
     checklist?: PlanWBSStep[];
-    // Inline diffs for edits applied during this turn — one entry per file,
-    // surfaced by the host (RENDER_DIFF) after PatchActuator applies. Attached to
-    // the turn that explained the edit and persisted so a teardown mid-render
-    // re-hydrates the diff. Display-only; never sent to the core.
+    // Inline diff blocks surfaced by the host after PatchActuator applies. Persisted.
     diffBlocks?: DiffBlockShape[];
-    // Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel: the L2-promoted checkpoint
-    // that wraps this completed assistant turn. Populated from
-    // `server_stream_end`. Only assistant messages carry one; absent on user
-    // messages and on streaming-in-flight turns. Survives PERSIST_TRANSCRIPT
-    // so the branch button still works on rehydrated sessions.
+    // L2-promoted checkpoint wrapping this completed assistant turn. Persisted.
     checkpoint_id?: string;
-    // Phase 7.11.8 — flips the branch button's icon to ⏹ when this turn
-    // ended in a user_abort emergency savepoint (Phase 7.11.3).
+    // Flips the branch button's icon to ⏹ for user_abort emergency savepoints.
     is_abort_savepoint?: boolean;
-    // Frozen at ingestion by authorLabelFor() — the row component is pure and
-    // never reads reactive config. Legacy turns without this field fall back to
-    // a static literal at render time; never retroactively relabeled.
+    // Frozen at ingestion; the row component is pure and never reads reactive config.
     authorLabel?: string;
-    // Phase 9 (ADR-707) — Native Thinking. Raw reasoning accumulated for this
-    // turn (display-only — NEVER persisted to the transcript or fed back to the
-    // agent). `thinkingStartedAt`/`thinkingElapsedMs` drive the chronometrics:
-    // start is stamped on the first reasoning delta; elapsed is frozen when the
-    // first answer (text) delta arrives. `thinkingOpen` controls the accordion
-    // (auto-expands while reasoning, auto-collapses when the answer begins).
+    // Native Thinking (ADR-707) — raw reasoning. Display-only; NEVER persisted.
     thinking?: string;
     thinkingTokens?: number;
     thinkingStartedAt?: number;
     thinkingElapsedMs?: number;
     thinkingOpen?: boolean;
-    // Ghost Telemetry (ADR-723) — answer tokens tallied client-side (one per
-    // arriving text chunk) so the per-message footer can tick a live count; the
-    // transport only emits a final aggregate cost, never a per-token delta. This
-    // is a presentation figure, distinct from the authoritative FinOps total.
-    // Unlike the live thinking slice it is durable audit data — it IS carried
-    // through PERSIST_TRANSCRIPT so a reload preserves the per-turn breakdown.
+    // Ghost Telemetry (ADR-723) — answer tokens tallied client-side. Persisted.
     liveTokens?: number;
 }
+
+/** Transient system notification chip — rendered in-transcript but never persisted.
+ *  `streaming` and `toolCalls` are typed `never` (structurally absent) so the union
+ *  satisfies the `normalizeStuckChips` / `mergeById` generic constraints without
+ *  making these fields accidentally accessible at their sites. */
+export interface SystemMessage {
+    id?: string;
+    role: 'system';
+    content: string;
+    readonly streaming?: never;
+    readonly toolCalls?: never;
+}
+
+/** Discriminated union over `role`. System chips are filtered from PERSIST_TRANSCRIPT. */
+export type Message = ConversationMessage | SystemMessage;
 export interface NattMessage {
     id?: string;   // Phase 7.12 — see Message.id (REHYDRATE_TRANSCRIPT merge key).
     role: 'natt' | 'user';
@@ -526,13 +507,18 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 type: 'PERSIST_TRANSCRIPT',
                 // Phase 7.11.8 — carry checkpoint_id + is_abort_savepoint so
                 // the rehydrated transcript still shows the ↪ Branch button.
-                messages: messages.map(({
-                    id, role, content, steps, stepsDone, toolCalls, diffBlocks,
-                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
-                }) => ({
-                    id, role, content, steps, stepsDone, toolCalls, diffBlocks,
-                    checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
-                })),
+                // Type predicate narrows to ConversationMessage[] so the destructure
+                // of rich fields (steps, toolCalls, …) that don't exist on SystemMessage
+                // is type-safe. System chips are transient display markers — not persisted.
+                messages: messages
+                    .filter((m): m is ConversationMessage => m.role !== 'system')
+                    .map(({
+                        id, role, content, steps, stepsDone, toolCalls, diffBlocks,
+                        checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
+                    }) => ({
+                        id, role, content, steps, stepsDone, toolCalls, diffBlocks,
+                        checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
+                    })),
                 nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
             });
         }, 400);
@@ -545,7 +531,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // out of the host transcript, so this webview-local copy is the only way a
     // partial trace survives a teardown/reconnect. Cleared on server_stream_end.
     useEffect(() => {
-        const inflight = messages.find(m => m.streaming && m.role === 'assistant');
+        const inflight = messages.find((m): m is ConversationMessage => m.role === 'assistant' && !!(m as ConversationMessage).streaming);
         const handle = setTimeout(() => {
             setInflightTurn(inflight
                 ? {
@@ -653,7 +639,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     if (Array.isArray(rh.messages)) {
                         // Normalize chips left spinning at the teardown that triggered
                         // this rehydrate so they don't resurrect as perpetual "pending".
-                        setMessages(prev => normalizeStuckChips(mergeById(rh.messages as Message[], prev)));
+                        setMessages(prev => normalizeStuckChips<Message>(mergeById(rh.messages as Message[], prev)));
                     }
                     if (Array.isArray(rh.nattMessages)) {
                         setNattMessages(prev => mergeById(rh.nattMessages as NattMessage[], prev));
@@ -791,9 +777,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     const d = msg.payload as { step_number: number; new_status: string };
                     setMessages(prev => {
                         for (let i = prev.length - 1; i >= 0; i--) {
-                            const m = prev[i];
+                            // System chips have no checklist; the cast is safe — only
+                            // ConversationMessage rows ever carry checklist entries.
+                            const m = prev[i] as ConversationMessage;
                             if (m.checklist && m.checklist.length > 0) {
-                                const next = m.checklist.map(t =>
+                                const next = m.checklist.map((t: PlanWBSStep) =>
                                     t.step_number === d.step_number ? { ...t, status: d.new_status } : t);
                                 return [...prev.slice(0, i), { ...m, checklist: next }, ...prev.slice(i + 1)];
                             }
@@ -831,18 +819,18 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     // renders on that turn, no degradation elsewhere.
                     const _se = (msg.payload ?? {}) as { checkpoint_id?: string };
                     const _cid = typeof _se.checkpoint_id === 'string' ? _se.checkpoint_id : undefined;
-                    setMessages(prev => prev.map((m, i) =>
-                        i === prev.length - 1
-                            // Phase 7.11.5 — drop parserState so MarkdownRenderer
-                            // takes its stable single-pass render path.
-                            ? {
-                                ...m,
-                                streaming: false,
-                                stepsDone: true,
-                                parserState: undefined,
-                                checkpoint_id: _cid ?? m.checkpoint_id,
-                            }
-                            : m));
+                    setMessages(prev => prev.map((m, i) => {
+                        // System chips carry no streaming state; skip them.
+                        if (i !== prev.length - 1 || m.role === 'system') { return m; }
+                        const cm = m as ConversationMessage;
+                        return {
+                            ...cm,
+                            streaming: false,
+                            stepsDone: true,
+                            parserState: undefined,
+                            checkpoint_id: _cid ?? cm.checkpoint_id,
+                        };
+                    }));
                     // Round-trip the just-finalized turn's code blocks to the host
                     // grammar engine. Content is already fully accumulated (the
                     // finalize above only flips flags), so read it from the mirror.
@@ -866,7 +854,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     setMessages(prev => {
                         const idx = prev.findIndex(m => m.id === d.turn_id);
                         if (idx < 0) { return prev; }   // zombie reply — turn is gone
-                        const merged: Record<string, ASTToken[][]> = { ...(prev[idx].codeTokens ?? {}) };
+                        // Code tokens are only ever attached to ConversationMessage turns.
+                        const cm = prev[idx] as ConversationMessage;
+                        const merged: Record<string, ASTToken[][]> = { ...(cm.codeTokens ?? {}) };
                         let changed = false;
                         for (const r of d.results!) {
                             if (r.ast_lines) { merged[r.hash] = r.ast_lines; changed = true; }
@@ -874,7 +864,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         if (!changed) { return prev; }
                         return [
                             ...prev.slice(0, idx),
-                            { ...prev[idx], codeTokens: merged },
+                            { ...cm, codeTokens: merged },
                             ...prev.slice(idx + 1),
                         ];
                     });
@@ -1164,6 +1154,22 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             ? { ...m, streaming: false, parserState: undefined }
                             : m));
                     break;
+                case 'state_compacted': {
+                    const d = msg.payload as { turns_compressed: number; compaction_message?: string };
+                    // Use || (not ??) so an empty-string payload also triggers the fallback.
+                    const label = d.compaction_message || `Context window compacted — ${d.turns_compressed} turn(s) summarized.`;
+                    setMessages(prev => {
+                        const chip: SystemMessage = { id: mkId(), role: 'system', content: label };
+                        const last = prev[prev.length - 1];
+                        // Insert BEFORE any streaming tail so server_token_chunk (which
+                        // targets prev.last by role==='assistant'&&streaming) is not orphaned.
+                        if ((last as ConversationMessage | undefined)?.streaming) {
+                            return [...prev.slice(0, -1), chip, last];
+                        }
+                        return [...prev, chip];
+                    });
+                    break;
+                }
                 case 'server_indexing_started': {
                     const d = msg.payload as { total_files?: number };
                     setIndexing({ state: 'indexing', pct: 0, total_files: d?.total_files, files_indexed: 0 });
@@ -1369,12 +1375,14 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             setIsAborting(false);
             setInflightTurn(null);
             setMessages(prev => prev.map((m, i) => {
-                if (i !== prev.length - 1 || !m.streaming) { return m; }
-                const calls = m.toolCalls?.map(tc =>
+                if (m.role === 'system') { return m; }
+                const cm = m as ConversationMessage;
+                if (i !== prev.length - 1 || !cm.streaming) { return m; }
+                const calls = cm.toolCalls?.map((tc: ToolCallShape) =>
                     (tc.status === undefined || tc.status === 'pending')
                         ? { ...tc, status: 'error' as const }
                         : tc);
-                return { ...m, streaming: false, stepsDone: true, parserState: undefined, toolCalls: calls };
+                return { ...cm, streaming: false, stepsDone: true, parserState: undefined, toolCalls: calls };
             }));
             addToast('warn', 'Stream stalled — no response from the backend. Ending this turn.');
         }, STREAM_WATCHDOG_TICK_MS);
@@ -1552,7 +1560,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // falls back to the authorization card — also in the main column, never the
     // analyst pane.
     const hitlHasDiff = !!hitlPending && messages.some(
-        m => (m.diffBlocks ?? []).some(db => db.patch_id === hitlPending.approval_id),
+        m => m.role !== 'system' && ((m as ConversationMessage).diffBlocks ?? []).some((db: DiffBlockShape) => db.patch_id === hitlPending.approval_id),
     );
 
     const wsLabel =
@@ -1699,6 +1707,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             )}
                             {(() => {
                                 return messages.map((m, i) => {
+                                    // System notification chips (state_compacted) bypass the
+                                    // full row structure — they render a plain string and have
+                                    // no role header, tool chips, token footer, or ErrorBoundary.
+                                    if (m.role === 'system') {
+                                        return (
+                                            <div key={m.id ?? `row-${i}`} className="ws-system-chip" role="status">
+                                                {m.content}
+                                            </div>
+                                        );
+                                    }
                                     return (
                                 <ErrorBoundary
                                     key={m.id ?? `row-${i}`}
@@ -1719,7 +1737,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             open={m.thinkingOpen ?? false}
                                             streaming={!!m.streaming}
                                             onToggle={() => setMessages(prev => prev.map((mm, j) =>
-                                                j === i ? { ...mm, thinkingOpen: !mm.thinkingOpen } : mm))}
+                                                j === i ? { ...(mm as ConversationMessage), thinkingOpen: !(mm as ConversationMessage).thinkingOpen } : mm))}
                                         />
                                     )}
                                     {/* Ghost Telemetry (ADR-723) — live action-log: the
@@ -1777,6 +1795,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             <div
                                                 className="ws-turn-footer"
                                                 data-streaming={m.streaming ? 'true' : 'false'}
+                                                aria-live="off"
+                                                aria-atomic="true"
                                             >
                                                 {m.streaming
                                                     ? `Thinking… ${total} ${total === 1 ? 'token' : 'tokens'}`

@@ -2666,6 +2666,21 @@ html, body, #root { height: 100%; }
   cursor: not-allowed;
 }
 
+/* ── System notification chips ─────────────────────────────── */
+/* In-transcript ambient notice (e.g. context compaction). Rendered as
+   text-level trace: no box, no border, muted — reads like a pipeline step. */
+.ws-system-chip {
+  margin: 2px 0 6px;
+  padding: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+  font-style: italic;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ── Error boundaries ──────────────────────────────────────── */
 /* Inline fallback for a single message row that failed to render. */
 .ws-error-row {
