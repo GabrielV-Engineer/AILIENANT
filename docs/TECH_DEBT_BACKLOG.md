@@ -63,33 +63,24 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
 | DEBT-078 | Frontend contract mirror for `state_compacted` + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet) | LOW | FE Architecture | Phase 11.7 (see DEBT-059) | Floating |
-| DEBT-077 | ~~Unify analyst `ContextBudgetManager` onto `ContextPipeline` — analyst still runs its own tier-ladder packer (ladder keys don't map to pipeline layer labels)~~ | MEDIUM | Architecture | 8.10.17 | RESOLVED 2026-06-26 |
-| DEBT-076 | ~~Live `STATE_COMPACTED` emission — wire `ContextPipeline.on_compacted` into the conversation-accrual path (summarizer/task_service) so it fires in production, not only at the 8.12.4 gate~~ | MEDIUM | Observability | 8.10.18 | RESOLVED 2026-06-28 |
-| DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if 7-mode UI ever adds more modes | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
-| DEBT-072 | ~~Pending-interrupt restart-durability — `HybridCheckpointer.recover()` must restore `hybrid_writes_l2` pending writes so a HITL interrupt survives a server restart~~ | MEDIUM | Durability | 8.10.16 | RESOLVED 2026-06-24 |
-| DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; orchestration mode + security posture recovered from checkpoint state) — the exact original payload is not persisted | LOW | Durability | future HITL slice | Floating |
-| DEBT-080 | Dependency-graph edge extraction is Python-only (`brain/memory.py` `if req.language_id=="python"`); non-Python files index with zero edges, so GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | Planned |
-| DEBT-081 | Analyst context under-fills the tier budget — on the 5-layer pipeline the empty L4 (conversation) reserves 2/3 of the post-foundation budget, squeezing file+docs into the L5 third; the Project-layer degrade also drops README+GraphRAG wholesale where the retired packer shed them gradually | MEDIUM | Architecture | future context slice | Floating |
-| DEBT-071 | ~~LangGraph `add_node` + langchain `args_schema` pyright errors across all node/tool classes (StateNode/ArgsSchema generic invariance)~~ | MEDIUM | Type hygiene | 8.10.15 | RESOLVED 2026-06-22 |
-| DEBT-070 | ~~Async-sleep HITL waits block a coroutine — replace with native LangGraph Suspend & Resume~~ | HIGH | Architecture | 8.10.14 | RESOLVED 2026-06-22 |
-| DEBT-069 | ~~Researcher is not a graph node — needs promotion~~ | MEDIUM | Cognitive activation | 8.10.12 | RESOLVED 2026-06-21 |
-| DEBT-068 | ~~Dispatch loop wired only on the Analyst — mutating-tier HITL routing pending~~ | HIGH | Cognitive activation | 8.10.11 | RESOLVED 2026-06-21 |
+| DEBT-080 | Dependency-graph edge extraction is Python-only; GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | Planned |
+| DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
+| DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
+| DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
+| DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM | Architecture | future graph slice | Blocked |
+| DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW | Capability gap | long-term | Floating |
+| DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
-| DEBT-044 | ValidateWBSDependenciesTool detects ordering violations only, not true DAG cycles | MEDIUM | Correctness gap | post-8.8.4 | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
 | DEBT-049 | SkillInvokeTool passes embed_fn=None — semantic skill auto-matching disabled | LOW | Feature gap | post-8.8.6 | Floating |
-| DEBT-051 | list_tasks cross-role visibility — orchestrator sees all tasks regardless of originating role | LOW | Feature gap | post-8.8.6 | Floating |
 | DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | DB-layer async migration | Floating |
 | DEBT-054 | todo_write / agent_todos channel unbound — no cognitive node wiring | LOW | Integration gap | future integration sprint | Floating |
-| DEBT-039 | ~~Benchmark report artifacts no retention~~ | MEDIUM | Reliability | 8.10.20 | RESOLVED 2026-06-29 |
-| DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
 | DEBT-027 | MCP servers not auto-connected at launch | LOW | Feature gap | dedicated slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
 | DEBT-007 | Auto-accept pays full HITL round-trip | LOW | Performance | Phase 11 | Floating |
-| DEBT-005 | ~~interior brain/agents strict-mode debt~~ | LOW | Type hygiene | 8.10.19 | RESOLVED 2026-06-29 |
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
 
 ---
