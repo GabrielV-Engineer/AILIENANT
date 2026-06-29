@@ -449,7 +449,7 @@ npm run compile                    # tsc + esbuild, 0 errors
 npm run lint                       # ESLint, 0 errors
 ```
 
-The suite is large (latest gate: **1,103 passing / 2 skipped**, `mypy .` clean — see the most recent [DEV_JOURNAL.md](docs/DEV_JOURNAL.md) entry for the current numbers). Each phase ships a sibling **checkpoint-gate** test file (`test_phase*_checkpoint_gate.py`) that re-certifies that phase's contract.
+The suite is large (latest gate: **2,022 passing / 2 skipped**, `mypy .` clean — see the most recent [DEV_JOURNAL.md](docs/DEV_JOURNAL.md) entry for the current numbers). Each phase ships a sibling **checkpoint-gate** test file (`test_phase*_checkpoint_gate.py`) that re-certifies that phase's contract.
 
 **Zero-degradation rule:** your change must not introduce a single new type error or lint warning. **Boy-Scout rule:** if a file you touch already has errors, fix them while you're there.
 

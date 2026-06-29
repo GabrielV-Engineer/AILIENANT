@@ -31,7 +31,7 @@
 | 8.10.15 Pyright Typing Pass (DEBT-071) | ✅ CLOSED | 2026-06-22 | — (DEBT-071 retired) |
 | 8.10.16 DEBT-072: HITL Restart-Durability | ✅ CLOSED | 2026-06-24 | recover() restores pending writes + wall-clock ordering; reconnect re-surfaces the interrupt |
 | 8.10.17 DEBT-077: Unify ContextBudgetManager | ✅ CLOSED | 2026-06-26 | analyst routes via build_agent_context → single budget system; DEBT-081 logged |
-| 8.10.18 DEBT-076: Live STATE_COMPACTED | ⬜ PENDING | — | wire on_compacted into conversation-accrual path |
+| 8.10.18 DEBT-076: Live STATE_COMPACTED | ✅ CLOSED | 2026-06-28 | on_state_compacted partial wired via configurable → summarizer; 8.12.4 gate 3/3 |
 | 8.10.19 DEBT-005: brain/ strict typing | ⬜ PENDING | — | 4 errors in brain/engine.py; mypy brain/ --strict → 0 |
 | 8.10.20 DEBT-039: Benchmark retention | ⬜ PENDING | — | max-artifacts cap + LRU eviction; configurable via .ailienant.json |
 | 8.10.21 FE: contracts.ts WS union | ⬜ PENDING | — | typed discriminated union for all WS events (45+ branches) |
@@ -621,7 +621,7 @@
 - [x] **8.10.17 — DEBT-077: Unify `ContextBudgetManager` onto `ContextPipeline`**
   `agents/analyst_context.py`: retire tier-ladder packer, route analyst CODEX/file/GraphRAG/docs/readme through `build_agent_context` (Foundation=CODEX+rules, Project=readme+GraphRAG, Execution=file+docs). Per-tier budget becomes `total_token_budget` resolved from analyst tier config. Existing `test_analyst_brains.py` mandates stay green. **DoD:** `mypy .` 0 · `pytest` green · analyst respects tier budgets.
 
-- [ ] **8.10.18 — DEBT-076: Live `STATE_COMPACTED` emission**
+- [x] **8.10.18 — DEBT-076: Live `STATE_COMPACTED` emission**
   Wire `ContextPipeline.on_compacted` into conversation-accrual path (summarizer/task_service). Pass `functools.partial(ws_manager.broadcast_state_compacted, session_id)` so IDE receives real event during long task, not only in gate test. **DoD:** `mypy .` 0 · `pytest` green (8.12.4 gate passes).
 
 - [ ] **8.10.19 — DEBT-005: `brain/` strict-mode typing pass**

@@ -8,16 +8,22 @@ Preservation: keeps last KEEP_LAST_N messages (Cognitive Horizon) verbatim.
 Condensation: remaining messages summarized in one LLM call to MODEL_SMALL.
 Replacement: compressed view written back via _merge_messages __replace__ sentinel.
 Resilience: on LLM failure, logs warning and truncates (keeps last KEEP_LAST_N).
+STATE_COMPACTED: after any compression, fires the on_state_compacted callback
+                 (if present in config.configurable) so the IDE can render a
+                 compaction notice. The callback is fire-and-forget — a dead
+                 WebSocket never aborts the summarizer node.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from langchain_core.runnables import RunnableConfig
 
 from tools.llm_gateway import LLMGateway
 from tools.token_counter import PrecisionTokenCounter
 from shared.config import MODEL_SMALL
-from core.resource_manager import ResourceBroker  # Phase 2.27
+from core.resource_manager import ResourceBroker
 
 logger = logging.getLogger("STATE_SUMMARIZER")
 
@@ -31,7 +37,31 @@ _PROMPT = (
 )
 
 
-async def run_summarize_node(state: Dict[str, Any]) -> Dict[str, Any]:
+async def _emit_compacted(config: Optional[RunnableConfig], message: str, n: int) -> None:
+    """Fire the STATE_COMPACTED notification callback. Never raises.
+
+    A dead WebSocket or transport error must not abort the summarizer node or corrupt
+    LangGraph state — UI telemetry is low-criticality and loss is acceptable.
+    Wire via: functools.partial(vfs_manager.broadcast_state_compacted, session_id)
+    bound as config["configurable"]["on_state_compacted"].
+    """
+    cfg = (config or {}).get("configurable") or {}
+    cb = cfg.get("on_state_compacted")
+    if cb is not None:
+        try:
+            await cb(message, n)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "STATE_COMPACTED notification failed (dead WS or transport error); "
+                "summarizer state unaffected.",
+                exc_info=True,
+            )
+
+
+async def run_summarize_node(
+    state: Dict[str, Any],
+    config: Optional[RunnableConfig] = None,
+) -> Dict[str, Any]:
     """LangGraph node: compress message history if token budget is exceeded.
 
     Returns {} (no-op) when history is within budget or too short to compress.
@@ -56,8 +86,9 @@ async def run_summarize_node(state: Dict[str, Any]) -> Dict[str, Any]:
         f"[{m.get('role', '?')}]: {m.get('content', '')}" for m in to_summarize
     )
 
-    # Phase 2.27 — pre-flight VRAM contention check. SWITCH_TO_CLOUD swaps to
-    # MODEL_BIG transparently. CANCEL falls back to plain truncation.
+    # Pre-flight VRAM contention check. SWITCH_TO_CLOUD swaps to MODEL_BIG
+    # transparently. CANCEL falls back to plain truncation (user-initiated — no
+    # STATE_COMPACTED emitted, since the user caused the early exit, not the engine).
     decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_SMALL)
     if decision.cancelled:
         logger.info(
@@ -86,6 +117,11 @@ async def run_summarize_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "StateSummarizer: compressed %d messages → 1 summary + %d recent (task=%s)",
             len(to_summarize), KEEP_LAST_N, state.get("task_id", ""),
         )
+        await _emit_compacted(
+            config,
+            f"Compacted {len(to_summarize)} conversation turn(s) to fit the context window.",
+            len(to_summarize),
+        )
         return {
             "messages": [
                 {"__replace__": True},
@@ -97,5 +133,10 @@ async def run_summarize_node(state: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning(
             "StateSummarizer: LLM call failed (%s) — truncating to last %d messages.",
             exc, KEEP_LAST_N,
+        )
+        await _emit_compacted(
+            config,
+            f"Truncated to last {KEEP_LAST_N} conversation turn(s).",
+            len(messages) - KEEP_LAST_N,
         )
         return {"messages": [{"__replace__": True}, *recent]}

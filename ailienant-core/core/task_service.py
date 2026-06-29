@@ -1,5 +1,6 @@
 import asyncio
 import difflib
+import functools
 import hashlib
 import json
 import os
@@ -637,6 +638,9 @@ class TaskService:
                     "enable_native_thinking": payload.enable_native_thinking,
                     "thinking_budget_tokens": payload.thinking_budget_tokens,
                     "cell_dispatcher": LiveCellDispatcher(session_id),
+                    "on_state_compacted": functools.partial(
+                        vfs_manager.broadcast_state_compacted, session_id
+                    ),
                 }
             }
             final_state: Dict[str, Any] = {}

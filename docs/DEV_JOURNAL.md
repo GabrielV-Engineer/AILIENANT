@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.18: Live STATE_COMPACTED emission — DEBT-076 — 2026-06-28
+**Status:** COMPLETE | **Gates:** mypy 0/374 · pytest 2022 passed
+- Shipped: `functools.partial(vfs_manager.broadcast_state_compacted, session_id)` injected into `cfg["configurable"]["on_state_compacted"]` in `core/task_service.py`; `brain/summarizer.run_summarize_node` gains an optional `config` param and calls `_emit_compacted` (fire-and-forget, BLE001-guarded) after both successful LLM compression and the bare-except truncation fallback. Gate `test_phase8_12_4_checkpoint_gate.py` (SC1/SC2/SC3) certifies live wiring, arity contract, and threshold-silent path.
+- Key decision: callback threaded via `RunnableConfig.configurable` (same seam as `narrate`/`stream_thinking`) so `vfs_manager` stays out of the `brain/` import graph and the summarizer remains testable with a spy; VRAM-cancelled early-return does not emit (user-initiated cancel, not engine compaction).
+
 ## 8.10.17: Unify analyst budget onto ContextPipeline — DEBT-077 — 2026-06-26
 **Status:** COMPLETE | **Gates:** mypy 0/373 · pyright 0 (prod) · pytest 2019 passed
 - Shipped: `assemble_analyst_context` now routes its sources through the shared `build_agent_context` (CODEX→Foundation, README+GraphRAG→Project, docs+active-file→Execution); the bespoke `ContextBudgetManager` tier-ladder packer + soft-cap constants are deleted, a `ContextBudgetError` path drops the Project layer wholesale on overflow, a `_G3_OVERHEAD_TOKENS` reserve keeps the post-assembly raw-data clause within the tier budget, and a G3 repair guard re-appends the file block's closing boundary tag if Execution-layer truncation cuts it.
