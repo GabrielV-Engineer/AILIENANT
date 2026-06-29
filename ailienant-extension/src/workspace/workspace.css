@@ -2665,3 +2665,57 @@ html, body, #root { height: 100%; }
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* ── Error boundaries ──────────────────────────────────────── */
+/* Inline fallback for a single message row that failed to render. */
+.ws-error-row {
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-warn) 40%, transparent);
+  background: color-mix(in srgb, var(--accent-warn) 8%, transparent);
+  color: var(--accent-warn);
+  font-size: 12px;
+}
+
+/* Last-resort root fallback when the whole panel fails to render. */
+.ws-crash-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100vh;
+  padding: 24px;
+  text-align: center;
+  background: var(--bg-main);
+}
+.ws-crash-title {
+  color: var(--accent-warn);
+  font-weight: 600;
+  font-size: 14px;
+}
+.ws-crash-detail {
+  color: var(--text-secondary);
+  font-size: 12px;
+  max-width: 420px;
+  word-break: break-word;
+}
+.ws-crash-actions {
+  display: flex;
+  gap: 8px;
+}
+.ws-crash-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ws-crash-btn:hover { background: var(--bg-hover); }
+.ws-crash-btn-primary {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}

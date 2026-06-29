@@ -1,4 +1,4 @@
-import { Fragment, useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
@@ -42,6 +42,19 @@ import { sanitizePtyChunk } from './utils/sanitizePty';
 import { HITLInterventionCard, type HITLIntervention } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
+import { ErrorBoundary } from './components/ErrorBoundary';
+
+/**
+ * Inline fallback for a single message row that throws during render. A malformed
+ * turn degrades to this quiet placeholder instead of crashing the whole transcript.
+ */
+function MessageRowFallback(): JSX.Element {
+    return (
+        <div className="ws-error-row" role="alert">
+            ⚠ This message could not be displayed.
+        </div>
+    );
+}
 
 type ToastLevel = 'info' | 'warn' | 'error';
 interface ToastItem { id: number; level: ToastLevel; message: string; }
@@ -1687,7 +1700,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             {(() => {
                                 return messages.map((m, i) => {
                                     return (
-                                <Fragment key={i}>
+                                <ErrorBoundary
+                                    key={m.id ?? `row-${i}`}
+                                    label="message-row"
+                                    resetKeys={[m.id, m.content, m.streaming]}
+                                    fallback={<MessageRowFallback />}
+                                >
                                     {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
                                         <PipelineProgress steps={m.steps} done={!!m.stepsDone} />
                                     )}
@@ -1813,7 +1831,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             post={vscode.postMessage.bind(vscode)}
                                         />
                                     )}
-                                </Fragment>
+                                </ErrorBoundary>
                                     );
                                 });
                             })()}

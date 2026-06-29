@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.23: Webview React error boundaries — 2026-06-29
+**Status:** COMPLETE | **Gates:** npm compile 0 (check-types 0 · lint 0 errors · esbuild ok)
+- Shipped: new reusable `src/workspace/components/ErrorBoundary.tsx` (class boundary, node-or-render-prop `fallback`, `resetKeys` auto-clear, console diagnostic); a root catch-all in `main.tsx` (`WorkspaceCrashPanel` with Try-again/Reload actions) and a per-message-row boundary in `Workspace.tsx` so one malformed turn degrades to an inline notice instead of blanking the transcript; row key switched from array index to `m.id ?? row-${i}`.
+- Key decision: the root boundary wraps `<Workspace>` at the `main.tsx` mount point (not inside its return) so a throw in Workspace's own render body is also caught; per-row isolation is the primary value (whole transcript stays mounted), the root panel is the last resort — boundaries catch render faults only, not the WS reducer's event-handler throws.
+
 ## 8.10.22: Host logger + console migration — `shared/logger.ts` — 2026-06-29
 **Status:** COMPLETE | **Gates:** npm compile 0 · npm lint 0 errors
 - Shipped: filled the 0-byte `src/shared/logger.ts` with a lazy "AILIENANT" output-channel logger (`debug/log/warn/error`, Error-stack + JSON arg formatting); migrated all 13 bare `console.*` calls across the 7 host modules (`extension.ts`, `ws_client.ts`, `workspace_provisioning.ts`, `brain/session.ts`, `providers/workspace_panel.ts`, `providers/mirror.ts`, `api/api_client.ts`) to it. Webview/React `console.*` left out of scope.

@@ -36,7 +36,7 @@
 | 8.10.20 DEBT-039: Benchmark retention | ✅ CLOSED | 2026-06-29 | max-artifacts cap (default 20) + LRU-by-mtime eviction under asyncio+FileLock; mypy . 0/375 · pytest 2041 passed |
 | 8.10.21 FE: contracts.ts WS union | ✅ CLOSED | 2026-06-29 | 58-variant event_type union (35 server + 23 client); session.ts _onWSMessage typed; npm compile 0 · lint 0 |
 | 8.10.22 FE: logger.ts implementation | ✅ CLOSED | 2026-06-29 | AILIENANT output-channel logger; 13 host console.* migrated across 7 modules; npm compile 0 · lint 0 |
-| 8.10.23 FE: Error Boundaries | ⬜ PENDING | — | workspace root + message-row boundaries; key={m.id} fix |
+| 8.10.23 FE: Error Boundaries | ✅ CLOSED | 2026-06-29 | reusable ErrorBoundary class (fallback + resetKeys); root crash panel + per-message-row boundary; key={m.id ?? i}; npm compile 0 |
 | 8.10.24 FE: STATE_COMPACTED handler | ⬜ PENDING | — | system notification chip + aria-live accessibility |
 | 8.10.25 FE: Workspace extraction | ⬜ PENDING | — | 45-branch switch → useWSMessageHandler hook; <800 lines |
 | 8.11 7-Mode Permission System | ✅ CLOSED | 2026-06-23 | — (7-mode matrix + shadow map + YOLO Guard; division gates locked) |
@@ -636,7 +636,7 @@
 - [x] **8.10.22 — FE: `shared/logger.ts` implementation + host-side migration**
   Implement `shared/logger.ts` (currently 0 bytes): wrapper around named VS Code output channel (`vscode.window.createOutputChannel("AILIENANT")`) with `log/warn/error/debug` methods. Migrate all 12 bare `console.*` calls in host side (`extension.ts`, `ws_client.ts`, `workspace_provisioning.ts`, `brain/session.ts`, `providers/workspace_panel.ts`, `providers/mirror.ts`, `api/api_client.ts`) to logger. Webview-side React `console.*` out of scope. **DoD:** `npm run compile` 0 · `npm run lint` 0 · zero bare `console.*` in host modules.
 
-- [ ] **8.10.23 — FE: React Error Boundaries in webview**
+- [x] **8.10.23 — FE: React Error Boundaries in webview**
   Add `ErrorBoundary` components to `ailienant-extension/src/workspace/` (zero exist). Minimum: one at `Workspace.tsx` root (catch-all, render "reload panel" recovery) + one around each message row (single malformed message never crashes transcript). Reusable `ErrorBoundary` class with `fallback` prop. Also fix array-index key (`key={i}`) → `key={m.id}` on message rows to prevent full-list reconciliation on append. **DoD:** `npm run compile` 0 · manual smoke: thrown render error shows fallback, not blank.
 
 - [ ] **8.10.24 — FE: `STATE_COMPACTED` handler + streaming footer `aria-live`**
