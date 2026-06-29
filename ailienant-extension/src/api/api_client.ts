@@ -1,7 +1,8 @@
-"ailienant-extension/src/api/api_client.ts"
+// ailienant-extension/src/api/api_client.ts
 
 import { DirtyBuffer } from '../editor/vfs_reader';
 import * as vscode from 'vscode';
+import { logger } from '../shared/logger';
 
 // Multimodal context the user can attach manually (image or document).
 export interface ManualAttachment {
@@ -422,7 +423,7 @@ export class APIClient {
                 signal: AbortSignal.timeout(10000),
             });
         } catch (e) {
-            console.warn('[ailienant] telemetry/reject failed:', e);
+            logger.warn('[ailienant] telemetry/reject failed:', e);
         }
     }
 }

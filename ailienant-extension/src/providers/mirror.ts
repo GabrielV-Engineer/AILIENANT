@@ -9,6 +9,7 @@
 import * as vscode from 'vscode';
 import { APIClient } from '../api/api_client';
 import { boundingBoxRegistry } from './telemetry';
+import { logger } from '../shared/logger';
 
 export const MIRROR_SCHEME = 'ailienant-vision';
 
@@ -87,7 +88,7 @@ export async function applyMergeCommand(nodeId: string): Promise<void> {
                         timestamp: Date.now(),
                     });
                 } catch (boxErr) {
-                    console.warn(`[ailienant] failed to register bounding box for ${relPath}:`, boxErr);
+                    logger.warn(`[ailienant] failed to register bounding box for ${relPath}:`, boxErr);
                 }
             }
             vscode.window.showInformationMessage(

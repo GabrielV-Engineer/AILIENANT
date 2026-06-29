@@ -1,8 +1,9 @@
 import WebSocket from 'ws';
 import * as vscode from 'vscode';
 import { WsConnectionStatus } from '../shared/config';
+import { logger } from '../shared/logger';
 
-// Eventos que nuestra extensión necesitará escuchar
+// Events the extension needs to listen for.
 export type WSMessageCallback = (data: unknown) => void;
 export type WSErrorCallback = (error: Error) => void;
 export type WSStatusCallback = (status: WsConnectionStatus) => void;
@@ -173,7 +174,7 @@ export class WSClient {
                         this._dashboardBc?.postMessage(parsedData);
                     }
                 } catch (e) {
-                    console.error('Error parseando payload de LangGraph', e);
+                    logger.error('Error parsing LangGraph payload', e);
                 }
             });
 
@@ -201,7 +202,7 @@ export class WSClient {
         } catch (error) {
             this.isConnecting = false;
             this._emitStatus('disconnected');
-            console.error('Error fatal al crear WebSocket', error);
+            logger.error('Fatal error creating WebSocket', error);
         }
     }
 
@@ -212,7 +213,7 @@ export class WSClient {
         // via the WS_STATUS indicator (workspace_panel.ts:459). No host toasts on
         // normal connect/reconnect cycles (they spam the VS Code UI event loop).
         if (status === 'disconnected') {
-            console.error('[WSClient] Connection lost (status=disconnected)');
+            logger.error('[WSClient] Connection lost (status=disconnected)');
         }
     }
 
@@ -249,7 +250,7 @@ export class WSClient {
         this.reconnectAttempts++;
         // Exponential backoff: 2^n * 1000ms + jitter, capped at 30s
         const backoffTime = Math.min(Math.pow(2, this.reconnectAttempts) * 1000 + Math.random() * 500, 30000);
-        console.log(`[WSClient] Reconnecting in ${Math.round(backoffTime)}ms (attempt ${this.reconnectAttempts})`);
+        logger.log(`[WSClient] Reconnecting in ${Math.round(backoffTime)}ms (attempt ${this.reconnectAttempts})`);
         setTimeout(() => this.connect(), backoffTime);
     }
 
@@ -322,7 +323,7 @@ export class WSClient {
         if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(payload));
         } else {
-            console.warn('[WSClient] Cannot send: connection not open');
+            logger.warn('[WSClient] Cannot send: connection not open');
         }
     }
 

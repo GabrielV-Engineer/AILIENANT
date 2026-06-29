@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { logger } from './shared/logger';
 
 /**
  * First-run provisioning of the workspace-local `.ailienant/` home.
@@ -111,8 +112,8 @@ export async function provisionWorkspaceHome(context: vscode.ExtensionContext): 
         await ensureGitignoreBlock(root);
 
         await context.workspaceState.update(PROVISIONED_FLAG, true);
-        console.log('AILIENANT: workspace home provisioned.');
+        logger.log('AILIENANT: workspace home provisioned.');
     } catch (err) {
-        console.warn('AILIENANT: workspace provisioning skipped:', err);
+        logger.warn('AILIENANT: workspace provisioning skipped:', err);
     }
 }

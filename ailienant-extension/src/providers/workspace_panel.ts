@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { logger } from '../shared/logger';
 import * as cp from 'child_process';
 import * as net from 'net';
 import * as crypto from 'crypto';
@@ -640,7 +641,7 @@ export class WorkspacePanelManager {
                             );
                             await GrammarLexer.enrich(diffs);  // best-effort; never throws
                         } catch (err) {
-                            console.error('[AILIENANT] HITL preview failed — forwarding bare approval', err);
+                            logger.error('[AILIENANT] HITL preview failed — forwarding bare approval', err);
                             diffs = [];
                         }
                         panel.webview.postMessage({
