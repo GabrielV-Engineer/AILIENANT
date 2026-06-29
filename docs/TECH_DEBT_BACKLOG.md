@@ -82,7 +82,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-051 | list_tasks cross-role visibility — orchestrator sees all tasks regardless of originating role | LOW | Feature gap | post-8.8.6 | Floating |
 | DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | DB-layer async migration | Floating |
 | DEBT-054 | todo_write / agent_todos channel unbound — no cognitive node wiring | LOW | Integration gap | future integration sprint | Floating |
-| DEBT-039 | Benchmark report artifacts no retention | MEDIUM | Reliability | post-8.5/8.8 | Floating |
+| DEBT-039 | ~~Benchmark report artifacts no retention~~ | MEDIUM | Reliability | 8.10.20 | RESOLVED 2026-06-29 |
 | DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
 | DEBT-027 | MCP servers not auto-connected at launch | LOW | Feature gap | dedicated slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
@@ -381,8 +381,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** Wave 2 / Analyst quality-lens (8.8.2), where search tooling becomes load-bearing for the Analyst.
 - **Notes:** logged at 8.8.1 ship per CLAUDE.md §11.3.
 
-### DEBT-039 [MEDIUM · Floating] — Benchmark report artifacts have no retention policy
+### DEBT-039 [MEDIUM · RESOLVED 2026-06-29, 8.10.20] — Benchmark report artifacts have no retention policy
 
+- **Resolved:** a configurable max-artifacts cap (default 20) with LRU-by-mtime eviction now runs at the write site. `core/benchmark/report.py` gains the pure `prune_artifacts(directory, max_runs)` (newest-N retained, only `*.json` candidates, tolerant of a vanished file, idempotent). `core/benchmark_service.py` reads `benchmark.max_stored_runs` from the global `~/.ailienant/.ailienant.json` (fail-safe to 20) and persists via `_persist_with_retention`, which serializes write+prune under an in-process `asyncio.Lock` plus a cross-process `filelock.FileLock` with all blocking I/O off the event loop (`asyncio.to_thread`). Durability-first: a lock timeout writes the report without pruning. Gate: `tests/benchmark/test_retention.py` (19 tests) including an end-to-end bound (5 runs · cap 3 → 3 artifacts).
 - **Date:** 2026-06-13
 - **Reproduce:** trigger `run_benchmark` repeatedly — each run writes a `~/.ailienant/benchmark/<task_id>.json` that is never pruned.
 - **File(s):** `ailienant-core/core/benchmark_service.py` (`BENCHMARK_DIR`, `run_benchmark`).

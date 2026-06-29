@@ -349,6 +349,7 @@ Proyect_Ailienant/
 │           ├── test_routing_study.py      #  TCI bucketing, H2 savings/retention, anchored pairing
 │           ├── test_report.py             #  Wilson, H1 0/0 guard, schema validity, full-matrix sweep
 │           ├── test_reproducibility.py    #  DoD-check: pinned-SHA surfaced + byte-deterministic report
+│           ├── test_retention.py          #  artifact count cap + LRU-by-mtime eviction, fail-safe config
 │           └── report.schema.json #       committed Draft-07 public contract for report.json (read by test_report)
 ├── ailienant-extension/         # VS Code extension (TypeScript + React)
 │   ├── src/

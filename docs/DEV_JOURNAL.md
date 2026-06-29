@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.20: Benchmark artifact retention — DEBT-039 — 2026-06-29
+**Status:** COMPLETE | **Gates:** mypy . 0/375 · pyright 0 · pytest 2041 passed, 2 skipped
+- Shipped: configurable max-artifacts cap (default 20) with LRU-by-mtime eviction at the write site — `prune_artifacts` in `core/benchmark/report.py` and `_persist_with_retention` in `core/benchmark_service.py`, which reads `benchmark.max_stored_runs` from the global `~/.ailienant/.ailienant.json`; new gate `tests/benchmark/test_retention.py` (19 tests).
+- Key decision: serialize write+prune under an in-process `asyncio.Lock` + cross-process `filelock.FileLock` with all blocking I/O on `asyncio.to_thread` (mirrors `docs_index`), and write durability-first on a lock timeout — a completed report is never lost to cleanup-lock contention.
+- Deferred: none — DEBT-039 closed.
+
 ## 8.10.19: brain/ strict-mode typing pass — DEBT-005 — 2026-06-29
 **Status:** COMPLETE | **Gates:** mypy brain/ --strict 0/33 · mypy . 0/374 · pytest 3 passed
 - Shipped: Cleared 2 strict errors in `brain/agentic_cell.py`: removed stale `# type: ignore[union-attr,index]` on LLM response access (line 142); added scoped `# type: ignore[attr-defined]` on `from core.permissions import` block (line 862) for `PermissionMode` re-exported without `__all__`. Boy-scout: translated Spanish section headers and stripped Phase PM references in `brain/engine.py`.

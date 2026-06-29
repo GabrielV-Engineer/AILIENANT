@@ -28,6 +28,7 @@ canonical order independent of the input ordering.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ from core.benchmark.routing_study import (
     RoutingStudyTable,
     build_routing_study,
 )
+
+logger = logging.getLogger("BENCHMARK_REPORT")
 
 # Semantic version of the report contract. A breaking change to the document
 # shape bumps the major; an additive field bumps the minor.
@@ -771,3 +774,53 @@ def write_report(report: Union[BenchmarkReport, Dict[str, Any]], path: Path) -> 
         tmp_path.unlink(missing_ok=True)
         raise
     return path
+
+
+def prune_artifacts(directory: Path, max_runs: int) -> List[Path]:
+    """Delete all but the newest ``max_runs`` ``*.json`` artifacts in ``directory``.
+
+    Recency is file mtime, so the most recently written report is always retained.
+    Only ``*.json`` files are candidates; the retention lock file and any ``*.tmp``
+    half-written temp file are never touched. Returns the paths actually deleted.
+
+    This is a pure mechanism: the CALLER is responsible for holding the retention
+    lock so two writers cannot race the prune. A vanished file (already gone, e.g.
+    a concurrent prune in another process) is treated as success; any other
+    per-file unlink error is logged and skipped so cleanup of one file never aborts
+    the rest. Idempotent — a second call once the directory is at or below the cap
+    is a no-op.
+    """
+    cap = max(0, max_runs)
+    try:
+        candidates = [p for p in directory.glob("*.json") if p.is_file()]
+    except OSError as exc:
+        logger.warning("prune_artifacts: cannot list %s: %s", directory, exc)
+        return []
+
+    if len(candidates) <= cap:
+        return []
+
+    # Newest last: sort ascending by (mtime, name) and drop the oldest overflow.
+    # The name tie-breaks files sharing a coarse-resolution mtime deterministically.
+    def _sort_key(p: Path) -> Tuple[float, str]:
+        try:
+            return (p.stat().st_mtime, p.name)
+        except OSError:
+            # A file that vanished between glob and stat sorts oldest so it is the
+            # first to be pruned (and its unlink below tolerates the absence).
+            return (float("-inf"), p.name)
+
+    ordered = sorted(candidates, key=_sort_key)
+    to_delete = ordered[: len(ordered) - cap]
+
+    deleted: List[Path] = []
+    for path in to_delete:
+        try:
+            path.unlink()
+            deleted.append(path)
+        except FileNotFoundError:
+            # Already gone — a concurrent pruner won the race; that is success.
+            deleted.append(path)
+        except OSError as exc:
+            logger.warning("prune_artifacts: failed to delete %s: %s", path, exc)
+    return deleted
