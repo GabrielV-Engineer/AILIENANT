@@ -13,7 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
-## 8.13.3: Extension lifecycle owner — devcontainer provisioning driver — 2026-06-30
+## 8.13.4: Host execution-bridge WS contract + DEBT-082 close — 2026-06-30
+**Status:** COMPLETE | **Gates:** mypy 0/377 · pytest 2059 passed (2 skipped) · pyright 0 · npm compile 0 · npm lint 0
+- Shipped: 5 additive devcontainer WS events in `api/ws_contracts.py` (provision request/status + exec request/stream/exit, `request_id`-correlated, env **names-only**) + `ConnectionManager` transport primitives (emit/wait/resolve, terminal-only provision resolve, disconnect-reaping) in `api/websocket_manager.py`; `SCHEMA_EVOLUTION.MD §26`; `tests/test_devcontainer_ws_contract.py` (7 rows). Contract + transport only — receive-loop dispatch + concrete bridge wire in 8.13.5. Boy-Scout: fixed the `ws_contracts.py` header + translated adjacent Spanish log strings.
+- Key decision: DEBT-082 resolved via the host-prerequisite CLI model — `@devcontainers/cli` moved to a dev-only `devDependency` (never shipped in the `.vsix`), the CLI is sourced from PATH / Dev Containers ext, and the provisioner degrades with an actionable remediation; chosen over bundling per §9 (no supply-chain bloat).
+- Resolved: DEBT-082 — host-prerequisite distribution model ratified and documented.
 **Status:** COMPLETE | **Gates:** npm compile 0 · npm lint 0
 - Shipped: `devcontainerProvisioner.ts` (vscode-free DI core — PATH→ext→optional-dep probe, lazy single-flight `up()`, SIGTERM→SIGKILL grace, 10 min timeout-degrade); `devcontainerFactory.ts` (vscode wiring + lazy singleton); wired into `extension.ts`; `@devcontainers/cli` pinned optional dep + esbuild external; `RuntimePanel.tsx` honest scaffold card; 10 mocha unit tests passing.
 - Deferred: DEBT-082 — `@devcontainers/cli` not shipped in the `.vsix` (`.vscodeignore` excludes `node_modules`); packaged extension relies on PATH / Dev Containers ext until 8.13.4 resolves the distribution model.

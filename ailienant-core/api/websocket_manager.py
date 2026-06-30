@@ -43,6 +43,8 @@ from api.ws_contracts import (
     ServerCellAstDiffEvent, CellAstDiffPayload,
     ServerCellGovernorTickEvent, CellGovernorTickPayload,
     ServerStateCompactedEvent, StateCompactedPayload,
+    ServerDevcontainerProvisionRequestEvent, DevcontainerProvisionRequestPayload,
+    ServerDevcontainerExecRequestEvent, DevcontainerExecRequestPayload,
 )
 
 from core.telemetry_log import log_ws_payload
@@ -126,6 +128,17 @@ class ConnectionManager:
         # Inbound flood guard — per-client token bucket (tokens + last-refill clock)
         self._inbound_tokens: Dict[str, float] = {}
         self._inbound_refill_at: Dict[str, float] = {}
+        # Devcontainer host bridge — request/response waiters keyed by request_id
+        # (UUID4). Provisioning resolves on a terminal status; exec aggregates
+        # streamed chunks until the exit frame arrives.
+        self._devc_provision_events: Dict[str, asyncio.Event] = {}
+        self._devc_provision_state: Dict[str, str] = {}
+        self._devc_exec_events: Dict[str, asyncio.Event] = {}
+        self._devc_exec_buffers: Dict[str, Dict[str, List[str]]] = {}
+        self._devc_exec_exit: Dict[str, int] = {}
+        # Reverse index (session_id -> in-flight request_ids) so a disconnect reaps
+        # any suspended devcontainer waiter in O(k).
+        self._client_pending_devc: Dict[str, Set[str]] = {}
 
     def has_client(self, session_id: str) -> bool:
         """True if a live WS client is connected for this session (gates disk writes)."""
@@ -190,7 +203,7 @@ class ConnectionManager:
                 return False
         self.active_connections[client_id] = websocket
         logger.info(
-            "🟢 IDE Conectado: %s. Total activos: %d",
+            "🟢 IDE connected: %s. Total active: %d",
             client_id,
             len(self.active_connections),
         )
@@ -237,6 +250,18 @@ class ConnectionManager:
             patch_event = self._patch_acks.pop(patch_id, None)
             if patch_event is not None:
                 patch_event.set()
+        # Devcontainer bridge waiters: pop buffers/state before set() so the woken
+        # coroutine resumes to an empty result and resolves to None (never hangs).
+        for request_id in self._client_pending_devc.pop(cid, set()):
+            self._devc_provision_state.pop(request_id, None)
+            self._devc_exec_buffers.pop(request_id, None)
+            self._devc_exec_exit.pop(request_id, None)
+            provision_event = self._devc_provision_events.pop(request_id, None)
+            if provision_event is not None:
+                provision_event.set()
+            exec_event = self._devc_exec_events.pop(request_id, None)
+            if exec_event is not None:
+                exec_event.set()
         # fire every registered session-cleanup hook (e.g.,
         # TaskService.cleanup_session purges the tool-call registry). Hooks
         # are registered from main.py during startup; we never let a hook
@@ -297,7 +322,7 @@ class ConnectionManager:
         try:
             result = ws_adapter.validate_json(raw_json_string)
         except ValidationError as e:
-            logger.error("⚠️ Inyección rechazada en la frontera: Payload malformado. Detalles: %s", e)
+            logger.error("⚠️ Injection rejected at the boundary: malformed payload. Details: %s", e)
             return None
         # Mirror the accepted inbound event to the live telemetry sink.
         log_ws_payload(
@@ -937,6 +962,153 @@ class ConnectionManager:
             logger.warning("⚠️ patch ack for unknown patch_id: %s", patch_id)
             return
         self._patch_ack_results[patch_id] = result
+        event.set()
+
+    # ------------------------------------------------------------------
+    # Devcontainer host execution bridge (trusted tier)
+    # ------------------------------------------------------------------
+    # Request/response plumbing the DevcontainerSandboxAdapter routes over: a
+    # provision round-trip (ensure_provisioned) and an exec round-trip that
+    # aggregates streamed chunks until the exit frame. Mirrors the patch-ack
+    # discipline — register a per-request_id Event, suspend on it, clean up in a
+    # finally, and let a disconnect reap the waiter so no path hangs.
+
+    async def emit_devcontainer_provision_request(
+        self, session_id: str, request_id: str, cwd: str
+    ) -> None:
+        """Ask the host to bring the workspace devcontainer up (idempotent host-side)."""
+        await self.send_personal_message(
+            session_id,
+            ServerDevcontainerProvisionRequestEvent(
+                data=DevcontainerProvisionRequestPayload(
+                    session_id=session_id, request_id=request_id, cwd=cwd
+                )
+            ),
+        )
+
+    async def emit_devcontainer_exec_request(
+        self,
+        session_id: str,
+        request_id: str,
+        command: str,
+        cwd: str,
+        env_keys: Optional[List[str]] = None,
+    ) -> None:
+        """Dispatch a command to run inside the host's provisioned devcontainer.
+
+        ``env_keys`` carries allowlisted variable NAMES only — never values; the
+        host resolves the values from its own environment.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerDevcontainerExecRequestEvent(
+                data=DevcontainerExecRequestPayload(
+                    session_id=session_id,
+                    request_id=request_id,
+                    command=command,
+                    cwd=cwd,
+                    env_keys=env_keys or [],
+                )
+            ),
+        )
+
+    async def wait_devcontainer_provision(
+        self, request_id: str, session_id: str, timeout: float
+    ) -> Optional[str]:
+        """Suspend until a terminal provisioning status arrives or timeout fires.
+
+        Returns the terminal ``state`` (``ready`` / ``timeout`` / ``failed``) or
+        ``None`` on wall-clock timeout. Interim ``provisioning`` ticks never wake
+        the waiter (see ``resolve_devcontainer_provision``).
+        """
+        event = asyncio.Event()
+        self._devc_provision_events[request_id] = event
+        self._client_pending_devc.setdefault(session_id, set()).add(request_id)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return self._devc_provision_state.pop(request_id, None)
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ devcontainer provision timeout (request_id=%s)", request_id)
+            return None
+        finally:
+            self._devc_provision_events.pop(request_id, None)
+            self._devc_provision_state.pop(request_id, None)
+            self._discard_pending_devc(session_id, request_id)
+
+    async def wait_devcontainer_exec(
+        self, request_id: str, session_id: str, timeout: float
+    ) -> Optional[Dict[str, Any]]:
+        """Suspend until the command's exit frame arrives or timeout fires.
+
+        Returns ``{"stdout": str, "stderr": str, "exit_code": int}`` (the streamed
+        chunks joined) or ``None`` on timeout / disconnect.
+        """
+        event = asyncio.Event()
+        self._devc_exec_events[request_id] = event
+        self._devc_exec_buffers[request_id] = {"stdout": [], "stderr": []}
+        self._client_pending_devc.setdefault(session_id, set()).add(request_id)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            exit_code = self._devc_exec_exit.pop(request_id, None)
+            if exit_code is None:
+                # Woken by a disconnect-reap rather than an exit frame.
+                return None
+            buf = self._devc_exec_buffers.get(request_id, {"stdout": [], "stderr": []})
+            return {
+                "stdout": "".join(buf.get("stdout", [])),
+                "stderr": "".join(buf.get("stderr", [])),
+                "exit_code": exit_code,
+            }
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ devcontainer exec timeout (request_id=%s)", request_id)
+            return None
+        finally:
+            self._devc_exec_events.pop(request_id, None)
+            self._devc_exec_buffers.pop(request_id, None)
+            self._devc_exec_exit.pop(request_id, None)
+            self._discard_pending_devc(session_id, request_id)
+
+    def _discard_pending_devc(self, session_id: str, request_id: str) -> None:
+        """Drop a finished request from the session's reverse index."""
+        pending = self._client_pending_devc.get(session_id)
+        if pending is not None:
+            pending.discard(request_id)
+            if not pending:
+                self._client_pending_devc.pop(session_id, None)
+
+    def resolve_devcontainer_provision(self, request_id: str, state: str) -> None:
+        """Called from the WS receive loop on client_devcontainer_provision_status.
+
+        Only a terminal state (``ready`` / ``timeout`` / ``failed``) stores the
+        result and wakes the waiter. An interim ``provisioning`` tick is progress
+        telemetry — logged, but it must not resolve the waiter.
+        """
+        if state == "provisioning":
+            logger.info("devcontainer provisioning in progress (request_id=%s)", request_id)
+            return
+        event = self._devc_provision_events.get(request_id)
+        if event is None:
+            logger.warning("⚠️ devcontainer provision status for unknown request_id: %s", request_id)
+            return
+        self._devc_provision_state[request_id] = state
+        event.set()
+
+    def append_devcontainer_stream(self, request_id: str, stream: str, chunk: str) -> None:
+        """Called from the WS receive loop on client_devcontainer_exec_stream."""
+        buf = self._devc_exec_buffers.get(request_id)
+        if buf is None:
+            # Late or unknown request — the waiter already resolved/timed out.
+            logger.info("devcontainer stream chunk for unknown request_id: %s", request_id)
+            return
+        buf.setdefault(stream, []).append(chunk)
+
+    def resolve_devcontainer_exit(self, request_id: str, exit_code: int) -> None:
+        """Called from the WS receive loop on client_devcontainer_exec_exit."""
+        event = self._devc_exec_events.get(request_id)
+        if event is None:
+            logger.warning("⚠️ devcontainer exit for unknown request_id: %s", request_id)
+            return
+        self._devc_exec_exit[request_id] = exit_code
         event.set()
 
     # ------------------------------------------------------------------

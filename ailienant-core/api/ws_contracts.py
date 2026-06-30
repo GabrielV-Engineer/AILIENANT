@@ -1,4 +1,4 @@
-# alienant-core/core/ws_contracts.py
+# ailienant-core/api/ws_contracts.py
 
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Literal, Optional, Union
@@ -14,7 +14,7 @@ class FileUpdatePayload(BaseModel):
     filepath: str = Field(..., description="Absolute path of the file in the IDE")
     content: str = Field(..., description="Current content in the VS Code buffer")
     # This is the heart of the OCC that we defined in state.py
-    document_version_id: str = Field(..., description="Timestamp o Hash del IDE")
+    document_version_id: str = Field(..., description="Timestamp or hash from the IDE")
 
 
 class CodeProposalPayload(BaseModel):
@@ -1031,6 +1031,100 @@ class ServerStateCompactedEvent(BaseModel):
 
 
 # =====================================================================
+# 17c. DEVCONTAINER HOST EXECUTION BRIDGE (Trusted-Tier)
+# =====================================================================
+# The trusted devcontainer tier never shells Docker in the backend: the
+# DevcontainerSandboxAdapter routes provisioning and command execution over this
+# additive contract to the IDE host, which owns the local container runtime.
+#
+# Every event carries a ``request_id`` (UUID4) correlation key so concurrent
+# commands on one session never cross-talk and a retried inbound frame is
+# idempotent. ``env_keys`` is allowlisted variable NAMES only — never values: the
+# host resolves the values from its own environment when invoking
+# ``devcontainer exec``, so no secret value transits the loopback bridge.
+#
+# Provision ``state``: ``provisioning`` is an interim progress tick; ``ready`` /
+# ``timeout`` / ``failed`` are terminal (only terminal states resolve the waiter).
+
+
+class DevcontainerProvisionRequestPayload(BaseModel):
+    """Backend → host: bring the workspace devcontainer up (idempotent host-side)."""
+
+    session_id: str
+    request_id: str          # UUID4 — correlates the status reply
+    cwd: str
+
+
+class ServerDevcontainerProvisionRequestEvent(BaseModel):
+    event_type: Literal["server_devcontainer_provision_request"] = "server_devcontainer_provision_request"
+    data: DevcontainerProvisionRequestPayload
+
+
+class DevcontainerProvisionStatusPayload(BaseModel):
+    """Host → backend: provisioning lifecycle status for a request_id.
+
+    ``provisioning`` is an interim progress tick (surfaced to the runtime panel);
+    ``ready`` / ``timeout`` / ``failed`` are terminal and resolve the waiter.
+    """
+
+    session_id: str
+    request_id: str
+    state: Literal["provisioning", "ready", "timeout", "failed"]
+
+
+class ClientDevcontainerProvisionStatusEvent(BaseModel):
+    event_type: Literal["client_devcontainer_provision_status"] = "client_devcontainer_provision_status"
+    data: DevcontainerProvisionStatusPayload
+
+
+class DevcontainerExecRequestPayload(BaseModel):
+    """Backend → host: run one command inside the provisioned devcontainer.
+
+    ``env_keys`` lists allowlisted environment-variable NAMES the host should
+    forward from its own environment — never values, so no secret transits the
+    wire. Optional/defaulted so a host that ignores it degrades gracefully.
+    """
+
+    session_id: str
+    request_id: str          # UUID4 — correlates the stream chunks + exit
+    command: str
+    cwd: str
+    env_keys: List[str] = Field(default_factory=list)
+
+
+class ServerDevcontainerExecRequestEvent(BaseModel):
+    event_type: Literal["server_devcontainer_exec_request"] = "server_devcontainer_exec_request"
+    data: DevcontainerExecRequestPayload
+
+
+class DevcontainerExecStreamPayload(BaseModel):
+    """Host → backend: an incremental stdout/stderr chunk for a running command."""
+
+    session_id: str
+    request_id: str
+    stream: Literal["stdout", "stderr"]
+    chunk: str
+
+
+class ClientDevcontainerExecStreamEvent(BaseModel):
+    event_type: Literal["client_devcontainer_exec_stream"] = "client_devcontainer_exec_stream"
+    data: DevcontainerExecStreamPayload
+
+
+class DevcontainerExecExitPayload(BaseModel):
+    """Host → backend: the command finished; carries the terminal exit code."""
+
+    session_id: str
+    request_id: str
+    exit_code: int
+
+
+class ClientDevcontainerExecExitEvent(BaseModel):
+    event_type: Literal["client_devcontainer_exec_exit"] = "client_devcontainer_exec_exit"
+    data: DevcontainerExecExitPayload
+
+
+# =====================================================================
 # 18. THE MASTER CONTRACT O(1)
 # =====================================================================
 
@@ -1096,4 +1190,9 @@ WebSocketMessage = Union[
     ServerCellAstDiffEvent,          # cell glass-box: AST mutation applied
     ServerCellGovernorTickEvent,     # cell glass-box: budget governor tick
     ServerStateCompactedEvent,       # context pipeline: Layer 4 FIFO eviction
+    ServerDevcontainerProvisionRequestEvent,   # devcontainer bridge: provision request (→ host)
+    ClientDevcontainerProvisionStatusEvent,    # devcontainer bridge: provision status (← host)
+    ServerDevcontainerExecRequestEvent,        # devcontainer bridge: exec request (→ host)
+    ClientDevcontainerExecStreamEvent,         # devcontainer bridge: exec stdout/stderr chunk (← host)
+    ClientDevcontainerExecExitEvent,           # devcontainer bridge: exec exit code (← host)
 ]

@@ -70,7 +70,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM | Architecture | future graph slice | Blocked |
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW | Capability gap | long-term | Floating |
 | DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
-| DEBT-082 | Bundled `@devcontainers/cli` not shipped in the `.vsix` (`.vscodeignore` excludes `node_modules`; CLI is esbuild-external) — packaged extension relies on PATH / Dev Containers ext | MEDIUM | Packaging | 8.13.4 | Locked |
+| DEBT-082 | Bundled `@devcontainers/cli` not shipped in the `.vsix` (`.vscodeignore` excludes `node_modules`; CLI is esbuild-external) — packaged extension relies on PATH / Dev Containers ext | MEDIUM | Packaging | 8.13.4 | RESOLVED 2026-06-30 |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
@@ -394,15 +394,12 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** **RE-SCOPED → Division 8.13** (Polyglot Devcontainer Execution Layer, blueprint `docs/PHASE_8.13_BLUEPRINT.md`). The "extend our image with node:20-slim" approach was rejected as a TS/Python runtime bias (O(N)-runtime maintenance trap). Instead, the polyglot **devcontainer** adapter resolves it for the agent's *trusted* project execution, delegating image build/caching to the user's local Docker daemon; the untrusted benchmark TS lane stays `unsupported_runtime` (the devcontainer never runs untrusted model output — split-by-trust, §4).
 - **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. Until 8.13 lands, TS Pass@1 is `unsupported_runtime`; the Python subset DoD holds.
 
-### DEBT-082 [MEDIUM · Locked] — Bundled `@devcontainers/cli` not shipped in the `.vsix`
+### DEBT-082 [MEDIUM · RESOLVED 2026-06-30, 8.13.4] — Bundled `@devcontainers/cli` not shipped in the `.vsix`
 
-- **Date:** 2026-06-30
-- **Reproduce:** pack the extension (`vsce package`) and install the `.vsix` on a machine with no `devcontainer` on PATH and the Dev Containers extension absent — `DevcontainerProvisioner.resolveCli()` returns `source: 'none'` and `up()` degrades; the optional dep is present in `node_modules` for unpackaged dev runs only.
-- **File(s):** `ailienant-extension/src/providers/devcontainerProvisioner.ts` (`resolveCli`); `ailienant-extension/package.json` (`optionalDependencies`); `ailienant-extension/esbuild.js` (`external: ['@devcontainers/cli']`); `.vscodeignore` (excludes `node_modules/**`).
-- **Error:** packaging gap, not a runtime defect — `@devcontainers/cli` is declared as an optional dep and excluded from esbuild (it is a child-process bin, not an import), so `.vscodeignore`'s `node_modules/**` rule excludes it from the `.vsix`. In a packaged extension the CLI must come from PATH or the Dev Containers extension.
-- **Blocked by:** nothing structural; resolution options: (a) un-ignore `@devcontainers/cli/dist/**` in `.vscodeignore` and add a CLI-bundle entry to `esbuild.js`, or (b) always rely on PATH / Dev Containers extension and document the requirement. The correct option depends on the distribution model chosen at 8.13.4.
-- **Phase:** 8.13.4 (host execution-bridge wire contract).
-- **Notes:** declared packaging boundary of 8.13.3 per CLAUDE.md §11.3; safe because 8.13.3 never executes the CLI (the driver is dormant until the 8.13.4 host bridge wires it). Deferred to avoid a false "bundled CLI works in production" claim.
+- **Date:** 2026-06-30 · **Resolved:** 2026-06-30 (8.13.4)
+- **Reproduce (was):** pack the extension (`vsce package`) and install the `.vsix` on a machine with no `devcontainer` on PATH and the Dev Containers extension absent — `up()` degrades; the optional dep was present in `node_modules` for unpackaged dev runs only.
+- **Error:** packaging gap, not a runtime defect — `@devcontainers/cli` is excluded from esbuild (it is a child-process bin, not an import), so `.vscodeignore`'s `node_modules/**` rule excluded it from the `.vsix`. In a packaged extension the CLI must come from PATH or the Dev Containers extension.
+- **Resolution — host-prerequisite distribution model (option b):** the runnable `devcontainer` CLI is a documented **host prerequisite** (PATH or the Dev Containers extension `ms-vscode-remote.remote-containers`), not bundled. Chosen over bundling per CLAUDE.md §9 (lightest viable dependency; bundling the CLI's transitive runtime tree bloats the `.vsix` and widens the supply-chain surface), and because trusted execution already requires a local Docker daemon — requiring the CLI alongside it is reasonable. Concretely: `@devcontainers/cli` moved `optionalDependencies` → `devDependencies` (dev/test-only, never shipped); `DevcontainerProvisioner._doUp` now emits an actionable remediation (`CLI_MISSING_HINT`) on a `'path'`-source spawn and on an ENOENT failure, naming both supported ways to provide the CLI; `.vscodeignore` and `esbuild.js` are already the intended end state (unchanged). Documented in `PHASE_8.13_BLUEPRINT.md §3.5` + `DEVELOPERS.md`.
 
 ### DEBT-024 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — HITL inline-diff transport ships full file content (O(N)) instead of a unified diff (O(Δ))
 

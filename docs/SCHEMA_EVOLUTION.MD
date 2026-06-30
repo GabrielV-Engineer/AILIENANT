@@ -678,6 +678,9 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 **Context pipeline:**
 `state_compacted` (see §25)
 
+**Devcontainer host bridge:**
+`server_devcontainer_provision_request` · `client_devcontainer_provision_status` · `server_devcontainer_exec_request` · `client_devcontainer_exec_stream` · `client_devcontainer_exec_exit` (see §26)
+
 ---
 
 ## §18 — WBSStep Dependency Graph Field
@@ -902,3 +905,45 @@ unknown event; the new variant is purely additive to the `WebSocketMessage` unio
 
 **Backward-compat:** additive event + additive union member. No existing event, field, or
 checkpoint shape is altered.
+
+---
+
+## §26 — Devcontainer Host Execution Bridge (Trusted-Tier WS Contract)
+
+**Change:** five additive WS events that let the backend `DevcontainerSandboxAdapter`
+(`core/sandbox.py`) route trusted-tier provisioning and command execution over the existing
+host socket — the host owns the local container runtime and runs `devcontainer up` / `exec`.
+This is the version-tagged realization of the non-normative wire sketch in `PHASE_8.13_BLUEPRINT.md §3.2`.
+
+**New events** (`api/ws_contracts.py`), all carrying a `request_id` (UUID4) correlation key so
+concurrent commands on one session never cross-talk and a retried inbound frame is idempotent:
+
+| Direction | `event_type` | Payload |
+|---|---|---|
+| server → host | `server_devcontainer_provision_request` | `session_id, request_id, cwd` |
+| host → server | `client_devcontainer_provision_status` | `session_id, request_id, state` |
+| server → host | `server_devcontainer_exec_request` | `session_id, request_id, command, cwd, env_keys: List[str]` |
+| host → server | `client_devcontainer_exec_stream` | `session_id, request_id, stream, chunk` |
+| host → server | `client_devcontainer_exec_exit` | `session_id, request_id, exit_code` |
+
+**`state` semantics:** `state ∈ {provisioning, ready, timeout, failed}`. `provisioning` is an
+interim progress tick (consumed by the runtime panel); `ready`/`timeout`/`failed` are terminal and
+are the only states that resolve the provision waiter. `stream ∈ {stdout, stderr}`.
+
+**Secret hygiene:** `env_keys` carries allowlisted environment-variable **names only — never
+values** (`Field(default_factory=list)`, optional). The host resolves the values from its own
+environment when invoking `devcontainer exec`, so no secret value transits the loopback bridge.
+This is the wire encoding of the blueprint's "`env_whitelist` is not a wire field" — names are not
+secrets; the concrete bridge maps `env_whitelist` dict → `list(env_whitelist.keys())`.
+
+**Producer/transport:** `ConnectionManager` (`api/websocket_manager.py`) gains
+`emit_devcontainer_provision_request` / `emit_devcontainer_exec_request` (server→host) and the
+waiter primitives `wait_devcontainer_provision` / `wait_devcontainer_exec` (request-id keyed,
+mirroring `wait_patch_ack`), resolved by `resolve_devcontainer_provision` (terminal-only),
+`append_devcontainer_stream`, `resolve_devcontainer_exit`. A disconnect reaps any in-flight waiter
+(`_reap_client_state`) so no path hangs.
+
+**Consumer:** the receive-loop dispatch (`main.py`) and the concrete `HostExecutionBridge`
+implementation that consumes these primitives are wired in a later sub-phase; the contract +
+transport ship first. Per the additive-only discipline (CLAUDE.md §10), existing consumers tolerate
+the unknown events; all five are purely additive `WebSocketMessage` union members.

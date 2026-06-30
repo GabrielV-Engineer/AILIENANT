@@ -80,9 +80,12 @@ exec_exit      { session_id, code }
 provisioning   { state: up|ready|timeout }
 ```
 
-`env_whitelist` is deliberately **not** a wire field: the adapter applies it host-side when invoking
-`devcontainer exec`, so no secret values transit the loopback bridge (the host already holds the user's
-environment — see §3.4).
+Secret **values** are deliberately **not** wire fields. The realized contract (`SCHEMA_EVOLUTION.MD §26`)
+carries `env_keys` — allowlisted variable **names only, never values**: the host resolves the values from
+its own environment when invoking `devcontainer exec`, so no secret value transits the loopback bridge
+(the host already holds the user's environment — see §3.4). Each event also carries a `request_id` (UUID4)
+correlation key so concurrent commands on one session never cross-talk and a retried inbound frame is
+idempotent (Charter §5.3).
 
 ### 3.3 Async / non-blocking
 `devcontainer up` is minutes-long. It runs **once per workspace** (lazy, idempotent, single-flight — the
@@ -101,9 +104,14 @@ as the user intends — an explicitly chosen boundary, not an oversight.
 
 ### 3.5 Dependency governance (§9)
 `@devcontainers/cli` is the reference implementation of the open devcontainer spec — justified by
-"standardization over invention." It is a **soft/optional** dependency: probed at runtime and degraded
-when absent, **pinned** in the extension's `package.json` (Node). Nothing is added to Python
-`requirements`.
+"standardization over invention." **Distribution model (host-prerequisite, ratified 8.13.4):** the
+runnable `devcontainer` CLI is a **host prerequisite** sourced from the user's PATH or the installed Dev
+Containers extension; it is **not** bundled in the `.vsix`. The `@devcontainers/cli` package is a
+dev/test-only `devDependency` (the build excludes `node_modules`), chosen over vendoring the CLI's
+transitive runtime tree per §9 (lightest viable dependency, no supply-chain bloat) and because trusted
+execution already requires a local Docker daemon. The provisioner probes at runtime and degrades with an
+actionable remediation message naming both supported sources when neither is present. Nothing is added to
+Python `requirements`.
 
 ## 4. Work Breakdown (mirrors PROJECT_MANIFEST §8.13)
 
