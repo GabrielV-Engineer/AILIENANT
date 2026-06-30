@@ -697,11 +697,11 @@
 
 ---
 
-### Division 8.13 — Polyglot Devcontainer Execution Layer ⬜
+### Division 8.13 — Polyglot Devcontainer Execution Layer — [ADR-762] ⬜
 
-> Resolves DEBT-035 and the broader TS/Python runtime bias by delegating environment provisioning to the **devcontainer specification** (built/cached by the user's local Docker daemon via standard VS Code infrastructure) instead of hardcoding language runtimes into a single image. Binding blueprint: `docs/PHASE_8.13_BLUEPRINT.md`. Three locked decisions: **(1) split by trust** — the new tier serves the agent's *trusted* project execution; the benchmark oracle keeps the locked Docker cage for *untrusted* model output (the §4 invariant is preserved, not dissolved); **(2) extension-owned lifecycle** — VS Code-native; the backend executes through a host bridge; **(3) `@devcontainers/cli` is a soft/optional dependency** (probe + degrade), justified by "standardization over invention" (§9). ADR to be assigned.
+> Resolves DEBT-035 and the broader TS/Python runtime bias by delegating environment provisioning to the **devcontainer specification** (built/cached by the user's local Docker daemon via standard VS Code infrastructure) instead of hardcoding language runtimes into a single image. Binding blueprint: `docs/PHASE_8.13_BLUEPRINT.md`. Three locked decisions: **(1) split by trust** — the new tier serves the agent's *trusted* project execution; the benchmark oracle keeps the locked Docker cage for *untrusted* model output (the §4 invariant is preserved, not dissolved); **(2) extension-owned lifecycle** — VS Code-native; the backend executes through a host bridge; **(3) `@devcontainers/cli` is a soft/optional dependency** (probe + degrade), justified by "standardization over invention" (§9). ADR-762.
 
-- [ ] **8.13.1 — Blueprint + ADR.**
+- [x] **8.13.1 — Blueprint + ADR.**
   Author/ratify `docs/PHASE_8.13_BLUEPRINT.md`: trust-split model, extension-owned lifecycle, backend host-bridge contract, CLI probe/degrade order, security model for the trusted tier, §9 dependency justification.
 - [ ] **8.13.2 — `DevcontainerSandboxAdapter` backend tier.**
   New `SandboxAdapter` subclass in `core/sandbox.py`; `execute()` / `open_session()` route the command over the host bridge rather than shelling Docker. Selected by `select/resolve` only for *trusted* execution; the locked `DockerSandboxAdapter` oracle path is untouched. Files: `core/sandbox.py`.

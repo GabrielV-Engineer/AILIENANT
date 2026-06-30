@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.13.1: Polyglot Devcontainer Execution Layer — Blueprint + ADR ratified — 2026-06-29
+**Status:** COMPLETE | **Gates:** docs-only
+- Shipped: `docs/PHASE_8.13_BLUEPRINT.md` ratified (ADR-762); split-by-trust invariant, extension-owned lifecycle, host-bridge contract (+ non-normative wire sketch), CLI probe/degrade order, trusted-tier security model, and §9 soft-dep justification frozen binding; manifest header + overview tagged [ADR-762].
+- Key decision: the devcontainer tier serves only *trusted* project execution; the untrusted benchmark oracle keeps its locked Docker cage (Charter §4 invariant preserved, not dissolved).
+- Deferred: DEBT-035 — resolved across 8.13.2–8.13.6 (adapter + host-bridge + wiring + gate); this sub-phase freezes the contract only.
+
+---
+
 ## 8.10.25: Workspace.tsx store-backed WS controller extraction — 2026-06-29
 **Status:** COMPLETE | **Gates:** npm compile 0 (check-types 0 · lint 0 errors · esbuild ok)
 - Shipped: Memory-only `useChatStore` (22 live fields + `hydrate()`); 45-branch WS dispatch extracted to `useWSMessageHandler()` (no-arg, `getState()` synchronous truth, once-registered listener, rAF buffers, stall watchdog); session transcript effects in `useSessionPersistence()`; `ToastStack.tsx` component; `types.ts` + `utils/messageDispatchHelpers.ts`; `Workspace.tsx` 1981 → 726 lines.

@@ -1,8 +1,8 @@
 # Division 8.13 Blueprint — Polyglot Devcontainer Execution Layer
 
-**Status:** Planned (authored during 8.10.6; binding once 8.13 becomes the active phase).
+**Status:** Ratified — binding (Division 8.13 active).
 **Resolves:** DEBT-035 (TypeScript sandbox) and the broader TS/Python runtime bias.
-**ADR:** to be assigned.
+**ADR:** ADR-762.
 
 ---
 
@@ -70,6 +70,20 @@ provisioning lives where the Docker daemon and the user's `devcontainer.json` ar
 mirrors the off-process `NativeHITLSandboxAdapter` (channel + DLQ-on-timeout), which already executes
 off the backend process.
 
+**Illustrative wire shape** (non-normative — the authoritative, version-tagged contract is defined in
+8.13.4 in `SCHEMA_EVOLUTION.MD`, additive-only per §10; field names here may change):
+
+```
+exec_request   { session_id, cmd, cwd }
+exec_stream    { session_id, stream: out|err, chunk }
+exec_exit      { session_id, code }
+provisioning   { state: up|ready|timeout }
+```
+
+`env_whitelist` is deliberately **not** a wire field: the adapter applies it host-side when invoking
+`devcontainer exec`, so no secret values transit the loopback bridge (the host already holds the user's
+environment — see §3.4).
+
 ### 3.3 Async / non-blocking
 `devcontainer up` is minutes-long. It runs **once per workspace** (lazy, idempotent, single-flight — the
 same lazy-init discipline as the Docker daemon probe), emits a `provisioning` status event, and never
@@ -79,8 +93,11 @@ notice), never hangs — the never-hang contract from the gateway HITL-degrade w
 ### 3.4 Security model (trusted tier)
 Even trusted, AILIENANT keeps guardrails: the command's environment still passes through the adapter's
 `env_whitelist` (host API keys never leak); the adapter never runs untrusted model output (that stays in
-the locked cage). The blueprint documents that user lifecycle scripts (`postCreateCommand`) run as the
-user intends — that is the trusted boundary, explicitly chosen.
+the locked cage). **Tier selection is the hard guard:** `select`/`resolve` route only *trusted* project
+execution (`run_command`, the user's own tests, interactive sessions) to this adapter — untrusted oracle
+output can never resolve here; it stays in the locked `DockerSandboxAdapter` cage (§2). The trusted
+boundary is the user's own `devcontainer.json` / `postCreateCommand` / repo: those lifecycle scripts run
+as the user intends — an explicitly chosen boundary, not an oversight.
 
 ### 3.5 Dependency governance (§9)
 `@devcontainers/cli` is the reference implementation of the open devcontainer spec — justified by
@@ -90,7 +107,7 @@ when absent, **pinned** in the extension's `package.json` (Node). Nothing is add
 
 ## 4. Work Breakdown (mirrors PROJECT_MANIFEST §8.13)
 
-- **8.13.1** Blueprint + ADR (this document ratified, ADR assigned).
+- **8.13.1** Blueprint + ADR — ✅ ratified (ADR-762).
 - **8.13.2** `DevcontainerSandboxAdapter` backend tier + host-bridge `execute()`/`open_session()`.
 - **8.13.3** Extension lifecycle owner: probe/degrade, `up`/`exec` driver, non-blocking build + timeout
   degrade, `RuntimePanel` status.
