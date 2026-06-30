@@ -703,7 +703,7 @@
 
 - [x] **8.13.1 — Blueprint + ADR.**
   Author/ratify `docs/PHASE_8.13_BLUEPRINT.md`: trust-split model, extension-owned lifecycle, backend host-bridge contract, CLI probe/degrade order, security model for the trusted tier, §9 dependency justification.
-- [ ] **8.13.2 — `DevcontainerSandboxAdapter` backend tier.**
+- [x] **8.13.2 — `DevcontainerSandboxAdapter` backend tier.**
   New `SandboxAdapter` subclass in `core/sandbox.py`; `execute()` / `open_session()` route the command over the host bridge rather than shelling Docker. Selected by `select/resolve` only for *trusted* execution; the locked `DockerSandboxAdapter` oracle path is untouched. Files: `core/sandbox.py`.
 - [ ] **8.13.3 — Extension lifecycle owner.**
   Probe order: Dev Containers extension (`ms-vscode-remote.remote-containers`) → bundled `@devcontainers/cli` (`devcontainer up` / `exec`) → degrade. Non-blocking build (lazy, single-flight, idempotent) with a timeout degrade; provisioning status surfaced in `RuntimePanel.tsx`. Files: `ailienant-extension/src/` (provisioning driver), `RuntimePanel.tsx`, `package.json` (pinned optional dep).

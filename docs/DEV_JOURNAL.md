@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.13.2: DevcontainerSandboxAdapter — trusted-tier backend over host bridge — 2026-06-30
+**Status:** COMPLETE | **Gates:** mypy 0/376 · pytest 2053 passed (2 skipped) · pyright 0
+- Shipped: `DevcontainerSandboxAdapter` in `core/sandbox.py` — a thin trust-tier router that delegates to a new `HostExecutionBridge` Protocol seam; lazy single-flight provisioning, DLQ-on-timeout, never-crash degrade mirroring NativeHITL; `tests/test_devcontainer_adapter.py` (12 rows). Boy-Scout: explicit `import docker.errors` clears 2 pre-existing pyright stub errors.
+- Key decision: the adapter is inert w.r.t. the safety resolver (no `ACTIVE_TIER`/`get_active_adapter` change) so the untrusted benchmark oracle keeps its locked Docker cage, and interactive sessions delegate to the bridge rather than building a throwaway PTY-over-WS backend.
+- Deferred: DEBT-035 — host bridge + tier-selection wiring still pending (8.13.3–8.13.5); the adapter degrades to `[devcontainer_bridge_unavailable]` until they land.
+
+---
+
 ## 8.13.1: Polyglot Devcontainer Execution Layer — Blueprint + ADR ratified — 2026-06-29
 **Status:** COMPLETE | **Gates:** docs-only
 - Shipped: `docs/PHASE_8.13_BLUEPRINT.md` ratified (ADR-762); split-by-trust invariant, extension-owned lifecycle, host-bridge contract (+ non-normative wire sketch), CLI probe/degrade order, trusted-tier security model, and §9 soft-dep justification frozen binding; manifest header + overview tagged [ADR-762].

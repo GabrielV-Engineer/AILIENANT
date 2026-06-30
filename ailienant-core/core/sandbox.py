@@ -42,18 +42,20 @@ import shlex
 import tempfile
 from abc import ABC, abstractmethod
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Protocol, Tuple
 
 if TYPE_CHECKING:
     from core.workspace_sync import SyncSurface
 
 import docker
+import docker.errors  # explicit submodule import so the type checker resolves docker.errors.*
 import wasmtime
 from pydantic import BaseModel
 
 from core.pty_session import (
     PreSpawnGuard,
     SandboxSession,
+    SandboxSessionError,
     _PtyBackend,
     _PtySession,
 )
@@ -607,6 +609,251 @@ class NativeHITLSandboxAdapter(SandboxAdapter):
         """
         logger.critical(
             "[DLQ:NativeHITL] timeout — command suppressed for replay. "
+            "cwd=%s command=%s", cwd, command,
+        )
+
+
+# ── Devcontainer trusted-tier adapter ────────────────────────────────────────
+
+_PROVISION_TIMEOUT_S: int = 600   # devcontainer up is minutes-long (image build + caching)
+_BRIDGE_GRACE_S: float = 1.0      # outer wall-clock margin over the host-side exec timeout
+
+
+class HostExecutionBridge(Protocol):
+    """Structural contract for the off-process host that owns the devcontainer.
+
+    The adapter routes trusted execution to whichever component drives the
+    user's local container runtime (the IDE host). A ``Protocol`` — not an ABC —
+    keeps that component free to satisfy this contract structurally without
+    importing back into this module, so the implementor can live in the host
+    layer that already depends on ``core`` without forming an import cycle.
+
+    Implementors own the wire encoding and the actual ``devcontainer up`` /
+    ``devcontainer exec`` invocation. ``env_whitelist`` is applied by the host
+    when launching the command, so no secret values are threaded through any
+    persisted state here.
+    """
+
+    async def ensure_provisioned(self, *, session_id: str, cwd: str) -> bool:
+        """Bring the workspace container up (idempotent host-side); ``True`` when ready."""
+        ...
+
+    async def exec_command(
+        self,
+        *,
+        session_id: str,
+        command: str,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        timeout_s: float,
+    ) -> SandboxResult:
+        """Run a one-shot command inside the provisioned container."""
+        ...
+
+    async def open_host_session(
+        self,
+        *,
+        session_id: str,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        pre_spawn_guard: Optional[PreSpawnGuard],
+    ) -> SandboxSession:
+        """Open a persistent interactive session inside the provisioned container."""
+        ...
+
+
+def _default_host_bridge() -> Optional[HostExecutionBridge]:
+    """Resolve the process-wide host bridge.
+
+    Returns ``None`` until a concrete host bridge is wired in, which is the
+    point at which trusted execution becomes routable. A ``None`` result makes
+    the adapter degrade cleanly rather than crash, so the tier is safe to
+    construct before the host channel exists.
+    """
+    return None
+
+
+class DevcontainerSandboxAdapter(SandboxAdapter):
+    """Trusted-tier adapter that routes execution to a user-owned devcontainer.
+
+    Where :class:`DockerSandboxAdapter` is a locked cage for *untrusted* model
+    output, this tier reproduces the user's *own* project environment declared
+    in ``devcontainer.json``. It never shells Docker itself: every command is
+    routed over a :class:`HostExecutionBridge` to the host, which owns the
+    container runtime. Provisioning is lazy, idempotent and single-flight; a
+    missing bridge or a provisioning / execution timeout degrades to a bracketed
+    sentinel (plus a dead-letter log line) and never crashes the host process —
+    the same off-process discipline as :class:`NativeHITLSandboxAdapter`.
+    """
+
+    supports_sessions = True
+
+    def __init__(
+        self,
+        *,
+        bridge: Optional[HostExecutionBridge] = None,
+        host_workspace: Optional[str] = None,
+    ) -> None:
+        self._bridge: Optional[HostExecutionBridge] = bridge
+        self._host_workspace: str = host_workspace or os.getcwd()
+        self._provision_lock: asyncio.Lock = asyncio.Lock()
+        self._provisioned: bool = False
+
+    @property
+    def host_workspace(self) -> str:
+        """The workspace root that holds ``devcontainer.json`` and is provisioned."""
+        return self._host_workspace
+
+    def _get_bridge(self) -> Optional[HostExecutionBridge]:
+        """Resolve the bridge per call: an injected instance wins, else the default."""
+        return self._bridge if self._bridge is not None else _default_host_bridge()
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+    ) -> SandboxResult:
+        """Route ``command`` to the host container; always returns, never raises.
+
+        Every failure mode collapses to ``exit_code=-1`` with a bracketed
+        sentinel so a host or bridge fault can never crash the backend process.
+        """
+        if not session_id:
+            logger.error(
+                "Devcontainer adapter invoked without session_id — refusing to "
+                "route to host. Command suppressed: %s", command,
+            )
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[devcontainer_no_session]",
+            )
+
+        bridge = self._get_bridge()
+        if bridge is None:
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[devcontainer_bridge_unavailable]",
+            )
+
+        try:
+            provisioned = await self._ensure_provisioned(
+                bridge=bridge, session_id=session_id, cwd=cwd,
+            )
+        except asyncio.TimeoutError:
+            await self._enqueue_dlq_stub(command="devcontainer up", cwd=cwd)
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[devcontainer_provision_timeout]",
+            )
+        if not provisioned:
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[devcontainer_provision_failed]",
+            )
+
+        try:
+            return await asyncio.wait_for(
+                bridge.exec_command(
+                    session_id=session_id,
+                    command=command,
+                    cwd=cwd,
+                    env_whitelist=env_whitelist,
+                    timeout_s=timeout_s,
+                ),
+                timeout=timeout_s + _BRIDGE_GRACE_S,
+            )
+        except asyncio.TimeoutError:
+            await self._enqueue_dlq_stub(command=command, cwd=cwd)
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[devcontainer_exec_timeout]",
+            )
+        except Exception as exc:  # noqa: BLE001 — a host/bridge fault must not crash the backend
+            logger.error(
+                "Devcontainer bridge exec failed: %s", exc, exc_info=True,
+            )
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[devcontainer_bridge_error]",
+            )
+
+    async def open_session(
+        self,
+        *,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+        pre_spawn_guard: Optional[PreSpawnGuard] = None,
+    ) -> SandboxSession:
+        """Open a persistent interactive session over the host bridge.
+
+        Unlike :meth:`execute` (which returns a degrade result), an interactive
+        open is exceptional on failure: a missing bridge or a failed/timed-out
+        provision raises :class:`SandboxSessionError`.
+        """
+        if not session_id:
+            raise SandboxSessionError(
+                "DevcontainerSandboxAdapter.open_session requires a session_id."
+            )
+        bridge = self._get_bridge()
+        if bridge is None:
+            raise SandboxSessionError(
+                "Devcontainer host bridge unavailable — cannot open a session."
+            )
+        try:
+            provisioned = await self._ensure_provisioned(
+                bridge=bridge, session_id=session_id, cwd=cwd,
+            )
+        except asyncio.TimeoutError as exc:
+            await self._enqueue_dlq_stub(command="devcontainer up", cwd=cwd)
+            raise SandboxSessionError(
+                "Devcontainer provisioning timed out — cannot open a session."
+            ) from exc
+        if not provisioned:
+            raise SandboxSessionError(
+                "Devcontainer provisioning failed — cannot open a session."
+            )
+        return await bridge.open_host_session(
+            session_id=session_id,
+            cwd=cwd,
+            env_whitelist=env_whitelist,
+            pre_spawn_guard=pre_spawn_guard,
+        )
+
+    async def _ensure_provisioned(
+        self,
+        *,
+        bridge: HostExecutionBridge,
+        session_id: str,
+        cwd: str,
+    ) -> bool:
+        """Lazy, idempotent, single-flight ``devcontainer up`` over the bridge.
+
+        Re-entry after a successful provision is a fast-path no-op. The slow
+        provisioning ``await`` runs inside the lock so concurrent callers
+        serialize behind a single attempt. A timeout propagates to the caller
+        (which picks the right degrade); a ``False`` result is deliberately not
+        latched, so the next call retries.
+        """
+        if self._provisioned:
+            return True
+        async with self._provision_lock:
+            if self._provisioned:
+                return True
+            ready = await asyncio.wait_for(
+                bridge.ensure_provisioned(session_id=session_id, cwd=cwd),
+                timeout=_PROVISION_TIMEOUT_S,
+            )
+            if ready:
+                self._provisioned = True
+            return ready
+
+    async def _enqueue_dlq_stub(self, *, command: str, cwd: str) -> None:
+        """Dead-letter hand-off stub: log a CRITICAL line for later replay.
+
+        No real queue is written here — that requires a state-channel addition
+        out of scope for this tier — mirroring the NativeHITL DLQ stub.
+        """
+        logger.critical(
+            "[DLQ:Devcontainer] host execution suppressed for replay. "
             "cwd=%s command=%s", cwd, command,
         )
 

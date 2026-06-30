@@ -224,6 +224,8 @@ def resolve_default_adapter():
 
 Docker is the daemon-pattern default (persistent `ailienant-sandbox-daemon`, exec socket, `_DockerPtyBackend` for interactive sessions). Wasm is fuel-metered with a module-import scope guard. NativeHITL is the degraded fallback — every run requires human sign-off.
 
+A fourth tier, `DevcontainerSandboxAdapter`, targets the user's *trusted* project environment (`devcontainer.json`): instead of shelling Docker it routes `execute()`/`open_session()` over a `HostExecutionBridge` to the IDE host, which owns `devcontainer up`/`exec`. It mirrors NativeHITL's off-process discipline (lazy single-flight provisioning, DLQ-on-timeout, never-crash degrade). It is **not** selected by the safety resolver above — it is reserved for trusted execution and selected separately, leaving the untrusted benchmark oracle on the locked Docker cage. The host bridge and the tier-selection wiring are not yet built, so the adapter degrades cleanly (`[devcontainer_bridge_unavailable]`) until they land.
+
 ### Fail-closed privilege classification — [core/permissions.py](ailienant-core/core/permissions.py), [core/mcp_registry.py](ailienant-core/core/mcp_registry.py)
 
 `classify_tool_privilege()` decides a tool's `ToolPrivilegeTier` with **catalog > verb-heuristic > DANGEROUS** precedence:
