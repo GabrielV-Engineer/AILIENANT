@@ -13,6 +13,13 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.10.25: Workspace.tsx store-backed WS controller extraction — 2026-06-29
+**Status:** COMPLETE | **Gates:** npm compile 0 (check-types 0 · lint 0 errors · esbuild ok)
+- Shipped: Memory-only `useChatStore` (22 live fields + `hydrate()`); 45-branch WS dispatch extracted to `useWSMessageHandler()` (no-arg, `getState()` synchronous truth, once-registered listener, rAF buffers, stall watchdog); session transcript effects in `useSessionPersistence()`; `ToastStack.tsx` component; `types.ts` + `utils/messageDispatchHelpers.ts`; `Workspace.tsx` 1981 → 726 lines.
+- Key decision: new memory-only `useChatStore` (vanilla `create`, not `createPersistedStore`) keeps live state out of `vscode.setState` — persisting the transcript on every token would blow the setState quota and duplicate PERSIST_TRANSCRIPT; all switch reads use `getState().messages` (synchronous truth) eliminating the 1-tick render-cycle lag `messagesRef` had under WS bursts.
+
+---
+
 ## 8.10.24: STATE_COMPACTED chip + streaming footer aria-live — 2026-06-29
 **Status:** COMPLETE | **Gates:** npm compile 0 (check-types 0 · lint 0 errors · esbuild ok)
 - Shipped: `Message` refactored into a discriminated union (`ConversationMessage | SystemMessage`) with `streaming?: never; toolCalls?: never` on the system arm to satisfy generic constraints; `state_compacted` WS handler pushes a `SystemMessage` chip with a streaming-tail guard; chip renders via early JS return before ErrorBoundary (bypasses the full row structure); filtered from PERSIST_TRANSCRIPT via type-predicate `.filter((m): m is ConversationMessage => m.role !== 'system')`; `aria-live="off" aria-atomic="true"` added to streaming token footer; `.ws-system-chip` CSS follows the `.ws-thinking` inline-trace pattern.

@@ -1,7 +1,7 @@
 import './workspace.css';
 import { createRoot } from 'react-dom/client';
 import { Workspace } from './Workspace';
-import type { Message, NattMessage } from './Workspace';
+import type { Message, NattMessage } from './types';
 import type { AilienantConfig } from '../shared/types';
 import type { BudgetLimitMode, OrchestrationMode } from '../shared/config';
 import { ErrorBoundary } from './components/ErrorBoundary';

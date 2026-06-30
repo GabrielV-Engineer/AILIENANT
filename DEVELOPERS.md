@@ -359,7 +359,19 @@ Proyect_Ailienant/
 │   │   ├── webview/             #     React sidebar (chat, ThoughtBox, diffs, HUD, checklist)
 │   │   ├── dashboard/           #     Web Dashboard SPA (Hardware/BYOM/Rules/Staging/Audit/…)
 │   │   ├── core/                #     IntentRouter, PatchActuator, tokenizer, inline-edit manager
-│   │   ├── workspace/ · sidebar/ #    Zustand stores, streaming markdown parser
+│   │   ├── workspace/           #    Zustand stores, streaming markdown parser
+│   │   │   ├── chatStore.ts     #      memory-only Zustand store — 22 live chat-runtime fields (messages, streaming, toasts, …)
+│   │   │   ├── workspaceStore.ts #     persisted Zustand store — UI slice (mode, preset, inflightTurn, drafts, …)
+│   │   │   ├── types.ts         #      shared message type exports (ConversationMessage, SystemMessage, Message, NattMessage, …)
+│   │   │   ├── Workspace.tsx    #      layout host — selectors + hook calls; <800 lines
+│   │   │   ├── hooks/
+│   │   │   │   ├── useWSMessageHandler.ts #  no-arg WS dispatch controller (45-branch switch, rAF buffers, watchdog)
+│   │   │   │   └── useSessionPersistence.ts # PERSIST_TRANSCRIPT + inflight snapshot + mount-rehydrate effects
+│   │   │   ├── components/
+│   │   │   │   └── ToastStack.tsx #    presentational toast list (JSX, role="alert" per item)
+│   │   │   └── utils/
+│   │   │       └── messageDispatchHelpers.ts # pure helpers + dispatch consts (mkId, mergeById, attachOrUpdate*, …)
+│   │   ├── sidebar/             #    sidebar webview
 │   │   ├── providers/ · api/    #     chat provider, WS client, path index, HITL notifier
 │   │   └── test/                #     vscode-test mocha suite
 │   ├── media/                   #   source logos (logo.svg, icon-color.svg, icon.svg)

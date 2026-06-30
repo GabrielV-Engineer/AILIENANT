@@ -38,7 +38,7 @@
 | 8.10.22 FE: logger.ts implementation | ✅ CLOSED | 2026-06-29 | AILIENANT output-channel logger; 13 host console.* migrated across 7 modules; npm compile 0 · lint 0 |
 | 8.10.23 FE: Error Boundaries | ✅ CLOSED | 2026-06-29 | reusable ErrorBoundary class (fallback + resetKeys); root crash panel + per-message-row boundary; key={m.id ?? i}; npm compile 0 |
 | 8.10.24 FE: STATE_COMPACTED handler | ✅ CLOSED | 2026-06-29 | discriminated union Message type; state_compacted chip; streaming footer aria-live="off"; npm compile 0 · lint 0 |
-| 8.10.25 FE: Workspace extraction | ⬜ PENDING | — | 45-branch switch → useWSMessageHandler hook; <800 lines |
+| 8.10.25 FE: Workspace extraction | ✅ CLOSED | 2026-06-29 | 22 useState → useChatStore; 45-branch switch → useWSMessageHandler(); Workspace.tsx 1981→726 lines; npm compile 0 · lint 0 |
 | 8.11 7-Mode Permission System | ✅ CLOSED | 2026-06-23 | — (7-mode matrix + shadow map + YOLO Guard; division gates locked) |
 | 8.11.1 session_mode enum extension | ✅ CLOSED | 2026-06-22 | — (additive 7-mode vocabulary; behavior-inert) |
 | 8.11.2 evaluate_action resolver rewrite | ✅ CLOSED | 2026-06-22 | — (7×3 matrix; governance.py verified-unchanged) |
@@ -642,7 +642,7 @@
 - [x] **8.10.24 — FE: `STATE_COMPACTED` handler + streaming footer `aria-live`**
   `Workspace.tsx` message switch: add `state_compacted` case → system notification row ("Context window compacted — N turn(s) summarized.") as muted info chip. Consumes `ServerStateCompactedEvent` shipped 8.12.1. Add `aria-live="polite"` to toast stack wrapper + `aria-live="off"` + `aria-atomic="true"` on streaming-tokens footer. **DoD:** `npm run compile` 0 · `npm run lint` 0 · `STATE_COMPACTED` → system chip renders.
 
-- [ ] **8.10.25 — FE: `Workspace.tsx` message-handler extraction**
+- [x] **8.10.25 — FE: `Workspace.tsx` message-handler extraction**
   Extract 45-branch WS message dispatch switch from `Workspace.tsx` (1,944 lines) → standalone reducer `workspace/hooks/useWSMessageHandler.ts`. Hook receives typed WS message (via 8.10.21), React state setters; returns nothing (pure dispatch). `Workspace.tsx` becomes layout host calling hook. No features; no behaviour change; tests stay green. Target: `Workspace.tsx` < 800 lines. **DoD:** `npm run compile` 0 · `npm run lint` 0 · FE golden-path smoke-test.
 
 ---

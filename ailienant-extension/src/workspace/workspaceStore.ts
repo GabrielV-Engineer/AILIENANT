@@ -18,11 +18,12 @@
  *   - `inflightTurn`          — Phase 7.12: in-flight streaming turn snapshot
  *                               (display-only thinking resilience across reloads)
  *
- * Excluded (host-fed, live, or transient — leave as `useState`):
- *   - wsStatus, occStatus, telemetry, snapshot, indexing, lockedFiles, config,
- *     workspaceFolder, activeModelId, orchestrationMode, budget*, dreaming*,
- *     messages, nattMessages, hitlPending, isStreaming, activeTaskId,
- *     attachedItems, nattAttachedItems, toasts.
+ * Excluded (host-fed, live, or transient — NOT persisted): the live chat-runtime
+ * slice lives in the memory-only `useChatStore` (`chatStore.ts`), which the WS
+ * dispatch controller mutates — wsStatus, occStatus, telemetry, snapshot, indexing,
+ * lockedFiles, config, workspaceFolder, budget*, messages, nattMessages,
+ * hitlPending, isStreaming, activeTaskId, attachedItems, nattAttachedItems, toasts,
+ * tps. Local component state retains activeModelId, orchestrationMode, dreaming*.
  */
 import type { ExecutionMode } from '../shared/types';
 import type { ReasoningPreset, InferenceTier } from '../shared/config';
