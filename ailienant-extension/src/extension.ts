@@ -16,6 +16,7 @@ import { boundingBoxRegistry, installDecayListener } from './providers/telemetry
 import { InlineMutationManager } from './core/InlineMutationManager';
 import { IdeSync } from './ide_sync';
 import { provisionWorkspaceHome } from './workspace_provisioning';
+import { getDevcontainerProvisioner, disposeDevcontainerProvisioner } from './providers/devcontainerFactory';
 import { logger } from './shared/logger';
 
 function makeSessionId(): string {
@@ -40,6 +41,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     WSClient.getInstance().configure(`ws://127.0.0.1:${port}/api/v1/ws`, token);
 
     const coreManager = new CoreProcessManager(port, token, context.extensionUri.fsPath);
+
+    // Devcontainer trusted-tier lifecycle owner. Dormant here — provisioning is
+    // driven lazily by the backend host bridge; instantiated so it can be disposed
+    // and so the resolved CLI source is logged once for diagnostics.
+    const devcontainer = getDevcontainerProvisioner();
+    logger.log(`[devcontainer] resolved CLI source: ${devcontainer.resolveCli().source}`);
 
     // ── Workspace panel manager (single-instance editor tab) ─────────
     const workspaceManager = new WorkspacePanelManager(context.extensionUri, context.workspaceState);
@@ -260,6 +267,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         incognitoBar,
         { dispose: () => InlineMutationManager.instance.dispose() },
         { dispose: () => workspaceManager.dispose() },
+        { dispose: () => disposeDevcontainerProvisioner() },
     );
 
     // Phase 3.4.7 — silent Bounding Box decay listener

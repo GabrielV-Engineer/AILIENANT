@@ -44,7 +44,9 @@ async function main() {
 		sourcesContent: false,
 		platform: 'node',
 		outfile: 'dist/extension.js',
-		external: ['vscode'],
+		// '@devcontainers/cli' is spawned as a child process, not imported — keep it
+		// external so esbuild never tries to bundle it (it is a soft/optional dep).
+		external: ['vscode', '@devcontainers/cli'],
 		logLevel: 'silent',
 		plugins: [esbuildProblemMatcherPlugin],
 	});

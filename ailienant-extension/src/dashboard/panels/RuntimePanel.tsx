@@ -173,6 +173,20 @@ export function RuntimePanel(): JSX.Element {
                 )}
             </div>
 
+            {/* ── Project Devcontainer card (trusted tier) ── */}
+            <div className="db-card">
+                <div className="db-card-title">Project Devcontainer (trusted tier)</div>
+                <div className="db-traffic-light" style={{ marginBottom: 12 }}>
+                    <div className="db-tl-dot" style={{ background: SEMAPHORE.gray, width: 16, height: 16 }} />
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>Not connected</span>
+                </div>
+                <div className="db-muted" style={{ fontSize: 12 }}>
+                    {"Trusted project commands (your own tests, run_command) run in your repository's "}
+                    {"devcontainer.json environment — separate from the locked benchmark sandbox above. "}
+                    {"Live provisioning status appears here once the host execution bridge is connected."}
+                </div>
+            </div>
+
             {/* ── Lifecycle Controls card ── */}
             <div className="db-card">
                 <div className="db-card-title">Lifecycle Controls</div>
