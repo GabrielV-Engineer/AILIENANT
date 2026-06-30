@@ -13,6 +13,13 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.13.3: Extension lifecycle owner — devcontainer provisioning driver — 2026-06-30
+**Status:** COMPLETE | **Gates:** npm compile 0 · npm lint 0
+- Shipped: `devcontainerProvisioner.ts` (vscode-free DI core — PATH→ext→optional-dep probe, lazy single-flight `up()`, SIGTERM→SIGKILL grace, 10 min timeout-degrade); `devcontainerFactory.ts` (vscode wiring + lazy singleton); wired into `extension.ts`; `@devcontainers/cli` pinned optional dep + esbuild external; `RuntimePanel.tsx` honest scaffold card; 10 mocha unit tests passing.
+- Deferred: DEBT-082 — `@devcontainers/cli` not shipped in the `.vsix` (`.vscodeignore` excludes `node_modules`); packaged extension relies on PATH / Dev Containers ext until 8.13.4 resolves the distribution model.
+
+---
+
 ## 8.13.2: DevcontainerSandboxAdapter — trusted-tier backend over host bridge — 2026-06-30
 **Status:** COMPLETE | **Gates:** mypy 0/376 · pytest 2053 passed (2 skipped) · pyright 0
 - Shipped: `DevcontainerSandboxAdapter` in `core/sandbox.py` — a thin trust-tier router that delegates to a new `HostExecutionBridge` Protocol seam; lazy single-flight provisioning, DLQ-on-timeout, never-crash degrade mirroring NativeHITL; `tests/test_devcontainer_adapter.py` (12 rows). Boy-Scout: explicit `import docker.errors` clears 2 pre-existing pyright stub errors.

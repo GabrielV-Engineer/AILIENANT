@@ -224,7 +224,7 @@ def resolve_default_adapter():
 
 Docker is the daemon-pattern default (persistent `ailienant-sandbox-daemon`, exec socket, `_DockerPtyBackend` for interactive sessions). Wasm is fuel-metered with a module-import scope guard. NativeHITL is the degraded fallback — every run requires human sign-off.
 
-A fourth tier, `DevcontainerSandboxAdapter`, targets the user's *trusted* project environment (`devcontainer.json`): instead of shelling Docker it routes `execute()`/`open_session()` over a `HostExecutionBridge` to the IDE host, which owns `devcontainer up`/`exec`. It mirrors NativeHITL's off-process discipline (lazy single-flight provisioning, DLQ-on-timeout, never-crash degrade). It is **not** selected by the safety resolver above — it is reserved for trusted execution and selected separately, leaving the untrusted benchmark oracle on the locked Docker cage. The host bridge and the tier-selection wiring are not yet built, so the adapter degrades cleanly (`[devcontainer_bridge_unavailable]`) until they land.
+A fourth tier, `DevcontainerSandboxAdapter`, targets the user's *trusted* project environment (`devcontainer.json`): instead of shelling Docker it routes `execute()`/`open_session()` over a `HostExecutionBridge` to the IDE host, which owns `devcontainer up`/`exec`. It mirrors NativeHITL's off-process discipline (lazy single-flight provisioning, DLQ-on-timeout, never-crash degrade). It is **not** selected by the safety resolver above — it is reserved for trusted execution and selected separately, leaving the untrusted benchmark oracle on the locked Docker cage. The extension-side lifecycle owner (`DevcontainerProvisioner` in `src/providers/devcontainerProvisioner.ts`) is built and dormant — it probes for the `devcontainer` CLI, drives `devcontainer up`/`exec` as a child process with single-flight provisioning and SIGTERM→SIGKILL timeout degrade, and exposes a status-listener seam. The WS host-bridge wire contract (8.13.4) that connects it to the backend is not yet built, so the adapter degrades cleanly (`[devcontainer_bridge_unavailable]`) until it lands.
 
 ### Fail-closed privilege classification — [core/permissions.py](ailienant-core/core/permissions.py), [core/mcp_registry.py](ailienant-core/core/mcp_registry.py)
 
@@ -374,7 +374,9 @@ Proyect_Ailienant/
 │   │   │   └── utils/
 │   │   │       └── messageDispatchHelpers.ts # pure helpers + dispatch consts (mkId, mergeById, attachOrUpdate*, …)
 │   │   ├── sidebar/             #    sidebar webview
-│   │   ├── providers/ · api/    #     chat provider, WS client, path index, HITL notifier
+│   │   ├── providers/ · api/    #     chat provider, WS client, path index, HITL notifier,
+│   │   │                        #     devcontainerProvisioner.ts (vscode-free lifecycle driver — probe/up/exec/degrade),
+│   │   │                        #     devcontainerFactory.ts (vscode wiring + lazy singleton; dormant until 8.13.4)
 │   │   └── test/                #     vscode-test mocha suite
 │   ├── media/                   #   source logos (logo.svg, icon-color.svg, icon.svg)
 │   └── esbuild.js               #   3 build contexts (extension CJS · webview IIFE · dashboard ESM)
