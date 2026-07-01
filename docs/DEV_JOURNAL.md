@@ -13,6 +13,16 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.3: Dead-code detection (analyst tool) — 2026-07-01
+**Status:** COMPLETE | **Gates:** mypy 0/387 · pytest 2152 passed · pyright 0
+- Shipped: `core/dead_code.py` — file-level zero-resolved-in-degree, non-entrypoint orphan scan
+  over `dependency_graph`, with a hardcoded entrypoint set plus `.ailienant/dead-code-allowlist.json`
+  glob extension; `detect_dead_code` analyst tool in `tools/analyst_tools.py`.
+- Key decision: scope corrected to file-level (not symbol-level) per 8.14.6's own documented
+  "near-inert without a call-graph" framing; in-degree is resolved (not the raw dashboard
+  aggregate) to avoid false orphans on dotted-module imports; all content reads run inside the
+  thread-pool compute, narrowed to already-filtered candidates, via a size-capped jailed reader.
+
 ## 8.14.2: Shared memory snapshot export/import — 2026-07-01
 **Status:** COMPLETE | **Gates:** mypy 0/385 · pytest 2121 passed · pyright 0
 - Shipped: `core/memory_snapshot.py` — portable export/import of a project's `dependency_graph` + PPR

@@ -1,4 +1,4 @@
-"""Wave 2 analyst arsenal — six net-new READ_ONLY tools for the Analyst role.
+"""Wave 2 analyst arsenal — seven net-new READ_ONLY tools for the Analyst role.
 
 Every tool follows the perception_tools.py / researcher_tools.py convention:
   - async-only (_arun); _run raises NotImplementedError
@@ -14,6 +14,8 @@ Tools registered here (all READ_ONLY, allowed_roles={"analyst"}):
   web_search          — injectable search callable (brave-search MCP compatible)
   read_token_ledger   — live token-cost snapshot from core.token_ledger.TokenLedger
                         (also surfaced to the orchestrator for budget telemetry)
+  detect_dead_code    — zero-resolved-in-degree, non-entrypoint file candidates
+                        via core.dead_code.compute_dead_code
 
 Security: every disk read is confined to workspace_root via _jailed_disk_read (path
 traversal check using pathlib.resolve().is_relative_to). LLM-supplied file paths
@@ -631,6 +633,67 @@ class TokenLedgerReadTool(BaseTool):
 
 
 # =====================================================================
+# DeadCodeDetectionTool
+# =====================================================================
+
+
+class DeadCodeInput(BaseModel):
+    """No arguments — scans the whole project's dependency graph."""
+
+
+class DeadCodeDetectionTool(BaseTool):
+    """Surface zero-resolved-in-degree, non-entrypoint in-repo files as dead-code candidates.
+
+    Computed over the file-level dependency_graph. A hardcoded entrypoint set
+    (FastAPI routes, pytest files, main.py, tool-registration call sites) is
+    always excluded; an optional .ailienant/dead-code-allowlist.json extends the
+    exclusion with user glob patterns over workspace-relative file paths. An
+    absent or malformed allowlist falls back to the hardcoded set only — never
+    raises. A candidate is a coarse, file-level signal for human review, not a
+    guarantee that the file is unused.
+    """
+
+    name: str = "detect_dead_code"
+    description: str = (
+        "Find files with zero resolved in-degree in the dependency graph that are not a "
+        "known entrypoint (FastAPI route, pytest file, main.py, tool registration) or "
+        "allowlisted via .ailienant/dead-code-allowlist.json. Returns a JSON list of "
+        "candidate dead-code files (workspace-relative paths) with in_degree 0."
+    )
+    args_schema: Type[BaseModel] = DeadCodeInput  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    _project_id: str = PrivateAttr()
+    _workspace_root: str = PrivateAttr()
+    _session_id: Optional[str] = PrivateAttr(default=None)
+
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        workspace_root: str,
+        session_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._project_id = project_id
+        self._workspace_root = workspace_root
+        self._session_id = session_id
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("DeadCodeDetectionTool is async-only — use _arun().")
+
+    async def _arun(self) -> str:
+        from core.dead_code import compute_dead_code
+
+        try:
+            candidates = await compute_dead_code(self._project_id, self._workspace_root, self._session_id)
+        except Exception as exc:  # noqa: BLE001 — analyst surface must never crash the agent turn
+            logger.warning("detect_dead_code failed for project %s: %s", self._project_id, exc, exc_info=True)
+            return json.dumps({"error": "dead-code scan failed", "candidates": []})
+        return json.dumps({"candidates": candidates, "count": len(candidates)})
+
+
+# =====================================================================
 # Schema registration helper + register_analyst_tools
 # =====================================================================
 
@@ -652,7 +715,7 @@ def _tool_schema(
 
 
 async def register_analyst_tools(store: ToolRAGStore) -> int:
-    """Register all 6 analyst-scoped schemas in the given store. Returns count."""
+    """Register all 7 analyst-scoped schemas in the given store. Returns count."""
     schemas: List[ToolSchema] = [
         _tool_schema(
             "run_linter",
@@ -684,6 +747,11 @@ async def register_analyst_tools(store: ToolRAGStore) -> int:
             "Read live token usage and estimated USD cost from the TokenLedger.",
             TokenLedgerInput,
             roles=_ANALYST_AND_ORCHESTRATOR,
+        ),
+        _tool_schema(
+            "detect_dead_code",
+            "Find zero-in-degree, non-entrypoint files in the dependency graph as dead-code candidates.",
+            DeadCodeInput,
         ),
     ]
     for schema in schemas:
@@ -747,7 +815,7 @@ def make_dependency_audit_tool(
 
 
 def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]:
-    """Construct the six analyst tools bound to live session context.
+    """Construct the seven analyst tools bound to live session context.
 
     Mirrors the coder's ``make_coder_execute_tools``: the metadata-only schemas
     registered in the RAG store are inert; this is where the executable callables
@@ -766,6 +834,7 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
 
     workspace_root = str(state.get("workspace_root") or "")
     project_id = str(state.get("project_id") or "")
+    session_id = state.get("session_id")
 
     vfs = VFSMiddleware()
     ram_reader = vfs.read_ram_only
@@ -805,5 +874,14 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
             TokenLedgerReadTool(ledger=token_ledger),
             ToolPrivilegeTier.READ_ONLY,
             _ANALYST_AND_ORCHESTRATOR,
+        ),
+        "detect_dead_code": RegisteredTool(
+            DeadCodeDetectionTool(
+                project_id=project_id,
+                workspace_root=workspace_root,
+                session_id=str(session_id) if session_id else None,
+            ),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_ROLES,
         ),
     }
