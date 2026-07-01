@@ -281,7 +281,8 @@ class _FakeAdapter:
         self.calls: List[Dict[str, Any]] = []
 
     async def execute(
-        self, command: str, *, timeout_s: float, cwd: str, env_whitelist: Dict[str, str]
+        self, command: str, *, timeout_s: float, cwd: str, env_whitelist: Dict[str, str],
+        session_id: Any = None,
     ) -> Any:
         self.calls.append({"command": command, "timeout_s": timeout_s})
         return SimpleNamespace(exit_code=self.exit_code, stdout="out", stderr="err")

@@ -102,6 +102,15 @@ output can never resolve here; it stays in the locked `DockerSandboxAdapter` cag
 boundary is the user's own `devcontainer.json` / `postCreateCommand` / repo: those lifecycle scripts run
 as the user intends — an explicitly chosen boundary, not an oversight.
 
+**Selective HITL fallback (unavailable devcontainer):** when the devcontainer infrastructure is unavailable
+*before a command runs* (no bridge, provisioning failed, no `devcontainer.json`), trusted execution does not
+hard-fail and does not silently use the locked cage — it delegates to the HITL-gated **Native** tier
+(`NativeHITLSandboxAdapter`): the command is proposed to the operator, suspended until explicit consent, then
+run host-native (or DLQ'd on timeout/decline). This preserves loop continuity without compromising host
+integrity. Two invariants keep it correct: (1) the fallback is the Native tier, never the untrusted-code cage
+(§2); (2) it engages only *pre-execution* — a mid-execution failure degrades rather than re-run on the host
+(idempotency). The `devcontainer.json` scaffold restores isolated execution and retires the prompts.
+
 ### 3.5 Dependency governance (§9)
 `@devcontainers/cli` is the reference implementation of the open devcontainer spec — justified by
 "standardization over invention." **Distribution model (host-prerequisite, ratified 8.13.4):** the

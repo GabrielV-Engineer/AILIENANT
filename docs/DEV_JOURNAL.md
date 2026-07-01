@@ -13,7 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
-## 8.13.4: Host execution-bridge WS contract + DEBT-082 close — 2026-06-30
+## 8.13.5: Trusted-tier wiring + concrete host bridge + Selective HITL Fallback — 2026-06-30
+**Status:** COMPLETE | **Gates:** mypy 0/379 · pytest 2071 passed (2 skipped) · pyright 0 · npm compile 0 · npm lint 0
+- Shipped: end-to-end trusted devcontainer execution — `api/devcontainer_bridge.py` (`WebSocketHostBridge` over the ConnectionManager primitives, injectable manager), `main.py` receive-loop dispatch + composition-root bridge injection (`set_trusted_bridge`, DI — `core` imports no transport layer), `core.sandbox.resolve_execution_adapter` chokepoint wired at the 3 live run_command sites (coder, tracked-tool, `sandbox_bash`); extension host handler (`devcontainerExecHandler.ts`), `contracts.ts` 5 events, `AILIENANT: Scaffold devcontainer` command. New tests: bridge (5) + adapter fallback/selection (7) + host handler (6).
+- Key decision: **Selective HITL Fallback** — an unavailable devcontainer (pre-execution: no bridge / provision fail / no `devcontainer.json`) delegates to the HITL-gated `NativeHITLSandboxAdapter` (propose→consent→host-native), never the untrusted cage; a mid-execution failure degrades in place (idempotency). Reuses the existing Native tier (no new subsystem).
+- Deferred: DEBT-083 (incremental exec streaming), DEBT-084 (interactive sessions over the bridge), DEBT-085 (sub-cwd→container mapping), DEBT-086 (typecheck/validation-helper routing).
 **Status:** COMPLETE | **Gates:** mypy 0/377 · pytest 2059 passed (2 skipped) · pyright 0 · npm compile 0 · npm lint 0
 - Shipped: 5 additive devcontainer WS events in `api/ws_contracts.py` (provision request/status + exec request/stream/exit, `request_id`-correlated, env **names-only**) + `ConnectionManager` transport primitives (emit/wait/resolve, terminal-only provision resolve, disconnect-reaping) in `api/websocket_manager.py`; `SCHEMA_EVOLUTION.MD §26`; `tests/test_devcontainer_ws_contract.py` (7 rows). Contract + transport only — receive-loop dispatch + concrete bridge wire in 8.13.5. Boy-Scout: fixed the `ws_contracts.py` header + translated adjacent Spanish log strings.
 - Key decision: DEBT-082 resolved via the host-prerequisite CLI model — `@devcontainers/cli` moved to a dev-only `devDependency` (never shipped in the `.vsix`), the CLI is sourced from PATH / Dev Containers ext, and the provisioner degrades with an actionable remediation; chosen over bundling per §9 (no supply-chain bloat).

@@ -292,9 +292,11 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             _background_tasks.add(_t)
             _t.add_done_callback(_background_tasks.discard)
 
-        from core.sandbox import get_active_adapter
+        from core.sandbox import resolve_execution_adapter
 
-        adapter = get_active_adapter()
+        # Trusted project execution: prefer the user's devcontainer (with a
+        # HITL-gated native fallback) when a session is live; else the oracle tier.
+        adapter = resolve_execution_adapter(session_id=session_id, trusted=True)
 
         # No resolved tier → nothing to spawn into. Marking it "completed" would lie
         # that a command ran; surface it honestly as failed-and-deferred. This is the

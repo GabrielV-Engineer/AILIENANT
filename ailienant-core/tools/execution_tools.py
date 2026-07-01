@@ -57,7 +57,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
 from core.permissions import ToolPrivilegeTier
-from core.sandbox import get_active_adapter
+from core.sandbox import get_active_adapter, resolve_execution_adapter
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.control_tools import DANGEROUS_COMMANDS_REGEX
 
@@ -264,10 +264,11 @@ class SandboxBashTool(BaseTool):
                 f"matched. Use ask_user_question to request HITL approval before retrying."
             )
 
-        # Phase 6.2 — dispatch through the resolved sandbox tier instead of the
-        # host. The adapter absorbs the timeout internally (Docker exit 124 /
-        # NativeHITL wait_for / Wasm fuel) and always returns a SandboxResult.
-        adapter = get_active_adapter()
+        # Trusted project execution: route to the devcontainer tier when a
+        # session is present, else the resolved oracle tier. The adapter absorbs
+        # the timeout internally and always returns a SandboxResult; an
+        # unavailable devcontainer delegates to the HITL-gated native fallback.
+        adapter = resolve_execution_adapter(session_id=session_id, trusted=True)
         if adapter is None:
             raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
 
@@ -276,6 +277,7 @@ class SandboxBashTool(BaseTool):
             timeout_s=timeout_sec,
             cwd=working_dir or "",
             env_whitelist=_sandbox_env(),
+            session_id=session_id,
         )
         body = _truncate(result.stdout + result.stderr)
         return f"[sandbox_bash] exit={result.exit_code}\n{body}"

@@ -943,7 +943,9 @@ mirroring `wait_patch_ack`), resolved by `resolve_devcontainer_provision` (termi
 `append_devcontainer_stream`, `resolve_devcontainer_exit`. A disconnect reaps any in-flight waiter
 (`_reap_client_state`) so no path hangs.
 
-**Consumer:** the receive-loop dispatch (`main.py`) and the concrete `HostExecutionBridge`
-implementation that consumes these primitives are wired in a later sub-phase; the contract +
-transport ship first. Per the additive-only discipline (CLAUDE.md §10), existing consumers tolerate
-the unknown events; all five are purely additive `WebSocketMessage` union members.
+**Consumer:** the receive-loop dispatch (`main.py`) and the concrete `HostExecutionBridge` implementation
+(`api/devcontainer_bridge.py::WebSocketHostBridge`, injected from the composition root) that consumes these
+primitives are now **wired**; the extension host handler (`providers/devcontainerExecHandler.ts`) drives the
+`DevcontainerProvisioner` and emits the client→backend events. Per the additive-only discipline (CLAUDE.md
+§10), existing consumers tolerate the unknown events; all five are purely additive `WebSocketMessage` union
+members.

@@ -709,7 +709,7 @@
   Probe order: Dev Containers extension (`ms-vscode-remote.remote-containers`) → bundled `@devcontainers/cli` (`devcontainer up` / `exec`) → degrade. Non-blocking build (lazy, single-flight, idempotent) with a timeout degrade; provisioning status surfaced in `RuntimePanel.tsx`. Files: `ailienant-extension/src/` (provisioning driver), `RuntimePanel.tsx`, `package.json` (pinned optional dep).
 - [x] **8.13.4 — Host execution-bridge wire contract.**
   Additive WS messages for the command bridge (request/stream/exit) + provisioning status. `docs/SCHEMA_EVOLUTION.MD` versioned entry; additive-only (§10). Files: `api/ws_contracts.py`, `api/websocket_manager.py`, `docs/SCHEMA_EVOLUTION.MD`.
-- [ ] **8.13.5 — execution_tools / MCP tier-selection wiring (AST-aware) + scaffold.**
+- [x] **8.13.5 — execution_tools / MCP tier-selection wiring (AST-aware) + scaffold.**
   `tools/execution_tools.py` selects the devcontainer tier for trusted execution via granular AST-aware edits; optional `devcontainer.json` scaffold/fallback ties into the Division 8.9 `.ailienant/` provisioning + `workspace_provisioning.ts`.
 - [ ] **8.13.6 — Division 8.13 Checkpoint Gate.**
   Trusted execution routes through the devcontainer when present; the untrusted oracle keeps the locked cage; CLI-absent and build-timeout degrade paths covered. **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.

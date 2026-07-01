@@ -662,15 +662,35 @@ class HostExecutionBridge(Protocol):
         ...
 
 
-def _default_host_bridge() -> Optional[HostExecutionBridge]:
-    """Resolve the process-wide host bridge.
+# Process-wide host bridge, injected from the composition root (the FastAPI
+# lifespan) via :func:`set_trusted_bridge`. Kept as a plain module global so
+# ``core`` depends only on the ``HostExecutionBridge`` abstraction it owns and
+# never imports the transport layer (dependency inversion): the concrete
+# WebSocket bridge lives in ``api`` and is pushed down, not pulled up. ``None``
+# until injected — the adapter degrades (and falls back) cleanly meanwhile.
+_injected_trusted_bridge: Optional[HostExecutionBridge] = None
 
-    Returns ``None`` until a concrete host bridge is wired in, which is the
-    point at which trusted execution becomes routable. A ``None`` result makes
-    the adapter degrade cleanly rather than crash, so the tier is safe to
-    construct before the host channel exists.
+
+def set_trusted_bridge(bridge: Optional[HostExecutionBridge]) -> None:
+    """Inject (or clear) the process-wide host bridge. Called once at startup.
+
+    Passing ``None`` clears the seam — used by tests for isolation, mirroring the
+    ``reset_task_service`` convention.
     """
-    return None
+    global _injected_trusted_bridge
+    _injected_trusted_bridge = bridge
+
+
+def _default_host_bridge() -> Optional[HostExecutionBridge]:
+    """Resolve the process-wide host bridge injected at startup.
+
+    Returns ``None`` until a concrete host bridge is injected via
+    :func:`set_trusted_bridge`, which is the point at which trusted execution
+    becomes routable. A ``None`` result makes the adapter degrade (and, when a
+    fallback is configured, delegate to it) rather than crash, so the tier is
+    safe to construct before the host channel exists.
+    """
+    return _injected_trusted_bridge
 
 
 class DevcontainerSandboxAdapter(SandboxAdapter):
@@ -693,11 +713,17 @@ class DevcontainerSandboxAdapter(SandboxAdapter):
         *,
         bridge: Optional[HostExecutionBridge] = None,
         host_workspace: Optional[str] = None,
+        fallback: Optional[SandboxAdapter] = None,
     ) -> None:
         self._bridge: Optional[HostExecutionBridge] = bridge
         self._host_workspace: str = host_workspace or os.getcwd()
         self._provision_lock: asyncio.Lock = asyncio.Lock()
         self._provisioned: bool = False
+        # Selective fallback: when the devcontainer infrastructure is unavailable
+        # *before a command runs*, delegate to this adapter instead of degrading —
+        # continuity for the autonomous loop. Left unset, the adapter degrades to a
+        # bracketed sentinel exactly as before (backward-compatible).
+        self._fallback: Optional[SandboxAdapter] = fallback
 
     @property
     def host_workspace(self) -> str:
@@ -733,8 +759,10 @@ class DevcontainerSandboxAdapter(SandboxAdapter):
 
         bridge = self._get_bridge()
         if bridge is None:
-            return SandboxResult(
-                exit_code=-1, stdout="", stderr="[devcontainer_bridge_unavailable]",
+            return await self._fallback_or_degrade(
+                sentinel="[devcontainer_bridge_unavailable]",
+                command=command, timeout_s=timeout_s, cwd=cwd,
+                env_whitelist=env_whitelist, session_id=session_id,
             )
 
         try:
@@ -743,12 +771,16 @@ class DevcontainerSandboxAdapter(SandboxAdapter):
             )
         except asyncio.TimeoutError:
             await self._enqueue_dlq_stub(command="devcontainer up", cwd=cwd)
-            return SandboxResult(
-                exit_code=-1, stdout="", stderr="[devcontainer_provision_timeout]",
+            return await self._fallback_or_degrade(
+                sentinel="[devcontainer_provision_timeout]",
+                command=command, timeout_s=timeout_s, cwd=cwd,
+                env_whitelist=env_whitelist, session_id=session_id,
             )
         if not provisioned:
-            return SandboxResult(
-                exit_code=-1, stdout="", stderr="[devcontainer_provision_failed]",
+            return await self._fallback_or_degrade(
+                sentinel="[devcontainer_provision_failed]",
+                command=command, timeout_s=timeout_s, cwd=cwd,
+                env_whitelist=env_whitelist, session_id=session_id,
             )
 
         try:
@@ -774,6 +806,37 @@ class DevcontainerSandboxAdapter(SandboxAdapter):
             return SandboxResult(
                 exit_code=-1, stdout="", stderr="[devcontainer_bridge_error]",
             )
+
+    async def _fallback_or_degrade(
+        self,
+        *,
+        sentinel: str,
+        command: str,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: str,
+    ) -> SandboxResult:
+        """Delegate to the configured fallback, or return the degrade sentinel.
+
+        Reached only from the *pre-execution* failure paths (bridge unavailable,
+        provisioning failed/timed out) where the command provably never ran — so
+        delegating to the fallback cannot double-apply a side effect (idempotency).
+        Mid-execution failures never reach here; they degrade in place.
+        """
+        if self._fallback is None:
+            return SandboxResult(exit_code=-1, stdout="", stderr=sentinel)
+        logger.info(
+            "Devcontainer unavailable (%s) — delegating to fallback adapter %s.",
+            sentinel, type(self._fallback).__name__,
+        )
+        return await self._fallback.execute(
+            command,
+            timeout_s=timeout_s,
+            cwd=cwd,
+            env_whitelist=env_whitelist,
+            session_id=session_id,
+        )
 
     async def open_session(
         self,
@@ -1307,6 +1370,51 @@ def get_active_adapter() -> Optional[SandboxAdapter]:
     ``None``.
     """
     return ACTIVE_ADAPTER
+
+
+# ── Trusted-tier selection (devcontainer + HITL-native fallback) ─────────────
+
+_trusted_adapter: Optional["DevcontainerSandboxAdapter"] = None
+
+
+def get_trusted_adapter() -> SandboxAdapter:
+    """Lazily-built singleton for *trusted* project execution.
+
+    Routes to the user-owned devcontainer over the injected host bridge, with a
+    :class:`NativeHITLSandboxAdapter` fallback so an unavailable devcontainer
+    degrades to consent-gated host execution rather than halting the loop.
+
+    Built with ``bridge=None`` so the adapter's ``_get_bridge()`` resolves
+    :func:`_default_host_bridge` (the injected bridge) *per call* — the singleton
+    therefore picks up the bridge regardless of build/injection order.
+    """
+    global _trusted_adapter
+    if _trusted_adapter is None:
+        _trusted_adapter = DevcontainerSandboxAdapter(
+            bridge=None, fallback=NativeHITLSandboxAdapter(),
+        )
+    return _trusted_adapter
+
+
+def reset_trusted_adapter() -> None:
+    """Drop the cached trusted adapter (test isolation)."""
+    global _trusted_adapter
+    _trusted_adapter = None
+
+
+def resolve_execution_adapter(
+    *, session_id: Optional[str], trusted: bool = True
+) -> Optional[SandboxAdapter]:
+    """Pick the adapter for a command.
+
+    Trusted execution with a live session routes to the devcontainer tier
+    (:func:`get_trusted_adapter`); everything else keeps the locked oracle tier
+    (:func:`get_active_adapter`). The untrusted benchmark oracle never passes
+    ``trusted=True`` here, so its Docker cage is provably untouched.
+    """
+    if trusted and session_id:
+        return get_trusted_adapter()
+    return get_active_adapter()
 
 
 # ── Zero-config image pull (Phase 7.9.B.8) ───────────────────────────────────

@@ -61,6 +61,21 @@ def _resolve_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sb, "ACTIVE_ADAPTER", _DirectAdapter())
     monkeypatch.setattr(sb, "ACTIVE_TIER", "NATIVE_HITL")
+    # Reset the trusted-tier injection seam so an e2e lifespan (which injects a real
+    # WebSocketHostBridge) never leaks into a later unit test — an unresolved bridge
+    # would otherwise park a trusted call on the 600 s provision wait. The e2e client
+    # injects inside its own `with` block, which runs after this fixture.
+    sb.set_trusted_bridge(None)
+    sb.reset_trusted_adapter()
+    # Trusted execution routes through the devcontainer tier in production, but unit
+    # tests have no host bridge — routing there would land on the HITL-native fallback
+    # and block on an approval that never arrives. Make the trusted selector delegate
+    # to the (already faked) oracle adapter so existing tests that patch
+    # `get_active_adapter` and pass a session_id keep working, and nothing hangs.
+    # Tests exercising the real selector override this via their own monkeypatch.
+    # Late binding (lambda calls at invocation time) so a test that patches
+    # `get_active_adapter` after this fixture still has its fake resolved.
+    monkeypatch.setattr(sb, "get_trusted_adapter", lambda: sb.get_active_adapter())
 
 
 def pytest_sessionfinish(session, exitstatus):

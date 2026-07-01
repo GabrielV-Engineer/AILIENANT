@@ -21,6 +21,7 @@ import pytest
 import core.sandbox as sandbox
 from core.pty_session import PreSpawnGuard, SandboxSession, SandboxSessionError
 from core.sandbox import DevcontainerSandboxAdapter, SandboxResult
+from core.sandbox import get_trusted_adapter as _real_get_trusted_adapter
 
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
@@ -307,3 +308,110 @@ def test_construction_does_not_mutate_resolution_globals() -> None:
     # get_active_tier()=="DOCKER" guard is provably unaffected.
     assert sandbox.ACTIVE_TIER is before_tier
     assert sandbox.ACTIVE_ADAPTER is before_adapter
+
+
+# ── Selective HITL fallback ──────────────────────────────────────────────────
+# When the devcontainer infrastructure is unavailable BEFORE a command runs, the
+# adapter delegates to the configured fallback (loop continuity) rather than
+# degrading. A MID-execution failure never delegates — re-running on the host
+# could double-apply a side effect (idempotency).
+
+
+class _RecordingFallback:
+    """A stand-in fallback adapter that records the delegated command."""
+
+    def __init__(self) -> None:
+        self.calls: List[str] = []
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+    ) -> SandboxResult:
+        self.calls.append(command)
+        return SandboxResult(exit_code=0, stdout="fallback-ran", stderr="")
+
+
+def test_fallback_on_bridge_unavailable() -> None:
+    fb = _RecordingFallback()
+    adapter = DevcontainerSandboxAdapter(bridge=None, fallback=fb)  # type: ignore[arg-type]
+    result = asyncio.run(
+        adapter.execute("t", timeout_s=5, cwd="/w", env_whitelist={}, session_id="s1")
+    )
+    assert result.stdout == "fallback-ran"
+    assert fb.calls == ["t"]
+
+
+def test_fallback_on_provision_failed() -> None:
+    fb = _RecordingFallback()
+    adapter = DevcontainerSandboxAdapter(bridge=_DecliningBridge(), fallback=fb)  # type: ignore[arg-type]
+    result = asyncio.run(
+        adapter.execute("t", timeout_s=5, cwd="/w", env_whitelist={}, session_id="s1")
+    )
+    assert result.stdout == "fallback-ran"
+    assert fb.calls == ["t"]
+
+
+def test_fallback_on_provision_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox, "_PROVISION_TIMEOUT_S", 0.01)
+    fb = _RecordingFallback()
+    adapter = DevcontainerSandboxAdapter(bridge=_HangingProvisionBridge(), fallback=fb)  # type: ignore[arg-type]
+    result = asyncio.run(
+        adapter.execute("t", timeout_s=5, cwd="/w", env_whitelist={}, session_id="s1")
+    )
+    assert result.stdout == "fallback-ran"
+    assert fb.calls == ["t"]
+
+
+def test_no_fallback_on_mid_exec_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mid-execution failure degrades — it must NOT re-run on the fallback."""
+    monkeypatch.setattr(sandbox, "_BRIDGE_GRACE_S", 0.0)
+    fb = _RecordingFallback()
+    adapter = DevcontainerSandboxAdapter(bridge=_RaisingBridge(), fallback=fb)  # type: ignore[arg-type]
+    result = asyncio.run(
+        adapter.execute("t", timeout_s=5, cwd="/w", env_whitelist={}, session_id="s1")
+    )
+    assert result.exit_code == -1
+    assert result.stderr == "[devcontainer_bridge_error]"
+    assert fb.calls == []  # never delegated after the command may have started
+
+
+def test_no_fallback_without_session() -> None:
+    """No session → nothing to HITL on; degrade, never delegate."""
+    fb = _RecordingFallback()
+    adapter = DevcontainerSandboxAdapter(bridge=_FakeBridge(), fallback=fb)  # type: ignore[arg-type]
+    result = asyncio.run(
+        adapter.execute("t", timeout_s=5, cwd="/w", env_whitelist={}, session_id=None)
+    )
+    assert result.stderr == "[devcontainer_no_session]"
+    assert fb.calls == []
+
+
+# ── Trusted-tier chokepoint selection ────────────────────────────────────────
+# The selector routes by identity: trusted+session → get_trusted_adapter, else
+# → get_active_adapter. Assert the decision directly with distinct sentinels
+# (robust to the conftest fixture, which delegates the trusted accessor).
+
+
+def test_resolve_execution_adapter_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    trusted = object()
+    oracle = object()
+    monkeypatch.setattr(sandbox, "get_trusted_adapter", lambda: trusted)
+    monkeypatch.setattr(sandbox, "get_active_adapter", lambda: oracle)
+
+    assert sandbox.resolve_execution_adapter(session_id="s1", trusted=True) is trusted
+    assert sandbox.resolve_execution_adapter(session_id=None, trusted=True) is oracle
+    assert sandbox.resolve_execution_adapter(session_id="s1", trusted=False) is oracle
+
+
+def test_get_trusted_adapter_builds_devcontainer_with_fallback() -> None:
+    # ``_real_get_trusted_adapter`` is captured at import time, so the conftest's
+    # attribute patch on ``sandbox.get_trusted_adapter`` does not affect it.
+    sandbox.reset_trusted_adapter()
+    adapter = _real_get_trusted_adapter()
+    assert isinstance(adapter, DevcontainerSandboxAdapter)
+    assert isinstance(adapter._fallback, sandbox.NativeHITLSandboxAdapter)

@@ -62,9 +62,11 @@ class _FakeAdapter:
         timeout_s: float,
         cwd: str,
         env_whitelist: Any,
+        session_id: Any = None,
     ) -> _FakeSandboxResult:
         self.calls.append({
             "command": command, "timeout_s": timeout_s, "cwd": cwd,
+            "session_id": session_id,
         })
         return _FakeSandboxResult(
             stdout=self._stdout, stderr=self._stderr, exit_code=self._exit_code,

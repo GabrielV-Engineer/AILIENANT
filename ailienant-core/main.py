@@ -171,6 +171,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _handler.addFilter(_scrubber)
 
     await resolve_default_adapter()          # Phase 6.1.4 — bind sandbox tier
+    # Inject the concrete WS host bridge for the trusted devcontainer tier from
+    # the composition root, so core depends only on the HostExecutionBridge
+    # abstraction it owns and never imports the transport layer.
+    from api.devcontainer_bridge import WebSocketHostBridge
+    from core.sandbox import set_trusted_bridge
+    set_trusted_bridge(WebSocketHostBridge())
     await catalog_db.init_db()
     await init_dlq_table()                   # Phase 6.4 — dead_letter_tasks table
     await init_audit_table()                 # Phase 6.6 — hitl_audit_log ledger
@@ -1159,6 +1165,27 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 logger.info(
                     "🩹 Patch ack from %s: patch_id=%s ok=%s",
                     client_id, valid_event.data.patch_id, valid_event.data.ok,
+                )
+
+            elif valid_event.event_type == "client_devcontainer_provision_status":
+                # Host reports the devcontainer provisioning lifecycle; only a
+                # terminal state resolves the trusted-tier bridge's waiter.
+                vfs_manager.resolve_devcontainer_provision(
+                    valid_event.data.request_id, valid_event.data.state
+                )
+
+            elif valid_event.event_type == "client_devcontainer_exec_stream":
+                # Incremental stdout/stderr chunk for a running devcontainer command.
+                vfs_manager.append_devcontainer_stream(
+                    valid_event.data.request_id,
+                    valid_event.data.stream,
+                    valid_event.data.chunk,
+                )
+
+            elif valid_event.event_type == "client_devcontainer_exec_exit":
+                # Devcontainer command finished; wake the bridge's exec waiter.
+                vfs_manager.resolve_devcontainer_exit(
+                    valid_event.data.request_id, valid_event.data.exit_code
                 )
 
             elif valid_event.event_type == "client_concurrency_conflict":

@@ -114,7 +114,9 @@ async def test_sandbox_bash_auto_executes(monkeypatch: Any) -> None:
     adapter.execute = AsyncMock(
         return_value=SandboxResult(exit_code=0, stdout="hello\n", stderr="")
     )
-    monkeypatch.setattr(exec_mod, "get_active_adapter", lambda: adapter)
+    # A session-bearing run routes through the trusted-tier selector; patch that
+    # seam (not the oracle accessor) so the fake is used for the devcontainer path.
+    monkeypatch.setattr(exec_mod, "resolve_execution_adapter", lambda **_kw: adapter)
     out = await SandboxBashTool()._arun(
         command="echo hello", session_id="s1", session_permission_mode="AUTO"
     )

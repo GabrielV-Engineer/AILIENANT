@@ -1809,9 +1809,11 @@ class TaskService:
 
         try:
             if tool_name == "sandbox_bash":
-                from core.sandbox import get_active_adapter
+                from core.sandbox import resolve_execution_adapter
 
-                adapter = get_active_adapter()
+                # Trusted project execution: prefer the user's devcontainer (with a
+                # HITL-gated native fallback); the tracked path always carries a session.
+                adapter = resolve_execution_adapter(session_id=session_id, trusted=True)
                 if adapter is None:
                     raise RuntimeError(
                         "Sandbox adapter not initialized — lifespan startup did "
@@ -1825,6 +1827,7 @@ class TaskService:
                     timeout_s=float(args.get("timeout_sec", 30.0)),
                     cwd=str(args.get("working_dir") or ""),
                     env_whitelist=_sandbox_env(),  # whitelisted host env only
+                    session_id=session_id,
                 )
                 body = _truncate_tool_output(
                     (result.stdout or "") + (result.stderr or "")

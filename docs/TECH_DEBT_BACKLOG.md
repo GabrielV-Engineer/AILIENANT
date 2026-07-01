@@ -71,6 +71,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW | Capability gap | long-term | Floating |
 | DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
 | DEBT-082 | Bundled `@devcontainers/cli` not shipped in the `.vsix` (`.vscodeignore` excludes `node_modules`; CLI is esbuild-external) — packaged extension relies on PATH / Dev Containers ext | MEDIUM | Packaging | 8.13.4 | RESOLVED 2026-06-30 |
+| DEBT-083 | Devcontainer exec output is buffered into one chunk per stream, not truly incremental | LOW | Capability gap | future 8.13 slice | Floating |
+| DEBT-084 | Interactive devcontainer sessions (`open_host_session`) not wired over the host bridge | MEDIUM | Feature gap | future 8.13 slice | Floating |
+| DEBT-085 | Devcontainer exec runs at the workspace-folder root; the backend `cwd` (host path) is not mapped into the container | LOW | Correctness gap | future 8.13 slice | Floating |
+| DEBT-086 | Typecheck/validation helpers (`check_type_integrity`, `coder_tools._exec`) lack a `session_id` and stay on the oracle tier, not the devcontainer | LOW | Consistency gap | future 8.13 slice | Floating |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
@@ -400,6 +404,30 @@ Decision    Not a defect — see [DECISION] tier.
 - **Reproduce (was):** pack the extension (`vsce package`) and install the `.vsix` on a machine with no `devcontainer` on PATH and the Dev Containers extension absent — `up()` degrades; the optional dep was present in `node_modules` for unpackaged dev runs only.
 - **Error:** packaging gap, not a runtime defect — `@devcontainers/cli` is excluded from esbuild (it is a child-process bin, not an import), so `.vscodeignore`'s `node_modules/**` rule excluded it from the `.vsix`. In a packaged extension the CLI must come from PATH or the Dev Containers extension.
 - **Resolution — host-prerequisite distribution model (option b):** the runnable `devcontainer` CLI is a documented **host prerequisite** (PATH or the Dev Containers extension `ms-vscode-remote.remote-containers`), not bundled. Chosen over bundling per CLAUDE.md §9 (lightest viable dependency; bundling the CLI's transitive runtime tree bloats the `.vsix` and widens the supply-chain surface), and because trusted execution already requires a local Docker daemon — requiring the CLI alongside it is reasonable. Concretely: `@devcontainers/cli` moved `optionalDependencies` → `devDependencies` (dev/test-only, never shipped); `DevcontainerProvisioner._doUp` now emits an actionable remediation (`CLI_MISSING_HINT`) on a `'path'`-source spawn and on an ENOENT failure, naming both supported ways to provide the CLI; `.vscodeignore` and `esbuild.js` are already the intended end state (unchanged). Documented in `PHASE_8.13_BLUEPRINT.md §3.5` + `DEVELOPERS.md`.
+
+### DEBT-083 [LOW · Floating] — Devcontainer exec output is buffered, not incremental
+
+- **Date:** 2026-06-30
+- **Detail:** the host handler (`providers/devcontainerExecHandler.ts`) runs `provisioner.exec()` to completion and emits one `client_devcontainer_exec_stream` per stream plus the exit frame. The backend aggregator handles this identically to many chunks, so it is contract-equivalent — but long-running trusted commands do not stream live. True incremental streaming needs the provisioner to surface its child's `stdout`/`stderr` `data` events.
+- **Phase:** future 8.13 slice.
+
+### DEBT-084 [MEDIUM · Floating] — Interactive devcontainer sessions not wired over the host bridge
+
+- **Date:** 2026-06-30
+- **Detail:** `WebSocketHostBridge.open_host_session` raises `SandboxSessionError` — the 8.13.4 WS contract covers one-shot exec only. Trusted `run_command` uses `execute()`, so this is unreached today, but interactive PTY sessions inside the devcontainer need an additive session-stream contract (open/stdin/stream/close) plus a host-side PTY driver.
+- **Phase:** future 8.13 slice.
+
+### DEBT-085 [LOW · Floating] — Devcontainer exec ignores the backend `cwd`
+
+- **Date:** 2026-06-30
+- **Detail:** the host runs `devcontainer exec --workspace-folder <root>` at the container's workspace root; the backend `cwd` (a host path) is carried on the wire but not mapped into the container filesystem. A sub-directory `working_dir` is therefore not honored. Needs a host↔container path translation (or a `cd <container-path> &&` prefix once the mapping is known).
+- **Phase:** future 8.13 slice.
+
+### DEBT-086 [LOW · Floating] — Typecheck/validation helpers stay on the oracle tier
+
+- **Date:** 2026-06-30
+- **Detail:** `check_type_integrity` and `coder_tools._exec` run trusted checks but take no `session_id`, so `resolve_execution_adapter` keeps them on the oracle tier rather than the devcontainer. Threading a `session_id` into these helpers (and their callers) would route them through the same trusted tier as `run_command`.
+- **Phase:** future 8.13 slice.
 
 ### DEBT-024 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — HITL inline-diff transport ships full file content (O(N)) instead of a unified diff (O(Δ))
 

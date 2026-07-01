@@ -19,6 +19,8 @@ import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { ConfigLoader } from '../shared/config_loader';
 import { WorkspacePathIndex, extractMentions, FOLDER_EXPANSION_CAP, FOLDER_EXPANSION_GIVE_UP } from './workspacePathIndex';
 import { HitlNotifier, type HITLApprovalRequestPayload, type HitlMode } from './hitlNotifier';
+import { getDevcontainerProvisioner } from './devcontainerFactory';
+import { handleDevcontainerServerEvent } from './devcontainerExecHandler';
 
 function findBackendPath(extensionFsPath: string): string | null {
     const candidates = [
@@ -576,6 +578,34 @@ export class WorkspacePanelManager {
                             payload: { patch_id: result.patch_id, files: result.diffs },
                         });
                     }
+                });
+                return;
+            }
+
+            // Devcontainer trusted-tier bridge: the host drives `devcontainer
+            // up`/`exec` via the provisioner and streams results back. On a
+            // missing devcontainer.json we offer to scaffold one so the operator
+            // can retire the HITL host-exec prompts.
+            if (
+                msg.event_type === 'server_devcontainer_provision_request' ||
+                msg.event_type === 'server_devcontainer_exec_request'
+            ) {
+                void handleDevcontainerServerEvent(msg, {
+                    provisioner: getDevcontainerProvisioner(),
+                    workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+                    send: (m) => WSClient.getInstance().send(m as never),
+                    env: process.env,
+                    onNoDevcontainer: () => {
+                        void vscode.window.showInformationMessage(
+                            'No devcontainer.json found — trusted commands are running host-native (with your approval). Create one for isolated execution?',
+                            'Scaffold devcontainer',
+                        ).then((choice) => {
+                            if (choice === 'Scaffold devcontainer') {
+                                void vscode.commands.executeCommand('ailienant.scaffoldDevcontainer');
+                            }
+                        });
+                    },
+                    log: (m) => logger.log(`[devcontainer] ${m}`),
                 });
                 return;
             }

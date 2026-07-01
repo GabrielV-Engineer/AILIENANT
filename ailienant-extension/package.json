@@ -39,6 +39,11 @@
         "icon": "media/icon.svg"
       },
       {
+        "command": "ailienant.scaffoldDevcontainer",
+        "title": "Scaffold devcontainer.json",
+        "category": "AILIENANT"
+      },
+      {
         "command": "ailienant.newSession",
         "title": "New AILIENANT Session",
         "category": "AILIENANT",

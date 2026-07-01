@@ -17,6 +17,7 @@ import { InlineMutationManager } from './core/InlineMutationManager';
 import { IdeSync } from './ide_sync';
 import { provisionWorkspaceHome } from './workspace_provisioning';
 import { getDevcontainerProvisioner, disposeDevcontainerProvisioner } from './providers/devcontainerFactory';
+import { scaffoldDevcontainer } from './providers/devcontainerScaffold';
 import { logger } from './shared/logger';
 
 function makeSessionId(): string {
@@ -47,6 +48,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // and so the resolved CLI source is logged once for diagnostics.
     const devcontainer = getDevcontainerProvisioner();
     logger.log(`[devcontainer] resolved CLI source: ${devcontainer.resolveCli().source}`);
+    const scaffoldDevcontainerCmd = vscode.commands.registerCommand(
+        'ailienant.scaffoldDevcontainer',
+        () => scaffoldDevcontainer(),
+    );
 
     // ── Workspace panel manager (single-instance editor tab) ─────────
     const workspaceManager = new WorkspacePanelManager(context.extensionUri, context.workspaceState);
@@ -263,6 +268,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         rejectInlineEditCmd,
         toggleIncognitoCmd,
         triggerDreamingCmd,
+        scaffoldDevcontainerCmd,
         ideSync,
         incognitoBar,
         { dispose: () => InlineMutationManager.instance.dispose() },

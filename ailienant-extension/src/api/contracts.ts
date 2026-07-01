@@ -170,6 +170,64 @@ export interface ServerApplyWorkspaceEditEvent {
     data: ApplyWorkspaceEditPayload;
 }
 
+// ── Devcontainer host execution bridge (trusted tier) ────────────────────────
+// The backend routes trusted provisioning + command execution over these events
+// to the host, which owns the local container runtime. Every event is correlated
+// by `request_id`; `env_keys` carries variable NAMES only (never values).
+
+export interface DevcontainerProvisionRequestPayload {
+    session_id: string;
+    request_id: string;
+    cwd: string;
+}
+export interface ServerDevcontainerProvisionRequestEvent {
+    event_type: 'server_devcontainer_provision_request';
+    data: DevcontainerProvisionRequestPayload;
+}
+
+export interface DevcontainerExecRequestPayload {
+    session_id: string;
+    request_id: string;
+    command: string;
+    cwd: string;
+    env_keys: string[];
+}
+export interface ServerDevcontainerExecRequestEvent {
+    event_type: 'server_devcontainer_exec_request';
+    data: DevcontainerExecRequestPayload;
+}
+
+export interface DevcontainerProvisionStatusPayload {
+    session_id: string;
+    request_id: string;
+    state: 'provisioning' | 'ready' | 'timeout' | 'failed';
+}
+export interface ClientDevcontainerProvisionStatusEvent {
+    event_type: 'client_devcontainer_provision_status';
+    data: DevcontainerProvisionStatusPayload;
+}
+
+export interface DevcontainerExecStreamPayload {
+    session_id: string;
+    request_id: string;
+    stream: 'stdout' | 'stderr';
+    chunk: string;
+}
+export interface ClientDevcontainerExecStreamEvent {
+    event_type: 'client_devcontainer_exec_stream';
+    data: DevcontainerExecStreamPayload;
+}
+
+export interface DevcontainerExecExitPayload {
+    session_id: string;
+    request_id: string;
+    exit_code: number;
+}
+export interface ClientDevcontainerExecExitEvent {
+    event_type: 'client_devcontainer_exec_exit';
+    data: DevcontainerExecExitPayload;
+}
+
 export interface NattMessagePayload {
     content: string;
     is_alert: boolean;
@@ -678,7 +736,9 @@ export type ServerWSMessage =
     | ServerCellGovernorTickEvent
     | ServerCodeProposalEvent
     | ServerStatusEvent
-    | ServerStateCompactedEvent;
+    | ServerStateCompactedEvent
+    | ServerDevcontainerProvisionRequestEvent
+    | ServerDevcontainerExecRequestEvent;
 
 /** Every client→server event (23). */
 export type ClientWSMessage =
@@ -704,7 +764,10 @@ export type ClientWSMessage =
     | ClientPtyWriteEvent
     | ClientRetryToolEvent
     | ClientInvokeTrackedBashEvent
-    | ClientBranchFromCheckpointEvent;
+    | ClientBranchFromCheckpointEvent
+    | ClientDevcontainerProvisionStatusEvent
+    | ClientDevcontainerExecStreamEvent
+    | ClientDevcontainerExecExitEvent;
 
 /** The full bidirectional wire union. */
 export type WSMessage = ServerWSMessage | ClientWSMessage;
@@ -751,6 +814,8 @@ const SERVER_EVENT_TYPES: ReadonlySet<string> = new Set<ServerEventType>([
     'server_code_proposal',
     'server_status',
     'state_compacted',
+    'server_devcontainer_provision_request',
+    'server_devcontainer_exec_request',
 ]);
 
 /** Runtime narrowing guard: true when `m` is a server→client wire event. */
