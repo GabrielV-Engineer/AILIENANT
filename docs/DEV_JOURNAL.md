@@ -13,6 +13,18 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.2: Shared memory snapshot export/import — 2026-07-01
+**Status:** COMPLETE | **Gates:** mypy 0/385 · pytest 2121 passed · pyright 0
+- Shipped: `core/memory_snapshot.py` — portable export/import of a project's `dependency_graph` + PPR
+  analytics to a committed `.ailienant/memory.db.zst`, with a session-init bootstrap that warm-starts
+  the graph before the full crawl; `bulk_import_graph` in `core/db.py`; additive
+  `client_export_memory_snapshot` WS command.
+- Key decision: the snapshot is path-relative and project-agnostic (relativize + re-key on import) so a
+  committed artifact works across clone paths; graph+PPR only (not `indexed_files`) so the crawl still
+  builds the vector store; bounded streaming decompression caps a zip bomb; file-backed temp SQLite
+  avoids the optional `sqlite3_(de)serialize` C API for portability.
+- Deferred: DEBT-090 — extension-side export button/command palette entry (backend command is wired).
+
 ## 8.14.1: Git blast-radius mapper (pre-apply validator) — 2026-07-01
 **Status:** COMPLETE | **Gates:** mypy 0/383 · pytest 2110 passed · pyright 0
 - Shipped: `core/blast_radius.py` — a resolved reverse-adjacency BFS over `dependency_graph` computing

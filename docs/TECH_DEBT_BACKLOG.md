@@ -67,6 +67,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-087 | Python relative imports (`from .mod import x`) skipped by the extractor — asymmetric with TS/JS lexical resolution | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-088 | `bfs_k_hop_backward` has the same resolved-form multi-hop gap as pre-8.14.1 blast-radius (dependents referenced by import specifier, not file path) | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-089 | Blast-radius mapper's Python module resolution is fail-safe suffix matching, not sys.path-aware — may over-count on a basename collision across packages | LOW | Architecture / Graph | future graph slice | Floating |
+| DEBT-090 | Memory-snapshot export command is backend-only (WS event + engine); no extension-side button / command-palette entry to trigger it | LOW | FE Integration | future FE slice | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -268,6 +269,14 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** declared MVP tradeoff, not a defect — over-counting is the safe direction for a pre-apply review gate (never silently under-count); the worker process has no view of the project's actual `sys.path` / installed-package resolution order.
 - **Resolution (unscheduled):** resolve Python targets against the same import-root context a real interpreter would use (parsed `sys.path` entries, namespace packages) instead of a flat suffix index.
 - **Notes:** logged at 8.14.1 close per CLAUDE.md §11.3.
+
+### DEBT-090 [LOW · Floating] — Memory-snapshot export has no extension-side trigger
+
+- **Date:** 2026-07-01
+- **Reproduce:** the shared-memory export is fully wired on the backend — the `client_export_memory_snapshot` WS event, its `main.py` dispatch, and `core.memory_snapshot.export_memory_snapshot` — but no VS Code command / button sends that event, so a user cannot yet trigger an export from the UI. Import bootstrap already runs automatically at session init.
+- **Error:** declared backend-only scope — 8.14.2's DoD is `mypy`/`pyright` only (no npm gate); the additive WS contract is forward-compatible, so wiring the FE later needs no backend change.
+- **Resolution (unscheduled):** add an extension command-palette entry / status-panel button that emits `client_export_memory_snapshot` with the active `project_id` + `workspace_root`.
+- **Notes:** logged at 8.14.2 close per CLAUDE.md §11.3.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

@@ -83,6 +83,7 @@ from brain.memory import _worker_init, calculate_graph_analytics_sync
 
 # --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
 from core.indexer import lazy_indexer, reactive_indexer, SingleFlightCoordinator
+from core.memory_snapshot import export_memory_snapshot, import_memory_snapshot
 from brain.daemon import overnight_daemon
 
 # --- IMPORTACIONES FASE 7.9.B.1 (Memory Dashboard REST surface) ---
@@ -1114,6 +1115,17 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     valid_event.data.focus_area,
                 )
 
+            elif valid_event.event_type == "client_export_memory_snapshot":
+                # Fire-and-forget off the receive loop: a large-graph compress must
+                # not stall this client's WebSocket. Best-effort — logged, not acked.
+                asyncio.create_task(
+                    export_memory_snapshot(
+                        valid_event.data.project_id,
+                        valid_event.data.workspace_root,
+                    ),
+                    name=f"export_snapshot:{valid_event.data.project_id}",
+                )
+
             elif valid_event.event_type == "client_planner_mode_toggle":
                 planner_mode_registry[client_id] = valid_event.data.active
                 logger.info(
@@ -1210,6 +1222,16 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 configure_telemetry_log(valid_event.data.workspace_root)
                 if valid_event.data.workspace_pid is not None:
                     _session_workspace_pid[client_id] = valid_event.data.workspace_pid
+                # Warm-start the dependency graph from a committed snapshot before the
+                # full crawl, so graph-aware tools work in seconds on a fresh clone.
+                # Fail-open: a missing or bad artifact simply defers to the crawl.
+                try:
+                    await import_memory_snapshot(
+                        valid_event.data.project_id,
+                        valid_event.data.workspace_root,
+                    )
+                except Exception:  # noqa: BLE001 — bootstrap must never block session init
+                    logger.warning("Memory snapshot bootstrap failed", exc_info=True)
                 await lazy_indexer.start(
                     workspace_root=valid_event.data.workspace_root,
                     project_id=valid_event.data.project_id,

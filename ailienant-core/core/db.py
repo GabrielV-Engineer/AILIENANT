@@ -106,6 +106,11 @@ _FILE_LINES_DDL = (
 _FILE_LINES_MAX_LINES: int = 5000
 _FILE_LINES_MAX_LINE_CHARS: int = 1000
 
+# Slice size for the snapshot bulk-import executemany. executemany reuses one
+# prepared statement per row (never hitting SQLite's per-statement variable limit),
+# so this only bounds the in-flight parameter array, not correctness.
+_IMPORT_CHUNK: int = 5000
+
 _fts5_supported: Optional[bool] = None
 
 
@@ -374,6 +379,49 @@ async def upsert_edge_confidence(
                 "WHERE source_file=? AND target_dependency=? AND project_id=?",
                 [(conf, score, src, tgt, project_id) for src, tgt, conf, score in rows],
             )
+            await db.commit()
+
+
+async def bulk_import_graph(
+    edges: List[Tuple[str, str, Optional[str], Optional[float]]],
+    ppr_rows: List[Tuple[str, float, Optional[int]]],
+    project_id: str = "",
+) -> None:
+    """Bulk-load resolved graph edges and PPR rows for a project in one transaction.
+
+    Warm-starts a project from a shared-memory snapshot without the thousands of
+    per-file ``upsert_dependencies`` connect + lock cycles that loading edge-by-edge
+    would incur: a single write connection under the per-project graph lock, one
+    transaction, ``executemany`` in bounded slices. ``executemany`` reuses one
+    prepared statement per row so it never approaches SQLite's per-statement
+    variable ceiling; the slice only bounds the in-flight parameter array. Rows are
+    ``INSERT OR REPLACE`` so a re-import is idempotent.
+
+    ``edges`` carry ``(source_file, target_dependency, confidence, confidence_score)``
+    with confidence written inline (the snapshot already holds the analytics
+    resolution); ``ppr_rows`` carry ``(file_path, ppr_score, leiden_community_id)``.
+    """
+    if not edges and not ppr_rows:
+        return
+    now = time.time()
+    async with graph_write_lock(project_id):
+        async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+            for start in range(0, len(edges), _IMPORT_CHUNK):
+                chunk = edges[start:start + _IMPORT_CHUNK]
+                await db.executemany(
+                    "INSERT OR REPLACE INTO dependency_graph "
+                    "(source_file, target_dependency, project_id, confidence, confidence_score) "
+                    "VALUES (?,?,?,?,?)",
+                    [(src, tgt, project_id, conf, score) for src, tgt, conf, score in chunk],
+                )
+            for start in range(0, len(ppr_rows), _IMPORT_CHUNK):
+                chunk_ppr = ppr_rows[start:start + _IMPORT_CHUNK]
+                await db.executemany(
+                    "INSERT OR REPLACE INTO ppr_scores "
+                    "(file_path, project_id, ppr_score, computed_at, leiden_community_id) "
+                    "VALUES (?,?,?,?,?)",
+                    [(fp, project_id, score, now, comm) for fp, score, comm in chunk_ppr],
+                )
             await db.commit()
 
 

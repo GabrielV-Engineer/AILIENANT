@@ -391,6 +391,19 @@ class ClientDreamingRunEvent(BaseModel):
     data: DreamingRunPayload
 
 
+class ExportMemorySnapshotPayload(BaseModel):
+    """Client → server: export this project's dependency graph to a shareable,
+    committable ``.ailienant/memory.db.zst`` snapshot."""
+
+    project_id: str
+    workspace_root: str
+
+
+class ClientExportMemorySnapshotEvent(BaseModel):
+    event_type: Literal["client_export_memory_snapshot"] = "client_export_memory_snapshot"
+    data: ExportMemorySnapshotPayload
+
+
 # =====================================================================
 # 9. VFS PATCH APPROVED (IPC Bridge)
 # =====================================================================
@@ -1153,6 +1166,7 @@ WebSocketMessage = Union[
     ClientFileDeleteEvent,           
     ClientIdeTelemetryEvent,         # IDE telemetry bus — silent file-lifecycle channel
     ClientDreamingRunEvent,          # Manual Dreaming — explicit consolidate-memory trigger
+    ClientExportMemorySnapshotEvent, # export dependency graph → shareable .ailienant/memory.db.zst
     ServerVfsPatchApprovedEvent,     
     ServerApplyWorkspaceEditEvent,   # write pipeline dispatch
     ClientPatchAppliedEvent,         # write pipeline ack
