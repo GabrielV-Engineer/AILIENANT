@@ -46,7 +46,7 @@
 | 8.11.4 Division 8.11 Checkpoint Gate | ✅ CLOSED | 2026-06-23 | — (exhaustive 7×4 matrix lock vs §23 contract; test-only) |
 | 8.11.5 YOLO Guard + Matrix Combined Gate | ✅ CLOSED | 2026-06-23 | — (composed pipeline; no-double-interception locked; test-only) |
 | 8.12 Five-Layer Context Pipeline | ✅ CLOSED | 2026-06-23 | context_pipeline.py + agent_context.py budget-guard; STATE_COMPACTED wire contract; gate test_context_pipeline.py |
-| 8.13 Devcontainer Execution Layer | ⬜ PENDING | — | 8.13.1 blueprint + ADR (resolves DEBT-035) |
+| 8.13 Devcontainer Execution Layer | ✅ CLOSED | 2026-06-30 | trusted tier + host bridge + Selective HITL Fallback; DEBT-082 resolved (DEBT-035's untrusted-TS lane stays unsupported_runtime by design, §2) |
 | 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.0 polyglot dependency-extraction registry (Python + TS/JS); then 8.14.1 blast-radius mapper |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | ⬜ PENDING | — | 11.0 Design system |
@@ -697,7 +697,7 @@
 
 ---
 
-### Division 8.13 — Polyglot Devcontainer Execution Layer — [ADR-762] ⬜
+### Division 8.13 — Polyglot Devcontainer Execution Layer — [ADR-762] ✅
 
 > Resolves DEBT-035 and the broader TS/Python runtime bias by delegating environment provisioning to the **devcontainer specification** (built/cached by the user's local Docker daemon via standard VS Code infrastructure) instead of hardcoding language runtimes into a single image. Binding blueprint: `docs/PHASE_8.13_BLUEPRINT.md`. Three locked decisions: **(1) split by trust** — the new tier serves the agent's *trusted* project execution; the benchmark oracle keeps the locked Docker cage for *untrusted* model output (the §4 invariant is preserved, not dissolved); **(2) extension-owned lifecycle** — VS Code-native; the backend executes through a host bridge; **(3) `@devcontainers/cli` is a soft/optional dependency** (probe + degrade), justified by "standardization over invention" (§9). ADR-762.
 
@@ -711,7 +711,7 @@
   Additive WS messages for the command bridge (request/stream/exit) + provisioning status. `docs/SCHEMA_EVOLUTION.MD` versioned entry; additive-only (§10). Files: `api/ws_contracts.py`, `api/websocket_manager.py`, `docs/SCHEMA_EVOLUTION.MD`.
 - [x] **8.13.5 — execution_tools / MCP tier-selection wiring (AST-aware) + scaffold.**
   `tools/execution_tools.py` selects the devcontainer tier for trusted execution via granular AST-aware edits; optional `devcontainer.json` scaffold/fallback ties into the Division 8.9 `.ailienant/` provisioning + `workspace_provisioning.ts`.
-- [ ] **8.13.6 — Division 8.13 Checkpoint Gate.**
+- [x] **8.13.6 — Division 8.13 Checkpoint Gate.**
   Trusted execution routes through the devcontainer when present; the untrusted oracle keeps the locked cage; CLI-absent and build-timeout degrade paths covered. **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` 0.
 
 ---

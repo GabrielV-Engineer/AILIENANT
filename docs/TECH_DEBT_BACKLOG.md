@@ -69,7 +69,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
 | DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM | Architecture | future graph slice | Blocked |
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW | Capability gap | long-term | Floating |
-| DEBT-035 | MultiPL-E TypeScript execution → polyglot devcontainer layer | MEDIUM | Feature gap | **Division 8.13** | Planned |
+| DEBT-035 | MultiPL-E TypeScript execution needs a locked Node-capable sandbox tier | MEDIUM | Feature gap | future — needs a distinct locked tier | Floating |
 | DEBT-082 | Bundled `@devcontainers/cli` not shipped in the `.vsix` (`.vscodeignore` excludes `node_modules`; CLI is esbuild-external) — packaged extension relies on PATH / Dev Containers ext | MEDIUM | Packaging | 8.13.4 | RESOLVED 2026-06-30 |
 | DEBT-083 | Devcontainer exec output is buffered into one chunk per stream, not truly incremental | LOW | Capability gap | future 8.13 slice | Floating |
 | DEBT-084 | Interactive devcontainer sessions (`open_host_session`) not wired over the host bridge | MEDIUM | Feature gap | future 8.13 slice | Floating |
@@ -395,8 +395,8 @@ Decision    Not a defect — see [DECISION] tier.
 - **File(s):** `ailienant-core/tests/benchmark/executors.py` (`SandboxCodegenExecutor`); `ailienant-core/core/sandbox.py` (`_DOCKERFILE_TEXT`, `python:3.13-slim`).
 - **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The shared sandbox image is Python-only (no Node/tsc), so MultiPL-E TS cannot be executed in-container. 8.3.1 ships the full TS *adapter* (loader, prompt, extraction, assembly, Pass@1 wiring); only the TS *execution backend* is deferred. Python (HumanEval) Pass@1 is real.
 - **Blocked by:** nothing technical — needs a Node-capable sandbox tier without compromising the locked Docker security profile.
-- **Phase:** **RE-SCOPED → Division 8.13** (Polyglot Devcontainer Execution Layer, blueprint `docs/PHASE_8.13_BLUEPRINT.md`). The "extend our image with node:20-slim" approach was rejected as a TS/Python runtime bias (O(N)-runtime maintenance trap). Instead, the polyglot **devcontainer** adapter resolves it for the agent's *trusted* project execution, delegating image build/caching to the user's local Docker daemon; the untrusted benchmark TS lane stays `unsupported_runtime` (the devcontainer never runs untrusted model output — split-by-trust, §4).
-- **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. Until 8.13 lands, TS Pass@1 is `unsupported_runtime`; the Python subset DoD holds.
+- **Phase:** **Division 8.13 CLOSED 2026-06-30 without resolving this** — the polyglot devcontainer adapter (blueprint `docs/PHASE_8.13_BLUEPRINT.md`) serves only the agent's *trusted* project execution; the untrusted MultiPL-E TS benchmark lane is the opposite threat model (§2) and permanently stays `unsupported_runtime` — pointing it at a user-owned devcontainer would dissolve the locked-cage guarantee. Remains open: a distinct **locked** Node-capable sandbox tier (mirroring `DockerSandboxAdapter`'s hardening — no network, read-only mount, non-root, env-whitelist) is still needed to execute untrusted TS candidates. No phase currently owns this.
+- **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. TS Pass@1 remains `unsupported_runtime`; the Python subset DoD holds.
 
 ### DEBT-082 [MEDIUM · RESOLVED 2026-06-30, 8.13.4] — Bundled `@devcontainers/cli` not shipped in the `.vsix`
 

@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.13.6: Division 8.13 Checkpoint Gate — CLOSED — 2026-06-30
+**Status:** COMPLETE | **Gates:** mypy 0/380 · pytest green (8/8 gate rows) · pyright 0 · npm compile 0
+- Shipped: `tests/test_phase8_13_checkpoint_gate.py` (8 rows) certifying the division's cross-cutting invariants — oracle cage untouched, untrusted/session-less execution never reaches the devcontainer, the trusted tier's fallback targets Native (never the cage), every pre-execution failure delegates while mid-execution failures degrade in place (idempotency), a hanging bridge is bounded, and the WS contract is additive and tolerant. **Division 8.13 (Polyglot Devcontainer Execution Layer) is now CLOSED.**
+- Key decision: auditing division closure surfaced that DEBT-035 (untrusted MultiPL-E TS execution) is **not** resolved by 8.13 — it is the opposite threat model (§2) and the benchmark lane permanently stays `unsupported_runtime`; only DEBT-082 was resolved. Corrected the manifest/backlog to avoid a false resolution claim.
+- Deferred: DEBT-035 remains open (needs a distinct locked Node-capable tier, no phase yet); DEBT-083–086 from 8.13.5 remain open.
+
+---
+
 ## 8.13.5: Trusted-tier wiring + concrete host bridge + Selective HITL Fallback — 2026-06-30
 **Status:** COMPLETE | **Gates:** mypy 0/379 · pytest 2071 passed (2 skipped) · pyright 0 · npm compile 0 · npm lint 0
 - Shipped: end-to-end trusted devcontainer execution — `api/devcontainer_bridge.py` (`WebSocketHostBridge` over the ConnectionManager primitives, injectable manager), `main.py` receive-loop dispatch + composition-root bridge injection (`set_trusted_bridge`, DI — `core` imports no transport layer), `core.sandbox.resolve_execution_adapter` chokepoint wired at the 3 live run_command sites (coder, tracked-tool, `sandbox_bash`); extension host handler (`devcontainerExecHandler.ts`), `contracts.ts` 5 events, `AILIENANT: Scaffold devcontainer` command. New tests: bridge (5) + adapter fallback/selection (7) + host handler (6).
