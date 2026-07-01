@@ -13,6 +13,25 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.1: Git blast-radius mapper (pre-apply validator) — 2026-07-01
+**Status:** COMPLETE | **Gates:** mypy 0/383 · pytest 2110 passed · pyright 0
+- Shipped: `core/blast_radius.py` — a resolved reverse-adjacency BFS over `dependency_graph` computing
+  transitive dependents of a pending diff's changed files (cycle-safe, deterministic, off-loop via
+  `asyncio.to_thread`), wired as a pre-apply gate in `task_service.py` that escalates to human review
+  via `request_human_approval("BLAST_RADIUS", …)` when the radius exceeds `BLAST_RADIUS_THRESHOLD_FILES`
+  (env-configurable, default 25) and vetoes the write on decline.
+- Key decision: deviated from the manifest's literal "reuse `bfs_k_hop_backward`" — that SQL walker
+  seeds on raw node strings, but post-8.14.0 a dependent references a changed file by import specifier
+  (extensionless TS/JS path or dotted Python module), not its absolute path, so it silently
+  under-counts. Built a resolved in-memory reverse adjacency instead, sharing the confidence resolver
+  (extracted as `resolve_target_to_file`) plus a fail-safe Python suffix index (over-count, never
+  under-count — the safe direction for a review gate). A mapper fault fails open (advisory); a
+  threshold breach fails closed.
+- Deferred: DEBT-088 — `bfs_k_hop_backward` has the same resolved-form gap; DEBT-089 — Python
+  resolution is suffix-based, not sys.path-aware.
+
+---
+
 ## 8.14.0: Polyglot dependency extraction (IMPORT_EXTRACTORS registry) — 2026-07-01
 **Status:** COMPLETE | **Gates:** mypy 0/381 · pytest 2095 passed · pyright 0
 - Shipped: `language_id`-dispatched `IMPORT_EXTRACTORS` registry (Python refactored verbatim + TS/JS

@@ -276,6 +276,23 @@ def _candidate_paths(normalized_target: str) -> Iterator[str]:
         yield normalized_target + "/index" + ext
 
 
+def resolve_target_to_file(
+    target: str, indexed: set[str], norm_indexed: Dict[str, str]
+) -> Optional[str]:
+    """Map a stored ``target_dependency`` to a concrete indexed file, or None.
+
+    Direct membership first, then extension/``index.*`` candidate expansion for an
+    extensionless TS/JS specifier. Pure string math over the pre-built indexed set and
+    its forward-slash lookup (``norm_indexed``); no filesystem access. Shared by
+    confidence scoring and the blast-radius mapper so both resolve edges identically.
+    """
+    if target in indexed:
+        return target
+    normalized_target = target.replace("\\", "/")
+    hit = next((c for c in _candidate_paths(normalized_target) if c in norm_indexed), None)
+    return norm_indexed[hit] if hit is not None else None
+
+
 def _resolve_edge_confidence(
     edges: Tuple[Tuple[str, str], ...], indexed_files: Tuple[str, ...]
 ) -> Tuple[Tuple[str, str, str, float], ...]:
@@ -299,18 +316,11 @@ def _resolve_edge_confidence(
 
     out: List[Tuple[str, str, str, float]] = []
     for source, target in edges:
-        if target in indexed:
-            out.append((source, target, "EXTRACTED", 1.0))
-            continue
-        normalized_target = target.replace("\\", "/")
-        resolved = next(
-            (c for c in _candidate_paths(normalized_target) if c in norm_indexed),
-            None,
-        )
+        resolved = resolve_target_to_file(target, indexed, norm_indexed)
         if resolved is not None:
-            out.append((source, norm_indexed[resolved], "EXTRACTED", 1.0))
+            out.append((source, resolved, "EXTRACTED", 1.0))
             continue
-        module_stem = normalized_target.rsplit("/", 1)[-1].split(".")[-1]
+        module_stem = target.replace("\\", "/").rsplit("/", 1)[-1].split(".")[-1]
         if stems.get(module_stem, 0) >= 2:
             out.append((source, target, "AMBIGUOUS", 0.25))
         else:

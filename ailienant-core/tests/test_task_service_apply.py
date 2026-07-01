@@ -127,6 +127,8 @@ async def test_hitl_request_carries_proposed_files() -> None:
         for c in ctxs:
             c.stop()
 
+    # The blast-radius check (stubbed empty by the autouse fixture) does not call
+    # request_human_approval — only the per-file FILE_WRITE card does.
     approval_mock.assert_awaited_once()
     assert approval_mock.await_args is not None
     kwargs = approval_mock.await_args.kwargs

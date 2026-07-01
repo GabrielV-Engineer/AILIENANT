@@ -78,6 +78,25 @@ def _resolve_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sb, "get_trusted_adapter", lambda: sb.get_active_adapter())
 
 
+@pytest.fixture(autouse=True)
+def _stub_blast_radius(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the pre-apply blast-radius check so unit tests stay hermetic.
+
+    ``compute_blast_radius`` reads the real on-disk catalog DB (``DB_CATALOG_PATH``);
+    without this stub, every test that reaches ``_run_coding_task``'s apply path would
+    perform live I/O against the developer's actual project graph and could escalate
+    nondeterministically depending on what happens to be indexed on that machine. A
+    test exercising escalation overrides this via its own patch, applied after this
+    fixture runs.
+    """
+    import core.blast_radius as br
+
+    async def _empty(*_a: object, **_k: object) -> list:
+        return []
+
+    monkeypatch.setattr(br, "compute_blast_radius", _empty)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Write CHECKPOINT_REPORT.md with metrics collected during the test session."""
     # Module may be keyed as "test_parser_stress" or "tests.test_parser_stress"

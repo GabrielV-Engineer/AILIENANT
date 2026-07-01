@@ -65,6 +65,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-078 | Frontend contract mirror for `state_compacted` + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet) | LOW | FE Architecture | Phase 11.7 (see DEBT-059) | Floating |
 | DEBT-080 | Dependency-graph edge extraction is Python-only; GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | RESOLVED |
 | DEBT-087 | Python relative imports (`from .mod import x`) skipped by the extractor — asymmetric with TS/JS lexical resolution | LOW | Architecture / Graph | future graph slice | Floating |
+| DEBT-088 | `bfs_k_hop_backward` has the same resolved-form multi-hop gap as pre-8.14.1 blast-radius (dependents referenced by import specifier, not file path) | LOW | Architecture / Graph | future graph slice | Floating |
+| DEBT-089 | Blast-radius mapper's Python module resolution is fail-safe suffix matching, not sys.path-aware — may over-count on a basename collision across packages | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -250,6 +252,22 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** coverage asymmetry, not a defect. Historically justified when the worker had no project-root context; that context now exists (`req.file_path` + `req.workspace_root`, both plumbed in 8.14.0).
 - **Resolution (unscheduled):** add relative-specifier resolution to the Python extractor, reusing the same lexical `posixpath` + workspace-guard approach as `_resolve_relative_specifier`, mapping a dotted relative import to a workspace path against the source file's directory.
 - **Notes:** logged at 8.14.0 close per CLAUDE.md §11.3; marked in code as `TODO(DEBT-087)`.
+
+### DEBT-088 [LOW · Floating] — `bfs_k_hop_backward` has the pre-8.14.1 resolved-form gap
+
+- **Date:** 2026-07-01
+- **Reproduce:** `bfs_k_hop_backward` (`core/memory/graphrag_extractor.py`, used by `TraceDataFlowTool`) seeds its `target_dependency IN (...)` query with the raw node string passed in. Since 8.14.0, a dependent references a changed file by import specifier (an extensionless TS/JS path or a dotted Python module), not the file's absolute path, so seeding the walker with a file path finds nothing and its multi-hop step re-feeds unresolved `source_file` values into the same mismatched query — the same under-counting gap `core/blast_radius.py` (8.14.1) was built to avoid.
+- **Error:** architectural gap, not a defect — the walker predates the polyglot resolved-target concept.
+- **Resolution (unscheduled):** migrate `TraceDataFlowTool`'s backward view onto the resolved-adjacency traversal introduced in `core/blast_radius.py`, or extend that module's reverse adjacency into a general-purpose resolved BFS both callers share.
+- **Notes:** logged at 8.14.1 close per CLAUDE.md §11.3.
+
+### DEBT-089 [LOW · Floating] — Blast-radius Python resolution is suffix-based, not sys.path-aware
+
+- **Date:** 2026-07-01
+- **Reproduce:** `core/blast_radius._build_python_suffix_index` maps every segment-aligned path suffix of an indexed `.py` file to that file, so a dotted Python import target resolves via suffix match rather than true `sys.path` resolution. Two indexed modules sharing a basename (e.g. `pkg_a/utils.py` and `pkg_b/utils.py`) both match a bare `import utils`, over-counting the blast radius.
+- **Error:** declared MVP tradeoff, not a defect — over-counting is the safe direction for a pre-apply review gate (never silently under-count); the worker process has no view of the project's actual `sys.path` / installed-package resolution order.
+- **Resolution (unscheduled):** resolve Python targets against the same import-root context a real interpreter would use (parsed `sys.path` entries, namespace packages) instead of a flat suffix index.
+- **Notes:** logged at 8.14.1 close per CLAUDE.md §11.3.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

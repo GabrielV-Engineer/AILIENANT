@@ -903,6 +903,41 @@ class TaskService:
                 gate.record_answer(len(notice.encode()))
                 await vfs_manager.broadcast_token(session_id, notice)
 
+            # Blast-radius gate: how many files transitively import what we're about to
+            # change? A mapper fault is advisory (fail-open) so a graph hiccup never blocks
+            # a legitimate write — the pre_patch hooks below remain the fail-closed backstop.
+            # A radius over threshold escalates to human review and a decline vetoes the write.
+            from core.blast_radius import DEFAULT_DEPTH, compute_blast_radius
+            from shared.config import BLAST_RADIUS_THRESHOLD_FILES
+            try:
+                affected = await compute_blast_radius(
+                    final_state.get("project_id") or "",
+                    list(patches_to_apply),  # dict keys = file-path strings (Dict[str, str])
+                    workspace_root=final_state.get("workspace_root") or "",
+                )
+            except Exception:  # noqa: BLE001 — a mapper fault must never crash the apply path
+                logger.warning("Blast-radius mapper failed (advisory, skipped)", exc_info=True)
+                affected = []
+            if len(affected) > BLAST_RADIUS_THRESHOLD_FILES:
+                approval = await vfs_manager.request_human_approval(
+                    session_id=session_id,
+                    action_description=(
+                        f"This change impacts {len(affected)} dependent file(s) — blast radius "
+                        f"exceeds the threshold of {BLAST_RADIUS_THRESHOLD_FILES}."
+                    ),
+                    request_kind="BLAST_RADIUS",
+                    risk_patterns_matched=[
+                        f"{len(affected)} transitive dependents (depth {DEFAULT_DEPTH})"
+                    ],
+                    timeout_s=None,
+                )
+                if not (approval and approval.get("approved")):
+                    blocked = "Changes not applied — blast-radius review was declined."
+                    gate.record_answer(len(blocked.encode()))
+                    await vfs_manager.broadcast_token(session_id, blocked)
+                    await self._finalize_stream(session_id)
+                    return
+
             # pre_patch gate: a non-zero (or timed-out / un-runnable) pre_patch hook
             # vetoes the write fail-closed — the patch never touches disk.
             pre_ok, pre_msgs = await self._run_patch_hooks(session_id, "pre_patch")

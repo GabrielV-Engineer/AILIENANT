@@ -60,9 +60,26 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 VRAM_MICRO_SWARM_GB: float = _env_float("AILIENANT_VRAM_MICRO_SWARM_GB", 4.0)
 VRAM_FULL_SWARM_GB: float = _env_float("AILIENANT_VRAM_FULL_SWARM_GB", 12.0)
 VRAM_CLOUD_FLOOR_GB: float = _env_float("AILIENANT_VRAM_CLOUD_FLOOR_GB", 4.0)
+
+# ---------------------------------------------------------------------------
+# Blast-radius pre-apply gate — the transitive-dependent count above which a
+# pending diff escalates to human review before touching disk. Tunable per repo
+# (a large monorepo tolerates a wider radius than a tightly-coupled service).
+# ---------------------------------------------------------------------------
+BLAST_RADIUS_THRESHOLD_FILES: int = _env_int("AILIENANT_BLAST_RADIUS_THRESHOLD_FILES", 25)
 
 
 # ---------------------------------------------------------------------------
