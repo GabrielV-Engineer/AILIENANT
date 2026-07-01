@@ -11,6 +11,7 @@ class IndexingRequest:
     file_path: str
     content: str
     language_id: str  # VS Code languageId: "python", "typescript", etc.
+    workspace_root: str = ""  # absolute workspace root; confines lexical relative-specifier resolution
 
 
 @dataclass

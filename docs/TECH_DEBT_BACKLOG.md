@@ -63,7 +63,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
 | DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
 | DEBT-078 | Frontend contract mirror for `state_compacted` + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet) | LOW | FE Architecture | Phase 11.7 (see DEBT-059) | Floating |
-| DEBT-080 | Dependency-graph edge extraction is Python-only; GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | Planned |
+| DEBT-080 | Dependency-graph edge extraction is Python-only; GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | RESOLVED |
+| DEBT-087 | Python relative imports (`from .mod import x`) skipped by the extractor — asymmetric with TS/JS lexical resolution | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -231,7 +232,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future HITL slice.
 - **Notes:** declared MVP boundary of 8.10.16 per CLAUDE.md §11.3.
 
-### DEBT-080 [MEDIUM · Planned, 8.14.0] — Dependency-graph edge extraction is Python-only
+### DEBT-080 [MEDIUM · RESOLVED 2026-07-01, 8.14.0] — Dependency-graph edge extraction is Python-only
 
 - **Date:** 2026-06-24
 - **Reproduce:** index a TypeScript/Go/Rust file — it lands in `indexed_files` with a symbol count and FTS-grep coverage, but `index_file_sync` (`brain/memory.py`) extracts import edges only under `if tree is not None and req.language_id == "python"`, so `dependency_graph` gains **zero edges** for it. GraphRAG's relational layer (`_bfs_k_hop`, PPR centrality) and every graph-reading capability — 8.14.1 blast-radius, 8.14.3 dead-code — are therefore silently Python-only.
@@ -240,6 +241,15 @@ Decision    Not a defect — see [DECISION] tier.
 - **Distinct from DEBT-075:** 080 is about graph **edges** (dependency topology); 075 is about **symbol typing** (LSP-style type resolution). Independent.
 - **Phase:** 8.14.0.
 - **Notes:** logged at 8.14 planning per CLAUDE.md §11.3; resolves the latent Python-only assumption under Division 8.14's "substrate already exists" premise.
+- **Resolution (2026-07-01, 8.14.0):** shipped the `IMPORT_EXTRACTORS` registry (Python + TS/JS) with lexical disk-free relative resolution, a strict workspace-boundary guard (`IndexingRequest.workspace_root`), and extension/`index.*` candidate expansion in `_resolve_edge_confidence`. The dependency graph is now polyglot. TS/JS relative resolution surfaced a Python asymmetry, logged as DEBT-087.
+
+### DEBT-087 [LOW · Floating] — Python relative imports skipped by the extractor
+
+- **Date:** 2026-07-01
+- **Reproduce:** `_extract_python_imports` (`brain/memory.py`) drops any `from .mod import x` / `from . import y` — it emits absolute module paths only. TS/JS now resolve relative specifiers lexically into workspace paths, so Python module boundaries are under-represented in the dependency graph relative to TS/JS.
+- **Error:** coverage asymmetry, not a defect. Historically justified when the worker had no project-root context; that context now exists (`req.file_path` + `req.workspace_root`, both plumbed in 8.14.0).
+- **Resolution (unscheduled):** add relative-specifier resolution to the Python extractor, reusing the same lexical `posixpath` + workspace-guard approach as `_resolve_relative_specifier`, mapping a dotted relative import to a workspace path against the source file's directory.
+- **Notes:** logged at 8.14.0 close per CLAUDE.md §11.3; marked in code as `TODO(DEBT-087)`.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

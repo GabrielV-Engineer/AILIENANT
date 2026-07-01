@@ -13,6 +13,16 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.0: Polyglot dependency extraction (IMPORT_EXTRACTORS registry) — 2026-07-01
+**Status:** COMPLETE | **Gates:** mypy 0/381 · pytest 2095 passed · pyright 0
+- Shipped: `language_id`-dispatched `IMPORT_EXTRACTORS` registry (Python refactored verbatim + TS/JS
+  static/re-export/dynamic-`import()`/`require()`), lexical disk-free relative-specifier resolution with
+  a strict workspace-boundary guard, and extension/`index.*` candidate expansion in the confidence
+  resolver — the dependency graph is now polyglot rather than silently Python-only. Closes DEBT-080.
+- Key decision: relative resolution is `posixpath`-based on forward-slashed input (deterministic on a
+  Windows host vs. a Linux worker); the guard is a directory-segment boundary, not a naive prefix.
+- Deferred: DEBT-087 — Python relative imports (`from .mod import x`) still skipped, asymmetric with TS/JS.
+
 ## 8.13.6: Division 8.13 Checkpoint Gate — CLOSED — 2026-06-30
 **Status:** COMPLETE | **Gates:** mypy 0/380 · pytest green (8/8 gate rows) · pyright 0 · npm compile 0
 - Shipped: `tests/test_phase8_13_checkpoint_gate.py` (8 rows) certifying the division's cross-cutting invariants — oracle cage untouched, untrusted/session-less execution never reaches the devcontainer, the trusted tier's fallback targets Native (never the cage), every pre-execution failure delegates while mid-execution failures degrade in place (idempotency), a hanging bridge is bounded, and the WS contract is additive and tolerant. **Division 8.13 (Polyglot Devcontainer Execution Layer) is now CLOSED.**

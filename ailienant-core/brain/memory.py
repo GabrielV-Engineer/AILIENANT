@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from shared.contracts import IndexingRequest, IndexingResult, PPRRequest, PPRResult
 
@@ -41,12 +42,12 @@ def _count_top_level_symbols(tree: Any) -> int:
     return sum(1 for node in tree.root_node.children if node.is_named)
 
 
-def _extract_python_imports(tree: Any) -> list[str]:
+def _extract_python_imports(tree: Any, req: IndexingRequest) -> list[str]:
     """Walk root_node children for Python import_statement and import_from nodes.
 
     Returns absolute module paths only (e.g. 'brain.state', 'shared.config').
-    Relative imports (from . import X) are silently skipped — resolving them
-    to absolute paths requires project-root context not available in the worker.
+    ``req`` is accepted for registry-uniform dispatch and unused here — Python
+    imports are already absolute module paths and need no lexical resolution.
     """
     imports: list[str] = []
     for node in tree.root_node.children:
@@ -67,9 +68,123 @@ def _extract_python_imports(tree: Any) -> list[str]:
             if module_node is None:
                 continue
             text = module_node.text.decode("utf-8")
-            if text and not text.startswith("."):  # skip relative imports
+            # TODO(DEBT-087): relative imports ("from .mod import x") are skipped —
+            # TS/JS now resolve relatives lexically, so Python module boundaries are
+            # asymmetric in the dependency graph until resolution is added here too.
+            if text and not text.startswith("."):
                 imports.append(text)
     return imports
+
+
+# JavaScript/TypeScript source extensions, tried when resolving an extensionless
+# relative specifier and stripped from a specifier that carries one explicitly.
+_JS_TS_EXTS: Tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def _string_literal_text(string_node: Any) -> str:
+    """Return the unquoted content of a tree-sitter ``string`` node.
+
+    Prefers the ``string_fragment`` child (grammar-provided, quote-free); falls
+    back to stripping the surrounding quote characters from the raw node text.
+    """
+    for child in string_node.children:
+        if child.type == "string_fragment":
+            return child.text.decode("utf-8")
+    raw = string_node.text.decode("utf-8")
+    if len(raw) >= 2 and raw[0] in "\"'`" and raw[-1] == raw[0]:
+        return raw[1:-1]
+    return ""
+
+
+def _resolve_relative_specifier(spec: str, req: IndexingRequest) -> Optional[str]:
+    """Lexically resolve a relative TS/JS specifier to an extensionless workspace path.
+
+    Pure string math — no filesystem access. Uses ``posixpath`` on forward-slashed
+    input so a Windows-origin path (``C:\\ws\\a.ts``) resolves identically on a Linux
+    or Alpine worker (where ``os.path`` treats ``\\`` as an ordinary filename char).
+    A specifier that escapes ``workspace_root`` is dropped (returns ``None``).
+    """
+    base = posixpath.dirname(req.file_path.replace("\\", "/"))
+    normalized = posixpath.normpath(posixpath.join(base, spec))
+    for ext in _JS_TS_EXTS:
+        if normalized.endswith(ext):
+            normalized = normalized[: -len(ext)]
+            break
+    ws = req.workspace_root.replace("\\", "/")
+    if ws:
+        safe_root = ws.rstrip("/") + "/"
+        if not (normalized + "/").startswith(safe_root):
+            return None  # directory escape — drop edge
+    return normalized
+
+
+def _extract_ecmascript_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract module dependencies from a TypeScript/JavaScript AST.
+
+    One walk serves all TS/JS variants (the grammars emit identical import node
+    types). Captures static ``import``/re-export ``export … from``, dynamic
+    ``import('…')``, and ``require('…')`` — the latter two nest arbitrarily, so
+    the whole tree is walked, not just top-level nodes. Bare/package specifiers
+    are emitted as-is (resolved to INFERRED downstream); relative specifiers are
+    lexically resolved and workspace-confined. Template/computed specifiers are
+    non-lexical and skipped. Order-preserving dedup keeps the edge list clean.
+    """
+    specs: List[str] = []
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        node_type = node.type
+        if node_type in ("import_statement", "export_statement"):
+            source = node.child_by_field_name("source")
+            if source is not None:
+                text = _string_literal_text(source)
+                if text:
+                    specs.append(text)
+        elif node_type == "call_expression":
+            func = node.child_by_field_name("function")
+            if func is not None and (
+                func.type == "import"
+                or (func.type == "identifier" and func.text == b"require")
+            ):
+                args = node.child_by_field_name("arguments")
+                if args is not None:
+                    for child in args.children:
+                        if child.type == "string":
+                            text = _string_literal_text(child)
+                            if text:
+                                specs.append(text)
+                            break
+        # Push children reversed so the stack yields them in document (pre-order)
+        # order — dependency edges preserve the source's import ordering.
+        stack.extend(reversed(node.children))
+
+    out: List[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        if spec.startswith("."):
+            resolved = _resolve_relative_specifier(spec, req)
+            if resolved is None:
+                continue
+            target = resolved
+        else:
+            target = spec
+        if target not in seen:
+            seen.add(target)
+            out.append(target)
+    return out
+
+
+# Import-edge extractors keyed by VS Code languageId. Dispatch is O(1); an
+# unregistered language yields no edges (best-effort, mirroring the worker's
+# never-raise contract). Further languages are a single registry entry plus one
+# extractor, added when a corpus exercises them — not speculatively.
+IMPORT_EXTRACTORS: Dict[str, Callable[[Any, IndexingRequest], List[str]]] = {
+    "python": _extract_python_imports,
+    "typescript": _extract_ecmascript_imports,
+    "typescriptreact": _extract_ecmascript_imports,
+    "javascript": _extract_ecmascript_imports,
+    "javascriptreact": _extract_ecmascript_imports,
+}
 
 
 def index_file_sync(req: IndexingRequest) -> IndexingResult:
@@ -95,8 +210,10 @@ def index_file_sync(req: IndexingRequest) -> IndexingResult:
             req.file_path, req.content, req.language_id
         )
         imports: list[str] = []
-        if tree is not None and req.language_id == "python":
-            imports = _extract_python_imports(tree)
+        if tree is not None:
+            extractor = IMPORT_EXTRACTORS.get(req.language_id)
+            if extractor is not None:
+                imports = extractor(tree, req)
         return IndexingResult(
             file_path=req.file_path,
             symbol_count=_count_top_level_symbols(tree),
@@ -144,17 +261,36 @@ def calculate_ppr_sync(req: PPRRequest) -> PPRResult:
             G.clear()
 
 
+def _candidate_paths(normalized_target: str) -> Iterator[str]:
+    """Lazily yield indexed-file candidates for an extensionless relative target.
+
+    A TS/JS relative specifier resolves to an extensionless workspace path; the
+    concrete file it names may carry any JS/TS extension or be a directory's
+    ``index.*`` barrel. Yielding lazily lets the caller short-circuit on the first
+    membership hit — no per-edge candidate list is materialized.
+    """
+    yield normalized_target
+    for ext in (".ts", ".tsx", ".js", ".jsx"):
+        yield normalized_target + ext
+    for ext in (".ts", ".tsx", ".js", ".jsx"):
+        yield normalized_target + "/index" + ext
+
+
 def _resolve_edge_confidence(
     edges: Tuple[Tuple[str, str], ...], indexed_files: Tuple[str, ...]
 ) -> Tuple[Tuple[str, str, str, float], ...]:
     """Derive a confidence label/score per edge from whole-graph resolution.
 
-    EXTRACTED (1.0): the target is itself an indexed source file — a concrete,
-    parsed internal dependency. AMBIGUOUS (0.25): the target's module stem matches
-    ≥2 indexed files, so which file it refers to cannot be disambiguated. INFERRED
-    (0.5): everything else — an external/unindexed module the import implies.
+    EXTRACTED (1.0): the target resolves to an indexed source file — directly, or
+    (for an extensionless relative TS/JS specifier) via extension/``index.*``
+    candidate expansion against the indexed set. AMBIGUOUS (0.25): the target's
+    module stem matches ≥2 indexed files, so which file it refers to cannot be
+    disambiguated. INFERRED (0.5): everything else — an external/unindexed module.
+
+    All resolution is in-memory string math over the indexed set; no filesystem access.
     """
     indexed = set(indexed_files)
+    norm_indexed = {f.replace("\\", "/"): f for f in indexed_files}
     stems: Counter[str] = Counter()
     for f in indexed_files:
         stem = os.path.splitext(os.path.basename(f.replace("\\", "/")))[0]
@@ -166,7 +302,15 @@ def _resolve_edge_confidence(
         if target in indexed:
             out.append((source, target, "EXTRACTED", 1.0))
             continue
-        module_stem = target.replace("\\", "/").rsplit("/", 1)[-1].split(".")[-1]
+        normalized_target = target.replace("\\", "/")
+        resolved = next(
+            (c for c in _candidate_paths(normalized_target) if c in norm_indexed),
+            None,
+        )
+        if resolved is not None:
+            out.append((source, norm_indexed[resolved], "EXTRACTED", 1.0))
+            continue
+        module_stem = normalized_target.rsplit("/", 1)[-1].split(".")[-1]
         if stems.get(module_stem, 0) >= 2:
             out.append((source, target, "AMBIGUOUS", 0.25))
         else:

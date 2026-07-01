@@ -367,7 +367,12 @@ class LazyIndexer:
                             )
                             continue
                         content = _vfs_result.content
-                        req = IndexingRequest(file_path=file_path, content=content, language_id=lang)
+                        req = IndexingRequest(
+                            file_path=file_path,
+                            content=content,
+                            language_id=lang,
+                            workspace_root=workspace_root,
+                        )
                         result: IndexingResult = await compute_pool.run(index_file_sync, req)
                         if result.success:
                             await upsert_indexed_file(file_path, project_id)
@@ -507,7 +512,12 @@ class ReactiveIndexer:
         response_cache.invalidate_path(filepath)
 
         try:
-            req = IndexingRequest(file_path=filepath, content=resolved, language_id=lang)
+            req = IndexingRequest(
+                file_path=filepath,
+                content=resolved,
+                language_id=lang,
+                workspace_root=workspace_root,
+            )
             result: IndexingResult = await compute_pool.run(index_file_sync, req)
             if not result.success:
                 logger.warning("ReactiveIndexer: index failed for %s: %s", filepath, result.error)
