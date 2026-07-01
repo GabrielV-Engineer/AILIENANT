@@ -13,6 +13,11 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.4: ADR-as-graph design spike (DECISION) — 2026-07-01
+**Status:** COMPLETE | **Gates:** n/a — decision spike, no code
+- Shipped: NO-GO decision on live ADR-as-graph state recorded in `SCHEMA_EVOLUTION.MD`; spike closed.
+- Key decision: reject an `architecture_decisions` table + `REFERENCES` edges — the need is already met by `AILIENANT.md` standing guidance and the analyst docs/codex brain, and GO would fight the timeless-documentation invariant plus add a stale-edge surface.
+
 ## 8.14.3: Dead-code detection (analyst tool) — 2026-07-01
 **Status:** COMPLETE | **Gates:** mypy 0/387 · pytest 2152 passed · pyright 0
 - Shipped: `core/dead_code.py` — file-level zero-resolved-in-degree, non-entrypoint orphan scan

@@ -949,3 +949,48 @@ primitives are now **wired**; the extension host handler (`providers/devcontaine
 `DevcontainerProvisioner` and emits the client→backend events. Per the additive-only discipline (CLAUDE.md
 §10), existing consumers tolerate the unknown events; all five are purely additive `WebSocketMessage` union
 members.
+
+---
+
+## Design Decision — ADR-as-Graph State (REJECTED)
+
+> Not a wire contract (no schema was added), so this record carries no `§N` number. It is the
+> durable rejection rationale for the question "should Architecture Decision Records become live,
+> agent-consumed system state?"
+
+**Decision: NO-GO.** Architecture Decision Records will **not** become live system state (no
+`architecture_decisions` table, no `REFERENCES` edges read by the analyst). Architectural
+decisions remain timeless Markdown in blueprints and this document, and reach agents through the
+mechanisms that already exist.
+
+**Rationale:**
+
+- **No corpus to graph.** ADR references live only as narrative citations inside blueprints and
+  `DEV_JOURNAL.md`. There is no ADR registry and no decisions table; the `manage_adr` /
+  `get_architecture` capability belongs to the *external* reference graph, not this system's own
+  catalog. GO would mean bootstrapping an entire corpus plus its curation surface from scratch.
+- **The need is already met.** `AILIENANT.md` project-instructions inject binding
+  "always do X / never do Y" standing guidance into every task
+  (`core/project_instructions.py`); the analyst tri-brain already ingests a `docs` + `codex`
+  brain source (§16) — it reads architectural docs into agent context already, just unstructured;
+  and the active blueprint is binding by charter (§1). A decisions table + reference edges would
+  be redundant with all three.
+- **It would fight the timeless-documentation invariant.** Making decisions live, agent-consumed
+  state means agents reason over decision identifiers and re-emit them into code comments and
+  journal entries (models cite their reasoning) — re-polluting exactly what the charter's
+  reference-eradication rule keeps timeless, downgrading a hard scrub rule to a soft prompt-level
+  hope.
+- **Stale-edge cost.** Reference edges keyed by file path rot on every rename/move (the same
+  fragility the resolved-import work fights), and a stale decision edge silently mis-informs the
+  agent — a wrong-direction failure.
+- **Precedent.** The standing preference for an existing mechanism over a new custom subsystem
+  (e.g. the hand-rolled `degree_centrality` over a heavyweight dependency) points away from
+  standing up a parallel subsystem here.
+
+**Affirmed alternative:** decisions stay in blueprints + `SCHEMA_EVOLUTION.MD`, surfaced to agents
+via the analyst `docs`/`codex` brain and `AILIENANT.md` standing guidance.
+
+**Revisit only if** the shape of the problem changes — multi-project/team scale where cross-repo
+decision provenance matters, or a *measured* case of the agent re-litigating a settled tradeoff
+that the existing prose channels demonstrably failed to prevent. Absent that evidence, this stays
+closed.
