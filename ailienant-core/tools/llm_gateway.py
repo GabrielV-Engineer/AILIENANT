@@ -9,7 +9,7 @@ import time
 import uuid
 from enum import Enum
 from typing import (
-    TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Type,
+    TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Type, cast,
 )
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 import httpx
 import litellm
-from litellm import ModelResponse
+from litellm import CustomStreamWrapper, ModelResponse
 from litellm.exceptions import APIConnectionError, ContextWindowExceededError
 from pydantic import BaseModel
 
@@ -204,9 +204,9 @@ async def _oom_cascade(
                 logger.debug("OOM engaged broadcast failed (non-fatal): %s", exc)
 
     _t0 = time.perf_counter()
-    response: ModelResponse = await litellm.acompletion(
+    response: ModelResponse = cast(ModelResponse, await litellm.acompletion(
         **{**kwargs, "model": fallback_model, "messages": trimmed}
-    )
+    ))
     swap_latency_ms = (time.perf_counter() - _t0) * 1000.0
 
     # 5. Ledger — the rescue is a cloud call.
@@ -421,7 +421,7 @@ class LLMGateway:
         if response_format and kwargs["model"] not in _RESPONSE_FORMAT_UNSUPPORTED:
             kwargs["response_format"] = response_format
         try:
-            return litellm.completion(**kwargs)
+            return cast(ModelResponse, litellm.completion(**kwargs))
         except Exception as e:
             if "response_format" in kwargs and _is_response_format_error(e):
                 logger.warning(
@@ -430,7 +430,7 @@ class LLMGateway:
                 )
                 _remember_rf_unsupported(kwargs["model"])
                 kwargs.pop("response_format", None)
-                return litellm.completion(**kwargs)
+                return cast(ModelResponse, litellm.completion(**kwargs))
             logger.error("LLM invoke failed [trace=%s]: %s", trace_id, e)
             raise
 
@@ -466,6 +466,7 @@ class LLMGateway:
         # back to the LiteLLM proxy when no preset is active (back-compat). This is
         # the single chokepoint that un-stubs the planner + mini-judge + coder.
         byom_kwargs: Optional[dict[str, Any]] = None
+        _effective_timeout = timeout  # default; overridden below for a resolved local target
         if effective_model.startswith("ailienant/"):
             from core.config.model_resolver import get_chat_target
             _alias_tier = effective_model.split("/", 1)[1]
@@ -515,7 +516,7 @@ class LLMGateway:
         if response_format and kwargs["model"] not in _RESPONSE_FORMAT_UNSUPPORTED:
             kwargs["response_format"] = response_format
         try:
-            response: ModelResponse = await litellm.acompletion(**kwargs)
+            response: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
         except ContextWindowExceededError:
             # Phase 6.3 — context window exhausted → OOM Cascade to cloud.
             return await _oom_cascade(
@@ -539,7 +540,7 @@ class LLMGateway:
                 )
                 _remember_rf_unsupported(kwargs["model"])
                 kwargs.pop("response_format", None)
-                response = await litellm.acompletion(**kwargs)
+                response = cast(ModelResponse, await litellm.acompletion(**kwargs))
             else:
                 logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
                 raise
@@ -707,7 +708,7 @@ class LLMGateway:
             **cfg,
         )
         try:
-            response = await litellm.acompletion(**kwargs)
+            response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
             async for chunk in response:
                 delta = chunk.choices[0].delta.content or ""
                 if delta:
@@ -761,7 +762,7 @@ class LLMGateway:
             )
             logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
             try:
-                resp: ModelResponse = await litellm.acompletion(**kwargs)
+                resp: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
                 return resp.choices[0].message.content or ""
             except APIConnectionError as exc:
                 if attempted_failover or not target.is_local or _looks_like_oom(exc):
@@ -823,7 +824,7 @@ class LLMGateway:
                 kwargs.setdefault("stream_options", {"include_usage": True})
                 logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
                 try:
-                    response = await litellm.acompletion(**kwargs)
+                    response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
                     break
                 except APIConnectionError as exc:
                     if attempted_failover or not target.is_local or _looks_like_oom(exc):
@@ -932,7 +933,7 @@ class LLMGateway:
         completion_tokens: int = 0
         try:
             try:
-                response = await litellm.acompletion(**kwargs)
+                response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
             except Exception as exc:
                 # Mirror ainvoke's self-healing: a backend that rejects
                 # response_format is memoed and retried once without it, before
@@ -944,7 +945,7 @@ class LLMGateway:
                     )
                     _remember_rf_unsupported(kwargs["model"])
                     kwargs.pop("response_format", None)
-                    response = await litellm.acompletion(**kwargs)
+                    response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
                 else:
                     raise
             async for chunk in response:

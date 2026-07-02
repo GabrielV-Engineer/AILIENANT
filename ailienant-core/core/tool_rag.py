@@ -165,7 +165,7 @@ class ToolRAGStore:
             if hasattr(self._db, "table_names") and not hasattr(self._db, "list_tables")
             else self._db.list_tables()
         )
-        if _LANCE_TABLE_NAME in existing_tables:
+        if _LANCE_TABLE_NAME in list(existing_tables):
             self._table = self._db.open_table(_LANCE_TABLE_NAME)
         else:
             self._table = self._db.create_table(_LANCE_TABLE_NAME, schema=self._schema)
@@ -285,7 +285,7 @@ class ToolRAGStore:
             if hasattr(self._db, "table_names") and not hasattr(self._db, "list_tables")
             else self._db.list_tables()
         )
-        if _LANCE_TABLE_NAME in existing_tables:
+        if _LANCE_TABLE_NAME in list(existing_tables):
             self._db.drop_table(_LANCE_TABLE_NAME)
         self._table = self._db.create_table(_LANCE_TABLE_NAME, schema=self._schema)
 

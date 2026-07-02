@@ -254,7 +254,7 @@ def _query_table(vector: List[float], k: int) -> List[Tuple[str, str]]:
     if _TABLE_NAME not in db.table_names():
         return []
     tbl = db.open_table(_TABLE_NAME)
-    rows = tbl.search(vector).metric("cosine").limit(k).to_list()
+    rows = tbl.search(vector).metric("cosine").limit(k).to_list()  # pyright: ignore[reportAttributeAccessIssue] — LanceQueryBuilder stub omits metric()
     return [(str(r.get("source", "docs")), str(r.get("content", ""))) for r in rows if r.get("content")]
 
 

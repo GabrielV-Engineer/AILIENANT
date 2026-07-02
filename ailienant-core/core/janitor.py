@@ -56,7 +56,7 @@ def _vector_gc_sync(workspace_root: str, lancedb_path: str) -> VectorGCReport:
 
     tbl = db.open_table(_WORKSPACE_EMBEDDINGS_TABLE)
     arrow_table = tbl.to_lance().to_table(columns=["file_path", "workspace_hash"])
-    mask = pc.equal(arrow_table.column("workspace_hash"), ws_hash)
+    mask = pc.equal(arrow_table.column("workspace_hash"), ws_hash)  # pyright: ignore[reportAttributeAccessIssue] — pyarrow.compute stub omits equal
     ws_table = arrow_table.filter(mask)
 
     unique_paths: List[str] = list(set(ws_table.column("file_path").to_pylist()))

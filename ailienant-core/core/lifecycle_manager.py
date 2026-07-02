@@ -114,7 +114,7 @@ class WorkspaceLifecycleManager:
         try:
             from brain.checkpoint import checkpoint_manager  # noqa: PLC0415
             if hasattr(checkpoint_manager, "wal_checkpoint"):
-                await checkpoint_manager.wal_checkpoint()
+                await checkpoint_manager.wal_checkpoint()  # pyright: ignore[reportAttributeAccessIssue] — duck-typed, guarded by hasattr
         except Exception as exc:  # noqa: BLE001
             logger.warning("WAL checkpoint on workspace shutdown failed: %s", exc)
 

@@ -155,9 +155,9 @@ def build_micro_swarm() -> Any:
     g = StateGraph(AIlienantGraphState)
     g.add_node("tool_rag_select", tool_rag_select_node)
     g.add_node("coder_agent", run_coder_node)              # type: ignore[type-var]
-    g.add_node("syntax_gate", syntax_gate_node)
-    g.add_node("style_gate", style_gate_node)
-    g.add_node("circuit_breaker_check", _circuit_breaker_node)
+    g.add_node("syntax_gate", syntax_gate_node)              # pyright: ignore[reportArgumentType]
+    g.add_node("style_gate", style_gate_node)                # pyright: ignore[reportArgumentType]
+    g.add_node("circuit_breaker_check", _circuit_breaker_node)  # pyright: ignore[reportArgumentType]
 
     # Phase 5.2 — Tool RAG runs once on entry. Retries from circuit_breaker
     # bypass tool_rag_select (selection is intent-based, not error-based).
@@ -214,10 +214,10 @@ def build_full_swarm(
     from validators.environment import verify_environment_node
 
     g = StateGraph(AIlienantGraphState)
-    g.add_node("verify_environment", verify_environment_node)
+    g.add_node("verify_environment", verify_environment_node)   # pyright: ignore[reportArgumentType]
     g.add_node("researcher_agent", run_researcher_node)         # type: ignore[type-var]
     g.add_node("planner_agent", run_planner_node)               # type: ignore[type-var]
-    g.add_node("orchestrator_agent", run_orchestrator_node)
+    g.add_node("orchestrator_agent", run_orchestrator_node)     # pyright: ignore[reportArgumentType]
     # Pass the compiled MICRO_SWARM directly as a sub-graph node. LangGraph
     # natively routes state between parent and child without re-applying the
     # parent's reducers on the returned dict — this avoids the O(2^N)

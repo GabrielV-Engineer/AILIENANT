@@ -203,7 +203,7 @@ class TrajectoryMemoryManager:
             return []
 
         tbl = db.open_table(_TABLE_NAME)
-        query = tbl.search(vector).metric("cosine").limit(k)
+        query = tbl.search(vector).metric("cosine").limit(k)  # pyright: ignore[reportAttributeAccessIssue] — LanceQueryBuilder stub omits metric()
 
         # Pre-filter pushdown: DataFusion applies the predicate during HNSW
         # traversal, guaranteeing true O(log N) latency and full recall within

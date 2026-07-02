@@ -119,7 +119,7 @@ def test_swarm_routing_logs_cloud_swarm_decision(telemetry_db):
             status="pending",
         ),
     ]
-    sends = route_to_coders(_swarm_state("swarm-e2e", tasks))
+    sends = route_to_coders(_swarm_state("swarm-e2e", tasks))  # pyright: ignore[reportArgumentType] — dict test double for the AIlienantGraphState TypedDict
 
     assert len(sends) == 2, "CLOUD SWARM must fan-out one Send per parallel task"
 

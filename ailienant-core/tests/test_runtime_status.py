@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import docker  # type: ignore[import-untyped]
+import docker.errors  # type: ignore[import-untyped]  # explicit: submodule not re-exported by docker's stubs
 import pytest
 import requests  # type: ignore[import-untyped]
 from fastapi import HTTPException

@@ -199,7 +199,9 @@ async def test_rebuild_cancels_previous(monkeypatch: pytest.MonkeyPatch) -> None
     t1 = di._current_rebuild_task
     await asyncio.sleep(0)
     di.request_rebuild()
-    t2 = di._current_rebuild_task
+    # Annotate: request_rebuild() reassigns the module global, which pyright cannot see
+    # across the call, so it otherwise narrows this read to the last local `= None`.
+    t2: "asyncio.Task[None] | None" = di._current_rebuild_task
     await asyncio.sleep(0.03)
 
     assert t1 is not t2
@@ -222,7 +224,7 @@ async def test_rebuild_error_boundary_resets_state(monkeypatch: pytest.MonkeyPat
     di._rebuild_in_flight = False
 
     di.request_rebuild()
-    task = di._current_rebuild_task
+    task: "asyncio.Task[None] | None" = di._current_rebuild_task
     assert task is not None
     await task                       # must NOT raise (error swallowed)
     assert di._rebuild_in_flight is False

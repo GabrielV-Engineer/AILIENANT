@@ -96,8 +96,8 @@ class HardwareDetector:
             info = pynvml.nvmlDeviceGetMemoryInfo(handle)
             name: str = pynvml.nvmlDeviceGetName(handle)
             gpu_name = name.decode("utf-8") if isinstance(name, bytes) else name
-            vram_total = info.total / (1024 ** 3)
-            vram_used = info.used / (1024 ** 3)
+            vram_total = int(info.total) / (1024 ** 3)
+            vram_used = int(info.used) / (1024 ** 3)
             pynvml.nvmlShutdown()
             return vram_total, vram_used, gpu_name
         except Exception:

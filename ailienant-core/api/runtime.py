@@ -23,6 +23,7 @@ import time
 from typing import Any, Dict, Optional
 
 import docker
+import docker.errors  # explicit: the submodule is not re-exported by docker's type stubs
 import requests  # docker-py dependency (requirements.txt:49)
 from fastapi import APIRouter, HTTPException, Request
 

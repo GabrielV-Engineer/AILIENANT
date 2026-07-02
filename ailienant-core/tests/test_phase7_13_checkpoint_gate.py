@@ -221,7 +221,7 @@ def test_cn1_daemon_and_maintenance_stop_without_orphans() -> None:
         assert d._running is False
 
         # The WAL worker spawns a real task; stop() must cancel it mid-sleep, no orphan.
-        wal = WALCheckpointer(SimpleNamespace(is_writing=False, conn=None), interval_s=3600.0)
+        wal = WALCheckpointer(SimpleNamespace(is_writing=False, conn=None), interval_s=3600.0)  # pyright: ignore[reportArgumentType] — SimpleNamespace test double for HybridCheckpointer
         wal.start()
         await wal.stop()
 
