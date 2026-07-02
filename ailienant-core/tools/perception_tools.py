@@ -728,6 +728,105 @@ class FindSymbolCallersTool(BaseTool):
 
 
 # =====================================================================
+# TraceCrossBoundaryTool — advisory "what handles this channel" across the WS/MCP seam
+# =====================================================================
+
+
+class TraceCrossBoundaryInput(BaseModel):
+    channel: str = Field(
+        description=(
+            "The inter-process channel to trace: a WS message type (e.g. "
+            "'server_stream_end') or an MCP tool name (e.g. 'run_task'). Returns the "
+            "files that declare, handle, or emit it across the extension/core boundary."
+        )
+    )
+
+
+class TraceCrossBoundaryTool(BaseTool):
+    """Advisory "what handles / declares / emits this channel" across the WS + MCP seams.
+
+    The code-dependency graph is blind to the inter-process contract (the extension and
+    core talk over a string-keyed WS union and an MCP catalog, never imports). This tool
+    resolves that contract from a SEPARATE namespaced edge layer. ``handles`` and
+    ``declares`` are high-precision (a real dispatch/declaration site). ``emits`` is
+    best-effort: a backend ``server_*`` emit is a typed model construction with no channel
+    literal at the send site, so those emitters are NOT captured. READ_ONLY and advisory:
+    an empty ``handlers`` list means "no handler found via this resolution path", NEVER
+    "no handler exists".
+    """
+
+    name: str = "trace_cross_boundary"
+    description: str = (
+        "Trace an inter-process channel (a WS message type like 'server_stream_end' or an "
+        "MCP tool name like 'run_task') to the files that handle, declare, or emit it across "
+        "the extension/core boundary. Advisory only — an empty 'handlers' means 'none found "
+        "via this path', never 'unhandled'. Backend server_* emitters are not captured."
+    )
+    args_schema: Type[BaseModel] = TraceCrossBoundaryInput  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    _project_id: str = PrivateAttr()
+    _workspace_root: str = PrivateAttr()
+    _session_id: Optional[str] = PrivateAttr(default=None)
+
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        workspace_root: str,
+        session_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._project_id = project_id
+        self._workspace_root = workspace_root
+        self._session_id = session_id
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("TraceCrossBoundaryTool is async-only — use _arun().")
+
+    async def _arun(self, channel: str) -> str:
+        from core.boundary_graph import refresh_boundary_graph, trace_boundary
+        from core.db import get_boundary_edges
+        from core.dead_code import _to_relpath
+
+        try:
+            # Build-on-demand: populate the boundary graph the first time it is queried.
+            if not await get_boundary_edges(self._project_id):
+                await refresh_boundary_graph(self._project_id, self._workspace_root)
+            trace = await trace_boundary(channel, self._project_id)
+        except Exception as exc:  # noqa: BLE001 — a lookup must never crash the agent turn
+            logger.warning(
+                "trace_cross_boundary failed for %r in project %s: %s",
+                channel, self._project_id, exc, exc_info=True,
+            )
+            return json.dumps({"error": str(exc), "channel": channel, "handlers": []})
+
+        def _rel(paths: List[str]) -> List[str]:
+            return [_to_relpath(p, self._workspace_root) for p in paths]
+
+        payload: Dict[str, Any] = {
+            "channel": channel,
+            "seam": trace.seam,
+            "declared_in": _rel(trace.declared_in),
+            "handlers": _rel(trace.handlers),
+            "emitters": _rel(trace.emitters),
+            "references": _rel(trace.references),
+            "in_catalog": trace.in_catalog,
+        }
+        if not trace.in_catalog:
+            payload["note"] = (
+                "channel not found in the boundary graph — not a declared WS/MCP channel, "
+                "or its files are not indexed; NOT evidence that it is unhandled"
+            )
+        elif not trace.handlers:
+            payload["note"] = (
+                "no handler found via static reference resolution — this is NOT a verdict "
+                "that the channel is unhandled (backend server_* emitters are also not captured)"
+            )
+        return json.dumps(payload)
+
+
+# =====================================================================
 # Task G — Schema registration helper
 # =====================================================================
 

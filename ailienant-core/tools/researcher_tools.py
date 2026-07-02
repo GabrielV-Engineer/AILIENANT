@@ -613,15 +613,19 @@ def _tool_schema(
 
 
 async def register_researcher_tools(store: ToolRAGStore) -> int:
-    """Register the 8 researcher-scoped schemas in the given store. Returns count.
+    """Register the 9 researcher-scoped schemas in the given store. Returns count.
 
     Includes 5 net-new tools, 1 schema formalization of the existing read_file
-    @tool, and architecture_digest + find_symbol_callers (defined in
-    perception_tools.py, wired here so the Researcher can orient and trace symbol
-    callers before composing its Skeleton Map). None auto-register at module import —
-    callers do this explicitly.
+    @tool, and architecture_digest + find_symbol_callers + trace_cross_boundary
+    (defined in perception_tools.py, wired here so the Researcher can orient, trace
+    symbol callers, and follow the WS/MCP seam before composing its Skeleton Map).
+    None auto-register at module import — callers do this explicitly.
     """
-    from tools.perception_tools import ArchitectureDigestInput, FindSymbolCallersInput
+    from tools.perception_tools import (
+        ArchitectureDigestInput,
+        FindSymbolCallersInput,
+        TraceCrossBoundaryInput,
+    )
 
     schemas: List[ToolSchema] = [
         _tool_schema(
@@ -668,6 +672,13 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
             "confidence tier per caller. Advisory — an empty result never means 'dead'.",
             FindSymbolCallersInput,
         ),
+        _tool_schema(
+            "trace_cross_boundary",
+            "Trace a WS message type or MCP tool name to the files that handle, declare, "
+            "or emit it across the extension/core boundary. Advisory — empty never means "
+            "'unhandled'.",
+            TraceCrossBoundaryInput,
+        ),
     ]
     for schema in schemas:
         await store.register_schema(schema)
@@ -680,7 +691,7 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
 
 
 def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]:
-    """Construct the seven researcher tools bound to live session context.
+    """Construct the eight researcher tools bound to live session context.
 
     Mirrors ``analyst_tools.build_analyst_tools``: the metadata-only schemas in the
     RAG store are inert; this is where the executable callables are instantiated
@@ -697,7 +708,11 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
     from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
     from core.tool_dispatch import RegisteredTool
     from core.vfs_middleware import make_safe_reader
-    from tools.perception_tools import ArchitectureDigestTool, FindSymbolCallersTool
+    from tools.perception_tools import (
+        ArchitectureDigestTool,
+        FindSymbolCallersTool,
+        TraceCrossBoundaryTool,
+    )
 
     workspace_root = str(state.get("workspace_root") or "")
     project_id = str(state.get("project_id") or "")
@@ -750,6 +765,15 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
         ),
         "find_symbol_callers": RegisteredTool(
             FindSymbolCallersTool(
+                project_id=project_id,
+                workspace_root=workspace_root,
+                session_id=session_id or None,
+            ),
+            ToolPrivilegeTier.READ_ONLY,
+            _RESEARCHER_ROLES,
+        ),
+        "trace_cross_boundary": RegisteredTool(
+            TraceCrossBoundaryTool(
                 project_id=project_id,
                 workspace_root=workspace_root,
                 session_id=session_id or None,

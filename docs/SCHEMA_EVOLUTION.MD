@@ -998,6 +998,56 @@ empty result is surfaced as "no callers found via this resolution path" — neve
 
 ---
 
+## §28 — Cross-Boundary Link Edges (WS / MCP Seam Wire Contract)
+
+Models AILIENANT's inter-process contract — the string-keyed WS message union and the MCP tool
+catalog that the extension (TS) and core (Python) communicate over, never through imports. Stored in
+a **physically separate table** so the file-level code-dependency traversal (`dependency_graph` via
+`_bfs_k_hop` / blast-radius / PPR / dead-code) can never observe these edges — non-pollution is
+structural, not a filter replicated at every read site (mirrors `§27`'s "no FK into
+`dependency_graph`" stance). Additive.
+
+```sql
+CREATE TABLE IF NOT EXISTS boundary_edges (
+    source_file  TEXT NOT NULL,   -- declaring/referencing file (catalog path)
+    channel      TEXT NOT NULL,   -- WS event_type literal or MCP tool name (node identity)
+    kind         TEXT NOT NULL,   -- declares | handles | emits | references
+    seam         TEXT NOT NULL,   -- ws | mcp
+    project_id   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (source_file, channel, kind, project_id)
+)
+```
+
+Population (`core.boundary_graph.refresh_boundary_graph`, new module): a cheap single-flight full
+rebuild (~71 channels — no incremental per-file coupling). The channel node-set is read by lazy
+runtime introspection of AILIENANT's own contract (`api.ws_contracts` `event_type` field defaults +
+`gateway.catalog.CATALOG` names; imported lazily so `core/` never statically couples to
+`api/`/`gateway/`). Each channel is narrowed over the indexed catalog via `fts_narrow_catalog`
+(reused, subprocess-free) then confirmed by matching the channel as a **quoted string literal**
+(`re.escape`d) — channels are always referenced quoted at real sites, so quote-anchoring rejects
+substring false-positives (`run_task` ≠ `rerun_task`) and backtick/comment prose mentions alike. The
+multi-second scan runs lock-free; only the atomic replace takes the per-project graph lock.
+
+**Direction rule (deterministic — `(boundary side = path root)` × `(channel prefix)`):** a hit in
+the declaration file (`api/ws_contracts.py` / `gateway/catalog.py`, matched by catalog path suffix) →
+`declares`; WS `server_*` extension-side → `handles`; WS `client_*` core-side → `handles`,
+extension-side → `emits`; MCP verb in `gateway/` → `handles`; anything else (non-`server_`/`client_`
+prefix, unknown side) → `references`, never surfaced as a handler.
+
+**Known fidelity boundary:** `declares` and `handles` are high-precision (a real
+declaration/dispatch literal). `emits` is best-effort — a backend `server_*` emit is a typed model
+construction (`ServerStreamEndEvent(data=…)`) with no channel literal at the send site, so those
+emitters are **not** recoverable by literal analysis (tracked debt for a structural emit-site
+resolver).
+
+**Consumer:** `trace_cross_boundary`, a new `ToolPrivilegeTier.READ_ONLY` perception tool
+(`tools/perception_tools.py::TraceCrossBoundaryTool`), reachable via both `build_analyst_tools` and
+`build_researcher_tools` (mirrors `find_symbol_callers`'s dual-role wiring). Build-on-demand: the
+graph is populated on first query. An empty `handlers` list is surfaced as "no handler found via
+this resolution path" — never "unhandled."
+
+---
+
 ## Design Decision — ADR-as-Graph State (REJECTED)
 
 > Not a wire contract (no schema was added), so this record carries no `§N` number. It is the

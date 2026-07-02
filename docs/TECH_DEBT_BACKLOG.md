@@ -69,6 +69,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-089 | Blast-radius mapper's Python module resolution is fail-safe suffix matching, not sys.path-aware — may over-count on a basename collision across packages | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-090 | Memory-snapshot export command is backend-only (WS event + engine); no extension-side button / command-palette entry to trigger it | LOW | FE Integration | future FE slice | Floating |
 | DEBT-091 | Architecture digest omits git co-change coupling (`FILE_CHANGES_WITH`) — no git-history substrate exists to source it from | LOW | Capability gap | future graph slice | Floating |
+| DEBT-092 | Boundary graph cannot recover backend `server_*` emit edges — the emit site is a typed model construction with no channel literal to match | LOW | Capability gap | future graph slice | Floating |
+| DEBT-093 | Boundary graph is build-on-demand only — no auto-refresh on index-complete, so it can lag later code edits until the next explicit rebuild | LOW | Capability gap | future graph slice | Floating |
+| DEBT-094 | 38 pre-existing project-wide `pyright` errors (third-party stub gaps + litellm union + typed-state test doubles), invisible to the enforced `mypy` gate | LOW | Typing debt | dedicated cleanup commit | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -286,6 +289,30 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** declared scope cut — 8.14.5's manifest marks co-change "optional… where cheap"; with no existing git-log analysis it is not cheap, so it was omitted rather than built speculatively (§9 / §11.3).
 - **Resolution (unscheduled):** add a bounded, idempotent git-log co-change extractor persisting pairwise change coupling, then surface a `co_change` section in the digest.
 - **Notes:** logged at 8.14.5 close per CLAUDE.md §11.3.
+
+### DEBT-092 [LOW · Floating] — Boundary graph cannot recover backend `server_*` emit edges
+
+- **Date:** 2026-07-02
+- **Reproduce:** `core.boundary_graph.refresh_boundary_graph` resolves WS/MCP boundary edges by matching the channel as a quoted string literal, but a backend `server_*` emit is a typed model construction (`api/websocket_manager.py` → `ServerStreamEndEvent(data=…)`) with no channel literal at the send site — so `trace_cross_boundary('server_stream_end')` returns `declares` + frontend `handles` but no core-side `emits`.
+- **Error:** declared fidelity boundary — `declares`/`handles` are high-precision; `emits` is best-effort (only extension `client_*` object sends carry a literal).
+- **Resolution (unscheduled):** a structural emit-site resolver that maps the `event_type` `Literal` back to the pydantic model class, then finds `send_personal_message(..., ModelClass(...))` constructions in the core emit path.
+- **Notes:** advisory READ_ONLY tool — an empty emit list is never a "not emitted" verdict. Logged at 8.14.7 close.
+
+### DEBT-093 [LOW · Floating] — Boundary graph has no auto-refresh on index-complete
+
+- **Date:** 2026-07-02
+- **Reproduce:** `TraceCrossBoundaryTool` builds the boundary graph on first query (empty-table trigger); after later code edits the stored edges can lag until an explicit `refresh_boundary_graph`. There is no `broadcast_indexing_complete` hook to rebuild.
+- **Error:** declared scope cut — liveness is not required by the 8.14.7 DoD; the full rebuild is cheap (~71 channels) so a trigger is a small follow-on.
+- **Resolution (unscheduled):** invoke `refresh_boundary_graph` (single-flight) from the index-complete path, or add a cheap staleness stamp the tool checks before serving.
+- **Notes:** logged at 8.14.7 close.
+
+### DEBT-094 [LOW · Floating] — 38 pre-existing project-wide pyright errors
+
+- **Date:** 2026-07-02
+- **Reproduce:** `cd ailienant-core && npx pyright` → 38 errors across 13 files, none touched by 8.14.7; confirmed present on a clean `HEAD` tree (stash test). Invisible to the enforced `mypy .` gate (0/392).
+- **Error:** three clusters — (A) ~19 third-party stub gaps (docker `.errors`, lancedb `LanceQueryBuilder.metric` / `table_names` union, `pyarrow.compute.equal`, pynvml `.total`, langgraph `HybridCheckpointer.wal_checkpoint`); (B) 10 in `tools/llm_gateway.py` from litellm's `ModelResponse | CustomStreamWrapper` union (+ one benign possibly-unbound); (C) 9 LangGraph typed-state / test-double mismatches.
+- **Resolution:** dedicated cleanup commit (separate from 8.14.7) — narrow the litellm union on the `stream` branch, defensive-init `_effective_timeout`, and justified `# type: ignore`/`cast` for the stub-gap false-positives.
+- **Notes:** logged for audit trail; being resolved in the immediately-following cleanup commit per the scope decision at 8.14.7 close.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

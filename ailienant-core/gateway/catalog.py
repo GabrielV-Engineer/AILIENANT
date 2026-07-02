@@ -189,6 +189,11 @@ def get_capability(name: str) -> Capability | None:
     return None
 
 
+def capability_names() -> Tuple[str, ...]:
+    """The MCP verb names — the channel identities of the MCP boundary seam."""
+    return tuple(cap.name for cap in CATALOG)
+
+
 def to_mcp_tools() -> list[types.Tool]:
     """Project the catalog into MCP ``Tool`` descriptors for ``list_tools``.
 

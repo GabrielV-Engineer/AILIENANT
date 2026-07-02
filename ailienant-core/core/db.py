@@ -102,6 +102,22 @@ _DDL = [
         system_prompt TEXT NOT NULL,
         updated_at    REAL NOT NULL
     )""",
+    # Cross-boundary link edges (WS / MCP inter-process seams). A physically
+    # separate table so the file-level code-dependency traversal (dependency_graph
+    # via _bfs_k_hop / blast-radius / PPR / dead-code) can never see these edges —
+    # non-pollution is structural, not a filter replicated at every read site. One
+    # row per (declaring/referencing file, channel, kind): the WS event_type literal
+    # or MCP tool name is the node identity; kind is declares|handles|emits|references.
+    """CREATE TABLE IF NOT EXISTS boundary_edges (
+        source_file  TEXT NOT NULL,
+        channel      TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        seam         TEXT NOT NULL,
+        project_id   TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (source_file, channel, kind, project_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_boundary_channel ON boundary_edges(project_id, channel)",
+    "CREATE INDEX IF NOT EXISTS idx_boundary_source ON boundary_edges(project_id, source_file)",
 ]
 
 # ── Content line-index (FTS5 trigram) ────────────────────────────────────────
@@ -705,6 +721,53 @@ async def purge_symbol_definitions(file_path: str, project_id: str = "") -> None
             (project_id, file_path),
         )
         await db.commit()
+
+
+# ── Cross-boundary link edges (WS / MCP seams) ───────────────────────────────
+
+async def replace_boundary_edges(
+    project_id: str, edges: List[Tuple[str, str, str, str]]
+) -> None:
+    """Atomically replace the whole boundary graph for a project (full rebuild).
+
+    ``edges`` are ``(source_file, channel, kind, seam)`` tuples. The delete+insert
+    runs as one transaction under ``graph_write_lock`` so a concurrent rebuild never
+    observes a half-cleared table. Only the SQLite write is locked — the caller does
+    the multi-second file scan outside the lock so reactive indexing is never frozen.
+    """
+    async with graph_write_lock(project_id):
+        async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+            await db.execute(
+                "DELETE FROM boundary_edges WHERE project_id=?", (project_id,)
+            )
+            if edges:
+                await db.executemany(
+                    "INSERT OR IGNORE INTO boundary_edges "
+                    "(source_file, channel, kind, seam, project_id) VALUES (?,?,?,?,?)",
+                    [(s, c, k, sm, project_id) for (s, c, k, sm) in edges],
+                )
+            await db.commit()
+
+
+async def get_boundary_edges(
+    project_id: str, channel: Optional[str] = None
+) -> List[Tuple[str, str, str, str]]:
+    """Return ``(source_file, channel, kind, seam)`` boundary edges for a project.
+
+    Optionally filtered to a single ``channel`` (the indexed lookup path). An empty
+    list means no boundary edge was resolved via static reference analysis — never
+    that a channel has no handler.
+    """
+    query = (
+        "SELECT source_file, channel, kind, seam FROM boundary_edges WHERE project_id=?"
+    )
+    params: Tuple[object, ...] = (project_id,)
+    if channel is not None:
+        query += " AND channel=?"
+        params = (project_id, channel)
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(query, params) as cur:
+            return [(str(r[0]), str(r[1]), str(r[2]), str(r[3])) for r in await cur.fetchall()]
 
 
 async def get_ppr_scores_bulk(

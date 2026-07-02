@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.7: Cross-boundary link edges (WS / MCP seams) — 2026-07-02
+**Status:** COMPLETE | **Gates:** mypy 0/392 · pytest 2194 passed · pyright 0 new (38 pre-existing, DEBT-094)
+- Shipped: separate `boundary_edges` table (`§28`) + `core/boundary_graph.py` full-rebuild resolver + READ_ONLY `trace_cross_boundary` tool answering "what handles `server_stream_end`" across the extension/core seam, with non-pollution of code-dependency traversal structural (separate table).
+- Key decision: deviated from the manifest's `brain/memory.py` per-file-extractor target to a dedicated single-flight batch builder — per-file extraction reintroduces the cross-file ordering/staleness the hybrid design exists to avoid; direction is deterministic (boundary side × channel prefix), `emits` is best-effort (typed-construction backend sends carry no literal).
+- Deferred: DEBT-092 (backend `server_*` emit-site resolver) · DEBT-093 (auto-refresh on index-complete) · DEBT-094 (38 pre-existing pyright errors, separate cleanup commit).
+
 ## 8.14.6.1: Two-Tiered symbol substrate implementation — 2026-07-02
 **Status:** COMPLETE | **Gates:** mypy 0/390 · pytest 2186 passed · pyright 0
 - Shipped: `symbol_definitions` catalog (`§27`) populated off the existing tree-sitter parse
