@@ -388,3 +388,116 @@ def calculate_graph_analytics_sync(req: PPRRequest) -> PPRResult:
     finally:
         if G is not None:
             G.clear()
+
+
+# ── Architecture-overview digest ──────────────────────────────────────────────
+# Synthesizes the persisted graph analytics into one bounded orientation payload.
+# Pure and picklable: it takes plain, already-relativized data and touches no I/O,
+# so it stays inside this process-pool-safe module without pulling a DB dependency.
+
+# Per-section output caps — the primary bound on digest size (token hygiene). A
+# capped section reports its true ``total`` beside the truncated slice so a caller
+# knows more exist.
+_HOTSPOT_LIMIT: int = 20
+_MODULE_LIMIT: int = 20
+_CLUSTER_LIMIT: int = 15
+_ENTRYPOINT_LIMIT: int = 25
+
+# Basenames that mark a real application entrypoint. Deliberately excludes test
+# files: a test module is not an architectural entrypoint. (The dead-code scanner
+# uses a wider notion that counts tests — to avoid flagging them as orphans — which
+# is the wrong semantics for an orientation digest.)
+_ARCH_ENTRYPOINT_BASENAMES: frozenset[str] = frozenset(
+    {"main.py", "__main__.py", "app.py", "manage.py", "cli.py", "wsgi.py", "asgi.py"}
+)
+
+_ROOT_MODULE_LABEL: str = "<root>"
+_NO_EXTENSION_LABEL: str = "<none>"
+
+
+def _empty_digest() -> Dict[str, object]:
+    """A well-formed, zero-valued digest mirroring the populated shape exactly.
+
+    Returned for both an empty/cold project and the tool's fail-open path so every
+    consumer key (``digest["languages"]`` …) is always present with its correct
+    type — an empty ``{}`` would raise ``KeyError`` in a downstream reader or gate.
+    """
+    return {
+        "languages": {"total": 0, "top": []},
+        "top_modules": {"total": 0, "top": []},
+        "hotspots": {"total": 0, "top": []},
+        "community_clusters": {"count": 0, "largest": []},
+        "entrypoints": {"total": 0, "top": []},
+        "graph_schema": {"indexed_files": 0, "edges": 0},
+    }
+
+
+def build_architecture_digest_sync(
+    *,
+    rel_files: Tuple[str, ...],
+    top_ppr_rel: Tuple[Tuple[str, float], ...],
+    community_ids: Tuple[int, ...],
+    edge_count: int,
+) -> Dict[str, object]:
+    """Assemble a bounded, deterministic architecture-overview digest.
+
+    All inputs are plain, workspace-relative, forward-slash data (relativized by the
+    caller). Deterministic: every list is sorted by a total order and truncated to a
+    module-constant cap, and each capped section carries its true ``total``.
+    """
+    if not rel_files and not top_ppr_rel and not community_ids:
+        return _empty_digest()
+
+    # Languages by file extension (deterministic: -count, then extension label).
+    lang_counter: Counter[str] = Counter()
+    for f in rel_files:
+        _, ext = os.path.splitext(f)
+        lang_counter[ext.lower() if ext else _NO_EXTENSION_LABEL] += 1
+    lang_sorted = sorted(lang_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    languages = {
+        "total": len(lang_sorted),
+        "top": [{"language": ext, "count": n} for ext, n in lang_sorted[:_MODULE_LIMIT]],
+    }
+
+    # Top-level modules (first path segment; root files fold into one label).
+    mod_counter: Counter[str] = Counter()
+    for f in rel_files:
+        mod_counter[f.split("/", 1)[0] if "/" in f else _ROOT_MODULE_LABEL] += 1
+    mod_sorted = sorted(mod_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    top_modules = {
+        "total": len(mod_sorted),
+        "top": [{"module": m, "count": n} for m, n in mod_sorted[:_MODULE_LIMIT]],
+    }
+
+    # Hotspots — highest-centrality files (stable secondary sort by path).
+    hot_sorted = sorted(top_ppr_rel, key=lambda ps: (-ps[1], ps[0]))
+    hotspots = {
+        "total": len(hot_sorted),
+        "top": [{"file": p, "score": s} for p, s in hot_sorted[:_HOTSPOT_LIMIT]],
+    }
+
+    # Community clusters — sizes per Louvain id (largest first, id tie-break).
+    cluster_counter: Counter[int] = Counter(community_ids)
+    cluster_sorted = sorted(cluster_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    community_clusters = {
+        "count": len(cluster_sorted),
+        "largest": [{"id": cid, "size": n} for cid, n in cluster_sorted[:_CLUSTER_LIMIT]],
+    }
+
+    # Entrypoints — files whose basename marks an application entry (no test files).
+    entry_files = sorted(
+        f for f in rel_files if f.rsplit("/", 1)[-1] in _ARCH_ENTRYPOINT_BASENAMES
+    )
+    entrypoints = {
+        "total": len(entry_files),
+        "top": entry_files[:_ENTRYPOINT_LIMIT],
+    }
+
+    return {
+        "languages": languages,
+        "top_modules": top_modules,
+        "hotspots": hotspots,
+        "community_clusters": community_clusters,
+        "entrypoints": entrypoints,
+        "graph_schema": {"indexed_files": len(rel_files), "edges": edge_count},
+    }

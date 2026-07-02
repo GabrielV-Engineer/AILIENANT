@@ -13,6 +13,18 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.5: Architecture-overview digest tool — 2026-07-02
+**Status:** COMPLETE | **Gates:** mypy 0/388 · pytest 2170 passed · pyright 0
+- Shipped: `architecture_digest` tool (`tools/perception_tools.py`) synthesizing persisted graph
+  analytics into one bounded {languages, top modules, hotspots, community clusters, entrypoints,
+  node/edge counts} payload via `brain/memory.build_architecture_digest_sync`; reachable by both the
+  researcher and analyst (`build_researcher_tools` + `build_analyst_tools`). New `core/db` getters
+  `get_all_community_ids`/`get_edge_count`; `get_top_ppr_files` given a deterministic `file_path` tie-break.
+- Key decision: sources only persisted `ppr_scores`/`dependency_graph` (never rebuilds the in-RAM graph);
+  the assembler stays in the picklable `brain/memory.py` by taking pre-relativized data (no `core.db`
+  import); tool reachability comes from the build dicts, not the schema-only perception bundle.
+- Deferred: DEBT-091 — git co-change coupling (`FILE_CHANGES_WITH`) omitted; no git-history substrate.
+
 ## 8.14.4: ADR-as-graph design spike (DECISION) — 2026-07-01
 **Status:** COMPLETE | **Gates:** n/a — decision spike, no code
 - Shipped: NO-GO decision on live ADR-as-graph state recorded in `SCHEMA_EVOLUTION.MD`; spike closed.

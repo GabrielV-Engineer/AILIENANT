@@ -482,14 +482,56 @@ async def get_indexed_count(project_id: str = "") -> int:
 
 
 async def get_top_ppr_files(project_id: str = "", limit: int = 20) -> List[Tuple[str, float]]:
-    """Return top-N (file_path, ppr_score) pairs ordered by score descending."""
+    """Return top-N (file_path, ppr_score) pairs ordered by score descending.
+
+    The secondary ``file_path`` key makes the ``LIMIT`` deterministic when several
+    files share a score: without it, which of the tied rows survive the cut is
+    left to SQLite's row order and cannot be recovered by re-sorting downstream.
+    """
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:
         async with db.execute(
             "SELECT file_path, ppr_score FROM ppr_scores "
-            "WHERE project_id=? ORDER BY ppr_score DESC LIMIT ?",
+            "WHERE project_id=? ORDER BY ppr_score DESC, file_path ASC LIMIT ?",
             (project_id, limit),
         ) as cur:
             return [(r[0], float(r[1])) for r in await cur.fetchall()]
+
+
+async def get_edge_count(project_id: str = "") -> int:
+    """Count dependency-graph edges for a project without materializing them.
+
+    Exact: the ``dependency_graph`` primary key is
+    ``(source_file, target_dependency, project_id)`` and ``target_dependency`` is a
+    module/file specifier, so every row is a distinct file-level edge — no
+    ``COUNT(DISTINCT)`` is needed. This counts code-dependency edges; when a
+    separately-namespaced cross-boundary edge type is added, filter it out here so
+    the digest's edge total stays code-only.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM dependency_graph WHERE project_id=?", (project_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def get_all_community_ids(project_id: str = "") -> Dict[str, int]:
+    """Return every node's Louvain community id for a project (NULL omitted).
+
+    Whole-project variant of get_community_ids_bulk: no ``IN (...)`` parameter list,
+    so it stays a single-parameter query regardless of file count (the bulk getter
+    chunks a *caller-supplied* node subset; here the subset is the whole project).
+    """
+    communities: Dict[str, int] = {}
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT file_path, leiden_community_id FROM ppr_scores "
+            "WHERE project_id=? AND leiden_community_id IS NOT NULL",
+            (project_id,),
+        ) as cur:
+            for r in await cur.fetchall():
+                communities[r[0]] = int(r[1])
+    return communities
 
 
 async def get_all_indexed_files() -> List[Tuple[str, str]]:

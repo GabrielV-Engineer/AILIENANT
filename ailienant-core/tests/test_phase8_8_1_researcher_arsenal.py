@@ -158,10 +158,15 @@ async def test_researcher_tools_survive_plan_mode(tmp_path: Path) -> None:
     await register_perception_tools(store)
     await register_researcher_tools(store)
 
+    # k spans the full registered schema universe rather than a hardcoded count:
+    # the fake hash-based embeddings have no real semantic ranking, so an exact-name
+    # query can rank anywhere among all registered schemas — a fixed k silently
+    # breaks the next time a tool is registered.
+    total_schemas = len(store.all_schemas())
     for tool_name in _WAVE1_TOOLS:
         results = await store.select_tools(
             tool_name,
-            k=10,
+            k=total_schemas,
             active_role="researcher",
             session_mode=SessionPermissionMode.PLAN,
         )

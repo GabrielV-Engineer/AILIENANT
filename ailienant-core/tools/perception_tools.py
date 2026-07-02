@@ -34,6 +34,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Tuple,
     Type,
 )
 from xml.etree import ElementTree as ET
@@ -487,6 +488,139 @@ class WebFetchTool(BaseTool):
                 logger.warning("markdownify failed for %s: %s", url, exc)
                 return body
         return body
+
+
+# =====================================================================
+# ArchitectureDigestTool
+# =====================================================================
+
+
+# Token ceiling for the whole digest — a backstop; the per-section item caps in
+# build_architecture_digest_sync are the primary bound. Sized to sit inside a
+# small-tier context budget.
+_DIGEST_TOKEN_CAP: int = 1200
+
+# Fixed low-value-first order in which whole sections are emptied when the digest
+# exceeds the token cap. Bounded (one re-count per drop), never per-element.
+# ``languages`` is last (highest-value orientation signal, and normally tiny) so it
+# is only shed in the pathological case where dropping every other section still
+# leaves the payload over budget — making the backstop a hard guarantee.
+_DIGEST_TRIM_ORDER: Tuple[str, ...] = (
+    "top_modules",
+    "community_clusters",
+    "entrypoints",
+    "hotspots",
+    "languages",
+)
+
+
+def _enforce_digest_token_cap(digest: Dict[str, object]) -> Dict[str, object]:
+    """Trim the digest under `_DIGEST_TOKEN_CAP` by dropping whole sections.
+
+    Deterministic and bounded: sections are emptied in a fixed order, re-counting
+    once per drop (at most len(`_DIGEST_TRIM_ORDER`) counts) — never token-by-token,
+    which would be quadratic on a large payload.
+    """
+    from tools.token_counter import PrecisionTokenCounter
+
+    if PrecisionTokenCounter.count(json.dumps(digest)) <= _DIGEST_TOKEN_CAP:
+        return digest
+    for section in _DIGEST_TRIM_ORDER:
+        node = digest.get(section)
+        if isinstance(node, dict):
+            if "top" in node:
+                node["top"] = []
+            if "largest" in node:
+                node["largest"] = []
+        if PrecisionTokenCounter.count(json.dumps(digest)) <= _DIGEST_TOKEN_CAP:
+            break
+    return digest
+
+
+class ArchitectureDigestInput(BaseModel):
+    """No arguments — synthesizes the whole project's persisted graph analytics."""
+
+
+class ArchitectureDigestTool(BaseTool):
+    """One-call codebase orientation from persisted graph analytics.
+
+    Synthesizes the stored centrality / community / edge data into a bounded digest
+    — {languages, top modules, hotspots, community clusters, entrypoints, graph
+    schema} — replacing dozens of orientation file-reads. Read-only; sources only
+    persisted `ppr_scores` / `dependency_graph`, never a fresh in-RAM graph build.
+    Always returns a well-formed digest (an empty skeleton on a cold or failed
+    project) so a consumer can index every key unconditionally.
+    """
+
+    name: str = "architecture_digest"
+    description: str = (
+        "Return a bounded overview of the project from the dependency graph: "
+        "languages, top-level modules, high-centrality hotspots, community clusters, "
+        "entrypoints, and node/edge counts. One call replaces many orientation "
+        "file-reads. Takes no arguments."
+    )
+    args_schema: Type[BaseModel] = ArchitectureDigestInput  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    _project_id: str = PrivateAttr()
+    _workspace_root: str = PrivateAttr()
+    _session_id: Optional[str] = PrivateAttr(default=None)
+
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        workspace_root: str,
+        session_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._project_id = project_id
+        self._workspace_root = workspace_root
+        self._session_id = session_id
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("ArchitectureDigestTool is async-only — use _arun().")
+
+    async def _arun(self) -> str:
+        from brain.memory import (
+            _HOTSPOT_LIMIT,
+            _empty_digest,
+            build_architecture_digest_sync,
+        )
+        from core.db import (
+            get_all_community_ids,
+            get_edge_count,
+            get_top_ppr_files,
+            list_indexed_files,
+        )
+        from core.dead_code import _to_relpath
+
+        try:
+            indexed = await list_indexed_files(self._project_id)
+            top_ppr = await get_top_ppr_files(self._project_id, _HOTSPOT_LIMIT)
+            community_map = await get_all_community_ids(self._project_id)
+            edge_count = await get_edge_count(self._project_id)
+
+            rel_files = tuple(_to_relpath(f, self._workspace_root) for f in indexed)
+            top_ppr_rel = tuple(
+                (_to_relpath(p, self._workspace_root), s) for p, s in top_ppr
+            )
+            community_ids = tuple(community_map.values())
+
+            digest = await asyncio.to_thread(
+                build_architecture_digest_sync,
+                rel_files=rel_files,
+                top_ppr_rel=top_ppr_rel,
+                community_ids=community_ids,
+                edge_count=edge_count,
+            )
+            return json.dumps({"digest": _enforce_digest_token_cap(digest)})
+        except Exception as exc:  # noqa: BLE001 — orientation must never crash the agent turn
+            logger.warning(
+                "architecture_digest failed for project %s: %s",
+                self._project_id, exc, exc_info=True,
+            )
+            return json.dumps({"error": str(exc), "digest": _empty_digest()})
 
 
 # =====================================================================

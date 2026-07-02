@@ -613,11 +613,15 @@ def _tool_schema(
 
 
 async def register_researcher_tools(store: ToolRAGStore) -> int:
-    """Register the 6 researcher-scoped schemas in the given store. Returns count.
+    """Register the 7 researcher-scoped schemas in the given store. Returns count.
 
-    Includes 5 net-new tools and 1 schema formalization of the existing read_file
-    @tool. None auto-register at module import — callers do this explicitly.
+    Includes 5 net-new tools, 1 schema formalization of the existing read_file
+    @tool, and architecture_digest (defined in perception_tools.py, wired here so
+    the Researcher can orient before composing its Skeleton Map). None auto-register
+    at module import — callers do this explicitly.
     """
+    from tools.perception_tools import ArchitectureDigestInput
+
     schemas: List[ToolSchema] = [
         _tool_schema(
             "read_file",
@@ -651,6 +655,12 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
             GetDependentsInput,
             roles=_RESEARCHER_AND_PLANNER,
         ),
+        _tool_schema(
+            "architecture_digest",
+            "Bounded project overview from the dependency graph: languages, top modules, "
+            "centrality hotspots, community clusters, entrypoints, and node/edge counts.",
+            ArchitectureDigestInput,
+        ),
     ]
     for schema in schemas:
         await store.register_schema(schema)
@@ -663,7 +673,7 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
 
 
 def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]:
-    """Construct the five researcher tools bound to live session context.
+    """Construct the six researcher tools bound to live session context.
 
     Mirrors ``analyst_tools.build_analyst_tools``: the metadata-only schemas in the
     RAG store are inert; this is where the executable callables are instantiated
@@ -680,6 +690,7 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
     from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
     from core.tool_dispatch import RegisteredTool
     from core.vfs_middleware import make_safe_reader
+    from tools.perception_tools import ArchitectureDigestTool
 
     workspace_root = str(state.get("workspace_root") or "")
     project_id = str(state.get("project_id") or "")
@@ -720,5 +731,14 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
             GetDependentsTool(get_dependents=dependents_fn),
             ToolPrivilegeTier.READ_ONLY,
             _RESEARCHER_AND_PLANNER,
+        ),
+        "architecture_digest": RegisteredTool(
+            ArchitectureDigestTool(
+                project_id=project_id,
+                workspace_root=workspace_root,
+                session_id=session_id or None,
+            ),
+            ToolPrivilegeTier.READ_ONLY,
+            _RESEARCHER_ROLES,
         ),
     }

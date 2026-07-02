@@ -68,6 +68,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-088 | `bfs_k_hop_backward` has the same resolved-form multi-hop gap as pre-8.14.1 blast-radius (dependents referenced by import specifier, not file path) | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-089 | Blast-radius mapper's Python module resolution is fail-safe suffix matching, not sys.path-aware — may over-count on a basename collision across packages | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-090 | Memory-snapshot export command is backend-only (WS event + engine); no extension-side button / command-palette entry to trigger it | LOW | FE Integration | future FE slice | Floating |
+| DEBT-091 | Architecture digest omits git co-change coupling (`FILE_CHANGES_WITH`) — no git-history substrate exists to source it from | LOW | Capability gap | future graph slice | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -277,6 +278,14 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** declared backend-only scope — 8.14.2's DoD is `mypy`/`pyright` only (no npm gate); the additive WS contract is forward-compatible, so wiring the FE later needs no backend change.
 - **Resolution (unscheduled):** add an extension command-palette entry / status-panel button that emits `client_export_memory_snapshot` with the active `project_id` + `workspace_root`.
 - **Notes:** logged at 8.14.2 close per CLAUDE.md §11.3.
+
+### DEBT-091 [LOW · Floating] — Architecture digest omits git co-change coupling
+
+- **Date:** 2026-07-02
+- **Reproduce:** `architecture_digest` (`tools/perception_tools.py` + `brain/memory.build_architecture_digest_sync`) synthesizes languages/modules/hotspots/communities/entrypoints from the persisted graph, but carries no git co-change ("files that change together" — the reference graph's `FILE_CHANGES_WITH`) signal; there is no git-history substrate in the catalog to source it from.
+- **Error:** declared scope cut — 8.14.5's manifest marks co-change "optional… where cheap"; with no existing git-log analysis it is not cheap, so it was omitted rather than built speculatively (§9 / §11.3).
+- **Resolution (unscheduled):** add a bounded, idempotent git-log co-change extractor persisting pairwise change coupling, then surface a `co_change` section in the digest.
+- **Notes:** logged at 8.14.5 close per CLAUDE.md §11.3.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 
