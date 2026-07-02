@@ -624,6 +624,110 @@ class ArchitectureDigestTool(BaseTool):
 
 
 # =====================================================================
+# FindSymbolCallersTool — advisory "who calls this symbol" over the Tier-2 substrate
+# =====================================================================
+
+
+class FindSymbolCallersInput(BaseModel):
+    symbol_name: str = Field(
+        description=(
+            "Function, class, or method name to find callers of. Prefer a fully-qualified "
+            "name (e.g. 'ToolDispatcher.dispatch'); a bare name works too. Must be "
+            "identifier-shaped; names shorter than 3 characters cannot be narrowed and are "
+            "slow — qualify them."
+        )
+    )
+
+
+class FindSymbolCallersTool(BaseTool):
+    """Advisory "who calls this symbol" lookup over the Tier-2 symbol substrate.
+
+    Resolves references lazily (indexed-file text-narrowing → AST confirmation); no call
+    edges are stored. Each caller carries a confidence tier — EXTRACTED (the caller imports
+    a defining file), AMBIGUOUS (the name is defined in several files), or INFERRED (an
+    AST-confirmed reference with no import path, e.g. dynamic dispatch — still reported).
+    READ_ONLY and advisory only: an empty or uncatalogued result means "no callers found
+    via this resolution path", NEVER "confirmed dead". Confirmation is by name, so a
+    same-named symbol on an unrelated type may surface as an INFERRED false positive —
+    treat the output as candidate callers, not a precise call graph.
+    """
+
+    name: str = "find_symbol_callers"
+    description: str = (
+        "Find the files that call/reference a function, class, or method by name, with a "
+        "confidence tier per caller. Advisory only — an empty result means 'none found via "
+        "this path', never 'unused/dead'. Prefer a fully-qualified name (e.g. Class.method)."
+    )
+    args_schema: Type[BaseModel] = FindSymbolCallersInput  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    _project_id: str = PrivateAttr()
+    _workspace_root: str = PrivateAttr()
+    _session_id: Optional[str] = PrivateAttr(default=None)
+
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        workspace_root: str,
+        session_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._project_id = project_id
+        self._workspace_root = workspace_root
+        self._session_id = session_id
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("FindSymbolCallersTool is async-only — use _arun().")
+
+    async def _arun(self, symbol_name: str) -> str:
+        from core.dead_code import _to_relpath
+        from core.symbol_refs import find_symbol_callers
+
+        try:
+            result = await find_symbol_callers(
+                symbol_name, self._project_id, workspace_root=self._workspace_root
+            )
+        except ValueError as exc:
+            # Input guard tripped (non-identifier name) — a caller error, not a fault.
+            return json.dumps({"error": str(exc), "symbol": symbol_name, "callers": []})
+        except Exception as exc:  # noqa: BLE001 — a lookup must never crash the agent turn
+            logger.warning(
+                "find_symbol_callers failed for %r in project %s: %s",
+                symbol_name, self._project_id, exc, exc_info=True,
+            )
+            return json.dumps({"error": str(exc), "symbol": symbol_name, "callers": []})
+
+        callers = [
+            {
+                "file": _to_relpath(c.file_path, self._workspace_root),
+                "lines": list(c.lines),
+                "confidence": c.confidence,
+            }
+            for c in result.callers
+        ]
+        payload: Dict[str, Any] = {
+            "symbol": symbol_name,
+            "defined_in": [_to_relpath(f, self._workspace_root) for f in result.defined_in],
+            "in_catalog": result.in_catalog,
+            "callers": callers,
+            "scanned": result.scanned,
+            "truncated": result.truncated,
+            "timed_out": result.timed_out,
+        }
+        if not result.in_catalog:
+            payload["note"] = (
+                "symbol not in the definition catalog — this is NOT evidence of zero callers"
+            )
+        elif not callers:
+            payload["note"] = (
+                "no callers found via this resolution path (text-search + AST) — this is NOT "
+                "a 'dead code' verdict"
+            )
+        return json.dumps(payload)
+
+
+# =====================================================================
 # Task G — Schema registration helper
 # =====================================================================
 

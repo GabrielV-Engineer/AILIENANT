@@ -13,6 +13,19 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.6.1: Two-Tiered symbol substrate implementation — 2026-07-02
+**Status:** COMPLETE | **Gates:** mypy 0/390 · pytest 2186 passed · pyright 0
+- Shipped: `symbol_definitions` catalog (`§27`) populated off the existing tree-sitter parse
+  (`core/ast_engine.py::collect_symbol_defs`), persisted via `ReactiveIndexer`; `core/symbol_refs.py`
+  resolves "who calls this symbol" lazily (FTS5 narrow → AST-confirm), tagging each caller
+  `EXTRACTED`/`AMBIGUOUS`/`INFERRED`; new READ_ONLY `find_symbol_callers` tool wired into both
+  analyst and researcher arsenals.
+- Key decision: reused the existing DEBT-041 FTS5 trigram index (`fts_narrow_catalog`) instead of a
+  ripgrep subprocess — satisfies the injection-safety and search-scope-confinement conditions by
+  construction, with no new dependency.
+- Deferred: symbol extraction scoped to `IMPORT_EXTRACTORS`' 5 languageIds (Python/TS/JS); wider
+  language coverage is a future extension, not a silent gap.
+
 ## 8.14.6: Symbol-level call-graph substrate (DECISION) — 2026-07-02
 **Status:** COMPLETE | **Gates:** n/a
 - Shipped: GO decision recorded in `docs/SCHEMA_EVOLUTION.MD` — a Two-Tiered Hybrid Graph (Tier 1

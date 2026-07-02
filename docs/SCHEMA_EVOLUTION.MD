@@ -952,6 +952,52 @@ members.
 
 ---
 
+## §27 — Symbol-Definition Catalog (Tier-2 Wire Contract)
+
+Ships the Tier-2 substrate recorded below in "Design Decision — Symbol-Level Call-Graph Substrate
+(GO — Two-Tiered Hybrid)". Additive; no FK into `dependency_graph`; **no call edges are stored.**
+
+```sql
+CREATE TABLE IF NOT EXISTS symbol_definitions (
+    qualified_name TEXT    NOT NULL,
+    file_path      TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,   -- function | class | method
+    start_line     INTEGER NOT NULL,  -- 1-indexed
+    end_line       INTEGER NOT NULL,  -- 1-indexed
+    project_id     TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (qualified_name, file_path, start_line, project_id)
+)
+```
+
+Population: `core.ast_engine.collect_symbol_defs` (dotted FQN, module → class → method) rides the
+existing single tree-sitter parse in `brain.memory.index_file_sync`, scoped to the same languageIds
+as `IMPORT_EXTRACTORS` (python, typescript(react), javascript(react)) — the import-path confidence
+anchor below only exists for those languages. Persisted via `core.indexer.ReactiveIndexer.index`
+under the existing content-hash short-circuit (condition #2 — no bespoke second indexer);
+`upsert_symbol_definitions` replaces a file's rows per reindex.
+
+**Query-time resolution (`core.symbol_refs.find_symbol_callers`, new module):** anchors the
+symbol's defining file(s) via `get_symbol_definitions`, narrows candidates via `fts_narrow_catalog`
+(the existing DEBT-041 FTS5 trigram line-index), then AST-confirms each candidate as a real
+identifier reference (rejecting string/comment noise and the definition site itself), tagging
+`EXTRACTED` (caller resolves to a defining file via `core.blast_radius.compute_blast_radius`) /
+`AMBIGUOUS` (≥2 defining files) / `INFERRED` (confirmed reference, no import path — e.g. dynamic
+dispatch; never discarded). Bounded by a wall-clock timeout and a bounded parse-fan-out semaphore,
+with import-connected candidates ordered first so a timeout sheds low-value noise, never the
+high-confidence hit; the result carries a truthful `truncated`/`timed_out` flag.
+
+**Conditions #7/#8 (input sanitization, search-scope confinement) are met by construction, not by a
+hardened subprocess:** `fts_narrow_catalog` was already a parameterized `MATCH ?` query scoped to
+the indexed catalog (built under DEBT-041) — no ripgrep/shell subprocess was introduced. An
+identifier-shaped allowlist on the symbol name remains as defense-in-depth ahead of the search.
+
+**Consumer:** `find_symbol_callers`, a new `ToolPrivilegeTier.READ_ONLY` perception tool
+(`tools/perception_tools.py::FindSymbolCallersTool`), reachable via both `build_analyst_tools` and
+`build_researcher_tools` (mirrors `architecture_digest`'s dual-role wiring). An uncatalogued or
+empty result is surfaced as "no callers found via this resolution path" — never "confirmed dead."
+
+---
+
 ## Design Decision — ADR-as-Graph State (REJECTED)
 
 > Not a wire contract (no schema was added), so this record carries no `§N` number. It is the
@@ -999,11 +1045,9 @@ closed.
 
 ## Design Decision — Symbol-Level Call-Graph Substrate (GO — Two-Tiered Hybrid)
 
-> Not a wire contract (no schema/table ships under this item), so this record carries no `§N`
-> number. It is the durable design record for the question 8.14.6 posed: should AILIENANT gain a
-> symbol-level (caller → callee) call-graph substrate? The next free numbered slot is `§28`
-> (`§27` is claimed by 8.15.0); a `§N` wire-contract entry lands only when the actual definition
-> catalog / lookup tool ships under the follow-on build item, `8.14.6.1`.
+> This record is the durable design rationale, not the wire contract itself — the shipped
+> `symbol_definitions` DDL and `find_symbol_callers` tool contract now live in **`§27`** above,
+> delivered under the follow-on build item `8.14.6.1`.
 
 **Decision: GO**, but not the substrate the manifest's own text sketched (`call_edges`,
 `caller_symbol → callee_symbol`, populated at index time). Research this session confirmed there is

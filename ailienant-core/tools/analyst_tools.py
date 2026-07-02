@@ -717,8 +717,8 @@ def _tool_schema(
 
 
 async def register_analyst_tools(store: ToolRAGStore) -> int:
-    """Register all 8 analyst-scoped schemas in the given store. Returns count."""
-    from tools.perception_tools import ArchitectureDigestInput
+    """Register all 9 analyst-scoped schemas in the given store. Returns count."""
+    from tools.perception_tools import ArchitectureDigestInput, FindSymbolCallersInput
 
     schemas: List[ToolSchema] = [
         _tool_schema(
@@ -762,6 +762,12 @@ async def register_analyst_tools(store: ToolRAGStore) -> int:
             "Bounded project overview from the dependency graph: languages, top modules, "
             "centrality hotspots, community clusters, entrypoints, and node/edge counts.",
             ArchitectureDigestInput,
+        ),
+        _tool_schema(
+            "find_symbol_callers",
+            "Find files that call/reference a function/class/method by name, with a "
+            "confidence tier per caller. Advisory — an empty result never means 'dead'.",
+            FindSymbolCallersInput,
         ),
     ]
     for schema in schemas:
@@ -825,7 +831,7 @@ def make_dependency_audit_tool(
 
 
 def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]:
-    """Construct the eight analyst tools bound to live session context.
+    """Construct the nine analyst tools bound to live session context.
 
     Mirrors the coder's ``make_coder_execute_tools``: the metadata-only schemas
     registered in the RAG store are inert; this is where the executable callables
@@ -840,7 +846,7 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
     from core.tool_dispatch import RegisteredTool
     from core.token_ledger import token_ledger
     from core.vfs_middleware import VFSMiddleware
-    from tools.perception_tools import ArchitectureDigestTool
+    from tools.perception_tools import ArchitectureDigestTool, FindSymbolCallersTool
     from tools.researcher_tools import make_vfs_path_provider
 
     workspace_root = str(state.get("workspace_root") or "")
@@ -897,6 +903,15 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
         ),
         "architecture_digest": RegisteredTool(
             ArchitectureDigestTool(
+                project_id=project_id,
+                workspace_root=workspace_root,
+                session_id=str(session_id) if session_id else None,
+            ),
+            ToolPrivilegeTier.READ_ONLY,
+            _ANALYST_ROLES,
+        ),
+        "find_symbol_callers": RegisteredTool(
+            FindSymbolCallersTool(
                 project_id=project_id,
                 workspace_root=workspace_root,
                 session_id=str(session_id) if session_id else None,

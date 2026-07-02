@@ -311,6 +311,7 @@ Proyect_Ailienant/
 │   │   ├── blast_radius.py      #     pre-apply transitive-dependents mapper (resolved reverse-adjacency BFS)
 │   │   ├── memory_snapshot.py   #     portable dependency-graph export/import (.ailienant/memory.db.zst)
 │   │   ├── dead_code.py         #     file-level zero-resolved-in-degree, non-entrypoint orphan scan
+│   │   ├── symbol_refs.py       #     Tier-2 lazy "who calls this symbol" resolver (FTS5 narrow → AST-confirm; no stored call edges)
 │   │   ├── benchmark_service.py #     host-side run_benchmark execution + report store (LFI-hardened, single-flight)
 │   │   ├── benchmark/           #     shippable in-process precision/ablation harness (importable without tests/)
 │   │   │                        #       arms/runner/hygiene/metrics/problems + codegen (Pass@1) + executors +

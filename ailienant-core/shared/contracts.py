@@ -14,6 +14,21 @@ class IndexingRequest:
     workspace_root: str = ""  # absolute workspace root; confines lexical relative-specifier resolution
 
 
+@dataclass(frozen=True)
+class SymbolDef:
+    """One symbol definition (function/class/method) extracted from a file's AST.
+
+    All fields are primitives so the enclosing IndexingResult stays picklable across
+    the ProcessPoolExecutor boundary — a tree-sitter node is process-local and must
+    never cross it. ``qualified_name`` is a dotted FQN of the enclosing named scopes
+    (module → class → method); ``start_line``/``end_line`` are 1-indexed.
+    """
+    qualified_name: str
+    kind: str  # "function" | "class" | "method"
+    start_line: int
+    end_line: int
+
+
 @dataclass
 class IndexingResult:
     """Result returned by the worker process. All fields are primitives — picklable."""
@@ -23,6 +38,7 @@ class IndexingResult:
     success: bool
     error: Optional[str] = None
     imports: list[str] = field(default_factory=list)  # absolute module paths extracted from AST
+    symbols: list[SymbolDef] = field(default_factory=list)  # symbol definitions extracted from AST
 
 
 _EXT_LANG: dict[str, str] = {

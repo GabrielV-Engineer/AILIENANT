@@ -8,18 +8,18 @@ from tree_sitter import Language, Parser
 
 logger = logging.getLogger(__name__)
 
-# --- Mapeo de Identificadores de VS Code a Gramáticas Tree-sitter ---
-# ¿Por qué este mapeo?:
-# 1. VS Code utiliza languageId específicos (ej. 'typescriptreact') que Tree-sitter
-#    no reconoce de forma nativa — este dict actúa como el "Traductor de Estructura".
-# 2. Permite a la IA diseccionar el código en nodos lógicos (funciones, clases, loops)
-#    en lugar de tratar el código como simple texto plano.
-# 3. Soporte multi-dominio: Web, Systems (C/C++/Zig), Enterprise, DevOps, Data Science.
-# 4. Lazy Loading: los parsers solo se cargan en RAM cuando se abre un archivo de ese tipo.
-# Nota: lenguas no soportadas por tree-sitter-languages son capturadas por el try/except
-# en parse() y retornan None (degradación grácil — sin fallos).
+# --- VS Code languageId → Tree-sitter grammar mapping ---
+# Why this mapping exists:
+# 1. VS Code uses specific languageIds (e.g. 'typescriptreact') that Tree-sitter does
+#    not recognize natively — this dict acts as the "structure translator".
+# 2. It lets the AI dissect code into logical nodes (functions, classes, loops) instead
+#    of treating source as flat text.
+# 3. Multi-domain coverage: Web, Systems (C/C++/Zig), Enterprise, DevOps, Data Science.
+# 4. Lazy loading: parsers are only pulled into RAM when a file of that type is opened.
+# Note: languages unsupported by tree-sitter-languages are caught by the try/except in
+# parse() and return None (graceful degradation — no crash).
 _LANG_MAP: Dict[str, str] = {
-    # Núcleo Web & Scripts
+    # Core web & scripting
     "python": "python",
     "typescript": "typescript",
     "typescriptreact": "tsx",
@@ -28,28 +28,28 @@ _LANG_MAP: Dict[str, str] = {
     "json": "json",
     "yaml": "yaml",
 
-    # Sistemas & Rendimiento (C-Family)
+    # Systems & performance (C-family)
     "c": "c",
     "cpp": "cpp",
     "rust": "rust",
     "go": "go",
     "zig": "zig",
 
-    # Enterprise & Mobile
+    # Enterprise & mobile
     "java": "java",
     "csharp": "c_sharp",
     "kotlin": "kotlin",
     "swift": "swift",
     "dart": "dart",
 
-    # Backend & Programación Funcional
+    # Backend & functional
     "php": "php",
     "ruby": "ruby",
     "elixir": "elixir",
     "scala": "scala",
     "haskell": "haskell",
 
-    # Automatización, Datos & Scripting
+    # Automation, data & scripting
     "shellscript": "bash",
     "powershell": "powershell",
     "r": "r",
@@ -208,6 +208,79 @@ def _collect_function_nodes(root: Any) -> list[Any]:
         children = getattr(node, "children", None) or []
         stack.extend(reversed(children))
     return found
+
+
+_CLASS_NODE_HINTS: Tuple[str, ...] = ("class",)
+_MAX_SYMBOL_DEPTH: int = 60
+
+
+def _is_class_like(node: Any) -> bool:
+    """A node that declares a named class scope (its methods nest beneath it)."""
+    type_name = getattr(node, "type", "") or ""
+    if not any(hint in type_name for hint in _CLASS_NODE_HINTS):
+        return False
+    try:
+        return node.child_by_field_name("name") is not None
+    except Exception:
+        return False
+
+
+def _named_child(node: Any) -> str:
+    """Decoded identifier from a node's 'name' field, or '' when absent/undecodable."""
+    try:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return ""
+        return str(name_node.text.decode("utf-8", "replace"))
+    except Exception:
+        return ""
+
+
+def collect_symbol_defs(root: Any) -> list[Tuple[str, str, int, int]]:
+    """Extract ``(qualified_name, kind, start_line, end_line)`` for every named
+    function/class/method definition, in source order.
+
+    A dotted FQN is built from the enclosing named scopes (module → class → method).
+    Class bodies ARE descended so methods carry their owner's prefix; function bodies
+    are NOT descended (nested closures are local, not cross-file lookup targets —
+    mirrors ``_collect_function_nodes``). Definitions only — no call expression is
+    parsed. Decorator wrappers are transparent (the inner definition is still found).
+    Best-effort and never raises; a malformed/nameless node is skipped. Lines are
+    1-indexed (tree-sitter rows are 0-indexed).
+    """
+    out: list[Tuple[str, str, int, int]] = []
+
+    def _walk(node: Any, prefix: Tuple[str, ...], in_class: bool, depth: int) -> None:
+        if node is None or depth > _MAX_SYMBOL_DEPTH:
+            return
+        for child in (getattr(node, "children", None) or []):
+            if _is_class_like(child):
+                name = _named_child(child)
+                if not name:
+                    _walk(child, prefix, in_class, depth + 1)
+                    continue
+                out.append(
+                    (".".join((*prefix, name)), "class",
+                     child.start_point[0] + 1, child.end_point[0] + 1)
+                )
+                # Descend the class so its methods / nested classes are captured.
+                _walk(child, (*prefix, name), True, depth + 1)
+            elif _is_function_like(child):
+                name = _named_child(child)
+                if not name:
+                    continue  # anonymous (arrow/default export) — not a lookup target
+                out.append(
+                    (".".join((*prefix, name)), "method" if in_class else "function",
+                     child.start_point[0] + 1, child.end_point[0] + 1)
+                )
+                # Do NOT descend a function body — nested closures stay local.
+            else:
+                # Transparent node (module/block/decorated_definition/…): keep walking,
+                # preserving the class flag through the class body.
+                _walk(child, prefix, in_class, depth + 1)
+
+    _walk(root, (), False, 0)
+    return out
 
 
 def _leading_comment(func: Any) -> str:

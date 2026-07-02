@@ -12,7 +12,7 @@ import posixpath
 from collections import Counter
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from shared.contracts import IndexingRequest, IndexingResult, PPRRequest, PPRResult
+from shared.contracts import IndexingRequest, IndexingResult, PPRRequest, PPRResult, SymbolDef
 
 logger = logging.getLogger("MEMORY_WORKER")
 
@@ -210,16 +210,26 @@ def index_file_sync(req: IndexingRequest) -> IndexingResult:
             req.file_path, req.content, req.language_id
         )
         imports: list[str] = []
+        symbols: list[SymbolDef] = []
         if tree is not None:
             extractor = IMPORT_EXTRACTORS.get(req.language_id)
             if extractor is not None:
                 imports = extractor(tree, req)
+                # Symbol definitions share the import extractor's language scope: the
+                # confidence-tiering anchor (import resolution) only exists for these
+                # languages, so a generic walk elsewhere would buy noise, not signal.
+                from core.ast_engine import collect_symbol_defs  # deferred: heavy tree-sitter dep
+                symbols = [
+                    SymbolDef(qualified_name=q, kind=k, start_line=s, end_line=e)
+                    for q, k, s, e in collect_symbol_defs(tree.root_node)
+                ]
         return IndexingResult(
             file_path=req.file_path,
             symbol_count=_count_top_level_symbols(tree),
             language_id=req.language_id,
             success=True,
             imports=imports,
+            symbols=symbols,
         )
     except Exception as exc:
         return IndexingResult(

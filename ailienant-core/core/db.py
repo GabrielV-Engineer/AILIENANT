@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
 from shared.config import DB_CATALOG_PATH
+from shared.contracts import SymbolDef
 
 # ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,21 @@ _DDL = [
         PRIMARY KEY (file_path, project_id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_if_project ON indexed_files(project_id)",
+    # Symbol-definition catalog (Tier-2 substrate): one row per named
+    # function/class/method. Additive, no FK into dependency_graph — the file-level
+    # analytics graph is never coupled to symbol identity. No call edges are stored;
+    # "who calls this symbol" is resolved lazily at query time (see core/symbol_refs.py).
+    """CREATE TABLE IF NOT EXISTS symbol_definitions (
+        qualified_name TEXT    NOT NULL,
+        file_path      TEXT    NOT NULL,
+        kind           TEXT    NOT NULL,
+        start_line     INTEGER NOT NULL,
+        end_line       INTEGER NOT NULL,
+        project_id     TEXT    NOT NULL DEFAULT '',
+        PRIMARY KEY (qualified_name, file_path, start_line, project_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_symdef_lookup ON symbol_definitions(project_id, qualified_name)",
+    "CREATE INDEX IF NOT EXISTS idx_symdef_file ON symbol_definitions(project_id, file_path)",
     # Phase 7.9.A.7 — Command-menu config stores (concurrency-safe via WAL).
     # Entity collections live here (not settings.json) so concurrent CRUD from
     # independent routers cannot lose updates (last-writer-wins on a JSON file).
@@ -628,6 +644,67 @@ async def fts_narrow_catalog(
             return None  # malformed FTS query → fall back to a full scan
     uncovered = catalog_set - covered  # index lag: never narrow these away
     return sorted((hits & catalog_set) | uncovered)
+
+
+# ── Symbol-definition catalog (Tier-2 substrate) ─────────────────────────────
+
+async def upsert_symbol_definitions(
+    file_path: str, defs: List[SymbolDef], project_id: str = ""
+) -> None:
+    """Replace the symbol-definition rows for one file (delete-then-insert).
+
+    Mirrors index_file_lines' per-file replace semantics: a reindex fully supersedes
+    the file's prior rows, so a renamed/moved symbol never leaves an orphan. Lines are
+    stored as extracted (1-indexed). No call edges are stored — reference resolution is
+    deferred to query time.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "DELETE FROM symbol_definitions WHERE project_id=? AND file_path=?",
+            (project_id, file_path),
+        )
+        if defs:
+            await db.executemany(
+                "INSERT OR IGNORE INTO symbol_definitions "
+                "(qualified_name, file_path, kind, start_line, end_line, project_id) "
+                "VALUES (?,?,?,?,?,?)",
+                [
+                    (d.qualified_name, file_path, d.kind, d.start_line, d.end_line, project_id)
+                    for d in defs
+                ],
+            )
+        await db.commit()
+
+
+async def get_symbol_definitions(
+    project_id: str, qualified_name: str
+) -> List[Tuple[str, str, int, int]]:
+    """Return ``(file_path, kind, start_line, end_line)`` rows defining ``qualified_name``.
+
+    More than one row means the same FQN is defined in multiple files (the AMBIGUOUS
+    case). An empty list means the symbol is simply not in the catalog — the caller
+    must never read that as "no callers exist".
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT file_path, kind, start_line, end_line FROM symbol_definitions "
+            "WHERE project_id=? AND qualified_name=?",
+            (project_id, qualified_name),
+        ) as cur:
+            return [
+                (str(r[0]), str(r[1]), int(r[2]), int(r[3]))
+                for r in await cur.fetchall()
+            ]
+
+
+async def purge_symbol_definitions(file_path: str, project_id: str = "") -> None:
+    """Drop all symbol-definition rows for a deleted file."""
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "DELETE FROM symbol_definitions WHERE project_id=? AND file_path=?",
+            (project_id, file_path),
+        )
+        await db.commit()
 
 
 async def get_ppr_scores_bulk(

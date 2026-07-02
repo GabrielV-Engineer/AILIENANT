@@ -24,8 +24,10 @@ from core.db import (
     get_indexed_hash,
     index_file_lines,
     purge_file_nodes,
+    purge_symbol_definitions,
     upsert_dependencies,
     upsert_indexed_file,
+    upsert_symbol_definitions,
 )
 from brain.memory import index_file_sync
 from shared.contracts import IndexingRequest, IndexingResult, detect_language
@@ -536,6 +538,16 @@ class ReactiveIndexer:
                 logger.warning(
                     "ReactiveIndexer: line-index write failed for %s: %s", filepath, line_exc
                 )
+            try:
+                # Accelerator-only: the symbol-definition catalog is an advisory
+                # Tier-2 substrate. A failed write only costs a lookup miss (surfaced
+                # as "symbol not in catalog"), never a corrupted graph — so it must
+                # never block the canonical index/embed flow either.
+                await upsert_symbol_definitions(filepath, result.symbols, project_id)
+            except Exception as sym_exc:  # noqa: BLE001 — log and continue; catalog is advisory
+                logger.warning(
+                    "ReactiveIndexer: symbol-catalog write failed for %s: %s", filepath, sym_exc
+                )
             embedded = await self._semantic_upsert(filepath, resolved, project_id)
             if embedded:
                 self._breaker.record_success(key)
@@ -554,6 +566,7 @@ class ReactiveIndexer:
         later starts from a clean slate.
         """
         await purge_file_nodes(filepath, project_id)
+        await purge_symbol_definitions(filepath, project_id)
         await self._semantic_delete(filepath, project_id)
         self._breaker.clear(f"{project_id}\x00{filepath}")
         from core.response_cache import response_cache  # deferred — avoid import cycle
