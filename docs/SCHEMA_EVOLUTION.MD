@@ -994,3 +994,100 @@ via the analyst `docs`/`codex` brain and `AILIENANT.md` standing guidance.
 decision provenance matters, or a *measured* case of the agent re-litigating a settled tradeoff
 that the existing prose channels demonstrably failed to prevent. Absent that evidence, this stays
 closed.
+
+---
+
+## Design Decision — Symbol-Level Call-Graph Substrate (GO — Two-Tiered Hybrid)
+
+> Not a wire contract (no schema/table ships under this item), so this record carries no `§N`
+> number. It is the durable design record for the question 8.14.6 posed: should AILIENANT gain a
+> symbol-level (caller → callee) call-graph substrate? The next free numbered slot is `§28`
+> (`§27` is claimed by 8.15.0); a `§N` wire-contract entry lands only when the actual definition
+> catalog / lookup tool ships under the follow-on build item, `8.14.6.1`.
+
+**Decision: GO**, but not the substrate the manifest's own text sketched (`call_edges`,
+`caller_symbol → callee_symbol`, populated at index time). Research this session confirmed there is
+today no symbol-level infrastructure at all — no FQN builder, no call-expression walker beyond a
+narrow import/require-call match inside `_extract_ecmascript_imports`, and `_count_top_level_symbols`
+(`brain/memory.py:39-42`) is a bare scalar with no identity. A stored-edges design was also found to
+be structurally incompatible with the existing graph: symbol-level edges would vastly exceed
+`MAX_GRAPH_EDGES=5000` (enforced as a pre-build cap-and-skip guard in `calculate_ppr_sync`/
+`calculate_graph_analytics_sync`, `brain/memory.py:242-247, 339-344`), so storing them would either
+blow the cap or fork the graph into two incompatible analytics systems. The adopted design instead
+sidesteps edge storage entirely.
+
+### The Two-Tiered Hybrid design
+
+**Tier 1 (macro, unchanged).** The existing file-level `dependency_graph` + in-RAM NetworkX
+Louvain/PPR/centrality pipeline is untouched — no fork, no cap redesign.
+
+**Tier 2 (micro, new — design only; no schema/code lands under 8.14.6).** A lightweight, additive
+**symbol-definition catalog**, tree-sitter indexed at file-index time, storing only symbol
+*definitions* (`qualified_name, file_path, kind, start_line, end_line, project_id` — no FK into
+`dependency_graph`). Row count is bounded by symbol count, not call count — a fundamentally smaller
+and more predictable growth curve than an edges table, and it never enters `MAX_GRAPH_EDGES`
+accounting because it is not a graph. **No call edges are ever stored.** The fragile part of any
+static call graph — cross-module FQN resolution under dynamic dispatch — is sidestepped, not solved.
+
+"Who calls this symbol" is answered lazily, at runtime, in two passes: (1) a text-search pass over the
+already-indexed file set for candidate usages of the symbol name; (2) an AST-validation pass (via the
+existing `core.ast_engine`) confirming each candidate is a real identifier reference, not a string
+literal or comment. Import-scoped resolution (`resolve_target_to_file`/`IMPORT_EXTRACTORS`, from
+8.14.0) is used **only as a ranking/confidence signal, never as a discard filter**: import-connected
+candidates are tagged with a higher-confidence tier, reusing the existing `EXTRACTED`/`AMBIGUOUS`/
+`INFERRED` vocabulary (`brain/memory.py::_resolve_edge_confidence`) rather than inventing new tier
+names, and unconnected-but-AST-validated candidates are still returned, tagged lower-confidence. A
+hard import gate was considered and rejected: this codebase's own `ToolDispatcher.dispatch()`
+(`core/tool_dispatch.py:205`) resolves tools purely through a string-keyed dict lookup with zero
+import relationship to the tool classes it invokes — a hard import gate would silently discard exactly
+that class of dynamic-dispatch caller, reintroducing the blind spot the hybrid design exists to avoid.
+
+Output is advisory only: gated behind the existing `ToolPrivilegeTier.READ_ONLY` tier, and — as a
+structural, code-level invariant, not just a comment — never the sole trigger for a destructive action
+(none exists today; this is a forward guarantee). `detect_dead_code` and blast-radius remain the
+file-level signals already shipped; Tier 2 may inform a human or agent's manual judgment but never
+feeds an automated deletion path, and an unconfirmed-or-empty Tier 2 result must be surfaced as "no
+callers found via this resolution path" — never as "confirmed dead" — mirroring the coverage caveat
+already binding on 8.14.8's runtime-trace validation ("never-observed ≠ dead").
+
+### Why this beats the alternatives
+
+- **vs. bespoke SQL recursive CTEs:** moot — a CTE still requires edges to exist first. The hard part
+  was never the query shape, it was producing correct edges under dynamic dispatch; storing zero
+  edges sidesteps that rather than querying it more cleverly.
+- **vs. bundling LSP/SCIP:** a persistent language-server process or SCIP indexer buys near-perfect
+  resolution at the cost of new process-lifecycle management, a large dependency footprint (against
+  CLAUDE.md §9's narrow-auditable precedent — the `scipy` rejection), and its own execution-sandboxing
+  surface — disproportionate for a read-only lookup, and already ruled out for this division via
+  `DEBT-075` (`docs/PROJECT_MANIFEST.md:723`).
+- **External validation:** an offline GraphRAG-MCP reference graph, indexed against this exact repo,
+  already computes function-level `CALLS` edges and was used at 8.14-planning time to validate that
+  this class of resolution is achievable here — confirming the *goal* is reachable without adopting
+  that reference implementation's heavier, fully-materialized-edges approach.
+
+### Binding conditions for the follow-on build (`8.14.6.1` — not built under this item)
+
+1. Concrete additive DDL for the definition catalog; no FK into `dependency_graph`.
+2. Reuse the existing incremental-reindex trigger (LazyIndexer/content-hash) for catalog freshness —
+   no bespoke second indexer.
+3. Import-scoped resolution is a ranking/confidence signal only, never a discard filter (see above;
+   corrects an initial draft of this decision that proposed a hard filter).
+4. Explicit runtime timeout + result/byte caps on the live lookup (CLAUDE.md §5.1 + §5.5); since
+   condition 3 does not hard-filter, the cap must apply **post-ranking** (import-confirmed hits
+   surfaced first) with a truthful `truncated: true`-style indicator, not a silent pre-ranking drop
+   that could discard the real dynamic-dispatch hit before it is ever ranked.
+5. The false/missing-edge rate must be empirically validated at build time against this codebase's own
+   dynamic-dispatch patterns (`build_*_tools`/`register_*_tools`), not assumed.
+6. `ToolPrivilegeTier.READ_ONLY` + a structural invariant that Tier-2 output is never the sole trigger
+   for a destructive action; an unconfirmed/empty result is surfaced as "no callers found," never
+   "confirmed dead."
+7. Text-search input sanitization (CLAUDE.md §6.2): the symbol name driving the live search is
+   agent-reachable and must be validated against an identifier-shaped allowlist (or passed as a
+   fixed-string/literal match, never a raw regex) before reaching a subprocess call, invoked with an
+   argument list — never a shell-interpolated string.
+8. Search-scope confinement: the text-search pass runs only over the already-indexed file set (the
+   same universe as `list_indexed_files`, which already excludes vendor/build/ignored directories),
+   not a raw whole-disk invocation relying solely on the search tool's own ignore-file handling.
+
+**Revisit trigger:** none — this is an affirmative GO. `8.14.6.1` (`docs/PROJECT_MANIFEST.md`) carries
+the concrete build spec forward, binding all eight conditions above.

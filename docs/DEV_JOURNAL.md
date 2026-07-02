@@ -13,6 +13,20 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.6: Symbol-level call-graph substrate (DECISION) — 2026-07-02
+**Status:** COMPLETE | **Gates:** n/a
+- Shipped: GO decision recorded in `docs/SCHEMA_EVOLUTION.MD` — a Two-Tiered Hybrid Graph (Tier 1
+  file-level analytics unchanged; Tier 2 stores only symbol definitions, never call edges, resolving
+  "who calls this" lazily via runtime text-search + AST validation) rather than the manifest's original
+  `call_edges` sketch.
+- Key decision: import-scoped resolution ranks candidates but never discards them, since a hard import
+  gate would silently drop this codebase's own dynamic-dispatch callers (`core/tool_dispatch.py:205`);
+  output stays `READ_ONLY`/advisory, never the sole trigger for a destructive action.
+- Deferred: follow-on build carved into new manifest item `8.14.6.1`, binding eight conditions from the
+  decision doc (no code lands under 8.14.6 itself).
+
+---
+
 ## 8.14.5: Architecture-overview digest tool — 2026-07-02
 **Status:** COMPLETE | **Gates:** mypy 0/388 · pytest 2170 passed · pyright 0
 - Shipped: `architecture_digest` tool (`tools/perception_tools.py`) synthesizing persisted graph
