@@ -4,6 +4,10 @@
 **Evaluated against:** LangChain's "Dynamic Subagents in Deep Agents" (`deepagents` package, QuickJS code-interpreter middleware + `task()` global).
 **Decision:** Do **not** adopt `deepagents` or a JS sandboxed interpreter. Build a native, Pydantic-validated dispatch layer that generalizes existing primitives instead.
 
+**Amendments (applied at 8.15.0 implementation):**
+- The SCHEMA_EVOLUTION record for the dispatch schema (§2) lands as **§30**, not the reserved "§27" — §27–§29 were consumed by Division 8.14 after this blueprint was ratified. Purely a numbering reconciliation.
+- `SubagentResultEnvelope.raw_digest`'s cap is single-sourced as `shared.config.MAX_OBSERVATION_CHARS` (with `core/tool_dispatch._MAX_OBSERVATION_CHARS` aliasing it), rather than importing the private constant from `core.tool_dispatch` — that module pulls in `core.permissions` + `langchain_core`, which would break `subagent_contracts.py`'s "independently-testable leaf module" intent. Anti-drift guarantee preserved.
+
 ---
 
 ## 1. Rationale

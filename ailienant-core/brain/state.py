@@ -669,3 +669,15 @@ class AIlienantGraphState(TypedDict):
     # prior list; [] explicitly clears it. Additive and safe-defaulted — older checkpoints
     # rehydrate unchanged (readers use `state.get("agent_todos") or []`).
     agent_todos: Annotated[List[Dict[str, Any]], _merge_todos]
+
+    # --- Dynamic Subagent Dispatch channels ---
+    # All additive & default-safe so a pre-dispatch checkpoint deserializes
+    # unchanged: the scalar channels are absent-until-written (readers use
+    # state.get → None/0), and the trace ships with an operator.add reducer from
+    # the outset so concurrent Send() branches append without a merge conflict.
+    # The plan/result channels hold model_dump() dicts (not the Pydantic models
+    # themselves) to keep the checkpoint plain-JSON-serializable.
+    dispatch_plan: Optional[Dict[str, Any]]            # DispatchPlan.model_dump(); written by the dispatching node
+    dispatch_batch_result: Optional[Dict[str, Any]]    # DispatchBatchResult.model_dump(); written by the synthesis node
+    dispatch_depth: int                                # default 0; incremented before any re-dispatch
+    subagent_dispatch_trace: Annotated[List[Dict[str, Any]], operator.add]  # append-only audit trail

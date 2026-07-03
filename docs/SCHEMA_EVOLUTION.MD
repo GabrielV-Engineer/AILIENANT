@@ -1305,3 +1305,55 @@ already binding on 8.14.8's runtime-trace validation ("never-observed ≠ dead")
 
 **Revisit trigger:** none — this is an affirmative GO. `8.14.6.1` (`docs/PROJECT_MANIFEST.md`) carries
 the concrete build spec forward, binding all eight conditions above.
+
+---
+
+## §30 — Dynamic Subagent Dispatch Schema + State Channels
+
+New module `ailienant-core/brain/subagent_contracts.py` and four additive `AIlienantGraphState`
+channels. The schema foundation for Division 8.15 (Dynamic Subagent Dispatch): every LLM-authored
+dispatch instruction is a Pydantic-validated closed-vocabulary object, parsed exactly as a
+`MissionSpecification` is — never executed as code. Additive only.
+
+> **Section number.** The blueprint reserved this record as "§27," written when the then-current max
+> was §26; Division 8.14 subsequently shipped §27–§29, so the dispatch schema lands as **§30**. No
+> content collision — purely a numbering reconciliation.
+
+**Contracts (`brain/subagent_contracts.py`).** Six models, all closed-vocabulary (no free-form
+JSON-schema dict):
+
+- `SubagentResponseField` — `{name: str, type: Literal["str","int","float","bool","list_str"], description: str}`.
+- `SubagentResponseSchema` — `fields: List[SubagentResponseField]`, bounded `[1, 8]`.
+- `SubagentTask` — `task_id`, `description` (≤4000), `subagent_role`
+  (`Literal` of the 8 canonical roles + `analyst_readonly`), `response_schema`,
+  `context_refs: List[str]` (≤20, VFS paths only), `max_iterations` (`[1, 8]`, default 1).
+  **Security invariant:** carries no `session_permission_mode` field — there is no wire path for a
+  subagent to request a more permissive mode than its parent turn.
+- `DispatchPlan` — `pattern` (`Literal` of the 6 dispatch patterns), `tasks: List[SubagentTask]`
+  bounded `[1, 32]` (fan-out width ceiling), `synthesis_instruction` (≤2000), `dispatch_depth`
+  bounded `[0, 2]` (recursion ceiling). The bounds are the first line of defence against an
+  over-scoped plan (rejected at construction, not after spawning work).
+- `SubagentResultEnvelope` — `task_id`, `status` (`Literal["ok","error","budget_exhausted","denied"]`),
+  `structured_result: Optional[Dict[str, Any]]`, `raw_digest` (≤`MAX_OBSERVATION_CHARS`, always
+  pre-truncated), `cost_usd`, `iterations_used`, `error_message`.
+- `DispatchBatchResult` — `batch_id`, `pattern: str` (open on the result side), `results`,
+  `total_cost_usd`, `winner_task_id: Optional[str]`.
+
+**Single-sourced cap.** `SubagentResultEnvelope.raw_digest`'s ceiling is
+`shared.config.MAX_OBSERVATION_CHARS` (= 4000), the same constant `core/tool_dispatch.py`'s dispatch
+loop enforces (`_MAX_OBSERVATION_CHARS` now aliases it). The two truncation ceilings can never drift.
+
+**State channels (`brain/state.py::AIlienantGraphState`).** Four additive channels, all default-safe
+so a pre-8.15 checkpoint deserializes unchanged — no existing field is renamed or narrowed, and
+consumers written before 8.15 ignore the new fields entirely:
+
+| Channel | Type | Reducer | Safe default |
+|---|---|---|---|
+| `dispatch_plan` | `Optional[Dict[str, Any]]` (`DispatchPlan.model_dump()`) | scalar overwrite | `None` |
+| `dispatch_batch_result` | `Optional[Dict[str, Any]]` (`DispatchBatchResult.model_dump()`) | scalar overwrite | `None` |
+| `dispatch_depth` | `int` | scalar overwrite | `0` |
+| `subagent_dispatch_trace` | `Annotated[List[Dict[str, Any]], operator.add]` | append (`operator.add`) | `[]` |
+
+The plan/result channels store `model_dump()` dicts (not the Pydantic models) so the checkpoint stays
+plain-JSON-serializable and `state.py` imports nothing from `subagent_contracts`. The `_dispatch_results`
+fan-in channel is **not** part of this record — it lands with the dispatch worker in a later sub-phase.

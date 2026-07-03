@@ -95,6 +95,16 @@ LLM_MAX_CONCURRENCY: int = max(1, _env_int("AILIENANT_LLM_MAX_CONCURRENCY", 8))
 
 
 # ---------------------------------------------------------------------------
+# Token hygiene — hard ceiling on observation/digest text folded back into a
+# prompt or a dispatch result envelope. Single source of truth shared by the
+# tool-dispatch loop and the subagent result schema so the two truncation
+# ceilings can never drift apart. A fixed constant, not env-tunable: it is a
+# correctness/attention bound, not a per-machine knob.
+# ---------------------------------------------------------------------------
+MAX_OBSERVATION_CHARS: int = 4000
+
+
+# ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)
 # ---------------------------------------------------------------------------
 # Mirrors the cloud env keys declared in core/config/provider_registry.py

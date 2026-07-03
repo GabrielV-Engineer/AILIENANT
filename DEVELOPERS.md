@@ -276,6 +276,7 @@ Proyect_Ailienant/
 │   │   ├── swarms.py            #     micro / full swarm builders
 │   │   ├── fast_path.py         #     SEQUENTIAL bypass
 │   │   ├── state.py             #     AIlienantGraphState, MissionSpecification, reducers
+│   │   ├── subagent_contracts.py #    dispatch schema: SubagentTask / DispatchPlan / result envelopes
 │   │   ├── routing_engine.py    #     CSS × TCI matrix
 │   │   ├── context_pipeline.py  #     5-layer context assembler (ContextChunk, ContextPipeline)
 │   │   ├── agent_context.py     #     budget-guard over ContextPipeline (build_agent_context)

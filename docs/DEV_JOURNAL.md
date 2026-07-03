@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.15.0: Structured dispatch schema — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/405 · pytest 2331 passed, 2 skipped · pyright 0
+- Shipped: new leaf module `brain/subagent_contracts.py` (six closed-vocabulary Pydantic models — `SubagentResponseField/Schema`, `SubagentTask`, `DispatchPlan`, `SubagentResultEnvelope`, `DispatchBatchResult`) with depth `[0,2]` / width `[1,32]` / field `[1,8]` bounds, plus four additive default-safe `AIlienantGraphState` channels (`dispatch_plan`, `dispatch_batch_result`, `dispatch_depth`, `subagent_dispatch_trace`). Schema + state only — no dispatch logic or graph wiring. `tests/test_subagent_contracts.py` (14 rows).
+- Key decision: two blueprint amendments in-change — `MAX_OBSERVATION_CHARS` hoisted to `shared/config.py` (single-sourced; `core/tool_dispatch._MAX_OBSERVATION_CHARS` now aliases it) so the contracts module stays a leaf and the truncation ceilings can't drift; and the SCHEMA_EVOLUTION record lands as §30, not the blueprint's reserved §27 (superseded by Division 8.14's §27–§29). Channels store `model_dump()` dicts, not models, so `state.py` imports nothing from the contracts (no cycle).
+- Deferred: `_dispatch_results` fan-in channel + all dispatch mechanics → 8.15.1.
+
 ## 8.15.0.1: LLM Gateway concurrency throttle — DEBT-099 — 2026-07-03
 **Status:** COMPLETE | **Gates:** mypy 0/403 · pytest 2317 passed, 2 skipped · pyright 0
 - Shipped: a per-event-loop `asyncio.Semaphore` (`tools/llm_gateway.py::_llm_semaphore`, keyed by the running loop via `WeakKeyDictionary`) gating the five direct-call gateway methods (`ainvoke`, `astream`, `acomplete_byom`, `astream_byom`, `astream_byom_thinking`), sized by new `AILIENANT_LLM_MAX_CONCURRENCY` (default 8, floored at 1). Client-side backpressure so a fan-out is admission-controlled here, not discovered as a provider rate-limit rejection. Sibling gate `tests/test_phase8_15_0_1_checkpoint_gate.py` (THROTTLE1-5).

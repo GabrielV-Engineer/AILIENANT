@@ -46,13 +46,16 @@ from core.permissions import (
     ToolPrivilegeTier,
     evaluate_action,
 )
+from shared.config import MAX_OBSERVATION_CHARS
 from shared.rbac import PermissionMode
 
 logger = logging.getLogger("TOOL_DISPATCH")
 
 # Hard ceiling on observation text fed back into the prompt — token hygiene: a
 # verbose tool result must never balloon the next reasoning turn unbounded.
-_MAX_OBSERVATION_CHARS: int = 4000
+# Single-sourced in shared.config so the dispatch-result envelope schema and this
+# loop enforce an identical ceiling that can never drift.
+_MAX_OBSERVATION_CHARS: int = MAX_OBSERVATION_CHARS
 
 
 @dataclass(frozen=True)
