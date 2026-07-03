@@ -7,6 +7,7 @@ import os
 import re
 import time
 import uuid
+import weakref
 from enum import Enum
 from typing import (
     TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Type, cast,
@@ -27,6 +28,7 @@ from shared.config import (
     MODEL_MEDIUM,
     MODEL_BIG,
     LITELLM_PROXY_BASE_URL,
+    LLM_MAX_CONCURRENCY,
     get_litellm_config,
     check_cloud_availability,
 )
@@ -331,6 +333,36 @@ _CLOUD_HEALTH_URLS: list[str] = [
     "https://api.anthropic.com",
 ]
 
+# -------------------------------------------------------------------------
+# Outbound-concurrency gate: bound how many gateway calls are in-flight to the
+# proxy at once so a fan-out is admission-controlled here, not discovered as a
+# provider-side rate-limit rejection. The gateway is a static namespace with no
+# instance to hold state, so the semaphore lives at module scope. An
+# asyncio.Semaphore binds to the loop that first uses it, and the test suite
+# spins many independent event loops (one per asyncio.run), so the gate is keyed
+# per running loop; a WeakKeyDictionary drops each entry when its loop is
+# garbage-collected, so no manual reset is ever needed.
+# -------------------------------------------------------------------------
+_llm_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _llm_semaphore() -> asyncio.Semaphore:
+    """Return the outbound-concurrency gate bound to the running event loop.
+
+    Lazily created per loop with the configured ceiling. Creation is race-free:
+    get_running_loop() -> lookup -> insert runs with no ``await`` in between, so
+    concurrent coroutines on the same loop cannot interleave mid-function and
+    every one observes the single shared semaphore.
+    """
+    loop = asyncio.get_running_loop()
+    sem = _llm_semaphores.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
+        _llm_semaphores[loop] = sem
+    return sem
+
 
 class LLMGateway:
     """
@@ -401,7 +433,16 @@ class LLMGateway:
         timeout: float = 60.0,
         session_id: Optional[str] = None,
     ) -> ModelResponse:
-        """Synchronous LLM call. Prefer ainvoke() inside async contexts."""
+        """Synchronous LLM call. Prefer ainvoke() inside async contexts.
+
+        DANGER: Bypass concurrency throttle — this synchronous path is NOT gated
+        by the outbound-concurrency semaphore (an asyncio primitive cannot guard
+        blocking code). Do NOT wrap it in ``asyncio.to_thread(LLMGateway.invoke,
+        ...)`` for fan-out: that smuggles it back onto the event loop while
+        bypassing the gate, so real concurrency to the provider silently exceeds
+        the ceiling. Use the async entry points (ainvoke / astream*) for any
+        concurrent work.
+        """
         trace_id = session_id or str(uuid.uuid4())
         cfg = get_litellm_config()
         logger.debug(
@@ -515,35 +556,42 @@ class LLMGateway:
             )
         if response_format and kwargs["model"] not in _RESPONSE_FORMAT_UNSUPPORTED:
             kwargs["response_format"] = response_format
-        try:
-            response: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
-        except ContextWindowExceededError:
-            # Phase 6.3 — context window exhausted → OOM Cascade to cloud.
-            return await _oom_cascade(
-                messages, effective_model, reason="context_overflow",
-                kwargs=kwargs, trace_id=trace_id, state=state,
-            )
-        except APIConnectionError as exc:
-            # Phase 6.3 — a CUDA / VRAM OOM surfaces as a connection error.
-            if _looks_like_oom(exc):
+        # Admission control: hold one concurrency slot for the whole network op
+        # (including the inline response_format retry and any OOM cascade), then
+        # release it before the post-hoc token accounting below.
+        sem = _llm_semaphore()
+        if sem.locked():
+            logger.debug("LLM gateway at concurrency ceiling; ainvoke queued [trace=%s]", trace_id)
+        async with sem:
+            try:
+                response: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
+            except ContextWindowExceededError:
+                # Context window exhausted → OOM cascade to a cloud fallback model.
                 return await _oom_cascade(
-                    messages, effective_model, reason="cuda_oom",
+                    messages, effective_model, reason="context_overflow",
                     kwargs=kwargs, trace_id=trace_id, state=state,
                 )
-            logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, exc)
-            raise
-        except Exception as e:
-            if "response_format" in kwargs and _is_response_format_error(e):
-                logger.warning(
-                    "Backend rejected response_format; stripping + retrying once [trace=%s]",
-                    trace_id,
-                )
-                _remember_rf_unsupported(kwargs["model"])
-                kwargs.pop("response_format", None)
-                response = cast(ModelResponse, await litellm.acompletion(**kwargs))
-            else:
-                logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
+            except APIConnectionError as exc:
+                # A CUDA / VRAM OOM surfaces as a connection error → cascade.
+                if _looks_like_oom(exc):
+                    return await _oom_cascade(
+                        messages, effective_model, reason="cuda_oom",
+                        kwargs=kwargs, trace_id=trace_id, state=state,
+                    )
+                logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, exc)
                 raise
+            except Exception as e:
+                if "response_format" in kwargs and _is_response_format_error(e):
+                    logger.warning(
+                        "Backend rejected response_format; stripping + retrying once [trace=%s]",
+                        trace_id,
+                    )
+                    _remember_rf_unsupported(kwargs["model"])
+                    kwargs.pop("response_format", None)
+                    response = cast(ModelResponse, await litellm.acompletion(**kwargs))
+                else:
+                    logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
+                    raise
 
         # — record token usage to the global ledger by tier.
         try:
@@ -707,15 +755,22 @@ class LLMGateway:
             extra_headers={"X-Ailienant-Trace-ID": trace_id},
             **cfg,
         )
-        try:
-            response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
-            async for chunk in response:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    yield delta
-        except Exception as e:
-            logger.error("LLM astream failed [trace=%s]: %s", trace_id, e)
-            raise
+        # Hold one concurrency slot for the full stream lifetime — an open stream
+        # keeps a live provider connection, so it is genuinely in-flight until the
+        # last chunk (see the module gate note on true in-flight accounting).
+        sem = _llm_semaphore()
+        if sem.locked():
+            logger.debug("LLM gateway at concurrency ceiling; astream queued [trace=%s]", trace_id)
+        async with sem:
+            try:
+                response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
+                async for chunk in response:
+                    delta = chunk.choices[0].delta.content or ""
+                    if delta:
+                        yield delta
+            except Exception as e:
+                logger.error("LLM astream failed [trace=%s]: %s", trace_id, e)
+                raise
 
     # -------------------------------------------------------------------------
     # Direct BYOM calls (proxy-free)
@@ -755,28 +810,34 @@ class LLMGateway:
         trace_id = session_id or str(uuid.uuid4())
         _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
         attempted_failover = False
-        while True:
-            kwargs = LLMGateway._byom_kwargs(
-                target, messages, temperature=temperature, max_tokens=max_tokens,
-                timeout=_effective_timeout, max_retries=LLM_MAX_TRANSPORT_RETRIES,
-            )
-            logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
-            try:
-                resp: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
-                return resp.choices[0].message.content or ""
-            except APIConnectionError as exc:
-                if attempted_failover or not target.is_local or _looks_like_oom(exc):
-                    raise  # OOM, cloud drop, or already retried — surface it
-                nxt = get_failover_target(tier, exclude_model=target.model)
-                if nxt is None:
-                    raise  # nothing to fall back to — original drop surfaces
-                logger.warning(
-                    "BYOM local endpoint dropped [model=%s trace=%s]; failing over to %s",
-                    target.model, trace_id, nxt.model,
+        # One concurrency slot spans the whole call, including the bounded local
+        # failover retry (a single logical op holds a single slot).
+        sem = _llm_semaphore()
+        if sem.locked():
+            logger.debug("LLM gateway at concurrency ceiling; acomplete_byom queued [trace=%s]", trace_id)
+        async with sem:
+            while True:
+                kwargs = LLMGateway._byom_kwargs(
+                    target, messages, temperature=temperature, max_tokens=max_tokens,
+                    timeout=_effective_timeout, max_retries=LLM_MAX_TRANSPORT_RETRIES,
                 )
-                target = nxt
-                _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
-                attempted_failover = True
+                logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
+                try:
+                    resp: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
+                    return resp.choices[0].message.content or ""
+                except APIConnectionError as exc:
+                    if attempted_failover or not target.is_local or _looks_like_oom(exc):
+                        raise  # OOM, cloud drop, or already retried — surface it
+                    nxt = get_failover_target(tier, exclude_model=target.model)
+                    if nxt is None:
+                        raise  # nothing to fall back to — original drop surfaces
+                    logger.warning(
+                        "BYOM local endpoint dropped [model=%s trace=%s]; failing over to %s",
+                        target.model, trace_id, nxt.model,
+                    )
+                    target = nxt
+                    _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+                    attempted_failover = True
 
     @staticmethod
     async def astream_byom(
@@ -810,63 +871,70 @@ class LLMGateway:
         _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
         prompt_tokens: int = 0
         completion_tokens: int = 0
-        try:
-            # Bounded single failover on the INITIAL connect only — a partially
-            # streamed answer cannot be re-rolled, so the retry must land before the
-            # first yield. A non-OOM transport drop of a local endpoint falls over
-            # once to the next callable ladder target; a second failure re-raises.
-            attempted_failover = False
-            while True:
-                kwargs = LLMGateway._byom_kwargs(
-                    target, messages, temperature=temperature, max_tokens=max_tokens,
-                    timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
-                )
-                kwargs.setdefault("stream_options", {"include_usage": True})
-                logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
-                try:
-                    response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
-                    break
-                except APIConnectionError as exc:
-                    if attempted_failover or not target.is_local or _looks_like_oom(exc):
-                        raise  # OOM, cloud drop, or already retried — surface it
-                    nxt = get_failover_target(tier, exclude_model=target.model)
-                    if nxt is None:
-                        raise  # nothing to fall back to — original drop surfaces
-                    logger.warning(
-                        "BYOM local endpoint dropped [model=%s trace=%s]; failing over to %s",
-                        target.model, trace_id, nxt.model,
-                    )
-                    target = nxt
-                    _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
-                    attempted_failover = True
-            async for chunk in response:
-                # Final-chunk shape (include_usage): `usage` populated, `choices`
-                # may be empty. Pre-final chunks: `usage=None`, content in choices[0].delta.
-                usage = getattr(chunk, "usage", None)
-                if usage is not None:
-                    prompt_tokens = int(
-                        getattr(usage, "prompt_tokens", prompt_tokens) or prompt_tokens
-                    )
-                    completion_tokens = int(
-                        getattr(usage, "completion_tokens", completion_tokens) or completion_tokens
-                    )
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = (getattr(choices[0], "delta", None) and choices[0].delta.content) or ""
-                    if delta:
-                        yield delta
-        finally:
-            # ALWAYS record — completion OR abort path. Zero-token cases are
-            # no-ops in the ledger contract (verified in core/token_ledger.py).
+        # Hold one concurrency slot for the full stream lifetime; the token
+        # accounting finally runs inside the gate so an abort flushes tokens and
+        # then frees the slot in that order.
+        sem = _llm_semaphore()
+        if sem.locked():
+            logger.debug("LLM gateway at concurrency ceiling; astream_byom queued [trace=%s]", trace_id)
+        async with sem:
             try:
-                from core.token_ledger import token_ledger
-                resolved_tier = _classify_model_as_tier(target.model)
-                if resolved_tier == TaskPriority.CLOUD:
-                    token_ledger.record_cloud(prompt_tokens, completion_tokens)
-                else:
-                    token_ledger.record_local(prompt_tokens, completion_tokens)
-            except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
-                logger.debug("Stream token accounting failed (non-fatal): %s", exc)
+                # Bounded single failover on the INITIAL connect only — a partially
+                # streamed answer cannot be re-rolled, so the retry must land before the
+                # first yield. A non-OOM transport drop of a local endpoint falls over
+                # once to the next callable ladder target; a second failure re-raises.
+                attempted_failover = False
+                while True:
+                    kwargs = LLMGateway._byom_kwargs(
+                        target, messages, temperature=temperature, max_tokens=max_tokens,
+                        timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
+                    )
+                    kwargs.setdefault("stream_options", {"include_usage": True})
+                    logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
+                    try:
+                        response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
+                        break
+                    except APIConnectionError as exc:
+                        if attempted_failover or not target.is_local or _looks_like_oom(exc):
+                            raise  # OOM, cloud drop, or already retried — surface it
+                        nxt = get_failover_target(tier, exclude_model=target.model)
+                        if nxt is None:
+                            raise  # nothing to fall back to — original drop surfaces
+                        logger.warning(
+                            "BYOM local endpoint dropped [model=%s trace=%s]; failing over to %s",
+                            target.model, trace_id, nxt.model,
+                        )
+                        target = nxt
+                        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+                        attempted_failover = True
+                async for chunk in response:
+                    # Final-chunk shape (include_usage): `usage` populated, `choices`
+                    # may be empty. Pre-final chunks: `usage=None`, content in choices[0].delta.
+                    usage = getattr(chunk, "usage", None)
+                    if usage is not None:
+                        prompt_tokens = int(
+                            getattr(usage, "prompt_tokens", prompt_tokens) or prompt_tokens
+                        )
+                        completion_tokens = int(
+                            getattr(usage, "completion_tokens", completion_tokens) or completion_tokens
+                        )
+                    choices = getattr(chunk, "choices", None) or []
+                    if choices:
+                        delta = (getattr(choices[0], "delta", None) and choices[0].delta.content) or ""
+                        if delta:
+                            yield delta
+            finally:
+                # ALWAYS record — completion OR abort path. Zero-token cases are
+                # no-ops in the ledger contract (verified in core/token_ledger.py).
+                try:
+                    from core.token_ledger import token_ledger
+                    resolved_tier = _classify_model_as_tier(target.model)
+                    if resolved_tier == TaskPriority.CLOUD:
+                        token_ledger.record_cloud(prompt_tokens, completion_tokens)
+                    else:
+                        token_ledger.record_local(prompt_tokens, completion_tokens)
+                except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
+                    logger.debug("Stream token accounting failed (non-fatal): %s", exc)
 
     # -------------------------------------------------------------------------
     # — Native Thinking streaming (proxy-free BYOM)
@@ -931,57 +999,64 @@ class LLMGateway:
         )
         prompt_tokens: int = 0
         completion_tokens: int = 0
-        try:
+        # Hold one concurrency slot for the full stream lifetime; the token
+        # accounting finally runs inside the gate so an abort flushes tokens and
+        # then frees the slot in that order.
+        sem = _llm_semaphore()
+        if sem.locked():
+            logger.debug("LLM gateway at concurrency ceiling; astream_byom_thinking queued [trace=%s]", trace_id)
+        async with sem:
             try:
-                response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
-            except Exception as exc:
-                # Mirror ainvoke's self-healing: a backend that rejects
-                # response_format is memoed and retried once without it, before
-                # any chunk is consumed (so a stream is never restarted mid-flight).
-                if "response_format" in kwargs and _is_response_format_error(exc):
-                    logger.warning(
-                        "Backend rejected streamed response_format; stripping + retrying once [trace=%s]",
-                        trace_id,
-                    )
-                    _remember_rf_unsupported(kwargs["model"])
-                    kwargs.pop("response_format", None)
+                try:
                     response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
-                else:
-                    raise
-            async for chunk in response:
-                usage = getattr(chunk, "usage", None)
-                if usage is not None:
-                    prompt_tokens = int(
-                        getattr(usage, "prompt_tokens", prompt_tokens) or prompt_tokens
-                    )
-                    completion_tokens = int(
-                        getattr(usage, "completion_tokens", completion_tokens) or completion_tokens
-                    )
-                choices = getattr(chunk, "choices", None) or []
-                if not choices:
-                    continue
-                delta_obj = getattr(choices[0], "delta", None)
-                if delta_obj is None:
-                    continue
-                # Reasoning channel first (it precedes the answer in practice).
-                reasoning = getattr(delta_obj, "reasoning_content", None) or ""
-                if reasoning:
-                    yield StreamDelta("thinking", reasoning)
-                content = getattr(delta_obj, "content", None) or ""
-                if content:
-                    yield StreamDelta("text", content)
-        finally:
-            # ALWAYS record — completion OR abort path. Identical contract to
-            # astream_byom; thinking tokens are inside completion_tokens.
-            try:
-                from core.token_ledger import token_ledger
-                resolved_tier = _classify_model_as_tier(target.model)
-                if resolved_tier == TaskPriority.CLOUD:
-                    token_ledger.record_cloud(prompt_tokens, completion_tokens)
-                else:
-                    token_ledger.record_local(prompt_tokens, completion_tokens)
-            except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
-                logger.debug("Stream token accounting failed (non-fatal): %s", exc)
+                except Exception as exc:
+                    # Mirror ainvoke's self-healing: a backend that rejects
+                    # response_format is memoed and retried once without it, before
+                    # any chunk is consumed (so a stream is never restarted mid-flight).
+                    if "response_format" in kwargs and _is_response_format_error(exc):
+                        logger.warning(
+                            "Backend rejected streamed response_format; stripping + retrying once [trace=%s]",
+                            trace_id,
+                        )
+                        _remember_rf_unsupported(kwargs["model"])
+                        kwargs.pop("response_format", None)
+                        response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
+                    else:
+                        raise
+                async for chunk in response:
+                    usage = getattr(chunk, "usage", None)
+                    if usage is not None:
+                        prompt_tokens = int(
+                            getattr(usage, "prompt_tokens", prompt_tokens) or prompt_tokens
+                        )
+                        completion_tokens = int(
+                            getattr(usage, "completion_tokens", completion_tokens) or completion_tokens
+                        )
+                    choices = getattr(chunk, "choices", None) or []
+                    if not choices:
+                        continue
+                    delta_obj = getattr(choices[0], "delta", None)
+                    if delta_obj is None:
+                        continue
+                    # Reasoning channel first (it precedes the answer in practice).
+                    reasoning = getattr(delta_obj, "reasoning_content", None) or ""
+                    if reasoning:
+                        yield StreamDelta("thinking", reasoning)
+                    content = getattr(delta_obj, "content", None) or ""
+                    if content:
+                        yield StreamDelta("text", content)
+            finally:
+                # ALWAYS record — completion OR abort path. Identical contract to
+                # astream_byom; thinking tokens are inside completion_tokens.
+                try:
+                    from core.token_ledger import token_ledger
+                    resolved_tier = _classify_model_as_tier(target.model)
+                    if resolved_tier == TaskPriority.CLOUD:
+                        token_ledger.record_cloud(prompt_tokens, completion_tokens)
+                    else:
+                        token_ledger.record_local(prompt_tokens, completion_tokens)
+                except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
+                    logger.debug("Stream token accounting failed (non-fatal): %s", exc)
 
     @staticmethod
     async def heartbeat(url: str) -> bool:

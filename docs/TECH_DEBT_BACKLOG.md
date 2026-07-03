@@ -102,7 +102,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
 | DEBT-097 | Single shared Docker sandbox container across all concurrent sessions (noisy-neighbor + shared blast radius) | HIGH | Reliability / Scale | future sandbox-isolation slice | Floating |
 | DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
-| DEBT-099 | No client-side concurrency throttle on LLM Gateway calls — only budget, not concurrency, is admission-controlled | HIGH | Reliability / Scale | pre-8.15.1 | Floating |
+| DEBT-099 | No client-side concurrency throttle on LLM Gateway calls — only budget, not concurrency, is admission-controlled | HIGH | Reliability / Scale | 8.15.0.1 | RESOLVED |
 | DEBT-100 | Docker daemon hang blocks the sandbox worker thread indefinitely (SDK call not interruptible) | HIGH | Reliability | future sandbox-resilience slice | Floating |
 
 ---
@@ -155,14 +155,15 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future sandbox-isolation slice (pre-requisite for any multi-session-concurrent execution guarantee).
 - **Notes:** the container's per-call security profile (`--read-only`, `--network none`, env-whitelist) is solid — this entry is about cross-session **resource isolation**, not the existing per-call security posture, which is unaffected. Logged during a general bottleneck audit (2026-07-02), not tied to a specific shipping sub-phase.
 
-### DEBT-099 [HIGH · Floating] — No client-side concurrency throttle on LLM Gateway calls
+### DEBT-099 [HIGH · RESOLVED 2026-07-03, 8.15.0.1] — No client-side concurrency throttle on LLM Gateway calls
 
-- **Date:** 2026-07-02
-- **Reproduce:** `grep -niE "semaphore|rate.?limit|max_connections" ailienant-core/tools/llm_gateway.py` — no matches. The only admission control on an outbound LLM call is the ledger's **budget** check (`gateway/ledger.py`, dollars), not a **concurrency** limit (number of simultaneous in-flight calls).
-- **Error:** reliability risk under fan-out. Team Swarms (Phase 2.1.5, concurrent `CoderAgent` clones via `Send()`) and the upcoming Division 8.15 (Dynamic Subagent Dispatch, `AILIENANT_MAX_CONCURRENT_SUBAGENTS`) can issue N simultaneous calls through the local LiteLLM proxy with no client-side backpressure. The failure mode is discovered externally (a cloud provider's rate limit rejects requests) rather than being prevented by AILIENANT's own admission control.
-- **Blocked by:** nothing structural; needs a bounded `asyncio.Semaphore` (or reuse the `AILIENANT_MAX_CONCURRENT_SUBAGENTS` env var as a shared ceiling) around `LLMGateway.ainvoke`/`astream_byom*` call sites.
-- **Phase:** should land **before** 8.15.1 (`build_dispatch_sends()`) ships, since that item is the first production caller that intentionally issues concurrent LLM calls at meaningful width (up to the `tasks` bound of 32, minus wave-splitting).
-- **Notes:** logged during a general bottleneck audit (2026-07-02); carved out explicitly as a pre-requisite concern for Division 8.15, similar in spirit to how DEBT-069 (Researcher node promotion) was carved as a prerequisite before dispatch-loop work began.
+- **Date:** 2026-07-02 · **Resolved:** 2026-07-03 (8.15.0.1)
+- **Reproduce (original):** `grep -niE "semaphore|rate.?limit|max_connections" ailienant-core/tools/llm_gateway.py` — no matches. The only admission control on an outbound LLM call was the ledger's **budget** check (`gateway/ledger.py`, dollars), not a **concurrency** limit (number of simultaneous in-flight calls).
+- **Error (original):** reliability risk under fan-out. Team Swarms (concurrent `CoderAgent` clones via `Send()`) and the upcoming Division 8.15 (Dynamic Subagent Dispatch) could issue N simultaneous calls through the local LiteLLM proxy with no client-side backpressure — the failure mode discovered externally (a cloud provider's rate limit rejects requests) rather than prevented by AILIENANT's own admission control.
+- **Resolved:** a per-event-loop `asyncio.Semaphore` (`tools/llm_gateway.py::_llm_semaphore`, keyed by the running loop via `WeakKeyDictionary`) now gates the five direct-call methods (`ainvoke`, `astream`, `acomplete_byom`, `astream_byom`, `astream_byom_thinking`), sized by new `AILIENANT_LLM_MAX_CONCURRENCY` (default 8, floored at 1; `shared/config.py`). The slot is held for the whole call — for streams, the whole stream — and released on every exit path (normal/exception/cancel) via `async with`. Delegating methods (`acomplete_with_thinking`, `ainvoke_by_priority`) and the private `_oom_cascade` never re-acquire (one slot per logical op); sync `invoke` is out of scope (asyncio primitive can't gate blocking code — no production callers) and carries a bypass-DANGER docstring warning.
+- **Key decision:** a **dedicated** env var, NOT a reuse of `AILIENANT_MAX_CONCURRENT_SUBAGENTS` (which the 8.15 blueprint defines as a *plan-time* wave-split ceiling, explicitly "not a runtime semaphore"). This is a transport-layer runtime gate — the two enforcement layers stay distinct. Head-of-line blocking under consumer backpressure is an accepted tradeoff (true in-flight accounting); load-shedding via acquire-timeout is deferred.
+- **File(s):** `tools/llm_gateway.py`, `shared/config.py`; gate `tests/test_phase8_15_0_1_checkpoint_gate.py` (THROTTLE1-5).
+- **Notes:** carved as a pre-requisite for Division 8.15 (landed before 8.15.1's first concurrent caller), similar in spirit to how DEBT-069 (Researcher node promotion) was carved as a prerequisite before dispatch-loop work began.
 
 ### DEBT-100 [HIGH · Floating] — Docker daemon hang blocks the sandbox worker thread indefinitely
 

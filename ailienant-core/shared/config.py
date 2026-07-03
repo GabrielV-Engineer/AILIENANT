@@ -83,6 +83,18 @@ BLAST_RADIUS_THRESHOLD_FILES: int = _env_int("AILIENANT_BLAST_RADIUS_THRESHOLD_F
 
 
 # ---------------------------------------------------------------------------
+# Outbound LLM concurrency ceiling — the maximum number of simultaneously
+# in-flight gateway calls to the LiteLLM proxy. Client-side backpressure so a
+# fan-out (parallel coder clones / subagent dispatch) is admission-controlled
+# here rather than discovered as a provider-side rate-limit rejection. This is a
+# transport-layer runtime gate, deliberately distinct from any plan-time
+# fan-out width ceiling. Floored at 1 so a malformed override can never wedge
+# the gateway shut.
+# ---------------------------------------------------------------------------
+LLM_MAX_CONCURRENCY: int = max(1, _env_int("AILIENANT_LLM_MAX_CONCURRENCY", 8))
+
+
+# ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)
 # ---------------------------------------------------------------------------
 # Mirrors the cloud env keys declared in core/config/provider_registry.py

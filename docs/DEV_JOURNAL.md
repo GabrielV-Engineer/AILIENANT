@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.15.0.1: LLM Gateway concurrency throttle — DEBT-099 — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/403 · pytest 2317 passed, 2 skipped · pyright 0
+- Shipped: a per-event-loop `asyncio.Semaphore` (`tools/llm_gateway.py::_llm_semaphore`, keyed by the running loop via `WeakKeyDictionary`) gating the five direct-call gateway methods (`ainvoke`, `astream`, `acomplete_byom`, `astream_byom`, `astream_byom_thinking`), sized by new `AILIENANT_LLM_MAX_CONCURRENCY` (default 8, floored at 1). Client-side backpressure so a fan-out is admission-controlled here, not discovered as a provider rate-limit rejection. Sibling gate `tests/test_phase8_15_0_1_checkpoint_gate.py` (THROTTLE1-5).
+- Key decision: a dedicated env var, NOT a reuse of the plan-time `AILIENANT_MAX_CONCURRENT_SUBAGENTS` — a transport-layer runtime gate is a distinct enforcement layer from 8.15's wave-split ceiling. One slot per logical op: delegating methods (`acomplete_with_thinking`, `ainvoke_by_priority`) and `_oom_cascade` never re-acquire; sync `invoke` is out of scope with a bypass-DANGER warning. Head-of-line blocking under consumer backpressure accepted for honest in-flight accounting.
+- Deferred: none.
+
 ## 8.14.12: Division 8.14 Checkpoint Gate amendment (polyglot round 2/3) — 2026-07-03
 **Status:** COMPLETE | **Gates:** mypy 0/402 · pytest 2312 passed, 2 skipped · pyright 0
 - Shipped: 4 new rows in `tests/test_phase8_14_checkpoint_gate.py` (POLY6, RESOLVER1-3) certifying the 8.14.10/8.14.11 widening from the division's vantage point — all 18 newly-added languages dispatch without raising, `brain.memory`'s confidence resolver and `core.blast_radius`'s traversal agree on the same dotted target, `core.dead_code`'s direct import of `blast_radius`'s private resolver names is unaffected, and a same-named file across two languages never cross-resolves.
