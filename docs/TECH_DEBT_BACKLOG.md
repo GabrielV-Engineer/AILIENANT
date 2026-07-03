@@ -71,7 +71,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-091 | Architecture digest omits git co-change coupling (`FILE_CHANGES_WITH`) — no git-history substrate exists to source it from | LOW | Capability gap | future graph slice | Floating |
 | DEBT-092 | Boundary graph cannot recover backend `server_*` emit edges — the emit site is a typed model construction with no channel literal to match | LOW | Capability gap | future graph slice | Floating |
 | DEBT-093 | Boundary graph is build-on-demand only — no auto-refresh on index-complete, so it can lag later code edits until the next explicit rebuild | LOW | Capability gap | future graph slice | Floating |
-| DEBT-094 | 38 pre-existing project-wide `pyright` errors (third-party stub gaps + litellm union + typed-state test doubles), invisible to the enforced `mypy` gate | LOW | Typing debt | dedicated cleanup commit | Floating |
+| DEBT-094 | 38 pre-existing project-wide `pyright` errors (third-party stub gaps + litellm union + typed-state test doubles), invisible to the enforced `mypy` gate | LOW | Typing debt | dedicated cleanup commit | RESOLVED 2026-07-02 |
+| DEBT-095 | Runtime call-trace capture (`sys.monitoring`) is Python-only — no TS/JS extension-side equivalent | LOW | Capability gap | future trace slice | Floating |
+| DEBT-096 | No sandbox/agentic-cell-integrated live trace capture — the 8.14.8 PoC only dogfoods AILIENANT's own pytest, not a user project's execution | LOW | Capability gap | 8.14.8.1 follow-on | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -306,13 +308,29 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolution (unscheduled):** invoke `refresh_boundary_graph` (single-flight) from the index-complete path, or add a cheap staleness stamp the tool checks before serving.
 - **Notes:** logged at 8.14.7 close.
 
-### DEBT-094 [LOW · Floating] — 38 pre-existing project-wide pyright errors
+### DEBT-094 [LOW · RESOLVED 2026-07-02] — 38 pre-existing project-wide pyright errors
 
 - **Date:** 2026-07-02
 - **Reproduce:** `cd ailienant-core && npx pyright` → 38 errors across 13 files, none touched by 8.14.7; confirmed present on a clean `HEAD` tree (stash test). Invisible to the enforced `mypy .` gate (0/392).
 - **Error:** three clusters — (A) ~19 third-party stub gaps (docker `.errors`, lancedb `LanceQueryBuilder.metric` / `table_names` union, `pyarrow.compute.equal`, pynvml `.total`, langgraph `HybridCheckpointer.wal_checkpoint`); (B) 10 in `tools/llm_gateway.py` from litellm's `ModelResponse | CustomStreamWrapper` union (+ one benign possibly-unbound); (C) 9 LangGraph typed-state / test-double mismatches.
-- **Resolution:** dedicated cleanup commit (separate from 8.14.7) — narrow the litellm union on the `stream` branch, defensive-init `_effective_timeout`, and justified `# type: ignore`/`cast` for the stub-gap false-positives.
-- **Notes:** logged for audit trail; being resolved in the immediately-following cleanup commit per the scope decision at 8.14.7 close.
+- **Resolution:** dedicated cleanup commit (separate from 8.14.7) — narrowed the litellm union on the `stream` branch, defensive-init `_effective_timeout`, and justified `# type: ignore`/`cast` for the stub-gap false-positives.
+- **Notes:** resolved in a dedicated follow-up commit; `npx pyright` → 0 errors, `mypy .` unchanged at 0/392.
+
+### DEBT-095 [LOW · Floating] — Polyglot (TS/JS) runtime call-trace capture
+
+- **Date:** 2026-07-02
+- **Reproduce:** `core/call_trace_probe.py`'s tracer uses `sys.monitoring` (PEP 669), a CPython-specific facility — it can only observe Python `caller → callee` calls. The 8.14.8 dogfood PoC and any 8.14.8.1 substrate are Python-only; extension-side (TypeScript) runtime calls are never traced.
+- **Error:** declared scope cut for the SPIKE — the manifest's dynamic-dispatch value case (`ToolDispatcher`) is Python, so the PoC's signal is representative for the backend, but the frontend gets no equivalent runtime confirmation.
+- **Resolution (unscheduled):** a Node-side equivalent (`async_hooks` / V8 inspector protocol) feeding the same reconciler shape, or accept the Python-only scope permanently and document it as a hard boundary rather than a gap.
+- **Notes:** logged at 8.14.8 close.
+
+### DEBT-096 [LOW · Floating] — Sandbox/agentic-cell-integrated live trace capture
+
+- **Date:** 2026-07-02
+- **Reproduce:** the manifest's literal target was capturing traces "from the existing sandbox / agentic-cell execution" (a user project's run). 8.14.8 instead dogfoods AILIENANT's own pytest (declared deviation, `SCHEMA_EVOLUTION.MD`) because it is self-contained, real, and needs no target project or container work for the PoC.
+- **Error:** the sandbox-execution capture path (tracing a user's own project as it runs inside `core/sandbox.py`'s tiers) remains unbuilt; the PoC only validates the *signal*, not that production capture path.
+- **Resolution (unscheduled):** if `8.14.8.1` ships, wire the same `CallTracer` into the trusted/native sandbox execution path (behind an explicit opt-in — tracing is not free and must never run unconditionally on user code) so production traces feed the persisted substrate instead of only the dogfood harness.
+- **Notes:** logged at 8.14.8 close; depends on `8.14.8.1` shipping first.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

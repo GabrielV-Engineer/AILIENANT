@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.8: Runtime-trace edge validation (SPIKE → PoC) — 2026-07-02
+**Status:** COMPLETE | **Gates:** mypy 0/394 · pytest 2205 passed, 2 skipped · pyright 0
+- Shipped: offline `core/call_trace_probe.py` harness — `sys.monitoring` (PEP 669, stdlib) intra-project call tracer + reconciler against the existing `find_symbol_callers` resolver, dogfooded over AILIENANT's own pytest; **GO** (27/67 mapped edges, ~40%, are dynamic discoveries the static resolver structurally misses — recorded in `SCHEMA_EVOLUTION.MD`).
+- Key decision: no `call_edges` substrate exists to attach confidence to (§27 ships none), so this SPIKE stayed offline/additive-free — persisted `observed_call_edges` + resolver confidence-promotion deferred to a GO-gated `8.14.8.1`; found and fixed a decorator-line/`co_firstlineno` vs tree-sitter `start_line` mismatch that would have silently broken mapping for every decorated symbol.
+- Deferred: DEBT-095 (polyglot/TS-JS runtime trace capture) · DEBT-096 (sandbox-execution-integrated live trace capture); the persisted substrate itself is manifest item 8.14.8.1, not a debt.
+
+---
+
 ## 8.14.7: Cross-boundary link edges (WS / MCP seams) — 2026-07-02
 **Status:** COMPLETE | **Gates:** mypy 0/392 · pytest 2194 passed · pyright 0 new (38 pre-existing, DEBT-094)
 - Shipped: separate `boundary_edges` table (`§28`) + `core/boundary_graph.py` full-rebuild resolver + READ_ONLY `trace_cross_boundary` tool answering "what handles `server_stream_end`" across the extension/core seam, with non-pollution of code-dependency traversal structural (separate table).

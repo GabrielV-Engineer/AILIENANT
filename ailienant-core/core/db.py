@@ -713,6 +713,27 @@ async def get_symbol_definitions(
             ]
 
 
+async def get_symbols_in_file(
+    project_id: str, file_path: str
+) -> List[Tuple[str, str, int, int]]:
+    """Return ``(qualified_name, kind, start_line, end_line)`` rows defined in ``file_path``.
+
+    The file-keyed inverse of :func:`get_symbol_definitions`: given a source file, list
+    every symbol it defines with its line span, so a caller can map an arbitrary line back
+    to the innermost defining symbol (range containment). Read-only; reuses the same table.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT qualified_name, kind, start_line, end_line FROM symbol_definitions "
+            "WHERE project_id=? AND file_path=?",
+            (project_id, file_path),
+        ) as cur:
+            return [
+                (str(r[0]), str(r[1]), int(r[2]), int(r[3]))
+                for r in await cur.fetchall()
+            ]
+
+
 async def purge_symbol_definitions(file_path: str, project_id: str = "") -> None:
     """Drop all symbol-definition rows for a deleted file."""
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:

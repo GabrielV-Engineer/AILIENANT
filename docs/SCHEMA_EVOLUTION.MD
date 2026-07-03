@@ -1048,6 +1048,77 @@ this resolution path" — never "unhandled."
 
 ---
 
+## Design Decision — Runtime-Trace Edge Validation (GO — dogfood PoC, substrate deferred)
+
+> Answers the 8.14.8 SPIKE: does a runtime call trace confirm/sharpen the static symbol-call
+> resolution enough to justify a persisted trace substrate? No `call_edges` table exists to attach a
+> `confidence_score` to (§27's Two-Tiered Hybrid GO ships **no stored call edges** — callers are
+> resolved lazily by `find_symbol_callers` and tagged per-query). So this decision is offline and
+> additive-free: a validation harness (`core/call_trace_probe.py`), not a schema change.
+
+**Method.** `sys.monitoring` (PEP 669, stdlib — zero new dependency) records intra-project
+`caller → callee` `CALL` edges, presence-only (`DISABLE` after first hit per call site keeps a full
+test-slice trace tractable). Each traced callee's `(file, firstlineno)` is mapped to its catalog
+symbol by **innermost line-range containment**, then reconciled against the existing
+`find_symbol_callers` resolver (§27) into three buckets: **confirmed** (resolver already found this
+caller), **dynamic discovery** (resolver structurally misses it — the value signal), **unobserved**
+(a static candidate never exercised at runtime — reported verbatim, **never** `dead`; traces only
+*raise* confidence, they never delete an edge). The dogfood measurement traces a bounded slice of
+AILIENANT's own pytest (`test_micro_swarm_e2e.py`, `test_phase8_8_2_analyst_arsenal.py`) as a
+subprocess, reconciling against a temp catalog built by indexing `core/`, `brain/`, `tools/`.
+
+**Two callee-resolution defects found and fixed during the PoC build, both worth recording:**
+1. **`__wrapped__` unwrap is load-bearing.** `sys.monitoring` observes the decorator's *wrapper*
+   callable; a `functools.wraps` wrapper's `co_firstlineno` points into the decorator's own body, so
+   an un-unwrapped callee silently mis-maps to the decorator, not the real target.
+2. **Decorator-line drift (broader than #1 — applies to every decorated symbol, wrapped or not).**
+   `co_firstlineno` for *any* decorated function points at the **first decorator line**, while
+   `collect_symbol_defs` (tree-sitter) records `start_line` as the `def` line — so strict
+   `[start_line, end_line]` containment silently fails to map every decorated symbol in the codebase
+   (`@pytest.fixture`, LangGraph node decorators, …). Fixed with a bounded (`≤20` line) fallback: when
+   no symbol contains the line outright, take the nearest symbol whose `start_line` follows within
+   the bound — the decorator-prefix case — never an unrelated distant symbol.
+
+**Measured result (dogfood, this codebase, `core/`+`brain/`+`tools/` catalog, one pytest slice):**
+
+| Metric | Count |
+|---|---|
+| Observed edges (intra-project) | 305 |
+| Mapped to a catalog symbol | 67 |
+| Confirmed (static resolver already found it) | 40 |
+| **Dynamic discoveries** (resolver structurally misses it) | **27** |
+| Unobserved static candidates (never exercised by this slice — not dead) | 94 |
+
+27 of 67 mapped edges (~40%) are dynamic discoveries — a material fraction, not noise. Concrete
+example: `tool_dispatch.py`'s string-keyed dispatcher — the exact dynamic-dispatch case the Two-Tiered
+Hybrid's `INFERRED` tier exists for — surfaces as an **unobserved** static candidate in this slice
+(correctly not "dead": simply not exercised by these two test files), while the same `BaseTool._arun`
+methods, invoked directly by `test_phase8_8_2_analyst_arsenal.py`, register as **dynamic discoveries**.
+This is the literal scenario the SPIKE was designed to surface.
+
+**Decision: GO.** The signal is real and material. A persisted `observed_call_edges` substrate +
+resolver confidence-promotion (never demotion — the coverage caveat is binding) is deferred to
+`8.14.8.1`, gated behind this GO, mirroring the §27 SPIKE → implementation split:
+- Additive Tier-2 table `observed_call_edges (caller_symbol, callee_symbol, project_id, content_hash)`,
+  idempotent ingest keyed by `content_hash` (§5.3).
+- `find_symbol_callers` promotes a caller already tagged `INFERRED`/`AMBIGUOUS` to a new `OBSERVED`
+  (or raises confidence within the existing tiers) when a runtime edge confirms it — never removes an
+  unconfirmed candidate.
+- Trace capture itself stays out-of-band (dogfood / offline harness first; a sandbox-execution-
+  integrated capture is tracked as DEBT, not built here) — this decision validates the *signal*, not
+  the *production capture path*.
+
+**Known limitations (recorded so the numbers above are read correctly, not inflated):**
+class-construction (`Foo()`) and `functools.partial` callees are best-effort/may be uncredited;
+decorators that do not set `__wrapped__` (not `functools.wraps`-based) cannot be unwrapped, so their
+callee is attributed to the wrapper's own defining symbol; `ProcessPoolExecutor` children run in a
+separate interpreter and are not traced in-process — itself a finding, since that is the same
+indirection static analysis also misses; C-level callees have no `__code__` and are skipped by design.
+Python-only (`sys.monitoring` is CPython-specific) — TS/JS runtime tracing is out of scope for this
+PoC and tracked as DEBT.
+
+---
+
 ## Design Decision — ADR-as-Graph State (REJECTED)
 
 > Not a wire contract (no schema was added), so this record carries no `§N` number. It is the
