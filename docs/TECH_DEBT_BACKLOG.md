@@ -97,6 +97,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
 | DEBT-007 | Auto-accept pays full HITL round-trip | LOW | Performance | Phase 11 | Floating |
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
+| DEBT-097 | Single shared Docker sandbox container across all concurrent sessions (noisy-neighbor + shared blast radius) | HIGH | Reliability / Scale | future sandbox-isolation slice | Floating |
+| DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
+| DEBT-099 | No client-side concurrency throttle on LLM Gateway calls — only budget, not concurrency, is admission-controlled | HIGH | Reliability / Scale | pre-8.15.1 | Floating |
+| DEBT-100 | Docker daemon hang blocks the sandbox worker thread indefinitely (SDK call not interruptible) | HIGH | Reliability | future sandbox-resilience slice | Floating |
 
 ---
 
@@ -138,6 +142,33 @@ Decision    Not a defect — see [DECISION] tier.
 - **Files:** `ailienant-core/tools/llm_gateway.py`.
 - **Verified:** `tests/test_streaming_structured_output.py` (forward / drop+sanitize / degrade+memo / pre-strip);
   existing 7.17 streaming + response-format suites green; mypy 0.
+
+### DEBT-097 [HIGH · Floating] — Single shared Docker sandbox container across all concurrent sessions
+
+- **Date:** 2026-07-02
+- **Reproduce:** `grep -n "ACTIVE_ADAPTER" ailienant-core/main.py ailienant-core/core/sandbox.py` — `resolve_default_adapter()` runs once at FastAPI lifespan startup (`main.py:174`) and binds a single module-level `ACTIVE_ADAPTER`; `DockerSandboxAdapter.__init__` holds one `self._container` reused for every `execute()`/`open_session()` call for the lifetime of the process, regardless of which session or project issued it.
+- **Error:** not a correctness defect — every EXECUTE call across every concurrent session shares one container's CPU/memory ceiling and one 512 MB `tmpfs` at `/work` (noisy-neighbor contention under concurrent sandboxed work), and a container crash/corruption drops sandbox capability for **every** active session simultaneously (shared blast radius), not just the session that caused it. `exec_run` calls are not individually locked (`asyncio.to_thread` only wraps the SDK call; `_lifecycle_lock` guards container *startup*, not per-call execution), so Docker's own exec multiplexing is the only isolation between concurrent callers.
+- **Blocked by:** nothing structural — a per-session or per-project container pool (bounded, LRU-evicted) is a viable fix, but changes the ADR-001 "session-global, immutable tier" invariant and needs its own design pass (container warm-up cost per session vs. shared-container contention is a real trade-off, not a free win).
+- **Phase:** future sandbox-isolation slice (pre-requisite for any multi-session-concurrent execution guarantee).
+- **Notes:** the container's per-call security profile (`--read-only`, `--network none`, env-whitelist) is solid — this entry is about cross-session **resource isolation**, not the existing per-call security posture, which is unaffected. Logged during a general bottleneck audit (2026-07-02), not tied to a specific shipping sub-phase.
+
+### DEBT-099 [HIGH · Floating] — No client-side concurrency throttle on LLM Gateway calls
+
+- **Date:** 2026-07-02
+- **Reproduce:** `grep -niE "semaphore|rate.?limit|max_connections" ailienant-core/tools/llm_gateway.py` — no matches. The only admission control on an outbound LLM call is the ledger's **budget** check (`gateway/ledger.py`, dollars), not a **concurrency** limit (number of simultaneous in-flight calls).
+- **Error:** reliability risk under fan-out. Team Swarms (Phase 2.1.5, concurrent `CoderAgent` clones via `Send()`) and the upcoming Division 8.15 (Dynamic Subagent Dispatch, `AILIENANT_MAX_CONCURRENT_SUBAGENTS`) can issue N simultaneous calls through the local LiteLLM proxy with no client-side backpressure. The failure mode is discovered externally (a cloud provider's rate limit rejects requests) rather than being prevented by AILIENANT's own admission control.
+- **Blocked by:** nothing structural; needs a bounded `asyncio.Semaphore` (or reuse the `AILIENANT_MAX_CONCURRENT_SUBAGENTS` env var as a shared ceiling) around `LLMGateway.ainvoke`/`astream_byom*` call sites.
+- **Phase:** should land **before** 8.15.1 (`build_dispatch_sends()`) ships, since that item is the first production caller that intentionally issues concurrent LLM calls at meaningful width (up to the `tasks` bound of 32, minus wave-splitting).
+- **Notes:** logged during a general bottleneck audit (2026-07-02); carved out explicitly as a pre-requisite concern for Division 8.15, similar in spirit to how DEBT-069 (Researcher node promotion) was carved as a prerequisite before dispatch-loop work began.
+
+### DEBT-100 [HIGH · Floating] — Docker daemon hang blocks the sandbox worker thread indefinitely
+
+- **Date:** 2026-07-02
+- **Reproduce:** documented in-code at `core/sandbox.py:203-205` ("Known limit (R5 in the plan)") but never carried into this backlog. A hung Docker **daemon** (not a hung command inside the container) leaves the synchronous `docker` SDK call made inside `asyncio.to_thread` blocked with no timeout, because the SDK call itself is not interruptible from Python.
+- **Error:** reliability risk — partial mitigation exists (the kernel-side `timeout --foreground` wrapper inside the container bounds a hung **command**), but the root cause (an unbounded, non-interruptible synchronous SDK call when the **daemon** itself stalls) is unresolved. The Phase 6.1.4 resolver (`resolve_default_adapter`) only probes daemon health at startup — it does not detect or recover from a daemon hang occurring mid-session.
+- **Blocked by:** the Docker SDK's synchronous transport has no native async cancellation; a fix would need an explicit wrapper-level timeout on the `asyncio.to_thread` future itself (`asyncio.wait_for`), accepting that the worker thread stays leaked/orphaned until the SDK call eventually returns or the process restarts — a real trade-off, not a clean fix.
+- **Phase:** future sandbox-resilience slice.
+- **Notes:** the risk (R5) was named in the original Phase 6 blueprint and left as an accepted trade-off at the time; formalized as a backlog entry during a general bottleneck audit (2026-07-02) rather than left as an undiscoverable code comment.
 
 ---
 
@@ -532,6 +563,15 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing — but it must convert **both** the pre-apply (this fix) and the post-apply (`PatchActuator.apply` → `RENDER_DIFF`) paths together, since they share `PatchedFileDiff`/`DiffBlockShape`.
 - **Phase:** future performance/transport sub-phase (own ticket — do not smuggle into a feature fix).
 - **Notes:** declared MVP during the ASK-mode inline-approval fix (one-atomic-event design). Bounded by the existing `DIFF_RENDER_LINE_CAP=400` *mount* cap in `DiffBlock.tsx`, but the **wire payload** is still uncapped. Target design: compute the unified diff server-side with `difflib`, transport unified diffs only (O(Δ)), and reconstruct both sides in the host via the already-present `diff` lib (`applyPatch`). Safe to defer under the bounded-file-size assumption.
+
+### DEBT-098 [MEDIUM · Floating] — Single ProcessPoolExecutor shared across all CPU-bound work
+
+- **Date:** 2026-07-02
+- **Reproduce:** `core/compute_pool.py:35-44` — one `ProcessPoolExecutor(max_workers=physical_cores-1)` instantiated at module scope and reused by every CPU-bound caller: GraphRAG PPR/analytics compute (`brain/memory.py`), the lazy indexer (`core/indexer.py`), and the blast-radius traversal (`core/blast_radius.py`, 8.14.1). No priority lanes or separate queues exist between them.
+- **Error:** performance/contention issue, not a correctness defect. On a modest core count (e.g., 4 physical → 3 workers), a reactive-index write racing a blast-radius pre-apply check or a PPR recompute can starve each other with no ordering guarantee — the pool services requests FIFO with no notion of "this is a synchronous user-facing check, that is a background reindex."
+- **Blocked by:** nothing structural; a fix could add either a priority-weighted submission wrapper over the existing pool, or split into a small foreground pool + a background pool, sized off the same `physical-1` budget.
+- **Phase:** future performance slice — worth revisiting if/when 8.14.9's blast-radius stress gate (<500ms wall-clock target) starts flaking under concurrent indexer load.
+- **Notes:** logged during a general bottleneck audit (2026-07-02); no reproduction of an actual contention failure yet — this is a structural risk, not an observed incident.
 
 ---
 
