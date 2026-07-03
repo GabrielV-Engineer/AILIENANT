@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.9: Division 8.14 Checkpoint Gate — Division CLOSED — 2026-07-02
+**Status:** COMPLETE | **Gates:** mypy 0/395 · pytest 2227 passed, 2 skipped · pyright 0
+- Shipped: `tests/test_phase8_14_checkpoint_gate.py` (14 rows, test-only) re-certifying the division's cross-cutting invariants from the shipped entry points — polyglot registry (5), blast-radius cycle-safety + 5K/15K/depth-3 <500 ms + to_thread offload proof, snapshot round-trip + torn-write isolation, dead-code hardcoded+JSON allowlist composition, digest bounded/token-capped/deterministic.
+- Key decision: extended the gate beyond the original spec with a division-wide non-pollution row (§4 Option B, manifest-amended) — `symbol_definitions`/`boundary_edges`/`observed_call_edges` never leak into `get_all_edges`/`compute_blast_radius`; guards the physical Tier-2 separation against a future merge.
+- Deferred: none.
+
 ## 8.14.8.1: Persisted observed-call-edge substrate — 2026-07-02
 **Status:** COMPLETE | **Gates:** mypy 0/394 · pytest 2213 passed, 2 skipped · pyright 0
 - Shipped: additive `observed_call_edges` Tier-2 table (`§29`) populated out-of-band by the trace harness (`persist_observed_edges`, append-only `INSERT OR IGNORE`, no lock) + a new top `OBSERVED` confidence tier merged into `find_symbol_callers`.
