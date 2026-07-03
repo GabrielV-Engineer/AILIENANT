@@ -207,11 +207,16 @@ def test_extraction_and_resolution_are_filesystem_free(
 
 
 def test_unregistered_language_yields_no_edges() -> None:
-    assert IMPORT_EXTRACTORS.get("go") is None
+    # "sql" has a working installed grammar (tree isn't None) but deliberately has
+    # no extractor — standard SQL carries no AST-visible import/include construct
+    # (verified: a client meta-command like `SOURCE x.sql;` parses as an ERROR node,
+    # not real SQL syntax), so this exercises the extractor-dispatch gap itself
+    # rather than a parse failure.
+    assert IMPORT_EXTRACTORS.get("sql") is None
     req = IndexingRequest(
-        file_path="/ws/main.go",
-        content="package main\nimport \"fmt\"\n",
-        language_id="go",
+        file_path="/ws/schema.sql",
+        content="CREATE TABLE x (id INT);\n",
+        language_id="sql",
         workspace_root="/ws",
     )
     result = index_file_sync(req)
