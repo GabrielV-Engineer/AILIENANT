@@ -75,6 +75,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-095 | Runtime call-trace capture (`sys.monitoring`) is Python-only — no TS/JS extension-side equivalent | LOW | Capability gap | future trace slice | Floating |
 | DEBT-096 | No sandbox/agentic-cell-integrated live trace capture — 8.14.8.1 populates `observed_call_edges` out-of-band (dogfood harness), still not a user project's live execution | LOW | Capability gap | future trace slice | Floating |
 | DEBT-101 | `observed_call_edges` has no reindex-coupled purge/TTL — stale rows accumulate; bounded only at read by the catalog-presence gate | LOW | Capability gap | future trace slice | Floating |
+| DEBT-102 | `tree-sitter-dart` is a single-release pip package (0.1.0, no update history since publish) — accepted supply-chain risk for Dart import extraction | LOW | Dependency risk | monitor / reconsider on breakage | Floating |
+| DEBT-103 | Dart `package:foo/bar.dart` URIs resolve pubspec-unaware — the `package:` prefix is stripped but never mapped to a real directory, so same-project package imports rarely resolve past bare extraction | LOW | Capability gap | future polyglot slice | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -371,6 +373,22 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** declared scope cut for 8.14.8.1 — capture is out-of-band, so no reindexer coupling was added. Correctness is preserved at the **read path**: `find_symbol_callers` only surfaces an added observed caller whose file is still in the catalog, so a stale row is never *shown*; it only wastes storage.
 - **Resolution (unscheduled):** a reindex-coupled purge (mirroring `purge_symbol_definitions`) keyed by `caller_file`/`callee_file`, or a periodic TTL sweep, or a symbol-presence check at read to prune on access.
 - **Notes:** logged at 8.14.8.1 close; append-only accumulation is deliberate ("never delete an observation"), so purge must be careful to drop only genuinely-orphaned rows.
+
+### DEBT-102 [LOW · Floating] — `tree-sitter-dart` single-release supply-chain risk
+
+- **Date:** 2026-07-03
+- **Reproduce:** `pip index versions tree-sitter-dart` shows exactly one published release (`0.1.0`), with no update history since — unlike every other pinned `tree-sitter-*` package in `requirements.txt`, which have multiple releases and an active maintenance cadence.
+- **Error:** accepted at 8.14.11 as the lightest viable option (no alternative Dart tree-sitter binding exists on PyPI) — a real but currently-inert risk: the package works today, but there is no signal it will be patched if `tree-sitter` core evolves incompatibly.
+- **Resolution (unscheduled):** monitor for a maintained fork/successor; if the pinned wheel ever breaks against a future `tree-sitter` core bump, drop Dart support (degrade gracefully — `IMPORT_EXTRACTORS`'s unregistered-language path already handles this) rather than vendor a patched build.
+- **Notes:** logged at 8.14.11 close per the project's dependency-governance stance (a new dependency's risk profile is stated explicitly, not silently absorbed).
+
+### DEBT-103 [LOW · Floating] — Dart `package:` URI resolution is pubspec-unaware
+
+- **Date:** 2026-07-03
+- **Reproduce:** `_extract_dart_imports` (`brain/memory.py`) strips the `package:` prefix from `import 'package:foo/bar.dart';` and emits the remainder (`foo/bar.dart`) as the target, but never maps the leading `foo` package name back to the project's own directory layout (that mapping lives in `pubspec.yaml`, a file this extractor never reads).
+- **Error:** declared scope cut for 8.14.11 — real resolution would require parsing a second file format entirely (YAML, plus the `name:`/`dependencies:` keys specifically), a materially larger feature than the source-AST extraction this round covers. A same-project `package:` import therefore rarely resolves past bare extraction today; it stays INFERRED, the same honest fallback as any unresolved import.
+- **Resolution (unscheduled):** a small `pubspec.yaml` reader keyed by the project's own package `name:` field, feeding a Dart-specific candidate expansion (`package:<own_name>/x.dart` → `lib/x.dart`) alongside the existing relative-specifier path.
+- **Notes:** logged at 8.14.11 close; `dart:` built-ins and relative (`'sibling.dart'`) specifiers are unaffected — only the same-project `package:` case is impacted.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

@@ -12,6 +12,7 @@ import posixpath
 from collections import Counter
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from core.module_resolver import FAMILY_TABLE, build_all_family_indices, family_for_source, resolve_via_suffix_index
 from shared.contracts import IndexingRequest, IndexingResult, PPRRequest, PPRResult, SymbolDef
 
 logger = logging.getLogger("MEMORY_WORKER")
@@ -82,13 +83,14 @@ _JS_TS_EXTS: Tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 
 
 def _string_literal_text(string_node: Any) -> str:
-    """Return the unquoted content of a tree-sitter ``string`` node.
+    """Return the unquoted content of a tree-sitter ``string``-shaped node.
 
-    Prefers the ``string_fragment`` child (grammar-provided, quote-free); falls
-    back to stripping the surrounding quote characters from the raw node text.
+    Prefers the grammar-provided, quote-free content child — named ``string_fragment``
+    in the ECMAScript grammars, ``string_content`` in C/C++/Ruby/Lua/Zig/Bash's — and
+    falls back to stripping the surrounding quote characters from the raw node text.
     """
     for child in string_node.children:
-        if child.type == "string_fragment":
+        if child.type in ("string_fragment", "string_content"):
             return child.text.decode("utf-8")
     raw = string_node.text.decode("utf-8")
     if len(raw) >= 2 and raw[0] in "\"'`" and raw[-1] == raw[0]:
@@ -96,17 +98,25 @@ def _string_literal_text(string_node: Any) -> str:
     return ""
 
 
-def _resolve_relative_specifier(spec: str, req: IndexingRequest) -> Optional[str]:
-    """Lexically resolve a relative TS/JS specifier to an extensionless workspace path.
+def _resolve_relative_specifier(
+    spec: str, req: IndexingRequest, strip_exts: Tuple[str, ...] = _JS_TS_EXTS
+) -> Optional[str]:
+    """Lexically resolve a relative specifier to a workspace path.
 
     Pure string math — no filesystem access. Uses ``posixpath`` on forward-slashed
     input so a Windows-origin path (``C:\\ws\\a.ts``) resolves identically on a Linux
     or Alpine worker (where ``os.path`` treats ``\\`` as an ordinary filename char).
     A specifier that escapes ``workspace_root`` is dropped (returns ``None``).
+
+    ``strip_exts`` controls whether a trailing recognized extension is stripped from
+    the result: TS/JS specifiers are conventionally extensionless (the default,
+    ``_JS_TS_EXTS``), but C/C++/PowerShell/Ruby-relative/Zig specifiers already carry
+    their real extension — callers for those pass ``strip_exts=()`` so the resolved
+    path keeps it.
     """
     base = posixpath.dirname(req.file_path.replace("\\", "/"))
     normalized = posixpath.normpath(posixpath.join(base, spec))
-    for ext in _JS_TS_EXTS:
+    for ext in strip_exts:
         if normalized.endswith(ext):
             normalized = normalized[: -len(ext)]
             break
@@ -174,16 +184,667 @@ def _extract_ecmascript_imports(tree: Any, req: IndexingRequest) -> list[str]:
     return out
 
 
+def _extract_c_family_includes(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract ``#include`` targets from a C/C++ AST.
+
+    Angle-bracket includes (``<stdio.h>``) are system headers — always bare/
+    external. Quoted includes (``"local.h"``) already carry their real extension
+    (no guessing needed, unlike JS's extensionless specifiers) and are lexically
+    resolved via the same relative-specifier math with extension-stripping
+    disabled.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "preproc_include":
+            path_node = node.child_by_field_name("path")
+            if path_node is not None:
+                if path_node.type == "system_lib_string":
+                    text = path_node.text.decode("utf-8").strip("<>")
+                    if text and text not in seen:
+                        seen.add(text)
+                        out.append(text)
+                elif path_node.type == "string_literal":
+                    text = _string_literal_text(path_node)
+                    if text:
+                        resolved = _resolve_relative_specifier(text, req, strip_exts=())
+                        if resolved is not None and resolved not in seen:
+                            seen.add(resolved)
+                            out.append(resolved)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_rust_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract ``use``- and ``mod``-declaration targets from a Rust AST.
+
+    A ``scoped_identifier``'s full text already concatenates its ``::``-chain (no
+    field-by-field path/name walk needed). A grouped ``use a::{b, c::d};`` expands
+    into N separate targets, each reconstructed as ``<prefix>::<member>``. A
+    body-less ``mod foo;`` maps to a sibling file/subdirectory — the SAME
+    suffix-index resolver that handles ``use`` naturally matches a bare trailing
+    segment, so no separate resolution path is needed. A bare external-crate root
+    (``serde``, ``std`` — not ``crate``/``self``/``super``-prefixed) is emitted the
+    same as everything else; it simply never matches the suffix index and falls
+    through to INFERRED, mirroring every other family's bare/external handling.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _emit(text: str) -> None:
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+
+    def _expand_list(prefix: str, list_node: Any) -> None:
+        for child in list_node.children:
+            if child.type in ("identifier", "scoped_identifier"):
+                _emit(f"{prefix}::{child.text.decode('utf-8')}")
+
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "use_declaration":
+            arg = node.child_by_field_name("argument")
+            if arg is not None:
+                if arg.type == "use_as_clause":
+                    path = arg.child_by_field_name("path")
+                    if path is not None:
+                        _emit(path.text.decode("utf-8"))
+                elif arg.type == "scoped_use_list":
+                    path = arg.child_by_field_name("path")
+                    lst = arg.child_by_field_name("list")
+                    prefix = path.text.decode("utf-8") if path is not None else ""
+                    if lst is not None:
+                        _expand_list(prefix, lst)
+                else:
+                    _emit(arg.text.decode("utf-8"))
+        elif node.type == "mod_item":
+            name = node.child_by_field_name("name")
+            # A body-less `mod foo;` always ends in a bare `;`; `mod foo { ... }` is
+            # inline and names no external file.
+            if name is not None and node.children and node.children[-1].type == ";":
+                _emit(name.text.decode("utf-8"))
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_go_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract import targets from a Go AST.
+
+    Handles both the single ``import "fmt"`` and grouped ``import (...)`` forms; an
+    aliased entry (``import f "fmt"``) still yields the real path, ignoring the
+    alias. Targets are package paths (``github.com/pkg/errors``), resolved at
+    directory granularity — a target names every ``.go`` file in the matching
+    directory, not one file (see ``core.module_resolver``).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _spec_text(spec: Any) -> Optional[str]:
+        path = spec.child_by_field_name("path")
+        if path is None or path.type != "interpreted_string_literal":
+            return None
+        for child in path.children:
+            if child.type == "interpreted_string_literal_content":
+                return child.text.decode("utf-8")
+        return None
+
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "import_declaration":
+            for child in node.children:
+                if child.type == "import_spec":
+                    text = _spec_text(child)
+                    if text and text not in seen:
+                        seen.add(text)
+                        out.append(text)
+                elif child.type == "import_spec_list":
+                    for spec in child.children:
+                        if spec.type == "import_spec":
+                            text = _spec_text(spec)
+                            if text and text not in seen:
+                                seen.add(text)
+                                out.append(text)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_java_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract import targets from a Java AST.
+
+    ``scoped_identifier``'s full text already concatenates the dotted chain (no
+    field-by-field walk needed). A trailing ``asterisk`` sibling marks a wildcard
+    import — since it sits AFTER the ``scoped_identifier``, the extracted text is
+    already the package prefix alone. ``static`` member imports resolve
+    identically (the containing class is what matters for file resolution). Java
+    enforces one-public-class-per-file matching the filename — expect the
+    highest resolution reliability of any dotted-family language here.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "import_declaration":
+            scoped = next((c for c in node.children if c.type == "scoped_identifier"), None)
+            if scoped is not None:
+                text = scoped.text.decode("utf-8")
+                if text and text not in seen:
+                    seen.add(text)
+                    out.append(text)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_kotlin_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract import targets from a Kotlin AST.
+
+    Unlike Java's recursively-nested ``scoped_identifier``, Kotlin's
+    ``qualified_identifier`` is a FLAT sibling sequence of ``identifier``/``.``
+    tokens — its own ``.text`` already excludes a trailing wildcard ``*`` or
+    ``as``-alias clause (both are siblings after it, not part of it). Kotlin does
+    not enforce file-per-class — expect lower recall than Java.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "import":
+            qid = next((c for c in node.children if c.type == "qualified_identifier"), None)
+            if qid is not None:
+                text = qid.text.decode("utf-8")
+                if text and text not in seen:
+                    seen.add(text)
+                    out.append(text)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_scala_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract import targets from a Scala AST.
+
+    A flat ``identifier``/``.`` sequence forms the base path. A trailing
+    ``namespace_wildcard`` (``_``) is a wildcard — the collected prefix alone is
+    emitted. A trailing ``namespace_selectors`` (``{A, B}`` / ``{A => Renamed}``)
+    expands into N targets — a rename selector (``arrow_renamed_identifier``)
+    resolves by its ORIGINAL name (field ``name``), never the local alias (field
+    ``alias``).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _emit(text: str) -> None:
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "import_declaration":
+            prefix_parts: List[str] = []
+            selectors: Optional[Any] = None
+            for child in node.children:
+                if child.type == "identifier":
+                    prefix_parts.append(child.text.decode("utf-8"))
+                elif child.type == "namespace_selectors":
+                    selectors = child
+                # "namespace_wildcard" and "." tokens contribute nothing further.
+            prefix = ".".join(prefix_parts)
+            if selectors is not None:
+                for sel in selectors.children:
+                    if sel.type == "identifier":
+                        _emit(f"{prefix}.{sel.text.decode('utf-8')}")
+                    elif sel.type == "arrow_renamed_identifier":
+                        name = sel.child_by_field_name("name")
+                        if name is not None:
+                            _emit(f"{prefix}.{name.text.decode('utf-8')}")
+            elif prefix:
+                _emit(prefix)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_csharp_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract using-directive targets from a C# AST.
+
+    VERIFIED TRAP: for an aliased ``using Alias = Foo.Bar;``,
+    ``child_by_field_name("name")`` returns the ALIAS identifier ("Alias"), not
+    the target — the real target (``qualified_name``/``identifier``) carries no
+    field name at all in that form. Extraction is therefore POSITIONAL: always
+    take the last non-punctuation child, never trust the ``name`` field. C#
+    namespaces are not required to mirror the directory layout (unlike Java's
+    compiler-enforced convention) — expect lower resolution recall than Java/
+    Python/Rust for this family.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "using_directive":
+            candidates = [
+                c for c in node.children if c.type not in ("using", ";", "static", "=")
+            ]
+            target_node = candidates[-1] if candidates else None
+            if target_node is not None and target_node.type in ("identifier", "qualified_name"):
+                text = target_node.text.decode("utf-8")
+                if text and text not in seen:
+                    seen.add(text)
+                    out.append(text)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_ruby_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract ``require``/``require_relative`` targets from a Ruby AST.
+
+    ``require_relative`` is workspace-relative (lexically resolved, extension-
+    stripping limited to ``.rb`` — Ruby specifiers are typically already
+    extensionless or carry ``.rb`` explicitly). Plain ``require`` defaults to
+    bare/external (gem convention, mirrors Node's ``require()`` default for a
+    bare specifier).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "call":
+            method = node.child_by_field_name("method")
+            if method is not None and method.text in (b"require", b"require_relative"):
+                args = node.child_by_field_name("arguments")
+                if args is not None:
+                    string_node = next((c for c in args.children if c.type == "string"), None)
+                    if string_node is not None:
+                        text = _string_literal_text(string_node)
+                        if text:
+                            if method.text == b"require_relative":
+                                target = _resolve_relative_specifier(text, req, strip_exts=(".rb",))
+                            else:
+                                target = text
+                            if target and target not in seen:
+                                seen.add(target)
+                                out.append(target)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_lua_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract ``require(...)`` targets from a Lua AST.
+
+    Lua module specifiers are dot-separated by convention
+    (``require("pkg.sub")``) and resolve via the dotted suffix index, not
+    path-relative math.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "function_call":
+            name = node.child_by_field_name("name")
+            if name is not None and name.type == "identifier" and name.text == b"require":
+                args = node.child_by_field_name("arguments")
+                if args is not None:
+                    string_node = next((c for c in args.children if c.type == "string"), None)
+                    if string_node is not None:
+                        content = string_node.child_by_field_name("content")
+                        text = (
+                            content.text.decode("utf-8")
+                            if content is not None
+                            else _string_literal_text(string_node)
+                        )
+                        if text and text not in seen:
+                            seen.add(text)
+                            out.append(text)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_zig_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract ``@import(...)`` targets from a Zig AST.
+
+    Same call-with-string-argument shape as JS's ``require()``/Lua's
+    ``require()``. A relative specifier (``./foo.zig``) is lexically resolved
+    (extension kept, already explicit); a bare one (``std``) stays external.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "builtin_function":
+            ident = next((c for c in node.children if c.type == "builtin_identifier"), None)
+            if ident is not None and ident.text == b"@import":
+                args = next((c for c in node.children if c.type == "arguments"), None)
+                if args is not None:
+                    string_node = next((c for c in args.children if c.type == "string"), None)
+                    if string_node is not None:
+                        text = _string_literal_text(string_node)
+                        if text:
+                            if text.startswith("."):
+                                target = _resolve_relative_specifier(text, req, strip_exts=())
+                            else:
+                                target = text
+                            if target and target not in seen:
+                                seen.add(target)
+                                out.append(target)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_elixir_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract ``import``/``alias``/``require``/``use`` targets from an Elixir AST.
+
+    ``call``'s field ``target`` names the macro; its ``arguments`` child is
+    either a single ``alias`` node (the dotted target's own text) or a ``dot``
+    node (field ``left`` = prefix, field ``right`` -> ``tuple`` of ``alias``
+    children — a grouped ``alias MyApp.{Bar, Baz}`` — expanded into N separate
+    targets). Reliability tracks the ``mix``-generated module-to-file
+    convention, not a compiler guarantee (medium recall, like Kotlin/C#).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _emit(text: str) -> None:
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+
+    macros = (b"import", b"alias", b"require", b"use")
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "call":
+            target = node.child_by_field_name("target")
+            if target is not None and target.type == "identifier" and target.text in macros:
+                args = next((c for c in node.children if c.type == "arguments"), None)
+                if args is not None:
+                    for child in args.children:
+                        if child.type == "alias":
+                            _emit(child.text.decode("utf-8"))
+                        elif child.type == "dot":
+                            left = child.child_by_field_name("left")
+                            right = child.child_by_field_name("right")
+                            prefix = left.text.decode("utf-8") if left is not None else ""
+                            if right is not None and right.type == "tuple":
+                                for member in right.children:
+                                    if member.type == "alias":
+                                        _emit(f"{prefix}.{member.text.decode('utf-8')}")
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_haskell_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract import targets from a Haskell AST.
+
+    ``import``'s field ``module`` ALWAYS names the real target — even in the
+    ``qualified ... as Alias`` form, where the field-named ``alias`` child is a
+    SEPARATE ``module`` node holding the local alias (the grammar itself
+    disambiguates by field name — no positional guessing needed here). A
+    ``module``'s full text already concatenates its dotted chain. GHC's
+    search-path convention is closely followed in practice — expect high
+    recall, similar to Java.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "import":
+            module = node.child_by_field_name("module")
+            if module is not None:
+                text = module.text.decode("utf-8")
+                if text and text not in seen:
+                    seen.add(text)
+                    out.append(text)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_bash_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract ``source``/``.`` targets from a Bash AST.
+
+    Filters on the exact ``command_name`` text (``source`` or ``.``) — an
+    unambiguous, AST-visible match, never a raw-text regex that could
+    false-positive inside an unrelated string. The path argument (field
+    ``argument``) is lexically resolved with extension-stripping disabled (a
+    sourced script's extension, if any, is already explicit).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "command":
+            name = node.child_by_field_name("name")
+            if name is not None and name.type == "command_name":
+                word = next((c for c in name.children if c.type == "word"), None)
+                if word is not None and word.text in (b"source", b"."):
+                    arg = node.child_by_field_name("argument")
+                    if arg is not None:
+                        text = (
+                            _string_literal_text(arg)
+                            if arg.type == "string"
+                            else arg.text.decode("utf-8")
+                        )
+                        if text:
+                            resolved = _resolve_relative_specifier(text, req, strip_exts=())
+                            if resolved is not None and resolved not in seen:
+                                seen.add(resolved)
+                                out.append(resolved)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_powershell_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract dot-sourcing and ``Import-Module`` targets from a PowerShell AST.
+
+    PowerShell is case-insensitive — ``Import-Module``/``import-module`` both
+    match. Dot-sourcing (``. .\\foo.ps1``) folds the whole path into
+    ``command_name_expr``'s own text (field ``command_name``);
+    ``Import-Module`` puts the module name/path in ``command_elements`` (a bare
+    module name, with no path separator, stays external — an installed
+    PowerShell module, not a local file).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "command":
+            name_node = node.child_by_field_name("command_name")
+            first_child = node.children[0] if node.children else None
+            if first_child is not None and first_child.type == "command_invokation_operator":
+                if name_node is not None:
+                    # PowerShell's native separator is "\" — _resolve_relative_specifier
+                    # expects forward-slash input (the TS/JS/posixpath convention).
+                    text = name_node.text.decode("utf-8").replace("\\", "/")
+                    if text:
+                        resolved = _resolve_relative_specifier(text, req, strip_exts=())
+                        if resolved is not None and resolved not in seen:
+                            seen.add(resolved)
+                            out.append(resolved)
+            elif (
+                name_node is not None
+                and name_node.text.decode("utf-8", "ignore").lower() == "import-module"
+            ):
+                elements = node.child_by_field_name("command_elements")
+                if elements is not None:
+                    tok = next(
+                        (c for c in elements.children if c.type in ("generic_token", "string")),
+                        None,
+                    )
+                    if tok is not None:
+                        text = (
+                            _string_literal_text(tok)
+                            if tok.type == "string"
+                            else tok.text.decode("utf-8")
+                        )
+                        if text:
+                            if "/" in text or "\\" in text or text.startswith("."):
+                                target = _resolve_relative_specifier(
+                                    text.replace("\\", "/"), req, strip_exts=()
+                                )
+                            else:
+                                target = text  # bare module name — external
+                            if target and target not in seen:
+                                seen.add(target)
+                                out.append(target)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_swift_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract import targets from a Swift AST.
+
+    Extraction is trivial (``import_declaration`` -> ``identifier`` ->
+    ``simple_identifier``), but the result is ALWAYS bare/external: Swift's
+    implicit whole-module visibility means files within the same module never
+    explicitly import each other, so ``import Foo`` names an external
+    framework/package, never a sibling ``.swift`` file. This contributes
+    external-dependency metadata only, by design — not a resolver gap.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "import_declaration":
+            ident = next((c for c in node.children if c.type == "identifier"), None)
+            if ident is not None:
+                text = ident.text.decode("utf-8")
+                if text and text not in seen:
+                    seen.add(text)
+                    out.append(text)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_php_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract require/include and namespace-``use`` targets from a PHP AST.
+
+    ``require``/``require_once``/``include``/``include_once`` each wrap an
+    ``encapsed_string`` (directly, or inside a ``parenthesized_expression`` for
+    the call-style form) — resolved the same way as Ruby's ``require_relative``/
+    C's quoted ``#include``, extension kept since already explicit.
+    ``use Foo\\Bar;`` namespace imports resolve via the dotted/namespaced suffix
+    index (separator ``\\``) — PSR-4 autoloading (Composer) maps a namespace to a
+    directory closely enough that this tracks Java-like reliability for
+    Composer-based projects.
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _emit(text: Optional[str]) -> None:
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+
+    include_kinds = {
+        "require_expression", "require_once_expression",
+        "include_expression", "include_once_expression",
+    }
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in include_kinds:
+            string_node = next(
+                (c for c in node.children if c.type in ("encapsed_string", "string")), None
+            )
+            if string_node is None:
+                paren = next(
+                    (c for c in node.children if c.type == "parenthesized_expression"), None
+                )
+                if paren is not None:
+                    string_node = next(
+                        (c for c in paren.children if c.type in ("encapsed_string", "string")),
+                        None,
+                    )
+            if string_node is not None:
+                text = _string_literal_text(string_node)
+                if text:
+                    _emit(_resolve_relative_specifier(text, req, strip_exts=()))
+        elif node.type == "namespace_use_declaration":
+            for clause in node.children:
+                if clause.type == "namespace_use_clause":
+                    target = next(
+                        (c for c in clause.children if c.type == "qualified_name"), None
+                    )
+                    if target is not None:
+                        _emit(target.text.decode("utf-8"))
+        stack.extend(reversed(node.children))
+    return out
+
+
+def _extract_dart_imports(tree: Any, req: IndexingRequest) -> list[str]:
+    """Extract import/export targets from a Dart AST.
+
+    Three resolution shapes: ``dart:core`` (built-in, always bare/external),
+    ``package:foo/bar.dart`` (URI-scheme — the ``package:`` prefix is stripped
+    and the remainder emitted as a package-relative path; whether it then
+    resolves depends on whether the project's own indexed layout happens to
+    match, since pubspec-aware package-name resolution is out of scope here),
+    and a bare relative specifier (``'sibling.dart'``, resolved the same way as
+    Ruby's ``require_relative``/C's quoted ``#include``, extension kept since
+    already explicit).
+    """
+    out: List[str] = []
+    seen: set[str] = set()
+    stack: List[Any] = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "uri":
+            string_lit = next((c for c in node.children if c.type == "string_literal"), None)
+            if string_lit is not None:
+                text = _string_literal_text(string_lit)
+                if text:
+                    if text.startswith("dart:"):
+                        target: Optional[str] = text
+                    elif text.startswith("package:"):
+                        target = text[len("package:"):]
+                    else:
+                        target = _resolve_relative_specifier(text, req, strip_exts=())
+                    if target and target not in seen:
+                        seen.add(target)
+                        out.append(target)
+        stack.extend(reversed(node.children))
+    return out
+
+
 # Import-edge extractors keyed by VS Code languageId. Dispatch is O(1); an
 # unregistered language yields no edges (best-effort, mirroring the worker's
-# never-raise contract). Further languages are a single registry entry plus one
-# extractor, added when a corpus exercises them — not speculatively.
+# never-raise contract).
 IMPORT_EXTRACTORS: Dict[str, Callable[[Any, IndexingRequest], List[str]]] = {
     "python": _extract_python_imports,
     "typescript": _extract_ecmascript_imports,
     "typescriptreact": _extract_ecmascript_imports,
     "javascript": _extract_ecmascript_imports,
     "javascriptreact": _extract_ecmascript_imports,
+    "c": _extract_c_family_includes,
+    "cpp": _extract_c_family_includes,
+    "rust": _extract_rust_imports,
+    "go": _extract_go_imports,
+    "java": _extract_java_imports,
+    "kotlin": _extract_kotlin_imports,
+    "scala": _extract_scala_imports,
+    "csharp": _extract_csharp_imports,
+    "ruby": _extract_ruby_imports,
+    "lua": _extract_lua_imports,
+    "zig": _extract_zig_imports,
+    "elixir": _extract_elixir_imports,
+    "haskell": _extract_haskell_imports,
+    "shellscript": _extract_bash_imports,
+    "powershell": _extract_powershell_imports,
+    "swift": _extract_swift_imports,
+    "php": _extract_php_imports,
+    "dart": _extract_dart_imports,
 }
 
 
@@ -303,6 +964,27 @@ def resolve_target_to_file(
     return norm_indexed[hit] if hit is not None else None
 
 
+# Ecmascript specifiers never enter `FAMILY_TABLE` (they resolve via
+# `resolve_target_to_file`'s path-style candidate expansion instead), but their
+# basename-stem AMBIGUOUS check still needs its own scope bucket, distinct from
+# every dotted-family language, to avoid a same-named file in an unrelated
+# language falsely inflating this family's AMBIGUOUS rate (and vice versa).
+_ECMASCRIPT_EXTS: Tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def _stem_scope_key(f: str) -> str:
+    """Bucket key for the basename-stem AMBIGUOUS check — one bucket per language
+    family (never merged across languages, mirroring `module_resolver`'s own
+    per-family suffix-index isolation) plus a shared "ecmascript" bucket and a
+    catch-all for every other/unregistered extension."""
+    nf = f.replace("\\", "/")
+    ext = os.path.splitext(nf)[1].lower()
+    if ext in _ECMASCRIPT_EXTS:
+        return "ecmascript"
+    family = family_for_source(nf)
+    return family if family is not None else ext
+
+
 def _resolve_edge_confidence(
     edges: Tuple[Tuple[str, str], ...], indexed_files: Tuple[str, ...]
 ) -> Tuple[Tuple[str, str, str, float], ...]:
@@ -310,19 +992,27 @@ def _resolve_edge_confidence(
 
     EXTRACTED (1.0): the target resolves to an indexed source file — directly, or
     (for an extensionless relative TS/JS specifier) via extension/``index.*``
-    candidate expansion against the indexed set. AMBIGUOUS (0.25): the target's
-    module stem matches ≥2 indexed files, so which file it refers to cannot be
-    disambiguated. INFERRED (0.5): everything else — an external/unindexed module.
+    candidate expansion against the indexed set; or (for a dotted/namespaced
+    target — Python, Java, Kotlin, Scala, C#, Rust, Lua, Elixir, Haskell) via the
+    shared ``core.module_resolver`` suffix index, scoped to the *source* file's own
+    language family so an unrelated language's same-named file can never
+    cross-resolve into the wrong target (Go is deliberately excluded from this
+    tier — see below). AMBIGUOUS (0.25): the target's module stem matches ≥2
+    indexed files WITHIN THE SAME FAMILY, or the family suffix index itself found
+    ≥2 hits. INFERRED (0.5): everything else — an external/unindexed module.
 
     All resolution is in-memory string math over the indexed set; no filesystem access.
     """
     indexed = set(indexed_files)
     norm_indexed = {f.replace("\\", "/"): f for f in indexed_files}
-    stems: Counter[str] = Counter()
+    family_indices = build_all_family_indices(indexed_files)
+
+    stems_by_scope: Dict[str, Counter[str]] = {}
     for f in indexed_files:
+        scope = _stem_scope_key(f)
         stem = os.path.splitext(os.path.basename(f.replace("\\", "/")))[0]
         if stem:
-            stems[stem] += 1
+            stems_by_scope.setdefault(scope, Counter())[stem] += 1
 
     out: List[Tuple[str, str, str, float]] = []
     for source, target in edges:
@@ -330,8 +1020,26 @@ def _resolve_edge_confidence(
         if resolved is not None:
             out.append((source, resolved, "EXTRACTED", 1.0))
             continue
+
+        # Dotted/namespaced suffix-index tier — additive, only engaged when the
+        # path-style attempt above already failed. Go stays INFERRED here by design
+        # (a package target maps to many files, which doesn't fit the
+        # one-file-per-EXTRACTED-edge model); its full directory-level resolution
+        # still applies in `core.blast_radius`, which returns multiple files.
+        family = family_for_source(source)
+        if family is not None and family != "go":
+            cfg = FAMILY_TABLE[family]
+            hits = resolve_via_suffix_index(target, cfg.separator, family_indices[family])
+            if len(hits) == 1:
+                out.append((source, hits[0], "EXTRACTED", 1.0))
+                continue
+            if len(hits) >= 2:
+                out.append((source, target, "AMBIGUOUS", 0.25))
+                continue
+
         module_stem = target.replace("\\", "/").rsplit("/", 1)[-1].split(".")[-1]
-        if stems.get(module_stem, 0) >= 2:
+        scope = _stem_scope_key(source)
+        if stems_by_scope.get(scope, Counter()).get(module_stem, 0) >= 2:
             out.append((source, target, "AMBIGUOUS", 0.25))
         else:
             out.append((source, target, "INFERRED", 0.5))

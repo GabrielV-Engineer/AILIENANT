@@ -29,6 +29,14 @@ Rows certified here:
   DIGEST2     the digest is token-capped (bounded passes) and deterministic
   NOPOLLUTE1  the Tier-2 substrates (symbol_definitions / boundary_edges /
               observed_call_edges) never contaminate the file-level graph reads
+  POLY6       every language added in 8.14.10/8.14.11 (21 total, on top of the
+              original 5) is registered and dispatches without raising
+  RESOLVER1   the shared suffix-index resolver agrees whether invoked from
+              brain.memory's confidence scorer or core.blast_radius's traversal
+  RESOLVER2   core.dead_code's direct import of blast_radius's private,
+              Python-only resolver names is unaffected by the widening
+  RESOLVER3   a same-named file in two different languages never cross-resolves
+              across the whole division (confidence scoring + blast-radius)
 """
 from __future__ import annotations
 
@@ -57,10 +65,13 @@ from core import memory_snapshot as ms
 from core.ast_engine import ASTEngine
 from core.blast_radius import (
     MAX_BLAST_EDGES,
+    _build_python_suffix_index,
+    _resolved_target_files,
     compute_blast_radius,
     compute_blast_radius_sync,
 )
 from core.dead_code import compute_dead_code_sync
+from core.module_resolver import build_all_family_indices, resolve_via_suffix_index
 from shared.contracts import IndexingRequest, SymbolDef
 from tools.perception_tools import (
     _DIGEST_TOKEN_CAP,
@@ -166,12 +177,16 @@ def test_poly4_extraction_and_resolution_are_filesystem_free(
 
 
 def test_poly5_unregistered_language_yields_no_edges() -> None:
-    assert IMPORT_EXTRACTORS.get("go") is None
+    # "sql" has a working installed grammar but deliberately has no extractor —
+    # standard SQL carries no AST-visible import/include construct (a client
+    # meta-command like `SOURCE x.sql;` parses as an ERROR node, not real SQL
+    # syntax) — 8.14.10 registered "go", so this row moved off it.
+    assert IMPORT_EXTRACTORS.get("sql") is None
     result = index_file_sync(
         IndexingRequest(
-            file_path="/ws/main.go",
-            content='package main\nimport "fmt"\n',
-            language_id="go",
+            file_path="/ws/schema.sql",
+            content="CREATE TABLE x (id INT);\n",
+            language_id="sql",
             workspace_root="/ws",
         )
     )
@@ -428,3 +443,111 @@ def test_nopollute1_tier2_substrates_never_contaminate_file_graph(
         assert await compute_blast_radius(proj, ["/ws/a.ts"]) == ["/ws/main.ts"]
 
     asyncio.run(_run())
+
+
+# ── POLY6 ─────────────────────────────────────────────────────────────────────
+
+
+def test_poly6_every_widened_language_is_registered_and_dispatches() -> None:
+    widened_languages = (
+        # 8.14.10 — no new dependency
+        "c", "cpp", "rust", "go", "java", "kotlin", "scala", "csharp", "ruby",
+        "lua", "zig", "elixir", "haskell", "shellscript", "powershell", "swift",
+        # 8.14.11 — new pinned dependency
+        "php", "dart",
+    )
+    assert len(widened_languages) == 18
+    for lang in widened_languages:
+        assert IMPORT_EXTRACTORS.get(lang) is not None, f"{lang} missing from IMPORT_EXTRACTORS"
+        result = index_file_sync(
+            IndexingRequest(
+                file_path=f"/ws/probe.{lang}",
+                content="",
+                language_id=lang,
+                workspace_root="/ws",
+            )
+        )
+        assert result.success is True, f"{lang} raised instead of degrading gracefully"
+
+
+# ── RESOLVER1 ─────────────────────────────────────────────────────────────────
+
+
+def test_resolver1_brain_memory_and_blast_radius_agree() -> None:
+    """The shared suffix-index resolver must resolve an identical dotted target
+    the same way whether queried from `_resolve_edge_confidence` (confidence
+    scoring) or `compute_blast_radius_sync` (the reverse-adjacency traversal) —
+    the whole point of `core.module_resolver` existing is that neither module
+    keeps its own divergent copy of this logic."""
+    indexed = ("/ws/brain/state.py",)
+    edges = (("/ws/app.py", "brain.state"),)
+
+    confidence = _resolve_edge_confidence(edges, indexed)
+    assert confidence == (("/ws/app.py", "/ws/brain/state.py", "EXTRACTED", 1.0),)
+
+    radius = compute_blast_radius_sync(("/ws/brain/state.py",), edges, indexed)
+    assert radius == ["/ws/app.py"]
+
+
+# ── RESOLVER2 ─────────────────────────────────────────────────────────────────
+
+
+def test_resolver2_dead_code_private_import_names_unaffected() -> None:
+    """`core.dead_code` imports `_build_python_suffix_index`/`_resolved_target_files`
+    directly from `core.blast_radius` by name — the 8.14.10 refactor onto the
+    shared `core.module_resolver` must keep both names and signatures intact."""
+    indexed = ("/ws/pkg/state.py",)
+    py_index = _build_python_suffix_index(indexed)
+    assert py_index["state"] == ["/ws/pkg/state.py"]
+
+    resolved = _resolved_target_files(
+        "pkg.state", set(indexed), {f: f for f in indexed}, py_index
+    )
+    assert resolved == ["/ws/pkg/state.py"]
+
+    # The actual call shape core.dead_code._resolve_in_degree uses — 4 positional
+    # args, no `source` — must still work unchanged, exercised end-to-end via the
+    # public compute_dead_code_sync entry point.
+    edges = (("/ws/app.py", "pkg.state"),)
+    candidates = compute_dead_code_sync(
+        edges, ("/ws/pkg/state.py", "/ws/app.py"), "/ws", content_reader=lambda _p: None
+    )
+    assert "pkg/state.py" not in [c["file"] for c in candidates]
+
+
+# ── RESOLVER3 ─────────────────────────────────────────────────────────────────
+
+
+def test_resolver3_cross_language_same_name_never_cross_resolves() -> None:
+    """A Python and a Rust file sharing the identical basename-suffix
+    (`services/state`) must resolve independently at the division level — both
+    in the persisted confidence score AND in the blast-radius traversal."""
+    indexed = ("/ws/services/state.py", "/ws/services/state.rs")
+
+    py_edges = (("/ws/other.py", "services.state"),)
+    rust_edges = (("/ws/other.rs", "services::state"),)
+    assert _resolve_edge_confidence(py_edges, indexed) == (
+        ("/ws/other.py", "/ws/services/state.py", "EXTRACTED", 1.0),
+    )
+    assert _resolve_edge_confidence(rust_edges, indexed) == (
+        ("/ws/other.rs", "/ws/services/state.rs", "EXTRACTED", 1.0),
+    )
+
+    py_radius = compute_blast_radius_sync(
+        ("/ws/services/state.py",), py_edges, indexed
+    )
+    rust_radius = compute_blast_radius_sync(
+        ("/ws/services/state.rs",), rust_edges, indexed
+    )
+    assert py_radius == ["/ws/other.py"]
+    assert rust_radius == ["/ws/other.rs"]
+
+    # Direct module_resolver-level confirmation: neither family's suffix index
+    # contains the other language's file at all.
+    all_idx = build_all_family_indices(indexed)
+    assert resolve_via_suffix_index("services.state", ".", all_idx["python"]) == [
+        "/ws/services/state.py"
+    ]
+    assert resolve_via_suffix_index("services::state", "::", all_idx["rust"]) == [
+        "/ws/services/state.rs"
+    ]

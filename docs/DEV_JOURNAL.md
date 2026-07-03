@@ -13,6 +13,24 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.12: Division 8.14 Checkpoint Gate amendment (polyglot round 2/3) — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/402 · pytest 2312 passed, 2 skipped · pyright 0
+- Shipped: 4 new rows in `tests/test_phase8_14_checkpoint_gate.py` (POLY6, RESOLVER1-3) certifying the 8.14.10/8.14.11 widening from the division's vantage point — all 18 newly-added languages dispatch without raising, `brain.memory`'s confidence resolver and `core.blast_radius`'s traversal agree on the same dotted target, `core.dead_code`'s direct import of `blast_radius`'s private resolver names is unaffected, and a same-named file across two languages never cross-resolves.
+- Key decision: amended the existing gate file rather than forking a second one — one capstone gate per division, consistent with how NOPOLLUTE1 was added at 8.14.9.
+- Deferred: none.
+
+## 8.14.11: Polyglot import extraction, round 3 (PHP, Dart) — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/402 · pytest 2308 passed, 2 skipped · pyright 0
+- Shipped: two new pinned dependencies (`tree-sitter-php==0.24.1`, `tree-sitter-dart==0.1.0`), wired into `core/ast_engine.py`. New extractors for PHP (require/require_once/include/include_once + namespace `use`, separator `\`) and Dart (three resolution shapes: `dart:` built-in, `package:` URI-scheme, relative). Both node shapes verified via a live-parse spike before implementation, per the discipline used for every other language in this round.
+- Key decision: `tree-sitter-dart` is a single-release package (0.1.0, no update history) — a real accepted supply-chain risk, logged as debt rather than silently absorbed. Dart's `package:foo/bar.dart` URIs are pubspec-unaware by design (stripped to a bare package-relative path, may or may not resolve) — full package-name resolution would require parsing a second file type entirely, out of scope for this round.
+- Deferred: DEBT-102 (`tree-sitter-dart` single-release supply-chain risk) · DEBT-103 (Dart `package:` URI resolution is pubspec-unaware).
+
+## 8.14.10: Polyglot import extraction, round 2 — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/401 · pytest 2297 passed, 2 skipped · pyright 0
+- Shipped: `IMPORT_EXTRACTORS` widened from 5 to 21 languageIds (C, C++, Rust, Go, Java, Kotlin, C#, Ruby, Lua, Scala, Zig, Elixir, Haskell, Bash, PowerShell, Swift, on top of the existing Python/TS/JS/TSX/JSX) — every node shape empirically verified by live-parsing real snippets through the installed grammars before writing any extractor. New `core/module_resolver.py`: a shared, per-language-family suffix-index resolver generalizing the previously private, Python-only `blast_radius._build_python_suffix_index`, now used by both `brain.memory._resolve_edge_confidence` and `core.blast_radius`.
+- Key decision: suffix indices are strictly per-family, never merged, and the AMBIGUOUS stem-collision Counter is scoped the same way — closing a dormant cross-language false-resolution bug this widening would otherwise have activated. Go resolves at directory granularity in blast-radius but deliberately stays INFERRED at the confidence-scoring layer (one target maps to many files). Python's own dotted imports now reach EXTRACTED for the first time (previously always INFERRED) — a user-visible improvement to an already-shipped path, not just new-language coverage.
+- Deferred: none (PHP/Dart carved into 8.14.11 for the new-dependency risk boundary).
+
 ## 8.14.9: Division 8.14 Checkpoint Gate — Division CLOSED — 2026-07-02
 **Status:** COMPLETE | **Gates:** mypy 0/395 · pytest 2227 passed, 2 skipped · pyright 0
 - Shipped: `tests/test_phase8_14_checkpoint_gate.py` (14 rows, test-only) re-certifying the division's cross-cutting invariants from the shipped entry points — polyglot registry (5), blast-radius cycle-safety + 5K/15K/depth-3 <500 ms + to_thread offload proof, snapshot round-trip + torn-write isolation, dead-code hardcoded+JSON allowlist composition, digest bounded/token-capped/deterministic.

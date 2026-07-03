@@ -64,6 +64,11 @@ _EXT_LANG: dict[str, str] = {
     ".sql": "sql",
     ".sh": "shellscript",
     ".ps1": "powershell",
+    ".scala": "scala",
+    ".zig": "zig",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".hs": "haskell",
 }
 
 

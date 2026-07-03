@@ -23,6 +23,7 @@ from typing import Dict, List, Set, Tuple
 
 from brain.memory import resolve_target_to_file
 from core import db as catalog_db
+from core import module_resolver
 
 # Default reverse-traversal depth. Three hops captures direct importers and two
 # further layers of transitive dependents — deep enough to surface a real ripple,
@@ -39,25 +40,13 @@ MAX_BLAST_EDGES: int = 20000
 def _build_python_suffix_index(indexed_files: Tuple[str, ...]) -> Dict[str, List[str]]:
     """Map every segment-aligned path suffix of each indexed ``.py`` file to that file.
 
-    A Python edge target is a dotted module (``brain.state``) with no lexically
-    recoverable absolute path — the import root is a ``sys.path`` entry the worker
-    never sees. Indexing each file by its path suffixes (``state``, ``brain/state``,
-    ``pkg/brain/state``) lets ``brain.state`` → ``brain/state`` resolve in O(1). A
-    suffix that matches several files maps to all of them: over-matching over-counts
-    the radius, the safe direction for a review gate.
+    Thin wrapper over the shared, multi-language ``core.module_resolver`` — kept as its
+    own named function (byte-identical output to the pre-8.14.10 implementation) because
+    ``core.dead_code`` imports this name directly and stays Python-only by design.
     """
-    idx: Dict[str, List[str]] = {}
-    for f in indexed_files:
-        nf = f.replace("\\", "/")
-        if not nf.endswith(".py"):
-            continue
-        stem = nf[:-3]
-        if stem.endswith("/__init__"):
-            stem = stem[: -len("/__init__")]
-        parts = stem.split("/")
-        for i in range(len(parts)):
-            idx.setdefault("/".join(parts[i:]), []).append(nf)
-    return idx
+    return module_resolver.build_suffix_index(
+        indexed_files, extensions=(".py",), granularity="file", strip_basenames=("__init__",),
+    )
 
 
 def _resolved_target_files(
@@ -66,7 +55,12 @@ def _resolved_target_files(
     norm_indexed: Dict[str, str],
     py_index: Dict[str, List[str]],
 ) -> List[str]:
-    """Resolve one edge target to the concrete indexed file(s) it names."""
+    """Resolve one edge target to the concrete indexed file(s) it names (Python-only).
+
+    Kept as its own function, unchanged, because ``core.dead_code`` imports and calls
+    this exact signature directly. Blast-radius's own traversal uses the newer,
+    multi-language ``_resolved_target_files_polyglot`` instead (see below).
+    """
     direct = resolve_target_to_file(target, indexed, norm_indexed)
     if direct is not None:
         return [direct.replace("\\", "/")]
@@ -79,16 +73,43 @@ def _resolved_target_files(
     return []
 
 
+def _resolved_target_files_polyglot(
+    source: str,
+    target: str,
+    indexed: Set[str],
+    norm_indexed: Dict[str, str],
+    family_indices: Dict[str, Dict[str, List[str]]],
+) -> List[str]:
+    """Resolve one edge target across every registered language family.
+
+    Path-style resolution (TS/JS/C-family relative specifiers) is tried first via the
+    existing ``resolve_target_to_file``. If that fails, the *source* file's own
+    extension selects exactly one family's suffix index (never a merged/cross-language
+    index — see ``core.module_resolver``'s module docstring for why that would be a
+    real correctness bug, not just imprecision).
+    """
+    direct = resolve_target_to_file(target, indexed, norm_indexed)
+    if direct is not None:
+        return [direct.replace("\\", "/")]
+    family = module_resolver.family_for_source(source)
+    if family is None:
+        return []
+    cfg = module_resolver.FAMILY_TABLE[family]
+    return module_resolver.resolve_via_suffix_index(target, cfg.separator, family_indices[family])
+
+
 def _build_reverse_adjacency(
     edges: Tuple[Tuple[str, str], ...], indexed_files: Tuple[str, ...]
 ) -> Dict[str, Set[str]]:
     """Build ``resolved_target_file -> {source_file, ...}`` — pure, in-memory, no disk."""
     indexed: Set[str] = set(indexed_files)
     norm_indexed: Dict[str, str] = {f.replace("\\", "/"): f for f in indexed_files}
-    py_index = _build_python_suffix_index(indexed_files)
+    family_indices = module_resolver.build_all_family_indices(indexed_files)
     rev: Dict[str, Set[str]] = {}
     for source, target in edges:
-        for resolved in _resolved_target_files(target, indexed, norm_indexed, py_index):
+        for resolved in _resolved_target_files_polyglot(
+            source, target, indexed, norm_indexed, family_indices
+        ):
             rev.setdefault(resolved, set()).add(source.replace("\\", "/"))
     return rev
 

@@ -84,6 +84,8 @@ _LANG_SOURCES: Dict[str, Tuple[str, str]] = {
     "powershell": ("tree_sitter_powershell", "language"),
     "lua":        ("tree_sitter_lua",        "language"),
     "sql":        ("tree_sitter_sql",        "language"),
+    "php":        ("tree_sitter_php",        "language_php"),
+    "dart":       ("tree_sitter_dart",       "language"),
 }
 
 # Cache of Language objects — expensive to create, cheap to reuse
