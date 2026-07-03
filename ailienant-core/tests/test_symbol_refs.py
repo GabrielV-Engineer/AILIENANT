@@ -332,3 +332,155 @@ def test_tool_output_never_says_dead_on_empty(
     assert payload["callers"] == []
     assert "dead" not in json.dumps(payload).lower() or "NOT" in payload.get("note", "")
     assert payload["in_catalog"] is False
+
+
+# ── OBSERVED tier: runtime-observation merge (additive, never demote/delete) ──
+
+
+def _callers_by_name(result: Any) -> "dict[str, str]":
+    return {c.file_path.replace("\\", "/").split("/")[-1]: c.confidence for c in result.callers}
+
+
+def test_observed_edge_promotes_extracted_to_observed(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A statically-found EXTRACTED caller with a runtime observation becomes OBSERVED and
+    sorts first — a promotion, never a demotion."""
+    if not catalog_db._fts5_available():
+        pytest.skip("SQLite build lacks FTS5/trigram")
+    _isolate_catalog(tmp_path, monkeypatch)
+    monkeypatch.setattr(_blast_radius_module, "compute_blast_radius", _real_compute_blast_radius)
+    from core.symbol_refs import find_symbol_callers
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        target = await _seed(
+            tmp_path, "target_mod.py", "def handle_tool():\n    return 1\n",
+            defs=[SymbolDef("handle_tool", "function", 1, 2)],
+        )
+        importer = await _seed(
+            tmp_path, "importer.py",
+            "from target_mod import handle_tool\nhandle_tool()\n", deps=["target_mod"],
+        )
+        await catalog_db.persist_observed_edges(
+            _PID, [("importer.run", importer, "handle_tool", target)]
+        )
+        return await find_symbol_callers("handle_tool", _PID, workspace_root=str(tmp_path))
+
+    result = asyncio.run(_run())
+    tiers = _callers_by_name(result)
+    assert tiers.get("importer.py") == "OBSERVED", "runtime observation did not promote the caller"
+    assert result.callers[0].file_path.replace("\\", "/").endswith("importer.py"), "OBSERVED did not sort first"
+
+
+def test_observed_edge_adds_pure_dynamic_caller(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller with NO AST-confirmable reference (pure dynamic dispatch) is surfaced as
+    OBSERVED purely from the runtime substrate — the ~40% GO signal."""
+    if not catalog_db._fts5_available():
+        pytest.skip("SQLite build lacks FTS5/trigram")
+    _isolate_catalog(tmp_path, monkeypatch)
+    from core.symbol_refs import find_symbol_callers
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        target = await _seed(
+            tmp_path, "target_mod.py", "def handle_tool():\n    return 1\n",
+            defs=[SymbolDef("handle_tool", "function", 1, 2)],
+        )
+        # No textual reference to handle_tool at all — static resolution finds nothing.
+        dyn = await _seed(tmp_path, "dyn_caller.py", "x = 1\n")
+        await catalog_db.persist_observed_edges(
+            _PID, [("dyn_caller.run", dyn, "handle_tool", target)]
+        )
+        return await find_symbol_callers("handle_tool", _PID, workspace_root=str(tmp_path))
+
+    result = asyncio.run(_run())
+    tiers = _callers_by_name(result)
+    assert tiers.get("dyn_caller.py") == "OBSERVED", "pure-dynamic observed caller was not surfaced"
+
+
+def test_static_caller_without_observation_is_never_demoted_or_removed(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unrelated observation must not demote or drop a static candidate."""
+    if not catalog_db._fts5_available():
+        pytest.skip("SQLite build lacks FTS5/trigram")
+    _isolate_catalog(tmp_path, monkeypatch)
+    monkeypatch.setattr(_blast_radius_module, "compute_blast_radius", _real_compute_blast_radius)
+    from core.symbol_refs import find_symbol_callers
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        target = await _seed(
+            tmp_path, "target_mod.py", "def handle_tool():\n    return 1\n",
+            defs=[SymbolDef("handle_tool", "function", 1, 2)],
+        )
+        importer = await _seed(
+            tmp_path, "importer.py",
+            "from target_mod import handle_tool\nhandle_tool()\n", deps=["target_mod"],
+        )
+        # An observation for a DIFFERENT callee — must not touch handle_tool's caller.
+        await catalog_db.persist_observed_edges(
+            _PID, [("importer.run", importer, "unrelated_symbol", "elsewhere.py")]
+        )
+        return await find_symbol_callers("handle_tool", _PID, workspace_root=str(tmp_path))
+
+    result = asyncio.run(_run())
+    tiers = _callers_by_name(result)
+    assert tiers.get("importer.py") == "EXTRACTED", "an unrelated observation demoted/dropped a static caller"
+
+
+def test_stale_observed_caller_whose_file_left_the_index_is_not_surfaced(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not catalog_db._fts5_available():
+        pytest.skip("SQLite build lacks FTS5/trigram")
+    _isolate_catalog(tmp_path, monkeypatch)
+    from core.symbol_refs import find_symbol_callers
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        target = await _seed(
+            tmp_path, "target_mod.py", "def handle_tool():\n    return 1\n",
+            defs=[SymbolDef("handle_tool", "function", 1, 2)],
+        )
+        # Caller file was never indexed (renamed/deleted since the trace).
+        ghost = str(tmp_path / "ghost.py")
+        await catalog_db.persist_observed_edges(
+            _PID, [("ghost.run", ghost, "handle_tool", target)]
+        )
+        return await find_symbol_callers("handle_tool", _PID, workspace_root=str(tmp_path))
+
+    result = asyncio.run(_run())
+    names = {c.file_path.replace("\\", "/").split("/")[-1] for c in result.callers}
+    assert "ghost.py" not in names, "a stale observed caller (file not in catalog) was surfaced"
+
+
+def test_observed_edge_for_different_callee_file_is_ambiguous_safe(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An observation whose callee_file is not among the callee's defined files must not
+    promote/add — the same-named-symbol-in-another-file guard."""
+    if not catalog_db._fts5_available():
+        pytest.skip("SQLite build lacks FTS5/trigram")
+    _isolate_catalog(tmp_path, monkeypatch)
+    from core.symbol_refs import find_symbol_callers
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        await _seed(
+            tmp_path, "target_mod.py", "def handle_tool():\n    return 1\n",
+            defs=[SymbolDef("handle_tool", "function", 1, 2)],
+        )
+        caller = await _seed(tmp_path, "some_caller.py", "z = 1\n")
+        # Observed callee_file is a DIFFERENT file — an unrelated same-named symbol.
+        await catalog_db.persist_observed_edges(
+            _PID, [("some_caller.fn", caller, "handle_tool", str(tmp_path / "other_home.py"))]
+        )
+        return await find_symbol_callers("handle_tool", _PID, workspace_root=str(tmp_path))
+
+    result = asyncio.run(_run())
+    names = {c.file_path.replace("\\", "/").split("/")[-1] for c in result.callers}
+    assert "some_caller.py" not in names, "an observation of a different-file same-named symbol leaked in"

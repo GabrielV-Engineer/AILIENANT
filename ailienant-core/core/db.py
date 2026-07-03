@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import sqlite3
 import threading
 import time
@@ -118,6 +120,24 @@ _DDL = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_boundary_channel ON boundary_edges(project_id, channel)",
     "CREATE INDEX IF NOT EXISTS idx_boundary_source ON boundary_edges(project_id, source_file)",
+    # Observed call edges — runtime-confirmed caller -> callee, captured out-of-band by
+    # the offline trace harness. A physically separate table (no FK into dependency_graph
+    # or symbol_definitions), so it never pollutes code-dependency traversal. This is an
+    # accumulating observation log: INSERT OR IGNORE only, never delete — an observation
+    # raises caller confidence at read time and is never lost. content_hash is the identity
+    # (includes project_id) so the same edge in two projects stays two rows. The _file
+    # columns disambiguate a non-unique qualified_name (the AMBIGUOUS case) and give the
+    # reader the file unit it surfaces callers in.
+    """CREATE TABLE IF NOT EXISTS observed_call_edges (
+        caller_symbol TEXT NOT NULL,
+        caller_file   TEXT NOT NULL,
+        callee_symbol TEXT NOT NULL,
+        callee_file   TEXT NOT NULL,
+        project_id    TEXT NOT NULL DEFAULT '',
+        content_hash  TEXT NOT NULL,
+        PRIMARY KEY (content_hash)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_observed_callee ON observed_call_edges(project_id, callee_symbol)",
 ]
 
 # ── Content line-index (FTS5 trigram) ────────────────────────────────────────
@@ -742,6 +762,74 @@ async def purge_symbol_definitions(file_path: str, project_id: str = "") -> None
             (project_id, file_path),
         )
         await db.commit()
+
+
+# ── Observed call edges (runtime-confirmed caller -> callee) ──────────────────
+
+
+def _observed_content_hash(
+    project_id: str, caller_symbol: str, caller_file: str, callee_symbol: str, callee_file: str
+) -> str:
+    """Stable identity of an observed edge — the INSERT OR IGNORE dedup key.
+
+    A JSON-serialized identity (quoting/escaping is injective, so no field boundary can
+    collide the way naive concatenation would). ``project_id`` is included because it is the
+    sole PK yet the catalog is one file shared across projects: omitting it would silently
+    drop the same edge observed in a second project.
+    """
+    payload = json.dumps(
+        [project_id, caller_symbol, caller_file, callee_symbol, callee_file],
+        separators=(",", ":"),
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+async def persist_observed_edges(
+    project_id: str, edges: List[Tuple[str, str, str, str]]
+) -> int:
+    """Append runtime-observed edges (idempotent, append-only, no lock).
+
+    ``edges`` are ``(caller_symbol, caller_file, callee_symbol, callee_file)`` tuples. This
+    is an accumulating observation log — INSERT OR IGNORE on the content_hash PK, never a
+    delete — so re-persisting the same trace is a no-op and an observation is never lost
+    (the "traces raise confidence, never delete" caveat). Unlike the rebuildable
+    boundary graph there is no half-cleared window, so no lock is taken. Returns the number
+    of newly inserted rows.
+    """
+    if not edges:
+        return 0
+    rows = [
+        (cs, cf, es, ef, project_id, _observed_content_hash(project_id, cs, cf, es, ef))
+        for (cs, cf, es, ef) in edges
+    ]
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        cur = await db.executemany(
+            "INSERT OR IGNORE INTO observed_call_edges "
+            "(caller_symbol, caller_file, callee_symbol, callee_file, project_id, content_hash) "
+            "VALUES (?,?,?,?,?,?)",
+            rows,
+        )
+        inserted = cur.rowcount if cur.rowcount is not None else 0
+        await db.commit()
+        return inserted
+
+
+async def get_observed_callers(
+    project_id: str, callee_symbol: str
+) -> List[Tuple[str, str, str]]:
+    """Return ``(caller_symbol, caller_file, callee_file)`` rows observed calling ``callee_symbol``.
+
+    ``callee_file`` rides along so the reader can intersect with the callee's defining
+    files (AMBIGUOUS-safe: an observed call to one same-named symbol never promotes a caller
+    of the unrelated one).
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT caller_symbol, caller_file, callee_file FROM observed_call_edges "
+            "WHERE project_id=? AND callee_symbol=?",
+            (project_id, callee_symbol),
+        ) as cur:
+            return [(str(r[0]), str(r[1]), str(r[2])) for r in await cur.fetchall()]
 
 
 # ── Cross-boundary link edges (WS / MCP seams) ───────────────────────────────

@@ -352,6 +352,42 @@ async def reconcile(
     return report
 
 
+# ── symbol-pair mapping + persistence ────────────────────────────────────────
+
+# (caller_symbol, caller_file, callee_symbol, callee_file) — the persisted edge shape.
+SymbolPair = Tuple[str, str, str, str]
+
+
+async def map_edges_to_symbol_pairs(
+    edges: Set[Edge], project_id: str
+) -> List[SymbolPair]:
+    """Map BOTH endpoints of each runtime edge to catalog symbols (via ``innermost_symbol``).
+
+    Unlike :func:`reconcile` (which maps only the callee, keeping the caller file-granular),
+    persistence needs both endpoints as symbols. An edge is dropped when *either* endpoint is
+    uncatalogued — so the persist path must have indexed both the caller and callee trees, or
+    the dynamic-discovery edges (whose caller is often a test file) are silently lost.
+    """
+    from core.db import get_symbols_in_file
+
+    file_symbols: Dict[str, List[Symbol]] = {}
+
+    async def _symbol_at(file: str, line: int) -> Optional[str]:
+        if file not in file_symbols:
+            file_symbols[file] = list(await get_symbols_in_file(project_id, file))
+        sym = innermost_symbol(file_symbols[file], line)
+        return sym[0] if sym is not None else None
+
+    pairs: List[SymbolPair] = []
+    for (caller, callee) in edges:
+        caller_qn = await _symbol_at(caller[0], caller[2])
+        callee_qn = await _symbol_at(callee[0], callee[2])
+        if caller_qn is None or callee_qn is None:
+            continue
+        pairs.append((caller_qn, caller[0], callee_qn, callee[0]))
+    return pairs
+
+
 # ── dogfood entrypoint (one-off measurement; not a CI gate) ──────────────────
 
 
@@ -431,10 +467,14 @@ async def run_dogfood(
     subdirs: Sequence[str] = ("core", "brain", "tools"),
     pytest_slice: Sequence[str] = (),
     project_id: str = "call_trace_dogfood",
+    persist: bool = False,
 ) -> CoverageReport:
     """Index the source, trace a pytest slice in a subprocess, reconcile, and report.
 
-    The catalog is isolated to a temp DB so the measurement never touches the real one.
+    The catalog is isolated to a temp DB so the measurement never touches the real one. When
+    ``persist`` is set, the ``tests`` tree is also indexed (the caller of a dynamic-discovery
+    edge is usually a test file, and a symbol pair drops when either endpoint is uncatalogued)
+    and the mapped symbol pairs are written to ``observed_call_edges``.
     """
     import subprocess
     import tempfile
@@ -445,7 +485,8 @@ async def run_dogfood(
     catalog_db.DB_CATALOG_PATH = str(workdir / "catalog.sqlite")
     await catalog_db.init_db()
 
-    indexed = await _index_source(base, subdirs, project_id)
+    index_dirs = (*subdirs, "tests") if persist else subdirs
+    indexed = await _index_source(base, index_dirs, project_id)
     logger.info("dogfood: indexed %d source files", indexed)
 
     jsonl_out = str(workdir / "trace.jsonl")
@@ -457,6 +498,10 @@ async def run_dogfood(
     subprocess.run(child_cmd, cwd=str(base), check=False)
 
     into = ingest_edges(_read_jsonl(jsonl_out), str(base))
+    if persist:
+        pairs = await map_edges_to_symbol_pairs(into.edges, project_id)
+        written = await catalog_db.persist_observed_edges(project_id, pairs)
+        logger.info("dogfood: persisted %d observed symbol pairs", written)
     report = await reconcile(into.edges, project_id, workspace_root=str(base))
     logger.info("dogfood: %s", report.as_dict())
     return report

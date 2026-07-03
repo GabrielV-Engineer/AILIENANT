@@ -1048,6 +1048,55 @@ this resolution path" — never "unhandled."
 
 ---
 
+## §29 — Observed Call-Edge Substrate (Tier-2 Wire Contract)
+
+Persists the runtime-observation signal validated by the GO decision below. A Tier-2 table read by
+`core.symbol_refs.find_symbol_callers` to raise caller confidence with a new top tier. Physically
+separate, **no FK** into `dependency_graph` or `symbol_definitions` (same non-pollution stance as
+`§27`/`§28`). Additive.
+
+```sql
+CREATE TABLE IF NOT EXISTS observed_call_edges (
+    caller_symbol TEXT NOT NULL,   -- caller qualified_name (catalog FQN)
+    caller_file   TEXT NOT NULL,   -- caller's native-absolute catalog file_path
+    callee_symbol TEXT NOT NULL,   -- callee qualified_name (the query key)
+    callee_file   TEXT NOT NULL,   -- callee's native-absolute catalog file_path
+    project_id    TEXT NOT NULL DEFAULT '',
+    content_hash  TEXT NOT NULL,
+    PRIMARY KEY (content_hash)
+)
+CREATE INDEX idx_observed_callee ON observed_call_edges(project_id, callee_symbol);
+```
+
+**File-column enrichment (declared beyond the manifest sketch):** the manifest listed only
+`(caller_symbol, callee_symbol, project_id, content_hash)`. The `_file` columns are additive and
+load-bearing — a qualified_name is not unique (the `AMBIGUOUS` case: same FQN in ≥2 files); the file is
+what the runtime trace knows, the unit `find_symbol_callers` returns callers in
+(`SymbolCaller.file_path`), and the key for the AMBIGUOUS-safe callee match.
+
+**Population (`core.db.persist_observed_edges`) — append-only, no lock.** Populated **out-of-band** by
+the offline trace harness (`core.call_trace_probe`, `persist=True` maps both traced endpoints to catalog
+symbols via `innermost_symbol` and writes symbol pairs) — never a live sandbox-execution capture (tracked
+DEBT). Unlike the rebuildable `boundary_edges` (delete+insert under `graph_write_lock`), this is an
+*accumulating observation log*: `INSERT OR IGNORE` on the `content_hash` PK, **never a delete**. There is
+no half-cleared window, so no lock is taken, and accumulation is the wire-level expression of "traces
+raise confidence, never delete." `content_hash = sha1(json.dumps([project_id, caller_symbol, caller_file,
+callee_symbol, callee_file]))` — JSON-serialized (injective, no field-boundary collision) and
+`project_id`-scoped (it is the sole PK, but the catalog is one shared SQLite file, so omitting it would
+`INSERT OR IGNORE`-drop the same edge observed in a second project). Idempotent ⇒ re-persist is a no-op.
+
+**Consumer merge (`find_symbol_callers`):** after the static two-pass scan, `get_observed_callers`
+supplies runtime-confirmed callers. A confirmed observation either **promotes** an already-found caller to
+`OBSERVED` (the new rank-0 tier, above `EXTRACTED` — a direct observation outranks an import inference) or
+**adds** a caller the static passes structurally cannot (pure dynamic dispatch, no identifier node).
+Guarantees: an observation **only ever raises** confidence — it never demotes or removes a static
+candidate; the match is **AMBIGUOUS-safe** (only observations whose `callee_file` is among the callee's
+defining files count); staleness is bounded at the **read path** (an added observed caller is surfaced
+only if its file is still in the indexed catalog — no reindexer coupling); and the "no callers found …
+never confirmed dead" framing is unchanged.
+
+---
+
 ## Design Decision — Runtime-Trace Edge Validation (GO — dogfood PoC, substrate deferred)
 
 > Answers the 8.14.8 SPIKE: does a runtime call trace confirm/sharpen the static symbol-call

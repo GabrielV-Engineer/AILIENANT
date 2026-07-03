@@ -31,6 +31,7 @@ from core.call_trace_probe import (
     CallTracer,
     ingest_edges,
     innermost_symbol,
+    map_edges_to_symbol_pairs,
     reconcile,
 )
 from shared.contracts import SymbolDef
@@ -358,3 +359,83 @@ def test_probe_not_imported_by_runtime_modules() -> None:
         if "call_trace_probe" in text:
             hits.append(str(py))
     assert hits == [], f"call_trace_probe referenced outside tests/itself: {hits}"
+
+
+# ── persisted observed_call_edges: idempotency + cross-project isolation ──────
+
+
+async def _count_observed() -> int:
+    import aiosqlite
+
+    async with aiosqlite.connect(catalog_db.DB_CATALOG_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM observed_call_edges") as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+def test_persist_observed_edges_is_idempotent(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    edges = [
+        ("caller.run", "caller.py", "target.handle", "target.py"),
+        ("caller.run", "caller.py", "other.fn", "other.py"),
+    ]
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        await catalog_db.persist_observed_edges(_PID, edges)
+        first = await _count_observed()
+        await catalog_db.persist_observed_edges(_PID, edges)  # re-persist same trace
+        second = await _count_observed()
+        return first, second
+
+    first, second = asyncio.run(_run())
+    assert first == 2
+    assert second == 2, "re-persisting the same edges must be a no-op (content_hash idempotency)"
+
+
+def test_persist_same_edge_two_projects_keeps_both(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """project_id is in the content_hash — the same edge under two projects is two rows,
+    never an INSERT OR IGNORE cross-project collision."""
+    _isolate_catalog(tmp_path, monkeypatch)
+    edge = [("caller.run", "caller.py", "target.handle", "target.py")]
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        await catalog_db.persist_observed_edges("proj_a", edge)
+        await catalog_db.persist_observed_edges("proj_b", edge)
+        total = await _count_observed()
+        a_only = await catalog_db.get_observed_callers("proj_a", "target.handle")
+        return total, a_only
+
+    total, a_only = asyncio.run(_run())
+    assert total == 2, "same edge in two projects collided into one row (project_id missing from hash)"
+    assert a_only == [("caller.run", "caller.py", "target.py")]
+
+
+def test_map_edges_to_symbol_pairs_maps_both_and_drops_uncatalogued(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+
+    async def _run() -> Any:
+        await catalog_db.init_db()
+        caller_path = await _seed_native(
+            tmp_path, "caller.py", "def run():\n    return 1\n",
+            defs=[SymbolDef("run", "function", 1, 2)],
+        )
+        callee_path = await _seed_native(
+            tmp_path, "target.py", "def handle():\n    return 1\n",
+            defs=[SymbolDef("handle", "function", 1, 2)],
+        )
+        # Edge 1: both endpoints catalogued (line 1 falls in each symbol's span).
+        good: Any = ((caller_path, "run", 1), (callee_path, "handle", 1))
+        # Edge 2: callee file is not in the catalog → dropped.
+        bad: Any = ((caller_path, "run", 1), (str(tmp_path / "ghost.py"), "gone", 1))
+        return await map_edges_to_symbol_pairs({good, bad}, _PID)
+
+    pairs = asyncio.run(_run())
+    assert pairs == [("run", str(tmp_path / "caller.py"), "handle", str(tmp_path / "target.py"))]

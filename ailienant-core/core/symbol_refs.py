@@ -1,6 +1,6 @@
 """core/symbol_refs.py — lazy "who calls this symbol" resolver (Tier-2 substrate).
 
-No call edges are stored anywhere. References are resolved on demand in two passes:
+Static references are resolved on demand in two passes (no static call edges are stored):
 
   1. **Narrow** — the FTS5 trigram line-index pre-filters the already-indexed catalog to
      files that may mention the symbol name (``fts_narrow_catalog`` returns a *superset*,
@@ -10,12 +10,18 @@ No call edges are stored anywhere. References are resolved on demand in two pass
      real identifier reference. A name inside a string/comment is not an identifier node,
      so lexical noise is excluded structurally; the definition site itself is excluded too.
 
-Every confirmed caller is retained and tagged with a confidence tier
-(``EXTRACTED`` / ``AMBIGUOUS`` / ``INFERRED``). Import-path evidence RANKS a caller but
-NEVER discards one — a hard import gate would silently drop dynamic-dispatch callers
-(e.g. a string-keyed tool dispatcher that never imports the tool class it invokes), which
-is exactly the caller class this resolver exists to surface. Output is advisory and
-READ_ONLY: an empty or unconfirmed result means "no callers found via this resolution
+Each confirmed caller is tagged with a confidence tier (``EXTRACTED`` / ``AMBIGUOUS`` /
+``INFERRED``). Import-path evidence RANKS a caller but NEVER discards one — a hard import
+gate would silently drop dynamic-dispatch callers (e.g. a string-keyed tool dispatcher that
+never imports the tool class it invokes), which is exactly the caller class this resolver
+exists to surface.
+
+The result is then merged with the out-of-band runtime-observation substrate
+(``observed_call_edges``): a runtime-confirmed call raises a caller to ``OBSERVED`` (the top
+tier) or surfaces a pure-dynamic caller the static passes structurally cannot. Observation
+only ever *raises* confidence — it never demotes or removes a static candidate, and a stale
+observation whose file has left the index is dropped rather than surfaced. Output is advisory
+and READ_ONLY: an empty or unconfirmed result means "no callers found via this resolution
 path", never "confirmed dead".
 """
 from __future__ import annotations
@@ -24,12 +30,17 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, List, Optional, Set, Tuple
 
 from core import blast_radius
 from core.ast_engine import ASTEngine, _is_class_like, _is_function_like
-from core.db import fts_narrow_catalog, get_symbol_definitions, list_indexed_files
+from core.db import (
+    fts_narrow_catalog,
+    get_observed_callers,
+    get_symbol_definitions,
+    list_indexed_files,
+)
 from shared.contracts import detect_language
 
 logger = logging.getLogger(__name__)
@@ -55,7 +66,9 @@ _PARSE_CONCURRENCY: int = 8     # bounded fan-out — cap peak RAM on a common-n
 _DEFAULT_TIMEOUT_S: float = 4.0
 _DEFAULT_MAX_RESULTS: int = 100
 
-_CONFIDENCE_RANK = {"EXTRACTED": 0, "AMBIGUOUS": 1, "INFERRED": 2}
+# OBSERVED (a runtime-confirmed call) outranks every static tier — a direct observation is
+# stronger evidence than an import-path inference.
+_CONFIDENCE_RANK = {"OBSERVED": 0, "EXTRACTED": 1, "AMBIGUOUS": 2, "INFERRED": 3}
 
 # Dedicated parse cache so on-demand reference scans never pollute the ingest engine.
 _engine = ASTEngine()
@@ -223,6 +236,32 @@ async def find_symbol_callers(
                 callers.append(c)
 
     timed_out = idx < total and time.monotonic() >= deadline
+
+    # Merge the out-of-band runtime-observation substrate. A confirmed observation raises a
+    # caller to OBSERVED (the top tier) or surfaces a caller the static passes structurally
+    # cannot (pure dynamic dispatch — no identifier node to confirm). It NEVER demotes or
+    # removes a static candidate, and a stale observation whose file has left the index is
+    # dropped rather than surfaced (staleness bounded at the read path, capture is out-of-band).
+    observed = await get_observed_callers(project_id, qualified_name)
+    if observed:
+        defined_norm = {f.replace("\\", "/") for f in defined_files}
+        catalog_norm = {p.replace("\\", "/") for p in catalog}
+        by_file = {c.file_path.replace("\\", "/"): i for i, c in enumerate(callers)}
+        for caller_symbol, caller_file, callee_file in observed:
+            # AMBIGUOUS-safe: honour only observations of the same-named symbol actually
+            # defined here (skip when the callee is uncatalogued — nothing to disambiguate).
+            if defined_norm and callee_file.replace("\\", "/") not in defined_norm:
+                continue
+            ncf = caller_file.replace("\\", "/")
+            if ncf in by_file:
+                i = by_file[ncf]
+                callers[i] = replace(callers[i], confidence="OBSERVED")
+            elif ncf in catalog_norm:
+                callers.append(
+                    SymbolCaller(file_path=caller_file, lines=(), confidence="OBSERVED")
+                )
+                by_file[ncf] = len(callers) - 1
+
     callers.sort(key=lambda c: (_CONFIDENCE_RANK.get(c.confidence, 9), c.file_path.replace("\\", "/")))
     truncated = idx < total or len(callers) > max_results
     return SymbolCallersResult(

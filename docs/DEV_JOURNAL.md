@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.14.8.1: Persisted observed-call-edge substrate — 2026-07-02
+**Status:** COMPLETE | **Gates:** mypy 0/394 · pytest 2213 passed, 2 skipped · pyright 0
+- Shipped: additive `observed_call_edges` Tier-2 table (`§29`) populated out-of-band by the trace harness (`persist_observed_edges`, append-only `INSERT OR IGNORE`, no lock) + a new top `OBSERVED` confidence tier merged into `find_symbol_callers`.
+- Key decision: **additive, not promotion-only** — the resolver both promotes an already-found caller to `OBSERVED` *and* surfaces a pure-dynamic caller the static passes structurally cannot (the ~40% GO signal), while never demoting/removing a static candidate; AMBIGUOUS-safe via a `callee_file`∩`defined_files` match, staleness bounded at the read path (surface only if the caller's file is still indexed); `content_hash` is JSON-serialized and `project_id`-scoped to prevent cross-project `INSERT OR IGNORE` collision.
+- Deferred: DEBT-101 — `observed_call_edges` has no reindex-coupled purge/TTL (orphans accumulate; bounded only at read).
+
 ## 8.14.8: Runtime-trace edge validation (SPIKE → PoC) — 2026-07-02
 **Status:** COMPLETE | **Gates:** mypy 0/394 · pytest 2205 passed, 2 skipped · pyright 0
 - Shipped: offline `core/call_trace_probe.py` harness — `sys.monitoring` (PEP 669, stdlib) intra-project call tracer + reconciler against the existing `find_symbol_callers` resolver, dogfooded over AILIENANT's own pytest; **GO** (27/67 mapped edges, ~40%, are dynamic discoveries the static resolver structurally misses — recorded in `SCHEMA_EVOLUTION.MD`).

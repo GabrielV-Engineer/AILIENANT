@@ -73,7 +73,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-093 | Boundary graph is build-on-demand only — no auto-refresh on index-complete, so it can lag later code edits until the next explicit rebuild | LOW | Capability gap | future graph slice | Floating |
 | DEBT-094 | 38 pre-existing project-wide `pyright` errors (third-party stub gaps + litellm union + typed-state test doubles), invisible to the enforced `mypy` gate | LOW | Typing debt | dedicated cleanup commit | RESOLVED 2026-07-02 |
 | DEBT-095 | Runtime call-trace capture (`sys.monitoring`) is Python-only — no TS/JS extension-side equivalent | LOW | Capability gap | future trace slice | Floating |
-| DEBT-096 | No sandbox/agentic-cell-integrated live trace capture — the 8.14.8 PoC only dogfoods AILIENANT's own pytest, not a user project's execution | LOW | Capability gap | 8.14.8.1 follow-on | Floating |
+| DEBT-096 | No sandbox/agentic-cell-integrated live trace capture — 8.14.8.1 populates `observed_call_edges` out-of-band (dogfood harness), still not a user project's live execution | LOW | Capability gap | future trace slice | Floating |
+| DEBT-101 | `observed_call_edges` has no reindex-coupled purge/TTL — stale rows accumulate; bounded only at read by the catalog-presence gate | LOW | Capability gap | future trace slice | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -360,8 +361,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Date:** 2026-07-02
 - **Reproduce:** the manifest's literal target was capturing traces "from the existing sandbox / agentic-cell execution" (a user project's run). 8.14.8 instead dogfoods AILIENANT's own pytest (declared deviation, `SCHEMA_EVOLUTION.MD`) because it is self-contained, real, and needs no target project or container work for the PoC.
 - **Error:** the sandbox-execution capture path (tracing a user's own project as it runs inside `core/sandbox.py`'s tiers) remains unbuilt; the PoC only validates the *signal*, not that production capture path.
-- **Resolution (unscheduled):** if `8.14.8.1` ships, wire the same `CallTracer` into the trusted/native sandbox execution path (behind an explicit opt-in — tracing is not free and must never run unconditionally on user code) so production traces feed the persisted substrate instead of only the dogfood harness.
-- **Notes:** logged at 8.14.8 close; depends on `8.14.8.1` shipping first.
+- **Resolution (unscheduled):** wire the same `CallTracer` into the trusted/native sandbox execution path (behind an explicit opt-in — tracing is not free and must never run unconditionally on user code) so production traces feed the persisted substrate instead of only the dogfood harness.
+- **Notes:** logged at 8.14.8 close. `8.14.8.1` shipped the persisted substrate populated **out-of-band** (dogfood harness), so this live-capture path is still open.
+
+### DEBT-101 [LOW · Floating] — Observed-call-edge substrate has no purge/TTL
+
+- **Date:** 2026-07-02
+- **Reproduce:** `core.db.persist_observed_edges` is append-only (`INSERT OR IGNORE`, never delete). When a file is reindexed and a symbol is renamed/deleted, its `observed_call_edges` rows are not purged — they accumulate as orphans over successive trace runs.
+- **Error:** declared scope cut for 8.14.8.1 — capture is out-of-band, so no reindexer coupling was added. Correctness is preserved at the **read path**: `find_symbol_callers` only surfaces an added observed caller whose file is still in the catalog, so a stale row is never *shown*; it only wastes storage.
+- **Resolution (unscheduled):** a reindex-coupled purge (mirroring `purge_symbol_definitions`) keyed by `caller_file`/`callee_file`, or a periodic TTL sweep, or a symbol-presence check at read to prune on access.
+- **Notes:** logged at 8.14.8.1 close; append-only accumulation is deliberate ("never delete an observation"), so purge must be careful to drop only genuinely-orphaned rows.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

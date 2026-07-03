@@ -642,14 +642,15 @@ class FindSymbolCallersInput(BaseModel):
 class FindSymbolCallersTool(BaseTool):
     """Advisory "who calls this symbol" lookup over the Tier-2 symbol substrate.
 
-    Resolves references lazily (indexed-file text-narrowing → AST confirmation); no call
-    edges are stored. Each caller carries a confidence tier — EXTRACTED (the caller imports
-    a defining file), AMBIGUOUS (the name is defined in several files), or INFERRED (an
-    AST-confirmed reference with no import path, e.g. dynamic dispatch — still reported).
-    READ_ONLY and advisory only: an empty or uncatalogued result means "no callers found
-    via this resolution path", NEVER "confirmed dead". Confirmation is by name, so a
-    same-named symbol on an unrelated type may surface as an INFERRED false positive —
-    treat the output as candidate callers, not a precise call graph.
+    Resolves references lazily (indexed-file text-narrowing → AST confirmation); no static
+    call edges are stored. Each caller carries a confidence tier — OBSERVED (a runtime trace
+    confirmed the call — the strongest signal; may surface a pure-dynamic caller the static
+    passes cannot), EXTRACTED (the caller imports a defining file), AMBIGUOUS (the name is
+    defined in several files), or INFERRED (an AST-confirmed reference with no import path,
+    e.g. dynamic dispatch — still reported). READ_ONLY and advisory only: an empty or
+    uncatalogued result means "no callers found via this resolution path", NEVER "confirmed
+    dead". Confirmation is by name, so a same-named symbol on an unrelated type may surface as
+    an INFERRED false positive — treat the output as candidate callers, not a precise call graph.
     """
 
     name: str = "find_symbol_callers"
