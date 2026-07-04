@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.15.6: Division 8.15 checkpoint gate — 2026-07-04
+**Status:** COMPLETE | **Gates:** mypy 0/417 · pytest 2389 passed, 2 skipped · pyright 0
+- Shipped: `tests/test_phase8_15_checkpoint_gate.py` — 10 test-only rows re-certifying the division's cross-cutting invariants against their production entry points (extraction/shim integrity, depth+width deny-not-truncate + OOM-bounded rejection, budget reserve-deny + refund reconciliation, `analyst_readonly` floor-lock under every session mode, digest context-window ceiling, all 12 dispatch channels deserialize to safe defaults, `MAX_TOTAL_DISPATCH_FANOUT` product ceiling); no sibling suite re-run.
+- Key decision: the manifest spec was stale in three ways (Division 8.15 landed 12 state channels not 4; `test_mcts_daemon`/`test_mcts_mirror` test legacy `brain.mcts.*` not the relocated tournament, whose real regression proof is the `test_subagent_tournament.py` shim; and `dispatch_depth > 2` cannot construct under the Pydantic `le=2` bound) — the gate certifies the corrected invariants and the manifest line was clarified to match.
+- Deferred: DEBT-104/105/106/107 carry forward unchanged (division-closing gate opens no new debt).
+
+---
+
 ## 8.15.5: Six-pattern dispatch wiring + guards — 2026-07-04
 **Status:** COMPLETE | **Gates:** mypy 0/416 · pytest 2379 passed, 2 skipped · pyright 0
 - Shipped: dynamic dispatch wired into `brain/engine.py` behind `AILIENANT_ENABLE_DYNAMIC_DISPATCH` (default off → topology-identical); admission-gate depth/width deny (bounded rejection envelopes), per-role `agent_permission` with `analyst_readonly` READ_ONLY floor-lock, budget reserve@origin/commit@synthesize, all six patterns via new `dispatch_fanout`/`dispatch_advance` nodes, `dispatch_return_node`, and `brain/dispatch_emitter.py` for planner/researcher emission.
