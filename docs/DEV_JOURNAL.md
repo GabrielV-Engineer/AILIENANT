@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.15.4: Budget admission ledger — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/414 · pytest 2364 passed, 2 skipped · pyright 0
+- Shipped: `brain/dispatch_ledger.py` — pure `reserve_dispatch_budget`/`commit_dispatch_actual`/`refund_dispatch_reservation` (fail-closed admission, floor-at-zero refund) + `estimate_task_cost`/`estimate_wave_cost` over `estimate_iteration_cost`; `subagent_worker` now emits a real `cost_usd` (crash-safe pre-init of `loop_messages`/`trace` before the try).
+- Key decision: the ledger is state-channel, not file-backed — per-task spend is already the authoritative `current_cost_usd`/`max_budget_usd` channels + checkpointer; a file would double-book. Reservation is single-flight at wave boundaries, so the functions are pure/sync (gateway's floor-at-zero discipline reused, not its FileLock). Node/edge admission wiring deferred to 8.15.5.
+- Deferred: DEBT-105 — dispatch cost is estimate-based and under-counts (lenient reserve; `answer_fn`/overage unmetered); `finops`/`check_governor` remain the hard backstop.
+
+---
+
 ## 8.15.3: Tournament module extraction — 2026-07-03
 **Status:** COMPLETE | **Gates:** mypy 0/412 · pytest 2349 passed, 2 skipped · pyright 0
 - Shipped: relocated `select_candidate_via_mcts` (+ its `_verdict_reward`/`_vfs_to_view`/`_content_to_vfs` helpers) verbatim into `brain/subagent_tournament.py::run_tournament`; `agentic_cell.py` keeps the name via a re-export shim (behavior byte-identical, existing MCTS/checkpoint-gate tests pass unmodified). New `run_tournament_from_dispatch` adapts a `DispatchBatchResult` into candidates and delegates.

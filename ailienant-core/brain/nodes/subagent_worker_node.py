@@ -128,6 +128,11 @@ async def subagent_worker(
     status = "ok"
     structured_result: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    # Initialized before the try so the post-try cost estimate is crash-safe on an early
+    # failure (a bad reasoner/tool resolution) — the node must never raise. `trace` stays
+    # `List[Any]` to keep `ToolCall`'s import deferred inside the try (no module-top cycle).
+    loop_messages: List[Dict[str, Any]] = []
+    trace: List[Any] = []
 
     try:
         from core.permissions import session_mode_from_channel
@@ -146,8 +151,8 @@ async def subagent_worker(
             f"You are the '{task.subagent_role}' subagent. Task:\n{task.description}\n\n"
             "You MAY call the available READ_ONLY tools to ground your answer; emit {} to skip."
         )
-        loop_messages: List[Dict[str, Any]] = [{"role": "user", "content": seed}]
-        trace: List[ToolCall] = []
+        loop_messages = [{"role": "user", "content": seed}]
+        trace = []
         reasoner = configurable.get("dispatch_tool_reasoner") or make_gateway_reasoner(
             tools, session_id=task.task_id
         )
@@ -182,12 +187,23 @@ async def subagent_worker(
     if len(raw_digest) > MAX_OBSERVATION_CHARS:
         raw_digest = raw_digest[:MAX_OBSERVATION_CHARS] + "\n…[truncated]"
 
+    # Real per-invocation cost of the tool loop (context + tool calls), the "actual" the
+    # dispatch ledger reconciles against. The answer_fn synthesis call is not separately
+    # metered (DEBT-105). Estimation must not crash the node, so a failure degrades to 0.0.
+    from brain.iteration_governor import estimate_iteration_cost
+
+    try:
+        cost_usd = estimate_iteration_cost(loop_messages, trace)
+    except Exception as exc:  # noqa: BLE001 — cost accounting must never sink the envelope
+        logger.warning("subagent_worker cost estimate failed; recording 0.0: %s", exc)
+        cost_usd = 0.0
+
     envelope = SubagentResultEnvelope(
         task_id=task.task_id,
         status=status,  # type: ignore[arg-type]  # narrowed to the Literal by construction
         structured_result=structured_result if status == "ok" else None,
         raw_digest=raw_digest,
-        cost_usd=0.0,
+        cost_usd=cost_usd,
         iterations_used=trace_len,
         error_message=error_message,
     )

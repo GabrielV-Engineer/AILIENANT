@@ -134,6 +134,9 @@ async def test_worker_accepts_conforming_answer() -> None:
     env = result["_dispatch_results"][0]
     assert env["status"] == "ok"
     assert env["structured_result"] == {"summary": "done t0"}
+    # Real per-invocation cost is now metered from the tool-loop context (was a 0.0
+    # placeholder) — the seed prompt alone yields a small positive spend.
+    assert env["cost_usd"] > 0.0
 
 
 @pytest.mark.anyio
