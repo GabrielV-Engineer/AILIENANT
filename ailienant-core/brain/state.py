@@ -681,3 +681,12 @@ class AIlienantGraphState(TypedDict):
     dispatch_batch_result: Optional[Dict[str, Any]]    # DispatchBatchResult.model_dump(); written by the synthesis node
     dispatch_depth: int                                # default 0; incremented before any re-dispatch
     subagent_dispatch_trace: Annotated[List[Dict[str, Any]], operator.add]  # append-only audit trail
+    # Per-worker result envelopes, one per subagent Send. operator.add so the
+    # concurrent fan-in writers in a super-step append without a merge conflict
+    # (mirrors every other Send() fan-in channel). Never cleared mid-dispatch —
+    # an operator.add channel cannot be reset, and synthesis is terminal.
+    _dispatch_results: Annotated[List[Dict[str, Any]], operator.add]
+    # Number of subagent waves already dispatched within one dispatch level
+    # (distinct from dispatch_depth, which counts recursion). Advanced once per
+    # fan-in barrier by dispatch_gate; single-writer, so no reducer. Default 0.
+    dispatch_wave_count: int

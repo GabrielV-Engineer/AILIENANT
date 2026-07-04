@@ -277,6 +277,8 @@ Proyect_Ailienant/
 │   │   ├── fast_path.py         #     SEQUENTIAL bypass
 │   │   ├── state.py             #     AIlienantGraphState, MissionSpecification, reducers
 │   │   ├── subagent_contracts.py #    dispatch schema: SubagentTask / DispatchPlan / result envelopes
+│   │   ├── dispatch.py          #     build_dispatch_sends fan-out + wave-split routers
+│   │   ├── nodes/               #     subagent_worker + dispatch_synthesize dispatch nodes
 │   │   ├── routing_engine.py    #     CSS × TCI matrix
 │   │   ├── context_pipeline.py  #     5-layer context assembler (ContextChunk, ContextPipeline)
 │   │   ├── agent_context.py     #     budget-guard over ContextPipeline (build_agent_context)

@@ -13,6 +13,18 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.15.2: Dispatch synthesis + wave batching — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/410 · pytest 2342 passed, 2 skipped · pyright 0
+- Shipped: `dispatch_synthesize` node (`brain/nodes/dispatch_synthesize_node.py`) folds the accumulated `_dispatch_results` into one `DispatchBatchResult` under a per-batch char ceiling derived from the parent's `active_llm_profile` (`resolve_context_budget` × chars/token × fraction, whole-envelope greedy pack); sequential wave-splitting via a `dispatch_gate` fan-in node + `route_after_workers` loop-back + new `dispatch_wave_count` channel, capped by `MAX_CONCURRENT_SUBAGENTS` (default 4). Harness-tested; production wiring is 8.15.5.
+- Key decision: a fanned-out node's conditional edge fires once PER Send instance (verified against `coder_agent`/`route_after_coder`), so the wave decision hangs off a single fan-in node (`dispatch_gate`), never off `subagent_worker` — otherwise the loop-back would re-fan N× (runaway). Winner-first ordering + `winner_task_id` await tournament selection (8.15.3); this slice is declaration-order, `winner_task_id=None`.
+- Deferred: budget admission (8.15.4); six-pattern + graph wiring + feature flag (8.15.5).
+
+## 8.15.1: Generalized Send() dispatch primitive — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/410 · pytest 2342 passed, 2 skipped · pyright 0
+- Shipped: `brain/dispatch.py::build_dispatch_sends` (one `Send` per `SubagentTask`, `dispatch_depth++` at the fan-out edge, wave-slicing), `subagent_worker` node delegating to the existing `ToolDispatcher.run_loop` + a `response_schema`-constrained final answer, and the `operator.add` `_dispatch_results` fan-in channel. Compiled-harness test proves 2 concurrent Sends both write with no `INVALID_CONCURRENT_GRAPH_UPDATE` (R6); `test_swarms.py` unchanged (R1).
+- Key decision: `_dispatch_results` stays pure `operator.add` (R6) and is never cleared — an `operator.add` channel cannot be reset, so `dispatch_synthesize` is terminal instead. Only `analyst_readonly`→`build_analyst_tools`; other roles run tool-less (pure-reasoning) — per-role dev arsenals + floor-lock are 8.15.5. Worker never raises: a fault becomes a `status="error"` envelope.
+- Deferred: `_dispatch_results` consumers, synthesis, and waves shipped alongside in 8.15.2.
+
 ## 8.15.0: Structured dispatch schema — 2026-07-03
 **Status:** COMPLETE | **Gates:** mypy 0/405 · pytest 2331 passed, 2 skipped · pyright 0
 - Shipped: new leaf module `brain/subagent_contracts.py` (six closed-vocabulary Pydantic models — `SubagentResponseField/Schema`, `SubagentTask`, `DispatchPlan`, `SubagentResultEnvelope`, `DispatchBatchResult`) with depth `[0,2]` / width `[1,32]` / field `[1,8]` bounds, plus four additive default-safe `AIlienantGraphState` channels (`dispatch_plan`, `dispatch_batch_result`, `dispatch_depth`, `subagent_dispatch_trace`). Schema + state only — no dispatch logic or graph wiring. `tests/test_subagent_contracts.py` (14 rows).

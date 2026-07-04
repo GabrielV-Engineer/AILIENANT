@@ -1357,3 +1357,37 @@ consumers written before 8.15 ignore the new fields entirely:
 The plan/result channels store `model_dump()` dicts (not the Pydantic models) so the checkpoint stays
 plain-JSON-serializable and `state.py` imports nothing from `subagent_contracts`. The `_dispatch_results`
 fan-in channel is **not** part of this record — it lands with the dispatch worker in a later sub-phase.
+
+---
+
+## §31 — Dynamic Dispatch Mechanics Channels
+
+Two additive `AIlienantGraphState` channels + the dispatch primitive/worker/synthesis nodes that build on
+the §30 schema. Additive only — a pre-8.15 checkpoint deserializes both to their safe defaults; no existing
+field is renamed or narrowed.
+
+| Channel | Type | Reducer | Safe default |
+|---|---|---|---|
+| `_dispatch_results` | `Annotated[List[Dict[str, Any]], operator.add]` (per-worker `SubagentResultEnvelope.model_dump()`) | append (`operator.add`) | `[]` |
+| `dispatch_wave_count` | `int` (waves already dispatched at this level; single-writer) | scalar overwrite | `0` |
+
+**New code (`brain/dispatch.py`, `brain/nodes/subagent_worker_node.py`, `brain/nodes/dispatch_synthesize_node.py`):**
+`build_dispatch_sends(plan, base_state, *, target_node="subagent_worker")` emits one `Send` per
+`SubagentTask` in the current wave (slice `tasks[wave*cap : (wave+1)*cap]`, `cap =
+shared.config.MAX_CONCURRENT_SUBAGENTS`, default 4), incrementing `dispatch_depth` at the fan-out edge.
+`subagent_worker` runs a role-gated `ToolDispatcher` loop, synthesises a `response_schema`-constrained
+answer, and writes one envelope to `_dispatch_results`. `dispatch_gate` (single fan-in node) advances
+`dispatch_wave_count`; `route_after_workers` loops back for the next wave or proceeds to
+`dispatch_synthesize`, which digests the accumulated envelopes under a per-batch char ceiling keyed off the
+parent's `active_llm_profile` and writes one `DispatchBatchResult` to `dispatch_batch_result`.
+
+**Amendment to the §30/blueprint contract:** `_dispatch_results` is **never cleared mid-dispatch**. An
+`operator.add` channel cannot be reset (returning `[]` concatenates to a no-op), so — rather than a custom
+reset-sentinel reducer — `dispatch_synthesize` is **terminal** (runs once after the final wave, digests all
+accumulated results), the wave loop-back lives in `route_after_workers` on the `dispatch_gate` fan-in node,
+and the raw channel is simply superseded on the next dispatch invocation. This preserves R6 (`operator.add`
+from day one) and bounds peak concurrency at the cap.
+
+**Deferred (not this record):** production graph wiring + the `AILIENANT_ENABLE_DYNAMIC_DISPATCH` feature
+flag + planner/researcher entry edges (8.15.5); budget-admission ledger (8.15.4); `analyst_readonly`
+READ_ONLY floor-lock and per-role dev tool arsenals (8.15.5); tournament winner selection (8.15.3).

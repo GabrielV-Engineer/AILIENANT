@@ -103,6 +103,14 @@ LLM_MAX_CONCURRENCY: int = max(1, _env_int("AILIENANT_LLM_MAX_CONCURRENCY", 8))
 # ---------------------------------------------------------------------------
 MAX_OBSERVATION_CHARS: int = 4000
 
+# ---------------------------------------------------------------------------
+# Dynamic subagent dispatch — the maximum number of subagent workers that fan
+# out concurrently in a single wave. A plan wider than this is split into
+# sequential waves at dispatch time (bounded fan-out, not a runtime semaphore).
+# Floored at 1 so a malformed override can never wedge dispatch shut.
+# ---------------------------------------------------------------------------
+MAX_CONCURRENT_SUBAGENTS: int = max(1, _env_int("AILIENANT_MAX_CONCURRENT_SUBAGENTS", 4))
+
 
 # ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)

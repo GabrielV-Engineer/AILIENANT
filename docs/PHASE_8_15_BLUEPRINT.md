@@ -8,6 +8,11 @@
 - The SCHEMA_EVOLUTION record for the dispatch schema (§2) lands as **§30**, not the reserved "§27" — §27–§29 were consumed by Division 8.14 after this blueprint was ratified. Purely a numbering reconciliation.
 - `SubagentResultEnvelope.raw_digest`'s cap is single-sourced as `shared.config.MAX_OBSERVATION_CHARS` (with `core/tool_dispatch._MAX_OBSERVATION_CHARS` aliasing it), rather than importing the private constant from `core.tool_dispatch` — that module pulls in `core.permissions` + `langchain_core`, which would break `subagent_contracts.py`'s "independently-testable leaf module" intent. Anti-drift guarantee preserved.
 
+**Amendments (applied at 8.15.1/8.15.2 implementation):**
+- `_dispatch_results` is **never cleared mid-dispatch**. §2/§3 describe `dispatch_synthesize` as clearing it to `[]`, but an `operator.add` channel cannot be reset (returning `[]` concatenates to a no-op). Rather than add a custom reset-sentinel reducer, `dispatch_synthesize` is made **terminal** (runs once after the final wave, digests all accumulated results) and the wave loop-back lives in `route_after_workers` on a dedicated fan-in node `dispatch_gate`. This keeps R6's `operator.add`-from-day-one and bounds peak concurrency at the cap; the raw channel is simply superseded per dispatch invocation.
+- The wave decision hangs off the single fan-in node `dispatch_gate` (plain edge from `subagent_worker`), **not** a conditional edge on `subagent_worker` itself — a conditional edge on a fanned-out node fires once per Send instance (verified against `route_after_coder`), which would re-fan N× per wave.
+- Per the current tool infrastructure, only `analyst_readonly` has an executable `Dict[str, RegisteredTool]` map (`build_analyst_tools`); the 8 dev roles run tool-less (pure-reasoning subagents) until their arsenals land in **8.15.5**.
+
 ---
 
 ## 1. Rationale
