@@ -15,6 +15,7 @@ from brain.failure_breaker import failure_breaker, normalize_signature
 from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
 from core.dead_letter import dead_letter_decorator  # DLQ node wrapper
 from core.telemetry_log import log_node_transition
+from shared.config import ENABLE_DYNAMIC_DISPATCH  # graph-construction-time topology gate
 
 logger = logging.getLogger("AILIENANT_ENGINE")
 
@@ -345,6 +346,81 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 
 
 # =====================================================================
+# 3b. DYNAMIC DISPATCH (opt-in, feature-flagged at construction time)
+# =====================================================================
+# The ENABLE_DYNAMIC_DISPATCH flag is read once here, at module import / graph
+# construction. When it is off (the default), none of the dispatch nodes or edges are
+# added and the compiled graph is topologically identical to a deployment without this
+# feature — production sets the env before the process starts; tests reload this module
+# under a patched environment to rebuild the graph. The new edges out of the two dispatch
+# origins fire only when a `dispatch_plan` is present, so an enabled deployment that never
+# emits a plan still takes exactly the pre-existing path.
+
+
+def _route_planner_dispatch(state: Dict[str, Any]) -> str:
+    """Planner exit: fan out to the dispatch subgraph when a plan was emitted, else the
+    normal successor (drift_compute)."""
+    return "dispatch_origin" if state.get("dispatch_plan") else "drift_compute"
+
+
+def _route_researcher_dispatch(state: Dict[str, Any]) -> str:
+    """Researcher exit: fan out to the dispatch subgraph when a plan was emitted, else the
+    normal successor (planner_agent)."""
+    return "dispatch_origin" if state.get("dispatch_plan") else "planner_agent"
+
+
+def _wire_dynamic_dispatch(wf: "StateGraph") -> None:
+    """Add the dispatch subgraph nodes and edges. Called only when the feature is enabled.
+
+    Imports are deferred here so a disabled deployment never loads the dispatch machinery.
+    The pure sync nodes (origin/fanout/gate/advance) are added raw; the async worker and
+    synthesize nodes are telemetry-wrapped like the rest of the spine.
+    """
+    from brain.dispatch import (
+        dispatch_advance,
+        dispatch_fanout,
+        dispatch_gate,
+        dispatch_origin,
+        dispatch_router,
+        route_after_admission,
+        route_after_synthesis,
+        route_after_workers,
+    )
+    from brain.nodes.dispatch_synthesize_node import dispatch_synthesize
+    from brain.nodes.subagent_worker_node import subagent_worker
+
+    wf.add_node("dispatch_origin", dispatch_origin)  # pyright: ignore[reportArgumentType]
+    wf.add_node("dispatch_fanout", dispatch_fanout)  # pyright: ignore[reportArgumentType]
+    wf.add_node("dispatch_gate", dispatch_gate)      # pyright: ignore[reportArgumentType]
+    wf.add_node("dispatch_advance", dispatch_advance)  # pyright: ignore[reportArgumentType]
+    wf.add_node("subagent_worker", _instrument_node("subagent_worker", subagent_worker))  # pyright: ignore[reportArgumentType]
+    wf.add_node("dispatch_synthesize", _instrument_node("dispatch_synthesize", dispatch_synthesize))  # pyright: ignore[reportArgumentType]
+
+    # Admission gate → Send-only fan-out, or short-circuit to synthesis on a denial.
+    wf.add_conditional_edges(
+        "dispatch_origin", route_after_admission,
+        {"dispatch_fanout": "dispatch_fanout", "dispatch_synthesize": "dispatch_synthesize"},
+    )
+    wf.add_conditional_edges("dispatch_fanout", dispatch_router, ["subagent_worker"])
+    wf.add_edge("subagent_worker", "dispatch_gate")
+    # Next wave (same round) → origin; new round → advance; done → synthesize.
+    wf.add_conditional_edges(
+        "dispatch_gate", route_after_workers,
+        {
+            "dispatch_origin": "dispatch_origin",
+            "dispatch_advance": "dispatch_advance",
+            "dispatch_synthesize": "dispatch_synthesize",
+        },
+    )
+    wf.add_edge("dispatch_advance", "dispatch_origin")
+    # Terminal: rejoin the spine at whichever node the emitting agent recorded.
+    wf.add_conditional_edges(
+        "dispatch_synthesize", route_after_synthesis,
+        {"drift_compute": "drift_compute", "planner_agent": "planner_agent"},
+    )
+
+
+# =====================================================================
 # 4. GRAPH TOPOLOGY (Edges)
 # =====================================================================
 workflow.add_edge(START, "summarize_history")
@@ -364,8 +440,22 @@ workflow.add_conditional_edges(
 workflow.add_conditional_edges(
     "ideation_loop", route_after_ideation, {"planner_agent": "researcher_agent", END: END}
 )
-workflow.add_edge("researcher_agent", "planner_agent")
-workflow.add_edge("planner_agent", "drift_compute")
+if ENABLE_DYNAMIC_DISPATCH:
+    # Additive/opt-in: the two dispatch origins get a conditional exit that fans out to
+    # the dispatch subgraph only when a dispatch_plan is present, else returns the exact
+    # pre-8.15 target. The subgraph rejoins the spine via route_after_synthesis.
+    workflow.add_conditional_edges(
+        "researcher_agent", _route_researcher_dispatch,
+        {"dispatch_origin": "dispatch_origin", "planner_agent": "planner_agent"},
+    )
+    workflow.add_conditional_edges(
+        "planner_agent", _route_planner_dispatch,
+        {"dispatch_origin": "dispatch_origin", "drift_compute": "drift_compute"},
+    )
+    _wire_dynamic_dispatch(workflow)
+else:
+    workflow.add_edge("researcher_agent", "planner_agent")
+    workflow.add_edge("planner_agent", "drift_compute")
 workflow.add_edge("drift_compute", "drift_gate")
 workflow.add_conditional_edges("drift_gate", route_to_coders, ["coder_agent", "agentic_cell"])
 # The ReAct cell loops back onto itself while its latest verdict says "continue" (each

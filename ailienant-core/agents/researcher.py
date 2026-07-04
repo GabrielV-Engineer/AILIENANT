@@ -611,4 +611,10 @@ async def run_researcher_node(
     except Exception as _dump_err:
         logger.debug("Researcher state dump skipped: %s", _dump_err)
 
+    # Optionally open a dynamic-dispatch fan-out before handing off to the Planner
+    # (no-op unless enabled and a plan is emitted). On emission the graph routes
+    # researcher → dispatch subgraph and returns to planner_agent.
+    from brain.dispatch_emitter import maybe_emit_dispatch
+    result.update(await maybe_emit_dispatch(state, config, return_node="planner_agent"))
+
     return result

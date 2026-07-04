@@ -685,4 +685,10 @@ async def run_planner_node(
         logger.debug("plan dump skipped: %s", _dump_err)
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Optionally open a dynamic-dispatch fan-out (no-op unless the feature is enabled
+    # and a plan is emitted). On emission the graph routes planner → dispatch subgraph
+    # and returns to drift_compute; otherwise the pre-existing edge is taken unchanged.
+    from brain.dispatch_emitter import maybe_emit_dispatch
+    result.update(await maybe_emit_dispatch(state, config, return_node="drift_compute"))
+
     return result

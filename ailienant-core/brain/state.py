@@ -690,3 +690,27 @@ class AIlienantGraphState(TypedDict):
     # (distinct from dispatch_depth, which counts recursion). Advanced once per
     # fan-in barrier by dispatch_gate; single-writer, so no reducer. Default 0.
     dispatch_wave_count: int
+    # Downstream node the dispatch subgraph returns to after synthesis. Set on
+    # dispatch entry by the emitting agent (planner → "drift_compute",
+    # researcher → "planner_agent") so a single shared synthesize node routes back
+    # to the correct successor. Scalar-overwrite; default None → "drift_compute".
+    dispatch_return_node: Optional[str]
+    # Pattern loop-back counter (adversarial critic wave, loop-until-done
+    # continuation). Distinct from dispatch_wave_count (which slices one fixed task
+    # list): a round introduces a NEW task set via dispatch_advance. Default 0.
+    dispatch_round_count: int
+    # Result-isolation watermark: the index into _dispatch_results past which the
+    # CURRENT dispatch's envelopes begin. Because _dispatch_results is operator.add
+    # and cannot be cleared, synthesis digests/commits only results[consumed:], and
+    # advances this to len(results) so a second dispatch in the same run never
+    # re-digests or double-counts the first's envelopes. Default 0 → slice [0:].
+    _dispatch_consumed: int
+    # Budget reservation bookkeeping for the active dispatch. _dispatch_reserved_usd
+    # is the running sum reserved against current_cost_usd (folded via that channel's
+    # operator.add reducer); _dispatch_reserved_round is the highest round already
+    # reserved, so a per-round reserve stays single-flight and replay-safe. Defaults 0.
+    _dispatch_reserved_usd: float
+    _dispatch_reserved_round: int
+    # Admission verdict written by dispatch_origin, read by the admission router to
+    # fan out or short-circuit to synthesis: "admit" | "denied" | "budget_exhausted".
+    _dispatch_admission: Optional[str]

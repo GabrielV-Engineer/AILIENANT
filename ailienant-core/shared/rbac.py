@@ -1,53 +1,49 @@
-# alienant-core/core/rbac.py
+# ailienant-core/shared/rbac.py
 
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import List
+from typing import Dict, List
 
 
 class PermissionMode(str, Enum):
-    """
-    Control de Acceso Basado en Roles (RBAC) estricto para los Nodos Cognitivos.
-    """
+    """Strict Role-Based Access Control (RBAC) for the cognitive nodes."""
 
-    PLAN_ONLY = "plan_only"  # Solo puede generar WBS (Planner)
-    ROUTING_ONLY = "routing_only"  # Solo decide a qué nodo ir (Orchestrator)
-    EDIT_EXECUTE_RBW = (
-        "edit_execute_rbw"  # Puede modificar código con Read-Before-Write (Logic)
-    )
-    READ_ONLY = "read_only"  # Analiza, pero no toca el VFS (Analyst)
+    PLAN_ONLY = "plan_only"  # May only generate a WBS (Planner).
+    ROUTING_ONLY = "routing_only"  # May only decide which node to go to (Orchestrator).
+    EDIT_EXECUTE_RBW = "edit_execute_rbw"  # May modify code with Read-Before-Write (Logic).
+    READ_ONLY = "read_only"  # Analyzes, but never touches the VFS (Analyst).
 
 
 class AgentIdentity(BaseModel):
-    """Contrato inmutable de la identidad de un nodo."""
+    """Immutable identity contract for a node."""
 
-    name: str = Field(..., description="Nombre del Nodo de Poder")
-    role_description: str = Field(..., description="El System Prompt base")
+    name: str = Field(..., description="Power-node name")
+    role_description: str = Field(..., description="The base system prompt")
     permission_mode: PermissionMode
     allowed_tools: List[str] = Field(
-        default_factory=list, description="Herramientas MCP autorizadas"
+        default_factory=list, description="Authorized MCP tools"
     )
 
 
-# Instancias de Poder (Nuestros 4 Nodos Base)
+# Power instances (our 4 base nodes)
 PLANNER_IDENTITY = AgentIdentity(
     name="PlannerAgent",
-    role_description="Eres el Estratega. Transformas requerimientos en un WBS inmutable.",
+    role_description="You are the Strategist. You transform requirements into an immutable WBS.",
     permission_mode=PermissionMode.PLAN_ONLY,
-    allowed_tools=[],  # Sin herramientas de ejecución
+    allowed_tools=[],  # No execution tools
 )
 
 LOGIC_IDENTITY = AgentIdentity(
     name="LogicAgent",
-    role_description="Eres el Constructor. Ejecutas los pasos del WBS modificando el código.",
+    role_description="You are the Builder. You execute the WBS steps by modifying the code.",
     permission_mode=PermissionMode.EDIT_EXECUTE_RBW,
     allowed_tools=["edit_file", "run_terminal"],
 )
 
-# Phase 4.1.1 — ResearcherAgent (The Context Hound).
+# ResearcherAgent (The Context Hound).
 # Strictly read-only: explores GraphRAG + @-mention bypass to emit a Skeleton Map
-# for the PlannerAgent. Tools are programmatic (Python) in this phase; LangChain
-# bind_tools / ReAct is deferred until Phase 4.1.4 (CoderAgent transmutation).
+# for the PlannerAgent. Tools are programmatic (Python); LangChain bind_tools /
+# ReAct is deferred until the CoderAgent transmutation.
 RESEARCHER_IDENTITY = AgentIdentity(
     name="ResearcherAgent",
     role_description=(
@@ -61,4 +57,35 @@ RESEARCHER_IDENTITY = AgentIdentity(
     allowed_tools=[],
 )
 
-# ... (Orchestrator y Analyst seguirán este mismo patrón)
+# (Orchestrator and Analyst follow this same pattern.)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic subagent dispatch — role → permission floor.
+#
+# A dispatched subagent resolves its RBAC identity through this map, exactly as an
+# ordinary WBS step resolves one. The developer roles carry the write/execute-capable
+# identity; the adversarial critic (analyst_readonly) is pinned to READ_ONLY so
+# ``core.permissions.evaluate_action`` denies it any WRITE/EXECUTE/DANGEROUS tool in
+# every session mode — it must never mutate what it judges. An unknown role resolves to
+# the READ_ONLY floor (fail-safe: a subagent can never escalate past its map entry).
+# ---------------------------------------------------------------------------
+_DEV_ROLES = (
+    "core_dev",
+    "architect_refactor",
+    "devops_infra",
+    "secops",
+    "qa_tester",
+    "doc_manager",
+    "vcs_manager",
+    "data_ml_engineer",
+)
+DISPATCH_ROLE_PERMISSIONS: Dict[str, PermissionMode] = {
+    **{role: PermissionMode.EDIT_EXECUTE_RBW for role in _DEV_ROLES},
+    "analyst_readonly": PermissionMode.READ_ONLY,
+}
+
+
+def resolve_dispatch_permission(role: str) -> PermissionMode:
+    """Map a dispatch subagent role to its permission floor (READ_ONLY if unknown)."""
+    return DISPATCH_ROLE_PERMISSIONS.get(role, PermissionMode.READ_ONLY)

@@ -111,6 +111,22 @@ MAX_OBSERVATION_CHARS: int = 4000
 # ---------------------------------------------------------------------------
 MAX_CONCURRENT_SUBAGENTS: int = max(1, _env_int("AILIENANT_MAX_CONCURRENT_SUBAGENTS", 4))
 
+# ---------------------------------------------------------------------------
+# Dynamic subagent dispatch — production wiring gate and recursion/fan-out
+# ceilings. The ENABLE flag is read once at graph-construction (module import)
+# time: when off, the compiled engine graph is topologically identical to a
+# deployment without this feature. The depth/width/round caps are re-checked in
+# code (defense in depth) beyond the Pydantic bounds already on DispatchPlan, so
+# a caller that bypasses schema validation still cannot exceed a reviewed ceiling.
+# ---------------------------------------------------------------------------
+ENABLE_DYNAMIC_DISPATCH: bool = os.getenv("AILIENANT_ENABLE_DYNAMIC_DISPATCH", "0") != "0"
+MAX_DISPATCH_DEPTH: int = max(0, _env_int("AILIENANT_MAX_DISPATCH_DEPTH", 2))
+MAX_DISPATCH_WIDTH: int = max(1, _env_int("AILIENANT_MAX_DISPATCH_WIDTH", 32))
+MAX_DISPATCH_ROUNDS: int = max(1, _env_int("AILIENANT_MAX_DISPATCH_ROUNDS", 3))
+# Named product ceiling (depth × width) — a single edit to either cap can never
+# silently blow past this reviewed bound; asserted in the division checkpoint gate.
+MAX_TOTAL_DISPATCH_FANOUT: int = max(1, _env_int("AILIENANT_MAX_TOTAL_DISPATCH_FANOUT", 64))
+
 
 # ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)

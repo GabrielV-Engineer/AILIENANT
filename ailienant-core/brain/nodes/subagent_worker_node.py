@@ -57,19 +57,23 @@ def _validate_against_schema(result: Any, task: SubagentTask) -> Optional[str]:
 
 
 def _resolve_tools(role: str, state: Mapping[str, Any]) -> Dict[str, Any]:
-    """Role → executable tool map for the ToolDispatcher.
+    """Role → executable ``RegisteredTool`` map for the ToolDispatcher.
 
-    Only the READ_ONLY critic role has an executable tool set today (the analyst
-    arsenal); the developer roles run tool-less until their arsenals land. Never
-    raises — a resolution failure degrades to a tool-less (pure-reasoning) subagent.
+    The READ_ONLY critic role maps to the analyst arsenal. The developer roles resolve
+    their RBAC permission floor (see ``resolve_dispatch_permission``) but have no static
+    ``RegisteredTool`` arsenal yet — their executable tooling arrives at runtime through
+    MCP registration (``tools.mcp_adapter.tool_registry``), so they run tool-less
+    (pure-reasoning) here until a dedicated dev-role arsenal builder lands (DEBT-106).
+    Never raises — a resolution failure degrades to a tool-less subagent.
     """
+    builders: Dict[str, Any] = {}
     if role == "analyst_readonly":
         try:
             from tools.analyst_tools import build_analyst_tools
-            return build_analyst_tools(state)
+            builders = build_analyst_tools(state)
         except Exception as exc:  # noqa: BLE001 — degrade to tool-less, never crash the node
             logger.warning("analyst tool resolution failed; running tool-less: %s", exc)
-    return {}
+    return builders
 
 
 async def _default_answer(task: SubagentTask, observations: List[str]) -> Dict[str, Any]:
@@ -137,15 +141,20 @@ async def subagent_worker(
     try:
         from core.permissions import session_mode_from_channel
         from core.tool_dispatch import ToolCall, ToolDispatcher, make_gateway_reasoner
-        from shared.rbac import PermissionMode
+        from shared.rbac import resolve_dispatch_permission
 
         tools = _resolve_tools(task.subagent_role, state)
+        # Per-role RBAC identity: dev roles resolve to the write/execute-capable floor,
+        # the analyst_readonly critic stays READ_ONLY, an unknown role gets the READ_ONLY
+        # floor. The (mode, tier, identity) matrix in evaluate_action() then denies any
+        # tool the identity is not entitled to — so analyst_readonly can never reach a
+        # WRITE/EXECUTE tool under any session mode.
         dispatcher = ToolDispatcher(
             tools,
             active_role=task.subagent_role,
             session_mode=session_mode_from_channel(state.get("session_permission_mode")),
             state=state,
-            agent_permission=PermissionMode.READ_ONLY,
+            agent_permission=resolve_dispatch_permission(task.subagent_role),
         )
         seed = (
             f"You are the '{task.subagent_role}' subagent. Task:\n{task.description}\n\n"

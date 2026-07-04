@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.15.5: Six-pattern dispatch wiring + guards — 2026-07-04
+**Status:** COMPLETE | **Gates:** mypy 0/416 · pytest 2379 passed, 2 skipped · pyright 0
+- Shipped: dynamic dispatch wired into `brain/engine.py` behind `AILIENANT_ENABLE_DYNAMIC_DISPATCH` (default off → topology-identical); admission-gate depth/width deny (bounded rejection envelopes), per-role `agent_permission` with `analyst_readonly` READ_ONLY floor-lock, budget reserve@origin/commit@synthesize, all six patterns via new `dispatch_fanout`/`dispatch_advance` nodes, `dispatch_return_node`, and `brain/dispatch_emitter.py` for planner/researcher emission.
+- Key decision: shipped primitives assumed one dispatch per run + strictly-terminal synthesis; FULL scope broke both, so a consume-watermark (`_dispatch_consumed`) isolates each dispatch's results and a `dispatch_round_count` + `dispatch_advance` separates pattern rounds from wave-splitting (synthesis stays terminal-per-dispatch); admission short-circuits via a pure string router (no mixed Send/str return).
+- Deferred: DEBT-106 — the 8 dev roles resolve `EDIT_EXECUTE_RBW` but run tool-less (no static arsenal builder); DEBT-107 — autonomous LLM plan-emission deferred (seam + hook shipped); DEBT-105 advanced (admission wired) but metering residue remains.
+
+---
+
 ## 8.15.4: Budget admission ledger — 2026-07-03
 **Status:** COMPLETE | **Gates:** mypy 0/414 · pytest 2364 passed, 2 skipped · pyright 0
 - Shipped: `brain/dispatch_ledger.py` — pure `reserve_dispatch_budget`/`commit_dispatch_actual`/`refund_dispatch_reservation` (fail-closed admission, floor-at-zero refund) + `estimate_task_cost`/`estimate_wave_cost` over `estimate_iteration_cost`; `subagent_worker` now emits a real `cost_usd` (crash-safe pre-init of `loop_messages`/`trace` before the try).

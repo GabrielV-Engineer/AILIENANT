@@ -35,11 +35,53 @@ _CHARS_PER_TOKEN: float = 4.0
 _DIGEST_BUDGET_FRAC: float = 0.5
 
 
+# Patterns that elect a single winning candidate.
+_WINNER_PATTERNS = frozenset({"tournament", "generate_and_filter"})
+
+
+def _select_winner(results: List[Dict[str, Any]]) -> Optional[str]:
+    """Deterministic winner among succeeded envelopes for tournament/filter patterns.
+
+    Prefers the highest ``score`` (a float/int field in ``structured_result`` by
+    convention); falls back to the first ``ok`` result. A caller that owns a real
+    verify harness can instead run the MCTS tournament via
+    ``brain.subagent_tournament.run_tournament_from_dispatch`` and pass its
+    ``winner_task_id`` in — this node's default keeps the pattern exercisable without
+    a live surface/verify plumbing.
+    """
+    best_id: Optional[str] = None
+    best_score = float("-inf")
+    first_ok: Optional[str] = None
+    for env in results:
+        if str(env.get("status", "")) != "ok":
+            continue
+        task_id = str(env.get("task_id", ""))
+        if first_ok is None:
+            first_ok = task_id
+        structured = env.get("structured_result")
+        if isinstance(structured, dict):
+            raw_score = structured.get("score")
+            if isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool):
+                if float(raw_score) > best_score:
+                    best_score = float(raw_score)
+                    best_id = task_id
+    return best_id if best_id is not None else first_ok
+
+
 async def dispatch_synthesize(
     state: Dict[str, Any], config: Optional[RunnableConfig] = None
 ) -> Dict[str, Any]:
-    """Digest the accumulated dispatch results into one DispatchBatchResult."""
-    raw_results: List[Dict[str, Any]] = list(state.get("_dispatch_results") or [])
+    """Digest one dispatch's results into a DispatchBatchResult and reconcile budget.
+
+    Terminal per top-level dispatch: it digests/commits only the envelopes since the
+    consume-watermark (so a second dispatch in the same run never re-digests or
+    double-counts the first), advances the watermark, commits the round's budget
+    reservation (refunding the unused delta), and clears ``dispatch_plan`` so a stale
+    plan cannot re-fire an origin edge after the subgraph returns.
+    """
+    all_results: List[Dict[str, Any]] = list(state.get("_dispatch_results") or [])
+    consumed = int(state.get("_dispatch_consumed", 0) or 0)
+    raw_results = all_results[consumed:]  # this dispatch's envelopes only (R-A)
     raw_plan: Dict[str, Any] = state.get("dispatch_plan") or {}
     pattern = str(raw_plan.get("pattern", ""))
 
@@ -63,11 +105,41 @@ async def dispatch_synthesize(
             continue
         used += digest_len
 
+    winner = _select_winner(raw_results) if pattern in _WINNER_PATTERNS else None
+
     batch = DispatchBatchResult(
         batch_id=uuid4().hex,
         pattern=pattern,
         results=packed,
         total_cost_usd=total_cost,
-        winner_task_id=None,  # tournament selection populates this in a later sub-phase
+        winner_task_id=winner,
     )
-    return {"dispatch_batch_result": batch.model_dump()}
+
+    delta: Dict[str, Any] = {
+        "dispatch_batch_result": batch.model_dump(),
+        # Advance the watermark past every envelope observed so far, isolating a
+        # subsequent dispatch in the same run. Clear the plan so its origin edge does
+        # not re-fire on the way back out (R-C).
+        "_dispatch_consumed": len(all_results),
+        "dispatch_plan": None,
+    }
+
+    # Reconcile the round's budget reservation against the actual spend (R-D). A
+    # refund folds negatively into the operator.add cost channel.
+    reserved = float(state.get("_dispatch_reserved_usd", 0.0) or 0.0)
+    if reserved > 0.0:
+        from brain.dispatch_ledger import DispatchReservation, commit_dispatch_actual
+
+        refund = commit_dispatch_actual(
+            DispatchReservation(
+                task_id=str(state.get("task_id", "")),
+                batch_id=batch.batch_id,
+                reserved_usd=reserved,
+            ),
+            total_cost,
+        )
+        if refund:
+            delta["current_cost_usd"] = -refund
+        delta["_dispatch_reserved_usd"] = 0.0
+
+    return delta

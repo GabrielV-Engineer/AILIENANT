@@ -279,6 +279,7 @@ Proyect_Ailienant/
 │   │   ├── subagent_contracts.py #    dispatch schema: SubagentTask / DispatchPlan / result envelopes
 │   │   ├── dispatch.py          #     build_dispatch_sends fan-out + wave-split routers
 │   │   ├── dispatch_ledger.py   #     budget admission: reserve/commit/refund over current_cost_usd
+│   │   ├── dispatch_emitter.py  #     optional planner/researcher DispatchPlan emission (hook + synthetic)
 │   │   ├── nodes/               #     subagent_worker + dispatch_synthesize dispatch nodes
 │   │   ├── routing_engine.py    #     CSS × TCI matrix
 │   │   ├── context_pipeline.py  #     5-layer context assembler (ContextChunk, ContextPipeline)

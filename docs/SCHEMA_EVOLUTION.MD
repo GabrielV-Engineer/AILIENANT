@@ -1391,3 +1391,35 @@ from day one) and bounds peak concurrency at the cap.
 **Deferred (not this record):** production graph wiring + the `AILIENANT_ENABLE_DYNAMIC_DISPATCH` feature
 flag + planner/researcher entry edges (8.15.5); budget-admission ledger (8.15.4); `analyst_readonly`
 READ_ONLY floor-lock and per-role dev tool arsenals (8.15.5); tournament winner selection (8.15.3).
+
+---
+
+## §32 — Dispatch Production-Wiring Channels
+
+Six additive `AIlienantGraphState` channels supporting the graph-wired dispatch subgraph (the §30 schema +
+§31 mechanics folded into `brain/engine.py` behind `AILIENANT_ENABLE_DYNAMIC_DISPATCH`). Additive only — a
+pre-8.15 checkpoint deserializes each to its safe default; no existing field is renamed or narrowed.
+
+| Channel | Type | Reducer | Safe default | Role |
+|---|---|---|---|---|
+| `dispatch_return_node` | `Optional[str]` | scalar overwrite | `None` (→ `"drift_compute"`) | downstream node the subgraph rejoins after synthesis |
+| `dispatch_round_count` | `int` | scalar overwrite | `0` | pattern loop-back counter (adversarial critic / loop continuation), distinct from `dispatch_wave_count` |
+| `_dispatch_consumed` | `int` | scalar overwrite | `0` | result-isolation watermark: synthesis digests/commits only `_dispatch_results[consumed:]` |
+| `_dispatch_reserved_usd` | `float` | scalar overwrite | `0.0` | running budget reservation for the active dispatch (folded into `current_cost_usd` via its `operator.add` reducer) |
+| `_dispatch_reserved_round` | `int` | scalar overwrite | `-1` (sentinel) | highest round already reserved — reserve is single-flight/replay-safe per round |
+| `_dispatch_admission` | `Optional[str]` | scalar overwrite | `None` | origin verdict (`"admit"|"denied"|"budget_exhausted"`) read by the admission router |
+
+**New nodes (`brain/dispatch.py`):** `dispatch_origin` is now the **admission gate** (validate → depth/width
+deny with bounded rejection envelopes ≤ `MAX_DISPATCH_WIDTH` → single-flight budget reserve); a pure string
+router `route_after_admission` routes to `dispatch_fanout` (Send-only fan-out) or short-circuits to
+`dispatch_synthesize`. `dispatch_advance` performs a pattern round transition (swap `dispatch_plan`, reset
+`dispatch_wave_count`, bump `dispatch_round_count`); `route_after_workers` is now 3-way
+(next wave | new round | synthesize) and `route_after_synthesis` returns `dispatch_return_node`.
+
+**Amendment to the §31 contract:** `dispatch_synthesize` remains **terminal per top-level dispatch**, but
+because two dispatches can run in one graph turn (researcher then planner) and patterns can loop, it now
+digests/commits only the watermarked slice `_dispatch_results[_dispatch_consumed:]`, advances the watermark
+to `len(_dispatch_results)`, commits the round's budget reservation, and clears `dispatch_plan=None` so a
+stale plan cannot re-fire an origin edge on the way back to the spine. New constants (`shared/config.py`):
+`ENABLE_DYNAMIC_DISPATCH`, `MAX_DISPATCH_DEPTH` (2), `MAX_DISPATCH_WIDTH` (32), `MAX_DISPATCH_ROUNDS` (3),
+`MAX_TOTAL_DISPATCH_FANOUT` (64).
