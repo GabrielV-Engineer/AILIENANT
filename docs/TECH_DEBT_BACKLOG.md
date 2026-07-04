@@ -77,6 +77,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-101 | `observed_call_edges` has no reindex-coupled purge/TTL — stale rows accumulate; bounded only at read by the catalog-presence gate | LOW | Capability gap | future trace slice | Floating |
 | DEBT-102 | `tree-sitter-dart` is a single-release pip package (0.1.0, no update history since publish) — accepted supply-chain risk for Dart import extraction | LOW | Dependency risk | monitor / reconsider on breakage | Floating |
 | DEBT-103 | Dart `package:foo/bar.dart` URIs resolve pubspec-unaware — the `package:` prefix is stripped but never mapped to a real directory, so same-project package imports rarely resolve past bare extraction | LOW | Capability gap | future polyglot slice | Floating |
+| DEBT-104 | Tournament surface rollback does not delete a candidate's newly introduced paths (`push_vfs_to_surface` only writes) — harmless for the agentic cell's same-file candidates, but `run_tournament_from_dispatch` fans out heterogeneous candidates that can contaminate siblings + the winner restore | LOW | Correctness / isolation | 8.15.5 dispatch wiring | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -390,6 +391,14 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** declared scope cut for 8.14.11 — real resolution would require parsing a second file format entirely (YAML, plus the `name:`/`dependencies:` keys specifically), a materially larger feature than the source-AST extraction this round covers. A same-project `package:` import therefore rarely resolves past bare extraction today; it stays INFERRED, the same honest fallback as any unresolved import.
 - **Resolution (unscheduled):** a small `pubspec.yaml` reader keyed by the project's own package `name:` field, feeding a Dart-specific candidate expansion (`package:<own_name>/x.dart` → `lib/x.dart`) alongside the existing relative-specifier path.
 - **Notes:** logged at 8.14.11 close; `dart:` built-ins and relative (`'sibling.dart'`) specifiers are unaffected — only the same-project `package:` case is impacted.
+
+### DEBT-104 [LOW · Floating] — Tournament surface rollback does not delete candidate-introduced files
+
+- **Date:** 2026-07-03
+- **Reproduce:** `run_tournament` (`brain/subagent_tournament.py`) rolls the shared surface back to the clean base between candidates by calling `push_vfs_to_surface(surface, base_vfs, ...)`. `push_vfs_to_surface` (`core/workspace_sync.py`) only *writes* the paths in the pushed set — it never removes surface files absent from it. So a candidate that introduces a new path (one not in `clean_base_content`) leaves that file on the surface after the rollback; it then contaminates the next candidate's verify run and the final winner restore.
+- **Error:** harmless for the agentic cell, whose competing candidates are edits to the *same existing* file set (no new paths leak). Exposed only by `run_tournament_from_dispatch`, where independent subagents may each propose different new files. The relocated body is byte-identical (R2), so the fix belongs at the caller/isolation layer, not in the relocated engine. Today the adapter emits a `logger.warning` (naming the out-of-base paths) but still evaluates the candidate — new-file candidates are legitimate for `generate`.
+- **Resolution (owned by 8.15.5 wiring):** give the tournament a delete-not-in-base rollback path (or snapshot/restore the full surface path set) so heterogeneous dispatch candidates are fully isolated, then drop the advisory warning.
+- **Notes:** logged at 8.15.3 close; the warning uses the `SUBAGENT_TOURNAMENT` logger and is asserted in `tests/test_subagent_tournament.py::test_from_dispatch_warns_on_out_of_base_path`.
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 

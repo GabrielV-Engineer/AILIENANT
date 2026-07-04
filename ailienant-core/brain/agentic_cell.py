@@ -40,6 +40,8 @@ from brain.retry_policy import (
     AGENTIC_CELL_MAX_ITERATIONS,
 )
 from brain.state import VFSFile
+from brain.subagent_tournament import _content_to_vfs
+from brain.subagent_tournament import run_tournament as select_candidate_via_mcts
 
 logger = logging.getLogger("AGENTIC_CELL")
 
@@ -200,24 +202,6 @@ def audit_tool_args(tool_name: str, args: Dict[str, Any]) -> _AuditOutcome:
 
 
 # =====================================================================
-# Reward
-# =====================================================================
-
-def _verdict_reward(exit_code: int, diagnostics: str) -> float:
-    """Map a structured verdict to an MCTS reward in [-1.0, 1.0].
-
-    Exit 0 with no diagnostics is the apex (+1.0); a non-zero exit is graded down by how
-    much diagnostic text it produced, so a near-miss outranks a wall of errors. This is the
-    cell's *own* verdict — no extra LLM/judge calls — which keeps branch evaluation cheap.
-    """
-    if exit_code == 0:
-        return 1.0 if not diagnostics.strip() else 0.5
-    # Non-zero: scale -0.2 .. -1.0 by diagnostic volume (longer = worse).
-    penalty = min(len(diagnostics), 4000) / 4000.0
-    return -0.2 - 0.8 * penalty
-
-
-# =====================================================================
 # Session registry (one persistent shell per task, leak-safe)
 # =====================================================================
 
@@ -342,100 +326,6 @@ async def _run_on_surface(cell: _CellSession, command: str, timeout_s: float) ->
         await asyncio.sleep(0)
     output = bytes(cell.buffer[start:]).decode("utf-8", errors="replace")
     return exit_code, output
-
-
-def _vfs_to_view(vfs_files: Dict[str, VFSFile]) -> Dict[str, str]:
-    """blob-hash view (path -> blob_hash) for MCTS node bookkeeping."""
-    return {path: vf.blob_hash for path, vf in vfs_files.items()}
-
-
-def _content_to_vfs(content_by_path: Dict[str, str], blob_store: Any) -> Dict[str, VFSFile]:
-    """Materialize {path: content} into {path: VFSFile} backed by the blob store."""
-    from agents.coder import content_hash
-
-    out: Dict[str, VFSFile] = {}
-    for path, content in content_by_path.items():
-        out[path] = VFSFile(
-            blob_hash=blob_store.put(content),
-            document_version_id=content_hash(content),
-            is_dirty=True,
-        )
-    return out
-
-
-# =====================================================================
-# Contained MCTS branch governance (transactional surface restoration)
-# =====================================================================
-
-async def select_candidate_via_mcts(
-    *,
-    surface: Any,
-    clean_base_content: Dict[str, str],
-    candidates: List[Dict[str, str]],
-    verify_command: str,
-    run_verify: Callable[[str], Awaitable[Tuple[int, str]]],
-    blob_store: Any,
-    mission_state: Any,
-) -> Tuple[int, Dict[str, str]]:
-    """Pick the best of >=2 competing edits over the *shared* persistent surface.
-
-    Each candidate is a full {path: content} working set. The surface is physical and
-    shared, so candidates cannot be evaluated naively — Candidate A's run would leave the
-    files mutated when Candidate B is verified. The evaluation is therefore transactional:
-
-        for each candidate i:
-            push candidate i -> surface
-            run the verify command -> structured verdict -> reward
-            roll the surface back to the clean base   (undo i before evaluating i+1)
-        select the UCB1 winner
-        restore the surface to the winner
-
-    Returns ``(winner_index, winner_content)``. Reward is the candidate's own verdict, so no
-    extra model/judge calls are made.
-    """
-    from brain.mcts.tree import MCTSTree
-    from core.workspace_sync import push_vfs_to_surface
-
-    base_vfs = _content_to_vfs(clean_base_content, blob_store)
-    base_version_ids = {p: vf.document_version_id for p, vf in base_vfs.items()}
-
-    tree = MCTSTree(root_state=mission_state, root_vfs_view=_vfs_to_view(base_vfs))
-    child_ids: List[str] = []
-
-    for index, candidate in enumerate(candidates):
-        cand_vfs = _content_to_vfs(candidate, blob_store)
-        cand_version_ids = {p: vf.document_version_id for p, vf in cand_vfs.items()}
-
-        await push_vfs_to_surface(surface, cand_vfs, blob_store, cand_version_ids)
-        exit_code, diagnostics = await run_verify(verify_command)
-        reward = _verdict_reward(exit_code, diagnostics)
-
-        child = tree.expand(
-            tree.root_id,
-            action=f"candidate_{index}",
-            new_vfs_view=_vfs_to_view(cand_vfs),
-            child_mission_state=mission_state,
-        )
-        child.reward = reward
-        child.visits = 1
-        child.total_value = reward
-        child_ids.append(child.node_id)
-
-        # Roll the physical surface back to the clean base before the next candidate.
-        await push_vfs_to_surface(surface, base_vfs, blob_store, base_version_ids)
-
-    # UCB1 needs the parent visited; backpropagate one visit per evaluated candidate.
-    tree.get_node(tree.root_id).visits = len(child_ids)
-    best_id = tree.select_best_child(tree.root_id)
-    winner_index = child_ids.index(best_id) if best_id in child_ids else 0
-    winner_content = candidates[winner_index]
-
-    # Restore the surface to the winning candidate's condition.
-    winner_vfs = _content_to_vfs(winner_content, blob_store)
-    winner_version_ids = {p: vf.document_version_id for p, vf in winner_vfs.items()}
-    await push_vfs_to_surface(surface, winner_vfs, blob_store, winner_version_ids)
-
-    return winner_index, winner_content
 
 
 # =====================================================================

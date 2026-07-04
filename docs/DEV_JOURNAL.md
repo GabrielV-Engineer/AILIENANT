@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.15.3: Tournament module extraction — 2026-07-03
+**Status:** COMPLETE | **Gates:** mypy 0/412 · pytest 2349 passed, 2 skipped · pyright 0
+- Shipped: relocated `select_candidate_via_mcts` (+ its `_verdict_reward`/`_vfs_to_view`/`_content_to_vfs` helpers) verbatim into `brain/subagent_tournament.py::run_tournament`; `agentic_cell.py` keeps the name via a re-export shim (behavior byte-identical, existing MCTS/checkpoint-gate tests pass unmodified). New `run_tournament_from_dispatch` adapts a `DispatchBatchResult` into candidates and delegates.
+- Key decision: the envelope→`{path:content}` mapping is undefined until 8.15.5, so the adapter takes a pluggable `candidate_extractor` (default = string-valued `structured_result` fields) rather than hardcoding a guess into a shipped function.
+- Deferred: DEBT-104 — tournament surface rollback does not delete a candidate's newly introduced paths (contamination risk for heterogeneous dispatch candidates; warned, full isolation owned by 8.15.5).
+
+---
+
 ## 8.15.2: Dispatch synthesis + wave batching — 2026-07-03
 **Status:** COMPLETE | **Gates:** mypy 0/410 · pytest 2342 passed, 2 skipped · pyright 0
 - Shipped: `dispatch_synthesize` node (`brain/nodes/dispatch_synthesize_node.py`) folds the accumulated `_dispatch_results` into one `DispatchBatchResult` under a per-batch char ceiling derived from the parent's `active_llm_profile` (`resolve_context_budget` × chars/token × fraction, whole-envelope greedy pack); sequential wave-splitting via a `dispatch_gate` fan-in node + `route_after_workers` loop-back + new `dispatch_wave_count` channel, capped by `MAX_CONCURRENT_SUBAGENTS` (default 4). Harness-tested; production wiring is 8.15.5.
