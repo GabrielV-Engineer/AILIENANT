@@ -481,6 +481,8 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             total_token_budget=_budget,
             foundation=[system_prompt],
             execution=[file_block, rag_block, style_block],
+            session_id=session_id,
+            session_start_time=state.get("session_start_time"),
         )
         _system_content = _agent_ctx.foundation_block
         _context_block = _agent_ctx.execution_block

@@ -170,3 +170,47 @@ def log_indexing_event(
         "INDEX",
         {"session": session_id, "action": action, "file": filepath, "detail": detail},
     )
+
+
+def log_context_utilization(
+    session_id: str,
+    source: str,  # "summarizer" | "pipeline"
+    total_tokens: int,
+    token_budget: int,
+    turn_count: int,
+    duration_s: float,
+    l1_tokens: Optional[int] = None,
+    l2_tokens: Optional[int] = None,
+    l3_tokens: Optional[int] = None,
+    l4_tokens: Optional[int] = None,
+    l5_tokens: Optional[int] = None,
+    l4_evicted: Optional[int] = None,
+    l5_truncated: Optional[bool] = None,
+) -> None:
+    """Record one context-window utilization sample.
+
+    ``source`` distinguishes the summarizer's raw-token gate (no layer concept)
+    from ContextPipeline's five-layer assembly; the l1..l5/l4_evicted/l5_truncated
+    fields are only populated when source="pipeline" and simply omitted from the
+    emitted line otherwise. Ratio computation is defensive (token_budget<=0 -> 0.0)
+    so a malformed budget can never raise.
+    """
+    ratio = (total_tokens / token_budget) if token_budget > 0 else 0.0
+    fields: Dict[str, Any] = {
+        "session": session_id,
+        "source": source,
+        "ratio": f"{ratio:.4f}",
+        "total_tokens": total_tokens,
+        "token_budget": token_budget,
+        "turns": turn_count,
+        "duration_s": f"{duration_s:.4f}",
+    }
+    if l1_tokens is not None:
+        fields.update(
+            {
+                "l1": l1_tokens, "l2": l2_tokens, "l3": l3_tokens,
+                "l4": l4_tokens, "l5": l5_tokens,
+                "l4_evicted": l4_evicted, "l5_truncated": l5_truncated,
+            }
+        )
+    _emit("CONTEXT", fields)

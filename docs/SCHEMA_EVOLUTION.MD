@@ -1423,3 +1423,29 @@ to `len(_dispatch_results)`, commits the round's budget reservation, and clears 
 stale plan cannot re-fire an origin edge on the way back to the spine. New constants (`shared/config.py`):
 `ENABLE_DYNAMIC_DISPATCH`, `MAX_DISPATCH_DEPTH` (2), `MAX_DISPATCH_WIDTH` (32), `MAX_DISPATCH_ROUNDS` (3),
 `MAX_TOTAL_DISPATCH_FANOUT` (64).
+
+---
+
+## §33 — Session-Start Timestamp Channel (Context-Utilization Telemetry)
+
+One additive `AIlienantGraphState` channel supporting the 8.16.0 context-utilization telemetry spike.
+Additive only — a pre-8.16 checkpoint deserializes it to its safe default; no existing field is renamed
+or narrowed.
+
+| Channel | Type | Reducer | Safe default | Role |
+|---|---|---|---|---|
+| `session_start_time` | `Optional[float]` | scalar overwrite (`LastValue`) | `None` | wall-clock epoch (`time.time()`) marking session start, used to derive the `duration_s` field of `core/telemetry_log.py::log_context_utilization` records |
+
+**Write discipline:** set exactly once per session by `core/task_service.py::TaskService._resolve_session_start_time`
+(a `@staticmethod`), called from `_run_coding_task`'s `if resume_value is None:` branch on every ordinary
+turn — not only the first. The resolver probes the warm L1 checkpoint (`hybrid_checkpointer.get_tuple`,
+zero IOPS — `MemorySaver`, not SQLite) for a value already seeded on an earlier turn of the same
+`thread_id` and carries it forward unchanged; only a genuinely cold thread gets a fresh `time.time()`. No
+graph node ever returns this key in a state update — it is read-only downstream, exactly mirroring the
+existing `session_permission_mode` channel's seed-only write discipline (never written by a node; read
+back from a prior checkpoint via `aget_state` in the native-HITL-resume branch), which is the empirical
+precedent this design leans on.
+
+**Known limitation:** if the server process restarts mid-session, L1 goes cold and the resolver has no L2
+fallback (avoiding a per-turn SQLite read is the point) — the next turn is treated as a fresh session
+start, so `duration_s` under-counts for that one session. A degraded metric, not a correctness issue.

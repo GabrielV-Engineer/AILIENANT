@@ -382,6 +382,27 @@ class TaskService:
                 pass
         return initial_state
 
+    @staticmethod
+    def _resolve_session_start_time(session_id: str) -> float:
+        """First turn of a session sets this; every later turn on the same
+        thread_id (while L1 stays warm) carries the persisted value forward.
+        Never raises — any checkpointer fault falls back to "now" rather than
+        aborting turn initialization."""
+        try:
+            from brain.checkpoint import hybrid_checkpointer
+            from langchain_core.runnables import RunnableConfig
+            cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
+            tup = hybrid_checkpointer.get_tuple(cfg)  # L1 MemorySaver read — zero IOPS
+            if tup is not None:
+                checkpoint = cast(Dict[str, Any], tup.checkpoint)
+                values = checkpoint.get("channel_values", {}) if isinstance(checkpoint, dict) else {}
+                prior = values.get("session_start_time") if isinstance(values, dict) else None
+                if prior is not None:
+                    return float(prior)
+        except Exception:  # noqa: BLE001 — never abort turn init over a bookkeeping read
+            logger.debug("session_start_time resolution failed; defaulting to now", exc_info=True)
+        return time.time()
+
     async def _classify_intent(self, prompt: str) -> str:
         """Return 'edit' or 'question'. Heuristic first, cheap LLM tie-break, safe default."""
         text = prompt.strip().lower()
@@ -549,6 +570,7 @@ class TaskService:
 
         if resume_value is None:
             state = self._build_initial_state(session_id, payload, execution_mode)
+            state["session_start_time"] = self._resolve_session_start_time(session_id)
 
             # Resolve the user-authored skills that apply to this task (auto-matched by
             # description plus any explicitly invoked one) and thread them as a loose

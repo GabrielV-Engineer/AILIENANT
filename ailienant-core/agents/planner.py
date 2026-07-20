@@ -377,6 +377,8 @@ async def run_planner_node(
             project=[_project_instructions, _skill_block],
             memory=[_trajectory_block, skeleton_block],
             execution=[context_str],
+            session_id=state.get("task_id", ""),
+            session_start_time=state.get("session_start_time"),
         )
         system_prompt_text = _agent_ctx.foundation_block
         _ide_context_block = _agent_ctx.execution_block

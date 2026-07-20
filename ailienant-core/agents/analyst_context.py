@@ -300,6 +300,7 @@ async def assemble_analyst_context(
             foundation=foundation,
             project=project,
             execution=execution,
+            session_id=session_id,
         )
     except ContextBudgetError:
         # Pinned CODEX + Project overflow the window: drop the (never-evicted)
@@ -315,6 +316,7 @@ async def assemble_analyst_context(
             foundation=foundation,
             project=(),
             execution=execution,
+            session_id=session_id,
         )
 
     block = "\n\n".join(p for p in (result.foundation_block, result.execution_block) if p)

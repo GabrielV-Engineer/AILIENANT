@@ -16,6 +16,7 @@ STATE_COMPACTED: after any compression, fires the on_state_compacted callback
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -58,16 +59,26 @@ async def _emit_compacted(config: Optional[RunnableConfig], message: str, n: int
             )
 
 
-async def run_summarize_node(
+async def _run_summarize_node_core(
     state: Dict[str, Any],
     config: Optional[RunnableConfig] = None,
+    *,
+    _telemetry_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """LangGraph node: compress message history if token budget is exceeded.
+    """LangGraph node core: compress message history if token budget is exceeded.
 
     Returns {} (no-op) when history is within budget or too short to compress.
     Returns {"messages": [__replace__ sentinel, summary_msg, *recent]} on compression.
+
+    ``_telemetry_sink``, when provided, is populated with ``total_tokens``/
+    ``token_budget``/``turn_count`` at the exact points this function already
+    computes them for its own logic — a side channel for the public
+    ``run_summarize_node`` wrapper's telemetry emission, so nothing is ever
+    tokenized twice.
     """
     messages: List[Dict[str, str]] = state.get("messages", [])
+    if _telemetry_sink is not None:
+        _telemetry_sink["turn_count"] = len(messages)
     if len(messages) <= KEEP_LAST_N:
         return {}
 
@@ -77,7 +88,11 @@ async def run_summarize_node(
     threshold = int(context_window * THRESHOLD_RATIO)
 
     all_text = "\n".join(m.get("content", "") for m in messages if isinstance(m, dict))
-    if PrecisionTokenCounter.estimate_with_buffer(all_text, model_name) <= threshold:
+    total_tokens = PrecisionTokenCounter.estimate_with_buffer(all_text, model_name)
+    if _telemetry_sink is not None:
+        _telemetry_sink["total_tokens"] = total_tokens
+        _telemetry_sink["token_budget"] = context_window
+    if total_tokens <= threshold:
         return {}
 
     recent = messages[-KEEP_LAST_N:]
@@ -140,3 +155,39 @@ async def run_summarize_node(
             len(messages) - KEEP_LAST_N,
         )
         return {"messages": [{"__replace__": True}, *recent]}
+
+
+def _emit_summarizer_telemetry(state: Dict[str, Any], sink: Dict[str, Any]) -> None:
+    """Best-effort context-utilization telemetry sample. Never raises — a
+    failure here must never mask the real return value or a real exception
+    propagating out of run_summarize_node's finally block."""
+    try:
+        from core.telemetry_log import log_context_utilization
+        start = state.get("session_start_time")
+        log_context_utilization(
+            session_id=str(state.get("task_id", "")), source="summarizer",
+            total_tokens=sink.get("total_tokens", 0),
+            token_budget=sink.get("token_budget", 0),
+            turn_count=sink.get("turn_count", len(state.get("messages", []))),
+            duration_s=(time.time() - start) if start else 0.0,
+        )
+    except Exception:  # noqa: BLE001 — telemetry is best-effort
+        logger.debug("context-utilization telemetry emit failed", exc_info=True)
+
+
+async def run_summarize_node(
+    state: Dict[str, Any],
+    config: Optional[RunnableConfig] = None,
+) -> Dict[str, Any]:
+    """LangGraph node: compress message history if token budget is exceeded.
+
+    Delegates to _run_summarize_node_core, then emits a context-utilization
+    telemetry sample as a side effect. The return value is always identical
+    to calling _run_summarize_node_core directly — telemetry never observes
+    or mutates it.
+    """
+    sink: Dict[str, Any] = {}
+    try:
+        return await _run_summarize_node_core(state, config, _telemetry_sink=sink)
+    finally:
+        _emit_summarizer_telemetry(state, sink)

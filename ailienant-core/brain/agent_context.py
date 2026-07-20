@@ -106,6 +106,8 @@ async def build_agent_context(
     conversation: Sequence[str] = (),
     execution: Sequence[str] = (),
     on_compacted: Optional[Callable[[str, int], Awaitable[None]]] = None,
+    session_id: Optional[str] = None,
+    session_start_time: Optional[float] = None,
 ) -> AgentContextResult:
     """Assemble an agent's context under a hard token budget.
 
@@ -118,7 +120,12 @@ async def build_agent_context(
     amnesia-aware degrade path (Foundation/Project/Memory must never be silently
     dropped).
     """
-    pipeline = ContextPipeline(total_token_budget, on_compacted=on_compacted)
+    pipeline = ContextPipeline(
+        total_token_budget,
+        on_compacted=on_compacted,
+        session_id=session_id,
+        session_start_time=session_start_time,
+    )
     _add_sources(pipeline.foundation, foundation)
     _add_sources(pipeline.project, project)
     _add_sources(pipeline.memory, memory)

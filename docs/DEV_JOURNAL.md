@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.16.0: Context-utilization telemetry (benchmark spike) — 2026-07-20
+**Status:** COMPLETE | **Gates:** mypy 0/419 · pytest 2404 passed, 2 skipped (1 pre-existing FileLock flake in `test_retention.py`, unrelated — DEBT-108) · pyright 0 · new `test_context_telemetry.py` 16/16
+- Shipped: `core/telemetry_log.py::log_context_utilization` (new CONTEXT category, no new sink); non-invasive instrumentation of `run_summarize_node` (rename-and-wrap with a shared-computation sink, avoiding a second tiktoken pass) and `ContextPipeline.assemble()`; `core/benchmark/session_corpus.py` synthetic long-session generator; Decision Gate recorded PROVISIONAL in `docs/PHASE_8_16_BLUEPRINT.md` pending real telemetry accrual (synthetic median 0.093 vs THRESHOLD_RATIO=0.80 is supporting characterization only, not the binding signal).
+- Key decision: `session_start_time` threaded through as an additive `AIlienantGraphState` channel (§33), set once via a checkpoint-probe carry-forward resolver in `core/task_service.py` rather than reset every turn — verified via a real (non-mocked) `HybridCheckpointer.put`/`get_tuple` round trip, not assumed.
+- Deferred: DEBT-108 — the one full-suite failure is a load-timing flake in the benchmark retention test (passes 3/3 solo, 2/3 in-group, and at HEAD; its stub-runner path never touches any 8.16.0 code), logged for test-hardening.
+
+---
+
 ## 8.15.6: Division 8.15 checkpoint gate — 2026-07-04
 **Status:** COMPLETE | **Gates:** mypy 0/417 · pytest 2389 passed, 2 skipped · pyright 0
 - Shipped: `tests/test_phase8_15_checkpoint_gate.py` — 10 test-only rows re-certifying the division's cross-cutting invariants against their production entry points (extraction/shim integrity, depth+width deny-not-truncate + OOM-bounded rejection, budget reserve-deny + refund reconciliation, `analyst_readonly` floor-lock under every session mode, digest context-window ceiling, all 12 dispatch channels deserialize to safe defaults, `MAX_TOTAL_DISPATCH_FANOUT` product ceiling); no sibling suite re-run.

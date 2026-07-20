@@ -18,6 +18,7 @@ foundation-layer-up: brain/ ← agents/ ← gateway/, never the reverse.
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, ClassVar, List, Optional
@@ -198,9 +199,13 @@ class ContextPipeline:
         total_token_budget: int,
         *,
         on_compacted: Optional[Callable[[str, int], Awaitable[None]]] = None,
+        session_id: Optional[str] = None,
+        session_start_time: Optional[float] = None,
     ) -> None:
         self._total = total_token_budget
         self._on_compacted = on_compacted
+        self._session_id = session_id
+        self._session_start_time = session_start_time
         self._layers: tuple[ContextLayer, ...] = (
             FoundationLayer(),
             ProjectLayer(),
@@ -336,6 +341,19 @@ class ContextPipeline:
             total_tok, l1_tok, l2_tok, l3_tok, l4_tok, l5_tok,
             l4_evicted, l5_truncated,
         )
+        try:
+            from core.telemetry_log import log_context_utilization
+            log_context_utilization(
+                session_id=self._session_id or "", source="pipeline",
+                total_tokens=total_tok, token_budget=self._total,
+                turn_count=len(self.conversation.chunks()),
+                duration_s=(time.time() - self._session_start_time) if self._session_start_time else 0.0,
+                l1_tokens=l1_tok, l2_tokens=l2_tok, l3_tokens=l3_tok,
+                l4_tokens=l4_tok, l5_tokens=l5_tok,
+                l4_evicted=l4_evicted, l5_truncated=l5_truncated,
+            )
+        except Exception:  # noqa: BLE001 — telemetry is best-effort, never blocks assembly
+            _log.debug("context-utilization telemetry emit failed", exc_info=True)
         return ContextAssemblyResult(
             content=content,
             total_tokens=total_tok,

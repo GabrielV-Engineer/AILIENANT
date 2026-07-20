@@ -363,13 +363,20 @@ def _merge_todos(
 
 class AIlienantGraphState(TypedDict):
     """
-    El cerebro compartido del flujo de LangGraph.
-    Define estrictamente la memoria y variables que los nodos pueden leer o mutar.
+    The shared brain of the LangGraph flow.
+    Strictly defines the memory and variables nodes may read or mutate.
     """
 
-    # --- Identidad de la Misión ---
+    # --- Mission Identity ---
     task_id: str
     user_input: str
+    # Wall-clock epoch (time.time()) set once by core/task_service.py's
+    # session-start resolver on the first turn of a session, then carried
+    # forward unchanged on every later turn while L1 stays warm. No graph
+    # node ever writes this — read-only downstream, used to derive session
+    # duration for context-utilization telemetry. Absent/None on a checkpoint
+    # written before this field existed.
+    session_start_time: Optional[float]
 
     # --- Workspace Identity & Manual Context (Phase 1.1.0 / 1.1.0.4) ---
     project_id: Optional[str]              # SHA-256 of the VS Code workspace root path
