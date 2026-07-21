@@ -51,7 +51,7 @@
 | 8.15 Dynamic Subagent Dispatch | ⬜ PENDING | — | 8.15.0 structured dispatch schema |
 | 8.16 Importance-Aware Session Memory | ⬜ PENDING | — | 8.16.0 context-utilization telemetry (GO/NO-GO gate) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
-| Phase 11 Dashboard Enterprise Redesign | ⬜ PENDING | — | 11.0 Design system |
+| Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.1 Project context disambiguation (11.0 design system shipped) |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
 | Phase 13 Pre-Launch Innovation Sprint | ⬜ PENDING | — | 13.1 Prompt caching |
 | Phase 14 Portfolio Level Release | ⬜ PENDING | — | 14.1 Dockerization |
@@ -863,7 +863,7 @@
 
 > Elevate the web dashboard from MVP (11 functional panels, basic CSS) to an enterprise-grade observability console with full project-context awareness and a flagship GraphRAG visualization. Depends on Division 8.12 `STATE_COMPACTED` event contract. Nine sub-phases.
 
-- [ ] **11.0 — Design System & Navigation.**
+- [x] **11.0 — Design System & Navigation.**
   Enterprise component library (design tokens, spacing scale, typography, color system); sidebar nav with grouped panels (Monitoring / Configuration / Operations); keyboard shortcuts; collapsible sidebar; responsive layout. Foundation inherited by all redesigned panels.
 - [ ] **11.1 — Project Context Disambiguation (critical — precedes all panel redesigns).**
   Active project selector (project name + path) pinned to the top bar; `project_id` propagated to all polling hooks (`HardwarePanel`, `TelemetryPanel`, `OverviewPanel`, `AuditPanel`, `RuntimePanel`, `RecoveryPanel`); global config panels (`BYOMPanel`, `ExtensionsPanel`, `RulesPanel`) show active project badge; backend dashboard endpoints gain `?project_id=` filter param. **DoD:** switching projects re-scopes all widget data.

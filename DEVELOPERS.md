@@ -374,7 +374,10 @@ Proyect_Ailienant/
 │   │   ├── ide_sync.ts          #     context capture (debounced, .ailienantignore gate)
 │   │   ├── workspace_provisioning.ts # first-run .ailienant/ skeleton + starter AILIENANT.md + .gitignore block
 │   │   ├── webview/             #     React sidebar (chat, ThoughtBox, diffs, HUD, checklist)
-│   │   ├── dashboard/           #     Web Dashboard SPA (Hardware/BYOM/Rules/Staging/Audit/…)
+│   │   ├── dashboard/           #     Web Dashboard SPA (grouped/collapsible nav shell + panels)
+│   │   │   ├── panels/          #       Hardware/BYOM/Rules/Staging/Audit/Overview/Memory/…
+│   │   │   ├── ui/              #       design-system primitives (Card, StatTile, Button, Badge, Skeleton, EmptyState, ShortcutsOverlay)
+│   │   │   └── hooks/           #       usePollingWhileVisible · useSidebarCollapsed · useKeyboardShortcuts
 │   │   ├── core/                #     IntentRouter, PatchActuator, tokenizer, inline-edit manager
 │   │   ├── workspace/           #    Zustand stores, streaming markdown parser
 │   │   │   ├── chatStore.ts     #      memory-only Zustand store — 22 live chat-runtime fields (messages, streaming, toasts, …)

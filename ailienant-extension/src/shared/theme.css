@@ -30,6 +30,110 @@
 
   /* Surfaces */
   --radius-smart: 6px;
+
+  /* ==========================================================
+     Enterprise design tokens — additive scales consumed by the
+     web dashboard's component library and inherited by every
+     redesigned panel. All values below are additive: existing
+     tokens above are never mutated, so the sidebar and workspace
+     surfaces that also import this file are unaffected.
+     ========================================================== */
+
+  /* ── Spacing (4px baseline grid) ─────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* ── Typography scale ────────────────────────────────────── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace;
+  --fs-xs:   11px;
+  --fs-sm:   12px;
+  --fs-base: 13px;
+  --fs-md:   15px;
+  --fs-lg:   18px;
+  --fs-xl:   22px;
+  --fw-normal:   400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+
+  /* ── Radius scale ────────────────────────────────────────── */
+  --radius-sm:   4px;
+  --radius-md:   6px;   /* canonical alias of --radius-smart */
+  --radius-lg:   10px;
+  --radius-pill: 999px;
+
+  /* ── Refined elevation (crisp "lifted glass" for dark) ───── */
+  --bg-elevated: #1C222B;                     /* one step above --bg-surface */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+  /* A faint top highlight applied inside cards for a lifted edge. */
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* ── Motion ──────────────────────────────────────────────── */
+  --dur-fast: 0.12s;
+  --dur-base: 0.2s;
+  --ease:     cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ── Focus ring & z-index scale ──────────────────────────── */
+  --focus-ring: 0 0 0 3px rgba(99, 165, 131, 0.35);
+  --z-sidebar: 20;
+  --z-overlay: 100;
+  --z-tooltip: 9999;
+
+  /* ── Status palette (fixed, reserved — always icon + label,
+        never a chart series). WCAG contrast on the #161B22 card
+        surface is validated ≥5:1 for every role. ───────────── */
+  --status-good:     #63a583;   /* = --accent-primary */
+  --status-warning:  #E3B341;   /* = --accent-warn */
+  --status-serious:  #ec835a;   /* degraded, not-yet-critical */
+  --status-critical: #F85149;   /* = --accent-alert */
+  --accent-info:     #58A6FF;   /* informational blue */
+
+  /* ── Categorical chart palette (8 slots, fixed CVD-safe order).
+        Validated for adjacent separation on the dark surface;
+        multi-series charts pair it with direct labels + gaps. ─ */
+  --cat-1: #3987e5;
+  --cat-2: #199e70;
+  --cat-3: #c98500;
+  --cat-4: #008300;
+  --cat-5: #9085e9;
+  --cat-6: #e66767;
+  --cat-7: #d55181;
+  --cat-8: #d95926;
+
+  /* ── Sequential blue ramp (magnitude, light→dark) for density
+        heatmaps and continuous encodings. ─────────────────── */
+  --seq-100: #cde2fb;
+  --seq-200: #9ec5f4;
+  --seq-300: #6da7ec;
+  --seq-400: #3987e5;
+  --seq-500: #256abf;
+  --seq-600: #184f95;
+  --seq-700: #0d366b;
+
+  /* ── Compatibility shim (transitional) ───────────────────────
+     The web dashboard is a browser SPA, not a VS Code webview, so
+     `--vscode-*` host variables never resolve there, and the
+     legacy `--color-*` names were never defined at all. Aliasing
+     them to real tokens keeps the current BYOM panel rendering
+     correctly until it is migrated onto the design tokens
+     directly (tracked in the backlog). Remove this block once no
+     stylesheet references these names. */
+  --vscode-editor-background:    var(--bg-surface);
+  --vscode-sideBar-background:   var(--bg-main);
+  --vscode-panel-border:         var(--border-subtle);
+  --vscode-descriptionForeground: var(--text-secondary);
+  --color-primary:      var(--accent-primary);
+  --color-primary-soft: rgba(99, 165, 131, 0.18);
+  --color-card:         var(--bg-surface);
+  --color-text:         var(--text-primary);
+  --color-border:       var(--border-subtle);
 }
 
 /* ── Reset ──────────────────────────────────────────────────── */
