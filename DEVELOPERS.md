@@ -324,7 +324,9 @@ Proyect_Ailienant/
 │   │   ├── benchmark/           #     shippable in-process precision/ablation harness (importable without tests/)
 │   │   │                        #       arms/runner/hygiene/metrics/problems + codegen (Pass@1) + executors +
 │   │   │                        #       oracle (Resolve@k) + strategies + routing_study + report; ships its own
-│   │   │                        #       datasets/ (HumanEval/MultiPL-E) and corpus/v1/ (multi-file snapshot)
+│   │   │                        #       datasets/ (HumanEval/MultiPL-E) and corpus/v1/ (multi-file snapshot);
+│   │   │                        #       session_corpus.py (synthetic long-session generator) +
+│   │   │                        #       context_telemetry_report.py (CONTEXT-telemetry gate aggregator + CLI)
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
 │   │       ├── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
 │   │       └── host_discovery.py #      ephemeral ~/.ailienant/run.json (port+token+pid, 0600) + async liveness probe
