@@ -63,6 +63,26 @@ export interface VectorMapResponse {
     variance_explained: number[];
 }
 
+export interface EmbeddingRow {
+    file_path: string;
+    label: string;
+    token_count: number;
+    indexed_at: string;
+    snippet: string;
+}
+
+export type EmbeddingSort = 'file_path' | 'token_count' | 'indexed_at';
+export type SortOrder = 'asc' | 'desc';
+
+export interface EmbeddingListResponse {
+    project_id: string;
+    folder: string;
+    rows: EmbeddingRow[];
+    total: number;
+    offset: number;
+    limit: number;
+}
+
 const BASE = '/api/v1/memory';
 
 async function getJson<T>(path: string, params: Record<string, string | number> = {}): Promise<T> {
@@ -87,4 +107,27 @@ export function fetchGraph(projectId: string, folder: string): Promise<GraphResp
 
 export function fetchVectors(projectId: string, folder: string): Promise<VectorMapResponse> {
     return getJson<VectorMapResponse>('/vectors', { project_id: projectId, folder });
+}
+
+export function fetchEmbeddings(
+    projectId: string,
+    folder: string,
+    opts: { sort: EmbeddingSort; order: SortOrder; offset: number; limit: number },
+): Promise<EmbeddingListResponse> {
+    return getJson<EmbeddingListResponse>('/embeddings', {
+        project_id: projectId, folder,
+        sort: opts.sort, order: opts.order, offset: opts.offset, limit: opts.limit,
+    });
+}
+
+export async function purgeEmbedding(projectId: string, filePath: string): Promise<{ ok: boolean }> {
+    const res = await fetch(`${BASE}/embeddings/purge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId, file_path: filePath, confirm: true }),
+    });
+    if (!res.ok) {
+        throw new Error(`/embeddings/purge → HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ ok: boolean }>;
 }

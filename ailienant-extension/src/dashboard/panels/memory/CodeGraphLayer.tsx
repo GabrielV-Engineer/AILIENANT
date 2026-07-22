@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useCallback } from 'react';
 import ReactFlow, {
-    Background, Controls, MiniMap, type Node, type Edge, type NodeTypes,
+    Background, Controls, MiniMap, Handle, Position, type Node, type Edge, type NodeTypes,
     useNodesState, useEdgesState, useViewport, type NodeProps,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { forceSimulation, forceManyBody, forceLink, forceCenter, type SimNode } from 'd3-force-3d';
 import type { GraphResponse, GraphNode } from './api';
 
 const EXTERNAL_COLOR = '#6E7681';
@@ -25,12 +26,13 @@ function communityColor(id: number): string {
     return `hsl(${hue.toFixed(1)}, 60%, 62%)`;
 }
 
-// Confidence → edge stroke style (the approved visual audit):
-// EXTRACTED solid, INFERRED dashed, AMBIGUOUS red. Null/unknown → solid.
+// Confidence → edge stroke style: EXTRACTED solid, INFERRED dashed, AMBIGUOUS
+// amber. Colors are chosen to read clearly against the dark canvas (the old
+// near-black strokes were effectively invisible).
 function edgeStyle(confidence?: string | null): React.CSSProperties {
-    if (confidence === 'AMBIGUOUS') { return { stroke: '#F85149' }; }
-    if (confidence === 'INFERRED') { return { stroke: '#30363D', strokeDasharray: '6 4' }; }
-    return { stroke: '#30363D' };  // EXTRACTED or unknown
+    if (confidence === 'AMBIGUOUS') { return { stroke: '#f0883e', strokeWidth: 1.4 }; }
+    if (confidence === 'INFERRED') { return { stroke: '#5b6785', strokeWidth: 1.2, strokeDasharray: '6 4' }; }
+    return { stroke: '#7c8bb0', strokeWidth: 1.2 };  // EXTRACTED or unknown
 }
 
 interface NodeData {
@@ -85,30 +87,43 @@ function DotNode({ data }: NodeProps<NodeData>): JSX.Element {
 
 function LodNode(props: NodeProps<NodeData>): JSX.Element {
     const { zoom } = useViewport();
-    if (zoom > 0.8) { return <FullNode {...props} />; }
-    if (zoom > 0.4) { return <MediumNode {...props} />; }
-    return <DotNode {...props} />;
+    const inner = zoom > 0.8 ? <FullNode {...props} /> : zoom > 0.4 ? <MediumNode {...props} /> : <DotNode {...props} />;
+    // Custom ReactFlow nodes must expose handles or edges have no anchor and never
+    // render. Both are pinned to the node centre (via CSS) and hidden, so edges
+    // draw straight centre-to-centre — this graph is undirected, so every node is
+    // both a source and a target.
+    return (
+        <>
+            <Handle type="target" position={Position.Top} className="mm-handle" isConnectable={false} />
+            {inner}
+            <Handle type="source" position={Position.Bottom} className="mm-handle" isConnectable={false} />
+        </>
+    );
 }
 
 const NODE_TYPES: NodeTypes = { lodNode: LodNode };
 
-// Phyllotaxis (sunflower) placement — deterministic, high-PPR toward the center.
-function layout(nodes: GraphNode[]): Map<string, { x: number; y: number }> {
-    const ordered = [...nodes].sort((a, b) => (b.ppr_score - a.ppr_score) || a.id.localeCompare(b.id));
-    const golden = Math.PI * (3 - Math.sqrt(5));
-    const spacing = 140;
+// Force-directed placement: a one-shot d3-force pass in 2D, then frozen — nodes
+// cluster by their actual connectivity (unlike the old phyllotaxis spiral, which
+// ignored edges). Bounded iterations keep it off the render loop.
+function layout(nodes: GraphNode[], edges: GraphResponse['edges']): Map<string, { x: number; y: number }> {
+    const simNodes: SimNode[] = nodes.map(n => ({ id: n.id }));
+    const links = edges.map(e => ({ source: e.source, target: e.target }));
+    const sim = forceSimulation(simNodes, 2)
+        .force('charge', forceManyBody().strength(-120).distanceMax(700))
+        .force('link', forceLink(links).id((d: SimNode) => d.id).distance(70).strength(0.4))
+        .force('center', forceCenter(0, 0).strength(0.05))
+        .alphaDecay(0.05)
+        .stop();
+    sim.tick(Math.min(240, Math.max(90, Math.round(1200 / Math.sqrt(nodes.length + 1)))));
     const pos = new Map<string, { x: number; y: number }>();
-    ordered.forEach((n, i) => {
-        const r = spacing * Math.sqrt(i);
-        const theta = i * golden;
-        pos.set(n.id, { x: r * Math.cos(theta), y: r * Math.sin(theta) });
-    });
+    simNodes.forEach(sn => pos.set(sn.id, { x: (sn.x ?? 0) * 2.2, y: (sn.y ?? 0) * 2.2 }));
     return pos;
 }
 
 function toFlow(graph: GraphResponse): { nodes: Node<NodeData>[]; edges: Edge[] } {
     const maxPpr = Math.max(1e-9, ...graph.nodes.map(n => n.ppr_score));
-    const pos = layout(graph.nodes);
+    const pos = layout(graph.nodes, graph.edges);
     const nodes: Node<NodeData>[] = graph.nodes.map(n => {
         const norm = Math.min(1, n.ppr_score / maxPpr);
         const hasCommunity = n.leiden_community_id !== null && n.leiden_community_id !== undefined;
@@ -161,12 +176,14 @@ export function CodeGraphLayer({ graph, search, onSelectNode }: CodeGraphLayerPr
     }, [built, setNodes, setEdges]);
 
     const filtered = useMemo(() => {
-        if (!search.trim()) { return nodes; }
-        const q = search.toLowerCase();
-        return nodes.map(n => ({
-            ...n,
-            hidden: !(n.data.label.toLowerCase().includes(q) || n.data.full_path.toLowerCase().includes(q)),
-        }));
+        const q = search.trim().toLowerCase();
+        if (!q) { return nodes.map(n => ({ ...n, className: undefined })); }
+        // Pulse matches, dim the rest — a highlight, not a hide, so the graph's
+        // shape stays legible while the search result stands out.
+        return nodes.map(n => {
+            const hit = n.data.label.toLowerCase().includes(q) || n.data.full_path.toLowerCase().includes(q);
+            return { ...n, className: hit ? 'mm-node-hit' : 'mm-node-dim' };
+        });
     }, [nodes, search]);
 
     const onNodeClick = useCallback((_: React.MouseEvent, node: Node<NodeData>) => {
@@ -189,7 +206,7 @@ export function CodeGraphLayer({ graph, search, onSelectNode }: CodeGraphLayerPr
         <>
             {graph.capped && (
                 <div className="mm-banner">
-                    Showing top {graph.nodes.length} of {graph.total_nodes} nodes by PageRank.
+                    Showing top {graph.nodes.length} of {graph.total_nodes} nodes by centrality.
                 </div>
             )}
             <ReactFlow

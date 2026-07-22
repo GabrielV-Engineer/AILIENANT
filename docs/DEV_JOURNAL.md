@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.2: GraphRAG "Neural Nebula" visualization — 2026-07-22
+**Status:** COMPLETE | **Gates:** mypy 0/422 · pytest 26 (9 new memory + app-boot smoke) · pyright 0 · npm compile 0 (eslint 0; sole pre-existing `vfs_reader.ts` warning) · palette validator PASS on #000000 · `three` confirmed code-split off `main.js`
+- Shipped: custom three.js 3D graph ("Neural Nebula", `panels/memory/nebula/*`) — InstancedMesh glass spheres (Fresnel + emissive-core shader), d3-force-3d one-shot-frozen layout, raycast picking, <1% breathing, search pulse over matched nodes + incident edges; the 2D ReactFlow graph is now force-directed with a pulse highlight, node `<Handle>`s (so edges actually render) and brighter strokes; the embedding vector map is a three.js points scene (density-colored via `--seq`, PCA-variance caption) that **replaced regl-scatterplot** — `regl` compiles with `new Function`, which the dashboard's `script-src 'self'` CSP forbids (this was the real "Failed to load the vector renderer" cause, surfaced once the bare `catch` was un-swallowed); new paginated/sortable File Embedding Browser with HITL-confirmed per-file purge; `ui/ConfirmModal` extracted; backend additive `/embeddings` + `/embeddings/purge` (reuses `semantic_delete`) + `max_nodes` 2000→5000; Windows `.js` MIME registration for the split chunks.
+- Key decision: two engineering corrections shaped it — `react-force-graph-3d`'s per-node objects can't hold 60 FPS toward 100k so a custom InstancedMesh engine replaced it, and real glass (transmission) is un-instanceable/iGPU-costly so the crystal look is shaded; node types honestly encode only the two the file-level substrate has, and the community palette was re-validated on black (not the `#161B22` card surface).
+- Deferred: DEBT-111 symbol-level node types (frozen substrate) · DEBT-112 BYOM adoption of `ConfirmModal` · DEBT-113 GPU-picking + Web-Worker layout for >tens-of-thousands nodes · DEBT-114 captured retrieval-trace for a true reasoning-path pulse.
+
+---
+
 ## 11.0: Dashboard design system & navigation — 2026-07-20
 **Status:** COMPLETE | **Gates:** npm compile 0 (tsc 0 · eslint 0, sole warning is pre-existing `editor/vfs_reader.ts`) · palette validator PASS · frontend-only (no mypy/pytest)
 - Shipped: additive token layer in `shared/theme.css` (spacing/type/radius/elevation/motion/focus/z-index + dataviz-validated status/categorical-8/sequential palettes + defines the previously-undefined `--font-mono`); `dashboard/ui/` primitive set (Card/StatTile/Button/Badge/Skeleton/EmptyState/SectionHeader/ShortcutsOverlay); grouped Monitoring/Configuration/Operations nav with a persisted collapsible icon-rail (`useSidebarCollapsed`), essentials keyboard shortcuts (`useKeyboardShortcuts`: Ctrl/Cmd+B · 1–9 · ?), refined dark elevation, focus-visible rings, thin scrollbars, reduced-motion, and responsive auto-collapse.

@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import mimetypes
 import os
 import secrets
 import sys
@@ -305,7 +306,14 @@ async def _require_token(
     return await call_next(request)
 
 
-# Dashboard SPA — Phase 7.6 (served at /dashboard)
+# The dashboard SPA loads its code-split chunks via dynamic import(); a browser
+# refuses to execute an ES module served with a non-JavaScript content type.
+# Windows' registry-backed mimetypes can map .js/.mjs to text/plain, so register
+# the correct types explicitly before mounting the static files.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+
+# Dashboard SPA — served at /dashboard
 _DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "ailienant-extension", "dist", "dashboard")
 if os.path.isdir(_DASHBOARD_DIR):
     app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

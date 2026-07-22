@@ -177,7 +177,7 @@ Source: [agents/planner.py](ailienant-core/agents/planner.py), [core/memory/cont
 
 ### Memory visualization
 
-The dashboard's Memory panel ([CodeGraphLayer.tsx](ailienant-extension/src/dashboard/panels/memory/CodeGraphLayer.tsx)) renders the GraphRAG index as a force-directed knowledge graph (ReactFlow): LOD nodes, hub/"god" nodes by degree centrality, community coloring, PPR ramp, phyllotaxis layout. Data is plain HTTP — `GET /api/v1/memory/graph` (nodes with `ppr_score`/`in_degree`/`out_degree`, edges with `confidence`) and `/api/v1/memory/vectors` (2D PCA projection) from [api/memory_dashboard.py](ailienant-core/api/memory_dashboard.py). No WebSocket — the dashboard is a same-origin REST SPA.
+The dashboard's Memory panel renders the GraphRAG index four ways. The flagship is a custom three.js **"Neural Nebula"** ([nebula/](ailienant-extension/src/dashboard/panels/memory/nebula/)): an InstancedMesh of glass-crystal node spheres (Fresnel-rim + emissive-core shader, not real transmission — it wouldn't instance), a d3-force-3d one-shot-then-frozen layout, raycast picking, sub-1% breathing, and a search pulse over matched nodes + incident edges; `three` is lazy code-split so it loads only when the 3D tab opens. The 2D [CodeGraphLayer.tsx](ailienant-extension/src/dashboard/panels/memory/CodeGraphLayer.tsx) (ReactFlow) is the WebGL-less / reduced-motion / accessible fallback — now force-directed with a pulse highlight. [VectorMapLayer.tsx](ailienant-extension/src/dashboard/panels/memory/VectorMapLayer.tsx) is a PCA density heatmap, and [EmbeddingBrowser.tsx](ailienant-extension/src/dashboard/panels/memory/EmbeddingBrowser.tsx) a paginated/sortable per-file list with HITL-confirmed purge. Data is plain HTTP — `GET /api/v1/memory/{graph,vectors,embeddings}` and `POST /api/v1/memory/embeddings/purge` from [api/memory_dashboard.py](ailienant-core/api/memory_dashboard.py). No WebSocket — the dashboard is a same-origin REST SPA. (Node types encode only the two the file-level substrate has, `file`/`external-dep`; "centrality" is `nx.degree_centrality`.)
 
 ### Tool registry
 
@@ -376,7 +376,9 @@ Proyect_Ailienant/
 │   │   ├── webview/             #     React sidebar (chat, ThoughtBox, diffs, HUD, checklist)
 │   │   ├── dashboard/           #     Web Dashboard SPA (grouped/collapsible nav shell + panels)
 │   │   │   ├── panels/          #       Hardware/BYOM/Rules/Staging/Audit/Overview/Memory/…
-│   │   │   ├── ui/              #       design-system primitives (Card, StatTile, Button, Badge, Skeleton, EmptyState, ShortcutsOverlay)
+│   │   │   │   └── memory/      #         GraphRAG viz: CodeGraphLayer (2D), VectorMapLayer, EmbeddingBrowser
+│   │   │   │       └── nebula/  #           custom three.js "Neural Nebula" 3D engine (lazy-split)
+│   │   │   ├── ui/              #       design-system primitives (Card, StatTile, Button, Badge, Skeleton, EmptyState, ShortcutsOverlay, ConfirmModal)
 │   │   │   └── hooks/           #       usePollingWhileVisible · useSidebarCollapsed · useKeyboardShortcuts
 │   │   ├── core/                #     IntentRouter, PatchActuator, tokenizer, inline-edit manager
 │   │   ├── workspace/           #    Zustand stores, streaming markdown parser
@@ -448,7 +450,8 @@ The Core exposes a REST + WebSocket surface (see [api/](ailienant-core/api/)). H
 | `GET/POST /api/v1/mcp/servers` · `POST /api/v1/mcp/test` · `GET …/registry` · `POST …/registry/install` · `…/config/{export,import}` | MCP server CRUD + curated browse/one-click install + portable config |
 | `GET /api/v1/audit/{log,stats,verify}` | HITL audit ledger + chain verification |
 | `GET /api/v1/sessions/{thread_id}/checkpoints` | Time-travel checkpoint chain |
-| `GET /api/v1/memory/{sections,graph,vectors}` | GraphRAG browse surfaces |
+| `GET /api/v1/memory/{sections,graph,vectors,embeddings}` | GraphRAG browse surfaces (embeddings: paginated/sortable) |
+| `POST /api/v1/memory/embeddings/purge` | HITL-confirmed per-file vector eviction |
 | `POST /api/v1/system/janitor` | Memory GC |
 
 ---

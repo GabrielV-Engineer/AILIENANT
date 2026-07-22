@@ -23,6 +23,10 @@ from typing import Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+# Whitelisted sort keys for the embedding browser — any other value is rejected
+# so a caller can never steer the sort onto an unexpected column.
+_EMBEDDING_SORT_KEYS: frozenset[str] = frozenset({"indexed_at", "token_count", "file_path"})
+
 from core import db as catalog_db
 from core.memory.semantic_memory import SemanticMemoryManager, pca_project_2d
 from core.storage_paths import graphrag_lancedb_path_for
@@ -95,6 +99,34 @@ class VectorMapResponse(BaseModel):
     point_count: int
     degenerate: bool
     variance_explained: List[float]
+
+
+class EmbeddingRow(BaseModel):
+    file_path: str
+    label: str
+    token_count: int
+    indexed_at: str      # ISO-8601 write timestamp; sortable as a string
+    snippet: str
+
+
+class EmbeddingListResponse(BaseModel):
+    project_id: str
+    folder: str
+    rows: List[EmbeddingRow]
+    total: int           # matched rows within the scanned window
+    offset: int
+    limit: int
+
+
+class PurgeRequest(BaseModel):
+    project_id: str
+    file_path: str
+    confirm: bool = False
+
+
+class PurgeResponse(BaseModel):
+    ok: bool
+    file_path: str
 
 
 # =====================================================================
@@ -197,7 +229,7 @@ async def get_sections(depth: int = Query(1, ge=1, le=3)) -> SectionsResponse:
 async def get_graph(
     project_id: str = Query(...),
     folder: str = Query(""),
-    max_nodes: int = Query(300, ge=10, le=2000),
+    max_nodes: int = Query(300, ge=10, le=5000),
 ) -> GraphResponse:
     """Code dependency graph for one section. SQLite only — no vector store hit.
 
@@ -317,3 +349,82 @@ async def get_vectors(
         degenerate=degenerate,
         variance_explained=var_exp,
     )
+
+
+@router.get("/embeddings", response_model=EmbeddingListResponse)
+async def get_embeddings(
+    project_id: str = Query(...),
+    folder: str = Query(""),
+    sort: str = Query("file_path"),
+    order: str = Query("asc"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+) -> EmbeddingListResponse:
+    """Paginated, sortable list of a section's per-file embeddings (no vectors).
+
+    Reads a bounded metadata window from the vector store, sorts by a whitelisted
+    key in Python, then slices offset:limit — the store exposes no native
+    offset/order_by, and the corpus is whole-file (bounded), so a Python-side
+    sort+slice is both sufficient and injection-free.
+    """
+    if not _SAFE_ID_RE.match(project_id):
+        raise HTTPException(status_code=400, detail="invalid project_id")
+    if sort not in _EMBEDDING_SORT_KEYS:
+        raise HTTPException(status_code=422, detail=f"invalid sort key: {sort!r}")
+    if order not in ("asc", "desc"):
+        raise HTTPException(status_code=422, detail=f"invalid order: {order!r}")
+
+    sem = SemanticMemoryManager(lancedb_path=graphrag_lancedb_path_for(project_id))
+    raw = await sem.list_embeddings(project_id, folder_prefix=folder)
+
+    reverse = order == "desc"
+    if sort == "token_count":
+        raw.sort(
+            key=lambda r: (int(r.get("token_count") or 0), str(r.get("file_path", ""))),
+            reverse=reverse,
+        )
+    else:
+        raw.sort(key=lambda r: str(r.get(sort, "")), reverse=reverse)
+
+    total = len(raw)
+    window = raw[offset:offset + limit]
+    rows = [
+        EmbeddingRow(
+            file_path=str(r.get("file_path", "")),
+            label=os.path.basename(_norm(str(r.get("file_path", "")))),
+            token_count=int(r.get("token_count") or 0),
+            indexed_at=str(r.get("indexed_at") or ""),
+            snippet=str(r.get("content_snippet") or ""),
+        )
+        for r in window
+    ]
+
+    return EmbeddingListResponse(
+        project_id=project_id,
+        folder=folder,
+        rows=rows,
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.post("/embeddings/purge", response_model=PurgeResponse)
+async def purge_embedding(req: PurgeRequest) -> PurgeResponse:
+    """Evict a single file's embedding from the vector store (HITL-confirmed).
+
+    Idempotent: purging an already-absent file is a no-op. The delete is keyed on
+    an exact (workspace_hash, file_path) row match; the id is allowlisted and the
+    path is single-quote-escaped inside SemanticMemoryManager.semantic_delete, so
+    there is no SQL-string-injection surface. `confirm` must be explicitly true.
+    """
+    if not _SAFE_ID_RE.match(req.project_id):
+        raise HTTPException(status_code=400, detail="invalid project_id")
+    if req.confirm is not True:
+        raise HTTPException(status_code=422, detail="purge requires confirm=true")
+    if not req.file_path:
+        raise HTTPException(status_code=422, detail="file_path required")
+
+    sem = SemanticMemoryManager(lancedb_path=graphrag_lancedb_path_for(req.project_id))
+    await sem.semantic_delete(req.file_path, workspace_hash=req.project_id)
+    return PurgeResponse(ok=True, file_path=req.file_path)

@@ -597,6 +597,76 @@ class SemanticMemoryManager:
             ]
         return rows[:max_rows]
 
+    # ── Embedding metadata list (dashboard file-embedding browser) ─────
+
+    async def list_embeddings(
+        self,
+        workspace_hash: str,
+        folder_prefix: str = "",
+        max_rows: int = 50000,
+    ) -> List[Dict[str, Any]]:
+        """Read per-file embedding metadata (no vectors) for one workspace.
+
+        Powers the dashboard's file-embedding browser. Returns a list of
+        {file_path, content_snippet, token_count, indexed_at} dicts, optionally
+        folder-filtered and bounded by max_rows. Excludes the heavy vector column
+        (irrelevant to a list). Returns [] on empty table, sanitization failure, or
+        any error (non-fatal). The blocking LanceDB read runs inside to_thread.
+        """
+        if not workspace_hash or not _SAFE_ID_RE.match(workspace_hash):
+            logger.warning(
+                "SemanticMemory.list_embeddings: workspace_hash %r failed sanitization.",
+                workspace_hash,
+            )
+            return []
+        try:
+            return await asyncio.to_thread(
+                self._list_embeddings_sync, workspace_hash, folder_prefix, max_rows
+            )
+        except Exception as err:
+            logger.warning("SemanticMemory.list_embeddings: failed (non-fatal): %s", err)
+            return []
+
+    def _list_embeddings_sync(
+        self, workspace_hash: str, folder_prefix: str, max_rows: int
+    ) -> List[Dict[str, Any]]:
+        db = lancedb.connect(self._lancedb_path)
+        if _TABLE_NAME not in db.table_names():
+            return []
+        tbl = db.open_table(_TABLE_NAME)
+
+        cols = ["file_path", "content_snippet", "token_count", "indexed_at"]
+        # Same injection-proof Expression pushdown as _dump_vectors_sync: the
+        # workspace_hash is bound into a PyArrow compute Expression, never an SQL
+        # string, so a hostile id can neither widen the scan nor inject a predicate.
+        expr = pc.field("workspace_hash") == workspace_hash
+        rows: List[Dict[str, Any]]
+        try:
+            ds = tbl.to_lance()
+            try:
+                arrow_tbl = ds.to_table(columns=cols, filter=expr)
+            except (TypeError, AttributeError):
+                arrow_tbl = ds.scanner(columns=cols, filter=expr).to_table()
+            rows = arrow_tbl.to_pylist()
+        except Exception as primary_err:
+            logger.debug(
+                "list_embeddings: pushdown path unavailable (%s) — bounded fallback.",
+                primary_err,
+            )
+            arrow_tbl = tbl.to_arrow()
+            rows = [
+                r for r in arrow_tbl.to_pylist()
+                if str(r.get("workspace_hash", "")) == workspace_hash
+            ]
+
+        if folder_prefix:
+            fp = folder_prefix.replace("\\", "/")
+            rows = [
+                r for r in rows
+                if str(r.get("file_path", "")).replace("\\", "/").startswith(fp)
+            ]
+        return rows[:max_rows]
+
 
 # ── Module-level helpers ───────────────────────────────────────────────────
 

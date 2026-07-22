@@ -1123,3 +1123,116 @@ html, body, #root { height: 100%; }
   .ui-skeleton,
   .ui-overlay { transition: none; animation: none; }
 }
+
+/* ============================================================
+   GraphRAG knowledge visualization (Neural Nebula + layers)
+   ============================================================ */
+
+/* ── 3D Nebula ─────────────────────────────────────────────── */
+.mm-nebula { position: absolute; inset: 0; }
+.mm-nebula-canvas { width: 100%; height: 100%; display: block; background: #000; cursor: grab; }
+.mm-nebula-canvas:active { cursor: grabbing; }
+.mm-nebula-legend {
+  position: absolute; bottom: 12px; left: 12px; z-index: 6;
+  display: flex; gap: 14px; align-items: center;
+  background: color-mix(in srgb, var(--bg-surface) 70%, transparent);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-pill);
+  padding: 6px 12px; font-size: 11px; color: var(--text-secondary);
+}
+.mm-legend-item { display: flex; align-items: center; gap: 6px; }
+.mm-legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.mm-legend-file { background: #3987e5; }
+.mm-legend-ext { background: #6e7681; border-radius: 2px; transform: rotate(45deg); }
+.mm-legend-god { background: #e3b341; box-shadow: 0 0 6px #e3b341; }
+
+/* ── 2D graph edge handles (hidden, centred so edges draw node-to-node) ── */
+.mm-handle {
+  opacity: 0 !important;
+  width: 6px !important; height: 6px !important;
+  min-width: 0 !important; min-height: 0 !important;
+  border: 0 !important; background: transparent !important;
+  top: 50% !important; left: 50% !important; right: auto !important; bottom: auto !important;
+  transform: translate(-50%, -50%) !important;
+  pointer-events: none !important;
+}
+
+/* ── Vector map caption + density legend ───────────────────── */
+.mm-vec-caption {
+  position: absolute; top: 10px; left: 10px; z-index: 6;
+  font-size: 11px; color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-smart);
+  padding: 4px 10px;
+}
+.mm-vec-legend {
+  position: absolute; top: 10px; right: 10px; z-index: 6;
+  display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-secondary);
+}
+.mm-vec-legend-bar {
+  width: 90px; height: 8px; border-radius: 4px;
+  background: linear-gradient(90deg, #184f95, #3987e5, #9ec5f4, #eaf4ff);
+}
+
+/* ── File embedding browser ────────────────────────────────── */
+.mm-embeddings { position: absolute; inset: 0; overflow: auto; padding: var(--space-2); }
+.mm-emb-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mm-emb-th {
+  text-align: left; padding: 8px 10px; color: var(--text-secondary);
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  cursor: pointer; user-select: none; white-space: nowrap;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mm-emb-th:hover { color: var(--text-primary); }
+.mm-emb-th--actions { width: 44px; cursor: default; }
+.mm-emb-row { cursor: pointer; }
+.mm-emb-row:hover { background: var(--bg-hover); }
+.mm-emb-row td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 55%, transparent); }
+.mm-emb-file { color: var(--text-primary); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-emb-num, .mm-emb-date { font-variant-numeric: tabular-nums; color: var(--text-secondary); white-space: nowrap; }
+.mm-emb-actions { text-align: right; }
+.mm-emb-purge { padding: 3px 6px; }
+.mm-emb-purge:hover { color: var(--status-critical); }
+.mm-emb-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; font-size: 11px; color: var(--text-secondary); }
+.mm-emb-pageinfo { font-variant-numeric: tabular-nums; }
+
+/* ── Glass inspect card (emerges on select) ────────────────── */
+.mm-glass {
+  background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 75%, #ffffff 12%);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 var(--highlight-top);
+  animation: mm-emerge var(--dur-base) var(--ease);
+}
+@keyframes mm-emerge {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.mm-detail-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.mm-detail-stats { display: flex; gap: 8px; margin-bottom: 10px; }
+.mm-detail-stats .ui-stat { flex: 1; }
+
+/* ── 2D graph search pulse (highlight, not hide) ───────────── */
+.react-flow__node.mm-node-dim { opacity: 0.22; transition: opacity var(--dur-base) var(--ease); }
+.react-flow__node.mm-node-hit { animation: mm-node-pulse 1.2s ease-in-out infinite; z-index: 10; }
+@keyframes mm-node-pulse {
+  0%, 100% { filter: drop-shadow(0 0 2px var(--accent-primary)); }
+  50% { filter: drop-shadow(0 0 10px var(--accent-primary)); }
+}
+
+/* ── Generic confirm modal (ui/ConfirmModal) ───────────────── */
+.ui-confirm { width: 420px; max-width: 92vw; }
+.ui-confirm-body { font-size: 13px; color: var(--text-primary); line-height: 1.5; margin: 4px 0 12px; }
+.ui-confirm-warning {
+  font-size: 12px; color: var(--status-warning);
+  background: color-mix(in srgb, var(--status-warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-warning) 35%, transparent);
+  border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 12px;
+}
+.ui-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node.mm-node-hit { animation: none; filter: drop-shadow(0 0 6px var(--accent-primary)); }
+  .mm-glass { animation: none; }
+}

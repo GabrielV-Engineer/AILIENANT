@@ -1449,3 +1449,22 @@ precedent this design leans on.
 **Known limitation:** if the server process restarts mid-session, L1 goes cold and the resolver has no L2
 fallback (avoiding a per-turn SQLite read is the point) — the next turn is treated as a fresh session
 start, so `duration_s` under-counts for that one session. A degraded metric, not a correctness issue.
+
+## §34 — Memory Dashboard: Embedding Browser + Purge (REST Wire Contract)
+
+Additive REST surface on the existing `/api/v1/memory` router (`api/memory_dashboard.py`) for the GraphRAG
+visualization's file-embedding browser. Transport-only Pydantic models (not persisted schema); additive and
+version-tolerant — consumers ignore unknown fields, and no existing endpoint's shape changes.
+
+| Endpoint | Method | Request | Response | Notes |
+|---|---|---|---|---|
+| `/api/v1/memory/embeddings` | GET | `project_id`, `folder`, `sort∈{file_path,token_count,indexed_at}`, `order∈{asc,desc}`, `offset≥0`, `limit∈[1,200]` | `EmbeddingListResponse{project_id, folder, rows:[EmbeddingRow{file_path,label,token_count,indexed_at,snippet}], total, offset, limit}` | Reads a bounded metadata window via `SemanticMemoryManager.list_embeddings` (no vector column), sorts by the whitelisted key + slices in Python; `total` = matched rows in the scanned window. Unknown `sort`/`order` → 422; bad `project_id` (fails `_SAFE_ID_RE`) → 400. |
+| `/api/v1/memory/embeddings/purge` | POST | `{project_id, file_path, confirm:true}` | `PurgeResponse{ok, file_path}` | HITL-gated (`confirm` must be `true`, else 422). Delegates to the existing `SemanticMemoryManager.semantic_delete` (id allowlisted, path single-quote-escaped). Idempotent — purging an absent row is a no-op. |
+
+**Cap-raise (compatible widening):** `/api/v1/memory/graph`'s `max_nodes` upper bound widened `2000 → 5000`
+(default unchanged at 300), aligned with `MAX_GRAPH_EDGES`. Strictly permissive — no previously-valid request
+becomes invalid; the `capped` flag contract is unchanged.
+
+**Store method:** `SemanticMemoryManager.list_embeddings` (`core/memory/semantic_memory.py`) mirrors
+`dump_vectors`' injection-proof PyArrow-Expression pushdown (`workspace_hash` bound, never interpolated) but
+selects metadata columns including `indexed_at` and excludes the heavy `vector` column.
