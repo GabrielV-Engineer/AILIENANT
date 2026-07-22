@@ -428,12 +428,12 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** 11.4 (BYOM & Extensions polish) — migrate the `.byom-*` block and `BYOMPanel.tsx` off `--vscode-*`/`--color-*`/hardcoded hex onto the design tokens directly, then delete the shim.
 - **Notes:** carved at 11.0 ship per CLAUDE.md §11.3; also fold in the `SEMAPHORE_COLORS`/inline-hex token migration for `HardwarePanel`/`OverviewPanel` as those panels are redesigned (11.3).
 
-### DEBT-111 [MEDIUM · Blocked] — GraphRAG nebula limited to file/external node types
+### DEBT-111 [MEDIUM · Floating] — GraphRAG nebula limited to file/external node types
 
 - **Date:** 2026-07-22
 - **Reproduce:** open the Memory panel's Nebula. Nodes render as `file` (sphere) or `external-dep` (octahedron) only — there is no `function`/`class`/`module` shape, because the graph substrate is file-level.
-- **Blocked by:** `docs/SCHEMA_EVOLUTION.MD` "Symbol-Level Call-Graph Substrate" deliberately keeps `symbol_definitions`/`observed_call_edges` disconnected from the analytics graph (storing symbol edges would exceed `MAX_GRAPH_EDGES=5000` and fork the PPR/Leiden pipeline).
-- **Enterprise target (Phase 11.2.S):** amend that decision, add a symbol-edge analytics pass (or a separate capped symbol graph), then extend the nebula's `nodeThreeObject`/shape map. The rendering engine already scales; only the data substrate is the blocker.
+- **Not blocked (re-analyzed 2026-07-22):** a full call-edge-materialized symbol graph would conflict with `docs/SCHEMA_EVOLUTION.MD` "Symbol-Level Call-Graph Substrate" (`observed_call_edges` is unbounded/append-only and would exceed `MAX_GRAPH_EDGES=5000` or fork the PPR/Leiden pipeline) — but a containment-only design is not: `symbol_definitions` already exists, is already populated per-project, and stores zero edges, exactly the Tier-2 catalog that decision already authorizes.
+- **Enterprise target (Phase 11.2.S):** render `symbol_definitions` rows as satellite nodes of their owning file via a `defined_in` containment edge (bounded by symbol count, never enters `MAX_GRAPH_EDGES` accounting), extend the nebula's `nodeThreeObject`/shape map to the new `kind`s, and resolve "who calls this symbol" on-demand via the existing `find_symbol_callers` READ_ONLY tool (never bulk-loaded into the analytics graph). The rendering engine already scales; no decision amendment or new analytics pipeline needed.
 
 ### DEBT-113 [LOW · Floating] — Nebula picking + layout not yet scaled to 100k nodes
 
