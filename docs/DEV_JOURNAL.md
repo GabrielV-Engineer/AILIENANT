@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.3: Real-time Monitoring Panels Redesign — 2026-07-22
+**Status:** COMPLETE | **Gates:** tsc 0 · eslint 0 (sole pre-existing `vfs_reader.ts` warning) · npm compile 0
+- Shipped: dependency-free SVG chart primitives (`RadialGauge`/`Sparkline`/`Donut` + bounded timestamped `useRingBuffer`, `format.ts`) driving redesigned Telemetry (routing donut + spend-velocity), Hardware (radial gauges + localStorage thresholds + 60s VRAM timeline), Overview (`StatTile` KPIs incl. HITL pending), and a Runtime adapter tier-resolution ladder.
+- Key decision: honest-substrate frontend-only — metrics with no persisted history render as a live rolling client window (oscilloscope-style, reset on reload) rather than fabricating a series or blocking on new backend; fills animate via `stroke-dashoffset`/`transform` (not non-portable geometry-attribute transitions), a11y-labelled with reduced-motion fallbacks.
+- Deferred: DEBT-116..119 — latency P50/P95, Docker Gantt, adapter tier switcher, live container logs → new sub-phase 11.3.B.
+
+---
+
 ## 11.1: Project Context Disambiguation — 2026-07-22
 **Status:** COMPLETE | **Gates:** mypy 0/423 · pytest 2434 passed + 10 new (`test_project_context_scoping.py`) · pyright 0 · npm compile 0 (tsc 0, eslint 0; sole pre-existing `vfs_reader.ts` warning) · TestClient smoke: `/api/v1/projects` + 4 scoped read filters return 200
 - Shipped: persistent `projects` registry (`GET /api/v1/projects`, ghost-path-filtered) + top-bar `ProjectSelector` (localStorage + `?project_id=` URL, ghost-selection reconcile); additive nullable `project_id` column + index + PRAGMA-guarded migration on `routing_decisions`/`oom_fallback_events` (telemetry DB), `hitl_audit_log`, `dead_letter_tasks`, tagged on write from `state["project_id"]`; optional `?project_id=` read filters on telemetry/audit/DLQ endpoints; Telemetry/Overview/Audit/Recovery panels re-scope on switch; Hardware/Runtime carry an honest "machine-global" badge; BYOM/Extensions/Rules show the active-project badge.

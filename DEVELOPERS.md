@@ -380,7 +380,9 @@ Proyect_Ailienant/
 │   │   │   │   └── memory/      #         GraphRAG viz: CodeGraphLayer (2D), VectorMapLayer, EmbeddingBrowser
 │   │   │   │       └── nebula/  #           custom three.js "Neural Nebula" 3D engine (lazy-split)
 │   │   │   ├── ui/              #       design-system primitives (Card, StatTile, Button, Badge, Skeleton, EmptyState, ShortcutsOverlay, ConfirmModal, ProjectSelector, ActiveProjectBadge)
-│   │   │   └── hooks/           #       usePollingWhileVisible · useSidebarCollapsed · useKeyboardShortcuts · useActiveProject
+│   │   │   │   └── charts/      #         dependency-free SVG chart primitives (RadialGauge, Sparkline, Donut)
+│   │   │   ├── hooks/           #       usePollingWhileVisible · useSidebarCollapsed · useKeyboardShortcuts · useActiveProject · useRingBuffer
+│   │   │   └── format.ts        #       shared number/currency/size/relative-time formatters
 │   │   ├── core/                #     IntentRouter, PatchActuator, tokenizer, inline-edit manager
 │   │   ├── workspace/           #    Zustand stores, streaming markdown parser
 │   │   │   ├── chatStore.ts     #      memory-only Zustand store — 22 live chat-runtime fields (messages, streaming, toasts, …)

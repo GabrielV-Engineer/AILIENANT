@@ -9,3 +9,6 @@ export { ShortcutsOverlay, type ShortcutHint } from './ShortcutsOverlay';
 export { ConfirmModal } from './ConfirmModal';
 export { ProjectSelector } from './ProjectSelector';
 export { ActiveProjectBadge } from './ActiveProjectBadge';
+export { RadialGauge } from './charts/RadialGauge';
+export { Sparkline } from './charts/Sparkline';
+export { Donut, type DonutSlice } from './charts/Donut';

@@ -1,6 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
-import { Badge } from '../ui';
+import { useRingBuffer } from '../hooks/useRingBuffer';
+import { Badge, RadialGauge, Skeleton, Sparkline } from '../ui';
+import { Icon } from '../../shared/Icon';
+import { formatAgo } from '../format';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,34 +25,100 @@ interface HardwareProfile {
 type ExecutionMode       = 'SEQUENTIAL' | 'MICRO_SWARM' | 'FULL_SWARM';
 type ExecutionModeChoice = 'AUTO' | ExecutionMode;
 
+interface Band { warn: number; crit: number; }
+interface Thresholds { ram: Band; vram: Band; }
+
 const MICRO_SWARM_MIN_GB = 4.0;
 const FULL_SWARM_MIN_GB  = 12.0;
+const PROFILE_POLL_MS    = 3_000;
+const VRAM_HISTORY_LEN   = 20; // ~60 s at the 3 s poll cadence
 
 const SEMAPHORE_COLORS = { green: '#63a583', yellow: '#E3B341', red: '#F85149' } as const;
 type SemaphoreLevel = keyof typeof SEMAPHORE_COLORS;
+
+const THRESH_KEY = 'ailienant.dashboard.hwThresholds';
+const DEFAULT_THRESH: Thresholds = { ram: { warn: 70, crit: 90 }, vram: { warn: 70, crit: 90 } };
+
+function clampPct(n: number): number {
+    if (!Number.isFinite(n)) { return 0; }
+    return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function loadThresholds(): Thresholds {
+    try {
+        const raw = localStorage.getItem(THRESH_KEY);
+        if (!raw) { return DEFAULT_THRESH; }
+        const parsed = JSON.parse(raw) as Partial<Thresholds>;
+        return {
+            ram:  { ...DEFAULT_THRESH.ram,  ...parsed.ram },
+            vram: { ...DEFAULT_THRESH.vram, ...parsed.vram },
+        };
+    } catch { return DEFAULT_THRESH; }
+}
 
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function GaugeBar({ used, total, label }: { used: number; total: number; label: string }): JSX.Element {
-    const pct  = total > 0 ? Math.min(used / total, 1) : 0;
-    const warn = pct > 0.7;
-    const crit = pct > 0.9;
+function LiveTag({ at }: { at: number | null }): JSX.Element | null {
+    if (at === null) { return null; }
+    return <span className="db-live"><span className="db-live-dot" />updated {formatAgo(at)}</span>;
+}
+
+function ThresholdMenu({ thresholds, onChange }: { thresholds: Thresholds; onChange: (t: Thresholds) => void }): JSX.Element {
+    const [open, setOpen] = useState(false);
+    const wrapRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!open) { return; }
+        const handler = (e: MouseEvent): void => {
+            if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) { setOpen(false); }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [open]);
+
+    const setBand = (metric: keyof Thresholds, key: keyof Band, val: number): void => {
+        onChange({ ...thresholds, [metric]: { ...thresholds[metric], [key]: clampPct(val) } });
+    };
+
     return (
-        <div style={{ marginBottom: 10 }}>
-            <div className="db-row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-                <span className="db-label" style={{ marginBottom: 0 }}>{label}</span>
-                <span className="db-muted">{used.toFixed(1)} / {total.toFixed(1)} GB</span>
-            </div>
-            <div className="db-gauge-track">
-                <div
-                    className="db-gauge-fill"
-                    data-warn={warn && !crit ? 'true' : 'false'}
-                    data-crit={crit ? 'true' : 'false'}
-                    style={{ width: `${pct * 100}%` }}
-                />
-            </div>
+        <div className="db-threshold-wrap" ref={wrapRef}>
+            <button
+                className="db-btn db-btn-secondary"
+                style={{ padding: '2px 8px', fontSize: 11 }}
+                onClick={() => setOpen(v => !v)}
+                aria-expanded={open}
+                aria-label="Configure alarm thresholds"
+            >
+                <Icon name="settings" size={12} /> Thresholds
+            </button>
+            {open && (
+                <div className="db-threshold-menu" role="dialog" aria-label="Alarm thresholds">
+                    <div className="db-threshold-head">Alarm thresholds (%)</div>
+                    {(['ram', 'vram'] as (keyof Thresholds)[]).map(metric => (
+                        <div key={metric} style={{ marginBottom: 8 }}>
+                            <div className="db-label" style={{ marginBottom: 4, textTransform: 'uppercase' }}>{metric}</div>
+                            <div className="db-threshold-row">
+                                <span className="db-muted">Warn</span>
+                                <input
+                                    className="db-input db-threshold-input" type="number" min={0} max={100}
+                                    value={thresholds[metric].warn}
+                                    onChange={e => setBand(metric, 'warn', Number(e.target.value))}
+                                />
+                            </div>
+                            <div className="db-threshold-row">
+                                <span className="db-muted">Critical</span>
+                                <input
+                                    className="db-input db-threshold-input" type="number" min={0} max={100}
+                                    value={thresholds[metric].crit}
+                                    onChange={e => setBand(metric, 'crit', Number(e.target.value))}
+                                />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -75,8 +144,16 @@ function ModeSkeleton(): JSX.Element {
 export function HardwarePanel(): JSX.Element {
     const [profile, setProfile]           = useState<HardwareProfile | null>(null);
     const [profileReady, setProfileReady] = useState(false);
+    const [updatedAt, setUpdatedAt]       = useState<number | null>(null);
     const [modeChoice, setModeChoice]     = useState<ExecutionModeChoice>('AUTO');
     const [modeSaving, setModeSaving]     = useState(false);
+    const [thresholds, setThresholds]     = useState<Thresholds>(() => loadThresholds());
+    const vramHistory = useRingBuffer<number>(VRAM_HISTORY_LEN);
+
+    const saveThresholds = (t: Thresholds): void => {
+        setThresholds(t);
+        try { localStorage.setItem(THRESH_KEY, JSON.stringify(t)); } catch { /* storage unavailable */ }
+    };
 
     // Fetch stored mode preference once on mount
     useEffect(() => {
@@ -87,18 +164,23 @@ export function HardwarePanel(): JSX.Element {
     }, []);
 
     // Poll the hardware profile while the dashboard is visible; a hidden window
-    // pauses polling and resumes on return.
+    // pauses polling and resumes on return. Each reading feeds the VRAM timeline.
     usePollingWhileVisible(() => {
         void (async (): Promise<void> => {
             try {
                 const r = await fetch('/api/v1/hardware/profile');
                 if (!r.ok) return;
                 const data: HardwareProfile = await r.json();
+                const now = Date.now();
                 setProfile(data);
                 setProfileReady(true);
+                setUpdatedAt(now);
+                if (!data.is_apple_silicon && data.vram_gb > 0) {
+                    vramHistory.push(data.vram_used_gb, now);
+                }
             } catch { /* backend offline */ }
         })();
-    }, 3000);
+    }, PROFILE_POLL_MS);
 
     const changeMode = async (m: ExecutionModeChoice): Promise<void> => {
         setModeChoice(m);
@@ -199,21 +281,52 @@ export function HardwarePanel(): JSX.Element {
 
                 {/* ── Memory Card ── */}
                 <div className="db-card">
-                    <div className="db-card-title">Memory</div>
-                    <GaugeBar
-                        used={ramUsed}
-                        total={ramTotal}
-                        label={isUnified ? 'Unified Memory' : 'RAM'}
-                    />
-                    {hasGpu && (
-                        <>
-                            <GaugeBar used={vramUsed} total={vramTotal} label="VRAM" />
-                            {profile?.gpu_name && (
-                                <div className="db-muted" style={{ fontSize: 11, marginTop: 2 }}>
-                                    {profile.gpu_name}
+                    <div className="db-row" style={{ justifyContent: 'space-between' }}>
+                        <div className="db-card-title">Memory</div>
+                        <div className="db-row" style={{ gap: 8, alignItems: 'center' }}>
+                            <LiveTag at={updatedAt} />
+                            <ThresholdMenu thresholds={thresholds} onChange={saveThresholds} />
+                        </div>
+                    </div>
+
+                    {!profileReady ? (
+                        <Skeleton height={120} />
+                    ) : (
+                        <div className="db-row" style={{ gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                            <div style={{ flex: 1, minWidth: 150 }}>
+                                <RadialGauge
+                                    value={ramUsed} max={ramTotal} label={isUnified ? 'Unified' : 'RAM'} unit="GB"
+                                    warnPct={thresholds.ram.warn / 100} critPct={thresholds.ram.crit / 100}
+                                />
+                                <div className="db-gauge-caption">{ramUsed.toFixed(1)} / {ramTotal.toFixed(1)} GB</div>
+                            </div>
+                            {hasGpu && (
+                                <div style={{ flex: 1, minWidth: 150 }}>
+                                    <RadialGauge
+                                        value={vramUsed} max={vramTotal} label="VRAM" unit="GB"
+                                        warnPct={thresholds.vram.warn / 100} critPct={thresholds.vram.crit / 100}
+                                    />
+                                    <div className="db-gauge-caption">{vramUsed.toFixed(1)} / {vramTotal.toFixed(1)} GB</div>
                                 </div>
                             )}
-                        </>
+                        </div>
+                    )}
+
+                    {hasGpu && (
+                        <div style={{ marginTop: 12 }}>
+                            <div className="db-label">VRAM — last 60s</div>
+                            <Sparkline
+                                samples={vramHistory.samples}
+                                domainMin={0}
+                                domainMax={vramTotal > 0 ? vramTotal : undefined}
+                                ariaLabel={`VRAM usage timeline, currently ${vramUsed.toFixed(1)} of ${vramTotal.toFixed(1)} gigabytes`}
+                                warmingHint="Warming up — VRAM timeline builds over ~1 minute…"
+                            />
+                        </div>
+                    )}
+
+                    {hasGpu && profile?.gpu_name && (
+                        <div className="db-muted" style={{ fontSize: 11, marginTop: 6 }}>{profile.gpu_name}</div>
                     )}
                     {!hasGpu && !isUnified && profileReady && (
                         <div className="db-muted" style={{ fontSize: 11, marginTop: 4 }}>

@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
-import { Badge } from '../ui';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Badge, Donut, EmptyState, Skeleton, Sparkline, type DonutSlice } from '../ui';
+import { Icon } from '../../shared/Icon';
 import { useActiveProject, withProject } from '../hooks/useActiveProject';
+import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
+import { useRingBuffer } from '../hooks/useRingBuffer';
+import { formatAgo, formatUsd } from '../format';
 
 interface TokenSnapshot {
     local_tokens:           number;
@@ -23,23 +27,46 @@ interface RoutingDecision {
 
 const PAGE_SIZE = 25;
 const REASON_CLAMP = 80;
+const COST_POLL_MS = 5_000;
+
+/** Freshness cue: a pulsing dot + "updated Ns ago". */
+function LiveTag({ at }: { at: number | null }): JSX.Element | null {
+    if (at === null) { return null; }
+    return (
+        <span className="db-live"><span className="db-live-dot" />updated {formatAgo(at)}</span>
+    );
+}
 
 function CostCard(): JSX.Element {
     const [snap, setSnap] = useState<TokenSnapshot | null>(null);
-    const [loading, setLoading] = useState(false);
+    const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+    const prevInvested = useRef<number | null>(null);
+    const velocity = useRingBuffer<number>(40);
 
-    const load = async (): Promise<void> => {
-        setLoading(true);
-        try {
-            const r = await fetch('/api/v1/telemetry/tokens');
-            if (r.ok) { setSnap(await r.json() as TokenSnapshot); }
-        } catch { /* no-op */ } finally { setLoading(false); }
-    };
-    useEffect(() => { load(); }, []);
+    // Poll the process-global token ledger while visible; derive a spend-velocity
+    // (Δ invested per interval) series — a monotonic cumulative total is useless
+    // as a live line, but its rate of change is the signal a monitor wants.
+    usePollingWhileVisible(() => {
+        void (async (): Promise<void> => {
+            try {
+                const r = await fetch('/api/v1/telemetry/tokens');
+                if (!r.ok) { return; }
+                const data = await r.json() as TokenSnapshot;
+                const now = Date.now();
+                if (prevInvested.current !== null) {
+                    velocity.push(Math.max(0, data.estimated_invested_usd - prevInvested.current), now);
+                }
+                prevInvested.current = data.estimated_invested_usd;
+                setSnap(data);
+                setUpdatedAt(now);
+            } catch { /* backend offline */ }
+        })();
+    }, COST_POLL_MS);
 
     const total = snap ? snap.local_tokens + snap.cloud_tokens : 0;
     const localPct = total > 0 ? (snap!.local_tokens / total) * 100 : 0;
     const cloudPct = total > 0 ? (snap!.cloud_tokens / total) * 100 : 0;
+    const lastVel = velocity.samples.length > 0 ? velocity.samples[velocity.samples.length - 1].v : 0;
 
     return (
         <div className="db-card">
@@ -48,26 +75,78 @@ function CostCard(): JSX.Element {
                     <div className="db-card-title">Cost &amp; Budget snapshot</div>
                     <Badge status="neutral" icon="cpu">Process-global</Badge>
                 </div>
-                <button className="db-btn db-btn-secondary" onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
+                <LiveTag at={updatedAt} />
             </div>
             {snap === null
-                ? <div className="db-muted">No telemetry yet.</div>
+                ? <Skeleton height={72} />
                 : <>
                     <div className="db-row" style={{ gap: 24, marginBottom: 12 }}>
                         <div>
                             <div className="db-label" style={{ marginBottom: 2 }}>Spent</div>
-                            <div style={{ fontSize: 20, fontWeight: 700 }}>${snap.estimated_invested_usd.toFixed(3)}</div>
+                            <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{formatUsd(snap.estimated_invested_usd)}</div>
                         </div>
                         <div>
                             <div className="db-label" style={{ marginBottom: 2 }}>Saved via local routing</div>
-                            <div style={{ fontSize: 20, fontWeight: 700, color: '#63a583' }}>${snap.estimated_savings_usd.toFixed(3)}</div>
+                            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--status-good)', fontVariantNumeric: 'tabular-nums' }}>{formatUsd(snap.estimated_savings_usd)}</div>
                         </div>
                     </div>
-                    <div className="db-label">Local tokens · {Math.round(snap.local_tokens).toLocaleString()}</div>
+
+                    <div className="db-row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                        <span className="db-label" style={{ marginBottom: 0 }}>Spend velocity</span>
+                        <span className="db-muted" style={{ fontVariantNumeric: 'tabular-nums' }}>{formatUsd(lastVel)} / interval</span>
+                    </div>
+                    <Sparkline
+                        samples={velocity.samples}
+                        ariaLabel={`Spend velocity, latest ${formatUsd(lastVel)} per ${COST_POLL_MS / 1000}-second interval`}
+                        warmingHint="Warming up — spend velocity appears after two polls…"
+                    />
+
+                    <div className="db-label" style={{ marginTop: 12 }}>Local tokens · {Math.round(snap.local_tokens).toLocaleString()}</div>
                     <div className="db-gauge-track"><div className="db-gauge-fill" style={{ width: `${localPct}%` }} /></div>
                     <div className="db-label" style={{ marginTop: 8 }}>Cloud tokens · {Math.round(snap.cloud_tokens).toLocaleString()}</div>
                     <div className="db-gauge-track"><div className="db-gauge-fill" data-warn="true" style={{ width: `${cloudPct}%` }} /></div>
                 </>}
+        </div>
+    );
+}
+
+function RoutingDonutCard(): JSX.Element {
+    const { projectId } = useActiveProject();
+    const [rows, setRows] = useState<RoutingDecision[] | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        setRows(null);
+        void (async (): Promise<void> => {
+            try {
+                const r = await fetch(withProject('/api/v1/telemetry/routing?limit=200', projectId));
+                if (!r.ok) { if (!cancelled) { setRows([]); } return; }
+                const data = (await r.json() as { decisions: RoutingDecision[] }).decisions ?? [];
+                if (!cancelled) { setRows(data); }
+            } catch { if (!cancelled) { setRows([]); } }
+        })();
+        return () => { cancelled = true; };
+    }, [projectId]);
+
+    // Aggregate by target node (a bounded set) rather than the free-text reason.
+    const slices = useMemo<DonutSlice[]>(() => {
+        if (!rows) { return []; }
+        const counts = new Map<string, number>();
+        for (const d of rows) {
+            const key = d.target_node ?? 'unknown';
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        return [...counts.entries()].map(([label, value]) => ({ label, value }));
+    }, [rows]);
+
+    return (
+        <div className="db-card">
+            <div className="db-card-title">Routing distribution (last 200)</div>
+            {rows === null
+                ? <Skeleton height={120} />
+                : rows.length === 0
+                    ? <EmptyState icon="network" title="No routing telemetry yet" hint="Decisions appear here as the engine routes tasks." />
+                    : <Donut slices={slices} ariaLabel="Routing decisions by target node" centerLabel="decisions" />}
         </div>
     );
 }
@@ -151,6 +230,14 @@ export function TelemetryPanel(): JSX.Element {
         <div>
             <div className="db-section-title">Telemetry</div>
             <CostCard />
+            <RoutingDonutCard />
+            <div className="db-card">
+                <div className="db-card-title">Request latency (P50 / P95)</div>
+                <div className="db-deferred">
+                    <Icon name="clock" size={12} />
+                    Coming in 11.3.B — per-request latency is not captured yet.
+                </div>
+            </div>
             <RoutingLogCard />
         </div>
     );

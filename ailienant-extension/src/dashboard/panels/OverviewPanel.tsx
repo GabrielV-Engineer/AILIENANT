@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Badge } from '../ui';
+import { useEffect, useMemo, useState } from 'react';
+import { Skeleton, StatTile } from '../ui';
 import { useActiveProject, withProject } from '../hooks/useActiveProject';
+import { formatUsd } from '../format';
 
 interface TokenSnapshot {
     local_tokens:            number;
@@ -17,18 +18,23 @@ interface AuditStats {
     by_type:       Record<string, number>;
 }
 
-interface RoutingDecision { id: number; timestamp: string; }
+interface RoutingDecision { id: number; timestamp: string; session_id: string | null; }
 
 interface OverviewProps { onNavigate: (id: string) => void; }
 
 const RECENT_BUCKETS = 12; // last 12 hours
+const DAY_MS = 86_400_000;
+
+function parseUtc(ts: string): number {
+    // SQLite CURRENT_TIMESTAMP is "YYYY-MM-DD HH:MM:SS" in UTC.
+    return Date.parse(ts.replace(' ', 'T') + 'Z');
+}
 
 function bucketByHour(rows: RoutingDecision[]): number[] {
     const buckets = new Array<number>(RECENT_BUCKETS).fill(0);
     const now = Date.now();
     for (const r of rows) {
-        // SQLite CURRENT_TIMESTAMP is "YYYY-MM-DD HH:MM:SS" in UTC.
-        const ms = Date.parse(r.timestamp.replace(' ', 'T') + 'Z');
+        const ms = parseUtc(r.timestamp);
         if (Number.isNaN(ms)) { continue; }
         const hoursAgo = Math.floor((now - ms) / 3_600_000);
         if (hoursAgo >= 0 && hoursAgo < RECENT_BUCKETS) {
@@ -64,65 +70,56 @@ export function OverviewPanel({ onNavigate }: OverviewProps): JSX.Element {
     const buckets = routing ? bucketByHour(routing) : [];
     const maxBucket = Math.max(1, ...buckets);
 
+    // Distinct routing sessions seen in the last 24h (bounded to the recent window).
+    const activeSessions = useMemo<number>(() => {
+        if (!routing) { return 0; }
+        const now = Date.now();
+        const seen = new Set<string>();
+        for (const r of routing) {
+            const ms = parseUtc(r.timestamp);
+            if (!Number.isNaN(ms) && now - ms < DAY_MS && r.session_id) { seen.add(r.session_id); }
+        }
+        return seen.size;
+    }, [routing]);
+
+    const loadingVal = <Skeleton width={70} height={22} />;
+
     return (
         <div>
             <div className="db-section-title">Overview</div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                {/* Token usage */}
-                <div className="db-card" style={{ marginBottom: 0 }}>
-                    <div className="db-row" style={{ justifyContent: 'space-between', gap: 8 }}>
-                        <div className="db-card-title" title="Cumulative since the Core process started — not per calendar day">
-                            Token usage (since startup)
-                        </div>
-                        <Badge status="neutral" icon="cpu">Global</Badge>
-                    </div>
-                    {tokens === null
-                        ? <div className="db-muted">No data.</div>
-                        : <>
-                            <div style={{ fontSize: 22, fontWeight: 700 }}>${tokens.estimated_invested_usd.toFixed(3)}</div>
-                            <div className="db-muted" style={{ marginTop: 4 }}>spent · saved ${tokens.estimated_savings_usd.toFixed(3)} via local routing</div>
-                            <div className="db-muted" style={{ marginTop: 6 }}>
-                                {Math.round(tokens.local_tokens).toLocaleString()} local · {Math.round(tokens.cloud_tokens).toLocaleString()} cloud tokens
-                            </div>
-                        </>}
-                </div>
-
-                {/* MCP servers */}
-                <div className="db-card" style={{ marginBottom: 0 }}>
-                    <div className="db-row" style={{ justifyContent: 'space-between', gap: 8 }}>
-                        <div className="db-card-title">MCP servers</div>
-                        <Badge status="neutral" icon="cpu">Global</Badge>
-                    </div>
-                    {servers === null
-                        ? <div className="db-muted">No data.</div>
-                        : <>
-                            <div style={{ fontSize: 22, fontWeight: 700 }}>{servers.length}</div>
-                            <div className="db-muted" style={{ marginTop: 4 }}>{enabledServers} enabled · {servers.length - enabledServers} disabled</div>
-                            <button className="db-btn db-btn-secondary" style={{ marginTop: 8 }} onClick={() => onNavigate('extensions')}>Manage</button>
-                        </>}
-                </div>
-
-                {/* Pending HITL */}
-                <div className="db-card" style={{ marginBottom: 0 }}>
-                    <div className="db-card-title">Pending HITL</div>
-                    {stats === null
-                        ? <div className="db-muted">No data.</div>
-                        : <>
-                            <div style={{ fontSize: 22, fontWeight: 700, color: stats.by_resolution.pending > 0 ? '#E3B341' : undefined }}>
-                                {stats.by_resolution.pending}
-                            </div>
-                            <div className="db-muted" style={{ marginTop: 4 }}>awaiting review · {stats.total} total events</div>
-                            <button className="db-btn db-btn-secondary" style={{ marginTop: 8 }} onClick={() => onNavigate('audit')}>Open ledger</button>
-                        </>}
-                </div>
+                <StatTile
+                    label="Token spend · global"
+                    title="Cumulative since the Core process started — not per calendar day"
+                    value={tokens === null ? loadingVal : formatUsd(tokens.estimated_invested_usd)}
+                    sub={tokens === null ? 'No data' : `saved ${formatUsd(tokens.estimated_savings_usd)} via local routing · process-global`}
+                />
+                <StatTile
+                    label="MCP servers · global"
+                    value={servers === null ? loadingVal : servers.length}
+                    sub={servers === null ? 'No data' : `${enabledServers} enabled · ${servers.length - enabledServers} disabled`}
+                    footer={<button className="db-btn db-btn-secondary" onClick={() => onNavigate('extensions')}>Manage</button>}
+                />
+                <StatTile
+                    label="HITL pending"
+                    value={stats === null ? loadingVal : stats.by_resolution.pending}
+                    tone={stats && stats.by_resolution.pending > 0 ? 'warning' : 'default'}
+                    sub={stats === null ? 'No data' : `awaiting review · ${stats.total} total events`}
+                    footer={<button className="db-btn db-btn-secondary" onClick={() => onNavigate('audit')}>Open ledger</button>}
+                />
+                <StatTile
+                    label="Active sessions · ≤24h"
+                    value={routing === null ? loadingVal : activeSessions}
+                    sub="distinct routing sessions in the last 24h"
+                />
             </div>
 
             {/* Recent activity */}
             <div className="db-card" style={{ marginTop: 16 }}>
                 <div className="db-card-title">Recent routing activity (last {RECENT_BUCKETS}h)</div>
                 {routing === null
-                    ? <div className="db-muted">Loading…</div>
+                    ? <Skeleton height={80} />
                     : routing.length === 0
                         ? <div className="db-muted">No routing telemetry recorded yet.</div>
                         : <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 80 }}>
@@ -136,7 +133,7 @@ export function OverviewPanel({ onNavigate }: OverviewProps): JSX.Element {
                                         minHeight: count > 0 ? 4 : 1,
                                         background: count > 0 ? 'var(--accent-primary)' : 'var(--border-subtle)',
                                         borderRadius: 2,
-                                        transition: 'height 0.3s ease',
+                                        transition: 'height var(--dur-base) var(--ease)',
                                     }}
                                 />
                             ))}

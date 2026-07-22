@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
 import { Badge } from '../ui';
+import { Icon } from '../../shared/Icon';
 
 interface RuntimeStatus {
     tier:              'DOCKER' | 'WASM' | 'NATIVE_HITL' | null;
@@ -8,6 +9,41 @@ interface RuntimeStatus {
     image_exists:      boolean;
     container_running: boolean;
     mode_label:        string;
+}
+
+type TierId = 'DOCKER' | 'WASM' | 'NATIVE_HITL';
+type TierState = 'active' | 'fallback' | 'blocked';
+
+const TIERS: { id: TierId; name: string; blurb: string }[] = [
+    { id: 'DOCKER',      name: 'Docker sandbox',      blurb: 'Isolated container — read-only rootfs, no network' },
+    { id: 'WASM',        name: 'WebAssembly sandbox', blurb: 'In-process Wasm isolation' },
+    { id: 'NATIVE_HITL', name: 'Native + HITL',       blurb: 'Host execution gated by per-command approval' },
+];
+
+/**
+ * Resolve the adapter fallback ladder from the current status flags. The tier
+ * the backend selected is `active`; higher-priority tiers it skipped are
+ * `blocked` (with the reason we fell through), lower-priority tiers are the
+ * remaining `fallback` options. Needs no new backend — it reads the flags the
+ * status endpoint already returns.
+ */
+function tierLadder(status: RuntimeStatus | null): { id: TierId; name: string; reason: string; state: TierState }[] {
+    const active: TierId | null = status?.docker_reachable ? 'DOCKER' : status?.tier ?? null;
+    const activeIdx = TIERS.findIndex(t => t.id === active);
+
+    const dockerReason = (): string => {
+        if (!status) { return 'Awaiting status…'; }
+        if (!status.docker_reachable) { return 'Daemon unreachable — falling through'; }
+        if (!status.image_exists) { return 'Reachable, but sandbox image not installed'; }
+        if (!status.container_running) { return 'Reachable, image present, container idle'; }
+        return 'Daemon reachable, image present, container running';
+    };
+
+    return TIERS.map((t, i) => {
+        const state: TierState = i === activeIdx ? 'active' : activeIdx === -1 || i < activeIdx ? 'blocked' : 'fallback';
+        const reason = t.id === 'DOCKER' ? dockerReason() : t.blurb;
+        return { id: t.id, name: t.name, reason, state };
+    });
 }
 
 interface LaunchResult { launched: boolean; platform: string; message: string; }
@@ -137,6 +173,7 @@ export function RuntimePanel(): JSX.Element {
     const hasImage  = status?.image_exists ?? false;
     const isRunning = status?.container_running ?? false;
     const imageTone: Tone = hasImage ? 'ok' : reachable ? 'warn' : 'bad';
+    const ladder = tierLadder(status);
 
     return (
         <div>
@@ -153,6 +190,26 @@ export function RuntimePanel(): JSX.Element {
                 <div className="db-traffic-light" style={{ marginBottom: 16 }}>
                     <div className="db-tl-dot" style={{ background: tierColor, width: 16, height: 16 }} />
                     <span style={{ fontWeight: 700, fontSize: 14 }}>{modeLabel}</span>
+                </div>
+
+                {/* Adapter fallback ladder — which execution tier is active and why */}
+                <div className="db-label" style={{ marginBottom: 6 }}>Execution tier resolution</div>
+                <div className="db-tier-ladder" style={{ marginBottom: 16 }}>
+                    {ladder.map((s, i) => (
+                        <div key={s.id} className="db-tier-step" data-state={s.state}>
+                            <div className="db-tier-rail">
+                                <div className="db-tier-node" />
+                                {i < ladder.length - 1 && <div className="db-tier-connector" />}
+                            </div>
+                            <div className="db-tier-body">
+                                <div className="db-tier-name">
+                                    {s.name}
+                                    {s.state === 'active' && <span className="db-tier-pill">Active</span>}
+                                </div>
+                                <div className="db-tier-reason">{s.reason}</div>
+                            </div>
+                        </div>
+                    ))}
                 </div>
 
                 {/* Three status rows */}
@@ -175,6 +232,11 @@ export function RuntimePanel(): JSX.Element {
                 {status === null && (
                     <div className="db-muted" style={{ marginTop: 8, fontSize: 11 }}>Polling Core…</div>
                 )}
+
+                <div className="db-deferred" style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 12, paddingTop: 10 }}>
+                    <Icon name="clock" size={12} />
+                    Lifecycle Gantt, manual tier switch &amp; live container logs — coming in 11.3.B.
+                </div>
             </div>
 
             {/* ── Project Devcontainer card (trusted tier) ── */}
