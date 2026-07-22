@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
+import { Badge } from '../ui';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -166,7 +167,10 @@ export function HardwarePanel(): JSX.Element {
 
     return (
         <div>
-            <div className="db-section-title">Hardware Monitor</div>
+            <div className="db-row" style={{ gap: 10, alignItems: 'center' }}>
+                <div className="db-section-title" style={{ marginBottom: 0 }}>Hardware Monitor</div>
+                <Badge status="neutral" icon="cpu" >Machine-global — not project-scoped</Badge>
+            </div>
 
             <div className="db-grid-2" style={{ marginBottom: 0 }}>
                 {/* ── CPU Card ── */}

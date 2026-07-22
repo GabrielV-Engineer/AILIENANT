@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { Badge } from '../ui';
+import { useActiveProject, withProject } from '../hooks/useActiveProject';
 
 interface TokenSnapshot {
     local_tokens:           number;
@@ -42,7 +44,10 @@ function CostCard(): JSX.Element {
     return (
         <div className="db-card">
             <div className="db-row" style={{ justifyContent: 'space-between' }}>
-                <div className="db-card-title">Cost &amp; Budget snapshot</div>
+                <div className="db-row" style={{ gap: 8 }}>
+                    <div className="db-card-title">Cost &amp; Budget snapshot</div>
+                    <Badge status="neutral" icon="cpu">Process-global</Badge>
+                </div>
                 <button className="db-btn db-btn-secondary" onClick={load} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</button>
             </div>
             {snap === null
@@ -68,18 +73,24 @@ function CostCard(): JSX.Element {
 }
 
 function RoutingLogCard(): JSX.Element {
+    const { projectId } = useActiveProject();
     const [rows, setRows] = useState<RoutingDecision[]>([]);
     const [page, setPage] = useState(0);
     const [loading, setLoading] = useState(false);
     const [done, setDone] = useState(false);
     const [revealed, setRevealed] = useState<Record<number, boolean>>({});
 
+    // A project switch re-scopes the log: reset pagination so the next load
+    // replaces (rather than appends to) rows from the previous project.
+    useEffect(() => { setPage(0); setDone(false); }, [projectId]);
+
     useEffect(() => {
         let cancelled = false;
         const load = async (): Promise<void> => {
             setLoading(true);
             try {
-                const r = await fetch(`/api/v1/telemetry/routing?limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`);
+                const url = withProject(`/api/v1/telemetry/routing?limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`, projectId);
+                const r = await fetch(url);
                 if (!r.ok) { return; }
                 const data = (await r.json() as { decisions: RoutingDecision[] }).decisions ?? [];
                 if (cancelled) { return; }
@@ -89,7 +100,7 @@ function RoutingLogCard(): JSX.Element {
         };
         load();
         return () => { cancelled = true; };
-    }, [page]);
+    }, [page, projectId]);
 
     return (
         <div className="db-card">

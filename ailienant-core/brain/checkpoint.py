@@ -451,3 +451,28 @@ hybrid_checkpointer = HybridCheckpointer()
 
 # Alias: engine.py and main.py import `checkpoint_manager` — no change needed there
 checkpoint_manager = hybrid_checkpointer
+
+
+def project_id_for_thread(thread_id: str) -> Optional[str]:
+    """Resolve a thread's ``project_id`` from its persisted graph state.
+
+    The audit ledger is written from the transport layer, which holds only the
+    ``session_id`` (== ``thread_id``). This reads the durable checkpoint rather
+    than any in-memory session map, so the answer is correct even after a
+    WebSocket drop/reconnect that cleared process-local state. Best-effort:
+    returns ``None`` (never raises) if no checkpoint exists yet or the channel
+    is unset, in which case the caller writes a project-agnostic (NULL) row.
+    """
+    if not thread_id:
+        return None
+    try:
+        cfg: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        ct = checkpoint_manager.get_tuple(cfg)
+        if ct is None:
+            return None
+        values = ct.checkpoint.get("channel_values", {})
+        pid = values.get("project_id")
+        return pid if isinstance(pid, str) and pid else None
+    except Exception:  # noqa: BLE001 — resolution is advisory; audit must still write
+        logger.debug("project_id_for_thread failed for %s", thread_id, exc_info=True)
+        return None

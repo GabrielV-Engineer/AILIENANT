@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { Badge } from '../ui';
+import { useActiveProject, withProject } from '../hooks/useActiveProject';
 
 interface TokenSnapshot {
     local_tokens:            number;
@@ -37,6 +39,7 @@ function bucketByHour(rows: RoutingDecision[]): number[] {
 }
 
 export function OverviewPanel({ onNavigate }: OverviewProps): JSX.Element {
+    const { projectId } = useActiveProject();
     const [tokens,   setTokens]   = useState<TokenSnapshot | null>(null);
     const [servers,  setServers]  = useState<McpServer[] | null>(null);
     const [stats,    setStats]    = useState<AuditStats | null>(null);
@@ -49,11 +52,13 @@ export function OverviewPanel({ onNavigate }: OverviewProps): JSX.Element {
                 return r.ok ? (await r.json() as T) : null;
             } catch { return null; }
         };
+        // Token usage + MCP servers are process/machine-global; audit stats and
+        // routing activity re-scope to the active project.
         get<TokenSnapshot>('/api/v1/telemetry/tokens').then(setTokens);
         get<{ servers: McpServer[] }>('/api/v1/mcp/servers').then(d => setServers(d?.servers ?? []));
-        get<AuditStats>('/api/v1/audit/stats').then(setStats);
-        get<{ decisions: RoutingDecision[] }>('/api/v1/telemetry/routing?limit=200').then(d => setRouting(d?.decisions ?? []));
-    }, []);
+        get<AuditStats>(withProject('/api/v1/audit/stats', projectId)).then(setStats);
+        get<{ decisions: RoutingDecision[] }>(withProject('/api/v1/telemetry/routing?limit=200', projectId)).then(d => setRouting(d?.decisions ?? []));
+    }, [projectId]);
 
     const enabledServers = servers?.filter(s => s.enabled).length ?? 0;
     const buckets = routing ? bucketByHour(routing) : [];
@@ -66,8 +71,11 @@ export function OverviewPanel({ onNavigate }: OverviewProps): JSX.Element {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                 {/* Token usage */}
                 <div className="db-card" style={{ marginBottom: 0 }}>
-                    <div className="db-card-title" title="Cumulative since the Core process started — not per calendar day">
-                        Token usage (since startup)
+                    <div className="db-row" style={{ justifyContent: 'space-between', gap: 8 }}>
+                        <div className="db-card-title" title="Cumulative since the Core process started — not per calendar day">
+                            Token usage (since startup)
+                        </div>
+                        <Badge status="neutral" icon="cpu">Global</Badge>
                     </div>
                     {tokens === null
                         ? <div className="db-muted">No data.</div>
@@ -82,7 +90,10 @@ export function OverviewPanel({ onNavigate }: OverviewProps): JSX.Element {
 
                 {/* MCP servers */}
                 <div className="db-card" style={{ marginBottom: 0 }}>
-                    <div className="db-card-title">MCP servers</div>
+                    <div className="db-row" style={{ justifyContent: 'space-between', gap: 8 }}>
+                        <div className="db-card-title">MCP servers</div>
+                        <Badge status="neutral" icon="cpu">Global</Badge>
+                    </div>
                     {servers === null
                         ? <div className="db-muted">No data.</div>
                         : <>

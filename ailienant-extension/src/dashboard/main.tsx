@@ -9,6 +9,8 @@ import { Tooltip as AiTooltip } from '../shared/Tooltip';
 import { useSidebarCollapsed } from './hooks/useSidebarCollapsed';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { ShortcutsOverlay, type ShortcutHint } from './ui/ShortcutsOverlay';
+import { ProjectSelector } from './ui/ProjectSelector';
+import { ActiveProjectProvider } from './hooks/useActiveProject';
 
 // ── Lazy-loaded heavy panels (Monaco code splitting) ─────────
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -118,6 +120,7 @@ function Dashboard(): JSX.Element {
                     </AiTooltip>
                     <img src={logoUrl as string} alt="AILIENANT" className="db-header-logo-img" />
                     <span className="db-header-sub">Local Command Center</span>
+                    <ProjectSelector />
                     <div className="db-spacer" />
                     <AiTooltip content="Keyboard shortcuts (?)" side="bottom">
                         <button className="db-collapse-btn" onClick={() => setHelpOpen(true)} aria-label="Keyboard shortcuts">
@@ -174,5 +177,9 @@ function Dashboard(): JSX.Element {
 document.addEventListener('DOMContentLoaded', () => {
     const root = document.getElementById('root');
     if (!root) { return; }
-    createRoot(root).render(<Dashboard />);
+    createRoot(root).render(
+        <ActiveProjectProvider>
+            <Dashboard />
+        </ActiveProjectProvider>
+    );
 });

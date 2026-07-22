@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { ActiveProjectBadge } from '../ui';
 
 interface DirectoryRule {
     id:        string;
@@ -68,7 +69,10 @@ export function RulesPanel(): JSX.Element {
 
     return (
         <div>
-            <div className="db-section-title">Rules & Governance</div>
+            <div className="db-row" style={{ gap: 10, alignItems: 'center' }}>
+                <div className="db-section-title" style={{ marginBottom: 0 }}>Rules &amp; Governance</div>
+                <ActiveProjectBadge />
+            </div>
 
             {/* Agent Identity */}
             <div className="db-card">

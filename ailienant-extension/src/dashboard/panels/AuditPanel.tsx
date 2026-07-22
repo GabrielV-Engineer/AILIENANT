@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useActiveProject, withProject } from '../hooks/useActiveProject';
 
 interface AuditEntry {
     id:           number;
@@ -23,6 +24,7 @@ interface AuditStats {
 }
 
 export function AuditPanel(): JSX.Element {
+    const { projectId } = useActiveProject();
     const [entries,     setEntries]     = useState<AuditEntry[]>([]);
     const [chainStatus, setChainStatus] = useState<ChainStatus | undefined>();
     const [stats,       setStats]       = useState<AuditStats | null>(null);
@@ -33,7 +35,7 @@ export function AuditPanel(): JSX.Element {
     const loadEntries = async (): Promise<void> => {
         setLoading(true);
         try {
-            const r = await fetch(`/api/v1/audit/log?offset=${page * PAGE_SIZE}&limit=${PAGE_SIZE}`);
+            const r = await fetch(withProject(`/api/v1/audit/log?offset=${page * PAGE_SIZE}&limit=${PAGE_SIZE}`, projectId));
             if (!r.ok) { return; }
             const data = await r.json() as AuditEntry[];
             setEntries(prev => page === 0 ? data : [...prev, ...data]);
@@ -43,6 +45,7 @@ export function AuditPanel(): JSX.Element {
     };
 
     const verifyChain = async (): Promise<void> => {
+        // Whole-ledger integrity check — deliberately not project-scoped.
         setChainStatus(undefined);
         try {
             const r = await fetch('/api/v1/audit/verify');
@@ -53,14 +56,16 @@ export function AuditPanel(): JSX.Element {
         }
     };
 
-    useEffect(() => { loadEntries(); }, [page]);
+    // A project switch resets pagination so the log replaces rather than appends.
+    useEffect(() => { setPage(0); }, [projectId]);
+    useEffect(() => { loadEntries(); }, [page, projectId]);
 
     useEffect(() => {
-        fetch('/api/v1/audit/stats')
+        fetch(withProject('/api/v1/audit/stats', projectId))
             .then(r => r.ok ? r.json() : null)
             .then((d: AuditStats | null) => { if (d) setStats(d); })
             .catch(() => {});
-    }, []);
+    }, [projectId]);
 
     return (
         <div>

@@ -331,7 +331,8 @@ Proyect_Ailienant/
 │   │       ├── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
 │   │       └── host_discovery.py #      ephemeral ~/.ailienant/run.json (port+token+pid, 0600) + async liveness probe
 │   ├── api/                     #   WS manager + REST routers (memory, byom, hardware, audit,
-│   │                            #     mcp_servers, skills, sessions, agent_roles, system_settings);
+│   │                            #     projects [active-project registry], mcp_servers, skills,
+│   │                            #     sessions, agent_roles, system_settings);
 │   │                            #     devcontainer_bridge.py (WebSocketHostBridge — trusted-tier transport)
 │   ├── tools/                   #   llm_gateway, validation pipeline (AST+LSP), MCP adapter
 │   │                            #     (multi-session registry + dispatch gate), perception/
@@ -378,8 +379,8 @@ Proyect_Ailienant/
 │   │   │   ├── panels/          #       Hardware/BYOM/Rules/Staging/Audit/Overview/Memory/…
 │   │   │   │   └── memory/      #         GraphRAG viz: CodeGraphLayer (2D), VectorMapLayer, EmbeddingBrowser
 │   │   │   │       └── nebula/  #           custom three.js "Neural Nebula" 3D engine (lazy-split)
-│   │   │   ├── ui/              #       design-system primitives (Card, StatTile, Button, Badge, Skeleton, EmptyState, ShortcutsOverlay, ConfirmModal)
-│   │   │   └── hooks/           #       usePollingWhileVisible · useSidebarCollapsed · useKeyboardShortcuts
+│   │   │   ├── ui/              #       design-system primitives (Card, StatTile, Button, Badge, Skeleton, EmptyState, ShortcutsOverlay, ConfirmModal, ProjectSelector, ActiveProjectBadge)
+│   │   │   └── hooks/           #       usePollingWhileVisible · useSidebarCollapsed · useKeyboardShortcuts · useActiveProject
 │   │   ├── core/                #     IntentRouter, PatchActuator, tokenizer, inline-edit manager
 │   │   ├── workspace/           #    Zustand stores, streaming markdown parser
 │   │   │   ├── chatStore.ts     #      memory-only Zustand store — 22 live chat-runtime fields (messages, streaming, toasts, …)

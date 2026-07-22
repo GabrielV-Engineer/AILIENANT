@@ -529,6 +529,7 @@ async def run_researcher_node(
                 _cascade_routing,
                 reason="vram_floor_reroute",
                 hw=(getattr(_hw_profile, "gpu_name", None) or None),
+                project_id=project_id,
             )
             logger.warning("Hardware reroute: %s", _hw_warning)
     except Exception as _hw_err:

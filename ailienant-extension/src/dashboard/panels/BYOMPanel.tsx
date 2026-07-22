@@ -17,6 +17,7 @@ import {
     saveBYOMConfig,
     testEndpoint,
 } from './byom/api';
+import { ActiveProjectBadge } from '../ui';
 
 // ---------------------------------------------------------------------------
 // Provider presentation — normalized shape the card renders from. Sourced from
@@ -436,8 +437,9 @@ export function BYOMPanel(): JSX.Element {
             )}
 
             {/* ===== ENDPOINTS SECTION ===== */}
-            <div className="db-row" style={{ marginBottom: 12, alignItems: 'center' }}>
+            <div className="db-row" style={{ marginBottom: 12, alignItems: 'center', gap: 10 }}>
                 <span className="db-section-title" style={{ marginBottom: 0 }}>Endpoints</span>
+                <ActiveProjectBadge />
                 <button className="db-btn db-btn-secondary" style={{ marginLeft: 'auto' }}
                     onClick={() => setEndpoints(prev => [...prev, toUi({ id: makeId(), name: '', url: '', api_key: '', provider: 'custom' })])}>
                     + Add Endpoint

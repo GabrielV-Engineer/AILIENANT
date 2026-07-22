@@ -1,4 +1,5 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
+import { ActiveProjectBadge } from '../ui';
 
 interface McpServer { id: string; name: string; uri: string; transport: string; enabled: boolean; }
 interface McpTestResult { reachable: boolean; tool_count: number; error?: string; }
@@ -445,7 +446,10 @@ export function ExtensionsPanel(): JSX.Element {
     const [tab, setTab] = useState<SubTab>('mcp');
     return (
         <div>
-            <div className="db-section-title">Extensions</div>
+            <div className="db-row" style={{ gap: 10, alignItems: 'center' }}>
+                <div className="db-section-title" style={{ marginBottom: 0 }}>Extensions</div>
+                <ActiveProjectBadge />
+            </div>
             <div className="db-row" style={{ gap: 8, marginBottom: 16 }}>
                 <button className={tab === 'mcp' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setTab('mcp')}>MCP Servers</button>
                 <button className={tab === 'skills' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setTab('skills')}>Skills</button>

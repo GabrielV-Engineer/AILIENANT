@@ -1193,6 +1193,10 @@ class ConnectionManager:
         )
         try:
             from core.audit import log_audit_event  # deferred — avoids import cycle
+            # Resolve the project this HITL belongs to from the durable checkpoint
+            # (session_id == the graph thread_id), not a process-local map — so the
+            # tag survives a WS drop/reconnect that cleared in-memory session state.
+            from brain.checkpoint import project_id_for_thread
             await log_audit_event(
                 session_id=session_id,
                 action_description=action_description,
@@ -1200,6 +1204,7 @@ class ConnectionManager:
                 resolution=resolution,
                 resolution_comment=None if decision is None else decision.get("comment"),
                 audit_id=approval_id,
+                project_id=project_id_for_thread(session_id),
             )
         except Exception:  # noqa: BLE001 — audit failure must never break HITL
             logger.error("HITL audit-log write failed for approval_id=%s", approval_id)

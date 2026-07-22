@@ -17,14 +17,18 @@ def _resolution_to_bool(r: str) -> bool | None:
 
 
 @router.get("/log")
-async def get_audit_log(offset: int = 0, limit: int = 20) -> List[Dict[str, Any]]:
+async def get_audit_log(
+    offset: int = 0, limit: int = 20, project_id: str | None = None
+) -> List[Dict[str, Any]]:
     limit = min(limit, 100)
+    where = "WHERE project_id = ? " if project_id else ""
+    params: tuple[Any, ...] = (project_id, limit, offset) if project_id else (limit, offset)
     async with aiosqlite.connect(f"file:{DB_CATALOG_PATH}?mode=ro", uri=True) as db:
         async with db.execute(
             "SELECT rowid, session_id, request_kind, resolution, "
             "chain_hash, prev_chain_hash, resolved_at "
-            "FROM hitl_audit_log ORDER BY resolved_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            f"FROM hitl_audit_log {where}ORDER BY resolved_at DESC LIMIT ? OFFSET ?",
+            params,
         ) as cur:
             rows = await cur.fetchall()
     return [
@@ -42,17 +46,19 @@ async def get_audit_log(offset: int = 0, limit: int = 20) -> List[Dict[str, Any]
 
 
 @router.get("/stats")
-async def get_audit_stats() -> Dict[str, Any]:
+async def get_audit_stats(project_id: str | None = None) -> Dict[str, Any]:
+    where = "WHERE project_id = ? " if project_id else ""
+    p: tuple[Any, ...] = (project_id,) if project_id else ()
     async with aiosqlite.connect(f"file:{DB_CATALOG_PATH}?mode=ro", uri=True) as db:
-        async with db.execute("SELECT COUNT(*) FROM hitl_audit_log") as cur:
+        async with db.execute(f"SELECT COUNT(*) FROM hitl_audit_log {where}", p) as cur:
             row = await cur.fetchone()
             total = row[0] if row else 0
         async with db.execute(
-            "SELECT resolution, COUNT(*) FROM hitl_audit_log GROUP BY resolution"
+            f"SELECT resolution, COUNT(*) FROM hitl_audit_log {where}GROUP BY resolution", p
         ) as cur:
             by_res = {r[0]: r[1] for r in await cur.fetchall()}
         async with db.execute(
-            "SELECT request_kind, COUNT(*) FROM hitl_audit_log GROUP BY request_kind"
+            f"SELECT request_kind, COUNT(*) FROM hitl_audit_log {where}GROUP BY request_kind", p
         ) as cur:
             by_type = {r[0]: r[1] for r in await cur.fetchall()}
     # DB stores "timeout" for no-human-decision (NOT NULL). Guard covers both

@@ -103,6 +103,7 @@ from api.runtime import router as runtime_router
 # --- IMPORTACIONES FASE 7.9.B.4 + 7.9.B.5 (System Settings + Audit REST surface) ---
 from api.system_settings import router as system_settings_router
 from api.audit import router as audit_router
+from api.projects import router as projects_router
 
 # --- IMPORTACIONES FASE 7.9.A.7 (Command-menu backends: agents/mcp/skills) ---
 from api.agent_roles import router as agents_router
@@ -336,6 +337,9 @@ app.include_router(system_settings_router)
 # Phase 7.9.B.5 — Audit Ledger REST endpoints (log/stats/verify)
 app.include_router(audit_router)
 
+# Active-project registry — GET /api/v1/projects for the dashboard selector
+app.include_router(projects_router)
+
 # Phase 7.9.A.7 — Command-menu backends (agent role overrides, MCP registry, skills)
 app.include_router(agents_router)
 app.include_router(mcp_router)
@@ -555,6 +559,13 @@ async def submit_task(
         if _fallback_root:
             payload.workspace_root = _fallback_root
 
+    # Guarantee a project_id on the payload so the per-project telemetry/audit/DLQ
+    # tags are never NULL for a normally-submitted task. An older client (or the
+    # HTTP-only path) may omit it; derive it from the workspace root via the same
+    # canonical hash the editor and on-disk stores agree on.
+    if not payload.project_id and payload.workspace_root:
+        payload.project_id = storage_paths.project_id_for(payload.workspace_root)
+
     # The WS planner-mode toggle is stored per-session in planner_mode_registry
     # (client_id == x_task_id); fold it into the payload so the coding path can
     # route to the Socratic ideation loop. Without this read the flag was always
@@ -748,13 +759,16 @@ async def resume_task(task_id: str) -> Dict[str, object]:
 
 
 @app.get("/api/v1/dlq/pending")
-async def list_pending_dlqs(task_id: Optional[str] = None) -> Dict[str, object]:
-    """Phase 6.9 — report unresolved DLQ episodes for the sidebar Resume affordance.
+async def list_pending_dlqs(
+    task_id: Optional[str] = None, project_id: Optional[str] = None
+) -> Dict[str, object]:
+    """Report unresolved DLQ episodes for the sidebar Resume affordance.
 
-    Backend surface for the extension's "Resume Task" item. Optionally scoped to
-    a ``task_id``; newest episodes first. Read-only — no state mutation.
+    Backend surface for the extension's "Resume Task" item and the dashboard's
+    recovery panel. Optionally scoped to a ``task_id`` and/or ``project_id``;
+    newest episodes first. Read-only — no state mutation.
     """
-    pending = await get_pending_dlqs(task_id)
+    pending = await get_pending_dlqs(task_id, project_id)
     return {
         "count": len(pending),
         "episodes": [r.model_dump() for r in pending],
@@ -826,19 +840,24 @@ async def http_telemetry_tokens() -> Dict[str, float]:
 
 
 @app.get("/api/v1/telemetry/routing")
-async def http_telemetry_routing(limit: int = 50, offset: int = 0) -> Dict[str, object]:
-    """Phase 7.9.B.6 — read recent routing decisions for the dashboard.
+async def http_telemetry_routing(
+    limit: int = 50, offset: int = 0, project_id: Optional[str] = None
+) -> Dict[str, object]:
+    """Read recent routing decisions for the dashboard.
 
     Pagination is clamped server-side (S4+S6) and ``reason`` is secret-masked
-    (S1) inside the helper, so this read path is safe to expose read-only.
+    (S1) inside the helper, so this read path is safe to expose read-only. When
+    ``project_id`` is supplied the result is scoped to that project.
     """
-    return {"decisions": recent_routing_decisions(limit=limit, offset=offset)}
+    return {"decisions": recent_routing_decisions(limit=limit, offset=offset, project_id=project_id)}
 
 
 @app.get("/api/v1/telemetry/oom")
-async def http_telemetry_oom(limit: int = 50, offset: int = 0) -> Dict[str, object]:
-    """Phase 7.9.B.6 — read recent OOM rescue-swap events for the dashboard."""
-    return {"events": recent_oom_events(limit=limit, offset=offset)}
+async def http_telemetry_oom(
+    limit: int = 50, offset: int = 0, project_id: Optional[str] = None
+) -> Dict[str, object]:
+    """Read recent OOM rescue-swap events for the dashboard, optionally project-scoped."""
+    return {"events": recent_oom_events(limit=limit, offset=offset, project_id=project_id)}
 
 
 # =====================================================================
@@ -1226,6 +1245,16 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # Bind the per-project GraphRAG store so the semantic index writes
                 # into this project's own directory under the application home.
                 storage_paths.bind_project(valid_event.data.workspace_root)
+                # Persist the id -> workspace-root mapping so the dashboard's
+                # active-project selector can name this project after a restart,
+                # independent of whether an editor window is currently connected.
+                try:
+                    await catalog_db.upsert_project(
+                        valid_event.data.project_id,
+                        valid_event.data.workspace_root,
+                    )
+                except Exception:  # noqa: BLE001 — registry write must never block session init
+                    logger.warning("Project registry upsert failed", exc_info=True)
                 # Point the live telemetry sink at this workspace (idempotent).
                 configure_telemetry_log(valid_event.data.workspace_root)
                 if valid_event.data.workspace_pid is not None:

@@ -73,6 +73,7 @@ def route_after_summarize(state: Dict[str, Any]) -> str:
         reason = "planner_mode_active=False"
     log_routing_decision(
         session_id=state.get("task_id", ""),
+        project_id=state.get("project_id", ""),
         source="summarize_history",
         target=target,
         reason=reason,
@@ -104,6 +105,7 @@ def route_after_ideation(state: Dict[str, Any]) -> str:
         reason = "ideation_no_op"
     log_routing_decision(
         session_id=state.get("task_id", ""),
+        project_id=state.get("project_id", ""),
         source="ideation_loop",
         target=str(target),
         reason=reason,
@@ -200,6 +202,7 @@ def route_after_coder(state: Dict[str, Any]) -> str:
     target = "error_correction" if healing else "contract_guard"
     log_routing_decision(
         session_id=state.get("task_id", ""),
+        project_id=state.get("project_id", ""),
         source="coder_agent",
         target=target,
         reason="healing_required" if healing else "coder_ok",
@@ -282,6 +285,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         )
         log_routing_decision(
             session_id=state.get("task_id", ""),
+            project_id=state.get("project_id", ""),
             source="drift_monitor",
             target="coder_agent",
             reason=f"SWARM: provider=CLOUD, {len(parallel_tasks)} tasks in parallel",
@@ -318,6 +322,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
     )
     log_routing_decision(
         session_id=state.get("task_id", ""),
+        project_id=state.get("project_id", ""),
         source="drift_monitor",
         target=target,
         reason=f"RELAY: provider={provider}, sequential execution",

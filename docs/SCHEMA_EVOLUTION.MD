@@ -1468,3 +1468,46 @@ becomes invalid; the `capped` flag contract is unchanged.
 **Store method:** `SemanticMemoryManager.list_embeddings` (`core/memory/semantic_memory.py`) mirrors
 `dump_vectors`' injection-proof PyArrow-Expression pushdown (`workspace_hash` bound, never interpolated) but
 selects metadata columns including `indexed_at` and excludes the heavy `vector` column.
+
+---
+
+## §35 — Dashboard Project-Context Scoping (Registry + Additive `project_id` Columns)
+
+Gives the dashboard a persistent notion of "active project" and lets the panels backed by genuinely
+per-project data re-scope on a project switch. **Additive only** — every column is nullable, every filter is
+optional, and an omitted `project_id` reproduces the prior process-global behavior, so old rows and old
+callers keep working unchanged.
+
+### 35.1 — Project Registry Table + REST Contract
+
+The on-disk analytics stores are keyed only by the opaque `project_id` hash and never record a workspace name
+or path. A new persistent mapping supplies the human-readable selector.
+
+| Surface | Shape | Notes |
+|---|---|---|
+| `projects` table (`core/db.py`) | `project_id TEXT PK, workspace_root TEXT NOT NULL, last_seen_utc INTEGER NOT NULL` | Upserted on `client_workspace_init` (`main.py`). Survives restarts. Helpers: `upsert_project`, `get_all_projects`. |
+| `GET /api/v1/projects` (`api/projects.py`) | `[{ id, name, path, last_seen }]` | `name = basename(workspace_root)`; `path` returned for disambiguation. **Ghost filter:** a `workspace_root` absent on disk is omitted at read time (registry row is retained — an unmounted drive may return). |
+
+### 35.2 — Additive `project_id` Columns on the Per-Project Ledgers
+
+Each is a nullable `TEXT project_id` added via a PRAGMA-guarded `ALTER TABLE ADD COLUMN` in that module's own
+init (SQLite has no `ADD COLUMN IF NOT EXISTS`; `CREATE TABLE IF NOT EXISTS` leaves an existing table
+untouched), plus a b-tree index so the `WHERE project_id = ?` read is O(log N), not a full scan. Populated at
+the write site from `state["project_id"]`.
+
+| Table | Module | Index | Write-site source |
+|---|---|---|---|
+| `routing_decisions` | `core/telemetry.py` | `idx_routing_decisions_project` | `log_routing_decision(..., project_id=state["project_id"])` at each `brain/engine.py` routing edge + `agents/researcher.py` |
+| `oom_fallback_events` | `core/telemetry.py` | `idx_oom_fallback_events_project` | `log_oom_event` reads `state["project_id"]` |
+| `hitl_audit_log` | `core/audit.py` | `idx_audit_project` | resolved from the **persisted checkpoint** via `brain.checkpoint.project_id_for_thread(session_id)` — reconnection-safe, since the transport layer holds only `session_id` (== `thread_id`). **Not** part of the blake2b chain hash (covers `session_id`), so chain verification is unaffected. |
+| `dead_letter_tasks` | `core/dead_letter.py` | `idx_dlq_project` | `save_dead_letter` reads `state["project_id"]` |
+
+### 35.3 — Optional `project_id` Read Filters (REST)
+
+Additive query params; omitting them returns the prior global result. `GET /api/v1/telemetry/routing`,
+`/api/v1/telemetry/oom`, `/api/v1/audit/log`, `/api/v1/audit/stats`, `/api/v1/dlq/pending` each accept an
+optional `project_id`. `DeadLetterRecord` and the routing/OOM row dicts gain an additive `project_id` field.
+
+**Deliberately global (not scoped):** hardware/VRAM and runtime/Docker (machine-global), the in-memory token
+ledger (`token_ledger.snapshot()`), and MCP-server config. These panels surface a "machine/process-global"
+badge rather than a no-op filter. Per-project token-cost bucketing is deferred (see `TECH_DEBT_BACKLOG.md`).

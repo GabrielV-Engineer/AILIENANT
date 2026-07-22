@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useActiveProject, withProject } from '../hooks/useActiveProject';
 
 // Mirrors core/dead_letter.py::DeadLetterRecord — an unresolved DLQ episode awaiting
 // resume (the cross-session complement to in-turn self-healing).
@@ -21,6 +22,7 @@ interface ResumeResult {
 }
 
 export function RecoveryPanel(): JSX.Element {
+    const { projectId } = useActiveProject();
     const [episodes, setEpisodes] = useState<DeadLetterEpisode[]>([]);
     const [loading,  setLoading]  = useState(false);
     const [busy,     setBusy]     = useState<string | null>(null);  // task_id being resumed
@@ -29,14 +31,14 @@ export function RecoveryPanel(): JSX.Element {
     const load = useCallback(async (): Promise<void> => {
         setLoading(true);
         try {
-            const r = await fetch('/api/v1/dlq/pending');
+            const r = await fetch(withProject('/api/v1/dlq/pending', projectId));
             if (!r.ok) { return; }
             const data = await r.json() as { count: number; episodes: DeadLetterEpisode[] };
             setEpisodes(data.episodes ?? []);
         } catch { /* non-blocking */ } finally {
             setLoading(false);
         }
-    }, []);
+    }, [projectId]);
 
     useEffect(() => { load(); }, [load]);
 

@@ -43,12 +43,19 @@ _DLQ_DDL = """CREATE TABLE IF NOT EXISTS dead_letter_tasks (
     exception_message        TEXT    NOT NULL,
     state_snapshot_blob_hash TEXT    NOT NULL,
     created_at               INTEGER NOT NULL,
-    resolved_at              INTEGER
+    resolved_at              INTEGER,
+    project_id               TEXT
 )"""
 
 _DLQ_IDX = (
     "CREATE INDEX IF NOT EXISTS idx_dlq_task_id "
     "ON dead_letter_tasks(task_id, created_at)"
+)
+
+# Project filter index for the dashboard's per-project recovery view.
+_DLQ_PROJECT_IDX = (
+    "CREATE INDEX IF NOT EXISTS idx_dlq_project "
+    "ON dead_letter_tasks(project_id)"
 )
 
 _EXC_MSG_CAP: int = 2000  # truncation cap for exception_message
@@ -66,6 +73,7 @@ class DeadLetterRecord(BaseModel):
     state_snapshot_blob_hash: str
     created_at: int
     resolved_at: Optional[int] = None
+    project_id: Optional[str] = None
 
 
 async def init_dlq_table() -> None:
@@ -73,7 +81,15 @@ async def init_dlq_table() -> None:
     the FastAPI lifespan startup, after ``catalog_db.init_db()``."""
     async with aiosqlite.connect(DB_CATALOG_PATH) as db:
         await db.execute(_DLQ_DDL)
+        # Additive migration: add the nullable project_id column to a pre-existing
+        # table (CREATE TABLE IF NOT EXISTS won't; SQLite has no ADD COLUMN IF NOT
+        # EXISTS). Old rows read back NULL and are excluded under a project filter.
+        async with db.execute("PRAGMA table_info(dead_letter_tasks)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "project_id" not in cols:
+            await db.execute("ALTER TABLE dead_letter_tasks ADD COLUMN project_id TEXT")
         await db.execute(_DLQ_IDX)
+        await db.execute(_DLQ_PROJECT_IDX)
         await db.commit()
 
 
@@ -94,6 +110,9 @@ async def save_dead_letter(
     """
     episode_id = uuid.uuid4().hex
     blob_hash = ""
+    # Tag the crashed episode with its project so the dashboard's recovery panel
+    # can scope to the active project. Read from the same state the snapshot uses.
+    project_id = str(state.get("project_id", "")) if state else ""
     if state is not None:
         try:
             blob_hash = blob_storage.put(
@@ -107,12 +126,12 @@ async def save_dead_letter(
         await db.execute(
             "INSERT INTO dead_letter_tasks (episode_id, task_id, thread_id, "
             "failed_node, exception_class, exception_message, "
-            "state_snapshot_blob_hash, created_at, resolved_at) "
-            "VALUES (?,?,?,?,?,?,?,?,NULL)",
+            "state_snapshot_blob_hash, created_at, resolved_at, project_id) "
+            "VALUES (?,?,?,?,?,?,?,?,NULL,?)",
             (
                 episode_id, task_id, thread_id, failed_node,
                 type(exc).__name__, str(exc)[:_EXC_MSG_CAP],
-                blob_hash, int(time.time()),
+                blob_hash, int(time.time()), project_id or None,
             ),
         )
         await db.commit()
@@ -123,18 +142,25 @@ async def save_dead_letter(
     return episode_id
 
 
-async def get_pending_dlqs(task_id: Optional[str] = None) -> List[DeadLetterRecord]:
+async def get_pending_dlqs(
+    task_id: Optional[str] = None, project_id: Optional[str] = None
+) -> List[DeadLetterRecord]:
     """Return unresolved DLQ episodes (newest first), optionally scoped to a
-    ``task_id``. ``resolved_at IS NULL`` is the recoverable-episode filter."""
+    ``task_id`` and/or ``project_id``. ``resolved_at IS NULL`` is the
+    recoverable-episode filter."""
     query = (
         "SELECT episode_id, task_id, thread_id, failed_node, exception_class, "
-        "exception_message, state_snapshot_blob_hash, created_at, resolved_at "
+        "exception_message, state_snapshot_blob_hash, created_at, resolved_at, "
+        "project_id "
         "FROM dead_letter_tasks WHERE resolved_at IS NULL"
     )
     params: tuple[str, ...] = ()
     if task_id is not None:
         query += " AND task_id = ?"
-        params = (task_id,)
+        params += (task_id,)
+    if project_id is not None:
+        query += " AND project_id = ?"
+        params += (project_id,)
     query += " ORDER BY created_at DESC"
 
     records: List[DeadLetterRecord] = []
@@ -154,6 +180,7 @@ async def get_pending_dlqs(task_id: Optional[str] = None) -> List[DeadLetterReco
                 state_snapshot_blob_hash=str(r[6]),
                 created_at=int(r[7]),
                 resolved_at=None if raw_resolved is None else int(raw_resolved),
+                project_id=None if r[9] is None else str(r[9]),
             )
         )
     return records

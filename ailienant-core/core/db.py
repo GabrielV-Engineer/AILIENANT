@@ -138,6 +138,17 @@ _DDL = [
         PRIMARY KEY (content_hash)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_observed_callee ON observed_call_edges(project_id, callee_symbol)",
+    # Project registry — the persistent id -> workspace-path mapping the dashboard's
+    # active-project selector reads. The on-disk analytics stores are keyed only by
+    # the opaque project_id hash; this table is the one place that remembers which
+    # absolute workspace root produced that hash and when it was last connected, so a
+    # human-readable name/path can be rendered without depending on a live editor
+    # window. Written on the editor's workspace-init handshake; survives restarts.
+    """CREATE TABLE IF NOT EXISTS projects (
+        project_id     TEXT    PRIMARY KEY,
+        workspace_root TEXT    NOT NULL,
+        last_seen_utc  INTEGER NOT NULL
+    )""",
 ]
 
 # ── Content line-index (FTS5 trigram) ────────────────────────────────────────
@@ -584,6 +595,40 @@ async def get_all_community_ids(project_id: str = "") -> Dict[str, int]:
             for r in await cur.fetchall():
                 communities[r[0]] = int(r[1])
     return communities
+
+
+async def upsert_project(project_id: str, workspace_root: str) -> None:
+    """Record (or refresh) a project's id -> workspace-root mapping.
+
+    Called on the editor's workspace-init handshake. Idempotent: re-connecting the
+    same workspace overwrites the row and bumps ``last_seen_utc``. A blank id or root
+    is ignored so a partial handshake never writes a useless registry row.
+    """
+    if not project_id or not workspace_root:
+        return
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        await db.execute(
+            "INSERT INTO projects (project_id, workspace_root, last_seen_utc) "
+            "VALUES (?,?,?) ON CONFLICT(project_id) DO UPDATE SET "
+            "workspace_root=excluded.workspace_root, last_seen_utc=excluded.last_seen_utc",
+            (project_id, workspace_root, int(time.time())),
+        )
+        await db.commit()
+
+
+async def get_all_projects() -> List[Tuple[str, str, int]]:
+    """Return every recorded (project_id, workspace_root, last_seen_utc), newest first.
+
+    The dashboard's active-project selector consumes this. Existence-of-path
+    filtering (ghost projects whose folder was deleted/unmounted) is applied at the
+    endpoint layer, not here — this helper stays a pure registry read.
+    """
+    async with aiosqlite.connect(DB_CATALOG_PATH) as db:
+        async with db.execute(
+            "SELECT project_id, workspace_root, last_seen_utc "
+            "FROM projects ORDER BY last_seen_utc DESC"
+        ) as cur:
+            return [(r[0], r[1], int(r[2])) for r in await cur.fetchall()]
 
 
 async def get_all_indexed_files() -> List[Tuple[str, str]]:

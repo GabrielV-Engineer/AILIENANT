@@ -7,3 +7,5 @@ export { Skeleton } from './Skeleton';
 export { EmptyState } from './EmptyState';
 export { ShortcutsOverlay, type ShortcutHint } from './ShortcutsOverlay';
 export { ConfirmModal } from './ConfirmModal';
+export { ProjectSelector } from './ProjectSelector';
+export { ActiveProjectBadge } from './ActiveProjectBadge';

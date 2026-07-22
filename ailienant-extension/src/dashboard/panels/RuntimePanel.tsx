@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
+import { Badge } from '../ui';
 
 interface RuntimeStatus {
     tier:              'DOCKER' | 'WASM' | 'NATIVE_HITL' | null;
@@ -139,7 +140,10 @@ export function RuntimePanel(): JSX.Element {
 
     return (
         <div>
-            <div className="db-section-title">Runtime / Environment</div>
+            <div className="db-row" style={{ gap: 10, alignItems: 'center' }}>
+                <div className="db-section-title" style={{ marginBottom: 0 }}>Runtime / Environment</div>
+                <Badge status="neutral" icon="cpu">Machine-global — not project-scoped</Badge>
+            </div>
 
             {/* ── Sandbox Status card ── */}
             <div className="db-card">

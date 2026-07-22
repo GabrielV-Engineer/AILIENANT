@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.1: Project Context Disambiguation — 2026-07-22
+**Status:** COMPLETE | **Gates:** mypy 0/423 · pytest 2434 passed + 10 new (`test_project_context_scoping.py`) · pyright 0 · npm compile 0 (tsc 0, eslint 0; sole pre-existing `vfs_reader.ts` warning) · TestClient smoke: `/api/v1/projects` + 4 scoped read filters return 200
+- Shipped: persistent `projects` registry (`GET /api/v1/projects`, ghost-path-filtered) + top-bar `ProjectSelector` (localStorage + `?project_id=` URL, ghost-selection reconcile); additive nullable `project_id` column + index + PRAGMA-guarded migration on `routing_decisions`/`oom_fallback_events` (telemetry DB), `hitl_audit_log`, `dead_letter_tasks`, tagged on write from `state["project_id"]`; optional `?project_id=` read filters on telemetry/audit/DLQ endpoints; Telemetry/Overview/Audit/Recovery panels re-scope on switch; Hardware/Runtime carry an honest "machine-global" badge; BYOM/Extensions/Rules show the active-project badge.
+- Key decision: audit's `project_id` is resolved at the single write-site from the **persisted checkpoint** (`brain.checkpoint.project_id_for_thread`, keyed by `session_id`==`thread_id`) rather than threaded through `request_human_approval`'s 6+ callers — reconnection-safe and low-churn; it is a plain column, never in the blake2b chain hash, so chain verification is unaffected.
+- Deferred: DEBT-115 — per-project token-cost bucketing (in-memory FinOps ledger stays process-global; cards honestly badged).
+
+---
+
 ## 11.2: GraphRAG "Neural Nebula" visualization — 2026-07-22
 **Status:** COMPLETE | **Gates:** mypy 0/422 · pytest 26 (9 new memory + app-boot smoke) · pyright 0 · npm compile 0 (eslint 0; sole pre-existing `vfs_reader.ts` warning) · palette validator PASS on #000000 · `three` confirmed code-split off `main.js`
 - Shipped: custom three.js 3D graph ("Neural Nebula", `panels/memory/nebula/*`) — InstancedMesh glass spheres (Fresnel + emissive-core shader), d3-force-3d one-shot-frozen layout, raycast picking, <1% breathing, search pulse over matched nodes + incident edges; the 2D ReactFlow graph is now force-directed with a pulse highlight, node `<Handle>`s (so edges actually render) and brighter strokes; the embedding vector map is a three.js points scene (density-colored via `--seq`, PCA-variance caption) that **replaced regl-scatterplot** — `regl` compiles with `new Function`, which the dashboard's `script-src 'self'` CSP forbids (this was the real "Failed to load the vector renderer" cause, surfaced once the bare `catch` was un-swallowed); new paginated/sortable File Embedding Browser with HITL-confirmed per-file purge; `ui/ConfirmModal` extracted; backend additive `/embeddings` + `/embeddings/purge` (reuses `semantic_delete`) + `max_nodes` 2000→5000; Windows `.js` MIME registration for the split chunks.

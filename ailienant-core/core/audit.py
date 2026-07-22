@@ -89,12 +89,20 @@ _AUDIT_DDL = """CREATE TABLE IF NOT EXISTS hitl_audit_log (
     operator_user_email       TEXT,
     prev_chain_hash           TEXT,
     chain_hash                TEXT    NOT NULL,
-    resolved_at               INTEGER NOT NULL
+    resolved_at               INTEGER NOT NULL,
+    project_id                TEXT
 )"""
 
 _AUDIT_IDX = (
     "CREATE INDEX IF NOT EXISTS idx_audit_session "
     "ON hitl_audit_log(session_id)"
+)
+
+# Project filter index for the dashboard's per-project audit view. Without it a
+# ``WHERE project_id = ?`` read is an O(N) scan of the whole append-only ledger.
+_AUDIT_PROJECT_IDX = (
+    "CREATE INDEX IF NOT EXISTS idx_audit_project "
+    "ON hitl_audit_log(project_id)"
 )
 
 # Field separator for the chain payload — a char that will not occur in any
@@ -168,7 +176,15 @@ async def init_audit_table(db_path: Optional[str] = None) -> None:
     """
     async with aiosqlite.connect(db_path or DB_CATALOG_PATH) as db:
         await db.execute(_AUDIT_DDL)
+        # Additive migration: CREATE TABLE IF NOT EXISTS leaves a pre-existing
+        # ledger untouched, so add the nullable project_id column when absent
+        # (SQLite has no ADD COLUMN IF NOT EXISTS). Old rows read back as NULL.
+        async with db.execute("PRAGMA table_info(hitl_audit_log)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "project_id" not in cols:
+            await db.execute("ALTER TABLE hitl_audit_log ADD COLUMN project_id TEXT")
         await db.execute(_AUDIT_IDX)
+        await db.execute(_AUDIT_PROJECT_IDX)
         await db.commit()
 
 
@@ -195,12 +211,17 @@ async def log_audit_event(
     resolution: str,
     resolution_comment: Optional[str] = None,
     audit_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     db_path: Optional[str] = None,
 ) -> str:
     """Append one immutable row to the HITL audit chain; return its ``chain_hash``.
 
     ``proposed_content`` is scrubbed before it is stored or hashed. The
     read-head → hash → INSERT section is serialised by :data:`_CHAIN_LOCK`.
+
+    ``project_id`` scopes the row for the dashboard's per-project audit view. It is
+    a plain filterable column and is deliberately **not** part of the chain hash
+    (which covers ``session_id``), so tagging never alters chain verification.
     """
     path = db_path or DB_CATALOG_PATH
     aid = audit_id or uuid.uuid4().hex
@@ -227,12 +248,14 @@ async def log_audit_event(
                 "INSERT INTO hitl_audit_log (audit_id, session_id, "
                 "request_kind, action_description, proposed_content_scrubbed, "
                 "proposed_content_hash, resolution, resolution_comment, "
-                "operator_user_email, prev_chain_hash, chain_hash, resolved_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "operator_user_email, prev_chain_hash, chain_hash, resolved_at, "
+                "project_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     aid, session_id, request_kind, action_description,
                     scrubbed, content_hash, resolution, resolution_comment,
                     operator, prev, chain_hash, resolved_at,
+                    project_id or None,
                 ),
             )
             await db.commit()
