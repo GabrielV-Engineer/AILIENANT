@@ -174,6 +174,17 @@ async def get_runtime_status(force: bool = False) -> Dict[str, object]:
     }
 
 
+@router.get("/lifecycle")
+async def get_runtime_lifecycle(limit: int = 100) -> Dict[str, object]:
+    """Recent Docker container lifecycle events for the RuntimePanel timeline.
+
+    Machine-global (no project dimension); the read is clamped inside the helper.
+    Returns ``[]`` if telemetry has recorded nothing yet.
+    """
+    from core.telemetry import recent_container_events
+    return {"events": recent_container_events(limit=limit)}
+
+
 @router.post("/start-docker")
 async def start_docker(request: Request) -> Dict[str, object]:
     """Launch Docker Desktop (or the Docker service) on the host machine.

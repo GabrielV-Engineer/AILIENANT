@@ -92,13 +92,44 @@ CREATE TABLE IF NOT EXISTS oom_fallback_events (
     swap_latency_ms   REAL,
     project_id        TEXT
 );
+
+-- Per-request end-to-end latency. One row per _run_coding_task invocation,
+-- written from its finally block. Percentiles are computed over a bounded
+-- most-recent window at read time, so the read never scans the whole ledger.
+-- TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+CREATE TABLE IF NOT EXISTS request_latency (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    session_id  TEXT,
+    project_id  TEXT,
+    duration_ms REAL,
+    outcome     TEXT
+);
+
+-- Docker container lifecycle events (started/stopped/removed). Machine-global
+-- (no project dimension), emitted from core/sandbox.py's async wrappers.
+-- TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+CREATE TABLE IF NOT EXISTS container_lifecycle (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    event        TEXT NOT NULL,
+    container_id TEXT,
+    image        TEXT,
+    tier         TEXT
+);
 """
 
 # Additive project_id migration + filter indexes. CREATE TABLE IF NOT EXISTS leaves
 # a pre-existing telemetry DB untouched, so the column is added via a PRAGMA-guarded
 # ALTER (SQLite has no ADD COLUMN IF NOT EXISTS); the index keeps the dashboard's
 # per-project ``WHERE project_id = ?`` read off an O(N) scan of the growing ledger.
-_PROJECT_MIGRATIONS: Tuple[str, ...] = ("routing_decisions", "oom_fallback_events")
+_PROJECT_MIGRATIONS: Tuple[str, ...] = ("routing_decisions", "oom_fallback_events", "request_latency")
+
+# Latency read window: percentiles are computed over at most this many most-recent
+# rows (fetched with an SQL-level LIMIT), keeping the O(N log N) sort trivial and
+# off the ledger's growth curve. ``recent`` is capped smaller still for the sparkline.
+_LATENCY_WINDOW: int = 500
+_LATENCY_RECENT_CAP: int = 60
 
 
 def init_telemetry_db(db_path: Union[str, Path] = _DEFAULT_DB_PATH) -> None:
@@ -290,6 +321,150 @@ def recent_oom_events(
             "swap_latency_ms": r[8],
             "project_id": r[9],
         }
+        for r in rows
+    ]
+
+
+# --- Request latency (P50/P95) -------------------------------------------------
+
+
+def _percentile(sorted_vals: List[float], q: float) -> float:
+    """Linear-interpolation percentile over an ascending-sorted list.
+
+    Hand-rolled to avoid a numpy/scipy dependency for this narrow need (charter
+    §9). ``q`` is 0..100. Returns 0.0 for an empty list.
+    """
+    n = len(sorted_vals)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return sorted_vals[0]
+    rank = (q / 100.0) * (n - 1)
+    lo = int(rank)
+    frac = rank - lo
+    if lo + 1 < n:
+        return sorted_vals[lo] + frac * (sorted_vals[lo + 1] - sorted_vals[lo])
+    return sorted_vals[lo]
+
+
+def log_request_latency(
+    session_id: str,
+    project_id: Optional[str],
+    duration_ms: float,
+    outcome: str,
+) -> None:
+    """Insert one end-to-end request-latency row. No-ops if DB not initialized.
+
+    ``project_id`` scopes the row for the dashboard's per-project latency view.
+    Best-effort: a write failure is logged, never raised, so this is safe to call
+    from a caller's ``finally`` block.
+    """
+    if _conn is None:
+        return
+    with _lock:
+        try:
+            _conn.execute(
+                "INSERT INTO request_latency "
+                "(session_id, project_id, duration_ms, outcome) VALUES (?, ?, ?, ?)",
+                (session_id, project_id or None, float(duration_ms), outcome),
+            )
+            _conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("Latency telemetry write failed: %s", exc)
+
+
+def latency_percentiles(
+    project_id: Optional[str] = None, window: int = _LATENCY_WINDOW
+) -> Dict[str, Any]:
+    """Summarize request latency over a bounded most-recent window.
+
+    The window is applied as an SQL-level ``ORDER BY id DESC LIMIT ?`` so the
+    percentile sort never touches more than ``window`` rows regardless of ledger
+    size. ``recent`` holds the newest ≤``_LATENCY_RECENT_CAP`` durations in
+    chronological order for a sparkline. Empty/uninitialised → zeros, never raises.
+    """
+    empty: Dict[str, Any] = {
+        "count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0,
+        "max_ms": 0.0, "avg_ms": 0.0, "recent": [],
+    }
+    if _conn is None:
+        return empty
+    safe_window = max(1, min(int(window), _LATENCY_WINDOW))
+    where = "WHERE project_id = ? " if project_id else ""
+    params: Tuple[Any, ...] = (project_id, safe_window) if project_id else (safe_window,)
+    with _lock:
+        try:
+            cursor = _conn.execute(
+                f"SELECT duration_ms FROM request_latency {where}ORDER BY id DESC LIMIT ?",
+                params,
+            )
+            rows = [float(r[0]) for r in cursor.fetchall() if r[0] is not None]
+        except sqlite3.Error as exc:
+            logger.warning("Latency telemetry read failed: %s", exc)
+            return empty
+    if not rows:
+        return empty
+    # rows are newest-first; the sparkline wants oldest→newest.
+    recent = [round(v, 2) for v in reversed(rows[:_LATENCY_RECENT_CAP])]
+    ordered = sorted(rows)
+    return {
+        "count": len(ordered),
+        "p50_ms": round(_percentile(ordered, 50), 2),
+        "p95_ms": round(_percentile(ordered, 95), 2),
+        "p99_ms": round(_percentile(ordered, 99), 2),
+        "max_ms": round(ordered[-1], 2),
+        "avg_ms": round(sum(ordered) / len(ordered), 2),
+        "recent": recent,
+    }
+
+
+# --- Docker container lifecycle (machine-global) -------------------------------
+
+
+def log_container_event(event: str, container_id: str, image: str, tier: str) -> None:
+    """Append one Docker container lifecycle event (started/stopped/removed).
+
+    Machine-global (no project dimension). Best-effort: never raises, so an emit
+    from the sandbox lifecycle path can never affect the cage.
+
+    TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+    """
+    if _conn is None:
+        return
+    with _lock:
+        try:
+            _conn.execute(
+                "INSERT INTO container_lifecycle "
+                "(event, container_id, image, tier) VALUES (?, ?, ?, ?)",
+                (event, container_id, image, tier),
+            )
+            _conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("Container lifecycle telemetry write failed: %s", exc)
+
+
+def recent_container_events(limit: int = 100) -> List[Dict[str, Any]]:
+    """Return recent container lifecycle events, newest first. Machine-global.
+
+    Clamped read; returns ``[]`` if the DB is not initialised.
+    """
+    if _conn is None:
+        return []
+    safe_limit, _ = _clamp_pagination(limit, 0)
+    with _lock:
+        try:
+            cursor = _conn.execute(
+                "SELECT id, timestamp, event, container_id, image, tier "
+                "FROM container_lifecycle ORDER BY id DESC LIMIT ?",
+                (safe_limit,),
+            )
+            rows = cursor.fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("Container lifecycle read failed: %s", exc)
+            return []
+    return [
+        {"id": r[0], "timestamp": r[1], "event": r[2],
+         "container_id": r[3], "image": r[4], "tier": r[5]}
         for r in rows
     ]
 

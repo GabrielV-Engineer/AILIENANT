@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.3.B.1 + 11.3.B.2: Monitoring Backend Telemetry — 2026-07-22
+**Status:** COMPLETE | **Gates:** mypy 0/426 · pyright 0 · pytest +12 new · tsc 0 · eslint 0
+- Shipped: additive `request_latency` (project-scoped) + `container_lifecycle` (machine-global) telemetry tables in `core/telemetry.py` with hand-rolled `_percentile` (no numpy, §9); `_run_coding_task` `perf_counter`/`finally` latency emit; sandbox async-wrapper lifecycle emits; `GET /telemetry/latency` + `/runtime/lifecycle`; live TelemetryPanel latency card + RuntimePanel span timeline (open spans → now).
+- Key decision: scope split by risk — set-tier (DEBT-118) dropped won't-do (would silently downgrade cage isolation); log-stream reframed to polled per-exec output (DEBT-119 → 11.3.B.3) since the dashboard is HTTP-only and the cage stdout is empty; lifecycle emits ride the already-async wrappers (loop-thread) with a `check_same_thread=False`+lock connection.
+- Deferred: DEBT-119 (exec-log → 11.3.B.3) · DEBT-120 — retention/GC of the two append-only tables via `core/janitor.py`.
+
+---
+
 ## 11.3: Real-time Monitoring Panels Redesign — 2026-07-22
 **Status:** COMPLETE | **Gates:** tsc 0 · eslint 0 (sole pre-existing `vfs_reader.ts` warning) · npm compile 0
 - Shipped: dependency-free SVG chart primitives (`RadialGauge`/`Sparkline`/`Donut` + bounded timestamped `useRingBuffer`, `format.ts`) driving redesigned Telemetry (routing donut + spend-velocity), Hardware (radial gauges + localStorage thresholds + 60s VRAM timeline), Overview (`StatTile` KPIs incl. HITL pending), and a Runtime adapter tier-resolution ladder.

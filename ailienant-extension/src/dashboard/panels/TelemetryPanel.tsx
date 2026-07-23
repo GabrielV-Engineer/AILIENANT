@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Donut, EmptyState, Skeleton, Sparkline, type DonutSlice } from '../ui';
-import { Icon } from '../../shared/Icon';
 import { useActiveProject, withProject } from '../hooks/useActiveProject';
 import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
 import { useRingBuffer } from '../hooks/useRingBuffer';
@@ -225,19 +224,86 @@ function RoutingLogCard(): JSX.Element {
     );
 }
 
+interface LatencySummary {
+    count:  number;
+    p50_ms: number;
+    p95_ms: number;
+    p99_ms: number;
+    max_ms: number;
+    avg_ms: number;
+    recent: number[];
+}
+
+function fmtMs(ms: number): string {
+    return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
+}
+
+function LatencyFigure({ label, ms, tone }: { label: string; ms: number; tone?: 'warning' | 'critical' }): JSX.Element {
+    const color = tone === 'critical' ? 'var(--status-critical)' : tone === 'warning' ? 'var(--status-warning)' : 'var(--text-primary)';
+    return (
+        <div>
+            <div className="db-label" style={{ marginBottom: 2 }}>{label}</div>
+            <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color }}>{fmtMs(ms)}</div>
+        </div>
+    );
+}
+
+function LatencyCard(): JSX.Element {
+    const { projectId } = useActiveProject();
+    const [data, setData] = useState<LatencySummary | null>(null);
+    const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+
+    const load = useCallback(async (): Promise<void> => {
+        try {
+            const r = await fetch(withProject('/api/v1/telemetry/latency', projectId));
+            if (!r.ok) { return; }
+            setData(await r.json() as LatencySummary);
+            setUpdatedAt(Date.now());
+        } catch { /* backend offline */ }
+    }, [projectId]);
+
+    usePollingWhileVisible(() => { void load(); }, 5000);
+    // Re-scope promptly on a project switch (the poll would otherwise wait a tick).
+    useEffect(() => { setData(null); void load(); }, [load]);
+
+    // Latency samples have no meaningful wall-clock; plot against request index.
+    const spark = useMemo(() => (data?.recent ?? []).map((v, i) => ({ t: i, v })), [data]);
+
+    return (
+        <div className="db-card">
+            <div className="db-row" style={{ justifyContent: 'space-between' }}>
+                <div className="db-card-title">Request latency</div>
+                <LiveTag at={updatedAt} />
+            </div>
+            {data === null
+                ? <Skeleton height={72} />
+                : data.count === 0
+                    ? <EmptyState icon="clock" title="No latency recorded yet" hint="Run a task to populate P50/P95." />
+                    : <>
+                        <div className="db-row" style={{ gap: 24, marginBottom: 10 }}>
+                            <LatencyFigure label="P50" ms={data.p50_ms} />
+                            <LatencyFigure label="P95" ms={data.p95_ms} tone="warning" />
+                            <LatencyFigure label="P99" ms={data.p99_ms} tone="critical" />
+                        </div>
+                        <div className="db-muted" style={{ marginBottom: 4, fontSize: 11 }}>
+                            last {data.count} · avg {fmtMs(data.avg_ms)} · max {fmtMs(data.max_ms)}
+                        </div>
+                        <Sparkline
+                            samples={spark}
+                            ariaLabel={`Recent request latency — P50 ${fmtMs(data.p50_ms)}, P95 ${fmtMs(data.p95_ms)}, P99 ${fmtMs(data.p99_ms)}`}
+                        />
+                    </>}
+        </div>
+    );
+}
+
 export function TelemetryPanel(): JSX.Element {
     return (
         <div>
             <div className="db-section-title">Telemetry</div>
             <CostCard />
             <RoutingDonutCard />
-            <div className="db-card">
-                <div className="db-card-title">Request latency (P50 / P95)</div>
-                <div className="db-deferred">
-                    <Icon name="clock" size={12} />
-                    Coming in 11.3.B — per-request latency is not captured yet.
-                </div>
-            </div>
+            <LatencyCard />
             <RoutingLogCard />
         </div>
     );

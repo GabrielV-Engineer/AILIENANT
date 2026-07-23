@@ -71,7 +71,7 @@ from core.rules import rule_manager
 
 # --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
 from core.token_ledger import token_ledger
-from core.telemetry import recent_oom_events, recent_routing_decisions
+from core.telemetry import latency_percentiles, recent_oom_events, recent_routing_decisions
 from core.telemetry_log import configure_telemetry_log, shutdown_telemetry_log
 from core.observability import configure_langsmith
 
@@ -858,6 +858,16 @@ async def http_telemetry_oom(
 ) -> Dict[str, object]:
     """Read recent OOM rescue-swap events for the dashboard, optionally project-scoped."""
     return {"events": recent_oom_events(limit=limit, offset=offset, project_id=project_id)}
+
+
+@app.get("/api/v1/telemetry/latency")
+async def http_telemetry_latency(project_id: Optional[str] = None) -> Dict[str, object]:
+    """Request-latency P50/P95/P99 summary for the dashboard, optionally project-scoped.
+
+    Percentiles are computed over a bounded most-recent window inside the helper,
+    so this read never scans the full ledger. Empty/uninitialised → zeros.
+    """
+    return latency_percentiles(project_id=project_id)
 
 
 # =====================================================================

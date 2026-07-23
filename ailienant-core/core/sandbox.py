@@ -340,6 +340,7 @@ class DockerSandboxAdapter(SandboxAdapter):
                     await asyncio.to_thread(container.remove, force=True)
                 except Exception as exc:  # noqa: BLE001 — defensive cleanup
                     logger.warning("Sandbox container remove failed: %s", exc)
+                self._emit_lifecycle("stopped", container)
                 self._container = None
             client = self._client
             if client is not None:
@@ -368,17 +369,37 @@ class DockerSandboxAdapter(SandboxAdapter):
                 self._image_id = image.id
 
             existing = await asyncio.to_thread(self._get_existing_container, client)
+            started = False
             if existing is None:
                 self._container = await asyncio.to_thread(
                     self._start_container_sync, client,
                 )
+                started = True
             elif getattr(existing, "status", None) != "running":
                 await asyncio.to_thread(existing.remove, force=True)
                 self._container = await asyncio.to_thread(
                     self._start_container_sync, client,
                 )
+                started = True
             else:
                 self._container = existing
+            if started:
+                self._emit_lifecycle("started")
+
+    def _emit_lifecycle(self, event: str, container: Any = None) -> None:
+        """Best-effort container-lifecycle telemetry, emitted on the event loop.
+
+        Called only from the async lifecycle methods (never the thread-pooled
+        sync helpers); the telemetry connection is check_same_thread=False and
+        lock-serialized regardless. Never raises, so it can never affect the cage.
+        """
+        try:
+            from core.telemetry import log_container_event
+            target = container if container is not None else self._container
+            cid = str(getattr(target, "id", "") or "")[:12]
+            log_container_event(event, cid, _SANDBOX_IMAGE_TAG, "DOCKER")
+        except Exception:  # noqa: BLE001 — telemetry must never affect the sandbox
+            logger.debug("container lifecycle emit skipped (%s)", event, exc_info=True)
 
     # ── sync helpers (always called via asyncio.to_thread) ──────────────────
 

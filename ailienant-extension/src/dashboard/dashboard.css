@@ -1374,6 +1374,19 @@ html, body, #root { height: 100%; }
 }
 .db-tier-reason { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 2px; }
 
+/* ── Container lifecycle timeline (Runtime) ────────────────── */
+.db-lifecycle { display: flex; flex-direction: column; gap: var(--space-2); }
+.db-lifecycle-row { display: flex; flex-direction: column; gap: 3px; }
+.db-lifecycle-meta { display: flex; justify-content: space-between; gap: var(--space-2); font-size: var(--fs-xs); }
+.db-lifecycle-cid { font-family: var(--font-mono); color: var(--text-secondary); }
+.db-lifecycle-track { position: relative; height: 10px; background: var(--bg-main); border-radius: var(--radius-pill); overflow: hidden; }
+.db-lifecycle-bar {
+  position: absolute; top: 0; bottom: 0; min-width: 2px;
+  background: var(--accent-primary); border-radius: var(--radius-pill);
+}
+.db-lifecycle-bar--active { background: var(--status-good); animation: byom-pulse 1.6s ease-in-out infinite; }
+
 @media (prefers-reduced-motion: reduce) {
-  .db-gauge-radial-fill, .db-chart-donut-seg, .db-live-dot { transition: none; animation: none; }
+  .db-gauge-radial-fill, .db-chart-donut-seg, .db-live-dot,
+  .db-lifecycle-bar--active { transition: none; animation: none; }
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
-import { Badge } from '../ui';
+import { Badge, EmptyState } from '../ui';
 import { Icon } from '../../shared/Icon';
 
 interface RuntimeStatus {
@@ -9,6 +9,75 @@ interface RuntimeStatus {
     image_exists:      boolean;
     container_running: boolean;
     mode_label:        string;
+}
+
+interface LifecycleEvent {
+    id:           number;
+    timestamp:    string;
+    event:        string;
+    container_id: string;
+    image:        string;
+    tier:         string;
+}
+
+interface Span { id: string; startMs: number; endMs: number | null; tier: string; }
+
+function fmtDuration(ms: number): string {
+    const s = Math.round(ms / 1000);
+    if (s < 60) { return `${s}s`; }
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+/** Pair started→stopped/removed events (by container id) into timeline spans. */
+function buildSpans(events: LifecycleEvent[]): Span[] {
+    const map = new Map<string, Span>();
+    // events arrive newest-first; walk oldest-first so a start is seen before its stop
+    for (const e of [...events].reverse()) {
+        const ms = Date.parse(e.timestamp.replace(' ', 'T') + 'Z');
+        if (Number.isNaN(ms)) { continue; }
+        const key = e.container_id || String(e.id);
+        let span = map.get(key);
+        if (!span) { span = { id: key, startMs: ms, endMs: null, tier: e.tier }; map.set(key, span); }
+        if (e.event === 'started') { span.startMs = ms; } else { span.endMs = ms; }
+    }
+    return [...map.values()].sort((a, b) => b.startMs - a.startMs).slice(0, 12);
+}
+
+function LifecycleTimeline({ events }: { events: LifecycleEvent[] }): JSX.Element {
+    const spans = buildSpans(events);
+    if (spans.length === 0) {
+        return <EmptyState icon="clock" title="No container activity yet" hint="Sandbox start/stop events appear here." />;
+    }
+    const now = Date.now();
+    const minStart = Math.min(...spans.map(s => s.startMs));
+    const maxEnd = Math.max(now, ...spans.map(s => s.endMs ?? now));
+    const total = Math.max(1, maxEnd - minStart);
+    return (
+        <div className="db-lifecycle">
+            {spans.map(s => {
+                const end = s.endMs ?? now;
+                const open = s.endMs === null;
+                const left = ((s.startMs - minStart) / total) * 100;
+                const width = Math.max(2, ((end - s.startMs) / total) * 100);
+                const durLabel = open ? 'running' : fmtDuration(end - s.startMs);
+                return (
+                    <div key={s.id} className="db-lifecycle-row">
+                        <div className="db-lifecycle-meta">
+                            <span className="db-lifecycle-cid">{s.id.slice(0, 12)}</span>
+                            <span className="db-muted">{new Date(s.startMs).toLocaleTimeString()} · {durLabel}</span>
+                        </div>
+                        <div className="db-lifecycle-track">
+                            <div
+                                className={`db-lifecycle-bar${open ? ' db-lifecycle-bar--active' : ''}`}
+                                style={{ left: `${left}%`, width: `${width}%` }}
+                                title={`${s.tier} · ${durLabel}`}
+                            />
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
 }
 
 type TierId = 'DOCKER' | 'WASM' | 'NATIVE_HITL';
@@ -92,6 +161,7 @@ export function RuntimePanel(): JSX.Element {
     const [downloading, setDownloading] = useState(false);
     const [downloadMsg, setDownloadMsg] = useState('');
     const [showFallback, setShowFallback] = useState(false);
+    const [events, setEvents] = useState<LifecycleEvent[] | null>(null);
     const launchDeadlineRef = useRef<number>(0);
 
     const fetchStatus = useCallback(async (force = false): Promise<void> => {
@@ -101,9 +171,16 @@ export function RuntimePanel(): JSX.Element {
         } catch { /* backend offline */ }
     }, []);
 
-    // Poll runtime status while the dashboard is visible; a hidden window
-    // pauses polling and resumes on return.
-    usePollingWhileVisible(() => { void fetchStatus(); }, POLL_INTERVAL_MS);
+    const fetchLifecycle = useCallback(async (): Promise<void> => {
+        try {
+            const r = await fetch('/api/v1/runtime/lifecycle?limit=100');
+            if (r.ok) { setEvents((await r.json() as { events: LifecycleEvent[] }).events ?? []); }
+        } catch { /* backend offline */ }
+    }, []);
+
+    // Poll runtime status + lifecycle while the dashboard is visible; a hidden
+    // window pauses polling and resumes on return.
+    usePollingWhileVisible(() => { void fetchStatus(); void fetchLifecycle(); }, POLL_INTERVAL_MS);
 
     // Escape hatch: clear "launching" once daemon is up OR the 30 s deadline passes.
     useEffect(() => {
@@ -235,8 +312,16 @@ export function RuntimePanel(): JSX.Element {
 
                 <div className="db-deferred" style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 12, paddingTop: 10 }}>
                     <Icon name="clock" size={12} />
-                    Lifecycle Gantt, manual tier switch &amp; live container logs — coming in 11.3.B.
+                    Live container logs — coming in 11.3.B.3.
                 </div>
+            </div>
+
+            {/* ── Container lifecycle timeline ── */}
+            <div className="db-card">
+                <div className="db-card-title">Container lifecycle</div>
+                {events === null
+                    ? <div className="db-muted">Polling Core…</div>
+                    : <LifecycleTimeline events={events} />}
             </div>
 
             {/* ── Project Devcontainer card (trusted tier) ── */}

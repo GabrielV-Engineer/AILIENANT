@@ -561,6 +561,11 @@ class TaskService:
         the initial turn). The post-graph processing — interrupt re-detection and the
         patches/apply path — is shared verbatim across the initial and resume entries.
         """
+        # End-to-end request-latency bracket (monotonic). The matching emit lives
+        # in this method's outermost ``finally`` so no return path leaks it.
+        _t0 = time.perf_counter()
+        _latency_outcome = "completed"
+
         from brain.engine import alienant_app  # deferred — avoids import cycle
         from brain.state import AIlienantGraphState
         from brain.checkpoint import hybrid_checkpointer
@@ -705,6 +710,7 @@ class TaskService:
             except asyncio.CancelledError:
                 raise  # propagate to the outer abort handler — don't swallow here
             except Exception as exc:  # noqa: BLE001 — a graph failure must not crash the task
+                _latency_outcome = "failed"
                 logger.warning("Graph run failed: %s", exc)
                 await vfs_manager.broadcast_token(
                     session_id,
@@ -720,6 +726,7 @@ class TaskService:
             # turn so resume_graph can re-enter the same thread, and release the runtime.
             pending_interrupt = await extract_pending_interrupt(cfg)
             if pending_interrupt is not None:
+                _latency_outcome = "interrupted"
                 self._paused_tasks[session_id] = (payload, execution_mode)
                 await self._emit_interrupt_card(session_id, pending_interrupt)
                 try:
@@ -737,12 +744,14 @@ class TaskService:
             # so the checkpoint is written (Rewind works) and return — the next
             # user turn resumes on the same thread_id via the messages accumulator.
             if mission is None and hitl_pending:
+                _latency_outcome = "interrupted"
                 await self._finalize_stream(session_id)
                 self._append_history(session_id, "user", payload.task_prompt)
                 return
 
             # Genuine planner failure (no plan, and not awaiting the user).
             if mission is None:
+                _latency_outcome = "failed"
                 errs = final_state.get("errors") or ["the planner did not return a plan"]
                 await vfs_manager.broadcast_token(
                     session_id, "I couldn't draft a plan: " + "; ".join(errs)
@@ -1006,6 +1015,7 @@ class TaskService:
             # written into state for the next checkpointer promote(); see
             # plan W1/W4 and ADR-706 §4.5(b).
             state["termination_reason"] = "user_abort"
+            _latency_outcome = "aborted"
             logger.info("[Session: %s] _run_coding_task aborted by user", session_id)
             await self._emit_abort_response(session_id, history_key=session_id)
             # Swallow — the orchestrator owns the lifecycle. Re-raising would
@@ -1018,6 +1028,19 @@ class TaskService:
             _mcp_sid_var.reset(_mcp_sid_tok)
             _mcp_mode_var.reset(_mcp_mode_tok)
             clear_session_trust(session_id)
+            # Record end-to-end request latency for the dashboard's P50/P95 view.
+            # Best-effort: the writer swallows its own errors, and this guard keeps
+            # any unexpected fault from disturbing task teardown.
+            try:
+                from core.telemetry import log_request_latency
+                log_request_latency(
+                    session_id,
+                    getattr(payload, "project_id", "") or "",
+                    (time.perf_counter() - _t0) * 1000.0,
+                    _latency_outcome,
+                )
+            except Exception:  # noqa: BLE001 — telemetry must never break teardown
+                logger.debug("latency telemetry emit skipped for %s", session_id, exc_info=True)
 
     async def _emit_interrupt_card(
         self, session_id: str, payload: Dict[str, Any]

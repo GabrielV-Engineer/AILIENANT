@@ -1511,3 +1511,31 @@ optional `project_id`. `DeadLetterRecord` and the routing/OOM row dicts gain an 
 **Deliberately global (not scoped):** hardware/VRAM and runtime/Docker (machine-global), the in-memory token
 ledger (`token_ledger.snapshot()`), and MCP-server config. These panels surface a "machine/process-global"
 badge rather than a no-op filter. Per-project token-cost bucketing is deferred (see `TECH_DEBT_BACKLOG.md`).
+
+## §36 — Monitoring Backend Telemetry (Request Latency + Container Lifecycle)
+
+Persists the two monitoring signals the frontend-only 11.3 could not fabricate. **Additive only** — two new
+tables and two new read endpoints; nothing existing changes, and clients that ignore them are unaffected.
+Both tables are append-only with **windowed/clamped reads** (never a full scan); their unbounded growth is
+tracked for a future janitor slice (`# TODO(retention): DEBT-120`).
+
+### 36.1 — `request_latency` (project-scoped)
+
+| Surface | Shape | Notes |
+|---|---|---|
+| `request_latency` table (`core/telemetry.py`) | `id PK, timestamp, session_id TEXT, project_id TEXT, duration_ms REAL, outcome TEXT` | In `_PROJECT_MIGRATIONS` ⇒ nullable `project_id` + `idx_request_latency_project`. Written by `log_request_latency(...)` from `_run_coding_task`'s outermost `finally` (monotonic `perf_counter` bracket; `outcome ∈ {completed, interrupted, failed, aborted}`). |
+| `GET /api/v1/telemetry/latency` | `{ count, p50_ms, p95_ms, p99_ms, max_ms, avg_ms, recent: number[] }` | Optional `project_id`. Percentiles are hand-rolled (§9, no numpy) over an SQL-`LIMIT`-bounded most-recent window (≤500); `recent` is the newest ≤60 durations (chronological) for a sparkline. Empty/uninitialised ⇒ all-zeros, never an error. |
+
+### 36.2 — `container_lifecycle` (machine-global)
+
+| Surface | Shape | Notes |
+|---|---|---|
+| `container_lifecycle` table (`core/telemetry.py`) | `id PK, timestamp, event TEXT, container_id TEXT, image TEXT, tier TEXT` | **No `project_id`** (machine-global, like the Runtime panel). Written by `log_container_event(...)`, emitted best-effort from `core/sandbox.py`'s **async** lifecycle wrappers (`_ensure_container_running`/`shutdown`, event-loop thread) so it can never affect the cage. |
+| `GET /api/v1/runtime/lifecycle?limit=N` | `{ events: [{ id, timestamp, event, container_id, image, tier }] }` | Clamped, newest-first. Consumed by the RuntimePanel timeline, which pairs `started`→`stopped` by `container_id` and renders an open span (to now) when a stop never arrives. |
+
+### 36.3 — Deliberately not built
+
+Adapter **set-tier** control (a manual tier override) was rejected: forcing the execution tier can silently
+downgrade isolation (NATIVE_HITL host-exec < Docker cage). The tier ladder stays read-only. Live container-log
+streaming is reframed (per-`exec_run` output, HTTP-polled) and deferred to 11.3.B.3, since the dashboard is
+HTTP-only (no WS/SSE) and the cage container's own stdout is empty.
