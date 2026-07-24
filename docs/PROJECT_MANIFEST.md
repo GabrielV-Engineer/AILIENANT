@@ -51,7 +51,7 @@
 | 8.15 Dynamic Subagent Dispatch | ⬜ PENDING | — | 8.15.0 structured dispatch schema |
 | 8.16 Importance-Aware Session Memory | ⬜ PENDING | — | 8.16.0 context-utilization telemetry (GO/NO-GO gate) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
-| Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.4 BYOM & Extensions polish (11.0–11.3 + 11.3.B.1/.2 shipped; 11.3.B.3 exec-log deferred) |
+| Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.4 BYOM & Extensions polish (11.0–11.3 + 11.3.B fully shipped) |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
 | Phase 13 Pre-Launch Innovation Sprint | ⬜ PENDING | — | 13.1 Prompt caching |
 | Phase 14 Portfolio Level Release | ⬜ PENDING | — | 14.1 Dockerization |
@@ -876,7 +876,7 @@
 - **11.3.B — Monitoring Backend Telemetry (unblocks the deferred 11.3 charts).** Umbrella; the four originally-bundled items were split by risk after exploration.
   - [x] **11.3.B.1 — Per-request latency P50/P95.** Additive `request_latency` table (project-scoped) in `core/telemetry.py`; `_run_coding_task` brackets each invocation with `perf_counter` and emits in its outermost `finally`; hand-rolled `_percentile` over a bounded most-recent window (§9, no numpy); `GET /api/v1/telemetry/latency`; live `TelemetryPanel` card. Closes DEBT-116.
   - [x] **11.3.B.2 — Docker container lifecycle timeline.** Additive machine-global `container_lifecycle` table; started/stopped emitted from `core/sandbox.py`'s async wrappers (loop-thread, best-effort); `GET /api/v1/runtime/lifecycle`; `RuntimePanel` span timeline (open spans render to now). Closes DEBT-117.
-  - [ ] **11.3.B.3 — Per-exec command-output log (reframed DEBT-119).** Capture each sandbox `exec_run` stdout/stderr into a bounded per-session ring, exposed via a polled `GET /api/v1/runtime/exec-log?tail=N` (dashboard is HTTP-only — no WS/SSE; a literal container-stdout tail is vacuous for the `tail -f /dev/null` cage). Adapter set-tier (former item 3) **dropped as won't-do** — forcing a tier can silently downgrade isolation; the tier ladder stays read-only.
+  - [x] **11.3.B.3 — Per-exec command-output log (reframed DEBT-119).** Bounded in-memory ring (`core/exec_log.py`, non-persistent — no retention debt) fed by a shared `record_execution(...)` wrapper at the 6 project-work `execute()` callers (`run_command`, tracked tool-stream, hooks, type-check, coder verify/exec), each `source`-tagged; the benchmark eval harness is excluded (would flood the operator log) and the cage adapters are untouched. Cursor-paged `GET /api/v1/runtime/exec-log?since=&tail=N` (monotonic `seq`, idle poll ⇒ empty). Command+output masked (shared `core/redaction.py`, extracted from `telemetry.py`) and middle-truncated before the lock. `RuntimePanel` "Sandbox command log" card. Adapter set-tier (former item 3) **dropped as won't-do** — forcing a tier can silently downgrade isolation; the tier ladder stays read-only. Closes DEBT-119.
 - [ ] **11.4 — BYOM & Extensions Polish.**
   BYOM: model browser with benchmark Pass@1 scores (from Division 8.3 reports), cost-per-token badges, quick-connect CTA, health-check status. Extensions: skill cards with usage stats, semantic search over the 56-tool catalog, installed vs available MCP servers with one-click install from the curated registry.
 - [ ] **11.5 — Verbal Reasoning Fallback for Non-Native-Thinking Models (closes DEBT-057).**

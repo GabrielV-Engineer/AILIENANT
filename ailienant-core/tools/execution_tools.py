@@ -272,12 +272,16 @@ class SandboxBashTool(BaseTool):
         if adapter is None:
             raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
 
-        result = await adapter.execute(
+        from core.exec_log import record_execution  # deferred — keeps the tool import light
+
+        result = await record_execution(
+            adapter,
             command,
             timeout_s=timeout_sec,
             cwd=working_dir or "",
             env_whitelist=_sandbox_env(),
             session_id=session_id,
+            source="run_command",
         )
         body = _truncate(result.stdout + result.stderr)
         return f"[sandbox_bash] exit={result.exit_code}\n{body}"
@@ -557,18 +561,22 @@ class CheckTypeIntegrityTool(BaseTool):
         else:
             argv = ("npx", "--no-install", "tsc", "--noEmit", "-p", target_dir)
 
-        # Phase 6.2 — route through the sandbox tier. The adapter takes a shell
-        # string, so the argv tuple is joined; the adapter owns the timeout.
+        # Route through the sandbox tier. The adapter takes a shell string, so
+        # the argv tuple is joined; the adapter owns the timeout.
         command = shlex.join(argv)
         adapter = get_active_adapter()
         if adapter is None:
             raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
 
-        result = await adapter.execute(
+        from core.exec_log import record_execution  # deferred — keeps the tool import light
+
+        result = await record_execution(
+            adapter,
             command,
             timeout_s=_DEFAULT_TYPECHECK_TIMEOUT_SEC,
             cwd="",
             env_whitelist=_sandbox_env(),
+            source="type_check",
         )
         combined = result.stdout + result.stderr
         return (

@@ -1536,6 +1536,25 @@ tracked for a future janitor slice (`# TODO(retention): DEBT-120`).
 ### 36.3 — Deliberately not built
 
 Adapter **set-tier** control (a manual tier override) was rejected: forcing the execution tier can silently
-downgrade isolation (NATIVE_HITL host-exec < Docker cage). The tier ladder stays read-only. Live container-log
-streaming is reframed (per-`exec_run` output, HTTP-polled) and deferred to 11.3.B.3, since the dashboard is
-HTTP-only (no WS/SSE) and the cage container's own stdout is empty.
+downgrade isolation (NATIVE_HITL host-exec < Docker cage). The tier ladder stays read-only.
+
+### 36.4 — Per-exec command log (in-memory ring, NOT a table)
+
+Reframed from the vacuous "container-log stream" (the dashboard is HTTP-only and the cage runs `tail -f /dev/null`).
+Unlike 36.1/36.2 this is **not persisted** — a bounded in-memory ring in `core/exec_log.py` (`deque(maxlen=200)`,
+lock-serialized), so a restart clears it and there is no retention surface (no DEBT-120 impact). Populated by a shared
+`record_execution(adapter, …, source=…)` wrapper the 6 project-work `execute()` callers route through (`run_command`,
+the graph-tracked tool-stream, pre/post-patch `hook`s, `type_check`, `coder_verify`, `coder_exec`); the benchmark eval
+harness and the interactive-cell PTY stream are deliberately excluded. Each entry:
+`{seq, ts, session_id, source, command, exit_code, output, duration_ms}`. Both `command` and `output` are
+middle-truncated and passed through `core.redaction.mask_secrets` (extracted from `telemetry.py`; the masker is now
+shared) **before** the lock — the critical section is only the `seq` bump and `deque.append`.
+
+Read contract — `GET /api/v1/runtime/exec-log?tail=<N>&since=<seq>` (machine-global):
+
+| Field | Meaning |
+|---|---|
+| `entries` | Chronological (oldest→newest) list of entries with `seq > since`; without `since`, the most-recent `tail` (clamped 1..200). |
+| `latest_seq` | The ring's current max `seq`; the client sends it back as `since` so an idle poll returns `entries: []`. |
+
+Cursor keys off the monotonic `seq`, never the display `ts` (tie-safe). Additive-only; old clients ignore the endpoint.

@@ -343,16 +343,19 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             }
 
         from tools.execution_tools import _sandbox_env
+        from core.exec_log import record_execution
 
         # Read the verdict from the typed SandboxResult.exit_code (an int) — never
         # re-parse it from rendered text, where a stdout containing the literal
         # "exit=" could corrupt extraction.
-        verify_result = await adapter.execute(
+        verify_result = await record_execution(
+            adapter,
             command,
             timeout_s=120.0,
             cwd=workspace_root,
             env_whitelist=_sandbox_env(),
             session_id=session_id,
+            source="coder_verify",
         )
 
         if verify_result.exit_code == 0:

@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.3.B.3: Per-exec Command Log — 2026-07-23
+**Status:** COMPLETE | **Gates:** mypy 0/429 · pyright 0 · pytest 2457 passed/2 skipped (+10 new) · tsc 0 · eslint 0
+- Shipped: bounded in-memory `core/exec_log.py` ring (non-persistent, no retention debt) fed by a shared `record_execution(...)` wrapper at the 6 project-work `execute()` callers (source-tagged); cursor-paged `GET /api/v1/runtime/exec-log?since=&tail=N`; command+output masked/truncated before the lock; `RuntimePanel` "Sandbox command log" card; masker extracted to shared `core/redaction.py`.
+- Key decision: capture at the callers (not a cage-adapter template-method — 13-site blast radius) and exclude the benchmark eval harness so the operator log isn't flooded; cursor keys off a monotonic `seq`, not the display timestamp, so an idle poll returns nothing.
+- Deferred: DEBT-119 closed; the ring is in-memory/self-evicting so DEBT-120 (persisted-table retention) is unaffected.
+
 ## 11.3.B.1 + 11.3.B.2: Monitoring Backend Telemetry — 2026-07-22
 **Status:** COMPLETE | **Gates:** mypy 0/426 · pyright 0 · pytest +12 new · tsc 0 · eslint 0
 - Shipped: additive `request_latency` (project-scoped) + `container_lifecycle` (machine-global) telemetry tables in `core/telemetry.py` with hand-rolled `_percentile` (no numpy, §9); `_run_coding_task` `perf_counter`/`finally` latency emit; sandbox async-wrapper lifecycle emits; `GET /telemetry/latency` + `/runtime/lifecycle`; live TelemetryPanel latency card + RuntimePanel span timeline (open spans → now).

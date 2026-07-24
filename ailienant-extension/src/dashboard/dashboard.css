@@ -1386,6 +1386,28 @@ html, body, #root { height: 100%; }
 }
 .db-lifecycle-bar--active { background: var(--status-good); animation: byom-pulse 1.6s ease-in-out infinite; }
 
+/* Sandbox command log — bounded, scrollable, newest-first list. */
+.db-execlog { display: flex; flex-direction: column; gap: var(--space-2); max-height: 340px; overflow-y: auto; }
+.db-execlog-row { display: flex; flex-direction: column; gap: 4px; padding-bottom: var(--space-2); border-bottom: 1px solid var(--border-subtle); }
+.db-execlog-row:last-child { border-bottom: none; padding-bottom: 0; }
+.db-execlog-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.db-execlog-source {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-secondary);
+  background: var(--bg-main); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill); padding: 1px 6px;
+}
+.db-execlog-cmd {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-primary);
+  flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.db-execlog-when { font-size: var(--fs-xs); white-space: nowrap; margin-left: auto; }
+.db-execlog-out {
+  margin: 0; font-family: var(--font-mono); font-size: var(--fs-xs);
+  color: var(--text-secondary); background: var(--bg-main);
+  border-radius: var(--radius-smart); padding: 6px 8px;
+  max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .db-gauge-radial-fill, .db-chart-donut-seg, .db-live-dot,
   .db-lifecycle-bar--active { transition: none; animation: none; }

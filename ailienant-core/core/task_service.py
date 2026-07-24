@@ -1195,13 +1195,18 @@ class TaskService:
 
         ok = True
         messages: List[str] = []
+        from core.exec_log import record_execution
+
         for command in commands:
             try:
-                result = await adapter.execute(
+                result = await record_execution(
+                    adapter,
                     command,
                     timeout_s=_HOOK_TIMEOUT_SEC,
                     cwd="",
                     env_whitelist=_sandbox_env(),
+                    session_id=session_id,
+                    source="hook",
                 )
             except Exception as exc:  # noqa: BLE001 — a hook fault never crashes the host
                 logger.warning(
@@ -1901,13 +1906,16 @@ class TaskService:
                     )
 
                 from tools.execution_tools import _sandbox_env
+                from core.exec_log import record_execution
 
-                result = await adapter.execute(
+                result = await record_execution(
+                    adapter,
                     args.get("command", ""),
                     timeout_s=float(args.get("timeout_sec", 30.0)),
                     cwd=str(args.get("working_dir") or ""),
                     env_whitelist=_sandbox_env(),  # whitelisted host env only
                     session_id=session_id,
+                    source="run_command",
                 )
                 body = _truncate_tool_output(
                     (result.stdout or "") + (result.stderr or "")

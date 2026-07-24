@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePollingWhileVisible } from '../hooks/usePollingWhileVisible';
 import { Badge, EmptyState } from '../ui';
 import { Icon } from '../../shared/Icon';
+import { formatAgo } from '../format';
 
 interface RuntimeStatus {
     tier:              'DOCKER' | 'WASM' | 'NATIVE_HITL' | null;
@@ -22,10 +23,28 @@ interface LifecycleEvent {
 
 interface Span { id: string; startMs: number; endMs: number | null; tier: string; }
 
+interface ExecEntry {
+    seq:         number;
+    ts:          number;
+    session_id:  string;
+    source:      string;
+    command:     string;
+    exit_code:   number;
+    output:      string;
+    duration_ms: number;
+}
+
+const EXEC_LOG_KEEP = 100;
+
 function fmtDuration(ms: number): string {
     const s = Math.round(ms / 1000);
     if (s < 60) { return `${s}s`; }
     return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+/** Command durations are usually sub-second, so keep ms resolution below 1 s. */
+function fmtExecMs(ms: number): string {
+    return ms < 1000 ? `${Math.round(ms)}ms` : fmtDuration(ms);
 }
 
 /** Pair started→stopped/removed events (by container id) into timeline spans. */
@@ -73,6 +92,31 @@ function LifecycleTimeline({ events }: { events: LifecycleEvent[] }): JSX.Elemen
                                 title={`${s.tier} · ${durLabel}`}
                             />
                         </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+/** Recent sandbox command executions — newest-first, scrollable, output collapsed per row. */
+function ExecLogCard({ entries }: { entries: ExecEntry[] }): JSX.Element {
+    if (entries.length === 0) {
+        return <EmptyState icon="terminal" title="No commands run yet" hint="Sandbox command executions appear here as the agent works." />;
+    }
+    return (
+        <div className="db-execlog">
+            {entries.map(e => {
+                const ok = e.exit_code === 0;
+                return (
+                    <div key={e.seq} className="db-execlog-row">
+                        <div className="db-execlog-head">
+                            <Badge status={ok ? 'good' : 'critical'} icon={ok ? 'check' : 'x'}>exit {e.exit_code}</Badge>
+                            <span className="db-execlog-source" title="Which subsystem ran this command">{e.source}</span>
+                            <code className="db-execlog-cmd" title={e.command}>{e.command}</code>
+                            <span className="db-muted db-execlog-when">{formatAgo(e.ts)} · {fmtExecMs(e.duration_ms)}</span>
+                        </div>
+                        {e.output !== '' && <pre className="db-execlog-out">{e.output}</pre>}
                     </div>
                 );
             })}
@@ -162,7 +206,9 @@ export function RuntimePanel(): JSX.Element {
     const [downloadMsg, setDownloadMsg] = useState('');
     const [showFallback, setShowFallback] = useState(false);
     const [events, setEvents] = useState<LifecycleEvent[] | null>(null);
+    const [execEntries, setExecEntries] = useState<ExecEntry[] | null>(null);
     const launchDeadlineRef = useRef<number>(0);
+    const latestSeqRef = useRef<number>(0);
 
     const fetchStatus = useCallback(async (force = false): Promise<void> => {
         try {
@@ -178,9 +224,32 @@ export function RuntimePanel(): JSX.Element {
         } catch { /* backend offline */ }
     }, []);
 
-    // Poll runtime status + lifecycle while the dashboard is visible; a hidden
-    // window pauses polling and resumes on return.
-    usePollingWhileVisible(() => { void fetchStatus(); void fetchLifecycle(); }, POLL_INTERVAL_MS);
+    // Cursor-paged exec log: send our last-seen seq as `since` so an idle poll
+    // returns nothing. New entries arrive chronological; prepend them (reversed)
+    // to the newest-first list and trim to a bounded window.
+    const fetchExecLog = useCallback(async (): Promise<void> => {
+        try {
+            const since = latestSeqRef.current;
+            const url = since > 0
+                ? `/api/v1/runtime/exec-log?tail=50&since=${since}`
+                : '/api/v1/runtime/exec-log?tail=50';
+            const r = await fetch(url);
+            if (!r.ok) { return; }
+            const data = await r.json() as { entries: ExecEntry[]; latest_seq: number };
+            latestSeqRef.current = data.latest_seq ?? since;
+            if (data.entries.length === 0) { setExecEntries(prev => prev ?? []); return; }
+            const incoming = [...data.entries].reverse(); // chronological → newest-first
+            setExecEntries(prev => [...incoming, ...(prev ?? [])].slice(0, EXEC_LOG_KEEP));
+        } catch { /* backend offline */ }
+    }, []);
+
+    // Poll runtime status + lifecycle + exec log while the dashboard is visible;
+    // a hidden window pauses polling and resumes on return.
+    usePollingWhileVisible(() => {
+        void fetchStatus();
+        void fetchLifecycle();
+        void fetchExecLog();
+    }, POLL_INTERVAL_MS);
 
     // Escape hatch: clear "launching" once daemon is up OR the 30 s deadline passes.
     useEffect(() => {
@@ -309,11 +378,6 @@ export function RuntimePanel(): JSX.Element {
                 {status === null && (
                     <div className="db-muted" style={{ marginTop: 8, fontSize: 11 }}>Polling Core…</div>
                 )}
-
-                <div className="db-deferred" style={{ borderTop: '1px solid var(--border-subtle)', marginTop: 12, paddingTop: 10 }}>
-                    <Icon name="clock" size={12} />
-                    Live container logs — coming in 11.3.B.3.
-                </div>
             </div>
 
             {/* ── Container lifecycle timeline ── */}
@@ -322,6 +386,20 @@ export function RuntimePanel(): JSX.Element {
                 {events === null
                     ? <div className="db-muted">Polling Core…</div>
                     : <LifecycleTimeline events={events} />}
+            </div>
+
+            {/* ── Sandbox command log ── */}
+            <div className="db-card">
+                <div className="db-row" style={{ gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                    <div className="db-card-title" style={{ marginBottom: 0 }}>Sandbox command log</div>
+                    <Icon name="terminal" size={12} />
+                </div>
+                <div className="db-muted" style={{ fontSize: 11, marginBottom: 8 }}>
+                    Recent commands the agent ran in the sandbox (secrets masked). Ephemeral — cleared on restart.
+                </div>
+                {execEntries === null
+                    ? <div className="db-muted">Polling Core…</div>
+                    : <ExecLogCard entries={execEntries} />}
             </div>
 
             {/* ── Project Devcontainer card (trusted tier) ── */}

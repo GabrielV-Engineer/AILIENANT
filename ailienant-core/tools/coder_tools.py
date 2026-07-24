@@ -147,11 +147,15 @@ async def _exec(command: str, timeout_s: float) -> Tuple[int, str]:
     adapter = get_active_adapter()
     if adapter is None:
         raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
-    result = await adapter.execute(
+    from core.exec_log import record_execution
+
+    result = await record_execution(
+        adapter,
         command,
         timeout_s=timeout_s,
         cwd="",
         env_whitelist=_sandbox_env(),
+        source="coder_exec",
     )
     return result.exit_code, _truncate(result.stdout + result.stderr)
 

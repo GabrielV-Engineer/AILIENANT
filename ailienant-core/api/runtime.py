@@ -185,6 +185,18 @@ async def get_runtime_lifecycle(limit: int = 100) -> Dict[str, object]:
     return {"events": recent_container_events(limit=limit)}
 
 
+@router.get("/exec-log")
+async def get_runtime_exec_log(tail: int = 50, since: Optional[int] = None) -> Dict[str, object]:
+    """Recent sandbox command executions (bounded in-memory ring), cursor-paged by seq.
+
+    Machine-global; each entry carries its session_id and a source tag. Pass the
+    prior ``latest_seq`` back as ``since`` to fetch only newer entries — an idle
+    poll then returns an empty list. Returns ``{"entries": [], "latest_seq": …}``.
+    """
+    from core.exec_log import recent_exec_log
+    return recent_exec_log(tail=tail, since=since)
+
+
 @router.post("/start-docker")
 async def start_docker(request: Request) -> Dict[str, object]:
     """Launch Docker Desktop (or the Docker service) on the host machine.
