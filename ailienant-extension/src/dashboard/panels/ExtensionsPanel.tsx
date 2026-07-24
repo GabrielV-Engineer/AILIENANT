@@ -1,5 +1,7 @@
-import { useEffect, useState, type ChangeEvent } from 'react';
-import { ActiveProjectBadge } from '../ui';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
+import {
+    ActiveProjectBadge, Badge, type BadgeStatus, Button, Card, EmptyState, SectionHeader, Skeleton, StatTile,
+} from '../ui';
 
 interface McpServer { id: string; name: string; uri: string; transport: string; enabled: boolean; }
 interface McpTestResult { reachable: boolean; tool_count: number; error?: string; }
@@ -34,15 +36,18 @@ const DISCOVERY_LINKS: ReadonlyArray<{ label: string; url: string }> = [
     { label: 'Reference servers', url: 'https://github.com/modelcontextprotocol/servers' },
 ];
 
-// Severity-coded privilege tiers — the conscious-consent surface shown before
-// a user connects a server.
-const TIER_COLORS: Record<string, string> = {
-    READ_ONLY: '#63a583',
-    WRITE: '#d6a534',
-    EXECUTE: '#d98b3a',
-    DANGEROUS: '#F85149',
-};
-function tierColor(tier: string): string { return TIER_COLORS[tier] ?? '#888'; }
+// Severity-coded privilege tiers — the conscious-consent surface shown before a
+// user connects a server. Maps onto the reserved status tokens (icon + label,
+// never color alone).
+function tierStatus(tier: string): BadgeStatus {
+    switch (tier) {
+        case 'READ_ONLY': return 'good';
+        case 'WRITE': return 'warning';
+        case 'EXECUTE': return 'serious';
+        case 'DANGEROUS': return 'critical';
+        default: return 'neutral';
+    }
+}
 
 async function getJson<T>(url: string): Promise<T | null> {
     try { const r = await fetch(url); return r.ok ? (await r.json() as T) : null; }
@@ -83,46 +88,37 @@ function RegistryCard(
     };
 
     return (
-        <div className="db-audit-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
-            <div className="db-row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+        <div className="db-ext-row">
+            <div className="db-row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 12 }}>{server.display_name}</div>
+                    <div className="db-ext-name">{server.display_name}</div>
                     <div className="db-muted">{server.description}</div>
-                    <div className="db-row" style={{ gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+                    <div className="db-row" style={{ gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
                         {Object.entries(server.tool_tiers).map(([tool, tier]) => (
-                            <span key={tool} title={`${tool}: ${tier}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, color: '#fff', background: tierColor(tier) }}>
-                                {tool} · {tier}
-                            </span>
+                            <Badge key={tool} status={tierStatus(tier)} icon="shield">{tool} · {tier}</Badge>
                         ))}
                     </div>
                 </div>
-                <div className="db-col" style={{ gap: 4, alignItems: 'flex-end', flexShrink: 0 }}>
+                <div className="db-col" style={{ gap: 6, alignItems: 'flex-end', flexShrink: 0 }}>
                     {server.installed
-                        ? <span className="db-muted" style={{ fontSize: 11 }}>Installed ✓</span>
-                        : <button className="db-btn db-btn-primary" disabled={busy} onClick={onInstallClick}>{busy ? 'Installing…' : 'Install'}</button>}
-                    <a href={server.source_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11 }}>View source ↗</a>
+                        ? <Badge status="good" icon="check">Installed</Badge>
+                        : <Button variant="primary" icon="plus" disabled={busy} onClick={onInstallClick}>{busy ? 'Installing…' : 'Install'}</Button>}
+                    <a href={server.source_url} target="_blank" rel="noopener noreferrer" className="db-ext-link">View source ↗</a>
                 </div>
             </div>
             {open && server.secrets.length > 0 && (
-                <div className="db-col" style={{ gap: 6, borderTop: '1px solid var(--vscode-panel-border)', paddingTop: 6 }}>
-                    <div className="db-muted" style={{ fontSize: 11 }}>
-                        Installing grants the privileges above. Provide the required credential(s):
-                    </div>
+                <div className="db-col" style={{ gap: 6, borderTop: '1px solid var(--border-subtle)', paddingTop: 8, marginTop: 8 }}>
+                    <div className="db-muted">Installing grants the privileges above. Provide the required credential(s):</div>
                     {server.secrets.map(name => (
-                        <input
-                            key={name}
-                            className="db-input"
-                            type="password"
-                            placeholder={name}
+                        <input key={name} className="db-input" type="password" placeholder={name}
                             value={secretValues[name] ?? ''}
-                            onChange={e => setSecretValues(v => ({ ...v, [name]: e.target.value }))}
-                        />
+                            onChange={e => setSecretValues(v => ({ ...v, [name]: e.target.value }))} />
                     ))}
-                    {error && <div className="db-muted" style={{ color: '#F85149' }}>{error}</div>}
-                    <button className="db-btn db-btn-primary" disabled={busy} onClick={() => void doInstall()}>{busy ? 'Installing…' : 'Confirm install'}</button>
+                    {error && <div className="db-ext-error">{error}</div>}
+                    <Button variant="primary" icon="plug" disabled={busy} onClick={() => void doInstall()}>{busy ? 'Installing…' : 'Confirm install'}</Button>
                 </div>
             )}
-            {error && !open && <div className="db-muted" style={{ color: '#F85149' }}>{error}</div>}
+            {error && !open && <div className="db-ext-error" style={{ marginTop: 6 }}>{error}</div>}
         </div>
     );
 }
@@ -184,88 +180,63 @@ function ConfigImportView(
     };
 
     return (
-        <div className="db-card">
-            <div className="db-card-title">Import server config</div>
+        <Card title="Import server config">
             <div className="db-muted" style={{ marginBottom: 10 }}>
                 Import a <code>config.json</code> projection of MCP servers. A server that needs a
                 credential is imported but flagged below until you supply the secret — it is never
                 silently dropped.
             </div>
-            <input
-                type="file"
-                accept="application/json,.json"
-                className="db-input"
-                onChange={e => void onFile(e)}
-            />
-            {fileName && <div className="db-muted" style={{ fontSize: 11, marginTop: 4 }}>{fileName}</div>}
+            <input type="file" accept="application/json,.json" className="db-input" onChange={e => void onFile(e)} />
+            {fileName && <div className="db-muted" style={{ marginTop: 4 }}>{fileName}</div>}
             {busy && <div className="db-muted" style={{ marginTop: 8 }}>Working…</div>}
-            {error && <div className="db-muted" style={{ color: '#F85149', marginTop: 8 }}>{error}</div>}
+            {error && <div className="db-ext-error" style={{ marginTop: 8 }}>{error}</div>}
 
             {result && (
                 <div className="db-col" style={{ gap: 6, marginTop: 12 }}>
-                    <div className="db-muted" style={{ fontSize: 11 }}>
+                    <div className="db-muted">
                         Imported {result.imported.length} · updated {result.updated.length}
                         {result.skipped.length > 0 ? ` · skipped ${result.skipped.length}` : ''}
                     </div>
                     {result.skipped.map(s => (
-                        <div key={s.name} className="db-muted" style={{ fontSize: 11, color: '#d6a534' }}>
-                            Skipped {s.name || '(unnamed)'}: {s.reason}
-                        </div>
+                        <div key={s.name} className="db-ext-warn">Skipped {s.name || '(unnamed)'}: {s.reason}</div>
                     ))}
                 </div>
             )}
 
             {pending.length > 0 && (
                 <div className="db-col" style={{ gap: 10, marginTop: 12 }}>
-                    <div className="db-card-title" style={{ fontSize: 12 }}>Credentials required</div>
+                    <div className="db-card-title" style={{ marginBottom: 0 }}>Credentials required</div>
                     {pending.map(name => {
                         const secrets = secretsFor(name);
                         return (
-                            <div
-                                key={name}
-                                className="db-audit-row"
-                                style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}
-                            >
-                                <div style={{ fontWeight: 600, fontSize: 12 }}>{name}</div>
+                            <div key={name} className="db-ext-row">
+                                <div className="db-ext-name">{name}</div>
                                 {secrets.length === 0 ? (
-                                    <div className="db-muted" style={{ fontSize: 11 }}>
-                                        This server needs a credential. Install it from the curated
-                                        registry to supply the secret.
+                                    <div className="db-muted">
+                                        This server needs a credential. Install it from the curated registry to supply the secret.
                                     </div>
                                 ) : (
-                                    <>
+                                    <div className="db-col" style={{ gap: 6, marginTop: 6 }}>
                                         {secrets.map(sn => (
-                                            <input
-                                                key={sn}
-                                                className="db-input"
-                                                type="password"
-                                                placeholder={sn}
+                                            <input key={sn} className="db-input" type="password" placeholder={sn}
                                                 value={secretInputs[name]?.[sn] ?? ''}
                                                 onChange={e => setSecretInputs(v => ({
-                                                    ...v,
-                                                    [name]: { ...(v[name] ?? {}), [sn]: e.target.value },
-                                                }))}
-                                            />
+                                                    ...v, [name]: { ...(v[name] ?? {}), [sn]: e.target.value },
+                                                }))} />
                                         ))}
-                                        <button
-                                            className="db-btn db-btn-primary"
-                                            disabled={busy}
-                                            onClick={() => void saveSecret(name)}
-                                        >
-                                            Save credential
-                                        </button>
-                                    </>
+                                        <Button variant="primary" icon="key" disabled={busy} onClick={() => void saveSecret(name)}>Save credential</Button>
+                                    </div>
                                 )}
                             </div>
                         );
                     })}
                 </div>
             )}
-        </div>
+        </Card>
     );
 }
 
-function McpTab(): JSX.Element {
+function McpTab({ onChanged }: { onChanged: () => void }): JSX.Element {
     const [view, setView] = useState<McpView>('browse');
     const [servers, setServers] = useState<McpServer[] | null>(null);
     const [registry, setRegistry] = useState<RegistryServer[] | null>(null);
@@ -277,25 +248,25 @@ function McpTab(): JSX.Element {
 
     const refreshServers = (): void => { void getJson<{ servers: McpServer[] }>('/api/v1/mcp/servers').then(d => setServers(d?.servers ?? [])); };
     const refreshRegistry = (): void => { void getJson<{ servers: RegistryServer[] }>('/api/v1/mcp/registry').then(d => setRegistry(d?.servers ?? [])); };
-    const refreshAll = (): void => { refreshServers(); refreshRegistry(); };
-    useEffect(() => { refreshAll(); }, []);
+    const refreshAll = (): void => { refreshServers(); refreshRegistry(); onChanged(); };
+    useEffect(() => { refreshServers(); refreshRegistry(); }, []);
 
     const addServer = async (): Promise<void> => {
         if (!name.trim() || !uri.trim()) { return; }
         setError(null);
         const res = await sendJson<{ ok: boolean; error?: string; servers?: McpServer[] }>(
             '/api/v1/mcp/servers', 'POST', { name: name.trim(), uri: uri.trim(), enabled: true });
-        if (res?.ok) { setServers(res.servers ?? []); setName(''); setUri(''); }
+        if (res?.ok) { setServers(res.servers ?? []); setName(''); setUri(''); onChanged(); }
         else { setError(res?.error ?? 'Failed to save server.'); }
     };
     const toggle = async (s: McpServer): Promise<void> => {
         const res = await sendJson<{ ok: boolean; servers?: McpServer[] }>(
             '/api/v1/mcp/servers', 'POST', { ...s, enabled: !s.enabled });
-        if (res?.ok) { setServers(res.servers ?? []); }
+        if (res?.ok) { setServers(res.servers ?? []); onChanged(); }
     };
     const remove = async (id: string): Promise<void> => {
         const res = await sendJson<{ ok: boolean; servers?: McpServer[] }>(`/api/v1/mcp/servers/${id}`, 'DELETE');
-        if (res?.ok) { setServers(res.servers ?? []); refreshRegistry(); }
+        if (res?.ok) { setServers(res.servers ?? []); refreshRegistry(); onChanged(); }
     };
     const test = async (s: McpServer): Promise<void> => {
         setTests(p => ({ ...p, [s.id]: 'loading' }));
@@ -307,78 +278,87 @@ function McpTab(): JSX.Element {
     const filtered = (registry ?? []).filter(r =>
         !q || r.display_name.toLowerCase().includes(q) || r.name.includes(q) || r.description.toLowerCase().includes(q));
 
+    const VIEWS: ReadonlyArray<{ id: McpView; label: string }> = [
+        { id: 'browse', label: 'Browse registry' },
+        { id: 'installed', label: 'Installed' },
+        { id: 'manual', label: 'Add manually' },
+        { id: 'import', label: 'Import config' },
+    ];
+
     return (
         <div>
-            <div className="db-row" style={{ gap: 6, marginBottom: 12 }}>
-                <button className={view === 'browse' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('browse')}>Browse registry</button>
-                <button className={view === 'installed' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('installed')}>Installed</button>
-                <button className={view === 'manual' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('manual')}>Add manually</button>
-                <button className={view === 'import' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setView('import')}>Import config</button>
+            <div className="db-row" style={{ gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+                {VIEWS.map(v => (
+                    <Button key={v.id} variant={view === v.id ? 'primary' : 'secondary'} onClick={() => setView(v.id)}>{v.label}</Button>
+                ))}
             </div>
 
             {view === 'browse' && (
-                <div className="db-card">
-                    <div className="db-card-title">Curated registry</div>
-                    <input className="db-input" placeholder="Search servers…" value={query} onChange={e => setQuery(e.target.value)} style={{ marginBottom: 10 }} />
+                <Card title="Curated registry">
+                    <input className="db-input" placeholder="Search servers…" value={query}
+                        onChange={e => setQuery(e.target.value)} style={{ marginBottom: 10 }} />
                     {registry === null
-                        ? <div className="db-muted">Loading…</div>
+                        ? <Skeleton height={64} count={2} />
                         : filtered.length === 0
-                            ? <div className="db-muted">No servers match.</div>
+                            ? <EmptyState icon="search" title="No servers match" hint="Try a different search term." />
                             : filtered.map(r => <RegistryCard key={r.name} server={r} onInstalled={refreshAll} />)}
-                    <div className="db-row" style={{ gap: 8, marginTop: 12, alignItems: 'center' }}>
-                        <span className="db-muted" style={{ fontSize: 11 }}>Explore the ecosystem:</span>
+                    <div className="db-row" style={{ gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span className="db-muted">Explore the ecosystem:</span>
                         {DISCOVERY_LINKS.map(l => (
-                            <a key={l.url} href={l.url} target="_blank" rel="noopener noreferrer" className="db-btn db-btn-secondary" style={{ fontSize: 11, textDecoration: 'none' }}>{l.label} ↗</a>
+                            <a key={l.url} href={l.url} target="_blank" rel="noopener noreferrer" className="db-btn db-btn-secondary" style={{ textDecoration: 'none' }}>{l.label} ↗</a>
                         ))}
                     </div>
-                </div>
+                </Card>
             )}
 
             {view === 'installed' && (
-                <div className="db-card">
-                    <div className="db-card-title">Installed servers</div>
+                <Card title="Installed servers">
                     {servers === null
-                        ? <div className="db-muted">Loading…</div>
+                        ? <Skeleton height={48} count={2} />
                         : servers.length === 0
-                            ? <div className="db-muted">No MCP servers configured. Install one from the registry.</div>
+                            ? <EmptyState icon="plug" title="No MCP servers configured" hint="Install one from the curated registry." action={<Button variant="primary" onClick={() => setView('browse')}>Browse registry</Button>} />
                             : servers.map(s => {
                                 const t = tests[s.id];
                                 return (
-                                    <div key={s.id} className="db-audit-row">
-                                        <div style={{ flex: 1 }}>
-                                            <div style={{ fontWeight: 600, fontSize: 12 }}>{s.name} {!s.enabled && <span className="db-muted">(disabled)</span>}</div>
-                                            <div className="db-muted">{s.uri}</div>
-                                            {t && t !== 'loading' && (
-                                                <div className="db-traffic-light" style={{ marginTop: 4 }}>
-                                                    <div className="db-tl-dot" style={{ background: t.reachable ? '#63a583' : '#F85149' }} />
-                                                    <span style={{ fontSize: 11 }}>{t.reachable ? `${t.tool_count} tools` : (t.error ?? 'unreachable')}</span>
+                                    <div key={s.id} className="db-ext-row">
+                                        <div className="db-row" style={{ justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div className="db-ext-name">
+                                                    {s.name} {!s.enabled && <Badge status="neutral">disabled</Badge>}
                                                 </div>
-                                            )}
-                                        </div>
-                                        <div className="db-row" style={{ gap: 6 }}>
-                                            <button className="db-btn db-btn-secondary" disabled={t === 'loading'} onClick={() => test(s)}>{t === 'loading' ? 'Testing…' : 'Test'}</button>
-                                            <button className="db-btn db-btn-secondary" onClick={() => toggle(s)}>{s.enabled ? 'Disable' : 'Enable'}</button>
-                                            <button className="db-btn db-btn-danger" onClick={() => remove(s.id)}>Delete</button>
+                                                <div className="db-muted" style={{ wordBreak: 'break-all' }}>{s.uri}</div>
+                                                {t && t !== 'loading' && (
+                                                    <div style={{ marginTop: 6 }}>
+                                                        {t.reachable
+                                                            ? <Badge status="good" icon="check-circle">{t.tool_count} tools</Badge>
+                                                            : <Badge status="critical" icon="x-circle">{t.error ?? 'unreachable'}</Badge>}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="db-row" style={{ gap: 6, flexShrink: 0 }}>
+                                                <Button icon="zap" disabled={t === 'loading'} onClick={() => test(s)}>{t === 'loading' ? 'Testing…' : 'Test'}</Button>
+                                                <Button onClick={() => toggle(s)}>{s.enabled ? 'Disable' : 'Enable'}</Button>
+                                                <Button variant="ghost" icon="trash" onClick={() => remove(s.id)}>Delete</Button>
+                                            </div>
                                         </div>
                                     </div>
                                 );
                             })}
-                </div>
+                </Card>
             )}
 
             {view === 'manual' && (
-                <div className="db-card">
-                    <div className="db-card-title">Add server manually (advanced)</div>
-                    <div className="db-muted" style={{ marginBottom: 10 }}>
+                <Card title="Add server manually (advanced)">
+                    <div className="db-ext-warn" style={{ marginBottom: 10 }}>
                         Warning: a <code>stdio://</code> server executes a local command on this machine. Only add servers you trust.
                     </div>
                     <div className="db-col">
                         <input className="db-input" placeholder="name" value={name} onChange={e => setName(e.target.value)} />
                         <input className="db-input" placeholder="stdio:///abs/path/to/server?arg=x" value={uri} onChange={e => setUri(e.target.value)} />
-                        {error && <div className="db-muted" style={{ color: '#F85149' }}>{error}</div>}
-                        <button className="db-btn db-btn-primary" onClick={addServer}>Add server</button>
+                        {error && <div className="db-ext-error">{error}</div>}
+                        <Button variant="primary" icon="plus" onClick={addServer}>Add server</Button>
                     </div>
-                </div>
+                </Card>
             )}
 
             {view === 'import' && <ConfigImportView registry={registry} onChanged={refreshAll} />}
@@ -386,8 +366,10 @@ function McpTab(): JSX.Element {
     );
 }
 
-function SkillsTab(): JSX.Element {
+function SkillsTab({ onChanged }: { onChanged: () => void }): JSX.Element {
     const [skills, setSkills] = useState<Skill[] | null>(null);
+    const [query, setQuery] = useState('');
+    const [creating, setCreating] = useState(false);
     const [name, setName] = useState('');
     const [body, setBody] = useState('');
     const [error, setError] = useState<string | null>(null);
@@ -399,62 +381,106 @@ function SkillsTab(): JSX.Element {
         setError(null);
         const res = await sendJson<{ ok: boolean; error?: string; skills?: Skill[] }>(
             '/api/v1/skills', 'POST', { name: name.trim(), body: body.trim() });
-        if (res?.ok) { setSkills(res.skills ?? []); setName(''); setBody(''); }
+        if (res?.ok) { setSkills(res.skills ?? []); setName(''); setBody(''); setCreating(false); onChanged(); }
         else { setError(res?.error ?? 'Failed to save skill.'); }
     };
     const remove = async (id: string): Promise<void> => {
         const res = await sendJson<{ ok: boolean; skills?: Skill[] }>(`/api/v1/skills/${id}`, 'DELETE');
-        if (res?.ok) { setSkills(res.skills ?? []); }
+        if (res?.ok) { setSkills(res.skills ?? []); onChanged(); }
     };
+
+    const q = query.trim().toLowerCase();
+    const filtered = useMemo(
+        () => (skills ?? []).filter(s => !q || s.name.toLowerCase().includes(q) || s.body.toLowerCase().includes(q)),
+        [skills, q],
+    );
 
     return (
         <div>
-            <div className="db-card">
-                <div className="db-card-title">Saved skills</div>
+            <Card
+                title="Saved skills"
+                actions={<Button variant="primary" icon="plus" onClick={() => setCreating(c => !c)}>{creating ? 'Close' : 'New skill'}</Button>}
+            >
+                {creating && (
+                    <div className="db-col" style={{ gap: 8, marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid var(--border-subtle)' }}>
+                        <input className="db-input" placeholder="skill name" value={name} onChange={e => setName(e.target.value)} />
+                        <textarea className="db-input" rows={5} placeholder="reusable instruction snippet…" value={body} onChange={e => setBody(e.target.value)} />
+                        {error && <div className="db-ext-error">{error}</div>}
+                        <div className="db-row" style={{ gap: 8 }}>
+                            <Button variant="primary" icon="check" onClick={create} disabled={!name.trim() || !body.trim()}>Save skill</Button>
+                            <Button onClick={() => { setCreating(false); setError(null); }}>Cancel</Button>
+                        </div>
+                    </div>
+                )}
+
+                {skills && skills.length > 4 && (
+                    <input className="db-input" placeholder="Search skills…" value={query}
+                        onChange={e => setQuery(e.target.value)} style={{ marginBottom: 10 }} />
+                )}
+
                 {skills === null
-                    ? <div className="db-muted">Loading…</div>
+                    ? <Skeleton height={44} count={2} />
                     : skills.length === 0
-                        ? <div className="db-muted">No skills yet. Create one below.</div>
-                        : skills.map(s => (
-                            <div key={s.id} className="db-audit-row">
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 12 }}>{s.name}</div>
-                                    {/* Plain text node — never dangerouslySetInnerHTML (S3). */}
-                                    <div className="db-muted" style={{ whiteSpace: 'pre-wrap', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                                        {s.body}
+                        ? <EmptyState icon="wand" title="No skills yet" hint="Create a reusable instruction snippet with New skill." />
+                        : filtered.length === 0
+                            ? <EmptyState icon="search" title="No skills match" hint="Try a different search term." />
+                            : filtered.map(s => (
+                                <div key={s.id} className="db-ext-row">
+                                    <div className="db-row" style={{ justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div className="db-ext-name">{s.name}</div>
+                                            {/* Plain text node — never dangerouslySetInnerHTML. */}
+                                            <div className="db-muted db-ext-clamp">{s.body}</div>
+                                        </div>
+                                        <Button variant="ghost" icon="trash" onClick={() => remove(s.id)}>Delete</Button>
                                     </div>
                                 </div>
-                                <button className="db-btn db-btn-danger" onClick={() => remove(s.id)}>Delete</button>
-                            </div>
-                        ))}
-            </div>
-
-            <div className="db-card">
-                <div className="db-card-title">Create skill</div>
-                <div className="db-col">
-                    <input className="db-input" placeholder="skill name" value={name} onChange={e => setName(e.target.value)} />
-                    <textarea className="db-input" rows={5} placeholder="reusable instruction snippet…" value={body} onChange={e => setBody(e.target.value)} />
-                    {error && <div className="db-muted" style={{ color: '#F85149' }}>{error}</div>}
-                    <button className="db-btn db-btn-primary" onClick={create}>Save skill</button>
-                </div>
-            </div>
+                            ))}
+            </Card>
         </div>
     );
 }
 
 export function ExtensionsPanel(): JSX.Element {
     const [tab, setTab] = useState<SubTab>('mcp');
+    const [counts, setCounts] = useState<{ installed: number; available: number; skills: number } | null>(null);
+
+    const refreshCounts = (): void => {
+        void Promise.all([
+            getJson<{ servers: McpServer[] }>('/api/v1/mcp/servers'),
+            getJson<{ servers: RegistryServer[] }>('/api/v1/mcp/registry'),
+            getJson<{ skills: Skill[] }>('/api/v1/skills'),
+        ]).then(([srv, reg, sk]) => setCounts({
+            installed: srv?.servers.length ?? 0,
+            available: reg?.servers.length ?? 0,
+            skills: sk?.skills.length ?? 0,
+        }));
+    };
+    useEffect(() => { refreshCounts(); }, []);
+
+    const kpi = (v: number | undefined): JSX.Element | number =>
+        counts === null ? <Skeleton width={40} height={22} /> : (v ?? 0);
+
     return (
         <div>
-            <div className="db-row" style={{ gap: 10, alignItems: 'center' }}>
-                <div className="db-section-title" style={{ marginBottom: 0 }}>Extensions</div>
-                <ActiveProjectBadge />
+            <SectionHeader
+                title="Extensions"
+                subtitle="Connect MCP servers and manage reusable skills."
+                actions={<ActiveProjectBadge />}
+            />
+
+            <div className="db-kpi-grid">
+                <StatTile label="MCP installed" value={kpi(counts?.installed)} sub="active servers" />
+                <StatTile label="Available in registry" value={kpi(counts?.available)} sub="curated, one-click" />
+                <StatTile label="Skills" value={kpi(counts?.skills)} sub="reusable snippets" />
             </div>
-            <div className="db-row" style={{ gap: 8, marginBottom: 16 }}>
-                <button className={tab === 'mcp' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setTab('mcp')}>MCP Servers</button>
-                <button className={tab === 'skills' ? 'db-btn db-btn-primary' : 'db-btn db-btn-secondary'} onClick={() => setTab('skills')}>Skills</button>
+
+            <div className="db-row" style={{ gap: 8, margin: '4px 0 16px' }}>
+                <Button variant={tab === 'mcp' ? 'primary' : 'secondary'} icon="plug" onClick={() => setTab('mcp')}>MCP Servers</Button>
+                <Button variant={tab === 'skills' ? 'primary' : 'secondary'} icon="wand" onClick={() => setTab('skills')}>Skills</Button>
             </div>
-            {tab === 'mcp' ? <McpTab /> : <SkillsTab />}
+
+            {tab === 'mcp' ? <McpTab onChanged={refreshCounts} /> : <SkillsTab onChanged={refreshCounts} />}
         </div>
     );
 }

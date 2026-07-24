@@ -331,6 +331,7 @@ Proyect_Ailienant/
 │   │   │                        #       context_telemetry_report.py (CONTEXT-telemetry gate aggregator + CLI)
 │   │   └── config/              #     BYOM schema + embedding/model resolvers + profiles
 │   │       ├── mcp_secrets.py   #       backend-masked MCP credential store (0600) + connect-time env injection
+│   │       ├── model_pricing.py #       best-effort per-model $/token from litellm.model_cost (local=free, unknown=omitted)
 │   │       └── host_discovery.py #      ephemeral ~/.ailienant/run.json (port+token+pid, 0600) + async liveness probe
 │   ├── api/                     #   WS manager + REST routers (memory, byom, hardware, audit,
 │   │                            #     projects [active-project registry], mcp_servers, skills,

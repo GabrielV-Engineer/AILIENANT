@@ -1,4 +1,4 @@
-// BYOM Models dashboard REST client — Phase 7.9.B.2.
+// BYOM Models dashboard REST client.
 // Same-origin fetch: the dashboard SPA is served by the same FastAPI server.
 // Types mirror api/byom.py pydantic models.
 
@@ -62,12 +62,22 @@ export interface DiscoveredModel {
     name: string; // human-readable label
 }
 
+// Per-1M-token pricing for a model (dashboard cost badges). Only present for
+// models the backend could resolve — local (free) or a litellm cost-map hit;
+// unknown models are omitted entirely, so a missing entry means "no badge".
+export interface ModelPrice {
+    input_per_mtok: number;
+    output_per_mtok: number;
+    local: boolean;
+}
+
 export interface BYOMConfigResponse {
     endpoints: EndpointConfig[];
     presets: ModelPreset[];         // built-ins first, then user-defined
     active_preset_id: string | null;
     discovered: DiscoveredModel[];  // available-model pool (local engines + imported cloud)
     model_cache: Record<string, string[]>;  // endpoint_id → imported canonical model ids
+    model_pricing?: Record<string, ModelPrice>;  // canonical model id → pricing (optional/additive)
 }
 
 export interface TestConnectionRequest {

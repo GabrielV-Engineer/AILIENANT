@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.4: BYOM & Extensions Polish — 2026-07-24
+**Status:** COMPLETE | **Gates:** mypy 0/431 · pyright 0 · pytest 2465 passed/2 skipped (+8 new) · tsc 0 · eslint 0
+- Shipped: frontend visual+UX redesign of both dashboard panels onto the 11.0 primitives/tokens — BYOM reorganized into a Connect→Configure→Verify 3-step spine with a KPI row, a one-action quick-connect strip, a prominent active-preset summary, and per-model cost badges; Extensions got a KPI count row, tier/reachability `Badge`s, `EmptyState`s, and a skills search + collapsible create. Only backend touch: `core/config/model_pricing.py` (`price_for`) reading `litellm.model_cost`, surfaced as an additive `model_pricing` map on `BYOMConfigResponse`.
+- Key decision: honest-substrate cost only — canonical ids are matched to litellm keys via a candidate ladder (normalized→verbatim→bare stem), local providers are free without touching litellm, and an unresolved model is omitted (no badge) rather than shown a guessed rate.
+- Deferred: per-model benchmark Pass@1 (report is arm-keyed, not per-model), skill usage-stats, and the tool-catalog/semantic-search item all explicitly de-scoped by the user — not logged as debt.
+
 ## 11.3.B.3: Per-exec Command Log — 2026-07-23
 **Status:** COMPLETE | **Gates:** mypy 0/429 · pyright 0 · pytest 2457 passed/2 skipped (+10 new) · tsc 0 · eslint 0
 - Shipped: bounded in-memory `core/exec_log.py` ring (non-persistent, no retention debt) fed by a shared `record_execution(...)` wrapper at the 6 project-work `execute()` callers (source-tagged); cursor-paged `GET /api/v1/runtime/exec-log?since=&tail=N`; command+output masked/truncated before the lock; `RuntimePanel` "Sandbox command log" card; masker extracted to shared `core/redaction.py`.

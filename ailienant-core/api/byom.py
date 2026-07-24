@@ -1,4 +1,4 @@
-"""api/byom.py — Phase 7.9.B.2 / 7.9.B.10.
+"""api/byom.py
 
 BYOM (Bring Your Own Model) REST surface for the Web Dashboard.
 
@@ -34,6 +34,7 @@ from core.config.byom_config import (
     save_byom_config,
 )
 from core.config import embedding_resolver, model_resolver
+from core.config.model_pricing import price_for
 from core.config.provider_registry import (
     CLOUD_PROVIDER_IDS,
     PROVIDER_IDS,
@@ -57,7 +58,7 @@ from api.websocket_manager import vfs_manager
 from core.indexer import lazy_indexer
 
 # ---------------------------------------------------------------------------
-# Embedding-target derivation (Phase 7.9.B.12) — provider-agnostic.
+# Embedding-target derivation — provider-agnostic.
 # Per-provider default embed models (overridable via env for power users).
 # ---------------------------------------------------------------------------
 _OLLAMA_EMBED_MODEL = os.getenv("AILIENANT_OLLAMA_EMBED_MODEL", "ollama/nomic-embed-text")
@@ -114,12 +115,24 @@ class EndpointConfigOut(BaseModel):
     provider: str
 
 
+class ModelPriceOut(BaseModel):
+    """Per-1M-token cost for one model, projected for the dashboard cost badges.
+    Absent from ``model_pricing`` entirely when unknown — never a guessed figure."""
+    input_per_mtok: float
+    output_per_mtok: float
+    local: bool
+
+
 class BYOMConfigResponse(BaseModel):
     endpoints: list[EndpointConfigOut]
     presets: list[ModelPreset]          # built-ins first, then user-defined
     active_preset_id: Optional[str]
     discovered: list[DiscoveredModelItem]  # all live models for preset dropdowns
     model_cache: dict[str, list[str]] = {}  # endpoint_id → canonical model ids (cloud catalogues)
+    # Canonical model id → best-effort pricing. Additive/optional: only carries
+    # entries we could resolve (local = free, cloud = litellm rate); unknown
+    # models are simply omitted so the UI shows no badge rather than a guess.
+    model_pricing: dict[str, ModelPriceOut] = {}
 
 
 class EngineStatusItem(BaseModel):
@@ -653,17 +666,55 @@ async def test_connection(req: TestConnectionRequest) -> TestConnectionResponse:
     return TestConnectionResponse(ok=True, models=items, latency_ms=latency)
 
 
+def _build_model_pricing(
+    discovered: list[DiscoveredModelItem],
+    model_cache: dict[str, list[str]],
+    presets: list[ModelPreset],
+) -> dict[str, ModelPriceOut]:
+    """Resolve best-effort pricing for every model id the UI can surface.
+
+    Collects canonical ids from the discovered pool, the imported cloud caches,
+    and configured preset tiers, then maps each through ``price_for``. Unknown
+    models are omitted (no badge) rather than assigned a fabricated rate.
+    """
+    ids: set[str] = {item.id for item in discovered}
+    for cached in model_cache.values():
+        ids.update(cached)
+    for preset in presets:
+        for tier_model in preset.tiers.values():
+            if tier_model and tier_model.strip():
+                ids.add(tier_model.strip())
+
+    pricing: dict[str, ModelPriceOut] = {}
+    for mid in ids:
+        price = price_for(mid)
+        if price is not None:
+            pricing[mid] = ModelPriceOut(
+                input_per_mtok=price.input_per_mtok,
+                output_per_mtok=price.output_per_mtok,
+                local=price.local,
+            )
+    return pricing
+
+
 @router.get("/config", response_model=BYOMConfigResponse)
 async def get_config() -> BYOMConfigResponse:
     """Return the full BYOM config: user endpoints, built-in + user presets, live models."""
     config = await asyncio.to_thread(load_byom_config)
     builtin_presets, discovered = await _build_builtin_presets(config.model_cache)
+    all_presets = builtin_presets + config.presets
+    # Pricing lives behind a thread: the first litellm touch imports a heavy
+    # module — keep it off the event loop.
+    model_pricing = await asyncio.to_thread(
+        _build_model_pricing, discovered, config.model_cache, all_presets
+    )
     return BYOMConfigResponse(
         endpoints=_mask_endpoints(config.endpoints),
-        presets=builtin_presets + config.presets,
+        presets=all_presets,
         active_preset_id=config.active_preset_id,
         discovered=discovered,
         model_cache=config.model_cache,
+        model_pricing=model_pricing,
     )
 
 
@@ -684,11 +735,11 @@ async def put_config(request: Request) -> BYOMConfigResponse:
         active = all_presets.get(merged.active_preset_id)
         if active:
             await _apply_preset(active)
-            # Phase 7.9.B.12 — derive + persist the provider-agnostic embedding
-            # target so the indexer preflight + semantic memory route correctly.
+            # Derive + persist the provider-agnostic embedding target so the
+            # indexer preflight + semantic memory route correctly.
             merged.embedding = _derive_embedding_target(active, merged.endpoints, discovered)
-            # Phase 7.9.B.13 — persist per-tier chat targets so the main chat +
-            # analyst can call the active model directly (no proxy).
+            # Persist per-tier chat targets so the main chat + analyst can call
+            # the active model directly (no proxy).
             merged.chat_models = {
                 tier: _build_chat_target(model_id, merged.endpoints)
                 for tier, model_id in active.tiers.items() if model_id

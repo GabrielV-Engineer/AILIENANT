@@ -544,34 +544,84 @@ html, body, #root { height: 100%; }
    ============================================================ */
 
 /* Status dot next to endpoint name */
-.byom-status-dot {
-  display: inline-block;
-  width: 10px; height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
+/* Shared pulse (also used by live status indicators elsewhere). */
 @keyframes byom-pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.35; }
 }
-.byom-status-dot--pulse { animation: byom-pulse 1s ease-in-out infinite; }
+
+/* ── Panel scaffolding: KPI grid + numbered steps ── */
+.db-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.db-step { margin-bottom: var(--space-6); }
+.db-step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.db-step-num {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-primary);
+  color: #0D1117;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
+  display: flex; align-items: center; justify-content: center;
+}
+.db-step-heading { flex: 1; min-width: 0; }
+.db-step-title {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+.db-step-actions { flex-shrink: 0; display: flex; gap: var(--space-2); align-items: center; }
 
 /* Field-level validation messages */
 .byom-field-error {
   font-size: 11px;
-  color: #F85149;
+  color: var(--status-critical);
   margin-top: 3px;
 }
 .byom-field-warn {
   font-size: 11px;
-  color: #E3B341;
+  color: var(--status-warning);
   margin-top: 3px;
 }
+.byom-input-error { border-color: var(--status-critical) !important; }
 
-/* Input highlighted red on validation failure */
-.byom-input-error {
-  border-color: #F85149 !important;
+.byom-link { color: var(--accent-primary); text-decoration: none; white-space: nowrap; }
+.byom-link:hover { text-decoration: underline; }
+
+/* ── Quick-connect strip ── */
+.byom-quick { border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-subtle)); }
+.byom-quick-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-end;
+  flex-wrap: wrap;
 }
+.byom-quick-field { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
+.byom-quick-key { flex: 1; min-width: 220px; }
+
+/* ── Running local engines row ── */
+.byom-engine-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-3) 0;
+}
+.byom-engine-item { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Endpoint card spacing */
+.byom-endpoint { margin-bottom: var(--space-3); }
 
 /* Collapsible model list after a successful test */
 .byom-model-list {
@@ -580,7 +630,7 @@ html, body, #root { height: 100%; }
   padding: 8px 10px;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   color: var(--text-secondary);
   max-height: 160px;
@@ -589,10 +639,34 @@ html, body, #root { height: 100%; }
 .byom-model-list li { padding: 2px 0; }
 .byom-model-list li + li { border-top: 1px solid var(--border-subtle); padding-top: 4px; margin-top: 2px; }
 
-/* Error state card */
-.byom-error {
-  color: #F85149;
-  border-color: #F85149;
+/* ── Active-preset summary (prominent, with cost badges) ── */
+.byom-active-preset { border-color: color-mix(in srgb, var(--status-good) 45%, var(--border-subtle)); margin-bottom: var(--space-3); }
+.byom-active-tiers { display: flex; flex-direction: column; gap: 6px; }
+.byom-active-tier {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.byom-active-tier + .byom-active-tier { border-top: 1px solid var(--border-subtle); }
+.byom-active-tier-label {
+  flex-shrink: 0;
+  width: 60px;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.byom-active-tier-model {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Preset grid — horizontal wrapping cards */
@@ -615,7 +689,7 @@ html, body, #root { height: 100%; }
   transition: border-color 0.15s;
 }
 .byom-preset-card--active {
-  border-color: var(--accent-primary, #63a583);
+  border-color: var(--accent-primary);
 }
 
 .byom-preset-name {
@@ -676,124 +750,12 @@ html, body, #root { height: 100%; }
   max-width: 360px;
 }
 
-/* ---- Confirmation modal ---- */
-.byom-confirm-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.byom-confirm-modal {
-  background: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 6px;
-  padding: 20px 24px;
-  min-width: 320px;
-  max-width: 480px;
-}
-
-.byom-confirm-title {
-  font-weight: 700;
-  font-size: 14px;
-  margin-bottom: 8px;
-}
-
-.byom-confirm-body {
-  font-size: 12px;
-  color: var(--vscode-descriptionForeground);
-  line-height: 1.5;
-}
-
-.byom-confirm-warning {
-  font-size: 11px;
-  color: #E3B341;
-  margin-top: 6px;
-}
-
-/* ---- Engine health bar ---- */
-.byom-engine-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding: 10px 12px;
-  background: var(--vscode-sideBar-background);
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 6px;
-}
-
-.byom-engine-bar-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--vscode-descriptionForeground);
-  margin-right: 4px;
-}
-
-.byom-engine-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-.byom-engine-chip--running {
-  border-color: #63a583;
-}
-
-.byom-engine-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #484F58;
-  flex-shrink: 0;
-}
-
-.byom-engine-dot--on {
-  background: #63a583;
-}
-
-.byom-engine-name {
-  font-weight: 600;
-}
-
-.byom-engine-count,
-.byom-engine-offline {
-  font-size: 11px;
-  color: var(--vscode-descriptionForeground);
-}
-
-.byom-engine-add {
-  font-size: 10px !important;
-  padding: 2px 6px !important;
-}
-
 /* ---- Provider description hint ---- */
 .byom-provider-hint {
   margin-top: 4px;
   font-size: 11px;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
   line-height: 1.4;
-}
-
-.byom-provider-help-link {
-  color: var(--color-primary, #63a583);
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.byom-provider-help-link:hover {
-  text-decoration: underline;
 }
 
 /* ── Tier browse button + model browser modal ── */
@@ -801,21 +763,18 @@ html, body, #root { height: 100%; }
   flex-shrink: 0;
   padding: 4px 10px;
   font-size: 11px;
-  background: var(--color-card, #2b2f36);
-  color: var(--color-text, #e6e6e6);
-  border: 1px solid var(--color-border, #3a3f47);
-  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
-.byom-tier-browse:hover { border-color: var(--color-primary, #63a583); }
+.byom-tier-browse:hover { border-color: var(--accent-primary); }
 
 .byom-detected-filter { margin: 8px 0; max-width: 320px; }
 
+/* Sizing only — the overlay chrome comes from .ui-overlay-panel. */
 .byom-model-browser {
-  background: var(--color-card, #21262d);
-  border: 1px solid var(--color-border, #3a3f47);
-  border-radius: 8px;
-  padding: 16px;
   width: min(560px, 92vw);
   max-height: 78vh;
   display: flex;
@@ -825,55 +784,39 @@ html, body, #root { height: 100%; }
 .byom-browser-list { overflow-y: auto; flex: 1; }
 .byom-browser-group { margin-bottom: 10px; }
 .byom-browser-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
   text-align: left;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   font-size: 12px;
   padding: 5px 8px;
   background: transparent;
-  color: var(--color-text, #e6e6e6);
+  color: var(--text-primary);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
-.byom-browser-item:hover { background: var(--color-primary-soft, rgba(99,165,131,0.18)); }
+.byom-browser-item:hover { background: color-mix(in srgb, var(--accent-primary) 18%, transparent); }
 
 /* ── Model health check ── */
-.byom-health-hint {
-  font-size: 11px;
-  color: var(--vscode-descriptionForeground);
-  margin-bottom: 10px;
-  line-height: 1.4;
-}
-.byom-health-empty {
-  font-size: 12px;
-  color: var(--vscode-descriptionForeground);
-  font-style: italic;
-}
 .byom-health-list { list-style: none; margin: 0; padding: 0; }
 .byom-health-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 5px 0;
+  padding: 6px 0;
   flex-wrap: wrap;
 }
+.byom-health-row + .byom-health-row { border-top: 1px solid var(--border-subtle); }
 .byom-health-model {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   font-size: 12px;
   flex: 1;
   min-width: 200px;
   word-break: break-all;
-}
-.byom-health-btn { flex-shrink: 0; padding: 3px 12px; font-size: 11px; }
-.byom-health-ok { font-size: 11px; color: var(--color-primary, #63a583); }
-.byom-health-err { font-size: 11px; color: #F85149; word-break: break-all; }
-
-.byom-api-key-hint {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--vscode-descriptionForeground);
 }
 
 /* ---- Discovered models grouped section ---- */
@@ -902,7 +845,7 @@ html, body, #root { height: 100%; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -911,7 +854,7 @@ html, body, #root { height: 100%; }
   justify-content: space-between;
   align-items: center;
   padding: 3px 0;
-  border-bottom: 1px solid var(--vscode-panel-border);
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 12px;
 }
 
@@ -922,37 +865,17 @@ html, body, #root { height: 100%; }
 .byom-discovered-model-id {
   font-family: var(--font-mono, monospace);
   font-size: 11px;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
 }
 
-/* ── Phase 7.9.B.11 — Save feedback, built-in badge, tier clear button ─── */
-
-.byom-save-success {
-  font-size: 12px;
-  color: #63a583;
-  font-weight: 600;
-  margin-left: 8px;
-  animation: byom-fade-out 2s forwards;
-}
-
-@keyframes byom-fade-out {
-  0%, 60% { opacity: 1; }
-  100%     { opacity: 0; }
-}
-
-.byom-save-error {
-  font-size: 11px;
-  color: #E3B341;
-  margin-top: 4px;
-}
-
+/* Built-in preset badge + tier clear button */
 .byom-preset-builtin-badge {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .04em;
-  color: var(--vscode-descriptionForeground);
-  border: 1px solid var(--vscode-panel-border);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
   border-radius: 3px;
   padding: 1px 5px;
   margin-left: 6px;
@@ -973,7 +896,7 @@ html, body, #root { height: 100%; }
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
   font-size: 15px;
   padding: 0 4px;
   line-height: 1;
@@ -981,7 +904,29 @@ html, body, #root { height: 100%; }
 }
 
 .byom-tier-clear:hover {
-  color: #c0392b;
+  color: var(--status-critical);
+}
+
+/* ── Extensions panel: rows, names, links, clamps ── */
+.db-ext-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.db-ext-name { font-weight: var(--fw-semibold); font-size: 13px; color: var(--text-primary); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.db-ext-link { font-size: 11px; color: var(--accent-info); text-decoration: none; }
+.db-ext-link:hover { text-decoration: underline; }
+.db-ext-error { font-size: 11px; color: var(--status-critical); }
+.db-ext-warn { font-size: 11px; color: var(--status-warning); }
+.db-ext-clamp {
+  white-space: pre-wrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 /* ============================================================
