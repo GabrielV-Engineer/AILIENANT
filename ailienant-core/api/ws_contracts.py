@@ -69,20 +69,23 @@ class TokenChunkPayload(BaseModel):
 
 
 class ThinkingChunkPayload(BaseModel):
-    """ a native-reasoning ("thinking") delta streamed to the
-    IDE's collapsible Thought Box.
+    """A reasoning ("thinking") delta streamed to the IDE's inline reasoning UI.
 
     Distinct from ``TokenChunkPayload`` (the answer stream) and from
     ``PipelineStepPayload`` (synthesized node narration). ``delta`` is
     a raw reasoning-token fragment; ``token_count`` is the cumulative thinking
     token count for the current turn (drives the live "N tokens" telemetry).
-    Display-only: the frontend renders it sanitized and NEVER feeds it back into
-    the agent loop.
+    ``source`` tags provenance — ``"native"`` (the model's own reasoning channel)
+    or ``"simulated"`` (a prompt-scaffolded fallback for models without native
+    thinking) — so the UI can label the trace honestly. Additive and default-safe:
+    older clients omit it and keep prior behavior. Display-only: the frontend
+    renders it sanitized and NEVER feeds it back into the agent loop.
     """
 
     session_id: str
     delta: str
     token_count: int = 0
+    source: Literal["native", "simulated"] = "native"
 
 
 class TelemetryPayload(BaseModel):
@@ -514,6 +517,10 @@ class AnalystQueryPayload(BaseModel):
     # Additive + optional: pre-clients omit it and the analyst defaults to medium.
     # Only changes generation; retrieval + embeddings are unaffected.
     model_tier: Optional[str] = None
+    # Master reasoning toggle mirrored from the workspace. When true, the analyst
+    # streams a reasoning trace (native or scaffolded-simulated) before its answer.
+    # Additive + optional: pre-clients omit it and reasoning stays on by default.
+    enable_native_thinking: bool = True
 
 
 class ClientAnalystQueryEvent(BaseModel):
@@ -541,6 +548,22 @@ class NattTokenChunkPayload(BaseModel):
 class ServerNattTokenChunkEvent(BaseModel):
     event_type: Literal["server_natt_token"] = "server_natt_token"
     data: NattTokenChunkPayload
+
+
+# reasoning ("thinking") delta for the analyst pane — the Natt-channel twin of
+# ``ThinkingChunkPayload``. Same inline reasoning UI, its own event type so the
+# analyst pane's stream never collides with the main chat's.
+class NattThinkingChunkPayload(BaseModel):
+    """Server → client: an analyst reasoning delta for the Natt canvas."""
+    session_id: str
+    delta: str
+    token_count: int = 0
+    source: Literal["native", "simulated"] = "native"
+
+
+class ServerNattThinkingChunkEvent(BaseModel):
+    event_type: Literal["server_natt_thinking_chunk"] = "server_natt_thinking_chunk"
+    data: NattThinkingChunkPayload
 
 
 class NattStreamEndPayload(BaseModel):
@@ -1176,6 +1199,7 @@ WebSocketMessage = Union[
     ClientAnalystQueryEvent,         # Natt analyst pane query
     ServerNattMessageEvent,          # analyst reply
     ServerNattTokenChunkEvent,       # streamed analyst token chunk
+    ServerNattThinkingChunkEvent,    # streamed analyst reasoning delta
     ServerNattStreamEndEvent,        # analyst stream finalized (+ context_version)
     ServerPipelineStepEvent,         # pipeline node progress
     ServerPlanDocumentEvent,         # finalized plan → rich Plan surface

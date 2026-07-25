@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 import os as _os
-from typing import Any, AsyncIterator, Dict, List, Optional, Set
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Set
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
@@ -378,15 +378,23 @@ async def generate_analyst_reply_stream(
     history: Optional[List[Dict[str, str]]] = None,
     session_id: str = "",
     tier: str = "medium",
+    on_reasoning: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    enable_thinking: bool = True,
 ) -> AsyncIterator[str]:
     """ streaming analyst reply for the Natt pane.
 
     System prompt = SOUL persona (already identity) + the assembled,
     budgeted, sandboxed analyst context block. Conversation memory (history) is replayed
     so the analyst keeps continuity. ``tier`` selects the answer model from the active BYOM
-    preset (the user trades speed vs quality); it does not affect retrieval. Outbound tokens
-    are coalesced into chunk_ms=40 frames via the shared batcher. Degrades to one actionable
-    message if the BYOM engine is down — the analyst must never crash the WS loop. Read-only.
+    preset (the user trades speed vs quality); it does not affect retrieval. Outbound answer
+    tokens are coalesced into chunk_ms=40 frames via the shared batcher. Degrades to one
+    actionable message if the BYOM engine is down — the analyst must never crash the WS loop.
+    Read-only.
+
+    When ``enable_thinking`` and a reasoning sink is wired, the reply is produced through
+    the shared reasoning-aware engine: the model's reasoning (native or a scaffolded
+    simulation) streams to ``on_reasoning(delta, source)`` while only the answer is batched
+    to the caller. The reasoning sink is best-effort — a dead sink never aborts the reply.
     """
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
     from transport.token_batcher import batch_tokens
@@ -400,8 +408,27 @@ async def generate_analyst_reply_stream(
         messages.extend(history)
     messages.append({"role": "user", "content": text})
 
+    async def _answer_only() -> AsyncIterator[str]:
+        """Yield only answer text; route reasoning deltas to the sink (best-effort)."""
+        async for d in LLMGateway.astream_reasoning(
+            messages, tier=tier, temperature=0.4, session_id=session_id,
+        ):
+            if d.kind == "thinking":
+                if on_reasoning is not None:
+                    try:
+                        await on_reasoning(d.text, d.source)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — reasoning sink is best-effort
+                        logger.debug("analyst reasoning sink failed (non-fatal): %s", exc)
+            else:  # "text" — the answer channel
+                yield d.text
+
     try:
-        raw = LLMGateway.astream_byom(messages, tier=tier, session_id=session_id)
+        if enable_thinking and on_reasoning is not None:
+            raw: AsyncIterator[str] = _answer_only()
+        else:
+            raw = LLMGateway.astream_byom(messages, tier=tier, session_id=session_id)
         produced = False
         async for chunk in batch_tokens(raw, chunk_ms=40):
             produced = True

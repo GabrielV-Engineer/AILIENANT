@@ -46,12 +46,13 @@ export interface ConversationMessage {
     is_abort_savepoint?: boolean;
     // Frozen at ingestion; the row component is pure and never reads reactive config.
     authorLabel?: string;
-    // Native Thinking (ADR-707) — raw reasoning. Display-only; NEVER persisted.
+    // Reasoning trace — raw reasoning. Display-only; NEVER persisted.
     thinking?: string;
     thinkingTokens?: number;
     thinkingStartedAt?: number;
     thinkingElapsedMs?: number;
     thinkingOpen?: boolean;
+    thinkingSource?: 'native' | 'simulated';
     // Ghost Telemetry (ADR-723) — answer tokens tallied client-side. Persisted.
     liveTokens?: number;
 }
@@ -78,6 +79,14 @@ export interface NattMessage {
     streaming?: boolean;
     // Same parser state, applied to analyst-canvas turns.
     parserState?: MdParserState;
+    // Reasoning trace for the analyst turn — same inline stream as the main chat.
+    // Display-only; NEVER persisted.
+    thinking?: string;
+    thinkingTokens?: number;
+    thinkingStartedAt?: number;
+    thinkingElapsedMs?: number;
+    thinkingOpen?: boolean;
+    thinkingSource?: 'native' | 'simulated';
 }
 
 /** A file/folder added to the turn context via the workspace picker. */

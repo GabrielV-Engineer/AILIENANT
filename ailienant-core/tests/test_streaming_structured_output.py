@@ -54,7 +54,7 @@ def _recording_stream(captured: Dict[str, Any], *deltas: StreamDelta) -> Any:
     return _factory
 
 
-async def _noop_sink(_text: str) -> None:
+async def _noop_sink(_text: str, _source: str = "native") -> None:
     return None
 
 

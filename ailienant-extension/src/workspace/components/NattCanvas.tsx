@@ -3,9 +3,10 @@ import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { NattPromptBar } from './NattPromptBar';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { ReasoningStream } from './ReasoningStream';
 import { vscode } from '../vscode_bridge';
 import { useWorkspaceStore, type AnalystTier } from '../workspaceStore';
-import type { ParserState as MdParserState } from '../utils/StreamingMarkdownParser';
+import type { NattMessage } from '../types';
 
 const _ANALYST_TIERS: AnalystTier[] = ['small', 'medium', 'big', 'cloud'];
 const _TIER_LABEL: Record<AnalystTier, string> = {
@@ -66,15 +67,6 @@ function AnalystModelPicker(): JSX.Element {
     );
 }
 
-interface NattMessage {
-    role: 'natt' | 'user';
-    content: string;
-    streaming?: boolean;
-    // Phase 7.11.5 — incremental markdown parser state. Live only while
-    // streaming; cleared on `server_natt_stream_end`.
-    parserState?: MdParserState;
-}
-
 interface AttachedItem { id: string; path: string; kind: 'file' | 'directory'; }
 
 interface Props {
@@ -85,12 +77,13 @@ interface Props {
     onNattRemoveAttached: (id: string) => void;
     onClose: () => void;
     onSendMessage: (text: string) => void;
+    onToggleReasoning: (index: number) => void;
 }
 
 export function NattCanvas({
     nattName, messages, disabled,
     nattAttachedItems, onNattRemoveAttached,
-    onClose, onSendMessage,
+    onClose, onSendMessage, onToggleReasoning,
 }: Props): JSX.Element {
     const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -134,8 +127,20 @@ export function NattCanvas({
                     <div key={i} className="ws-natt-msg" data-role={m.role}>
                         {m.role === 'natt' && <Icon name="bot" size={14} color="var(--accent-primary)" />}
                         <div className="ws-natt-msg-content">
+                            {m.role === 'natt' && m.thinking && (
+                                <ReasoningStream
+                                    thinking={m.thinking}
+                                    tokens={m.thinkingTokens ?? 0}
+                                    startedAt={m.thinkingStartedAt}
+                                    elapsedMs={m.thinkingElapsedMs}
+                                    open={m.thinkingOpen ?? false}
+                                    streaming={!!m.streaming}
+                                    source={m.thinkingSource}
+                                    onToggle={() => onToggleReasoning(i)}
+                                />
+                            )}
                             {m.role === 'natt' ? (
-                                // Phase 7.11.5 — anti-flicker markdown rendering.
+                                // Anti-flicker markdown rendering.
                                 <MarkdownRenderer
                                     content={m.content}
                                     parserState={m.parserState}

@@ -963,6 +963,8 @@ export class WorkspacePanelManager {
                             text: data.text,
                             session_id: data.session_id,
                             ...(typeof data.model_tier === 'string' && { model_tier: data.model_tier }),
+                            ...(typeof data.enable_native_thinking === 'boolean'
+                                && { enable_native_thinking: data.enable_native_thinking }),
                             ...(Array.isArray(data.context_paths) && data.context_paths.length > 0
                                 && { context_paths: data.context_paths }),
                         },

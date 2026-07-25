@@ -308,6 +308,12 @@ def _supports_native_thinking(model_name: str) -> bool:
 # once its streaming JSON mode is verified.
 _STREAMING_STRUCTURED_PROVIDERS: frozenset[str] = frozenset({"openai"})
 
+# Extra output-token headroom granted to a simulated-reasoning turn so the
+# scaffolded ``<thinking>`` block cannot starve the answer (the flat stream
+# shares one ``max_tokens`` across reasoning + answer). Capped so a runaway
+# reasoner cannot request an unbounded completion.
+_SIM_THINK_CAP: int = 4096
+
 
 def _supports_streaming_structured_output(target: Any) -> bool:
     """True when the resolved target's provider streams ``response_format``.
@@ -623,23 +629,24 @@ class LLMGateway:
         session_id: Optional[str] = None,
         state: Optional[Dict[str, Any]] = None,
         *,
-        on_thinking: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_thinking: Optional[Callable[[str, str], Awaitable[None]]] = None,
         enable_thinking: bool = False,
         thinking_budget_tokens: int = 4096,
     ) -> str:
-        """Structured completion that streams native reasoning while it works.
+        """Structured completion that streams reasoning while it works.
 
         A single entry point with two branches so the caller's code is identical
         regardless of model:
 
-        - **Streaming branch** (taken only when a reasoning sink is wired AND the
-          active model emits native reasoning tokens): consume the thinking-aware
-          stream, push each reasoning delta to ``on_thinking`` (best-effort), and
+        - **Reasoning branch** (taken whenever a reasoning sink is wired AND
+          thinking is enabled): consume :meth:`astream_reasoning` — which picks the
+          model's native reasoning stream or a prompt-scaffolded simulated one — push
+          each reasoning delta to ``on_thinking(text, source)`` (best-effort), and
           accumulate the answer tokens into an in-memory buffer that is returned.
-        - **Fallback branch** (every other case — no sink, thinking disabled, or a
-          non-reasoning model): delegate to :meth:`ainvoke`, preserving
-          ``response_format``, the OOM cascade, and response-cache compatibility.
-          Behaviour here is byte-identical to a direct ``ainvoke`` call.
+        - **Fallback branch** (no sink, or thinking disabled): delegate to
+          :meth:`ainvoke`, preserving ``response_format``, the OOM cascade, and
+          response-cache compatibility. Behaviour is byte-identical to a direct
+          ``ainvoke`` call — no scaffold, no wasted tokens.
 
         Streaming is *best-effort*; generation is *mission-critical*. A failure in
         the reasoning sink (e.g. a closed WebSocket) is swallowed and the sink is
@@ -647,24 +654,17 @@ class LLMGateway:
         the structured result is always returned intact. ``CancelledError`` (a real
         abort) is never swallowed.
 
-        Because the streaming branch cannot pass ``response_format`` (the streaming
-        APIs don't support it), a reasoning model may wrap its JSON in markdown
-        fences; when the caller asked for JSON the buffered answer is run through
-        :meth:`_sanitize_json_response` before returning so the downstream parser
-        never trips on a fence.
+        Because the reasoning stream cannot pass ``response_format`` (the streaming
+        APIs don't support it, and the simulated path emits prose before the JSON),
+        the buffered answer is run through :meth:`_sanitize_json_response` when the
+        caller asked for JSON, so the downstream parser never trips on a fence.
         """
         # Derive the BYOM tier from the alias, mirroring ainvoke's resolution.
         _alias_tier = model.split("/", 1)[1] if model.startswith("ailienant/") else "medium"
         tier = _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
 
-        target: Any = None
-        want_stream = on_thinking is not None and enable_thinking
-        if want_stream:
-            from core.config.model_resolver import get_chat_target
-            target = get_chat_target(tier)
-            want_stream = target is not None and _supports_native_thinking(target.model)
-
-        if not want_stream:
+        sink_wired = on_thinking is not None and enable_thinking
+        if not sink_wired:
             resp = await LLMGateway.ainvoke(
                 messages=messages,
                 model=model,
@@ -677,37 +677,26 @@ class LLMGateway:
             )
             return resp.choices[0].message.content or ""
 
-        # Streaming branch. on_thinking is guaranteed non-None by want_stream.
-        if on_thinking is None:
-            return ""  # unreachable by construction
-        assert target is not None  # narrowed: want_stream required a resolved target
-        sink: Callable[[str], Awaitable[None]] = on_thinking
+        # Reasoning branch. on_thinking is guaranteed non-None by sink_wired.
+        assert on_thinking is not None  # narrowed by sink_wired
+        sink: Callable[[str, str], Awaitable[None]] = on_thinking
         buffer: List[str] = []
         sink_live = True
-        # Preserve provider-enforced JSON mode on the stream where the provider
-        # supports it; elsewhere it stays None and the sanitizer below recovers
-        # the JSON (DEBT-013).
-        stream_response_format = (
-            response_format
-            if response_format and _supports_streaming_structured_output(target)
-            else None
-        )
-        async for delta in LLMGateway.astream_byom_thinking(
+        async for delta in LLMGateway.astream_reasoning(
             messages,
             tier=tier,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
             session_id=session_id,
-            enable_thinking=True,
             thinking_budget_tokens=thinking_budget_tokens,
-            response_format=stream_response_format,
+            response_format=response_format,
         ):
             if delta.kind == "thinking":
                 # Best-effort: a dead sink must never abort generation.
                 if sink_live:
                     try:
-                        await sink(delta.text)
+                        await sink(delta.text, delta.source)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:  # noqa: BLE001 — streaming is best-effort
@@ -717,11 +706,126 @@ class LLMGateway:
                 buffer.append(delta.text)
 
         answer = "".join(buffer)
-        # Dropping response_format reintroduces ```json fences on reasoning models;
-        # strip them so the downstream parser sees clean JSON.
+        # Dropping response_format reintroduces ```json fences (and a simulated turn
+        # emits reasoning before the JSON); strip so the downstream parser sees
+        # clean JSON.
         if response_format:
             answer = LLMGateway._sanitize_json_response(answer)
         return answer
+
+    @staticmethod
+    async def astream_reasoning(
+        messages: list[dict[str, Any]],
+        tier: str = "medium",
+        *,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
+        session_id: Optional[str] = None,
+        thinking_budget_tokens: int = 4096,
+        response_format: Optional[dict[str, Any]] = None,
+    ) -> AsyncIterator["StreamDelta"]:
+        """Reasoning-aware stream — one engine, native or simulated, chosen once.
+
+        Resolves the active BYOM tier and yields :class:`StreamDelta` values tagged
+        ``kind`` (``thinking``/``text``) and ``source`` (``native``/``simulated``):
+
+        - **Native** (model recognised by ``_supports_native_thinking``): delegate
+          to :meth:`astream_byom_thinking`, which surfaces the model's own
+          ``reasoning_content`` — behaviour identical to before.
+        - **Simulated** (any other model): inject a code-free reasoning scaffold on
+          a *copied* message list (the caller's list is never mutated), stream flat
+          text, and split it live with :class:`ThinkingTagDemuxer` so the
+          ``<thinking>`` block streams to the reasoning channel and the remainder is
+          the answer. The reasoning gets its own token headroom so it never starves
+          the answer.
+
+        Exactly one path fires per call — native and simulated never mix.
+        """
+        from tools.stream_delta import StreamDelta
+        from tools.thinking_demux import ThinkingTagDemuxer
+        from core.config.model_resolver import get_chat_target  # deferred — load order
+
+        target = get_chat_target(tier)
+        native = target is not None and _supports_native_thinking(target.model)
+
+        if native:
+            # Provider-enforced JSON mode on the stream only where supported;
+            # elsewhere the caller's sanitizer recovers the JSON (DEBT-013).
+            stream_rf = (
+                response_format
+                if response_format and _supports_streaming_structured_output(target)
+                else None
+            )
+            async for delta in LLMGateway.astream_byom_thinking(
+                messages,
+                tier=tier,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                session_id=session_id,
+                enable_thinking=True,
+                thinking_budget_tokens=thinking_budget_tokens,
+                response_format=stream_rf,
+            ):
+                yield delta  # already tagged source="native" by construction
+            return
+
+        # Simulated path: scaffold → flat stream → demux.
+        scaffolded = LLMGateway._inject_reasoning_scaffold(
+            messages, want_json=response_format is not None
+        )
+        sim_max_tokens = max_tokens + min(thinking_budget_tokens, _SIM_THINK_CAP)
+        demux = ThinkingTagDemuxer()
+        async for chunk in LLMGateway.astream_byom(
+            scaffolded,
+            tier=tier,
+            temperature=temperature,
+            max_tokens=sim_max_tokens,
+            timeout=timeout,
+            session_id=session_id,
+        ):
+            reasoning, answer = demux.feed(chunk)
+            if reasoning:
+                yield StreamDelta("thinking", reasoning, "simulated")
+            if answer:
+                yield StreamDelta("text", answer, "simulated")
+        reasoning, answer = demux.finish()
+        if reasoning:
+            yield StreamDelta("thinking", reasoning, "simulated")
+        if answer:
+            yield StreamDelta("text", answer, "simulated")
+
+    @staticmethod
+    def _inject_reasoning_scaffold(
+        messages: list[dict[str, Any]], *, want_json: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return a copy of ``messages`` with a code-free reasoning scaffold added.
+
+        The scaffold elicits a conceptual, narrative ``<thinking>`` block — no code,
+        no variable dumps, no answer — for models without native reasoning. Appended
+        to the first system message if present, else prepended as a new one. Each
+        message dict is shallow-copied so the caller's list (which a retry loop may
+        re-invoke) is never mutated.
+        """
+        scaffold = (
+            "Before answering, think out loud inside one <thinking>...</thinking> "
+            "block. Narrate a clear first-person train of thought: what you are "
+            "weighing, the trade-offs, what you need to check, and how you reach your "
+            "conclusion. Write professionally but plainly. Do NOT put code, file "
+            "contents, variable dumps, or the final answer inside <thinking> — "
+            "reasoning only. After </thinking>, give your final answer"
+        )
+        scaffold += (
+            ", which must be a single JSON object and nothing else." if want_json else "."
+        )
+        out = [dict(m) for m in messages]
+        for msg in out:
+            if msg.get("role") == "system":
+                msg["content"] = f"{msg.get('content', '')}\n\n{scaffold}"
+                return out
+        out.insert(0, {"role": "system", "content": scaffold})
+        return out
 
     @staticmethod
     async def astream(

@@ -1335,6 +1335,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     project_id: Optional[str] = _aq_proj,
                     project_root: str = _aq_root,
                     model_tier: Optional[str] = _q.model_tier,
+                    enable_native_thinking: bool = _q.enable_native_thinking,
                 ) -> None:
                     # Phase 7.11.3 — register THIS runner with the abort mesh
                     # (plan W1 invariant: current_task() is the spawned runner,
@@ -1345,7 +1346,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     if _ar_task is not None:
                         task_service.register_active_task(sid, _ar_task)
                     await task_service.stream_analyst_reply(
-                        sid, text, paths, cursor, project_id, project_root, model_tier
+                        sid, text, paths, cursor, project_id, project_root, model_tier,
+                        enable_native_thinking,
                     )
                     logger.info(
                         "[Session: %s] Analyst query handled (%d chars in, %d path(s))",

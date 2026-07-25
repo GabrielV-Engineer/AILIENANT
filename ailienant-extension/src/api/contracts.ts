@@ -61,6 +61,9 @@ export interface ThinkingChunkPayload {
     session_id: string;
     delta: string;
     token_count: number;
+    // Provenance: native reasoning vs a scaffolded simulation. Additive/optional
+    // — older servers omit it and the UI treats the trace as native.
+    source?: 'native' | 'simulated';
 }
 export interface ServerThinkingChunkEvent {
     event_type: 'server_thinking_chunk';
@@ -243,6 +246,17 @@ export interface NattTokenChunkPayload {
 export interface ServerNattTokenChunkEvent {
     event_type: 'server_natt_token';
     data: NattTokenChunkPayload;
+}
+
+export interface NattThinkingChunkPayload {
+    session_id: string;
+    delta: string;
+    token_count: number;
+    source?: 'native' | 'simulated';
+}
+export interface ServerNattThinkingChunkEvent {
+    event_type: 'server_natt_thinking_chunk';
+    data: NattThinkingChunkPayload;
 }
 
 export interface NattStreamEndPayload {
@@ -606,6 +620,9 @@ export interface AnalystQueryPayload {
     context_paths: string[];
     cursor?: number | null;
     model_tier?: string | null;
+    // Master reasoning toggle mirrored from the workspace; drives whether the
+    // analyst streams a reasoning trace. Additive/optional (defaults on server-side).
+    enable_native_thinking?: boolean;
 }
 export interface ClientAnalystQueryEvent {
     event_type: 'client_analyst_query';
@@ -716,6 +733,7 @@ export type ServerWSMessage =
     | ServerApplyWorkspaceEditEvent
     | ServerNattMessageEvent
     | ServerNattTokenChunkEvent
+    | ServerNattThinkingChunkEvent
     | ServerNattStreamEndEvent
     | ServerPipelineStepEvent
     | ServerPlanDocumentEvent
@@ -793,6 +811,7 @@ const SERVER_EVENT_TYPES: ReadonlySet<string> = new Set<ServerEventType>([
     'server_apply_workspace_edit',
     'server_natt_message',
     'server_natt_token',
+    'server_natt_thinking_chunk',
     'server_natt_stream_end',
     'server_pipeline_step',
     'server_plan_document',

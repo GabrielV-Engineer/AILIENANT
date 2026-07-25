@@ -1,14 +1,14 @@
 # tests/test_phase7_17_0b_streaming.py
-"""Streaming native thinking from the coding pipeline (ADR-739).
+"""Streaming reasoning from the coding pipeline.
 
 The planner/coder nodes stop freezing during inference: while they generate the
-structured JSON answer they stream the model's native reasoning to the Thought
-Box, reusing the Phase 9 thinking stack. Coverage:
+structured JSON answer they stream the model's reasoning (native, or a simulated
+scaffolded fallback) to the inline reasoning stream. Coverage:
 
   Gateway (``acomplete_with_thinking``):
-    G1 thinking branch — reasoning → sink, answer buffered and returned, no ainvoke.
+    G1 native branch — reasoning → sink, answer buffered and returned, no ainvoke.
     G2 fallback (thinking off) — delegates to ainvoke WITH response_format, no sink.
-    G3 fallback (non-reasoning model) — same delegation, capability-gated.
+    G3 non-reasoning model — a simulated <thinking> trace streams; no ainvoke.
     G4 socket isolation — a sink failure never aborts generation; sink latches off.
     G5 abort — a CancelledError from the sink propagates (real abort honoured).
     G6 fence strip — a ```json-wrapped answer returns bare, parseable JSON.
@@ -65,6 +65,16 @@ def _stream(*deltas: StreamDelta) -> Any:
     return _factory
 
 
+def _flat_stream(*chunks: str) -> Any:
+    """Build a callable returning an async iterator of flat text chunks (astream_byom)."""
+    def _factory(*_a: Any, **_k: Any) -> AsyncIterator[str]:
+        async def _gen() -> AsyncIterator[str]:
+            for c in chunks:
+                yield c
+        return _gen()
+    return _factory
+
+
 def _ainvoke_returning(content: str) -> AsyncMock:
     return AsyncMock(
         return_value=SimpleNamespace(
@@ -79,7 +89,7 @@ def _ainvoke_returning(content: str) -> AsyncMock:
 async def test_g1_thinking_branch_streams_and_buffers() -> None:
     seen: List[str] = []
 
-    async def sink(text: str) -> None:
+    async def sink(text: str, source: str = "native") -> None:
         seen.append(text)
 
     ainvoke = _ainvoke_returning("UNUSED")
@@ -125,25 +135,33 @@ async def test_g2_fallback_uses_ainvoke_with_response_format() -> None:
     assert ainvoke.call_args.kwargs["response_format"] == {"type": "json_object"}
 
 
-# ── G3 — fallback when the model is not a reasoning model ──────────────────────
+# ── G3 — non-reasoning model streams a simulated <thinking> trace ──────────────
 
 
-async def test_g3_fallback_when_model_not_reasoning() -> None:
-    sink = AsyncMock()
-    ainvoke = _ainvoke_returning('{"edits": []}')
+async def test_g3_non_reasoning_model_uses_simulated_trace() -> None:
+    seen: List[tuple[str, str]] = []
+
+    async def sink(text: str, source: str = "native") -> None:
+        seen.append((text, source))
+
+    ainvoke = _ainvoke_returning("UNUSED")
     with patch("core.config.model_resolver.get_chat_target", return_value=_target("ollama/qwen2.5-coder:7b")), \
+         patch.object(LLMGateway, "astream_byom", new=_flat_stream(
+             "<thinking>", "weighing the options", "</thinking>", '{"edits": []}',
+         )), \
          patch.object(LLMGateway, "ainvoke", new=ainvoke):
         out = await LLMGateway.acomplete_with_thinking(
             [{"role": "user", "content": "x"}],
             model="ailienant/big",
             response_format={"type": "json_object"},
             on_thinking=sink,
-            enable_thinking=True,         # on, but model can't reason → fallback
+            enable_thinking=True,         # on + non-reasoning model → simulated trace
         )
 
-    assert out == '{"edits": []}'
-    sink.assert_not_awaited()
-    assert ainvoke.await_count == 1
+    assert out == '{"edits": []}'                            # answer stripped of the block
+    assert "".join(t for t, _ in seen) == "weighing the options"
+    assert {s for _, s in seen} == {"simulated"}             # tagged simulated
+    ainvoke.assert_not_called()                              # no silent fallback anymore
 
 
 # ── G4 — a dead sink never aborts generation; it latches off ───────────────────
@@ -152,7 +170,7 @@ async def test_g3_fallback_when_model_not_reasoning() -> None:
 async def test_g4_socket_failure_does_not_break_generation() -> None:
     calls = {"n": 0}
 
-    async def flaky_sink(_text: str) -> None:
+    async def flaky_sink(_text: str, _source: str = "native") -> None:
         calls["n"] += 1
         raise ConnectionError("socket closed")
 
@@ -178,7 +196,7 @@ async def test_g4_socket_failure_does_not_break_generation() -> None:
 
 
 async def test_g5_cancelled_error_propagates() -> None:
-    async def cancelling_sink(_text: str) -> None:
+    async def cancelling_sink(_text: str, _source: str = "native") -> None:
         raise asyncio.CancelledError()
 
     with patch("core.config.model_resolver.get_chat_target", return_value=_target("claude-3-7-sonnet")), \
@@ -199,7 +217,7 @@ async def test_g5_cancelled_error_propagates() -> None:
 
 
 async def test_g6_strips_markdown_fences_from_buffered_answer() -> None:
-    async def sink(_text: str) -> None:
+    async def sink(_text: str, _source: str = "native") -> None:
         return None
 
     with patch("core.config.model_resolver.get_chat_target", return_value=_target("claude-3-7-sonnet")), \
@@ -228,7 +246,7 @@ async def test_ts1_thinking_streamer_coalesces_and_isolates_narration() -> None:
     from core import task_service as ts_mod
 
     chunks: List[str] = []
-    bcast_thinking = AsyncMock(side_effect=lambda sid, chunk, n=0: chunks.append(chunk))
+    bcast_thinking = AsyncMock(side_effect=lambda sid, chunk, n=0, source="native": chunks.append(chunk))
     bcast_step = AsyncMock()
     with patch.object(ts_mod.vfs_manager, "broadcast_thinking_chunk", bcast_thinking), \
          patch.object(ts_mod.vfs_manager, "broadcast_pipeline_step", bcast_step):
@@ -296,7 +314,7 @@ async def _run_coder_with(config: RunnableConfig) -> tuple[Dict[str, Any], Async
 
 
 async def test_n1_coder_forwards_seam_and_parses_edits() -> None:
-    async def sink(_t: str) -> None:
+    async def sink(_t: str, _source: str = "native") -> None:
         return None
 
     config: RunnableConfig = {"configurable": {
@@ -325,7 +343,7 @@ async def test_n2_coder_thinking_off_still_parses() -> None:
 
 
 async def test_n3_planner_forwards_seam_and_validates() -> None:
-    async def sink(_t: str) -> None:
+    async def sink(_t: str, _source: str = "native") -> None:
         return None
 
     decision = MagicMock()

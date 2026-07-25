@@ -51,7 +51,7 @@
 | 8.15 Dynamic Subagent Dispatch | ⬜ PENDING | — | 8.15.0 structured dispatch schema |
 | 8.16 Importance-Aware Session Memory | ⬜ PENDING | — | 8.16.0 context-utilization telemetry (GO/NO-GO gate) |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
-| Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.5 Verbal reasoning fallback (11.0–11.4 + 11.3.B shipped) |
+| Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.6 Active task header / prompt preservation (11.0–11.5 + 11.3.B shipped) |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
 | Phase 13 Pre-Launch Innovation Sprint | ⬜ PENDING | — | 13.1 Prompt caching |
 | Phase 14 Portfolio Level Release | ⬜ PENDING | — | 14.1 Dockerization |
@@ -879,7 +879,7 @@
   - [x] **11.3.B.3 — Per-exec command-output log (reframed DEBT-119).** Bounded in-memory ring (`core/exec_log.py`, non-persistent — no retention debt) fed by a shared `record_execution(...)` wrapper at the 6 project-work `execute()` callers (`run_command`, tracked tool-stream, hooks, type-check, coder verify/exec), each `source`-tagged; the benchmark eval harness is excluded (would flood the operator log) and the cage adapters are untouched. Cursor-paged `GET /api/v1/runtime/exec-log?since=&tail=N` (monotonic `seq`, idle poll ⇒ empty). Command+output masked (shared `core/redaction.py`, extracted from `telemetry.py`) and middle-truncated before the lock. `RuntimePanel` "Sandbox command log" card. Adapter set-tier (former item 3) **dropped as won't-do** — forcing a tier can silently downgrade isolation; the tier ladder stays read-only. Closes DEBT-119.
 - [x] **11.4 — BYOM & Extensions Polish.**
   BYOM: model browser with benchmark Pass@1 scores (from Division 8.3 reports), cost-per-token badges, quick-connect CTA, health-check status. Extensions: skill cards with usage stats, semantic search over the 56-tool catalog, installed vs available MCP servers with one-click install from the curated registry.
-- [ ] **11.5 — Verbal Reasoning Fallback for Non-Native-Thinking Models (closes DEBT-057).**
+- [x] **11.5 — Verbal Reasoning Fallback for Non-Native-Thinking Models (closes DEBT-057).**
   When native thinking is unavailable, `tools/llm_gateway.py` injects a reasoning scaffold into the system prompt (`<thinking>…</thinking>` prefix); the block is streamed to ThoughtBox via the existing `broadcast_thinking_chunk` path and stripped from the final answer. FE: Reasoning Mode toggle (`Native` / `Verbose` / `Compact`); ThoughtBox header shows `[Simulated]` vs `[Native]` tag. Files: `tools/llm_gateway.py`, `agents/planner.py`, `agents/coder.py`, `ThoughtBox.tsx`.
 - [ ] **11.6 — Active Task Header / Prompt Preservation (closes DEBT-058).**
   Submitted prompt stays as a sticky card pinned above the message list while the AI responds; collapses to 1-line summary on `TASK_COMPLETE`; user-dismissible. New `ActiveTaskHeader.tsx` with animated "Working…" + elapsed-time indicator + Cancel affordance. `workspaceStore.ts`: `activeTaskPrompt` / `activeTaskId` state. No backend change; uses existing WS events. Files: `workspaceStore.ts`, new `ActiveTaskHeader.tsx`, `NattCanvas.tsx`.

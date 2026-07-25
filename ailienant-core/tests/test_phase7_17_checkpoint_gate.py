@@ -98,7 +98,7 @@ async def test_gateway2_streaming_branch_fires_sink_and_ainvoke_not_called() -> 
     """Thinking on, reasoning model → sink receives deltas; answer buffered; ainvoke never called."""
     seen: List[str] = []
 
-    async def sink(text: str) -> None:
+    async def sink(text: str, source: str = "native") -> None:
         seen.append(text)
 
     ainvoke = _ainvoke_resp("UNUSED")
@@ -124,7 +124,7 @@ async def test_gateway2_streaming_branch_fires_sink_and_ainvoke_not_called() -> 
 
 async def test_isolate1_dead_sink_never_aborts_generation() -> None:
     """A closed WebSocket (ConnectionError from the sink) must NOT stop code generation."""
-    async def dead_sink(_text: str) -> None:
+    async def dead_sink(_text: str, _source: str = "native") -> None:
         raise ConnectionError("socket closed")
 
     with patch("core.config.model_resolver.get_chat_target", return_value=_target("claude-3-7-sonnet")), \
@@ -193,7 +193,7 @@ async def test_node1_coder_forwards_stream_thinking_to_gateway_and_parses_edits(
     from brain.state import MissionSpecification, WBSStep
     from agents.coder import run_coder_node
 
-    async def sink(_t: str) -> None:
+    async def sink(_t: str, _source: str = "native") -> None:
         return None
 
     step = WBSStep(

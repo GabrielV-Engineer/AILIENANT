@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.5: Verbal Reasoning Fallback + Unified Reasoning Stream — 2026-07-25
+**Status:** COMPLETE | **Gates:** mypy 0/434 · pyright 0 · pytest 2481 passed/2 skipped (+16 new) · tsc 0 · eslint 0
+- Shipped: one shared `LLMGateway.astream_reasoning` engine that picks the model's native reasoning OR a prompt-scaffolded simulated `<thinking>` trace (split live by `tools/thinking_demux.py`), consumed by all three surfaces (planner/coder turns, direct live-chat, analyst pane); a unified borderless inline `ReasoningStream` + self-tracing infinity glyph (no emoji) replaces the boxed ThoughtBox and renders identically in the main chat and `NattCanvas`, differing only by an honest additive `[Native]`/`[Simulated]` `source` tag.
+- Key decision: capability-gate + scaffold live only in the gateway so native and simulated are mutually exclusive (planner/coder prompts untouched, no double-injection); scaffold elicits conceptual, code-free reasoning; the existing Native-Thinking toggle stays the sole master switch — no new UI control (the manifest's Native/Verbose/Compact toggle was de-scoped by the user).
+- Deferred: DEBT-057 closed; simulated max_tokens gets `+min(budget, 4096)` headroom so reasoning never starves the answer.
+
 ## 11.4: BYOM & Extensions Polish — 2026-07-24
 **Status:** COMPLETE | **Gates:** mypy 0/431 · pyright 0 · pytest 2465 passed/2 skipped (+8 new) · tsc 0 · eslint 0
 - Shipped: frontend visual+UX redesign of both dashboard panels onto the 11.0 primitives/tokens — BYOM reorganized into a Connect→Configure→Verify 3-step spine with a KPI row, a one-action quick-connect strip, a prominent active-preset summary, and per-model cost badges; Extensions got a KPI count row, tier/reachability `Badge`s, `EmptyState`s, and a skills search + collapsible create. Only backend touch: `core/config/model_pricing.py` (`price_for`) reading `litellm.model_cost`, surfaced as an additive `model_pricing` map on `BYOMConfigResponse`.

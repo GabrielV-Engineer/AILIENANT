@@ -226,9 +226,12 @@ export function useWSMessageHandler(): void {
                 }
                 case 'server_thinking_chunk': {
                     // Accumulate raw reasoning into the streaming assistant turn's
-                    // Thought Box. Display-only: never touches `content`, stripped
-                    // before persist.
-                    const d = msg.payload as { delta: string; token_count?: number };
+                    // reasoning stream. Display-only: never touches `content`,
+                    // stripped before persist. `source` tags native vs simulated.
+                    const d = msg.payload as {
+                        delta: string; token_count?: number;
+                        source?: 'native' | 'simulated';
+                    };
                     recordRef.current();
                     cs.setIsStreaming(true);
                     cs.setMessages(prev => {
@@ -236,9 +239,9 @@ export function useWSMessageHandler(): void {
                         const last = prev[prev.length - 1];
                         if (last?.role === 'assistant' && last.streaming) {
                             return [...prev.slice(0, -1),
-                                accumulateThinking(last, d.delta, d.token_count, now)];
+                                accumulateThinking(last, d.delta, d.token_count, now, d.source)];
                         }
-                        return [...prev, { id: mkId(), ...newThinkingTurn(d.delta, d.token_count, now), authorLabel: authorLabelFor('assistant', nattName) }];
+                        return [...prev, { id: mkId(), ...newThinkingTurn(d.delta, d.token_count, now, d.source), authorLabel: authorLabelFor('assistant', nattName) }];
                     });
                     break;
                 }
@@ -656,10 +659,14 @@ export function useWSMessageHandler(): void {
                                 last.parserState ?? MD_INITIAL_STATE,
                                 d.token,
                             );
+                            // First answer token after reasoning freezes the clock and
+                            // collapses the reasoning stream (mirror of the main chat).
+                            const thinkingFreeze = freezeThinkingOnText(last, performance.now());
                             return [...prev.slice(0, -1), {
                                 ...last,
                                 content: last.content + d.token,
                                 parserState: nextState,
+                                ...(thinkingFreeze ?? {}),
                             }];
                         }
                         return [...prev, {
@@ -668,6 +675,35 @@ export function useWSMessageHandler(): void {
                             content: d.token,
                             streaming: true,
                             parserState: mdPushToken(MD_INITIAL_STATE, d.token),
+                        }];
+                    });
+                    break;
+                }
+                case 'server_natt_thinking_chunk': {
+                    // Analyst reasoning delta → the natt bubble's reasoning stream.
+                    // Display-only, its own channel so it never collides with the
+                    // main chat. Seeds a natt turn if reasoning arrives first.
+                    const d = msg.payload as {
+                        delta: string; token_count?: number;
+                        source?: 'native' | 'simulated';
+                    };
+                    cs.setNattMessages(prev => {
+                        const now = performance.now();
+                        const last = prev[prev.length - 1];
+                        if (last?.role === 'natt' && last.streaming) {
+                            return [...prev.slice(0, -1),
+                                accumulateThinking(last, d.delta, d.token_count, now, d.source)];
+                        }
+                        return [...prev, {
+                            id: mkId(),
+                            role: 'natt',
+                            content: '',
+                            streaming: true,
+                            thinking: d.delta,
+                            thinkingTokens: d.token_count ?? 0,
+                            thinkingStartedAt: now,
+                            thinkingOpen: true,
+                            thinkingSource: d.source,
                         }];
                     });
                     break;

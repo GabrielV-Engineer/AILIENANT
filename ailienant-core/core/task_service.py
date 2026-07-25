@@ -9,7 +9,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Literal, Optional, Tuple, cast, TYPE_CHECKING
+from typing import (
+    Awaitable, Callable, List, Dict, Any, Literal, Optional, Tuple, cast, TYPE_CHECKING,
+)
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager, LiveCellDispatcher
@@ -178,28 +180,43 @@ class TaskPayload(BaseModel):
 
 
 class _ThinkingStreamer:
-    """Coalesces reasoning deltas from the coding graph into the Thought Box.
+    """Coalesces reasoning deltas from a reasoning-aware stream into the UI.
 
-    The planner/coder nodes can't import the transport layer (cognitive-isolation
-    fence), so they push reasoning text through a callback handed to them on the
-    run config. This object IS that callback's home: it buffers deltas and flushes
-    them to ``broadcast_thinking_chunk`` on the same 60 ms / 4096-char window the
-    live-chat streamer uses, so a token flood never becomes one WS frame per token.
+    The planner/coder nodes (and the analyst) can't import the transport layer
+    (cognitive-isolation fence), so they push reasoning text through a callback
+    handed to them on the run config / as a sink. This object IS that callback's
+    home: it buffers deltas and flushes them on a 60 ms / 4096-char window so a
+    token flood never becomes one WS frame per token.
+
+    The broadcaster is injected so one coalescer serves both channels — the main
+    chat (``broadcast_thinking_chunk``, the default) and the analyst pane
+    (``broadcast_natt_thinking_chunk``). The ``source`` (``native``/``simulated``)
+    provenance rides each frame; it is constant for a turn, so the last value fed
+    wins on flush.
     """
 
     _WINDOW_S = 0.060
     _MAX_BUF = 4096
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        broadcast: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> None:
         self._session_id = session_id
+        self._broadcast: Callable[..., Awaitable[None]] = (
+            broadcast or vfs_manager.broadcast_thinking_chunk
+        )
         self._buf: List[str] = []
         self._buf_chars = 0
         self._chars_total = 0
+        self._source = "native"
         self._window_start = asyncio.get_running_loop().time()
 
-    async def feed(self, text: str) -> None:
+    async def feed(self, text: str, source: str = "native") -> None:
         if not text:
             return
+        self._source = source
         self._buf.append(text)
         self._buf_chars += len(text)
         self._chars_total += len(text)
@@ -216,8 +233,8 @@ class _ThinkingStreamer:
         self._buf_chars = 0
         # ~4 chars/token heuristic for the live "N tokens" telemetry; the billed
         # count flows through the gateway's usage accounting (display-only here).
-        await vfs_manager.broadcast_thinking_chunk(
-            self._session_id, chunk, max(1, self._chars_total // 4)
+        await self._broadcast(
+            self._session_id, chunk, max(1, self._chars_total // 4), source=self._source
         )
 
 
@@ -1360,9 +1377,9 @@ class TaskService:
         reply_parts: List[str],
         thinking_budget_tokens: int,
     ) -> str:
-        """Phase 9 (ADR-707) — demux the thinking-aware gateway stream.
+        """Demux the reasoning-aware gateway stream into two UI channels.
 
-        Routes reasoning deltas → the Thought Box (``broadcast_thinking_chunk``,
+        Routes reasoning deltas → the reasoning stream (``broadcast_thinking_chunk``,
         coalesced in a 60 ms window) and answer deltas → the chat bubble
         (``broadcast_token``, 40 ms window). Single-pass, inline time-window
         coalescing using the same monotonic-clock shape as
@@ -1384,6 +1401,7 @@ class TaskService:
         think_chars_total = 0
         think_buf_chars = 0
         text_buf_chars = 0
+        think_source = "native"
         think_window_start = loop.time()
         text_window_start = loop.time()
 
@@ -1394,7 +1412,8 @@ class TaskService:
                 # the authoritative billed count flows through the gateway's
                 # usage accounting, this is display-only.
                 await vfs_manager.broadcast_thinking_chunk(
-                    session_id, "".join(think_buf), max(1, think_chars_total // 4)
+                    session_id, "".join(think_buf), max(1, think_chars_total // 4),
+                    source=think_source,
                 )
                 think_buf = []
                 think_buf_chars = 0
@@ -1408,15 +1427,15 @@ class TaskService:
                 text_buf = []
                 text_buf_chars = 0
 
-        raw = LLMGateway.astream_byom_thinking(
+        raw = LLMGateway.astream_reasoning(
             messages,
             tier="medium",
             session_id=session_id,
-            enable_thinking=True,
             thinking_budget_tokens=thinking_budget_tokens,
         )
         async for d in raw:
             if d.kind == "thinking":
+                think_source = d.source
                 think_buf.append(d.text)
                 think_buf_chars += len(d.text)
                 think_chars_total += len(d.text)
@@ -1577,6 +1596,7 @@ class TaskService:
         project_id: Optional[str] = None,
         project_root: str = "",
         model_tier: Optional[str] = None,
+        enable_native_thinking: bool = True,
     ) -> None:
         """Context-aware, streamed analyst reply — the three-brain tutor.
 
@@ -1613,19 +1633,35 @@ class TaskService:
         mem_key = f"natt:{session_id}"
         history = list(_conversations.get(mem_key, []))
 
+        # Reasoning sink for the analyst pane: reuses the shared coalescer, wired
+        # to the Natt reasoning channel. The model's reasoning (native or
+        # scaffolded-simulated) streams here before the answer.
+        natt_streamer = _ThinkingStreamer(
+            session_id, broadcast=vfs_manager.broadcast_natt_thinking_chunk
+        )
+
         parts: List[str] = []
         aborted = False
         try:
             async for chunk in generate_analyst_reply_stream(
-                text, context_block, history, session_id, tier
+                text, context_block, history, session_id, tier,
+                on_reasoning=natt_streamer.feed,
+                enable_thinking=enable_native_thinking,
             ):
+                # First answer chunk: drain buffered reasoning so it lands before
+                # the answer (the two channels share one socket).
+                if not parts:
+                    await natt_streamer.flush()
                 parts.append(chunk)
                 await vfs_manager.broadcast_natt_token(session_id, chunk)
+            # Drain any reasoning that arrived without a following answer.
+            await natt_streamer.flush()
         except asyncio.CancelledError:
-            # Phase 7.11.3 — Stop button mid-analyst-stream.
+            # Stop button mid-analyst-stream.
             aborted = True
             logger.info("[Session: %s] stream_analyst_reply aborted by user", session_id)
             try:
+                await natt_streamer.flush()
                 await vfs_manager.broadcast_natt_token(session_id, self._ABORT_MARKER)
             except Exception:  # noqa: BLE001
                 pass

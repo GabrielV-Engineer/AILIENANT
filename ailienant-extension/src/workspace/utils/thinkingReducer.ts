@@ -1,5 +1,5 @@
 /**
- * Phase 9 (ADR-707) — pure, immutable reducers for the Native Thinking stream.
+ * Pure, immutable reducers for the inline reasoning stream.
  *
  * Extracted from Workspace.tsx so the accumulation / chronometric-freeze logic
  * can be unit-tested without rendering the panel, and so the message-update
@@ -10,24 +10,30 @@
  * `thinking*` slice, never `content` or history.
  */
 
-/** The Native-Thinking fields carried on an assistant `Message`. */
+/** Provenance of a reasoning trace. */
+export type ReasoningSource = 'native' | 'simulated';
+
+/** The reasoning fields carried on an assistant / analyst `Message`. */
 export interface ThinkingSlice {
     thinking?: string;
     thinkingTokens?: number;
     thinkingStartedAt?: number;
     thinkingElapsedMs?: number;
     thinkingOpen?: boolean;
+    /** Native reasoning vs a scaffolded simulation. First value seen wins. */
+    thinkingSource?: ReasoningSource;
 }
 
 /**
- * Append a reasoning delta to an existing streaming assistant turn.
- * Stamps `thinkingStartedAt` on the first delta and auto-expands the box.
+ * Append a reasoning delta to an existing streaming turn.
+ * Stamps `thinkingStartedAt` on the first delta and auto-expands the stream.
  */
 export function accumulateThinking<T extends ThinkingSlice>(
     turn: T,
     delta: string,
     tokenCount: number | undefined,
     now: number,
+    source?: ReasoningSource,
 ): T {
     return {
         ...turn,
@@ -35,6 +41,7 @@ export function accumulateThinking<T extends ThinkingSlice>(
         thinkingTokens: tokenCount ?? turn.thinkingTokens ?? 0,
         thinkingStartedAt: turn.thinkingStartedAt ?? now,
         thinkingOpen: turn.thinkingOpen ?? true,
+        thinkingSource: turn.thinkingSource ?? source,
     };
 }
 
@@ -43,6 +50,7 @@ export function newThinkingTurn(
     delta: string,
     tokenCount: number | undefined,
     now: number,
+    source?: ReasoningSource,
 ): ThinkingSlice & { role: 'assistant'; content: string; streaming: boolean } {
     return {
         role: 'assistant',
@@ -52,6 +60,7 @@ export function newThinkingTurn(
         thinkingTokens: tokenCount ?? 0,
         thinkingStartedAt: now,
         thinkingOpen: true,
+        thinkingSource: source,
     };
 }
 

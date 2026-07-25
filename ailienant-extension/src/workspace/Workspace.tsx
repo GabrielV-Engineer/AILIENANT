@@ -15,7 +15,7 @@ import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
-import { ThoughtBox } from './components/ThoughtBox';
+import { ReasoningStream } from './components/ReasoningStream';
 import { ToolChip } from './components/ToolChip';
 import { DiffBlock } from './components/DiffBlock';
 import { MessageActions } from './components/MessageActions';
@@ -257,6 +257,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             text,
             session_id: initial.sessionId,
             model_tier: useWorkspaceStore.getState().analystTier,
+            enable_native_thinking: useWorkspaceStore.getState().nativeThinking,
             ...(contextPaths.length > 0 && { context_paths: contextPaths }),
         });
         setNattAttachedItems([]);
@@ -478,15 +479,16 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
                                         <PipelineProgress steps={m.steps} done={!!m.stepsDone} />
                                     )}
-                                    {/* Phase 9 (ADR-707) — Native Thinking Thought Box. */}
+                                    {/* Inline reasoning stream — the model's thinking, live. */}
                                     {m.role === 'assistant' && m.thinking && (
-                                        <ThoughtBox
+                                        <ReasoningStream
                                             thinking={m.thinking}
                                             tokens={m.thinkingTokens ?? 0}
                                             startedAt={m.thinkingStartedAt}
                                             elapsedMs={m.thinkingElapsedMs}
                                             open={m.thinkingOpen ?? false}
                                             streaming={!!m.streaming}
+                                            source={m.thinkingSource}
                                             onToggle={() => setMessages(prev => prev.map((mm, j) =>
                                                 j === i ? { ...(mm as ConversationMessage), thinkingOpen: !(mm as ConversationMessage).thinkingOpen } : mm))}
                                         />
@@ -698,6 +700,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             onNattRemoveAttached={(id) => setNattAttachedItems(prev => prev.filter(i => i.id !== id))}
                             onClose={() => setNattOpen(false)}
                             onSendMessage={handleNattSubmit}
+                            onToggleReasoning={(idx) => setNattMessages(prev => prev.map((mm, j) =>
+                                j === idx ? { ...mm, thinkingOpen: !mm.thinkingOpen } : mm))}
                         />
                     )}
 

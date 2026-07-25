@@ -242,6 +242,7 @@ async def test_stream_chat_answer_demuxes_channels() -> None:
         return _gen()
 
     with patch("core.task_service.LLMGateway.astream_byom_thinking", side_effect=_thinking_deltas), \
+         patch("core.config.model_resolver.get_chat_target", return_value=_anthropic_target()), \
          patch.object(TaskService, "_build_rag_context", new=AsyncMock(return_value="")), \
          patch.object(TaskService, "_append_history", side_effect=lambda sid, role, content: appended.append((role, content))), \
          patch("core.task_service.vfs_manager.broadcast_thinking_chunk", broadcast_thinking), \

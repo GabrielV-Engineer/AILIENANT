@@ -27,6 +27,7 @@ from api.ws_contracts import (
     ServerByomConfigAppliedEvent, ByomConfigAppliedPayload,
     ServerNattMessageEvent, NattMessagePayload,
     ServerNattTokenChunkEvent, NattTokenChunkPayload,
+    ServerNattThinkingChunkEvent, NattThinkingChunkPayload,
     ServerNattStreamEndEvent, NattStreamEndPayload,
     ServerPipelineStepEvent, PipelineStepPayload,
     ServerPlanDocumentEvent, PlanDocumentPayload,
@@ -344,19 +345,25 @@ class ConnectionManager:
         )
 
     async def broadcast_thinking_chunk(
-        self, session_id: str, delta: str, token_count: int = 0
+        self, session_id: str, delta: str, token_count: int = 0,
+        source: str = "native",
     ) -> None:
-        """stream a native-reasoning delta to the Thought Box.
+        """Stream a reasoning delta to the main chat's inline reasoning stream.
 
         A separate channel from ``broadcast_token`` (the answer stream) and
-        ``broadcast_pipeline_step`` (node narration). Reuses the same
+        ``broadcast_pipeline_step`` (node narration). ``source`` tags the trace
+        as ``"native"`` or ``"simulated"``. Reuses the same
         ``send_personal_message`` plumbing.
         """
+        _source: Literal["native", "simulated"] = (
+            "simulated" if source == "simulated" else "native"
+        )
         await self.send_personal_message(
             session_id,
             ServerThinkingChunkEvent(
                 data=ThinkingChunkPayload(
-                    session_id=session_id, delta=delta, token_count=token_count
+                    session_id=session_id, delta=delta,
+                    token_count=token_count, source=_source,
                 )
             ),
         )
@@ -519,16 +526,39 @@ class ConnectionManager:
         )
 
     async def broadcast_natt_token(self, session_id: str, token: str) -> None:
-        """Stream a batched analyst token chunk to the Natt canvas (Phase 7.10.3)."""
+        """Stream a batched analyst token chunk to the Natt canvas."""
         await self.send_personal_message(
             session_id,
             ServerNattTokenChunkEvent(data=NattTokenChunkPayload(token=token)),
         )
 
+    async def broadcast_natt_thinking_chunk(
+        self, session_id: str, delta: str, token_count: int = 0,
+        source: str = "native",
+    ) -> None:
+        """Stream an analyst reasoning delta to the Natt pane's reasoning stream.
+
+        The Natt-channel twin of ``broadcast_thinking_chunk`` — same inline
+        reasoning UI, its own event type so it never collides with the main chat.
+        ``source`` tags the trace ``"native"`` or ``"simulated"``.
+        """
+        _source: Literal["native", "simulated"] = (
+            "simulated" if source == "simulated" else "native"
+        )
+        await self.send_personal_message(
+            session_id,
+            ServerNattThinkingChunkEvent(
+                data=NattThinkingChunkPayload(
+                    session_id=session_id, delta=delta,
+                    token_count=token_count, source=_source,
+                )
+            ),
+        )
+
     async def broadcast_natt_stream_end(
         self, session_id: str, context_version: str = ""
     ) -> None:
-        """Finalize the streamed analyst bubble + emit the G2 context version (Phase 7.10.3)."""
+        """Finalize the streamed analyst bubble + emit the G2 context version."""
         await self.send_personal_message(
             session_id,
             ServerNattStreamEndEvent(

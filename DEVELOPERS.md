@@ -377,7 +377,7 @@ Proyect_Ailienant/
 │   │   ├── extension.ts         #     activation entry
 │   │   ├── ide_sync.ts          #     context capture (debounced, .ailienantignore gate)
 │   │   ├── workspace_provisioning.ts # first-run .ailienant/ skeleton + starter AILIENANT.md + .gitignore block
-│   │   ├── webview/             #     React sidebar (chat, ThoughtBox, diffs, HUD, checklist)
+│   │   ├── webview/             #     React sidebar (chat, ReasoningStream + ∞ glyph, diffs, HUD, checklist)
 │   │   ├── dashboard/           #     Web Dashboard SPA (grouped/collapsible nav shell + panels)
 │   │   │   ├── panels/          #       Hardware/BYOM/Rules/Staging/Audit/Overview/Memory/…
 │   │   │   │   └── memory/      #         GraphRAG viz: CodeGraphLayer (2D), VectorMapLayer, EmbeddingBrowser

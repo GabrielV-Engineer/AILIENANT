@@ -394,9 +394,12 @@ no schema change — adds read-only `GET /api/v1/dlq/pending` endpoint.
 
 **Additive only. No `AIlienantGraphState` channel changes.**
 
-- **New WS event** `ServerThinkingChunkEvent` (`api/ws_contracts.py`), discriminator `event_type="server_thinking_chunk"`, payload `ThinkingChunkPayload{ session_id: str, delta: str, token_count: int = 0 }`.
+- **New WS event** `ServerThinkingChunkEvent` (`api/ws_contracts.py`), discriminator `event_type="server_thinking_chunk"`, payload `ThinkingChunkPayload{ session_id: str, delta: str, token_count: int = 0, source: "native"|"simulated" = "native" }`.
+- **`source` provenance field (additive):** `ThinkingChunkPayload.source` and the analyst-pane twin `NattThinkingChunkPayload.source` tag a reasoning trace as `native` (the model's own reasoning channel) or `simulated` (a prompt-scaffolded fallback for models without native thinking, produced by `LLMGateway.astream_reasoning`). Default `native`; omitted by older clients with no behavior change.
+- **New analyst WS event** `ServerNattThinkingChunkEvent`, discriminator `event_type="server_natt_thinking_chunk"`, payload `NattThinkingChunkPayload{ session_id, delta, token_count = 0, source = "native" }` — the `natt_*`-channel twin of the main reasoning event so the analyst pane streams reasoning without colliding with the main chat.
+- **`AnalystQueryPayload` growth:** `enable_native_thinking: bool = True` mirrors the master reasoning toggle into the analyst request. Omitted → reasoning on.
 - **`TaskPayload` growth** (`core/task_service.py`): `enable_native_thinking: bool = True`, `thinking_budget_tokens: int = 4096`. Omitted field from a client keeps prior behavior.
-- **No persisted/graph schema:** reasoning text is transport-only — not a graph-state channel, not written to the checkpointer, excluded from `PERSIST_TRANSCRIPT`.
+- **No persisted/graph schema:** reasoning text (native or simulated) is transport-only — not a graph-state channel, not written to the checkpointer, excluded from `PERSIST_TRANSCRIPT`.
 
 ---
 
@@ -655,7 +658,7 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 `server_vfs_patch_approved` · `server_apply_workspace_edit` · `client_patch_applied`
 
 **Analyst / Natt chat channel:**
-`client_analyst_query` · `server_natt_message` · `server_natt_token` · `server_natt_stream_end`
+`client_analyst_query` · `server_natt_message` · `server_natt_token` · `server_natt_thinking_chunk` · `server_natt_stream_end`
 
 **Workspace lifecycle:**
 `client_workspace_init` · `server_indexing_progress` · `server_indexing_error` · `server_byom_config_applied`
@@ -673,7 +676,7 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 `client_pty_write` · `server_cell_tool_start` · `server_cell_pty_chunk` · `server_cell_ast_diff` · `server_cell_governor_tick`
 
 **Native Thinking:**
-`server_thinking_chunk`
+`server_thinking_chunk` (+ additive `source` provenance; simulated fallback via `astream_reasoning`)
 
 **Context pipeline:**
 `state_compacted` (see §25)
