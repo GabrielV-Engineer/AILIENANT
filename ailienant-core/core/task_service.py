@@ -1432,6 +1432,9 @@ class TaskService:
             tier="medium",
             session_id=session_id,
             thinking_budget_tokens=thinking_budget_tokens,
+            # Live-chat replies are free markdown, never machine-parsed — safe
+            # to scaffold (see astream_reasoning's SAFETY INVARIANT).
+            free_form_answer=True,
         )
         async for d in raw:
             if d.kind == "thinking":

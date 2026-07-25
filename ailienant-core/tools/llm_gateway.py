@@ -654,10 +654,13 @@ class LLMGateway:
         the structured result is always returned intact. ``CancelledError`` (a real
         abort) is never swallowed.
 
-        Because the reasoning stream cannot pass ``response_format`` (the streaming
-        APIs don't support it, and the simulated path emits prose before the JSON),
-        the buffered answer is run through :meth:`_sanitize_json_response` when the
-        caller asked for JSON, so the downstream parser never trips on a fence.
+        A ``response_format`` request on a non-native model never shares a
+        completion with a reasoning preamble (see :meth:`astream_reasoning`'s
+        SAFETY INVARIANT) — it routes through :meth:`ainvoke` internally, which
+        forwards ``response_format`` where the provider supports it. The buffered
+        answer is still run through :meth:`_sanitize_json_response` as a universal
+        backstop (e.g. a native model whose provider doesn't support streamed
+        ``response_format``), so the downstream parser never trips on a fence.
         """
         # Derive the BYOM tier from the alias, mirroring ainvoke's resolution.
         _alias_tier = model.split("/", 1)[1] if model.startswith("ailienant/") else "medium"
@@ -724,6 +727,7 @@ class LLMGateway:
         session_id: Optional[str] = None,
         thinking_budget_tokens: int = 4096,
         response_format: Optional[dict[str, Any]] = None,
+        free_form_answer: bool = False,
     ) -> AsyncIterator["StreamDelta"]:
         """Reasoning-aware stream — one engine, native or simulated, chosen once.
 
@@ -732,13 +736,40 @@ class LLMGateway:
 
         - **Native** (model recognised by ``_supports_native_thinking``): delegate
           to :meth:`astream_byom_thinking`, which surfaces the model's own
-          ``reasoning_content`` — behaviour identical to before.
-        - **Simulated** (any other model): inject a code-free reasoning scaffold on
-          a *copied* message list (the caller's list is never mutated), stream flat
+          ``reasoning_content`` — behaviour identical to before. Reasoning is a
+          genuinely separate channel here, so it never competes with the answer.
+        - **Simulated, strict output** (non-native model, ``response_format`` set):
+          see the SAFETY INVARIANT below — never scaffolded.
+        - **Simulated, no scaffold** (non-native model, ``free_form_answer`` is
+          falsy): plain unscaffolded stream — the default, see below.
+        - **Simulated, scaffolded** (non-native model, ``free_form_answer=True``,
+          no ``response_format``): inject a code-free reasoning scaffold on a
+          *copied* message list (the caller's list is never mutated), stream flat
           text, and split it live with :class:`ThinkingTagDemuxer` so the
-          ``<thinking>`` block streams to the reasoning channel and the remainder is
-          the answer. The reasoning gets its own token headroom so it never starves
-          the answer.
+          ``<thinking>`` block streams to the reasoning channel and the remainder
+          is the answer. The reasoning gets its own token headroom so it never
+          starves the answer.
+
+        SAFETY INVARIANT (2026-07-25 incident — a recurrence of DEBT-013's failure
+        class on the new simulated path): a non-reasoning model asked to narrate
+        free-form reasoning *and* produce strict, machine-parsed output (a JSON
+        schema, or a marker-delimited format like the Coder's SEARCH/REPLACE
+        contract) in the SAME completion will unreliably corrupt that output —
+        observed as silently dropped required JSON fields (`MissionSpecification`)
+        and edits that were never emitted at all (the Coder's own "no prose before
+        or after" instruction directly contradicts a reasoning preamble). Because
+        of this, scaffolding is **off by default** — a caller must explicitly pass
+        ``free_form_answer=True`` to prove its answer is free prose/markdown that
+        is never machine-parsed (see ``agents/analyst.py`` and
+        ``core/task_service.py::_stream_with_thinking`` for the only two current
+        callers that do). ``response_format`` being set always overrides
+        ``free_form_answer`` — an explicit contradiction from a caller is treated
+        as a bug, not honored — and additionally routes through :meth:`ainvoke`
+        rather than the flat stream, restoring provider-level JSON enforcement +
+        self-heal where supported (the true pre-11.5 behavior for this case, not
+        merely "no scaffold"). Do not weaken this default without re-reading the
+        incident above; a new caller that doesn't think about this should get the
+        safe behavior, not the dangerous one.
 
         Exactly one path fires per call — native and simulated never mix.
         """
@@ -771,10 +802,42 @@ class LLMGateway:
                 yield delta  # already tagged source="native" by construction
             return
 
-        # Simulated path: scaffold → flat stream → demux.
-        scaffolded = LLMGateway._inject_reasoning_scaffold(
-            messages, want_json=response_format is not None
-        )
+        if response_format:
+            # See SAFETY INVARIANT above — never scaffolded, regardless of
+            # free_form_answer. ainvoke gives the best available JSON compliance
+            # (provider enforcement + self-heal where supported); callers that
+            # reach this branch already buffer the full answer downstream, so
+            # nothing is lost by not streaming incrementally.
+            resp = await LLMGateway.ainvoke(
+                messages,
+                model=f"ailienant/{tier}",
+                temperature=temperature,
+                response_format=response_format,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                session_id=session_id,
+            )
+            yield StreamDelta("text", resp.choices[0].message.content or "", "simulated")
+            return
+
+        if not free_form_answer:
+            # SAFETY DEFAULT — see the invariant above. Plain unscaffolded stream:
+            # no reasoning shown, but the answer is otherwise unaffected and still
+            # streams incrementally.
+            async for chunk in LLMGateway.astream_byom(
+                messages,
+                tier=tier,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                session_id=session_id,
+            ):
+                yield StreamDelta("text", chunk, "simulated")
+            return
+
+        # Scaffolded path — reached only when free_form_answer=True and no
+        # response_format (the caller has explicitly declared this is safe).
+        scaffolded = LLMGateway._inject_reasoning_scaffold(messages)
         sim_max_tokens = max_tokens + min(thinking_budget_tokens, _SIM_THINK_CAP)
         demux = ThinkingTagDemuxer()
         async for chunk in LLMGateway.astream_byom(
@@ -798,7 +861,7 @@ class LLMGateway:
 
     @staticmethod
     def _inject_reasoning_scaffold(
-        messages: list[dict[str, Any]], *, want_json: bool = False
+        messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Return a copy of ``messages`` with a code-free reasoning scaffold added.
 
@@ -807,6 +870,11 @@ class LLMGateway:
         to the first system message if present, else prepended as a new one. Each
         message dict is shallow-copied so the caller's list (which a retry loop may
         re-invoke) is never mutated.
+
+        Only ever called for a free-form answer with no ``response_format`` (see
+        ``astream_reasoning``'s SAFETY INVARIANT) — the scaffold is deliberately
+        format-agnostic; it never needs a JSON-specific clause because a strict
+        output contract is never combined with this scaffold in the first place.
         """
         scaffold = (
             "Before answering, think out loud inside one <thinking>...</thinking> "
@@ -814,10 +882,7 @@ class LLMGateway:
             "weighing, the trade-offs, what you need to check, and how you reach your "
             "conclusion. Write professionally but plainly. Do NOT put code, file "
             "contents, variable dumps, or the final answer inside <thinking> — "
-            "reasoning only. After </thinking>, give your final answer"
-        )
-        scaffold += (
-            ", which must be a single JSON object and nothing else." if want_json else "."
+            "reasoning only. After </thinking>, give your final answer."
         )
         out = [dict(m) for m in messages]
         for msg in out:

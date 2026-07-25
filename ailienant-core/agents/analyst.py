@@ -412,6 +412,9 @@ async def generate_analyst_reply_stream(
         """Yield only answer text; route reasoning deltas to the sink (best-effort)."""
         async for d in LLMGateway.astream_reasoning(
             messages, tier=tier, temperature=0.4, session_id=session_id,
+            # Natt replies are free markdown, never machine-parsed — safe to
+            # scaffold (see astream_reasoning's SAFETY INVARIANT).
+            free_form_answer=True,
         ):
             if d.kind == "thinking":
                 if on_reasoning is not None:

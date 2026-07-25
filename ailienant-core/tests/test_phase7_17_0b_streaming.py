@@ -8,7 +8,9 @@ scaffolded fallback) to the inline reasoning stream. Coverage:
   Gateway (``acomplete_with_thinking``):
     G1 native branch — reasoning → sink, answer buffered and returned, no ainvoke.
     G2 fallback (thinking off) — delegates to ainvoke WITH response_format, no sink.
-    G3 non-reasoning model — a simulated <thinking> trace streams; no ainvoke.
+    G3 non-reasoning model + JSON mode — never scaffolds (safety invariant); routes
+       through ainvoke instead. G3b — same model, no JSON mode, still never scaffolds
+       (scaffolding requires an explicit free_form_answer opt-in the caller never gives).
     G4 socket isolation — a sink failure never aborts generation; sink latches off.
     G5 abort — a CancelledError from the sink propagates (real abort honoured).
     G6 fence strip — a ```json-wrapped answer returns bare, parseable JSON.
@@ -135,33 +137,69 @@ async def test_g2_fallback_uses_ainvoke_with_response_format() -> None:
     assert ainvoke.call_args.kwargs["response_format"] == {"type": "json_object"}
 
 
-# ── G3 — non-reasoning model streams a simulated <thinking> trace ──────────────
+# ── G3 — non-reasoning model + strict JSON never scaffolds (safety invariant) ──
 
 
-async def test_g3_non_reasoning_model_uses_simulated_trace() -> None:
+async def test_g3_non_reasoning_model_with_json_mode_never_scaffolds() -> None:
+    """2026-07-25 incident regression test (DEBT-013 recurrence): a non-reasoning
+    model asked for response_format=json must NEVER receive a reasoning scaffold
+    — it silently corrupted MissionSpecification field compliance in production.
+    astream_reasoning routes this through ainvoke instead, restoring true
+    pre-11.5 JSON-mode fidelity (provider enforcement + self-heal)."""
     seen: List[tuple[str, str]] = []
 
     async def sink(text: str, source: str = "native") -> None:
         seen.append((text, source))
 
-    ainvoke = _ainvoke_returning("UNUSED")
+    ainvoke = _ainvoke_returning('{"edits": []}')
+
+    def _boom_stream(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("astream_byom (scaffold path) must not run")
+
     with patch("core.config.model_resolver.get_chat_target", return_value=_target("ollama/qwen2.5-coder:7b")), \
-         patch.object(LLMGateway, "astream_byom", new=_flat_stream(
-             "<thinking>", "weighing the options", "</thinking>", '{"edits": []}',
-         )), \
+         patch.object(LLMGateway, "astream_byom", new=_boom_stream), \
          patch.object(LLMGateway, "ainvoke", new=ainvoke):
         out = await LLMGateway.acomplete_with_thinking(
             [{"role": "user", "content": "x"}],
             model="ailienant/big",
             response_format={"type": "json_object"},
             on_thinking=sink,
-            enable_thinking=True,         # on + non-reasoning model → simulated trace
+            enable_thinking=True,
         )
 
-    assert out == '{"edits": []}'                            # answer stripped of the block
-    assert "".join(t for t, _ in seen) == "weighing the options"
-    assert {s for _, s in seen} == {"simulated"}             # tagged simulated
-    ainvoke.assert_not_called()                              # no silent fallback anymore
+    assert out == '{"edits": []}'
+    assert seen == []                              # no reasoning ever attempted
+    ainvoke.assert_called_once()
+    assert ainvoke.call_args.kwargs["response_format"] == {"type": "json_object"}
+
+
+async def test_g3b_non_reasoning_model_no_json_mode_never_scaffolds_either() -> None:
+    """The Coder-shape regression test: no response_format at all (SEARCH/REPLACE
+    style output), thinking on, non-reasoning model — scaffolding is still OFF
+    by default (free_form_answer was never requested by this caller)."""
+    seen: List[tuple[str, str]] = []
+
+    async def sink(text: str, source: str = "native") -> None:
+        seen.append((text, source))
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_flat(messages: Any, **kwargs: Any) -> AsyncIterator[str]:
+        captured["messages"] = messages
+        yield "### EDIT foo.py\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"
+
+    with patch("core.config.model_resolver.get_chat_target", return_value=_target("ollama/qwen2.5-coder:7b")), \
+         patch.object(LLMGateway, "astream_byom", new=_fake_flat):
+        out = await LLMGateway.acomplete_with_thinking(
+            [{"role": "system", "content": "S"}, {"role": "user", "content": "x"}],
+            model="ailienant/big",
+            on_thinking=sink,
+            enable_thinking=True,
+        )
+
+    assert "### EDIT foo.py" in out
+    assert seen == []                                     # no reasoning ever attempted
+    assert captured["messages"][0]["content"] == "S"       # never scaffolded
 
 
 # ── G4 — a dead sink never aborts generation; it latches off ───────────────────

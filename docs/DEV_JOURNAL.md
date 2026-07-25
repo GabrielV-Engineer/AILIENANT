@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.5.1: Reasoning-scaffold safety hardening (DEBT-013 recurrence) — 2026-07-25
+**Status:** COMPLETE | **Gates:** mypy 0/434 · pyright 0 · pytest 2487 passed/2 skipped (+9 net new; 1 pre-existing unrelated benchmark-retention flake, verified untouched) · tsc/eslint unaffected
+- Shipped: live testing found 11.5's simulated-reasoning scaffold competing with strict output contracts on non-native models — Planner's `MissionSpecification` silently dropped required `target_file` fields (3/3 retries), and the Coder likely produced zero parseable edits (its own "no prose before or after" instruction directly contradicted the scaffold). Same failure class as DEBT-013 (thinking + strict JSON, previously fixed on the native path), recurring on the new simulated path. Fixed structurally, not per-caller: `astream_reasoning` now defaults to `free_form_answer=False` (no scaffold unless a caller explicitly proves its answer is free markdown); `response_format` unconditionally overrides even an explicit opt-in and now routes through `ainvoke` (restoring provider-level JSON enforcement + self-heal, the true pre-11.5 behavior for that case).
+- Key decision: Planner, Coder, and `subagent_worker_node.py` needed zero code changes — they're protected automatically by the new safe default. Only the two genuinely free-form callers (`agents/analyst.py`, `core/task_service.py::_stream_with_thinking`) needed an explicit `free_form_answer=True` opt-in, which is the intentional, auditable declaration a safe API should require.
+- Deferred: none — fully fixed, not a tradeoff.
+
 ## 11.5: Verbal Reasoning Fallback + Unified Reasoning Stream — 2026-07-25
 **Status:** COMPLETE | **Gates:** mypy 0/434 · pyright 0 · pytest 2481 passed/2 skipped (+16 new) · tsc 0 · eslint 0
 - Shipped: one shared `LLMGateway.astream_reasoning` engine that picks the model's native reasoning OR a prompt-scaffolded simulated `<thinking>` trace (split live by `tools/thinking_demux.py`), consumed by all three surfaces (planner/coder turns, direct live-chat, analyst pane); a unified borderless inline `ReasoningStream` + self-tracing infinity glyph (no emoji) replaces the boxed ThoughtBox and renders identically in the main chat and `NattCanvas`, differing only by an honest additive `[Native]`/`[Simulated]` `source` tag.
