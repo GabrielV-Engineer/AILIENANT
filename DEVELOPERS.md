@@ -81,10 +81,13 @@ START
                          → supervisor_node   (FinOps hard-kill or proposal)
                            → apply_patch
                              → validate_output (AST + LSP)
-                               → [retry / heal?] → coder_agent | error_correction | agentic_cell | END
+                               → [retry / advance / heal?]
+                                   → coder_agent       (retry the same step)
+                                   → drift_gate        (advance: next pending WBS step — the RELAY multi-step loop)
+                                   → error_correction | agentic_cell | END
 ```
 
-Every node transition is persisted by a `HybridCheckpointer` over SQLite WAL, so every super-step is **durable, resumable, and branchable** (time-travel). The conditional loop-back edges (`route_after_coder`, `route_after_cell`) are what turn each repair iteration into its own checkpoint.
+Every node transition is persisted by a `HybridCheckpointer` over SQLite WAL, so every super-step is **durable, resumable, and branchable** (time-travel). The conditional loop-back edges (`route_after_coder`, `route_after_cell`, and `route_after_validation`'s WBS-advance) are what turn each repair/step iteration into its own checkpoint. A WBS step's status is written as a returned `mission_spec` state delta (never an in-place mutation), so the loop advances reliably across checkpoints.
 
 **Node executor pattern** (planner and coder share this shape):
 
@@ -286,6 +289,7 @@ Proyect_Ailienant/
 │   │   ├── agent_context.py     #     budget-guard over ContextPipeline (build_agent_context)
 │   │   ├── agentic_cell.py      #     bounded ReAct cell (re-exports run_tournament as select_candidate_via_mcts)
 │   │   ├── subagent_tournament.py #   transactional UCB1 candidate tournament + run_tournament_from_dispatch adapter
+│   │   ├── coder_companion.py    #     fire-and-forget structured post-turn explanation (best-effort WS side channel)
 │   │   ├── iteration_governor.py #    multi-axis circuit breaker
 │   │   ├── retry_policy.py      #     centralized retry/correction budgets
 │   │   └── mcts/ · episodic/    #     tree + UCB1 + audit checkpointer

@@ -499,7 +499,11 @@ workflow.add_conditional_edges(
     {"apply_patch": "apply_patch", "__end__": END},
 )
 workflow.add_edge("apply_patch", "validate_output")
-workflow.add_conditional_edges("validate_output", route_after_validation, ["coder_agent", END])
+# validate_output → retry the same step (coder_agent) · advance to the next pending
+# WBS step (drift_gate re-runs route_to_coders and re-checks finops/budget) · END.
+workflow.add_conditional_edges(
+    "validate_output", route_after_validation, ["coder_agent", "drift_gate", END]
+)
 
 # =====================================================================
 # 5. COMPILATION WITH PERSISTENCE (CheckpointManager)

@@ -92,18 +92,65 @@ async def run_validate_output_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def route_after_validation(state: Dict[str, Any]) -> str:
-    """Conditional edge: retry CoderAgent or proceed to END."""
+    """Conditional edge: retry the step, advance to the next WBS step, or END.
+
+    - ``guardrail_failed`` → retry the SAME step (bounded by the guardrail node's
+      MAX_RETRIES, which clears the flag on exhaustion).
+    - else, if the WBS still has a ``pending`` step → loop back to ``drift_gate``,
+      which re-runs ``route_to_coders`` to dispatch the next step (and re-traverses
+      ``finops_gate``/``supervisor_node`` so the budget ceiling is re-checked each
+      iteration). This is the RELAY multi-step loop.
+    - else → END (all steps reached a terminal status).
+
+    Uses the SAME ``status == "pending"`` predicate ``route_to_coders`` selects on,
+    so routing and dispatch never disagree. A stall guard ends the graph if the step
+    just executed is still ``pending`` (a durable-write failure or an early-return
+    step) so a non-advancing loop can never spin.
+    """
     from core.telemetry import log_routing_decision
+
     if state.get("guardrail_failed"):
-        target = "coder_agent"
-        reason = f"guardrail_failed=True (retry {state.get('retry_count', 0)}/{MAX_RETRIES})"
-    else:
-        target = "__end__"
-        reason = "guardrail_passed"
+        log_routing_decision(
+            session_id=state.get("task_id", ""),
+            source="validate_output",
+            target="coder_agent",
+            reason=f"guardrail_failed=True (retry {state.get('retry_count', 0)}/{MAX_RETRIES})",
+        )
+        return "coder_agent"
+
+    mission = state.get("mission_spec")
+    tasks = list(getattr(mission, "tasks", []) or [])
+    current = state.get("current_step_id")
+
+    # Stall guard: the step we just ran MUST have reached a terminal status. If it is
+    # still pending, looping would re-dispatch the same step forever — end instead.
+    just_ran = next((t for t in tasks if t.step_number == current), None)
+    if just_ran is not None and just_ran.status == "pending":
+        logger.error(
+            "route_after_validation: step #%s still 'pending' after execution — "
+            "ending to avoid a non-advancing loop.", current,
+        )
+        _log_end(state, "wbs_stall_step_not_terminal")
+        return END
+
+    if any(t.status == "pending" for t in tasks):
+        log_routing_decision(
+            session_id=state.get("task_id", ""),
+            source="validate_output",
+            target="drift_gate",
+            reason="wbs_advance_next_pending_step",
+        )
+        return "drift_gate"
+
+    _log_end(state, "wbs_all_steps_terminal")
+    return END
+
+
+def _log_end(state: Dict[str, Any], reason: str) -> None:
+    from core.telemetry import log_routing_decision
     log_routing_decision(
         session_id=state.get("task_id", ""),
         source="validate_output",
-        target=target,
+        target="__end__",
         reason=reason,
     )
-    return "coder_agent" if state.get("guardrail_failed") else END

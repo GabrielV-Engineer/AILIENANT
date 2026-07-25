@@ -75,8 +75,11 @@ def _mock_emit() -> Any:
 @pytest.mark.anyio
 async def test_run_command_step_marked_failed_not_completed() -> None:
     step = _make_step("run_command")
-    await run_coder_node(_make_state(step))
-    assert step.status == "failed"
+    result = await run_coder_node(_make_state(step))
+    # Status is now a durable, returned state delta (never an in-place mutation),
+    # so the checkpointed mission_spec advances the multi-step loop reliably.
+    assert result["mission_spec"].tasks[0].status == "failed"
+    assert step.status == "pending"  # caller's object is never mutated
 
 
 @pytest.mark.anyio
@@ -127,7 +130,8 @@ async def test_run_command_notifies_failed_status() -> None:
 async def test_read_file_step_still_completes_silently() -> None:
     step = _make_step("read_file")
     result = await run_coder_node(_make_state(step))
-    assert step.status == "completed"
+    assert result["mission_spec"].tasks[0].status == "completed"
+    assert step.status == "pending"  # durable delta; caller's object untouched
     assert not result.get("errors")
     assert not any(
         f.startswith("EXECUTE_TIER_DEFERRED:")

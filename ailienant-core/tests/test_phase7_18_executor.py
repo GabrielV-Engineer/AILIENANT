@@ -131,7 +131,8 @@ async def test_run_command_green_completes(_stub: Any) -> None:
     _stub([SandboxResult(exit_code=0, stdout="2 passed", stderr="")])
     step = _make_step()
     result = await run_coder_node(_make_state(step))
-    assert step.status == "completed"
+    # Status is a durable, returned mission_spec delta (not an in-place mutation).
+    assert result["mission_spec"].tasks[0].status == "completed"
     assert not result.get("errors")
     assert not result.get("healing_required")
 
@@ -155,7 +156,7 @@ async def test_run_command_failure_emits_healing_signal(_stub: Any) -> None:
     step = _make_step(command="mypy .")
     result = await run_coder_node(_make_state(step))
 
-    assert step.status == "failed"
+    assert result["mission_spec"].tasks[0].status == "failed"
     assert result.get("healing_required") is True
     assert result.get("failed_node") == "coder_agent"
     assert result.get("failure_signature")
@@ -225,7 +226,7 @@ async def test_no_adapter_preserves_honest_deferral(
     monkeypatch.setattr(sb, "ACTIVE_ADAPTER", None)
     step = _make_step()
     result = await run_coder_node(_make_state(step))
-    assert step.status == "failed"
+    assert result["mission_spec"].tasks[0].status == "failed"
     assert not result.get("healing_required")
     flags: List[str] = result.get("security_flags", [])
     assert any(f.startswith("EXECUTE_TIER_DEFERRED:") for f in flags)
@@ -265,7 +266,7 @@ async def test_plan_mode_denies_without_dispatch(_stub: Any) -> None:
     result = await run_coder_node(
         _make_state(step, session_permission_mode="PLAN")
     )
-    assert step.status == "failed"
+    assert result["mission_spec"].tasks[0].status == "failed"
     assert adapter.calls == []  # never dispatched
     assert any("DENIED" in e for e in result.get("errors", []))
     assert not result.get("healing_required")

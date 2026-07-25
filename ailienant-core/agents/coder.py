@@ -14,6 +14,10 @@ from langchain_core.runnables import RunnableConfig
 from brain.state import WBSStep
 # role registry lives in agents/roles.py (flat-module import via conftest).
 from agents.roles import build_coder_system_prompt, get_role_config
+# Durable, immutable WBS-step status writer — the graph checkpoints every
+# super-step, so a step transition MUST be a returned state delta (never an
+# in-place mutation) or it is lost to Time-Travel and the multi-step loop.
+from agents.orchestrator import _mark_step_status
 from core.project_instructions import get_project_instructions
 from brain.agent_context import (
     AMNESIA_ALERT,
@@ -263,8 +267,21 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # read_file produces nothing to patch — the context it gathers is already
     # folded into the running state, so the step genuinely completed.
     if target_step.action == "read_file":
-        target_step.status = "completed"
+        # Flip the IDE checklist row (read-only steps were previously silent).
+        _t = asyncio.create_task(
+            vfs_manager.emit_graph_mutation(
+                session_id=session_id,
+                step_number=target_step.step_number,
+                new_status="completed",
+                agent_name="CoderAgent",
+            )
+        )
+        _background_tasks.add(_t)
+        _t.add_done_callback(_background_tasks.discard)
         return {
+            "mission_spec": _mark_step_status(
+                mission_spec, target_step.step_number, "completed"
+            ),
             "current_step_id": target_step.step_number,
             "target_role": target_step.target_role,
             **({"security_flags": new_security_flags} if new_security_flags else {}),
@@ -302,12 +319,14 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         # that a command ran; surface it honestly as failed-and-deferred. This is the
         # operator-honesty contract — it holds ONLY when no adapter exists.
         if adapter is None:
-            target_step.status = "failed"
             new_security_flags.append(
                 f"EXECUTE_TIER_DEFERRED:{target_step.target_role}:{target_step.target_file}"
             )
             _notify_status("failed")
             return {
+                "mission_spec": _mark_step_status(
+                    mission_spec, target_step.step_number, "failed"
+                ),
                 "current_step_id": target_step.step_number,
                 "target_role": target_step.target_role,
                 "errors": [
@@ -330,9 +349,11 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
         session_mode = session_mode_from_channel(state.get("session_permission_mode"))
         if gate_execute_action(session_mode) is PermissionDecision.DENY:
-            target_step.status = "failed"
             _notify_status("failed")
             return {
+                "mission_spec": _mark_step_status(
+                    mission_spec, target_step.step_number, "failed"
+                ),
                 "current_step_id": target_step.step_number,
                 "target_role": target_step.target_role,
                 "errors": [
@@ -359,10 +380,12 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         )
 
         if verify_result.exit_code == 0:
-            target_step.status = "completed"
             _notify_status("completed")
             await _emit(f"verified {command}")
             return {
+                "mission_spec": _mark_step_status(
+                    mission_spec, target_step.step_number, "completed"
+                ),
                 "current_step_id": target_step.step_number,
                 "target_role": target_step.target_role,
                 **({"security_flags": new_security_flags} if new_security_flags else {}),
@@ -380,14 +403,17 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         diagnostics = format_diagnostics(parser(verify_result.stdout, verify_result.stderr))
         attempts = int(state.get("correction_attempts", 0))
 
-        target_step.status = "failed"
         _notify_status("failed")
+        _failed_mission = _mark_step_status(
+            mission_spec, target_step.step_number, "failed"
+        )
 
         # Budget exhausted → concede gracefully instead of looping forever (mirrors
         # reflexion_guard re-raising to the DLQ at the budget edge, without raising).
         if attempts >= CORRECTION_MAX_ATTEMPTS:
             await _emit(f"giving up on {command} after {attempts} attempts")
             return {
+                "mission_spec": _failed_mission,
                 "current_step_id": target_step.step_number,
                 "target_role": target_step.target_role,
                 "errors": [
@@ -398,6 +424,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             }
 
         return {
+            "mission_spec": _failed_mission,
             "healing_required": True,
             "correction_attempts": attempts + 1,
             "last_error_trace": diagnostics,
@@ -419,7 +446,10 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # both the topology block (relevant context) and the style block (house
     # convention exemplars) so the vector store is hit only once.
     _read_vfs = _make_vfs_reader(project_id, workspace_root, session_id)
-    current_content = _read_vfs(target_file)
+    # Prefer a prior in-run step's edit of this file (the multi-step loop) so the
+    # model refactors the ALREADY-edited version, not the stale committed one.
+    _prior_this_file = (state.get("pending_contents") or {}).get(target_file)
+    current_content = _prior_this_file if _prior_this_file is not None else _read_vfs(target_file)
     rag_snippets = await _fetch_rag_snippets(
         target_file, target_step.description, project_id, _coder_retrieval_fn
     )
@@ -558,8 +588,10 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         raw_edits = _parse_search_replace_blocks(content)
     except Exception as exc:  # noqa: BLE001 — a generation failure becomes a soft error
         logger.warning("CoderAgent: generation failed on step #%s: %s", step_id, exc)
-        target_step.status = "failed"
         fail: Dict[str, Any] = {
+            "mission_spec": _mark_step_status(
+                mission_spec, target_step.step_number, "failed"
+            ),
             "errors": [f"CoderAgent step #{target_step.step_number}: generation failed: {exc}"],
             "current_step_id": target_step.step_number,
             "target_role": target_step.target_role,
@@ -574,14 +606,22 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     local: dict[str, str] = {}
     originals: dict[str, str] = {}
     errors: list[str] = []
+    # In-run edits from prior WBS steps (the multi-step loop). A later step editing
+    # the same file must anchor its SEARCH blocks to the LATEST in-run version, or
+    # sequential same-file edits would each read the original and clobber each other
+    # under the operator.or_ reducer. Kept separate from `originals` so the stored
+    # diff + base_hash stay anchored to the TRUE committed file (the write pipeline's
+    # optimistic-concurrency stale-guard checks disk against base_hash).
+    _prior_contents: dict[str, str] = dict(state.get("pending_contents") or {})
 
     def _read(p: str) -> str:
         if p in local:
             return local[p]
-        c = _read_vfs(p)
-        c = c if c is not None else ""
-        originals.setdefault(p, c)
-        return c
+        vfs = _read_vfs(p)
+        vfs = vfs if vfs is not None else ""
+        originals.setdefault(p, vfs)          # diff + base_hash anchor = true VFS
+        prior = _prior_contents.get(p)         # latest in-run edit for this file
+        return prior if prior is not None else vfs
 
     def _write(p: str, c: str) -> None:
         local[p] = c
@@ -625,7 +665,6 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             base_hash[p] = content_hash(orig)  # pre-edit anchor for the stale guard
 
     # 4. Mark step complete + notify the IDE (non-blocking).
-    target_step.status = "completed"
     _t = asyncio.create_task(
         vfs_manager.emit_graph_mutation(
             session_id=session_id,
@@ -637,7 +676,15 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     _background_tasks.add(_t)
     _t.add_done_callback(_background_tasks.discard)
 
+    # Fire-and-forget structured explanation of this patch set, rendered beside the
+    # diff-approval UI. Best-effort side channel — never gates the graph's control flow.
+    from brain.coder_companion import schedule_coder_companion
+    schedule_coder_companion(state, attempt_ordinal=state.get("retry_count", 0))
+
     result: Dict[str, Any] = {
+        "mission_spec": _mark_step_status(
+            mission_spec, target_step.step_number, "completed"
+        ),
         "pending_patches": patches,
         "pending_contents": contents,
         "pending_base_hash": base_hash,

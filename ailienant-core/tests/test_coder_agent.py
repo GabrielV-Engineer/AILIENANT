@@ -159,6 +159,7 @@ async def test_coder_agent_ephemeral_system_prompt_does_not_leak_to_messages_or_
         "pending_patches",   # Phase 7.9.B.16 — coder now proposes diffs
         "pending_contents",  # Phase 7.9.B.18 — full new content for the write pipeline
         "pending_base_hash", # Phase 7.9.B.18 — pre-edit hash for the stale guard
+        "mission_spec",      # durable WBS-step status delta (multi-step loop)
         "target_role",
         "current_step_id",
         "current_cost_usd",
