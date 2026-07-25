@@ -27,6 +27,7 @@
  */
 import type { ExecutionMode } from '../shared/types';
 import type { ReasoningPreset, InferenceTier } from '../shared/config';
+import type { CoderCompanionPayload } from '../api/contracts';
 import { createPersistedStore } from '../shared/persistedStore';
 
 /**
@@ -122,9 +123,18 @@ export interface WorkspaceState {
      * the user forgot about).
      */
     activeSkills: Record<string, { id: string; name: string } | null>;
+    /**
+     * Coder Companion explanations keyed by task_id. Transient — a best-effort,
+     * fire-and-forget post-turn explanation that arrives asynchronously beside the
+     * diff-approval surface. Excluded from `pick` (never persisted): a stale
+     * explanation after reload would pair with a diff that is no longer on screen.
+     * Last-write-wins by correlation_id (task_id + attempt_ordinal).
+     */
+    coderCompanions: Record<string, CoderCompanionPayload>;
 
     // Setters (Zustand pattern — flat actions colocated with state).
     setDraft: (sessionId: string, text: string) => void;
+    setCoderCompanion: (payload: CoderCompanionPayload) => void;
     setActiveSkill: (sessionId: string, v: { id: string; name: string } | null) => void;
     setPaletteOpen: (v: boolean) => void;
     setContextOpen: (v: boolean) => void;
@@ -158,11 +168,14 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         analystTier: 'medium',
         inflightTurn: null,
         activeSkills: {},
+        coderCompanions: {},
 
         setDraft:        (sessionId, text) =>
             set((s) => ({ draftMessages: { ...s.draftMessages, [sessionId]: text } })),
         setActiveSkill:  (sessionId, v) =>
             set((s) => ({ activeSkills: { ...s.activeSkills, [sessionId]: v } })),
+        setCoderCompanion: (payload) =>
+            set((s) => ({ coderCompanions: { ...s.coderCompanions, [payload.task_id]: payload } })),
         setPaletteOpen:  (v) => set({ paletteOpen: v }),
         setContextOpen:  (v) => set({ contextOpen: v }),
         setNattOpen:     (v) => set({ nattOpen: v }),

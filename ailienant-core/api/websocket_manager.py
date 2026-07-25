@@ -762,6 +762,54 @@ class ConnectionManager:
             ),
         )
 
+    async def broadcast_coder_companion(
+        self,
+        session_id: str,
+        task_id: str,
+        correlation_id: str,
+        analysis: Any,
+    ) -> None:
+        """Emit the structured post-turn explanation for a coder turn.
+
+        ``correlation_id`` is f"{task_id}:{attempt_ordinal}" for last-write-wins keying.
+        ``analysis`` is a CompanionAnalysis from brain/coder_companion.py.
+        """
+        from api.ws_contracts import (
+            ServerCoderCompanionEvent,
+            CoderCompanionPayload,
+            CompanionDecisionWire,
+        )
+
+        payload_decisions = [
+            CompanionDecisionWire(
+                name=d.name,
+                rationale=d.rationale,
+                risk=d.risk,
+                tradeoff=d.tradeoff,
+            )
+            for d in analysis.decisions
+        ]
+
+        await self.send_personal_message(
+            session_id,
+            ServerCoderCompanionEvent(
+                data=CoderCompanionPayload(
+                    session_id=session_id,
+                    task_id=task_id,
+                    correlation_id=correlation_id,
+                    objective=analysis.objective,
+                    decisions=payload_decisions,
+                    patterns_applied=analysis.patterns_applied,
+                    bottlenecks=analysis.bottlenecks,
+                    security_notes=analysis.security_notes,
+                    errors_found=analysis.errors_found,
+                    follow_ups=analysis.follow_ups,
+                    reasoning_summary=analysis.reasoning_summary,
+                    degraded=analysis.degraded,
+                )
+            ),
+        )
+
     # ------------------------------------------------------------------
     # Time-Travel Debugging (Thread Branching)
     # ------------------------------------------------------------------

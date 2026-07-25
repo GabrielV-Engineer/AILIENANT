@@ -1161,6 +1161,41 @@ class ClientDevcontainerExecExitEvent(BaseModel):
 
 
 # =====================================================================
+# 17d. CODER COMPANION
+# =====================================================================
+# Post-turn structured explanation emitted after CoderAgent completes a patch.
+# Never blocks the graph; rendered asynchronously beside diff-approval UI.
+
+class CompanionDecisionWire(BaseModel):
+    """A single design decision from the companion explainer."""
+    name: str
+    rationale: str
+    risk: Optional[str] = None
+    tradeoff: Optional[str] = None
+
+
+class CoderCompanionPayload(BaseModel):
+    """Structured explanation for a coder turn. Last-write-wins by correlation_id."""
+    session_id: str
+    task_id: str
+    correlation_id: str  # f"{task_id}:{attempt_ordinal}" — retry-safe keying
+    objective: str
+    decisions: List[CompanionDecisionWire] = Field(default_factory=list)
+    patterns_applied: List[str] = Field(default_factory=list)
+    bottlenecks: List[str] = Field(default_factory=list)
+    security_notes: List[str] = Field(default_factory=list)
+    errors_found: List[str] = Field(default_factory=list)
+    follow_ups: List[str] = Field(default_factory=list)
+    reasoning_summary: Optional[str] = None
+    degraded: bool = False
+
+
+class ServerCoderCompanionEvent(BaseModel):
+    event_type: Literal["server_coder_companion"] = "server_coder_companion"
+    data: CoderCompanionPayload
+
+
+# =====================================================================
 # 18. THE MASTER CONTRACT O(1)
 # =====================================================================
 
@@ -1233,4 +1268,5 @@ WebSocketMessage = Union[
     ServerDevcontainerExecRequestEvent,        # devcontainer bridge: exec request (→ host)
     ClientDevcontainerExecStreamEvent,         # devcontainer bridge: exec stdout/stderr chunk (← host)
     ClientDevcontainerExecExitEvent,           # devcontainer bridge: exec exit code (← host)
+    ServerCoderCompanionEvent,                 # coder companion: structured post-turn explanation
 ]

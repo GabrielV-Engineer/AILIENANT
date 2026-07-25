@@ -1560,4 +1560,60 @@ Read contract — `GET /api/v1/runtime/exec-log?tail=<N>&since=<seq>` (machine-g
 | `entries` | Chronological (oldest→newest) list of entries with `seq > since`; without `since`, the most-recent `tail` (clamped 1..200). |
 | `latest_seq` | The ring's current max `seq`; the client sends it back as `since` so an idle poll returns `entries: []`. |
 
+---
+
+## §37 — Coder Companion Explanation Wire Contract (Phase 11.5.B)
+
+**Change:** new WebSocket event `server_coder_companion` carries structured explanation (objective / decisions / patterns / bottlenecks / security notes / errors / follow-ups) emitted asynchronously after CoderAgent completes a patch. Fire-and-forget, never blocks graph; rendered beside diff-approval UI.
+**Location:** `ailienant-core/api/ws_contracts.py` (new `CoderCompanionPayload`, `ServerCoderCompanionEvent`); `ailienant-core/brain/coder_companion.py` (backend pipeline); `ailienant-extension/src/workspace/components/CoderCompanionCard.tsx` (frontend render).
+**Schema version:** additive, backward-compatible. Consumers that ignore this event are unaffected.
+
+**Payload:**
+```python
+class CompanionDecisionWire(BaseModel):
+    name: str
+    rationale: str
+    risk: Optional[str] = None
+    tradeoff: Optional[str] = None
+
+class CoderCompanionPayload(BaseModel):
+    session_id: str
+    task_id: str
+    correlation_id: str  # f"{task_id}:{attempt_ordinal}" — retry-safe keying, last-write-wins
+    objective: str       # Full sentence summarizing what the patch achieves
+    decisions: List[CompanionDecisionWire] = []
+    patterns_applied: List[str] = []
+    bottlenecks: List[str] = []
+    security_notes: List[str] = []  # Distinct lane; populated only when security_flags non-empty
+    errors_found: List[str] = []
+    follow_ups: List[str] = []
+    reasoning_summary: Optional[str] = None  # Reserved; always null in this phase
+    degraded: bool = False  # True on any failure (timeout/parse/LLM exception)
+```
+
+**Producer contract:**
+- Fired by `schedule_coder_companion(state, attempt_ordinal)` from `run_coder_node`, immediately after SEARCH/REPLACE parsing. Synchronous entry point; delegates to `asyncio.create_task(_run_coder_companion)` (fire-and-forget, never blocks `route_after_coder`).
+- Emitted via `broadcast_coder_companion(session_id, task_id, correlation_id, analysis)` in `api/websocket_manager.py::ConnectionManager`.
+- Best-effort: budget pre-check skip, VRAM lock busy-skip, LLM timeout/exception, parse failure all result in `degraded=True` and "Explanation unavailable" objective. No event sent if budget ceiling reached or VRAM unavailable (frontend timeout path renders identical "unavailable" state).
+- Verbosity heuristic: `errors` or `security_flags` present → `deep` (all fields populated); >3 files → `deep`; 1 file no errors → `minimal`; else `normal`.
+
+**Consumer contract:**
+- Frontend `CoderCompanionCard` component subscribes to `server_coder_companion`, filters by `task_id`.
+- Skeleton-first rendering: fixed-height placeholder from mount (no layout shift).
+- Keyed by `correlation_id` (derived from `attempt_ordinal`): new attempt resets card to skeleton immediately.
+- 8s client timeout → "unavailable" state (covers skip/timeout/loss uniformly; dev never sees the distinction).
+- Renders `objective` + `security_notes` (if present, distinct lane) always-visible; `decisions` inline; `patterns_applied` / `bottlenecks` / `errors_found` / `follow_ups` behind collapse toggle (pure display-density, no re-fetch).
+
+**Backward-compat guarantee:**
+- Old clients ignoring this event type see no behavioral change (socket is multiplexed; unknown events are silently dropped by the Pydantic discriminator).
+- The frontend can be deployed independently; the backend fires the event regardless.
+
+**Known limitations (declared, not deferred):**
+1. `reasoning_summary` always `null` — no live thinking-tap in this phase.
+2. Retry attempt costs one small-tier LLM call (acceptable given `MINI_JUDGE_MODEL` pricing).
+3. No per-turn reserve/commit budget gate (soft skip-if-over-ceiling only).
+4. `imports_graph` context enrichment cut from v1.
+5. Under sustained local-tier VRAM contention, Companion may degrade far more often than succeed (explicitly lower priority than user's real work).
+6. Independent timeout constants (12s backend, 8s frontend); if backend latency runs close to 8s in practice, revisit together.
+
 Cursor keys off the monotonic `seq`, never the display `ts` (tie-safe). Additive-only; old clients ignore the endpoint.

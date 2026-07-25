@@ -836,3 +836,9 @@ Template (max ~12 lines per entry):
 - Shipped: `DeferredToolLoader` (eager-vs-deferred policy over `ToolRAGStore`, ~10%-of-budget char threshold) + `tool_search` discovery tool (READ_ONLY, all roles); `tool_rag_select_node` now consults the loader; ambient `_task_active_role` ContextVar added. Gate proves ≥70% reduction at 56 synthetic schemas + retrievability by query.
 - Key decision: role resolution is config-first (`RunnableConfig`) with the ContextVar as a declared MVP fallback; `tool_search` returns names+descriptions + a shift-left instruction (discovery, not direct-load) so full schemas never re-inflate the deferred prompt; deferred set built as `k-1`+append to guarantee `≤k` with no drop branch.
 - Deferred: DEBT-040 — `tool_search` ContextVar role fallback is stale across per-step transitions; robust `config.configurable` threading scheduled for 8.8.5.
+
+## 11.5.B: Coder Companion — Structured Post-Turn Explanation — 2026-07-25
+**Status:** COMPLETE | **Gates:** mypy 0/437 · pytest 22 new (86 in coder sweep) passed · pyright 0 · npm compile 0
+- Shipped: `brain/coder_companion.py` fire-and-forget explanation pass triggered from `run_coder_node`, emitting `ServerCoderCompanionEvent` (objective/decisions/patterns/bottlenecks/security_notes/errors/follow-ups) rendered by new `CoderCompanionCard.tsx` beside the diff-approval surface.
+- Key decision: reuses the existing droppable-side-channel idiom (strong-ref task set + done-callback, dual narrow exception guards, explicit LLM timeout, concurrency semaphore) rather than adding a blocking graph node; verbosity resolved from structural state signals, `reasoning_summary` schema-present but unpopulated.
+- Deferred: DEBT-121 — non-blocking local-tier VRAM-lock probe for `_companion_gpu_slot_available` (MVP unconditionally admits).

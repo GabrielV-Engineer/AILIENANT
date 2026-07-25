@@ -390,6 +390,32 @@ export interface ServerToolResultEvent {
     data: ToolResultPayload;
 }
 
+export interface CompanionDecisionWire {
+    name: string;
+    rationale: string;
+    risk?: string | null;
+    tradeoff?: string | null;
+}
+export interface CoderCompanionPayload {
+    session_id: string;
+    task_id: string;
+    /** `${task_id}:${attempt_ordinal}` — last-write-wins / reset key. */
+    correlation_id: string;
+    objective: string;
+    decisions: CompanionDecisionWire[];
+    patterns_applied: string[];
+    bottlenecks: string[];
+    security_notes: string[];
+    errors_found: string[];
+    follow_ups: string[];
+    reasoning_summary?: string | null;
+    degraded: boolean;
+}
+export interface ServerCoderCompanionEvent {
+    event_type: 'server_coder_companion';
+    data: CoderCompanionPayload;
+}
+
 export interface ToolDepGraphPayload {
     session_id: string;
     tool_call_id: string;
@@ -747,6 +773,7 @@ export type ServerWSMessage =
     | ServerToolStreamChunkEvent
     | ServerToolResultEvent
     | ServerToolDepGraphEvent
+    | ServerCoderCompanionEvent
     | ServerSessionBranchedEvent
     | ServerCellToolStartEvent
     | ServerCellPtyChunkEvent

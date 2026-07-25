@@ -17,6 +17,7 @@ import type {
 } from '../../shared/config';
 import type { AilienantConfig } from '../../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../../shared/types';
+import type { CoderCompanionPayload } from '../../api/contracts';
 import type { Message, NattMessage, ConversationMessage, SystemMessage, ToastLevel } from '../types';
 import type { HITLIntervention } from '../components/HITLInterventionCard';
 import type { CheckpointEntry } from '../components/CheckpointPicker';
@@ -511,6 +512,13 @@ export function useWSMessageHandler(): void {
                         }),
                         dep_graph: { nodes: d.nodes, edges: d.edges },
                     }), nattName));
+                    break;
+                }
+                case 'server_coder_companion': {
+                    // Best-effort post-turn explanation. Stored by task_id (last-write-wins
+                    // by correlation_id) so the card renders it beside the diff-approval
+                    // surface; never gates the diff, never persisted.
+                    ws.setCoderCompanion(msg.payload as CoderCompanionPayload);
                     break;
                 }
                 case 'server_cell_tool_start': {

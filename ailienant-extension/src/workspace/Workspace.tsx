@@ -18,6 +18,7 @@ import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ReasoningStream } from './components/ReasoningStream';
 import { ToolChip } from './components/ToolChip';
 import { DiffBlock } from './components/DiffBlock';
+import { CoderCompanionCard } from './components/CoderCompanionCard';
 import { MessageActions } from './components/MessageActions';
 import { CheckpointPicker } from './components/CheckpointPicker';
 import { IndexingStatus } from './components/IndexingStatus';
@@ -589,6 +590,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                                     />
                                                 );
                                             })}
+                                            {/* Best-effort post-turn explanation beside the diff the dev is
+                                                reviewing. Reads its own async WS channel; never gates approval. */}
+                                            <CoderCompanionCard taskId={initial.sessionId} />
                                         </div>
                                     )}
                                     {/* Phase 7.11.8 (ADR-706 §4.5g) — per-message
