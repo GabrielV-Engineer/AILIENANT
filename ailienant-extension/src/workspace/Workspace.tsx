@@ -478,7 +478,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     fallback={<MessageRowFallback />}
                                 >
                                     {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
-                                        <PipelineProgress steps={m.steps} done={!!m.stepsDone} />
+                                        <PipelineProgress steps={m.steps} done={!!m.stepsDone} hasChecklist={!!m.checklist?.length} />
                                     )}
                                     {/* Inline reasoning stream — the model's thinking, live. */}
                                     {m.role === 'assistant' && m.thinking && (

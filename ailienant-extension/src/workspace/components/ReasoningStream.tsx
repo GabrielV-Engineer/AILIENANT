@@ -5,16 +5,15 @@
  * pipeline trace) with an animated infinity glyph on the left. While the model
  * reasons the prose streams live and the block is expanded; the moment the
  * answer begins the parent freezes the clock and the block collapses to a
- * re-expandable "Reasoned for Ns" summary. A small `[Native]`/`[Simulated]` tag
- * states the trace's provenance honestly. Rendered identically in the main chat
- * and the analyst pane so the two never diverge.
+ * re-expandable "Reasoned for Ns" summary. Provenance (native vs simulated) is
+ * intentionally not surfaced — the trace reads identically either way. Rendered
+ * the same in the main chat and the analyst pane so the two never diverge.
  *
  * The reasoning text is rendered through `MarkdownRenderer` (React nodes, never
  * `dangerouslySetInnerHTML`); it is display-only and never re-enters the loop.
  */
 import { memo, useEffect, useState } from 'react';
 import { Icon } from '../../shared/Icon';
-import { Tooltip } from '../../shared/Tooltip';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ReasoningGlyph } from './ReasoningGlyph';
 import type { ReasoningSource } from '../utils/thinkingReducer';
@@ -28,20 +27,13 @@ interface Props {
     open: boolean;
     /** True while the turn is still streaming. */
     streaming: boolean;
-    /** Provenance of the trace; defaults to native. */
+    /** Provenance of the trace; retained on the contract but not surfaced in the UI. */
     source?: ReasoningSource;
     onToggle: () => void;
 }
 
-const _TAG_TIP: Record<ReasoningSource, string> = {
-    native: 'Native reasoning — the model emits its own thinking tokens.',
-    simulated:
-        'Simulated reasoning — this model has no native thinking, so AILIENANT '
-        + 'prompts it to reason step by step before answering.',
-};
-
 function ReasoningStreamImpl({
-    thinking, tokens, startedAt, elapsedMs, open, streaming, source = 'native', onToggle,
+    thinking, tokens, startedAt, elapsedMs, open, streaming, onToggle,
 }: Props): JSX.Element {
     const active = elapsedMs === undefined && streaming;
     const [liveMs, setLiveMs] = useState(0);
@@ -65,11 +57,6 @@ function ReasoningStreamImpl({
             <button type="button" className="ws-reason-header" onClick={onToggle} aria-expanded={open}>
                 <ReasoningGlyph size={16} still={!active} />
                 <span className="ws-reason-label">{label}</span>
-                <Tooltip content={_TAG_TIP[source]}>
-                    <span className="ws-reason-tag" data-source={source}>
-                        {source === 'simulated' ? 'Simulated' : 'Native'}
-                    </span>
-                </Tooltip>
                 <Icon
                     name={open ? 'chevron-down' : 'chevron-right'}
                     size={12}
@@ -87,8 +74,8 @@ function ReasoningStreamImpl({
 
 /**
  * Memoised so unrelated re-renders don't re-scan the reasoning text. Re-renders
- * only when a visible input changes — note `source` MUST be here or the tag
- * would not update when provenance resolves.
+ * only when a visible input changes. `source` is deliberately absent — it no
+ * longer drives any visible output.
  */
 export const ReasoningStream = memo(ReasoningStreamImpl, (a, b) =>
     a.thinking === b.thinking &&
@@ -96,6 +83,5 @@ export const ReasoningStream = memo(ReasoningStreamImpl, (a, b) =>
     a.elapsedMs === b.elapsedMs &&
     a.open === b.open &&
     a.streaming === b.streaming &&
-    a.startedAt === b.startedAt &&
-    a.source === b.source,
+    a.startedAt === b.startedAt,
 );

@@ -1,8 +1,6 @@
-"ailienant-extension/src/editor/vfs_reader.ts"
-
 import * as vscode from 'vscode';
 
-// Contrato de datos alineado con el esquema del backend (FastAPI)
+// Data contract aligned with the backend (FastAPI) schema.
 export interface DirtyBuffer {
     uri: string;        // Ruta absoluta del archivo
     content: string;    // Entropía actual (código sin guardar)

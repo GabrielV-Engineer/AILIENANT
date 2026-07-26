@@ -331,3 +331,137 @@ async def test_planner_injects_active_skills() -> None:
     joined = "\n".join(m["content"] for m in sent_messages)
     assert skill_body in joined
     assert 'kind="skill"' in joined  # rendered inside the sandboxed directive block
+
+
+# ── Test 5: live plan-of-attack reasoning pass (non-native models) ─────────────
+
+
+def _fake_astream_reasoning_factory(reasoning_chunks: List[str], draft_json: str):
+    """Build a fake ``astream_reasoning`` async generator.
+
+    Branch on the call shape so a single fake serves BOTH callers in a thinking-on
+    turn: the free-form reasoning pass (``free_form_answer=True``, no
+    ``response_format``) yields incremental ``thinking`` deltas; the strict WBS
+    draft (``response_format`` set, routed through here by ``acomplete_with_thinking``)
+    yields the plan JSON as one ``text`` delta.
+    """
+    from tools.stream_delta import StreamDelta
+
+    def _fake(messages, tier="medium", *, temperature=0.0, max_tokens=4096,
+              timeout=60.0, session_id=None, thinking_budget_tokens=4096,
+              response_format=None, free_form_answer=False):
+        async def _gen():
+            if response_format is None and free_form_answer:
+                for chunk in reasoning_chunks:
+                    yield StreamDelta("thinking", chunk, "simulated")
+            else:
+                yield StreamDelta("text", draft_json, "simulated")
+        return _gen()
+
+    return _fake
+
+
+@pytest.mark.anyio
+async def test_planner_streams_reasoning_before_draft_nonnative() -> None:
+    """On a non-native model with a wired sink, the planner streams multiple
+    incremental reasoning deltas to the Thought Box BEFORE the WBS is drafted,
+    and the resulting MissionSpecification is intact."""
+    collected: List[tuple[str, str]] = []
+
+    async def _sink(text: str, source: str) -> None:
+        collected.append((text, source))
+
+    cfg: RunnableConfig = {
+        "configurable": {
+            "stream_thinking": _sink,
+            "enable_native_thinking": True,
+            "thinking_budget_tokens": 4096,
+        }
+    }
+
+    fake = _fake_astream_reasoning_factory(
+        ["Let me think about ", "the approach ", "and the files."],
+        _valid_mission_json(),
+    )
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    state = _base_state()
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "agents.planner.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "agents.planner.LLMGateway.astream_reasoning", fake
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ), patch(
+        "core.config.model_resolver.get_chat_target",
+        return_value=MagicMock(model="ollama/llama3"),
+    ), patch(
+        "tools.llm_gateway._supports_native_thinking", return_value=False
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        result = await run_planner_node(state, cfg)
+
+    # Reasoning streamed incrementally (multiple deltas, not one final flush).
+    reasoning_deltas = [t for t, _ in collected]
+    assert len(reasoning_deltas) >= 2
+    assert "".join(reasoning_deltas).startswith("Let me think about")
+    # The strict draft still produced a valid, intact plan.
+    assert result.get("mission_spec") is not None
+
+
+@pytest.mark.anyio
+async def test_planner_skips_reasoning_pass_on_native_model() -> None:
+    """On a native model the extra reasoning pass must NOT fire (native models
+    already stream reasoning during their own draft — no double pass)."""
+    collected: List[tuple[str, str]] = []
+
+    async def _sink(text: str, source: str) -> None:
+        collected.append((text, source))
+
+    cfg: RunnableConfig = {
+        "configurable": {
+            "stream_thinking": _sink,
+            "enable_native_thinking": True,
+            "thinking_budget_tokens": 4096,
+        }
+    }
+
+    fake = _fake_astream_reasoning_factory(
+        ["should NOT be emitted"],
+        _valid_mission_json(),
+    )
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    state = _base_state()
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "agents.planner.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "agents.planner.LLMGateway.astream_reasoning", fake
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ), patch(
+        "core.config.model_resolver.get_chat_target",
+        return_value=MagicMock(model="claude-sonnet-5"),
+    ), patch(
+        "tools.llm_gateway._supports_native_thinking", return_value=True
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        result = await run_planner_node(state, cfg)
+
+    # The reasoning pass was gated out — the draft's own stream yields no 'thinking'.
+    assert collected == []
+    assert result.get("mission_spec") is not None

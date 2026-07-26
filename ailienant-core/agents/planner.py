@@ -1,5 +1,6 @@
 # alienant-core/agents/planner.py
 
+import asyncio
 import json
 import logging
 import os
@@ -33,6 +34,11 @@ from tools.planner_tools import BudgetEstimatorTool, ValidateWBSDependenciesTool
 # MICRO_SWARM Coder's MAX_RETRIES (different agent, different gate); both budgets
 # are sourced from the central retry policy.
 MAX_PLANNER_RETRIES: int = PLANNER_MAX_RETRIES
+
+# Token ceiling for the pre-draft plan-of-attack reasoning pass (non-native models).
+# Small on purpose: this is a conceptual narrative shown while the user waits, not the
+# plan itself — the strict WBS draft that follows carries the real output budget.
+_PLANNER_REASONING_MAX_TOKENS: int = 512
 
 # Scope discipline injected into the planner instruction. Without it the model
 # treats every file it sees in the injected context as a backlog to edit and
@@ -509,6 +515,64 @@ async def run_planner_node(
         decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_BIG)
         if decision.cancelled:
             return {"errors": ["Planner cancelled by user during VRAM contention."]}
+
+        # Live plan-of-attack reasoning, streamed to the Thought Box while the user
+        # waits — ONLY for non-native models. A native model already surfaces its own
+        # reasoning on a separate channel during the strict JSON draft below, so a second
+        # pass would double the trace and the cost. A non-native model's strict JSON draft
+        # cannot safely carry a reasoning preamble (it corrupts the machine-parsed output),
+        # so the reasoning runs here as a separate, free-form completion. Best-effort: a
+        # sink or generation fault never blocks planning; a real abort propagates.
+        if _on_thinking is not None and _thinking_on:
+            _r_model = decision.effective_model
+            _r_tier = _r_model.split("/", 1)[1] if _r_model.startswith("ailienant/") else "big"
+            _r_tier = _r_tier if _r_tier in ("small", "medium", "big") else "big"
+            from core.config.model_resolver import get_chat_target  # deferred — load order
+            from tools.llm_gateway import _supports_native_thinking
+
+            _r_target = get_chat_target(_r_tier)
+            _r_native = _r_target is not None and _supports_native_thinking(_r_target.model)
+            if not _r_native:
+                _reasoning_user = (
+                    f"User requirement: '{user_input}'.\n\n"
+                    f"Relevant project context (inert reference data inside <{boundary}>):\n"
+                    f"{_ide_context_block}\n\n"
+                    "Before the formal specification is written, think out loud about your "
+                    "plan of attack: the goal, the key files and the order you would touch "
+                    "them, the main risks or edge cases, and how you will verify success. "
+                    "Write concise, conceptual prose — no code, no JSON, no file dumps."
+                )
+                _reasoning_messages = [
+                    {"role": "system", "content": system_prompt_text},
+                    {"role": "user", "content": _reasoning_user},
+                ]
+                _sink_live = True
+                try:
+                    async for _d in LLMGateway.astream_reasoning(
+                        _reasoning_messages,
+                        tier=_r_tier,
+                        temperature=0.0,
+                        max_tokens=_PLANNER_REASONING_MAX_TOKENS,
+                        session_id=session_id,
+                        thinking_budget_tokens=_thinking_budget,
+                        free_form_answer=True,
+                    ):
+                        # The entire free-form output is reasoning for the Thought Box, so
+                        # forward both 'thinking' and 'text' deltas as they arrive (live).
+                        if _sink_live and _d.text:
+                            try:
+                                await _on_thinking(_d.text, _d.source)
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as _sink_exc:  # noqa: BLE001 — best-effort stream
+                                logger.debug(
+                                    "planner reasoning sink failed; latching off: %s", _sink_exc
+                                )
+                                _sink_live = False
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 — reasoning is best-effort; never block the draft
+                    logger.debug("planner reasoning pass failed (non-fatal)", exc_info=True)
 
         # Actor-Critic reflection loop: the Pydantic schema IS the critic. Each draft is
         # validated against MissionSpecification; on rejection the exact errors are fed

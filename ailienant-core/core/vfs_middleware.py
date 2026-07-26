@@ -148,6 +148,15 @@ class VFSMiddleware:
 
         Returns VFSReadResult; callers check .ok before using .content.
         """
+        # Resolve a relative path against the project root BEFORE any disk access,
+        # mirroring how the VS Code host resolves it (joinPath(workspaceFolder, path)).
+        # Without this, a relative path resolves against the backend process CWD — the
+        # disk read misses, the content reads as absent, and any pre-edit hash captured
+        # here diverges from the host's on-disk hash (a false stale-file guard at apply).
+        # The join only fires for a relative path with a known root; absolute paths and
+        # root-less context callers are untouched.
+        if not os.path.isabs(filepath) and project_root:
+            filepath = os.path.join(project_root, filepath)
         normalized = os.path.normpath(filepath)
         ext = os.path.splitext(normalized)[1].lower()
         size_meta: Dict[str, Any] = {"path": normalized, "extension": ext}
