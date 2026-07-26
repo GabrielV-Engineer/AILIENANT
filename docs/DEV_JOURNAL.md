@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## Fix: `npm test` broken suite-wide (bundle test files with esbuild) — 2026-07-26
+**Status:** COMPLETE | **Gates:** check-types 0 · lint 0 · npm compile 0 · npm test 105 passed/0 failed (was: 0 ran, crashed on file #1)
+- Shipped: `npm test` crashed on the first test file with `ERR_MODULE_NOT_FOUND` — `tsc -p . --outDir out` (via `"module": "Preserve"`) emitted extensionless relative imports that Node's ESM loader (used by `@vscode/test-cli`'s Electron host) refuses to resolve, unlike CommonJS `require()`. New `esbuild.tests.js` bundles each `src/test/*.test.ts` independently into a self-contained CJS file (mirroring the production `extension.js` bundle, which already proved esbuild resolves `shiki`'s ESM exports maps that plain `tsc` can't) — no runtime module resolution is left to trip over. `compile-tests` now runs it instead of raw `tsc`; `tsconfig.json`, `check-types`, `.vscode-test.mjs`, and the production `esbuild.js` are all untouched.
+- Key decision: `jsdom` is marked `external` (alongside `vscode`) — jsdom loads its own internal assets (default stylesheet, sync XHR worker) via `__dirname`-relative paths at runtime; bundling it in rewrites `__dirname` to `out/test/` and breaks that resolution (`ENOENT: default-stylesheet.css`). Left external, Node's normal `require('jsdom')` keeps jsdom's real `__dirname` intact.
+- Deferred: `watch-tests` script left on the old `tsc` path (dev-convenience only, not on the CI/pretest critical path); esbuild watch-mode for glob entry points needs its own verification pass.
+
 ## Fix: false stale-guard + live coding reasoning + reasoning badge + status relabel — 2026-07-26
 **Status:** COMPLETE | **Gates:** mypy 0/438 · pyright 0 · pytest 2523 passed/2 skipped (+6 new) · tsc 0 · eslint 0
 - Shipped (A, stale-guard): approving a diff falsely reported "these files changed since the proposal" on an unchanged file. Root cause: the write pipeline's stale guard compared two *different readers* — the backend captured `base_hash` via `make_safe_reader`→`read_safe`, whose disk read never joined `project_root`, so a relative `target_file` (`fibonacci.py`) resolved against the backend CWD, read as absent, and hashed `""`; the host hashes the real file after `joinPath(workspaceFolder, path)`. Fix: `read_safe` now resolves a relative path against `project_root` (the host's rule) before size/read/RAM/ignore — one change that also gives the coder the real file content (real refactor delta, not a full create) and fixes the diff old-side. Hits AUTO + ASK.
