@@ -49,6 +49,14 @@ export interface ChatState {
     snapshot: TokenSnapshot | undefined;
     indexing: IndexingState;
     activeTaskId: string | undefined;
+    /**
+     * Prompt-preservation for the sticky Active Task Header. Holds the text of
+     * the turn currently on screen (set at submit, cleared on dismiss) and its
+     * submit timestamp, which drives the live elapsed clock. Memory-only by
+     * design — persisting it would resurrect a stale header after a panel reload.
+     */
+    activeTaskPrompt: string | undefined;
+    activeTaskStartedAt: number | undefined;
     checkpointPicker: CheckpointEntry[] | null;
     budgetLimitMode: BudgetLimitMode;
     budgetWeeklyUsd: number;
@@ -72,6 +80,8 @@ export interface ChatState {
     setSnapshot: Dispatch<SetStateAction<TokenSnapshot | undefined>>;
     setIndexing: Dispatch<SetStateAction<IndexingState>>;
     setActiveTaskId: Dispatch<SetStateAction<string | undefined>>;
+    setActiveTaskPrompt: Dispatch<SetStateAction<string | undefined>>;
+    setActiveTaskStartedAt: Dispatch<SetStateAction<number | undefined>>;
     setCheckpointPicker: Dispatch<SetStateAction<CheckpointEntry[] | null>>;
     setBudgetLimitMode: Dispatch<SetStateAction<BudgetLimitMode>>;
     setBudgetWeeklyUsd: Dispatch<SetStateAction<number>>;
@@ -101,6 +111,8 @@ export const useChatStore = create<ChatState>((set) => ({
     snapshot: undefined,
     indexing: { state: 'idle' },
     activeTaskId: undefined,
+    activeTaskPrompt: undefined,
+    activeTaskStartedAt: undefined,
     checkpointPicker: null,
     budgetLimitMode: 'none',
     budgetWeeklyUsd: 0,
@@ -124,6 +136,8 @@ export const useChatStore = create<ChatState>((set) => ({
     setSnapshot:          (v) => set((s) => ({ snapshot: apply(v, s.snapshot) })),
     setIndexing:          (v) => set((s) => ({ indexing: apply(v, s.indexing) })),
     setActiveTaskId:      (v) => set((s) => ({ activeTaskId: apply(v, s.activeTaskId) })),
+    setActiveTaskPrompt:  (v) => set((s) => ({ activeTaskPrompt: apply(v, s.activeTaskPrompt) })),
+    setActiveTaskStartedAt: (v) => set((s) => ({ activeTaskStartedAt: apply(v, s.activeTaskStartedAt) })),
     setCheckpointPicker:  (v) => set((s) => ({ checkpointPicker: apply(v, s.checkpointPicker) })),
     setBudgetLimitMode:   (v) => set((s) => ({ budgetLimitMode: apply(v, s.budgetLimitMode) })),
     setBudgetWeeklyUsd:   (v) => set((s) => ({ budgetWeeklyUsd: apply(v, s.budgetWeeklyUsd) })),

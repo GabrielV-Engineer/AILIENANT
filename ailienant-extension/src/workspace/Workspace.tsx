@@ -13,6 +13,7 @@ import { WorkspaceHeader } from './components/WorkspaceHeader';
 import { TelemetryHUD } from './components/TelemetryHUD';
 import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
+import { ActiveTaskHeader } from './components/ActiveTaskHeader';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ToolChip } from './components/ToolChip';
@@ -80,6 +81,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const snapshot = useChatStore((s) => s.snapshot);
     const indexing = useChatStore((s) => s.indexing);
     const activeTaskId = useChatStore((s) => s.activeTaskId);
+    const activeTaskPrompt = useChatStore((s) => s.activeTaskPrompt);
+    const activeTaskStartedAt = useChatStore((s) => s.activeTaskStartedAt);
+    const setActiveTaskPrompt = useChatStore((s) => s.setActiveTaskPrompt);
     const checkpointPicker = useChatStore((s) => s.checkpointPicker);
     const setCheckpointPicker = useChatStore((s) => s.setCheckpointPicker);
     const budgetLimitMode = useChatStore((s) => s.budgetLimitMode);
@@ -149,6 +153,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const submitWithMode = useCallback((text: string, executionMode: ExecutionMode) => {
         const presetConfig = getPresetConfig(preset);
         setMessages(prev => [...prev, { id: mkId(), role: 'user', content: text, authorLabel: authorLabelFor('user', nattName) }]);
+        // Preserve the submitted prompt in the sticky Active Task Header. The
+        // plan-accept hand-off submits a fixed agreement phrase, not a user
+        // instruction, so substitute a readable label rather than surfacing it raw.
+        const chat = useChatStore.getState();
+        chat.setActiveTaskPrompt(text === AGREEMENT_SIGNAL ? 'Applying approved plan' : text);
+        chat.setActiveTaskStartedAt(Date.now());
         const storeState = useWorkspaceStore.getState();
         vscode.postMessage({
             type: 'SUBMIT_TASK',
@@ -452,6 +462,20 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                     {/* LEFT: chat + bar */}
                     <section className="ws-main-left">
                         <CSSAlertBanner telemetry={telemetry} />
+
+                        {/* Sticky prompt-preservation header — pinned above the
+                            scrolling transcript so the active request is never lost
+                            (DEBT-058). Expanded while streaming, collapsed on settle,
+                            dismissible; a new submit replaces it. */}
+                        {activeTaskPrompt !== undefined && activeTaskStartedAt !== undefined && (
+                            <ActiveTaskHeader
+                                prompt={activeTaskPrompt}
+                                startedAt={activeTaskStartedAt}
+                                isStreaming={isStreaming}
+                                onCancel={handleAbort}
+                                onDismiss={() => setActiveTaskPrompt(undefined)}
+                            />
+                        )}
 
                         <div className="ws-messages">
                             {messages.length === 0 && (

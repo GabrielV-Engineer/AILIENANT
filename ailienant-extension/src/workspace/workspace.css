@@ -189,6 +189,103 @@ html, body, #root { height: 100%; }
   align-items: center;
   gap: 8px;
 }
+
+/* ── Active Task Header (sticky prompt preservation, DEBT-058) ──────── */
+.ws-active-task {
+  flex: 0 0 auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--accent-primary);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: ws-active-task-in 0.18s ease;
+}
+@keyframes ws-active-task-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* Settled turn: quieter, single-line summary. */
+.ws-active-task[data-done="true"] {
+  border-left-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+  opacity: 0.9;
+}
+.ws-active-task-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ws-active-task-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent-primary);
+}
+.ws-active-task-check { color: var(--accent-primary); }
+.ws-active-task-status {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-primary);
+}
+/* Collapsed prompt sits inline and truncates to one line. */
+.ws-active-task-prompt {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Push elapsed + control to the right when the status label is present. */
+.ws-active-task-status ~ .ws-active-task-elapsed { margin-left: auto; }
+.ws-active-task-elapsed {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.ws-active-task-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ws-active-task-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-primary);
+}
+.ws-active-task-cancel:hover {
+  color: var(--vscode-inputValidation-errorForeground, #f48771);
+  border-color: color-mix(in srgb, var(--accent-primary) 60%, transparent);
+}
+/* Expanded full prompt — two-line clamp under the control bar. */
+.ws-active-task-prompt-full {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  padding-left: 24px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-active-task { animation: none; }
+}
+
 .ws-msg {
   padding: 12px 0;
   font-size: 12px;
