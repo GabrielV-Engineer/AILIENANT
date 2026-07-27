@@ -791,6 +791,9 @@ export class WorkspacePanelManager {
                             // The three-way mode selector governs the backend session
                             // permission policy (automatic | ask_before_edits | plan_mode).
                             execution_mode: data.execution_mode as string | undefined,
+                            // Persisted auto-accept preference — the backend elides the
+                            // approval card for low-risk edits when set.
+                            auto_accept_low_risk: data.auto_accept_low_risk as boolean | undefined,
                             // Explicit skill the user invoked for this turn (snake_case).
                             invoked_skill_id: data.invoked_skill_id as string | undefined,
                         });

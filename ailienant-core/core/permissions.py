@@ -422,6 +422,23 @@ _INTERCEPT_MODES: frozenset[SessionPermissionMode] = frozenset({
 })
 
 
+def scan_risk_patterns(content: Optional[str]) -> List[str]:
+    """Return the labels of every high-risk pattern that matches ``content``.
+
+    The label-only core shared by two callers: ``risk_intercept_guard`` (which
+    upgrades a permissive ALLOW to HITL on a match) and the apply-edge
+    auto-accept gate (which treats a non-empty result as "not low-risk", forcing
+    the manual approval card). Empty content or no match yields an empty list.
+    """
+    if not content:
+        return []
+    return [
+        label
+        for label, pattern in _RISK_PATTERNS.items()
+        if pattern.search(content)
+    ]
+
+
 def risk_intercept_guard(
     proposed_content: Optional[str],
     decision: PermissionDecision,
@@ -441,11 +458,7 @@ def risk_intercept_guard(
     ):
         return decision, []
 
-    matched: List[str] = [
-        label
-        for label, pattern in _RISK_PATTERNS.items()
-        if pattern.search(proposed_content)
-    ]
+    matched = scan_risk_patterns(proposed_content)
     if matched:
         return PermissionDecision.HITL, matched
     return decision, []

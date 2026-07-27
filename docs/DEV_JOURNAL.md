@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.8: Auto-Accept Shift-Left — 2026-07-27
+**Status:** COMPLETE | **Gates:** mypy 0/440 · pyright 0 · pytest 2541 passed/2 skipped · tsc 0 · eslint 0 · npm compile 0
+- Shipped: `autoAcceptLowRisk` now rides `TaskPayload` client→host→backend; the apply edge judges each pending edit's **added diff lines** against `permissions.py::scan_risk_patterns` (new shared helper) and, when set and no pattern matches, applies server-side with zero `server_hitl_approval_request` emissions — the blast-radius gate still guards both paths. Removed the prior webview short-circuit that read a never-sent `risk_metrics` field (vacuously true, so it silently auto-accepted every edit regardless of risk).
+- Key decision: judged risk on added `+` lines only, not whole-file content — `_RISK_PATTERNS` is command-tuned, so scanning full files would false-positive on any file merely mentioning `api_key`/`.env` and make the feature nearly inert. Diffs are computed once and shared between the risk scan and the (still-possible) approval card.
+- Deferred: DEBT-125 — the gate is a regex proxy over `_RISK_PATTERNS`, not a real edit-risk classifier; also fixes the `risk_metrics`↔`risk_patterns_matched` name mismatch so the card can show why an edit was flagged.
+
 ## 11.7: Chat Compaction for Long Sessions — 2026-07-27
 **Status:** COMPLETE | **Gates:** mypy 0/440 · pyright 0 · pytest 2539 passed/2 skipped · tsc 0 · eslint 0 · npm compile 0
 - Shipped: pre-compaction messages now fold behind a new collapsible `SessionSummaryCard.tsx` once the transcript exceeds `MESSAGE_COMPACTION_THRESHOLD` (40) and a `state_compacted` event has fired — non-destructive (bubbles stay in the store, restorable via "Show original messages"); short sessions render the marker as today's inline chip, unchanged. The AI prose the summarizer already produces is now plumbed to the wire via an additive optional `summary_text` field (`StateCompactedPayload` → `broadcast_state_compacted` → `summarizer.py::_emit_compacted`), since `state_compacted` previously carried only a status line, not the prose.

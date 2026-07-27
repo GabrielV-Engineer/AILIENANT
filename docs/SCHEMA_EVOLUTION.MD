@@ -1669,3 +1669,29 @@ class ActivityEventPayload(BaseModel):
 - Old clients ignoring `server_activity_event` see no change (multiplexed socket; unknown events silently dropped). The backend fires it regardless of the frontend consumer's presence.
 
 Cursor/timeline keys off the monotonic `seq`, never the display `ts` (tie-safe). Additive-only.
+
+---
+
+## §39 — Auto-Accept Shift-Left: Additive `TaskPayload` Field + Apply-Edge Gate
+
+**Additive only. No `AIlienantGraphState` channel changes, no new WS event.**
+
+- **`TaskPayload` growth** (`core/task_service.py`): `auto_accept_low_risk: bool = False`. Rides
+  the existing HTTP `POST /task/submit` payload client→host→backend along the same path as
+  `enable_native_thinking` (`Workspace.tsx` SUBMIT_TASK → `workspace_panel.ts` → `session.ts`).
+  Omitted → `False` → an approval card is always shown, exactly as before.
+- **Apply-edge gate** (`_run_coding_task`, `PermissionDecision.HITL` branch): the backend now
+  decides auto-accept at the source. Each pending edit is judged on its **added diff lines** via
+  the new shared `permissions.py::scan_risk_patterns(content) -> List[str]` (the label-only core
+  extracted from `risk_intercept_guard`, matching the `_RISK_PATTERNS` set: privilege escalation,
+  mass deletion, network egress, secret access, package install). When `auto_accept_low_risk` is
+  set **and** no added line trips a pattern, the edit applies server-side and **no
+  `server_hitl_approval_request` is emitted**. Any match — or the pre-existing blast-radius gate
+  (`task_service.py`, still fires on both paths) — forces the manual card. The
+  `ServerHITLApprovalRequestEvent` / `client_hitl_response` wire contracts are unchanged.
+- **Frontend consumer change:** the prior webview auto-accept short-circuit in
+  `useWSMessageHandler.ts` (which read a never-populated `risk_metrics` field — vacuously true,
+  so it auto-accepted every card) was removed; the decision is authoritative on the backend.
+- **Deferred (DEBT-125):** a real diff-aware/semantic edit-risk classifier and the
+  `risk_metrics` (FE) ↔ `risk_patterns_matched` (BE) name-mismatch fix so the card can display why
+  an edit was flagged. The current gate is a conservative proxy that fails toward the card.

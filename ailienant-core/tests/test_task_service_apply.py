@@ -41,12 +41,13 @@ def _mission() -> MissionSpecification:
     )
 
 
-def _payload() -> TaskPayload:
+def _payload(auto_accept_low_risk: bool = False) -> TaskPayload:
     return TaskPayload(
         task_prompt="bump the increment",
         dirty_buffers=[],
         project_id=None,
         workspace_root="/ws",
+        auto_accept_low_risk=auto_accept_low_risk,
     )
 
 
@@ -268,6 +269,91 @@ async def test_sequential_per_file_modified_content_honored() -> None:
     assert apply_mock.await_args is not None
     _sid, contents, _bh = apply_mock.await_args.args[:3]
     assert contents == {"a.py": "EDITED-A\n", "b.py": "B\n"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Shift-left auto-accept: a low-risk edit skips the approval card entirely; an
+# added risk-pattern line still forces the manual round-trip.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_auto_accept_low_risk_skips_card() -> None:
+    """DoD: a low-risk edit + auto-accept applies with ZERO approval requests.
+
+    ``request_human_approval`` is the sole emitter of
+    ``ServerHITLApprovalRequestEvent`` — asserting it is never awaited is the
+    WS-trace assertion that no card was emitted.
+    """
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
+    approval_mock = AsyncMock()  # must never be awaited on the low-risk path
+    ctxs = [
+        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
+        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
+        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
+    ]
+    for c in ctxs:
+        c.start()
+    try:
+        await TaskService()._run_coding_task("s1", _payload(auto_accept_low_risk=True), "SEQUENTIAL")
+    finally:
+        for c in ctxs:
+            c.stop()
+
+    approval_mock.assert_not_awaited()  # zero server_hitl_approval_request emissions
+    apply_mock.assert_awaited_once()    # the edit still lands, applied server-side
+    assert apply_mock.await_args is not None
+    _sid, contents, _bh = apply_mock.await_args.args[:3]
+    assert contents == _FINAL_STATE["pending_contents"]
+
+
+# One coder patch whose ADDED content trips the secret_access risk pattern.
+_RISKY_STATE: Dict[str, Any] = {
+    "mission_spec": _mission(),
+    "pending_patches": {"calc.py": "--- a/calc.py\n+++ b/calc.py\n"},
+    "pending_contents": {"calc.py": "API_KEY = fetch_secret()\n"},
+    "pending_base_hash": {"calc.py": "deadbeef"},
+    "errors": [],
+    "hitl_pending": False,
+}
+
+
+def _fake_astream_risky(*_a: Any, **_k: Any) -> AsyncIterator[Dict[str, Any]]:
+    async def _gen() -> AsyncIterator[Dict[str, Any]]:
+        yield _RISKY_STATE
+    return _gen()
+
+
+@pytest.mark.anyio
+async def test_auto_accept_high_risk_still_prompts() -> None:
+    """The conservative gate: an added risk-pattern line forces the card even
+    when auto-accept is ON — so a medium/high-risk edit still round-trips."""
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
+    approval_mock = AsyncMock(return_value={"approved": True, "comment": None, "modified_content": None})
+    ctxs = [
+        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream_risky),
+        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
+        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
+        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
+    ]
+    for c in ctxs:
+        c.start()
+    try:
+        await TaskService()._run_coding_task("s1", _payload(auto_accept_low_risk=True), "SEQUENTIAL")
+    finally:
+        for c in ctxs:
+            c.stop()
+
+    # `API_KEY` in an added line trips secret_access → the FILE_WRITE card still
+    # round-trips despite the auto-accept preference.
+    approval_mock.assert_awaited_once()
+    assert approval_mock.await_args is not None
+    assert approval_mock.await_args.kwargs["request_kind"] == "FILE_WRITE"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -644,22 +644,11 @@ export function useWSMessageHandler(): void {
                         files?: DiffBlockShape[];
                         proposed_files?: Array<{ file_path: string; unified_diff?: string; new_content?: string; base_hash?: string | null }>;
                     };
-                    // Soft-permission fast path: when the user enabled auto-accept and
-                    // every risk metric is low (or none was attached), approve without
-                    // ever mounting the card. The conservative gate — ANY medium/high
-                    // metric falls through to the manual card — is the whole safety
-                    // contract here.
-                    const autoAccept = ws.autoAcceptLowRisk;
-                    const allLowRisk = (req.risk_metrics ?? []).every(m => m.level === 'low');
-                    if (autoAccept && allLowRisk) {
-                        vscode.postMessage({
-                            type: 'HITL_RESPONSE',
-                            approval_id: req.approval_id,
-                            approved: true,
-                        });
-                        cs.addToast('info', 'Auto-accepted low-risk edit');
-                        break;
-                    }
+                    // Auto-accept is decided server-side (the apply edge omits the
+                    // approval request entirely for low-risk edits), so any card that
+                    // reaches here is one the backend deliberately routed to the human —
+                    // it must always mount. No frontend short-circuit.
+                    //
                     // The proposed diff rides in this same message (FILE_WRITE), so the
                     // inline diff and the Accept/Reject row mount together — attaching
                     // the blocks and setting hitlPending in one handler batches into a

@@ -86,7 +86,7 @@ export class SessionManager {
      */
     public async startAITask(
         taskPrompt: string,
-        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string; invoked_skill_id?: string },
+        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string; invoked_skill_id?: string; auto_accept_low_risk?: boolean },
     ): Promise<number | undefined> {
         try {
             // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
@@ -149,6 +149,9 @@ export class SessionManager {
                 // The mode selector maps to the backend session permission policy
                 // (Auto → auto-apply, Ask → HITL card, Plan → block mutations).
                 execution_mode: opts?.execution_mode,
+                // Shift-left auto-accept: lets the backend skip the approval card
+                // for edits whose added lines trip no high-risk pattern.
+                auto_accept_low_risk: opts?.auto_accept_low_risk,
                 // Snake_case end-to-end — must not be camelCased at the call site.
                 invoked_skill_id: opts?.invoked_skill_id,
             };

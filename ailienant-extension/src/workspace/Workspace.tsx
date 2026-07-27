@@ -193,6 +193,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             enable_native_thinking: storeState.nativeThinking,
             // Plan mode → route the turn into the backend Socratic loop.
             planner_mode_active: executionMode === 'plan_mode',
+            // Persisted auto-accept toggle, read at submit time. The backend elides
+            // the approval card for edits whose added lines trip no risk pattern.
+            auto_accept_low_risk: storeState.autoAcceptLowRisk,
             // Explicit skill chip selected by the user (snake_case, undefined if none).
             invoked_skill_id: storeState.activeSkills?.[initial.sessionId]?.id ?? undefined,
         });

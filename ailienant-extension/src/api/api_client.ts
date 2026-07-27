@@ -42,6 +42,10 @@ export interface TaskPayload {
     // The three-way mode selector (automatic | ask_before_edits | plan_mode).
     // The backend maps it to the session permission policy that gates writes.
     execution_mode?: string;
+    // Shift-left auto-accept. When true AND the edit's added lines trip no
+    // high-risk pattern, the backend applies server-side without ever emitting an
+    // approval card. Optional so an omitting client always sees the card.
+    auto_accept_low_risk?: boolean;
     // Id of a saved skill the user explicitly chose for this turn. Wire field is
     // snake_case end-to-end — do NOT send camelCase invokedSkillId.
     invoked_skill_id?: string;

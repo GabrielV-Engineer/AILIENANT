@@ -223,6 +223,12 @@ class TaskPayload(BaseModel):
     # Maps to the session permission policy that gates writes at the apply edge.
     # Optional: an omitting client keeps the per-session settings-file default.
     execution_mode: Optional[str] = None
+    # Shift-left auto-accept. When true AND the pending edit trips no high-risk
+    # content pattern, the apply edge skips the approval card and writes
+    # server-side — no server_hitl_approval_request round-trip. Any risk match
+    # still forces the manual card. Optional/default-False keeps the prior wire
+    # shape (an omitting client always sees the card).
+    auto_accept_low_risk: bool = False
     workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
     # The id of a saved skill the user explicitly chose for this turn. When present
     # the skill is injected unconditionally (still subject to its enabled flag); the
@@ -1008,6 +1014,7 @@ class TaskService:
 
             if verdict is PermissionDecision.HITL:
                 from api.ws_contracts import ProposedFile
+                from core.permissions import scan_risk_patterns
                 from core.vfs_middleware import make_safe_reader
 
                 # Old-side reader for the server-computed diff: RAM-buffer-first,
@@ -1019,64 +1026,115 @@ class TaskService:
                     session_id,
                     vfs=self.vfs,
                 )
-
-                # Strictly sequential approval: one file at a time. Only a single
-                # approval is ever in flight, so the chat shows one card; each file
-                # gets its own approval_id and an independent decision — rejecting
-                # one never discards the others. The proposed diff rides inside each
-                # request as a unified diff (O(Δ) on the wire) so the inline card can
-                # never desync from its authorization; the host reconstructs both
-                # sides. The accepted subset is applied once after the loop. No
-                # wall-clock deadline (the wait is bounded by the connection: a
-                # disconnect wakes the waiter).
+                # Compute each file's unified diff once — the risk scan and (on
+                # the manual path) the approval card both read from this map, so
+                # the diff is never computed twice.
                 ordered_paths = list(patches_to_apply)
-                total = len(ordered_paths)
-                accepted: Dict[str, str] = {}
-                revise_comment: Optional[str] = None
-                for idx, path in enumerate(ordered_paths, start=1):
-                    unified_diff = compute_unified_diff(
+                diffs: Dict[str, str] = {
+                    path: compute_unified_diff(
                         _old_reader(path) or "", patches_to_apply[path], path
                     )
-                    approval = await vfs_manager.request_human_approval(
-                        session_id=session_id,
-                        action_description=f"Apply change to {path} ({idx} of {total})",
-                        proposed_content=patches[path],
-                        request_kind="FILE_WRITE",
-                        proposed_files=[
-                            ProposedFile(
-                                file_path=path,
-                                unified_diff=unified_diff,
-                                base_hash=base_hashes.get(path),
-                            )
-                        ],
-                        timeout_s=None,
-                    )
-                    if approval and approval.get("approved"):
-                        # Honor an edit-before-apply payload from the card's edit mode.
-                        modified = approval.get("modified_content")
-                        accepted[path] = modified if modified else patches_to_apply[path]
-                        continue
-                    # Not approved. A note → request to revise: stop and let the host
-                    # re-submit the feedback as a fresh turn. A plain reject (or a
-                    # disconnect/None) drops only this file and the loop continues.
-                    comment = (approval or {}).get("comment")
-                    if comment:
-                        revise_comment = comment
-                        break
+                    for path in ordered_paths
+                }
 
-                if revise_comment is not None:
-                    msg = "Revising based on your feedback…"
-                    gate.record_answer(len(msg.encode()))
-                    await vfs_manager.broadcast_token(session_id, msg)
-                    await self._finalize_stream(session_id)
-                    return
-                if not accepted:
-                    discarded = "Changes discarded — no files were modified."
-                    gate.record_answer(len(discarded.encode()))
-                    await vfs_manager.broadcast_token(session_id, discarded)
-                    await self._finalize_stream(session_id)
-                    return
-                patches_to_apply = accepted
+                def _added_lines(diff: str) -> str:
+                    # The '+' side of a unified diff, minus the '+++' file header —
+                    # the content this edit introduces.
+                    return "".join(
+                        ln[1:]
+                        for ln in diff.splitlines(keepends=True)
+                        if ln.startswith("+") and not ln.startswith("+++")
+                    )
+
+                # Shift-left auto-accept: risk is judged on the ADDED lines only —
+                # what this edit introduces — so an unchanged region that merely
+                # mentions a secret token never blocks auto-accept. When the
+                # operator opted in AND no added line trips a high-risk pattern
+                # (secret access, mass deletion, privilege escalation, network
+                # egress, package install), apply without ever emitting an approval
+                # card — the round-trip is elided at the source. Any match forces
+                # the manual card, and the blast-radius gate below still guards the
+                # write on both paths.
+                risk_labels = sorted({
+                    label
+                    for diff in diffs.values()
+                    for label in scan_risk_patterns(_added_lines(diff))
+                })
+                auto_low_risk = bool(payload.auto_accept_low_risk) and not risk_labels
+
+                if auto_low_risk:
+                    logger.info(
+                        "Auto-accept: applying %d low-risk file(s) without an approval card",
+                        len(ordered_paths),
+                    )
+                    notice = "⚡ Auto-accepting low-risk changes directly to disk…"
+                    gate.record_answer(len(notice.encode()))
+                    await vfs_manager.broadcast_token(session_id, notice)
+                    # patches_to_apply already mirrors `contents`; fall through to
+                    # the blast-radius gate and the single apply commit — no
+                    # server_hitl_approval_request is emitted on this path.
+                else:
+                    if payload.auto_accept_low_risk and risk_labels:
+                        logger.info(
+                            "Auto-accept requested but %d file(s) tripped risk pattern(s) "
+                            "%s — routing to the approval card",
+                            len(ordered_paths),
+                            risk_labels,
+                        )
+                    # Strictly sequential approval: one file at a time. Only a single
+                    # approval is ever in flight, so the chat shows one card; each file
+                    # gets its own approval_id and an independent decision — rejecting
+                    # one never discards the others. The proposed diff rides inside each
+                    # request as a unified diff (O(Δ) on the wire) so the inline card can
+                    # never desync from its authorization; the host reconstructs both
+                    # sides. The accepted subset is applied once after the loop. No
+                    # wall-clock deadline (the wait is bounded by the connection: a
+                    # disconnect wakes the waiter).
+                    total = len(ordered_paths)
+                    accepted: Dict[str, str] = {}
+                    revise_comment: Optional[str] = None
+                    for idx, path in enumerate(ordered_paths, start=1):
+                        unified_diff = diffs[path]
+                        approval = await vfs_manager.request_human_approval(
+                            session_id=session_id,
+                            action_description=f"Apply change to {path} ({idx} of {total})",
+                            proposed_content=patches[path],
+                            request_kind="FILE_WRITE",
+                            proposed_files=[
+                                ProposedFile(
+                                    file_path=path,
+                                    unified_diff=unified_diff,
+                                    base_hash=base_hashes.get(path),
+                                )
+                            ],
+                            timeout_s=None,
+                        )
+                        if approval and approval.get("approved"):
+                            # Honor an edit-before-apply payload from the card's edit mode.
+                            modified = approval.get("modified_content")
+                            accepted[path] = modified if modified else patches_to_apply[path]
+                            continue
+                        # Not approved. A note → request to revise: stop and let the host
+                        # re-submit the feedback as a fresh turn. A plain reject (or a
+                        # disconnect/None) drops only this file and the loop continues.
+                        comment = (approval or {}).get("comment")
+                        if comment:
+                            revise_comment = comment
+                            break
+
+                    if revise_comment is not None:
+                        msg = "Revising based on your feedback…"
+                        gate.record_answer(len(msg.encode()))
+                        await vfs_manager.broadcast_token(session_id, msg)
+                        await self._finalize_stream(session_id)
+                        return
+                    if not accepted:
+                        discarded = "Changes discarded — no files were modified."
+                        gate.record_answer(len(discarded.encode()))
+                        await vfs_manager.broadcast_token(session_id, discarded)
+                        await self._finalize_stream(session_id)
+                        return
+                    patches_to_apply = accepted
             else:
                 # ALLOW (Auto): announce the write BEFORE touching disk so the live
                 # action log never shows a silent mutation — apply_patch_set's I/O

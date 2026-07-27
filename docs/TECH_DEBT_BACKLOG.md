@@ -119,7 +119,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
-| DEBT-007 | Auto-accept pays full HITL round-trip | LOW | Performance | Phase 11 | Floating |
+| ~~DEBT-007~~ | ~~Auto-accept pays full HITL round-trip~~ **RESOLVED (11.8):** shift-left to the apply edge — the backend omits `server_hitl_approval_request` for low-risk edits (added diff lines trip no `_RISK_PATTERNS`) and applies server-side; the vacuous frontend short-circuit was removed. | LOW | Performance | 11.8 | RESOLVED |
+| DEBT-125 | The apply-edge "low-risk" gate reuses command-tuned `_RISK_PATTERNS` as a proxy over added diff lines — coarse, fails toward the card. Build a diff-aware/semantic edit-risk classifier returning a real low/medium/high verdict; also fix the `risk_metrics` (FE) ↔ `risk_patterns_matched` (BE) name mismatch so the approval card can display *why* an edit was flagged. | LOW | Risk classification | future safety slice | Floating |
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
 | DEBT-097 | Single shared Docker sandbox container across all concurrent sessions (noisy-neighbor + shared blast radius) | HIGH | Reliability / Scale | future sandbox-isolation slice | Floating |
 | DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
@@ -240,6 +241,26 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing — self-contained FE change.
 - **Phase:** Phase 11 (deferred from 11.7).
 - **Notes:** Non-destructive by design; recoverability via "Show original messages" is unaffected. Deferred to keep 11.7 blast radius contained.
+
+### DEBT-125 [LOW · Floating] — Apply-edge "low-risk" gate is a command-pattern proxy, not an edit-risk classifier
+
+- **Date:** 2026-07-27
+- **Reproduce:** N/A (design coarseness, not an error). The 11.8 shift-left gate decides "low-risk"
+  by scanning an edit's **added diff lines** against `permissions.py::_RISK_PATTERNS` — a pattern
+  set originally tuned for shell-command content (privilege escalation, mass deletion, network
+  egress, secret access, package install). It fails toward the card (a false positive costs one
+  manual approval, never an unsafe silent write), but it is a proxy: it neither understands code
+  semantics nor grades severity (everything is binary low vs. not-low).
+- **File(s):** `ailienant-core/core/task_service.py` (the HITL-branch gate); `ailienant-core/core/permissions.py` (`scan_risk_patterns` / `_RISK_PATTERNS`); `ailienant-extension/src/shared/types.ts` + `ailienant-extension/src/workspace/components/HITLInterventionCard.tsx` (`risk_metrics`, dead field).
+- **Error:** (1) No real low/medium/high edit-risk verdict — the manifest's "risk metric" vocabulary
+  has no backend producer. (2) Name mismatch: the backend attaches labels as `risk_patterns_matched`
+  (`List[str]`) while the frontend reads `risk_metrics` (`{label, level}[]`), which is never sent —
+  so the approval card cannot show *why* an edit was flagged.
+- **Blocked by:** nothing — self-contained. A classifier (heuristic size/scope + secret/dep-graph
+  signals, or a small model) can replace the regex proxy; forwarding `risk_patterns_matched` onto
+  the FILE_WRITE card + renaming the FE field closes the display gap.
+- **Phase:** future safety slice (deferred from 11.8).
+- **Notes:** Deferred to keep 11.8's blast radius contained; the conservative gate is already safe.
 
 ### DEBT-066 [HIGH · RESOLVED 2026-06-20, 8.10.8] — No runtime LLM tool-dispatch loop activates the registered tools
 
@@ -798,8 +819,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error (original):** The test took the `tracemalloc` baseline snapshot immediately after `tracemalloc.start()`, collapsing the ceiling to ~64 KB while 50 `MCTSNode` + 50 `MissionSpecification` objects retained ~210-240 KB (Pydantic schema caches irrecoverable after first use). Assertion always failed.
 - **Resolved:** replaced the absolute ceiling with a **self-calibrated two-pass approach** — a calibration lifecycle run measures the one-time interpreter/schema-cache residual (`calibrated_delta`); the test-cycle run then asserts `delta_bytes <= int(max(calibrated_delta, 0) * _HEAP_HEADROOM_RATIO) + _HEAP_NOISE_FLOOR_BYTES` (`_HEAP_HEADROOM_RATIO = 1.20`, floor = 64 KB). A real allocation leak still shows a monotonically growing delta across passes; one-time process-wide cache churn is absorbed by the calibration. Test is green with no skip marker.
 
-### DEBT-007 [LOW · Floating] — Auto-accept low-risk edits pays a full HITL round-trip (shift-left candidate)
+### DEBT-007 [LOW · RESOLVED 2026-07-27, 11.8] — Auto-accept low-risk edits pays a full HITL round-trip (shift-left candidate)
 
+- **Resolved:** 2026-07-27 (11.8). The `autoAcceptLowRisk` preference now rides the
+  `TaskPayload` client→host→backend (`Workspace.tsx` → `workspace_panel.ts` → `session.ts` →
+  `core/task_service.py`). In `_run_coding_task`'s HITL branch the backend judges each edit on
+  its **added diff lines** via the new shared `permissions.py::scan_risk_patterns`; when the
+  preference is set and no added line trips `_RISK_PATTERNS`, it applies server-side and emits
+  **no** `server_hitl_approval_request` (the blast-radius gate still guards both paths). The old
+  webview short-circuit (`useWSMessageHandler.ts`, vacuously true against a never-sent
+  `risk_metrics` field — it auto-accepted *everything*) was removed. Follow-up: DEBT-125.
 - **Date:** 2026-06-02
 - **Reproduce:** N/A (latency, not an error). With auto-accept ON, every low-risk approval still flows
   backend → WS `server_hitl_approval_request` → webview → `HITL_RESPONSE` → host → WS
