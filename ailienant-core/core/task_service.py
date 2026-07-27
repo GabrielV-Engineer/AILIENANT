@@ -2,6 +2,7 @@ import asyncio
 import difflib
 import functools
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -51,6 +52,50 @@ def compute_unified_diff(old: str, new: str, path: str) -> str:
     return "".join(
         difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}")
     )
+
+
+def _classify_activity(
+    raw: str,
+) -> "tuple[Optional[str], Optional[str], Optional[str]]":
+    """Map a raw narration label (a node token or free-text) to a typed timeline
+    triple ``(kind, target, metric)`` for the Glass-Box Timeline activity channel.
+
+    Nodes keep emitting raw labels; this single choke point classifies them, so the
+    frontend can render a human label from ``kind`` and no raw internal token ever
+    reaches the screen. Returns ``(None, None, None)`` for a label with no timeline
+    equivalent (it still flows to the legacy pipeline-step channel).
+    """
+    s = raw.strip()
+    low = s.lower()
+    for verb, kind in (
+        ("reading ", "read"),
+        ("editing ", "edit"),
+        ("writing ", "edit"),
+        ("running ", "command"),
+        ("verified ", "command"),
+        ("giving up on ", "command"),
+        ("self-healing ", "heal"),
+        ("recovered ", "heal"),
+        ("could not auto-fix ", "heal"),
+        ("retrieving ", "retrieval"),
+    ):
+        if low.startswith(verb):
+            return kind, (s[len(verb):].strip() or None), None
+    phase = {
+        "context_gather": "understanding",
+        "synthesizing_intent": "understanding",
+        "handoff_to_planner": "planning",
+        "drafting_spec": "planning",
+        "critic_review": "reviewing",
+        "unwrapping_schema": "reviewing",
+        "plan_validated": "reviewing",
+        "plan_budget_overage_advisory": "reviewing",
+    }.get(s)
+    if phase is not None:
+        return phase, None, None
+    if s.startswith("critic_rejected"):
+        return "reviewing", None, "replanning"
+    return None, None, None
 
 
 # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: in-memory tool-call registry.
@@ -641,7 +686,41 @@ class TaskService:
         # layer (cognitive-isolation fence stays intact).
         gate = NarrationGate()
 
+        # Glass-Box Timeline activity stream (un-throttled). A per-turn monotonic `seq`
+        # orders events deterministically; the channel bypasses the NarrationGate so the
+        # full read/edit/command/plan/diff trace survives even on a coding turn where free
+        # narration is throttled. Bounded by _ACTIVITY_CAP — past it a single sentinel is
+        # emitted and the rest dropped, so a pathological loop can never flood the webview.
+        _ACTIVITY_CAP = 500
+        _activity_seq = itertools.count()
+
+        async def _push_activity(
+            kind: str,
+            target: Optional[str] = None,
+            metric: Optional[str] = None,
+            ref: Optional[str] = None,
+        ) -> None:
+            seq = next(_activity_seq)
+            if seq < _ACTIVITY_CAP:
+                await vfs_manager.broadcast_activity_event(
+                    session_id, seq=seq, ts=time.time(),
+                    kind=kind, target=target, metric=metric, ref=ref,
+                )
+            elif seq == _ACTIVITY_CAP:
+                await vfs_manager.broadcast_activity_event(
+                    session_id, seq=seq, ts=time.time(),
+                    kind="command", metric=f"activity trace capped at {_ACTIVITY_CAP}",
+                )
+
         async def _narrate(node_name: str, step_id: Optional[int] = None) -> None:
+            # One choke point feeds BOTH transparency channels from the raw node label:
+            # the un-throttled typed activity event (timeline) and the legacy throttled
+            # pipeline step (current PipelineProgress). Nodes stay unchanged — they emit
+            # raw labels; classification lives here. The frontend composes the human label
+            # from `kind`, so no raw internal token ever reaches the screen.
+            _kind, _target, _metric = _classify_activity(node_name)
+            if _kind is not None:
+                await _push_activity(_kind, _target, _metric)
             if gate.allow(len(node_name.encode())):
                 await vfs_manager.broadcast_pipeline_step(session_id, node_name, step_id)
 

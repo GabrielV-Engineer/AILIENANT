@@ -30,6 +30,7 @@ from api.ws_contracts import (
     ServerNattThinkingChunkEvent, NattThinkingChunkPayload,
     ServerNattStreamEndEvent, NattStreamEndPayload,
     ServerPipelineStepEvent, PipelineStepPayload,
+    ServerActivityEvent, ActivityEventPayload,
     ServerPlanDocumentEvent, PlanDocumentPayload,
     ServerStreamEndEvent,
     ServerInlineEditStartEvent, InlineEditStartPayload,
@@ -513,6 +514,39 @@ class ConnectionManager:
         await self.send_personal_message(
             session_id,
             ServerPipelineStepEvent(data=PipelineStepPayload(node_name=node_name, step_id=step_id)),
+        )
+
+    async def broadcast_activity_event(
+        self,
+        session_id: str,
+        *,
+        seq: int,
+        ts: float,
+        kind: str,
+        target: Optional[str] = None,
+        metric: Optional[str] = None,
+        ref: Optional[str] = None,
+    ) -> None:
+        """Emit one ordered agent-activity event for the Glass-Box Timeline.
+
+        Deliberately NOT metered by the NarrationGate (unlike broadcast_pipeline_step):
+        this is low-volume structured metadata, so the full activity trace survives even
+        on a coding turn where free narration would be throttled. Ordering is carried by
+        the caller-supplied per-turn monotonic ``seq``.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerActivityEvent(
+                data=ActivityEventPayload(
+                    session_id=session_id,
+                    seq=seq,
+                    ts=ts,
+                    kind=kind,  # type: ignore[arg-type]  # validated against ActivityKind at the edge
+                    target=target,
+                    metric=metric,
+                    ref=ref,
+                )
+            ),
         )
 
     async def broadcast_plan_document(

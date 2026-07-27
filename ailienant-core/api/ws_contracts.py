@@ -592,6 +592,51 @@ class ServerPipelineStepEvent(BaseModel):
     data: PipelineStepPayload
 
 
+# The stable, closed vocabulary of activity kinds. The frontend composes the
+# human-readable label from `kind` (+ `target`), so a raw internal node token
+# (e.g. "context_gather") never reaches the screen. Additive: extend this Literal
+# to introduce a new kind; older clients tolerate an unknown kind as a generic row.
+ActivityKind = Literal[
+    "understanding",  # gathering/interpreting the request (was context_gather / synthesizing_intent)
+    "planning",       # drafting the plan (was drafting_spec / handoff_to_planner)
+    "reviewing",      # validating the plan (was critic_review / plan_validated / unwrapping_schema)
+    "read",           # reading a file (target = path)
+    "edit",           # writing/editing a file (target = path)
+    "command",        # running a command / tool (target = command, ref = tool_call_id)
+    "retrieval",      # GraphRAG / context retrieval
+    "heal",           # self-healing a failed node (target = node)
+    "reasoning",      # a reasoning span (ref = thinking correlation id; body streams on server_thinking_chunk)
+    "plan",           # the plan document node (body = ExecutionChecklist)
+    "diff",           # a proposed/applied edit (ref = patch_id, target = path)
+]
+
+
+class ActivityEventPayload(BaseModel):
+    """Server → client: one structured, ordered agent-activity event for the
+    Glass-Box Timeline.
+
+    Un-throttled by design — this is low-volume structured metadata, NOT free
+    narration, so it is exempt from the NarrationGate that meters
+    ``server_pipeline_step``. ``seq`` is the per-turn monotonic order key (the
+    single deterministic sort, robust to cross-channel arrival races); ``ts`` is a
+    unix timestamp for relative-time display / tiebreak. ``ref`` correlates a
+    lightweight marker to its heavy body on an existing channel (reasoning →
+    thinking id, diff → patch_id, command → tool_call_id).
+    """
+    session_id: str
+    seq: int
+    ts: float
+    kind: ActivityKind
+    target: Optional[str] = None
+    metric: Optional[str] = None
+    ref: Optional[str] = None
+
+
+class ServerActivityEvent(BaseModel):
+    event_type: Literal["server_activity_event"] = "server_activity_event"
+    data: ActivityEventPayload
+
+
 class PlanDocumentPayload(BaseModel):
     """Server → client: the finalized plan as structured data for the rich Plan
     surface (NOT chat prose). Mirrors MissionSpecification's public shape.
@@ -1237,6 +1282,7 @@ WebSocketMessage = Union[
     ServerNattThinkingChunkEvent,    # streamed analyst reasoning delta
     ServerNattStreamEndEvent,        # analyst stream finalized (+ context_version)
     ServerPipelineStepEvent,         # pipeline node progress
+    ServerActivityEvent,             # Glass-Box Timeline: ordered, un-throttled activity event
     ServerPlanDocumentEvent,         # finalized plan → rich Plan surface
     ServerStreamEndEvent,            # assistant stream finalized
     ClientClearConversationEvent,    # clear short-term chat memory
