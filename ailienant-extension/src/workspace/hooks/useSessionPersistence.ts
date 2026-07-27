@@ -4,7 +4,9 @@
  *  1. Debounced PERSIST_TRANSCRIPT — mirror the completed transcript to the host
  *     so closing VS Code doesn't empty the session. Transient stream flags and the
  *     large `parserState` object are stripped; system chips are display-only and
- *     never persisted.
+ *     never persisted; `timeline`'s 'reasoning' entries are dropped (display-only,
+ *     matching `thinking`'s own exclusion) while every other kind survives as the
+ *     durable audit trail AgentTimeline renders on rehydrate.
  *  2. In-flight Thought-Box resilience — throttled snapshot of the active streaming
  *     turn into the panel-survivable store, so a partial reasoning trace survives a
  *     teardown/reconnect (cleared on server_stream_end).
@@ -16,6 +18,7 @@ import { vscode } from '../vscode_bridge';
 import { useChatStore } from '../chatStore';
 import { useWorkspaceStore } from '../workspaceStore';
 import type { ConversationMessage, Message } from '../types';
+import { stripReasoningForPersist } from '../utils/timelineBuilder';
 
 export function useSessionPersistence(): void {
     const messages = useChatStore((s) => s.messages);
@@ -39,9 +42,16 @@ export function useSessionPersistence(): void {
                     .map(({
                         id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                         checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
+                        timeline,
                     }) => ({
                         id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                         checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
+                        // 'reasoning' entries are display-only (matching thinking*'s
+                        // pre-existing exclusion above) — everything else (plan/diff/
+                        // read/edit/command/…) is durable audit evidence, same as
+                        // checklist/diffBlocks were before AgentTimeline took over
+                        // rendering them, so a rehydrated turn still shows its trace.
+                        timeline: timeline ? stripReasoningForPersist(timeline) : timeline,
                     })),
                 nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
             });

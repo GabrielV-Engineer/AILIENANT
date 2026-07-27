@@ -161,22 +161,27 @@ async def test_run_coding_task_emits_granular_narration_in_order() -> None:
     # The coding path drives the compiled graph; sub-step narration now flows
     # from inside the graph via the narrate emitter on config.configurable (the
     # agents narrate their own phases). task_service still emits "context_gather"
-    # before entering the graph, so it must lead the sequence.
+    # before entering the graph, so it must lead the sequence. Ordering is now
+    # observed on the un-throttled server_activity_event channel — the channel
+    # this test's original assertion (server_pipeline_step) was retired in favor
+    # of; see core/task_service.py::_narrate.
     def _fake_astream(state: dict, *_a: object, **_k: object) -> AsyncIterator[dict]:
         async def _gen() -> AsyncIterator[dict]:
             config = cast(Dict[str, Any], _k.get("config") or {})
             narrate = config.get("configurable", {}).get("narrate")
             if narrate is not None:
-                await narrate("routing_decision")
+                await narrate("critic_review")
                 await narrate("drafting_spec")
             yield {"mission_spec": _mission_two_tasks()}
 
         return _gen()
 
-    pipeline = AsyncMock()  # captures broadcast_pipeline_step(session_id, node_name, step_id)
+    activity = AsyncMock()  # captures broadcast_activity_event(session_id, seq=, kind=, ...)
+    pipeline_step = AsyncMock()
     ctxs = [
         patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
-        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=pipeline),
+        patch("core.task_service.vfs_manager.broadcast_activity_event", new=activity),
+        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=pipeline_step),
         patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
         patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
         patch("core.task_service.vfs_manager.request_human_approval", new=AsyncMock(return_value={"approved": False})),
@@ -190,5 +195,10 @@ async def test_run_coding_task_emits_granular_narration_in_order() -> None:
         for c in ctxs:
             c.stop()
 
-    node_names = [call.args[1] for call in pipeline.await_args_list]
-    assert node_names == ["context_gather", "routing_decision", "drafting_spec"]
+    kinds = [call.kwargs["kind"] for call in activity.await_args_list]
+    # "plan" is the early-seed marker (11.5.C.1) firing as soon as mission_spec
+    # first appears in the graph snapshot — correctly interleaved after the
+    # graph's own narration, since the snapshot arrives after those await calls.
+    assert kinds == ["understanding", "reviewing", "planning", "plan"]
+    # The legacy channel is retired: nothing calls it anymore.
+    pipeline_step.assert_not_awaited()

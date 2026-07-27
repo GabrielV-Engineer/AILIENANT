@@ -131,63 +131,6 @@ html, body, #root { height: 100%; }
 .ws-indexing-spin { animation: ws-spin 1s linear infinite; }
 @keyframes ws-spin { to { transform: rotate(360deg); } }
 
-/* ── 'Thinking' execution trace ──────────────────────────────
-   Inline, borderless trace that reads as part of the conversation — a quiet
-   muted status line in the same family as the per-turn footer, not a floating
-   widget box. */
-.ws-thinking {
-  margin: 2px 0 6px;
-  font-size: 12px;
-}
-.ws-thinking-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 2px 0;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--text-secondary);
-  opacity: 0.8;
-  text-align: left;
-  font: inherit;
-  font-size: 11px;
-  letter-spacing: 0.02em;
-}
-.ws-thinking-header:hover { color: var(--text-primary); opacity: 1; }
-.ws-thinking-spin { animation: ws-spin 1s linear infinite; flex-shrink: 0; }
-.ws-thinking-check { color: var(--accent-primary, #63a583); flex-shrink: 0; }
-.ws-thinking-label { flex: 1; text-transform: capitalize; }
-.ws-thinking-chevron { opacity: 0.6; flex-shrink: 0; }
-.ws-thinking-steps {
-  list-style: none;
-  margin: 0;
-  padding: 2px 0 4px 6px;
-}
-.ws-thinking-step {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
-  color: var(--text-secondary);
-  opacity: 0.7;
-  text-transform: capitalize;
-}
-.ws-thinking-step-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--vscode-descriptionForeground, var(--text-secondary));
-  opacity: 0.5;
-}
-.ws-thinking-step[data-current="true"] { color: var(--vscode-foreground, var(--text-primary)); }
-.ws-thinking-step[data-current="true"] .ws-thinking-step-dot {
-  background: var(--accent-primary, #63a583);
-  opacity: 1;
-}
-
 /* ── Main split-grid ───────────────────────────────────────── */
 .ws-main {
   display: grid;
@@ -2023,12 +1966,6 @@ html, body, #root { height: 100%; }
 /* ── Inline Elite Diff Engine ─────────────────────────────────────── */
 /* Diffs bind to the editor's own diff palette so a theme switch repaints
    without reload — never hard-coded reds/greens. */
-.ws-diff-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 6px 0;
-}
 .ws-diff {
   border: 1px solid var(--border-subtle);
   border-radius: 6px;

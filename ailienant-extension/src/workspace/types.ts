@@ -57,13 +57,9 @@ export interface ConversationMessage {
     liveTokens?: number;
     // Glass-Box Timeline (11.5.C) — the seq-ordered agent-activity trace for this
     // turn, built from server_activity_event + correlated existing streams
-    // (reasoning/diff bodies). Data model + ingestion only this slice — no
-    // renderer consumes it yet (PipelineProgress/ReasoningStream/etc. keep
-    // rendering from their existing fields until the AgentTimeline swap), and
-    // PERSIST_TRANSCRIPT's explicit allowlist excludes it by default (not
-    // persisted). Persistence (non-reasoning entries only, matching `thinking`'s
-    // display-only treatment) is wired when AgentTimeline takes over the audit
-    // role currently split across checklist/diffBlocks.
+    // (reasoning/diff bodies) and rendered by AgentTimeline. PERSIST_TRANSCRIPT
+    // strips 'reasoning' entries (display-only, matching `thinking`'s own
+    // exclusion); every other kind persists as the durable audit record.
     timeline?: TimelineEntry[];
 }
 

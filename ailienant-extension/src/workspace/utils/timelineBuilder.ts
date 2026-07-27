@@ -161,3 +161,14 @@ export function upsertToolBody(
     next[idx] = { ...next[idx], tool, status: tool.status === 'pending' ? 'active' : 'done' };
     return next;
 }
+
+/**
+ * The persisted view of a turn's timeline: 'reasoning' entries dropped entirely
+ * (display-only, matching the pre-existing `thinking`/`thinkingTokens`/etc. fields'
+ * exclusion from PERSIST_TRANSCRIPT — reasoning has never survived a reload). Every
+ * other kind (plan/diff/read/edit/command/…) is durable audit evidence and persists
+ * unchanged, taking over the role `checklist`/`diffBlocks` played before AgentTimeline.
+ */
+export function stripReasoningForPersist(entries: TimelineEntry[]): TimelineEntry[] {
+    return entries.filter(e => e.kind !== 'reasoning');
+}

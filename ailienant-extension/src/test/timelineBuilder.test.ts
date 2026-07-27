@@ -10,6 +10,7 @@ import type { ActivityEventPayload } from '../api/contracts';
 import type { DiffBlockShape, TimelineEntry } from '../shared/config';
 import {
     upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertToolBody,
+    stripReasoningForPersist,
 } from '../workspace/utils/timelineBuilder';
 
 function marker(over: Partial<ActivityEventPayload> & { seq: number; kind: ActivityEventPayload['kind'] }): ActivityEventPayload {
@@ -151,5 +152,18 @@ suite('11.5.C.1 — timelineBuilder', () => {
         const after = upsertActivityMarker(before, marker({ seq: 0, kind: 'understanding' }));
         assert.notStrictEqual(before, after);
         assert.strictEqual(before.length, 0);
+    });
+
+    // ── Persistence — reasoning dropped, everything else survives ───────────
+
+    test('stripReasoningForPersist drops reasoning entries, keeps everything else', () => {
+        const entries: TimelineEntry[] = [
+            { id: 'seq:0', seq: 0, ts: 100, kind: 'understanding', status: 'done' },
+            { id: 'r1', seq: 1, ts: 101, kind: 'reasoning', status: 'active', thinking: 'secret chain of thought' },
+            { id: 'a.py', seq: 2, ts: 102, kind: 'diff', status: 'done', target: 'a.py' },
+        ];
+        const persisted = stripReasoningForPersist(entries);
+        assert.deepStrictEqual(persisted.map(e => e.kind), ['understanding', 'diff']);
+        assert.ok(!persisted.some(e => 'thinking' in e && e.thinking));
     });
 });

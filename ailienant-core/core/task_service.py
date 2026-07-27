@@ -71,6 +71,14 @@ def _diff_line_delta(unified_diff: str) -> str:
     return f"+{added} -{removed}"
 
 
+# Glass-Box Timeline (11.5.C) activity channel — un-throttled by design (it
+# bypasses NarrationGate entirely), but bounded: past this many events in one
+# turn, a single sentinel replaces the rest so a pathological loop can never
+# flood the webview. Module-level (not a closure-local) so it's patchable in
+# tests without driving hundreds of real narrate calls.
+ACTIVITY_CAP: int = 500
+
+
 def _classify_activity(
     raw: str,
 ) -> "tuple[Optional[str], Optional[str], Optional[str]]":
@@ -710,23 +718,26 @@ class TaskService:
                 if _exec:
                     state["execution_mode"] = _exec
 
-        # Phase 7.10.2 (ADR-702): granular sub-step narration over server_pipeline_step.
-        # A NarrationGate keeps narration <= 15% of streamed volume once the answer is
-        # live; pre-answer phases (answer_bytes == 0) are never suppressed. The emitter
-        # rides on the run config (RunnableConfig.configurable), NOT graph state: a
-        # callable is not msgpack-serializable, and the checkpointer freezes the whole
-        # state after every node. `configurable` is never checkpointed and never part
-        # of a Send({**state}) fan-out payload, so the closure can never reach the
-        # serializer while the planner still narrates without importing the transport
-        # layer (cognitive-isolation fence stays intact).
+        # `gate` is now vestigial bookkeeping: `_narrate` no longer gates output
+        # through it (server_pipeline_step, the channel it throttled, is retired —
+        # see `_narrate` below), but its `record_answer()` accounting is still fed
+        # from several downstream call sites. Left in place rather than threading a
+        # removal through every one of those sites; DEBT-tracked for a follow-up
+        # sweep, not left silently — see `docs/TECH_DEBT_BACKLOG.md`.
+        #
+        # The `_narrate` emitter itself rides on the run config
+        # (RunnableConfig.configurable), NOT graph state: a callable is not
+        # msgpack-serializable, and the checkpointer freezes the whole state after
+        # every node. `configurable` is never checkpointed and never part of a
+        # Send({**state}) fan-out payload, so the closure can never reach the
+        # serializer while the planner still narrates without importing the
+        # transport layer (cognitive-isolation fence stays intact).
         gate = NarrationGate()
 
         # Glass-Box Timeline activity stream (un-throttled). A per-turn monotonic `seq`
         # orders events deterministically; the channel bypasses the NarrationGate so the
         # full read/edit/command/plan/diff trace survives even on a coding turn where free
-        # narration is throttled. Bounded by _ACTIVITY_CAP — past it a single sentinel is
-        # emitted and the rest dropped, so a pathological loop can never flood the webview.
-        _ACTIVITY_CAP = 500
+        # narration is throttled. Bounded by module-level ACTIVITY_CAP (see its docstring).
         _activity_seq = itertools.count()
 
         async def _push_activity(
@@ -736,28 +747,29 @@ class TaskService:
             ref: Optional[str] = None,
         ) -> None:
             seq = next(_activity_seq)
-            if seq < _ACTIVITY_CAP:
+            if seq < ACTIVITY_CAP:
                 await vfs_manager.broadcast_activity_event(
                     session_id, seq=seq, ts=time.time(),
                     kind=kind, target=target, metric=metric, ref=ref,
                 )
-            elif seq == _ACTIVITY_CAP:
+            elif seq == ACTIVITY_CAP:
                 await vfs_manager.broadcast_activity_event(
                     session_id, seq=seq, ts=time.time(),
-                    kind="command", metric=f"activity trace capped at {_ACTIVITY_CAP}",
+                    kind="command", metric=f"activity trace capped at {ACTIVITY_CAP}",
                 )
 
         async def _narrate(node_name: str, step_id: Optional[int] = None) -> None:
-            # One choke point feeds BOTH transparency channels from the raw node label:
-            # the un-throttled typed activity event (timeline) and the legacy throttled
-            # pipeline step (current PipelineProgress). Nodes stay unchanged — they emit
-            # raw labels; classification lives here. The frontend composes the human label
-            # from `kind`, so no raw internal token ever reaches the screen.
+            # Classifies the raw node label into a typed activity kind and pushes it
+            # to the un-throttled Glass-Box Timeline channel. Nodes stay unchanged —
+            # they emit raw labels; classification lives here. The frontend composes
+            # the human label from `kind`, so no raw internal token ever reaches the
+            # screen. server_pipeline_step (the legacy NarrationGate-throttled
+            # channel this superseded) is retired: PipelineProgress, its only
+            # consumer, was replaced by AgentTimeline. `step_id` is accepted for
+            # call-site compatibility but no longer forwarded anywhere.
             _kind, _target, _metric = _classify_activity(node_name)
             if _kind is not None:
                 await _push_activity(_kind, _target, _metric)
-            if gate.allow(len(node_name.encode())):
-                await vfs_manager.broadcast_pipeline_step(session_id, node_name, step_id)
 
         # Stream the planner/coder native reasoning to the Thought Box while they
         # generate, so the long structured-output call no longer reads as a freeze.

@@ -280,9 +280,7 @@ export function useWSMessageHandler(): void {
                 }
                 case 'server_activity_event': {
                     // Glass-Box Timeline (11.5.C): the un-throttled, seq-ordered
-                    // activity marker. Data-model ingestion only this slice — no
-                    // renderer consumes `timeline` yet; PipelineProgress keeps
-                    // rendering from `steps` above until the AgentTimeline swap.
+                    // activity marker, rendered by AgentTimeline.
                     const d = msg.payload as ActivityEventPayload;
                     cs.setMessages(prev => attachOrUpdateTimeline(
                         prev, prior => upsertActivityMarker(prior ?? [], d), nattName,

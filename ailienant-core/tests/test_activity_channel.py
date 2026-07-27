@@ -140,13 +140,13 @@ async def test_thinking_streamer_fires_span_start_once_with_ref() -> None:
 async def test_thinking_streamer_no_span_start_hook_is_a_noop() -> None:
     from core.task_service import _ThinkingStreamer
 
-    chunks: List[str] = []
+    calls: List[Any] = []
     streamer = _ThinkingStreamer(
-        "sess-X", broadcast=AsyncMock(side_effect=lambda *a, **k: chunks.append(a)),
+        "sess-X", broadcast=AsyncMock(side_effect=lambda *a, **k: calls.append(a)),
     )
     await streamer.feed("hi")
     await streamer.flush()  # must not raise with on_span_start=None (the default)
-    assert len(chunks) == 1
+    assert len(calls) == 1
 
 
 # --------------------------------------------------------------------------- #
