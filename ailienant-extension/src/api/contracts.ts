@@ -64,6 +64,9 @@ export interface ThinkingChunkPayload {
     // Provenance: native reasoning vs a scaffolded simulation. Additive/optional
     // — older servers omit it and the UI treats the trace as native.
     source?: 'native' | 'simulated';
+    // Correlates every delta of one reasoning span to the same Glass-Box Timeline
+    // node (a server_activity_event kind:"reasoning" carries the same ref).
+    ref?: string;
 }
 export interface ServerThinkingChunkEvent {
     event_type: 'server_thinking_chunk';
@@ -275,6 +278,29 @@ export interface PipelineStepPayload {
 export interface ServerPipelineStepEvent {
     event_type: 'server_pipeline_step';
     data: PipelineStepPayload;
+}
+
+// The stable, closed vocabulary of activity kinds. The frontend composes the
+// human-readable label from `kind` (+ `target`), so a raw internal node token
+// never reaches the screen. Mirrors the backend ActivityKind Literal (SCHEMA_EVOLUTION §38).
+export type ActivityKind =
+    | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
+    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff';
+
+export interface ActivityEventPayload {
+    session_id: string;
+    seq: number;                // per-turn monotonic order key (the deterministic sort)
+    ts: number;                 // unix timestamp — relative-time display / tiebreak only
+    kind: ActivityKind;
+    target?: string | null;
+    metric?: string | null;
+    // Correlates this marker to its heavy body on an existing channel (reasoning
+    // delta / diff block / tool call), when one exists.
+    ref?: string | null;
+}
+export interface ServerActivityEvent {
+    event_type: 'server_activity_event';
+    data: ActivityEventPayload;
 }
 
 export interface PlanDocumentPayload {
@@ -743,7 +769,7 @@ export interface ClientBranchFromCheckpointEvent {
 // DISCRIMINATED UNIONS
 // ============================================================
 
-/** Every server→client event (35). Narrow on `event_type`. */
+/** Every server→client event (36). Narrow on `event_type`. */
 export type ServerWSMessage =
     | ServerTokenChunkEvent
     | ServerThinkingChunkEvent
@@ -762,6 +788,7 @@ export type ServerWSMessage =
     | ServerNattThinkingChunkEvent
     | ServerNattStreamEndEvent
     | ServerPipelineStepEvent
+    | ServerActivityEvent
     | ServerPlanDocumentEvent
     | ServerStreamEndEvent
     | ServerInlineEditStartEvent
@@ -841,6 +868,7 @@ const SERVER_EVENT_TYPES: ReadonlySet<string> = new Set<ServerEventType>([
     'server_natt_thinking_chunk',
     'server_natt_stream_end',
     'server_pipeline_step',
+    'server_activity_event',
     'server_plan_document',
     'server_stream_end',
     'server_inline_edit_start',

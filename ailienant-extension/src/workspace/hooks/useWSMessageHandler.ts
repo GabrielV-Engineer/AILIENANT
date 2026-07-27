@@ -17,7 +17,7 @@ import type {
 } from '../../shared/config';
 import type { AilienantConfig } from '../../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../../shared/types';
-import type { CoderCompanionPayload } from '../../api/contracts';
+import type { CoderCompanionPayload, ActivityEventPayload } from '../../api/contracts';
 import type { Message, NattMessage, ConversationMessage, SystemMessage, ToastLevel } from '../types';
 import type { HITLIntervention } from '../components/HITLInterventionCard';
 import type { CheckpointEntry } from '../components/CheckpointPicker';
@@ -28,10 +28,12 @@ import { useTpsCalculator } from '../components/TelemetryHUD';
 import {
     mkId, authorLabelFor, normalizeStuckChips, mergeById, requestCodeTokens,
     attachOrUpdateToolCall, attachOrUpdateCellRun, attachOrUpdateChecklist, appendPtyLines,
+    attachOrUpdateTimeline,
     DEFAULT_STREAM_WATCHDOG_MS, STREAM_WATCHDOG_TICK_MS, MAX_TOOL_OUTPUT_LINES,
     STREAM_ACTIVITY_EVENTS,
 } from '../utils/messageDispatchHelpers';
 import { accumulateThinking, newThinkingTurn, freezeThinkingOnText, bumpLiveTokens } from '../utils/thinkingReducer';
+import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody } from '../utils/timelineBuilder';
 import { INITIAL_STATE as MD_INITIAL_STATE, pushToken as mdPushToken } from '../utils/StreamingMarkdownParser';
 import { mergeStreamEmits, type StreamLineEmit } from '../utils/streamTokenBuffer';
 import { sanitizePtyChunk } from '../utils/sanitizePty';
@@ -158,6 +160,16 @@ export function useWSMessageHandler(): void {
                             authorLabel: authorLabelFor('assistant', nattName),
                         }];
                     });
+                    // Glass-Box Timeline: correlate each settled diff into its 'diff'
+                    // node by file_path — the same ref the backend's activity marker
+                    // uses, so this can land before or after that marker.
+                    cs.setMessages(prev => attachOrUpdateTimeline(prev, prior => {
+                        let next = prior ?? [];
+                        for (const f of incoming) {
+                            next = upsertDiffBody(next, f.file_path, f);
+                        }
+                        return next;
+                    }, nattName));
                     break;
                 }
                 case 'REHYDRATE_TRANSCRIPT': {
@@ -231,7 +243,7 @@ export function useWSMessageHandler(): void {
                     // stripped before persist. `source` tags native vs simulated.
                     const d = msg.payload as {
                         delta: string; token_count?: number;
-                        source?: 'native' | 'simulated';
+                        source?: 'native' | 'simulated'; ref?: string | null;
                     };
                     recordRef.current();
                     cs.setIsStreaming(true);
@@ -244,6 +256,11 @@ export function useWSMessageHandler(): void {
                         }
                         return [...prev, { id: mkId(), ...newThinkingTurn(d.delta, d.token_count, now, d.source), authorLabel: authorLabelFor('assistant', nattName) }];
                     });
+                    // Glass-Box Timeline: correlate the delta into its 'reasoning' node
+                    // by `ref` (order-agnostic — a marker may not have arrived yet).
+                    cs.setMessages(prev => attachOrUpdateTimeline(
+                        prev, prior => upsertReasoningDelta(prior ?? [], d.delta, d.ref), nattName,
+                    ));
                     break;
                 }
                 case 'server_pipeline_step': {
@@ -259,6 +276,17 @@ export function useWSMessageHandler(): void {
                         }
                         return [...prev, { id: mkId(), role: 'assistant', content: '', streaming: true, steps: [node], authorLabel: authorLabelFor('assistant', nattName) }];
                     });
+                    break;
+                }
+                case 'server_activity_event': {
+                    // Glass-Box Timeline (11.5.C): the un-throttled, seq-ordered
+                    // activity marker. Data-model ingestion only this slice — no
+                    // renderer consumes `timeline` yet; PipelineProgress keeps
+                    // rendering from `steps` above until the AgentTimeline swap.
+                    const d = msg.payload as ActivityEventPayload;
+                    cs.setMessages(prev => attachOrUpdateTimeline(
+                        prev, prior => upsertActivityMarker(prior ?? [], d), nattName,
+                    ));
                     break;
                 }
                 case 'server_plan_document': {

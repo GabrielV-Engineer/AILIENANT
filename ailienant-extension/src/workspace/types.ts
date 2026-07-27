@@ -7,7 +7,7 @@
  * dependency graph acyclic. The `*Shape` artifact types stay in `shared/config`.
  */
 import type {
-    ASTToken, ToolCallShape, CellRunShape, PlanWBSStep, DiffBlockShape,
+    ASTToken, ToolCallShape, CellRunShape, PlanWBSStep, DiffBlockShape, TimelineEntry,
     BudgetLimitMode, OrchestrationMode,
 } from '../shared/config';
 import type { AilienantConfig } from '../shared/types';
@@ -55,6 +55,16 @@ export interface ConversationMessage {
     thinkingSource?: 'native' | 'simulated';
     // Ghost Telemetry (ADR-723) — answer tokens tallied client-side. Persisted.
     liveTokens?: number;
+    // Glass-Box Timeline (11.5.C) — the seq-ordered agent-activity trace for this
+    // turn, built from server_activity_event + correlated existing streams
+    // (reasoning/diff bodies). Data model + ingestion only this slice — no
+    // renderer consumes it yet (PipelineProgress/ReasoningStream/etc. keep
+    // rendering from their existing fields until the AgentTimeline swap), and
+    // PERSIST_TRANSCRIPT's explicit allowlist excludes it by default (not
+    // persisted). Persistence (non-reasoning entries only, matching `thinking`'s
+    // display-only treatment) is wired when AgentTimeline takes over the audit
+    // role currently split across checklist/diffBlocks.
+    timeline?: TimelineEntry[];
 }
 
 /** Transient system notification chip — rendered in-transcript but never persisted.

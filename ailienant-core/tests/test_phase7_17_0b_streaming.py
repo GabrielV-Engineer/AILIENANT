@@ -284,7 +284,9 @@ async def test_ts1_thinking_streamer_coalesces_and_isolates_narration() -> None:
     from core import task_service as ts_mod
 
     chunks: List[str] = []
-    bcast_thinking = AsyncMock(side_effect=lambda sid, chunk, n=0, source="native": chunks.append(chunk))
+    bcast_thinking = AsyncMock(
+        side_effect=lambda sid, chunk, n=0, source="native", ref=None: chunks.append(chunk)
+    )
     bcast_step = AsyncMock()
     with patch.object(ts_mod.vfs_manager, "broadcast_thinking_chunk", bcast_thinking), \
          patch.object(ts_mod.vfs_manager, "broadcast_pipeline_step", bcast_step):

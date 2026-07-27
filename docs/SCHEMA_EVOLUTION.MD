@@ -1647,10 +1647,12 @@ class ActivityEventPayload(BaseModel):
 - One choke point: `core/task_service.py::_narrate(raw)` classifies the raw node label via `_classify_activity(raw) → (kind, target, metric)` and emits both the un-throttled `server_activity_event` (timeline) and the legacy throttled `server_pipeline_step` (current PipelineProgress). Nodes are unchanged — they still emit raw labels.
 - `seq` = a turn-local `itertools.count()`; strictly increasing per turn. `ts = time.time()`.
 - **Bounded:** an un-gated channel is capped at `_ACTIVITY_CAP = 500` events per turn — past it a single `command` sentinel (`metric="activity trace capped at 500"`) is emitted and the rest are dropped, so a pathological loop can never flood the webview.
-- `reasoning` / `plan` / `diff` marker emission (with `ref` correlation) lands with the frontend consumer slice.
+- **`plan`** fires once, as soon as the WBS exists (the existing early-seed `broadcast_plan_document` latch in the graph-stream loop), `metric=f"{N} steps"`.
+- **`diff`** fires once per file that actually lands on disk (never a merely-proposed file), after `apply_patch_set` confirms `ok`. `target=ref=file_path` (stable, unique within a turn — no new id needed); `metric` is a compact `"+N -M"` line-delta computed by `_diff_line_delta` over the unified diff already held in `patches`.
+- **`reasoning`** fires once per `_ThinkingStreamer` span, on that streamer's first `flush()`, via an injected `on_span_start(ref)` hook. The streamer mints one `ref = uuid4().hex` per instance and stamps it on every `ThinkingChunkPayload`/`NattThinkingChunkPayload` delta of that span (`ref: Optional[str] = None`, additive on both payloads; `broadcast_thinking_chunk`/`broadcast_natt_thinking_chunk` gained a matching `ref` kwarg). **Scoped simplification:** one ref per streamer instance (per turn), not per distinct reasoning burst — if two separate reasoning spans occur in one turn (e.g. the planner's live pass and a later native coder pass), both group under one timeline node this slice; refining to one marker per burst is deferred, not silently dropped.
 
-**Consumer contract (frontend, later slice):**
-- `useWSMessageHandler` builds a per-turn `seq`-ordered `timeline` node list; the `AgentTimeline` component renders it, composing the human label from `kind` and correlating heavy bodies (reasoning tokens, diffs, tool output) into nodes by `ref`. Node-building is order-agnostic (a body event may precede its marker).
+**Consumer contract (frontend, 11.5.C.1):**
+- `useWSMessageHandler` builds a per-turn `seq`-ordered `timeline` node list; the `AgentTimeline` component (11.5.C.2) renders it, composing the human label from `kind` and correlating heavy bodies (reasoning tokens, diffs, tool output) into nodes by `ref`. Node-building is order-agnostic (a body event may precede its marker) — a `ref`-keyed map creates a placeholder on first sight of either.
 
 **Backward-compat guarantee:**
 - Old clients ignoring `server_activity_event` see no change (multiplexed socket; unknown events silently dropped). The backend fires it regardless of the frontend consumer's presence.

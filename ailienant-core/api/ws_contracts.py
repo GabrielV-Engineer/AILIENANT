@@ -86,6 +86,10 @@ class ThinkingChunkPayload(BaseModel):
     delta: str
     token_count: int = 0
     source: Literal["native", "simulated"] = "native"
+    # Correlates every delta of one reasoning span to the same Glass-Box Timeline
+    # node (server_activity_event kind="reasoning" carries the same ref). Additive
+    # and default-safe: an older client that never reads it is unaffected.
+    ref: Optional[str] = None
 
 
 class TelemetryPayload(BaseModel):
@@ -559,6 +563,7 @@ class NattThinkingChunkPayload(BaseModel):
     delta: str
     token_count: int = 0
     source: Literal["native", "simulated"] = "native"
+    ref: Optional[str] = None
 
 
 class ServerNattThinkingChunkEvent(BaseModel):

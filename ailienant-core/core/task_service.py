@@ -54,6 +54,23 @@ def compute_unified_diff(old: str, new: str, path: str) -> str:
     )
 
 
+def _diff_line_delta(unified_diff: str) -> str:
+    """Render a unified diff's change size as a compact "+N -M" metric.
+
+    Counts content lines only — the ``+++``/``---`` file headers are excluded so a
+    file's own header line is never mistaken for an added/removed line.
+    """
+    added = removed = 0
+    for line in unified_diff.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return f"+{added} -{removed}"
+
+
 def _classify_activity(
     raw: str,
 ) -> "tuple[Optional[str], Optional[str], Optional[str]]":
@@ -238,6 +255,15 @@ class _ThinkingStreamer:
     (``broadcast_natt_thinking_chunk``). The ``source`` (``native``/``simulated``)
     provenance rides each frame; it is constant for a turn, so the last value fed
     wins on flush.
+
+    ``on_span_start`` (optional) fires exactly once, on the first flush, with a
+    freshly minted correlation ref — the hook the Glass-Box Timeline uses to emit
+    the matching ``reasoning`` activity marker. Every ``ThinkingChunkPayload`` this
+    turn carries the same ``ref``, so the frontend correlates the whole streamed
+    span to one timeline node regardless of arrival order. Scoped simplification:
+    one ref per streamer instance (per turn), not per distinct reasoning burst — a
+    turn with two separate reasoning spans (e.g. the planner's live pass AND later
+    native coder thinking) still groups under one timeline node this slice.
     """
 
     _WINDOW_S = 0.060
@@ -247,11 +273,15 @@ class _ThinkingStreamer:
         self,
         session_id: str,
         broadcast: Optional[Callable[..., Awaitable[None]]] = None,
+        on_span_start: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> None:
         self._session_id = session_id
         self._broadcast: Callable[..., Awaitable[None]] = (
             broadcast or vfs_manager.broadcast_thinking_chunk
         )
+        self._on_span_start = on_span_start
+        self._ref = uuid.uuid4().hex
+        self._span_started = False
         self._buf: List[str] = []
         self._buf_chars = 0
         self._chars_total = 0
@@ -276,10 +306,15 @@ class _ThinkingStreamer:
         chunk = "".join(self._buf)
         self._buf = []
         self._buf_chars = 0
+        if not self._span_started:
+            self._span_started = True
+            if self._on_span_start is not None:
+                await self._on_span_start(self._ref)
         # ~4 chars/token heuristic for the live "N tokens" telemetry; the billed
         # count flows through the gateway's usage accounting (display-only here).
         await self._broadcast(
-            self._session_id, chunk, max(1, self._chars_total // 4), source=self._source
+            self._session_id, chunk, max(1, self._chars_total // 4),
+            source=self._source, ref=self._ref,
         )
 
 
@@ -730,7 +765,12 @@ class TaskService:
         # nodes hand `feed` to the gateway as a best-effort reasoning sink. Thinking
         # uses its own `server_thinking_chunk` channel, so it never touches the
         # NarrationGate budget (which governs `server_pipeline_step` only).
-        thinking_streamer = _ThinkingStreamer(session_id)
+        # on_span_start emits the matching Glass-Box Timeline "reasoning" marker,
+        # ref-correlated to every delta of this span (see _ThinkingStreamer).
+        thinking_streamer = _ThinkingStreamer(
+            session_id,
+            on_span_start=lambda ref: _push_activity("reasoning", ref=ref),
+        )
 
         # Set ambient MCP session context so McpToolAdapter._arun can gate
         # tool calls even when LangChain does not thread these as kwargs.
@@ -799,6 +839,9 @@ class TaskService:
                         if _early_mission is not None:
                             await vfs_manager.broadcast_plan_document(
                                 session_id, self._build_plan_payload(_early_mission, "")
+                            )
+                            await _push_activity(
+                                "plan", metric=f"{len(_early_mission.tasks)} steps"
                             )
                             _plan_seeded = True
                 # Drain any reasoning still buffered from the final node.
@@ -1082,6 +1125,15 @@ class TaskService:
             res = await apply_patch_set(session_id, patches_to_apply, base_hashes)
             if res.get("ok"):
                 applied = res.get("applied_files") or list(patches_to_apply)
+                # Timeline diff markers — one per file that actually landed on disk
+                # (never a merely-proposed file). ref = file_path: stable and unique
+                # within a turn, so the frontend correlates this marker to the
+                # DiffBlock the host already renders for the same path.
+                for _p in applied:
+                    _diff_text = patches.get(_p, "")
+                    await _push_activity(
+                        "diff", target=_p, metric=_diff_line_delta(_diff_text), ref=_p,
+                    )
                 result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
                 # post_patch hooks run after the write committed; a failure here is
                 # advisory only (the apply already landed) and is surfaced as a note.

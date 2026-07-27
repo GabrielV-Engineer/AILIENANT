@@ -8,7 +8,7 @@
  */
 import type { Message } from '../types';
 import type {
-    ToolCallShape, CellRunShape, CellIterationShape, PlanWBSStep,
+    ToolCallShape, CellRunShape, CellIterationShape, PlanWBSStep, TimelineEntry,
 } from '../../shared/config';
 import { MAX_IPC_CODE_CHARS } from '../../shared/config';
 import { vscode } from '../vscode_bridge';
@@ -25,6 +25,7 @@ export const MAX_TOOL_OUTPUT_LINES = 500;
 // Server events that count as live stream activity (reset the stall watchdog).
 export const STREAM_ACTIVITY_EVENTS = new Set<string>([
     'server_token_chunk', 'server_thinking_chunk', 'server_pipeline_step',
+    'server_activity_event',
     'server_tool_start', 'server_tool_stream_chunk', 'server_tool_result',
     'server_natt_token',
     'server_cell_tool_start', 'server_cell_pty_chunk', 'server_cell_ast_diff',
@@ -208,6 +209,31 @@ export function attachOrUpdateChecklist(
         role: 'assistant',
         content: '',
         checklist: update(undefined),
+        authorLabel: authorLabelFor('assistant', agentName),
+    }];
+}
+
+/**
+ * Attach to (or seed) the active assistant turn's Glass-Box Timeline. Mirrors
+ * `attachOrUpdateChecklist`'s shape; `update` receives the prior `timeline` (or
+ * `undefined`) and returns the next one via one of `timelineBuilder.ts`'s pure
+ * upsert functions. Pure on the previous array — no mutations.
+ */
+export function attachOrUpdateTimeline(
+    prev: Message[],
+    update: (prior: TimelineEntry[] | undefined) => TimelineEntry[],
+    agentName: string,
+): Message[] {
+    const lastIdx = prev.length - 1;
+    const last = lastIdx >= 0 ? prev[lastIdx] : undefined;
+    if (last?.role === 'assistant') {
+        return [...prev.slice(0, lastIdx), { ...last, timeline: update(last.timeline) }];
+    }
+    return [...prev, {
+        id: mkId(),
+        role: 'assistant',
+        content: '',
+        timeline: update(undefined),
         authorLabel: authorLabelFor('assistant', agentName),
     }];
 }

@@ -163,6 +163,41 @@ export interface DiffBlockShape {
     new_ast_lines?: ASTToken[][];
 }
 
+// Glass-Box Timeline (Phase 11.5.C) — the per-turn, seq-ordered agent-activity
+// trace. Mirrors the backend ActivityKind Literal (SCHEMA_EVOLUTION §38); the
+// frontend composes a human label from `kind` (+ `target`), so a raw internal
+// node token never reaches the screen.
+export type TimelineEntryKind =
+    | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
+    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff';
+
+// 'active' only meaningfully applies to a 'reasoning' entry this slice (still
+// receiving deltas); every other kind is a one-shot, self-contained marker and
+// settles to 'done' immediately on arrival. 'failed' is reserved for a future
+// slice once failure-carrying markers exist.
+export type TimelineEntryStatus = 'active' | 'done' | 'failed';
+
+export interface TimelineEntry {
+    // `ref` when the marker/body carries one (stable across both directions of
+    // arrival); otherwise a synthetic `seq:<n>` key. Never re-used across entries.
+    id: string;
+    // The turn-local monotonic order key from the activity marker. Number.POSITIVE_INFINITY
+    // marks an unresolved placeholder — created by a body event that arrived before
+    // its marker — sorted last until the marker resolves it (order-agnostic ingestion).
+    seq: number;
+    ts: number;
+    kind: TimelineEntryKind;
+    target?: string;
+    metric?: string;
+    ref?: string;
+    status: TimelineEntryStatus;
+    // Correlated bodies, attached once the corresponding stream arrives — order
+    // independent of the marker. Reused renderers consume these directly.
+    thinking?: string;         // kind: 'reasoning' — accumulated delta text
+    diff?: DiffBlockShape;     // kind: 'diff'
+    tool?: ToolCallShape;      // kind: 'command', when ref === tool_call_id
+}
+
 // Discriminated union of every message the webview can post.
 // Mirrors the cases in src/providers/chat_sidebar.ts onDidReceiveMessage.
 export type WebviewToHostMessage =

@@ -347,14 +347,15 @@ class ConnectionManager:
 
     async def broadcast_thinking_chunk(
         self, session_id: str, delta: str, token_count: int = 0,
-        source: str = "native",
+        source: str = "native", ref: Optional[str] = None,
     ) -> None:
         """Stream a reasoning delta to the main chat's inline reasoning stream.
 
         A separate channel from ``broadcast_token`` (the answer stream) and
         ``broadcast_pipeline_step`` (node narration). ``source`` tags the trace
-        as ``"native"`` or ``"simulated"``. Reuses the same
-        ``send_personal_message`` plumbing.
+        as ``"native"`` or ``"simulated"``. ``ref`` correlates this span's deltas
+        to the matching Glass-Box Timeline ``reasoning`` activity marker. Reuses
+        the same ``send_personal_message`` plumbing.
         """
         _source: Literal["native", "simulated"] = (
             "simulated" if source == "simulated" else "native"
@@ -364,7 +365,7 @@ class ConnectionManager:
             ServerThinkingChunkEvent(
                 data=ThinkingChunkPayload(
                     session_id=session_id, delta=delta,
-                    token_count=token_count, source=_source,
+                    token_count=token_count, source=_source, ref=ref,
                 )
             ),
         )
@@ -568,7 +569,7 @@ class ConnectionManager:
 
     async def broadcast_natt_thinking_chunk(
         self, session_id: str, delta: str, token_count: int = 0,
-        source: str = "native",
+        source: str = "native", ref: Optional[str] = None,
     ) -> None:
         """Stream an analyst reasoning delta to the Natt pane's reasoning stream.
 
@@ -584,7 +585,7 @@ class ConnectionManager:
             ServerNattThinkingChunkEvent(
                 data=NattThinkingChunkPayload(
                     session_id=session_id, delta=delta,
-                    token_count=token_count, source=_source,
+                    token_count=token_count, source=_source, ref=ref,
                 )
             ),
         )
