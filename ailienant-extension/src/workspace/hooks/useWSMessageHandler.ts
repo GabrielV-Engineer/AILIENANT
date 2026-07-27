@@ -674,6 +674,17 @@ export function useWSMessageHandler(): void {
                             }
                             return [...prev, { id: mkId(), role: 'assistant', content: '', diffBlocks: blocks }];
                         });
+                        // Glass-Box Timeline: correlate each proposed diff into its 'diff'
+                        // node by file_path — the same ref the eventual post-apply
+                        // server_activity_event uses, so a pending-approval diff and its
+                        // later confirmed-applied marker resolve to ONE entry.
+                        cs.setMessages(prev => attachOrUpdateTimeline(prev, prior => {
+                            let next = prior ?? [];
+                            for (const b of blocks) {
+                                next = upsertDiffBody(next, b.file_path, b);
+                            }
+                            return next;
+                        }, nattName));
                     }
                     cs.setHitlPending(req);
                     cs.addToast('warn', `${nattName} requires your authorization`);

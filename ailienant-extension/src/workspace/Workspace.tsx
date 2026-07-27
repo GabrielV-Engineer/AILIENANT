@@ -15,18 +15,15 @@ import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
-import { ReasoningStream } from './components/ReasoningStream';
 import { ToolChip } from './components/ToolChip';
-import { DiffBlock } from './components/DiffBlock';
+import { AgentTimeline } from './components/AgentTimeline';
 import { CoderCompanionCard } from './components/CoderCompanionCard';
 import { MessageActions } from './components/MessageActions';
 import { CheckpointPicker } from './components/CheckpointPicker';
 import { IndexingStatus } from './components/IndexingStatus';
-import { PipelineProgress } from './components/PipelineProgress';
 import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
 import { CellAuditWidget } from './components/CellAuditWidget';
-import { ExecutionChecklist } from './components/ExecutionChecklist';
 import { HITLInterventionCard } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
@@ -477,21 +474,25 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     resetKeys={[m.id, m.content, m.streaming]}
                                     fallback={<MessageRowFallback />}
                                 >
-                                    {m.role === 'assistant' && m.steps && m.steps.length > 0 && (
-                                        <PipelineProgress steps={m.steps} done={!!m.stepsDone} hasChecklist={!!m.checklist?.length} />
-                                    )}
-                                    {/* Inline reasoning stream — the model's thinking, live. */}
-                                    {m.role === 'assistant' && m.thinking && (
-                                        <ReasoningStream
-                                            thinking={m.thinking}
-                                            tokens={m.thinkingTokens ?? 0}
-                                            startedAt={m.thinkingStartedAt}
-                                            elapsedMs={m.thinkingElapsedMs}
-                                            open={m.thinkingOpen ?? false}
+                                    {/* Glass-Box Timeline — the living spine unifying phase
+                                        narration, reasoning, the plan checklist, and diffs
+                                        into one chronological, seq-ordered trace. */}
+                                    {m.role === 'assistant' && m.timeline && m.timeline.length > 0 && (
+                                        <AgentTimeline
+                                            entries={m.timeline}
                                             streaming={!!m.streaming}
-                                            source={m.thinkingSource}
-                                            onToggle={() => setMessages(prev => prev.map((mm, j) =>
+                                            thinking={m.thinking}
+                                            thinkingTokens={m.thinkingTokens}
+                                            thinkingStartedAt={m.thinkingStartedAt}
+                                            thinkingElapsedMs={m.thinkingElapsedMs}
+                                            thinkingOpen={m.thinkingOpen}
+                                            thinkingSource={m.thinkingSource}
+                                            onReasoningToggle={() => setMessages(prev => prev.map((mm, j) =>
                                                 j === i ? { ...(mm as ConversationMessage), thinkingOpen: !(mm as ConversationMessage).thinkingOpen } : mm))}
+                                            checklist={m.checklist}
+                                            hitlApprovalId={hitlPending?.approval_id}
+                                            onRespondDiff={respondInlineHitl}
+                                            onRequestChangesDiff={handleRequestChanges}
                                         />
                                     )}
                                     {/* Ghost Telemetry (ADR-723) — live action-log: the
@@ -506,11 +507,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         AST edits, with a budget-governor footer. */}
                                     {m.role === 'assistant' && m.cellRun && m.cellRun.iterations.length > 0 && (
                                         <CellAuditWidget run={m.cellRun} streaming={!!m.streaming} onStdin={handleCellStdin} />
-                                    )}
-                                    {/* Progressive execution checklist — the accepted
-                                        WBS, its rows flipping ☐→✅ as steps complete. */}
-                                    {m.role === 'assistant' && m.checklist && m.checklist.length > 0 && (
-                                        <ExecutionChecklist tasks={m.checklist} />
                                     )}
                                     {(m.role === 'user' || m.content) && (
                                         <div
@@ -570,30 +566,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             ))}
                                         </div>
                                     )}
-                                    {/* Inline Elite Diff Engine — split diffs for the edits in this turn.
-                                        Approval is strictly sequential: a DiffBlock carries the inline
-                                        Accept/Reject/Request-changes row and focused-diff keyboard ONLY
-                                        while it is the file currently awaiting authorization, matched by
-                                        patch_id === the live approval_id. Decided files stay as static
-                                        diffs above the current pending one. */}
+                                    {/* Diffs now render as 'diff' rows inside AgentTimeline above
+                                        (same hitlActive/onRespond/onRequestChanges wiring, relocated).
+                                        Best-effort post-turn explanation still rides alongside them,
+                                        gated on the same underlying diffBlocks field. */}
                                     {m.role === 'assistant' && m.diffBlocks && m.diffBlocks.length > 0 && (
-                                        <div className="ws-diff-stack">
-                                            {m.diffBlocks.map(db => {
-                                                const blockHitlActive = !!hitlPending && db.patch_id === hitlPending.approval_id;
-                                                return (
-                                                    <DiffBlock
-                                                        key={`${db.patch_id}:${db.file_path}`}
-                                                        block={db}
-                                                        hitlActive={blockHitlActive}
-                                                        onRespond={blockHitlActive ? respondInlineHitl : undefined}
-                                                        onRequestChanges={blockHitlActive ? handleRequestChanges : undefined}
-                                                    />
-                                                );
-                                            })}
-                                            {/* Best-effort post-turn explanation beside the diff the dev is
-                                                reviewing. Reads its own async WS channel; never gates approval. */}
-                                            <CoderCompanionCard taskId={initial.sessionId} />
-                                        </div>
+                                        <CoderCompanionCard taskId={initial.sessionId} />
                                     )}
                                     {/* Phase 7.11.8 (ADR-706 §4.5g) — per-message
                                         Time-Travel branch button. Only rendered
