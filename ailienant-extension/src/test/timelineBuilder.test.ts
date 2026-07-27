@@ -7,9 +7,9 @@
  */
 import * as assert from 'assert';
 import type { ActivityEventPayload } from '../api/contracts';
-import type { DiffBlockShape, TimelineEntry } from '../shared/config';
+import type { CellIterationShape, DiffBlockShape, TimelineEntry } from '../shared/config';
 import {
-    upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertToolBody,
+    upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertToolBody, upsertCellBody,
     stripReasoningForPersist,
 } from '../workspace/utils/timelineBuilder';
 
@@ -143,6 +143,69 @@ suite('11.5.C.1 — timelineBuilder', () => {
         assert.strictEqual(entries.length, 1);
         assert.strictEqual(entries[0].status, 'done');
         assert.strictEqual(entries[0].tool?.exit_code, 0);
+    });
+
+    // ── Cell — order-agnostic correlation by cell:{iteration} ref ───────────
+
+    function cellIteration(over: Partial<CellIterationShape> & { iteration: number }): CellIterationShape {
+        return { tools: [], pty: [], diffs: [], ...over };
+    }
+
+    test('cell body upserts and merges without duplicating the entry', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertCellBody(entries, 'cell:0', cellIteration({
+            iteration: 0, tools: [{ tool_name: 'run_terminal', args_scrubbed: {} }],
+        }), 100);
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].kind, 'cell');
+        assert.strictEqual(entries[0].target, 'run_terminal');
+        assert.strictEqual(entries[0].status, 'active');
+
+        entries = upsertCellBody(entries, 'cell:0', cellIteration({
+            iteration: 0,
+            tools: [{ tool_name: 'run_terminal', args_scrubbed: {} }],
+            pty: ['$ pytest', '2 passed'],
+        }), 100);
+        assert.strictEqual(entries.length, 1);
+        assert.deepStrictEqual(entries[0].cell?.pty, ['$ pytest', '2 passed']);
+    });
+
+    test('cell: marker arrives first, body attaches by cell:{iteration} ref', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertActivityMarker(entries, marker({
+            seq: 4, kind: 'cell', target: 'run_terminal', ref: 'cell:2', metric: 'iteration 3',
+        }));
+        entries = upsertCellBody(entries, 'cell:2', cellIteration({ iteration: 2 }), 100);
+
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].id, 'cell:2');
+        assert.strictEqual(entries[0].seq, 4);
+        assert.strictEqual(entries[0].status, 'active');
+        assert.ok(entries[0].cell);
+        assert.strictEqual(entries[0].cell!.iteration, 2);
+    });
+
+    test('cell: body arrives first, marker resolves it (no duplicate)', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertCellBody(entries, 'cell:2', cellIteration({ iteration: 2 }), 100);
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].seq, Number.POSITIVE_INFINITY);
+        assert.strictEqual(entries[0].status, 'active');
+
+        entries = upsertActivityMarker(entries, marker({
+            seq: 4, kind: 'cell', target: 'run_terminal', ref: 'cell:2', metric: 'iteration 3',
+        }));
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].seq, 4);
+        assert.ok(entries[0].cell, 'cell body must survive the marker merge');
+    });
+
+    test('two different iterations never collide (distinct refs)', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertCellBody(entries, 'cell:0', cellIteration({ iteration: 0 }), 100);
+        entries = upsertCellBody(entries, 'cell:1', cellIteration({ iteration: 1 }), 100);
+        assert.strictEqual(entries.length, 2);
+        assert.deepStrictEqual(entries.map(e => e.id).sort(), ['cell:0', 'cell:1']);
     });
 
     // ── Pure-on-inputs guarantee ──────────────────────────────────────────────

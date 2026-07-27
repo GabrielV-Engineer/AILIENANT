@@ -15,7 +15,7 @@
  * `AgentTimeline` renderer.
  */
 import type { ActivityEventPayload } from '../../api/contracts';
-import type { DiffBlockShape, ToolCallShape, TimelineEntry } from '../../shared/config';
+import type { CellIterationShape, DiffBlockShape, ToolCallShape, TimelineEntry } from '../../shared/config';
 
 /** Insert `entry` keeping the array sorted ascending by `seq` (an unresolved
  *  placeholder's `Number.POSITIVE_INFINITY` sorts last until a marker resolves it). */
@@ -48,7 +48,7 @@ export function upsertActivityMarker(
             target: payload.target ?? undefined,
             metric: payload.metric ?? undefined,
             ref: payload.ref ?? undefined,
-            status: payload.kind === 'reasoning' ? 'active' : 'done',
+            status: (payload.kind === 'reasoning' || payload.kind === 'cell') ? 'active' : 'done',
         };
         return insertSorted(entries, entry);
     }
@@ -159,6 +159,41 @@ export function upsertToolBody(
     }
     const next = [...entries];
     next[idx] = { ...next[idx], tool, status: tool.status === 'pending' ? 'active' : 'done' };
+    return next;
+}
+
+/**
+ * Attach an agentic-cell iteration to its timeline entry, keyed by `cell:{iteration}`
+ * (the same value the backend's `cell` activity marker uses as `ref`). Symmetric with
+ * `upsertToolBody`: an iteration's tool calls / PTY output / AST diffs / governor tick
+ * all update in place as they stream in, rather than creating a new entry per delta.
+ */
+export function upsertCellBody(
+    entries: TimelineEntry[],
+    ref: string,
+    cell: CellIterationShape,
+    ts: number = Date.now() / 1000,
+): TimelineEntry[] {
+    const idx = entries.findIndex(e => e.id === ref);
+    if (idx === -1) {
+        const entry: TimelineEntry = {
+            id: ref,
+            seq: Number.POSITIVE_INFINITY,
+            ts,
+            kind: 'cell',
+            target: cell.tools[cell.tools.length - 1]?.tool_name,
+            ref,
+            status: 'active',
+            cell,
+        };
+        return insertSorted(entries, entry);
+    }
+    const next = [...entries];
+    next[idx] = {
+        ...next[idx],
+        cell,
+        target: cell.tools[cell.tools.length - 1]?.tool_name ?? next[idx].target,
+    };
     return next;
 }
 

@@ -28,12 +28,12 @@ import { useTpsCalculator } from '../components/TelemetryHUD';
 import {
     mkId, authorLabelFor, normalizeStuckChips, mergeById, requestCodeTokens,
     attachOrUpdateToolCall, attachOrUpdateCellRun, attachOrUpdateChecklist, appendPtyLines,
-    attachOrUpdateTimeline,
+    attachOrUpdateTimeline, readMergedCellIteration,
     DEFAULT_STREAM_WATCHDOG_MS, STREAM_WATCHDOG_TICK_MS, MAX_TOOL_OUTPUT_LINES,
     STREAM_ACTIVITY_EVENTS,
 } from '../utils/messageDispatchHelpers';
 import { accumulateThinking, newThinkingTurn, freezeThinkingOnText, bumpLiveTokens } from '../utils/thinkingReducer';
-import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody } from '../utils/timelineBuilder';
+import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody } from '../utils/timelineBuilder';
 import { INITIAL_STATE as MD_INITIAL_STATE, pushToken as mdPushToken } from '../utils/StreamingMarkdownParser';
 import { mergeStreamEmits, type StreamLineEmit } from '../utils/streamTokenBuffer';
 import { sanitizePtyChunk } from '../utils/sanitizePty';
@@ -86,6 +86,11 @@ export function useWSMessageHandler(): void {
             let next = prev;
             for (const [iter, lines] of buffered) {
                 next = attachOrUpdateCellRun(next, iter, (it) => appendPtyLines(it, lines), nattName);
+                const merged = readMergedCellIteration(next, iter);
+                if (merged) {
+                    next = attachOrUpdateTimeline(next, ts =>
+                        upsertCellBody(ts ?? [], `cell:${iter}`, merged), nattName);
+                }
             }
             return next;
         });
@@ -553,10 +558,16 @@ export function useWSMessageHandler(): void {
                         tool_name: string;
                         args_scrubbed: Record<string, string>;
                     };
-                    cs.setMessages(prev => attachOrUpdateCellRun(prev, d.iteration, it => ({
-                        ...it,
-                        tools: [...it.tools, { tool_name: d.tool_name, args_scrubbed: d.args_scrubbed }],
-                    }), nattName));
+                    cs.setMessages(prev => {
+                        const withCell = attachOrUpdateCellRun(prev, d.iteration, it => ({
+                            ...it,
+                            tools: [...it.tools, { tool_name: d.tool_name, args_scrubbed: d.args_scrubbed }],
+                        }), nattName);
+                        const merged = readMergedCellIteration(withCell, d.iteration);
+                        if (!merged) { return withCell; }
+                        return attachOrUpdateTimeline(withCell, ts =>
+                            upsertCellBody(ts ?? [], `cell:${d.iteration}`, merged), nattName);
+                    });
                     break;
                 }
                 case 'server_cell_pty_chunk': {
@@ -583,10 +594,16 @@ export function useWSMessageHandler(): void {
                         search: string;
                         replace: string;
                     };
-                    cs.setMessages(prev => attachOrUpdateCellRun(prev, d.iteration, it => ({
-                        ...it,
-                        diffs: [...it.diffs, { path: d.path, search: d.search, replace: d.replace }],
-                    }), nattName));
+                    cs.setMessages(prev => {
+                        const withCell = attachOrUpdateCellRun(prev, d.iteration, it => ({
+                            ...it,
+                            diffs: [...it.diffs, { path: d.path, search: d.search, replace: d.replace }],
+                        }), nattName);
+                        const merged = readMergedCellIteration(withCell, d.iteration);
+                        if (!merged) { return withCell; }
+                        return attachOrUpdateTimeline(withCell, ts =>
+                            upsertCellBody(ts ?? [], `cell:${d.iteration}`, merged), nattName);
+                    });
                     break;
                 }
                 case 'server_cell_governor_tick': {
@@ -598,12 +615,20 @@ export function useWSMessageHandler(): void {
                         axis: string | null;
                     };
                     // The governor tick keys off step (1-based); the iteration it
-                    // belongs to is step - 1.
+                    // belongs to is step - 1. The timeline ref must reuse this same
+                    // reconciled `iter`, never raw `d.step` — the marker's own ref
+                    // always uses the raw (0-based) iteration.
                     const iter = d.iteration ?? Math.max(0, d.step - 1);
-                    cs.setMessages(prev => attachOrUpdateCellRun(prev, iter, it => ({
-                        ...it,
-                        governor: { step: d.step, cost_usd: d.cost_usd, elapsed_s: d.elapsed_s, axis: d.axis },
-                    }), nattName));
+                    cs.setMessages(prev => {
+                        const withCell = attachOrUpdateCellRun(prev, iter, it => ({
+                            ...it,
+                            governor: { step: d.step, cost_usd: d.cost_usd, elapsed_s: d.elapsed_s, axis: d.axis },
+                        }), nattName);
+                        const merged = readMergedCellIteration(withCell, iter);
+                        if (!merged) { return withCell; }
+                        return attachOrUpdateTimeline(withCell, ts =>
+                            upsertCellBody(ts ?? [], `cell:${iter}`, merged), nattName);
+                    });
                     break;
                 }
                 case 'server_telemetry': {

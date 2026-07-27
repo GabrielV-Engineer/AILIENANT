@@ -29,13 +29,21 @@ _setGlobal('Event', _dom.window.Event);
 _setGlobal('MouseEvent', _dom.window.MouseEvent);
 _setGlobal('navigator', _dom.window.navigator);
 _setGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+// JSDOM has no layout engine, so ResizeObserver doesn't exist — needed by
+// PtyPanel (useWindowedRows) once a cell row with non-empty PTY output mounts.
+class _NoopResizeObserver {
+    observe(): void { /* noop — no layout in JSDOM */ }
+    unobserve(): void { /* noop */ }
+    disconnect(): void { /* noop */ }
+}
+_setGlobal('ResizeObserver', _NoopResizeObserver);
 
 import * as assert from 'assert';
 import * as React from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { act } from 'react';
 import { AgentTimeline, type AgentTimelineProps } from '../workspace/components/AgentTimeline';
-import type { TimelineEntry, PlanWBSStep, DiffBlockShape } from '../shared/config';
+import type { TimelineEntry, PlanWBSStep, DiffBlockShape, CellIterationShape } from '../shared/config';
 
 function render(props: Partial<AgentTimelineProps> & { entries: TimelineEntry[] }): { container: HTMLDivElement; root: Root } {
     const container = document.createElement('div');
@@ -164,6 +172,27 @@ suite('11.5.C.2 — AgentTimeline', function () {
         assert.strictEqual(rowHeader!.getAttribute('aria-expanded'), 'false');
         assert.ok(rowHeader!.textContent?.includes('calc.py'));
         assert.ok(rowHeader!.textContent?.includes('+2 -1'));
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('a cell row renders CellAuditWidget for its single iteration (not the plain-label fallback)', () => {
+        const cell: CellIterationShape = {
+            iteration: 1,
+            tools: [{ tool_name: 'run_terminal', args_scrubbed: { command: 'pytest' } }],
+            pty: ['2 passed'],
+            diffs: [],
+        };
+        const { container, root } = render({
+            entries: [entry({ id: 'cell:1', kind: 'cell', target: 'run_terminal', metric: 'iteration 2', cell })],
+            streaming: true,
+        });
+        const row = container.querySelector('.ws-timeline-row[data-kind="cell"]');
+        assert.ok(row, 'cell row missing');
+        const audit = row!.querySelector('.ws-cell-audit');
+        assert.ok(audit, 'CellAuditWidget should be mounted for a cell row, not the generic label fallback');
+        assert.strictEqual(row!.querySelector('.ws-cell-iter-num')?.textContent, '#2');
+        assert.ok(row!.querySelector('.ws-cell-tool-name')?.textContent?.includes('run_terminal'));
         act(() => root.unmount());
         container.remove();
     });

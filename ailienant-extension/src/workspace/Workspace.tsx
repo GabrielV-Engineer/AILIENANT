@@ -23,7 +23,6 @@ import { CheckpointPicker } from './components/CheckpointPicker';
 import { IndexingStatus } from './components/IndexingStatus';
 import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
-import { CellAuditWidget } from './components/CellAuditWidget';
 import { HITLInterventionCard } from './components/HITLInterventionCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
@@ -31,7 +30,11 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastStack } from './components/ToastStack';
 import { useWSMessageHandler } from './hooks/useWSMessageHandler';
 import { useSessionPersistence } from './hooks/useSessionPersistence';
-import { mkId, authorLabelFor, attachOrUpdateCellRun, appendPtyLines } from './utils/messageDispatchHelpers';
+import {
+    mkId, authorLabelFor, attachOrUpdateCellRun, attachOrUpdateTimeline,
+    readMergedCellIteration, appendPtyLines,
+} from './utils/messageDispatchHelpers';
+import { upsertCellBody } from './utils/timelineBuilder';
 import type { Message, ConversationMessage, InitialState } from './types';
 
 /**
@@ -226,7 +229,12 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // it locally (the cell PTY runs echo-off, so the user otherwise sees nothing).
     const handleCellStdin = useCallback((iteration: number, line: string) => {
         vscode.postMessage({ type: 'PTY_STDIN', session_id: initial.sessionId, data: line + '\n' });
-        setMessages(prev => attachOrUpdateCellRun(prev, iteration, it => appendPtyLines(it, [`› ${line}`]), nattName));
+        setMessages(prev => {
+            const withCell = attachOrUpdateCellRun(prev, iteration, it => appendPtyLines(it, [`› ${line}`]), nattName);
+            const merged = readMergedCellIteration(withCell, iteration);
+            if (!merged) { return withCell; }
+            return attachOrUpdateTimeline(withCell, ts => upsertCellBody(ts ?? [], `cell:${iteration}`, merged), nattName);
+        });
     }, [initial.sessionId, nattName]);
 
     // Phase 7.11.6 — Retry button on a Rich Tool Chip. The backend looks up
@@ -475,8 +483,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     fallback={<MessageRowFallback />}
                                 >
                                     {/* Glass-Box Timeline — the living spine unifying phase
-                                        narration, reasoning, the plan checklist, and diffs
-                                        into one chronological, seq-ordered trace. */}
+                                        narration, reasoning, the plan checklist, diffs, and
+                                        the agentic-cell audit into one chronological,
+                                        seq-ordered trace. */}
                                     {m.role === 'assistant' && m.timeline && m.timeline.length > 0 && (
                                         <AgentTimeline
                                             entries={m.timeline}
@@ -493,6 +502,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             hitlApprovalId={hitlPending?.approval_id}
                                             onRespondDiff={respondInlineHitl}
                                             onRequestChangesDiff={handleRequestChanges}
+                                            onCellStdin={handleCellStdin}
                                         />
                                     )}
                                     {/* Ghost Telemetry (ADR-723) — live action-log: the
@@ -501,12 +511,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         canonical record, so this while-you-wait view drops out. */}
                                     {m.role === 'assistant' && m.streaming && m.toolCalls && m.toolCalls.length > 0 && (
                                         <ActionLog toolCalls={m.toolCalls} />
-                                    )}
-                                    {/* Glass-box audit log for the autonomous agentic
-                                        cell: per-iteration tool calls → terminal output →
-                                        AST edits, with a budget-governor footer. */}
-                                    {m.role === 'assistant' && m.cellRun && m.cellRun.iterations.length > 0 && (
-                                        <CellAuditWidget run={m.cellRun} streaming={!!m.streaming} onStdin={handleCellStdin} />
                                     )}
                                     {(m.role === 'user' || m.content) && (
                                         <div

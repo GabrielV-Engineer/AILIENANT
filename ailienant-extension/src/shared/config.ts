@@ -169,12 +169,13 @@ export interface DiffBlockShape {
 // node token never reaches the screen.
 export type TimelineEntryKind =
     | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
-    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff';
+    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell';
 
-// 'active' only meaningfully applies to a 'reasoning' entry this slice (still
-// receiving deltas); every other kind is a one-shot, self-contained marker and
-// settles to 'done' immediately on arrival. 'failed' is reserved for a future
-// slice once failure-carrying markers exist.
+// 'active' only meaningfully applies to a 'reasoning' or 'cell' entry (both fire
+// their marker at the start of an open-ended span — deltas / further iteration
+// body still incoming); every other kind is a one-shot, self-contained marker
+// and settles to 'done' immediately on arrival. 'failed' is reserved for a
+// future slice once failure-carrying markers exist.
 export type TimelineEntryStatus = 'active' | 'done' | 'failed';
 
 export interface TimelineEntry {
@@ -196,6 +197,7 @@ export interface TimelineEntry {
     thinking?: string;         // kind: 'reasoning' — accumulated delta text
     diff?: DiffBlockShape;     // kind: 'diff'
     tool?: ToolCallShape;      // kind: 'command', when ref === tool_call_id
+    cell?: CellIterationShape; // kind: 'cell', when ref === cell:{iteration}
 }
 
 // Discriminated union of every message the webview can post.

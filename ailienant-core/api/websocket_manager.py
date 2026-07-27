@@ -6,7 +6,7 @@ import logging
 import secrets
 import time
 import uuid
-from typing import Any, Dict, List, Literal, Optional, Set, cast
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Set, cast
 
 from fastapi import WebSocket
 from pydantic import ValidationError, TypeAdapter
@@ -1360,12 +1360,24 @@ class LiveCellDispatcher:
     Holds only a session_id string — no WebSocket reference, no asyncio.Event.
     Dispatch is always live-or-skip: if the session is absent from active_connections
     send_personal_message silently returns, so no teardown logic is needed.
+
+    ``push_activity`` is the turn-scoped Glass-Box Timeline emitter (see
+    ``core.task_service._push_activity``), threaded in by the one real
+    construction site so a cell iteration surfaces as a correlated ``"cell"``
+    activity marker (``ref = cell:{iteration}``) alongside everything else on
+    the timeline. Optional and guarded: direct construction without it (as
+    existing dispatch tests do) stays a valid, cell-marker-free dispatcher.
     """
 
-    __slots__ = ("_session_id",)
+    __slots__ = ("_session_id", "_push_activity")
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        push_activity: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> None:
         self._session_id = session_id
+        self._push_activity = push_activity
 
     async def emit_tool_call_start(
         self, *, iteration: int, tool_name: str, args_scrubbed: Dict[str, str]
@@ -1373,6 +1385,11 @@ class LiveCellDispatcher:
         await vfs_manager.broadcast_cell_tool_start(
             self._session_id, iteration, tool_name, args_scrubbed
         )
+        if self._push_activity is not None:
+            await self._push_activity(
+                "cell", target=tool_name, ref=f"cell:{iteration}",
+                metric=f"iteration {iteration + 1}",
+            )
 
     async def emit_pty_chunk(
         self, *, iteration: int, text: str, is_stderr: bool = False

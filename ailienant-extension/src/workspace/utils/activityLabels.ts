@@ -20,6 +20,7 @@ const KIND_VERB: Record<TimelineEntryKind, string> = {
     reasoning: 'Reasoning',
     plan: 'Planned',
     diff: 'Edited',
+    cell: 'Agentic cell',
 };
 
 /** One-line label for a timeline row, composed from its typed `kind` (+ `target`/`metric`). */
@@ -37,6 +38,8 @@ export function timelineEntryLabel(entry: Pick<TimelineEntry, 'kind' | 'target' 
                 : verb;
         case 'plan':
             return entry.metric ? `Planned ${entry.metric}` : verb;
+        case 'cell':
+            return entry.metric ? `${verb} · ${entry.metric}` : verb;
         default:
             return verb;
     }

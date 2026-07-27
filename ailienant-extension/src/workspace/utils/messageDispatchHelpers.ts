@@ -176,6 +176,22 @@ export function attachOrUpdateCellRun(
 }
 
 /**
+ * Read the just-merged iteration back off the array `attachOrUpdateCellRun`
+ * returned, so a caller can feed the SAME merged body into `upsertCellBody`
+ * (the Glass-Box Timeline) without duplicating its update logic.
+ * `attachOrUpdateCellRun` guarantees the last message is 'assistant' once it
+ * returns (appending a fresh one if the prior last message wasn't), so this
+ * never misses when called immediately after it on the same array.
+ */
+export function readMergedCellIteration(
+    messages: Message[], iteration: number,
+): CellIterationShape | undefined {
+    const last = messages[messages.length - 1];
+    if (last?.role !== 'assistant') { return undefined; }
+    return last.cellRun?.iterations.find((it) => it.iteration === iteration);
+}
+
+/**
  * Append sanitized PTY lines to an iteration's buffer with a stop-at-cap policy.
  * Once the cap is hit the buffer is frozen (apart from a one-time truncation
  * sentinel) so the virtualized list's indices never shift mid-scroll.

@@ -613,6 +613,7 @@ ActivityKind = Literal[
     "reasoning",      # a reasoning span (ref = thinking correlation id; body streams on server_thinking_chunk)
     "plan",           # the plan document node (body = ExecutionChecklist)
     "diff",           # a proposed/applied edit (ref = patch_id, target = path)
+    "cell",           # an agentic-cell loop iteration (ref = cell:{iteration}, target = tool_name)
 ]
 
 

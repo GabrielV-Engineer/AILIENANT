@@ -150,6 +150,38 @@ async def test_thinking_streamer_no_span_start_hook_is_a_noop() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# LiveCellDispatcher — cell activity marker (ref = cell:{iteration})
+# --------------------------------------------------------------------------- #
+
+
+async def test_live_cell_dispatcher_pushes_cell_activity_marker_once() -> None:
+    from api.websocket_manager import LiveCellDispatcher
+
+    calls: List[Tuple[Any, ...]] = []
+
+    async def _push(kind: str, target: Any = None, metric: Any = None, ref: Any = None) -> None:
+        calls.append((kind, target, metric, ref))
+
+    with patch("api.websocket_manager.vfs_manager.broadcast_cell_tool_start", new=AsyncMock()):
+        dispatcher = LiveCellDispatcher("sess-cell", push_activity=_push)
+        await dispatcher.emit_tool_call_start(
+            iteration=2, tool_name="run_terminal", args_scrubbed={"command": "pytest"},
+        )
+
+    assert calls == [("cell", "run_terminal", "iteration 3", "cell:2")]
+
+
+async def test_live_cell_dispatcher_without_push_activity_is_a_noop() -> None:
+    from api.websocket_manager import LiveCellDispatcher
+
+    with patch("api.websocket_manager.vfs_manager.broadcast_cell_tool_start", new=AsyncMock()):
+        dispatcher = LiveCellDispatcher("sess-cell")  # no push_activity — default None
+        await dispatcher.emit_tool_call_start(
+            iteration=0, tool_name="run_terminal", args_scrubbed={},
+        )  # must not raise
+
+
+# --------------------------------------------------------------------------- #
 # Plan + diff activity markers — end-to-end through _run_coding_task
 # --------------------------------------------------------------------------- #
 

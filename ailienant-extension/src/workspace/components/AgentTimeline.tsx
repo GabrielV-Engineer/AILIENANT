@@ -2,20 +2,25 @@
  * Glass-Box Timeline — the live, chronological, spined transcript of one
  * assistant turn (Phase 11.5.C).
  *
- * Unifies what used to be four separate stacked widgets (PipelineProgress,
- * ReasoningStream, ExecutionChecklist, DiffBlock) into one ordered list, driven
- * by `entries` (built from `server_activity_event` + correlated bodies — see
- * `utils/timelineBuilder.ts`). Rich Tool Chips (`ToolChip`/`ActionLog`) and the
- * agentic-cell audit (`CellAuditWidget`) are NOT migrated yet — their backend
- * activity-marker correlation (`ref = tool_call_id`) doesn't exist yet, so they
- * stay as separate, unchanged siblings until that lands.
+ * Unifies what used to be five separate stacked widgets (PipelineProgress,
+ * ReasoningStream, ExecutionChecklist, DiffBlock, CellAuditWidget) into one
+ * ordered list, driven by `entries` (built from `server_activity_event` +
+ * correlated bodies — see `utils/timelineBuilder.ts`). Rich Tool Chips
+ * (`ToolChip`/`ActionLog`) stay a separate, unchanged sibling by deliberate
+ * design, not a pending gap: their only live data source is a standalone
+ * dev-palette debug command (`execute_tracked_tool`), never part of the
+ * agent's turn, so there is no turn-scoped activity marker for them to
+ * correlate against (see `docs/TECH_DEBT_BACKLOG.md` DEBT-122).
  *
  * Reasoning and plan rows render their existing, already-tested components
  * directly (`ReasoningStream` owns its own settle/elapsed logic via the
  * message-level `thinking*` fields; `ExecutionChecklist` is always compact) —
- * only `diff` rows get a fresh, entry-scoped collapse here, since a split diff
- * is the heaviest element in the trace. Self-contained kinds (read/edit/
- * command/understanding/planning/reviewing/heal/retrieval) render one line.
+ * `diff` and `cell` rows carry their own entry-scoped body (`entry.diff` /
+ * `entry.cell`), the heaviest elements in the trace; `cell` reuses
+ * `CellAuditWidget` fed a synthetic single-iteration run, since it already
+ * owns its own expand/collapse and live-follow logic per iteration. Self-
+ * contained kinds (read/edit/command/understanding/planning/reviewing/heal/
+ * retrieval) render one line.
  *
  * While streaming: expanded by default, auto-follows new rows unless the user
  * has scrolled up to inspect history. The instant the turn settles it collapses
@@ -34,6 +39,7 @@ import { ReasoningGlyph } from './ReasoningGlyph';
 import { ReasoningStream } from './ReasoningStream';
 import { ExecutionChecklist } from './ExecutionChecklist';
 import { DiffBlock } from './DiffBlock';
+import { CellAuditWidget } from './CellAuditWidget';
 
 export interface AgentTimelineProps {
     entries: TimelineEntry[];
@@ -53,6 +59,8 @@ export interface AgentTimelineProps {
     hitlApprovalId?: string;
     onRespondDiff?: HitlRespond;
     onRequestChangesDiff?: (feedback: string) => void;
+    // Cell body — reuses CellAuditWidget fed a synthetic single-iteration run.
+    onCellStdin?: (iteration: number, line: string) => void;
 }
 
 const STICK_TOLERANCE_PX = 24;
@@ -72,7 +80,7 @@ function summarize(entries: TimelineEntry[]): string {
 function AgentTimelineImpl({
     entries, streaming,
     thinking, thinkingTokens, thinkingStartedAt, thinkingElapsedMs, thinkingOpen, onReasoningToggle,
-    checklist, hitlApprovalId, onRespondDiff, onRequestChangesDiff,
+    checklist, hitlApprovalId, onRespondDiff, onRequestChangesDiff, onCellStdin,
 }: AgentTimelineProps): JSX.Element | null {
     const done = !streaming;
     const [containerOpen, setContainerOpen] = useState(true);
@@ -85,6 +93,11 @@ function AgentTimelineImpl({
     const lastDiffId = useMemo(() => {
         let id: string | null = null;
         for (const e of entries) { if (e.kind === 'diff') { id = e.id; } }
+        return id;
+    }, [entries]);
+    const lastCellId = useMemo(() => {
+        let id: string | null = null;
+        for (const e of entries) { if (e.kind === 'cell') { id = e.id; } }
         return id;
     }, [entries]);
 
@@ -191,6 +204,29 @@ function AgentTimelineImpl({
                                                 onRequestChanges={hitlActive ? onRequestChangesDiff : undefined}
                                             />
                                         )}
+                                    </div>
+                                </div>
+                            );
+                        }
+
+                        if (entry.kind === 'cell' && entry.cell) {
+                            const live = entry.id === lastCellId && !done;
+                            // Derived, not `entry.status`: the marker fires at iteration
+                            // start and nothing ever flips it back to 'done' in the data
+                            // model (same latent shape as the reasoning row above) — the
+                            // dot would pulse forever on re-expand after the turn settles
+                            // if left following `entry.status` directly. Reuses the same
+                            // liveness check already driving `streaming` below.
+                            const cellDotStatus = live ? 'active' : 'done';
+                            return (
+                                <div key={entry.id} className="ws-timeline-row" data-kind="cell">
+                                    <span className="ws-timeline-dot" data-status={cellDotStatus} aria-hidden="true" />
+                                    <div className="ws-timeline-row-body">
+                                        <CellAuditWidget
+                                            run={{ iterations: [entry.cell] }}
+                                            streaming={live}
+                                            onStdin={onCellStdin}
+                                        />
                                     </div>
                                 </div>
                             );

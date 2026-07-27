@@ -285,7 +285,7 @@ export interface ServerPipelineStepEvent {
 // never reaches the screen. Mirrors the backend ActivityKind Literal (SCHEMA_EVOLUTION §38).
 export type ActivityKind =
     | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
-    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff';
+    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell';
 
 export interface ActivityEventPayload {
     session_id: string;
