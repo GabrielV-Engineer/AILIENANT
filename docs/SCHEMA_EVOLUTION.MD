@@ -889,11 +889,19 @@ Populated only when `request_kind == "RISK_INTERCEPT"`. Additive field — absen
 ```python
 class StateCompactedPayload(BaseModel):
     session_id: str
-    compaction_message: str   # system status line — NOT AI-generated prose
+    compaction_message: str          # system status line — NOT AI-generated prose
     turns_compressed: int
+    summary_text: Optional[str] = None  # additive: AI prose for the fold, when produced
 ```
 
-**Producer:** `WebSocketConnectionManager.broadcast_state_compacted(session_id, compaction_message, turns_compressed)` (`api/websocket_manager.py`), wired to the pipeline's `on_compacted` async callback via `functools.partial` with `session_id` bound (callback arity `(compaction_message, turns_compressed)`).
+**Producer:** `WebSocketConnectionManager.broadcast_state_compacted(session_id, compaction_message, turns_compressed, summary_text=None)` (`api/websocket_manager.py`), wired to the pipeline's `on_compacted` async callback via `functools.partial` with `session_id` bound. The pipeline path calls with arity `(compaction_message, turns_compressed)`; the `brain/summarizer.py` path adds the optional third `summary_text` positional — both are compatible because the field defaults to `None`.
+
+**Additive `summary_text` (prose for the fold):** the AI-generated summary produced by
+`brain/summarizer.py` on a successful compression now optionally rides in this payload so the
+IDE `SessionSummaryCard` can render it in the collapsed fold. It is `None` on the
+truncation-fallback path (no prose produced) and from any older/pipeline sender — consumers
+MUST tolerate its absence and fall back to `compaction_message`. This does not repurpose
+`compaction_message`, which remains the deterministic status line.
 
 **Field-name ratification (`summary` → `compaction_message`):** the originating plan named the
 payload field `summary`. It ships as `compaction_message` because the value is a deterministic
@@ -902,9 +910,10 @@ AI-generated narrative summary — the eventual prose summary is a separate conc
 `brain/summarizer.py`. Naming the field `compaction_message` prevents a future consumer from
 rendering a status string where it expects model prose.
 
-**Consumer:** none yet on the wire — the frontend `SessionSummaryCard` is a later milestone.
-Per the additive-only contract discipline (CLAUDE.md §10), existing consumers tolerate the
-unknown event; the new variant is purely additive to the `WebSocketMessage` union.
+**Consumer:** the frontend `SessionSummaryCard` folds the pre-compaction transcript behind a
+collapsible card, rendering `summary_text` as the fold body (falling back to a status line when
+absent). Per the additive-only contract discipline (CLAUDE.md §10), older consumers tolerate the
+unknown event and the unknown field; both the event and the field are purely additive.
 
 **Backward-compat:** additive event + additive union member. No existing event, field, or
 checkpoint shape is altered.

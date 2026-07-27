@@ -787,11 +787,19 @@ export function useWSMessageHandler(): void {
                             : m));
                     break;
                 case 'state_compacted': {
-                    const d = msg.payload as { turns_compressed: number; compaction_message?: string };
+                    const d = msg.payload as { turns_compressed: number; compaction_message?: string; summary_text?: string };
                     // Use || (not ??) so an empty-string payload also triggers the fallback.
                     const label = d.compaction_message || `Context window compacted — ${d.turns_compressed} turn(s) summarized.`;
                     cs.setMessages(prev => {
-                        const chip: SystemMessage = { id: mkId(), role: 'system', content: label };
+                        // The `compaction` meta upgrades this chip into a fold boundary: the
+                        // SessionSummaryCard renders here and collapses prior messages once the
+                        // transcript is long enough. `content` stays the below-threshold fallback.
+                        const chip: SystemMessage = {
+                            id: mkId(),
+                            role: 'system',
+                            content: label,
+                            compaction: { summaryText: d.summary_text ?? '', turnsCompressed: d.turns_compressed },
+                        };
                         const last = prev[prev.length - 1];
                         // Insert BEFORE any streaming tail so server_token_chunk (which
                         // targets prev.last by role==='assistant'&&streaming) is not orphaned.

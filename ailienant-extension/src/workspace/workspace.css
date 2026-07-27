@@ -2865,6 +2865,88 @@ html, body, #root { height: 100%; }
   user-select: none;
 }
 
+/* ── Session Summary fold (long-session compaction, DEBT-059) ──────── */
+.ws-session-summary {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--accent-primary);
+  border-radius: 6px;
+  margin: 4px 0 8px;
+  overflow: hidden;
+  animation: ws-session-summary-in 0.18s ease;
+}
+@keyframes ws-session-summary-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* Header row is the disclosure toggle — full-width, transparent button. */
+.ws-session-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+  min-width: 0;
+}
+.ws-session-summary-head:hover { background: color-mix(in srgb, var(--accent-primary) 6%, transparent); }
+.ws-session-summary-chev { flex: 0 0 auto; color: var(--accent-primary); }
+.ws-session-summary-box { flex: 0 0 auto; font-size: 13px; line-height: 1; }
+.ws-session-summary-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-session-summary-reveal-icon { flex: 0 0 auto; color: var(--text-secondary); }
+/* Revealed-mode collapse bar: quieter accent, distinct from the folded card. */
+.ws-session-summary[data-mode="revealed"] {
+  border-left-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+  opacity: 0.9;
+}
+.ws-session-summary-body {
+  padding: 0 12px 10px 34px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Bounded height so a long summary never dominates the transcript (DOM/token hygiene). */
+.ws-session-summary-prose {
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+.ws-session-summary-reveal {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ws-session-summary-reveal:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-primary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-session-summary { animation: none; }
+}
+
 /* ── Error boundaries ──────────────────────────────────────── */
 /* Inline fallback for a single message row that failed to render. */
 .ws-error-row {

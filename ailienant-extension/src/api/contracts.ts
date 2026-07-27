@@ -534,6 +534,9 @@ export interface StateCompactedPayload {
     session_id: string;
     compaction_message: string;
     turns_compressed: number;
+    /** Prose summary of the evicted turns, rendered in the fold. Optional/additive —
+     *  absent on the truncation-fallback path and from older senders. */
+    summary_text?: string;
 }
 /** Server event — note the `state_compacted` tag carries no `server_` prefix. */
 export interface ServerStateCompactedEvent {

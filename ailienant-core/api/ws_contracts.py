@@ -1104,12 +1104,15 @@ class ServerCellGovernorTickEvent(BaseModel):
 
 class StateCompactedPayload(BaseModel):
     """System notification emitted when Layer 4 FIFO eviction trims the conversation
-    window. ``compaction_message`` is a status line, not an AI-generated prose summary
-    (that arrives separately from brain/summarizer via the session_delta channel)."""
+    window. ``compaction_message`` is the short status line; ``summary_text`` optionally
+    carries the AI-generated prose summary of the evicted turns so the IDE can render it
+    in the fold. ``summary_text`` is absent on the truncation-fallback path (no prose was
+    produced) and on any older sender — consumers must tolerate its absence."""
 
     session_id: str
     compaction_message: str
     turns_compressed: int
+    summary_text: Optional[str] = None
 
 
 class ServerStateCompactedEvent(BaseModel):

@@ -14,6 +14,7 @@ import { TelemetryHUD } from './components/TelemetryHUD';
 import { CSSAlertBanner } from './components/CSSAlertBanner';
 import { PromptBar } from './components/PromptBar';
 import { ActiveTaskHeader } from './components/ActiveTaskHeader';
+import { SessionSummaryCard } from './components/SessionSummaryCard';
 import { NattCanvas } from './components/NattCanvas';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ToolChip } from './components/ToolChip';
@@ -36,7 +37,8 @@ import {
     readMergedCellIteration, appendPtyLines,
 } from './utils/messageDispatchHelpers';
 import { upsertCellBody } from './utils/timelineBuilder';
-import type { Message, ConversationMessage, InitialState } from './types';
+import type { Message, ConversationMessage, SystemMessage, InitialState } from './types';
+import { MESSAGE_COMPACTION_THRESHOLD } from './types';
 
 /**
  * Inline fallback for a single message row that throws during render. A malformed
@@ -127,6 +129,24 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const [activeModelId, setActiveModelId] = useState<string>(initial.activeModelId ?? '');
     const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>(initial.orchestrationMode ?? 'auto');
     const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    // ── Compaction fold state (session-transcript declutter) ──
+    // The last message carrying a `compaction` marker is the fold boundary: everything
+    // before it can collapse behind the SessionSummaryCard. Fold state is per-marker and
+    // resets when a newer compaction arrives (see the reset effect below).
+    let lastCompactionIdx = -1;
+    for (let k = messages.length - 1; k >= 0; k--) {
+        if ((messages[k] as SystemMessage).compaction) { lastCompactionIdx = k; break; }
+    }
+    const compactionMarkerId = lastCompactionIdx >= 0 ? messages[lastCompactionIdx].id : undefined;
+    const foldActive = lastCompactionIdx >= 0 && messages.length > MESSAGE_COMPACTION_THRESHOLD;
+    const [summaryExpanded, setSummaryExpanded] = useState(false);
+    const [originalRevealed, setOriginalRevealed] = useState(false);
+    // A fresh compaction re-folds the transcript and closes the prose body.
+    useEffect(() => {
+        setSummaryExpanded(false);
+        setOriginalRevealed(false);
+    }, [compactionMarkerId]);
 
     // ── Controllers: inbound WS/IPC dispatch + transcript persistence ──
     useWSMessageHandler();
@@ -487,8 +507,46 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     </div>
                                 </div>
                             )}
+                            {/* Compaction fold (DEBT-059) — once the transcript is long and the
+                                backend has compacted the context, the pre-compaction bubbles
+                                collapse behind the SessionSummaryCard. When the user reveals the
+                                originals, this slim bar sits above the restored transcript. The
+                                fold is non-destructive: the bubbles stay in the store. */}
+                            {foldActive && originalRevealed && (
+                                <SessionSummaryCard
+                                    mode="revealed"
+                                    hiddenCount={lastCompactionIdx}
+                                    summaryText=""
+                                    expanded={false}
+                                    onToggle={() => { /* n/a in revealed mode */ }}
+                                    onRevealOriginal={() => { /* n/a in revealed mode */ }}
+                                    onHideOriginal={() => setOriginalRevealed(false)}
+                                />
+                            )}
                             {(() => {
                                 return messages.map((m, i) => {
+                                    // Fold: hide the pre-compaction bubbles behind the card and
+                                    // render the card once at the boundary. Indices stay intact
+                                    // (we return null rather than slicing) so message_index and
+                                    // reasoning toggles below keep pointing at the right turn.
+                                    if (foldActive && !originalRevealed) {
+                                        if (i < lastCompactionIdx) { return null; }
+                                        if (i === lastCompactionIdx) {
+                                            const meta = (m as SystemMessage).compaction;
+                                            return (
+                                                <SessionSummaryCard
+                                                    key={m.id ?? 'compaction-fold'}
+                                                    mode="folded"
+                                                    hiddenCount={lastCompactionIdx}
+                                                    summaryText={meta?.summaryText ?? ''}
+                                                    expanded={summaryExpanded}
+                                                    onToggle={() => setSummaryExpanded(v => !v)}
+                                                    onRevealOriginal={() => setOriginalRevealed(true)}
+                                                    onHideOriginal={() => setOriginalRevealed(false)}
+                                                />
+                                            );
+                                        }
+                                    }
                                     // System notification chips (state_compacted) bypass the
                                     // full row structure — they render a plain string and have
                                     // no role header, tool chips, token footer, or ErrorBoundary.

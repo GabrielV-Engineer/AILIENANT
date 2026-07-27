@@ -73,10 +73,21 @@ export interface SystemMessage {
     content: string;
     readonly streaming?: never;
     readonly toolCalls?: never;
+    /** Present when this chip marks a context-compaction point. Its position in the
+     *  message array is the fold boundary: everything before it collapses behind the
+     *  SessionSummaryCard, everything after stays rendered. `summaryText` is the AI
+     *  prose (empty when the backend truncated instead of summarizing). */
+    compaction?: { summaryText: string; turnsCompressed: number };
 }
 
 /** Discriminated union over `role`. System chips are filtered from PERSIST_TRANSCRIPT. */
 export type Message = ConversationMessage | SystemMessage;
+
+/** Minimum visible-transcript length before a compaction event folds prior messages
+ *  behind the SessionSummaryCard. A frontend declutter guard, decoupled from the
+ *  backend's token-based compaction trigger — below it, the marker renders as a plain
+ *  inline chip so short sessions are never folded. */
+export const MESSAGE_COMPACTION_THRESHOLD = 40;
 
 export interface NattMessage {
     id?: string;   // see Message.id (REHYDRATE_TRANSCRIPT merge key).

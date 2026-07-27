@@ -38,11 +38,18 @@ _PROMPT = (
 )
 
 
-async def _emit_compacted(config: Optional[RunnableConfig], message: str, n: int) -> None:
+async def _emit_compacted(
+    config: Optional[RunnableConfig],
+    message: str,
+    n: int,
+    summary_text: Optional[str] = None,
+) -> None:
     """Fire the STATE_COMPACTED notification callback. Never raises.
 
     A dead WebSocket or transport error must not abort the summarizer node or corrupt
     LangGraph state — UI telemetry is low-criticality and loss is acceptable.
+    ``summary_text`` is the prose summary of the evicted turns (``None`` on the
+    truncation-fallback path) so the IDE can render it in the fold.
     Wire via: functools.partial(vfs_manager.broadcast_state_compacted, session_id)
     bound as config["configurable"]["on_state_compacted"].
     """
@@ -50,7 +57,7 @@ async def _emit_compacted(config: Optional[RunnableConfig], message: str, n: int
     cb = cfg.get("on_state_compacted")
     if cb is not None:
         try:
-            await cb(message, n)
+            await cb(message, n, summary_text)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "STATE_COMPACTED notification failed (dead WS or transport error); "
@@ -136,6 +143,7 @@ async def _run_summarize_node_core(
             config,
             f"Compacted {len(to_summarize)} conversation turn(s) to fit the context window.",
             len(to_summarize),
+            summary_text=summary_text,
         )
         return {
             "messages": [

@@ -974,8 +974,13 @@ class ConnectionManager:
         session_id: str,
         compaction_message: str,
         turns_compressed: int,
+        summary_text: Optional[str] = None,
     ) -> None:
-        """Notify the IDE that the Layer 4 conversation window was trimmed by FIFO eviction."""
+        """Notify the IDE that the Layer 4 conversation window was trimmed by FIFO eviction.
+
+        ``summary_text`` is the prose summary of the evicted turns when one was produced
+        (``None`` on the truncation-fallback path), letting the IDE render it in the fold.
+        """
         await self.send_personal_message(
             session_id,
             ServerStateCompactedEvent(
@@ -983,6 +988,7 @@ class ConnectionManager:
                     session_id=session_id,
                     compaction_message=compaction_message,
                     turns_compressed=turns_compressed,
+                    summary_text=summary_text,
                 )
             ),
         )

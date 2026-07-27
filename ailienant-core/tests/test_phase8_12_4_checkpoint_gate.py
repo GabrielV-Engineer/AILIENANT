@@ -6,12 +6,13 @@ message history is compressed, and stays silent when below the threshold.
 
 Locked invariants:
   SC1  on_state_compacted fires once on successful LLM compression; the message
-       contains "Compacted" and turns_compressed reflects the dropped turn count.
+       contains "Compacted", turns_compressed reflects the dropped turn count, and
+       the prose summary_text is forwarded to the callback.
   SC2  on_state_compacted is silent when history fits within the context window
        (no-op path returns {} without touching the callback).
   SC3  functools.partial(broadcast_state_compacted, session_id) yields the
-       (compaction_message, turns_compressed) arity the callback contract expects —
-       regression guard against signature drift in ConnectionManager.
+       (compaction_message, turns_compressed, summary_text) arity the callback
+       contract expects — regression guard against signature drift in ConnectionManager.
 
 Test-only; sibling-gate convention. No network, no live LLM, no real WebSocket.
 """
@@ -52,10 +53,10 @@ def _overflow_state(context_window: int = 500) -> dict:
 async def test_sc1_state_compacted_fires_on_compression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    received: List[Tuple[str, int]] = []
+    received: List[Tuple[str, int, Any]] = []
 
-    async def spy(message: str, turns: int) -> None:
-        received.append((message, turns))
+    async def spy(message: str, turns: int, summary: Any = None) -> None:
+        received.append((message, turns, summary))
 
     async def _stub_ainvoke(*_a: Any, **_kw: Any) -> Any:
         choice = SimpleNamespace(message=SimpleNamespace(content="Summary of history."))
@@ -74,6 +75,8 @@ async def test_sc1_state_compacted_fires_on_compression(
     assert len(received) == 1
     assert "Compacted" in received[0][0]
     assert received[0][1] > 0
+    # The prose summary is forwarded to the IDE fold (not just the status line).
+    assert received[0][2] == "Summary of history."
 
 
 # ── SC2 ─────────────────────────────────────────────────────────────────────
@@ -81,10 +84,10 @@ async def test_sc1_state_compacted_fires_on_compression(
 async def test_sc2_state_compacted_silent_below_threshold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    received: List[Tuple[str, int]] = []
+    received: List[Tuple[str, int, Any]] = []
 
-    async def spy(message: str, turns: int) -> None:
-        received.append((message, turns))
+    async def spy(message: str, turns: int, summary: Any = None) -> None:
+        received.append((message, turns, summary))
 
     config: dict = {"configurable": {"on_state_compacted": spy}}
     result = await run_summarize_node(
@@ -100,11 +103,12 @@ async def test_sc2_state_compacted_silent_below_threshold(
 def test_sc3_partial_arity_matches_on_compacted_contract() -> None:
     sig = inspect.signature(ConnectionManager.broadcast_state_compacted)
     params = list(sig.parameters)
-    # Unbound: (self, session_id, compaction_message, turns_compressed).
+    # Unbound: (self, session_id, compaction_message, turns_compressed, summary_text).
     # Binding vfs_manager.broadcast_state_compacted + session_id leaves
-    # (compaction_message, turns_compressed) — the on_compacted ABI.
+    # (compaction_message, turns_compressed, summary_text) — the on_compacted ABI.
     assert "compaction_message" in params
     assert "turns_compressed" in params
+    assert "summary_text" in params
     # Sanity-check that partial binds without error.
     mgr = ConnectionManager()
     cb = functools.partial(mgr.broadcast_state_compacted, "sess-test")
@@ -112,3 +116,4 @@ def test_sc3_partial_arity_matches_on_compacted_contract() -> None:
     cb_params = list(cb_sig.parameters)
     assert "compaction_message" in cb_params
     assert "turns_compressed" in cb_params
+    assert "summary_text" in cb_params

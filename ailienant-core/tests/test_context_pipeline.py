@@ -159,6 +159,14 @@ async def test_broadcast_state_compacted_event_shape() -> None:
     assert ev.data.session_id == "sess-1"
     assert ev.data.compaction_message == "Compacted 3 conversation turn(s)."
     assert ev.data.turns_compressed == 3
+    # summary_text is additive/optional — absent by default, tolerated by consumers.
+    assert ev.data.summary_text is None
+
+    # When the summarizer produced prose, it rides in the same event.
+    await mgr.broadcast_state_compacted("sess-1", "Compacted 3 turn(s).", 3, "The prose.")
+    ev2 = sent[1][1]
+    assert isinstance(ev2, ServerStateCompactedEvent)
+    assert ev2.data.summary_text == "The prose."
 
 
 async def test_on_compacted_partial_binding_arity() -> None:

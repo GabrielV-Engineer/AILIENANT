@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.7: Chat Compaction for Long Sessions — 2026-07-27
+**Status:** COMPLETE | **Gates:** mypy 0/440 · pyright 0 · pytest 2539 passed/2 skipped · tsc 0 · eslint 0 · npm compile 0
+- Shipped: pre-compaction messages now fold behind a new collapsible `SessionSummaryCard.tsx` once the transcript exceeds `MESSAGE_COMPACTION_THRESHOLD` (40) and a `state_compacted` event has fired — non-destructive (bubbles stay in the store, restorable via "Show original messages"); short sessions render the marker as today's inline chip, unchanged. The AI prose the summarizer already produces is now plumbed to the wire via an additive optional `summary_text` field (`StateCompactedPayload` → `broadcast_state_compacted` → `summarizer.py::_emit_compacted`), since `state_compacted` previously carried only a status line, not the prose.
+- Key decision: the manifest's claim that the event "carries the summary text" was false — the prose lived only in backend LangGraph state. Fixed at the source rather than working around it, since deferring it further would have left `SessionSummaryCard` showing a near-redundant status line. Two stale file refs also corrected: state/render live in the memory-only `chatStore.ts`/`types.ts` + `Workspace.tsx`, not `NattCanvas.tsx`/`workspaceStore.ts`.
+- Deferred: DEBT-124 — the fold is live-session only (its marker is a transient `SystemMessage` excluded from `PERSIST_TRANSCRIPT`); a reload unwinds it back to the full transcript, no data lost.
+
 ## 11.6: Active Task Header / Prompt Preservation — 2026-07-27
 **Status:** COMPLETE | **Gates:** tsc 0 · eslint 0 · npm compile 0 (frontend-only; no backend/pytest surface)
 - Shipped: new `components/ActiveTaskHeader.tsx` — a sticky card pinned above `.ws-messages` that preserves the submitted prompt so it never scrolls out of view (DEBT-058). Expanded while the turn streams (reused `ReasoningGlyph` + "Working…" + live `m:ss` elapsed + Cancel wired to the existing `handleAbort`), collapsed to a one-line summary on `server_stream_end`, and pinned until the user dismisses it (`✕`) or a new submit supersedes it. State is additive `activeTaskPrompt`/`activeTaskStartedAt` in the memory-only `chatStore.ts`, set in `submitWithMode`; elapsed reuses the ReasoningStream interval idiom (ticks while streaming, frozen on settle). New `.ws-active-task` CSS (accent left rule, two-line prompt clamp, reduced-motion honored).
