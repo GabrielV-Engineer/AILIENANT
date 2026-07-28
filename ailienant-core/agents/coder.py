@@ -33,13 +33,24 @@ _background_tasks: Set[asyncio.Task[Any]] = set()
 
 
 def content_hash(s: str) -> str:
-    """SHA-256 over newline-normalized text.
+    """SHA-256 over newline- and BOM-normalized text.
 
     Python text-mode reads collapse CRLF→LF, while VS Code's doc.getText() keeps
     the editor EOL. Normalizing both sides before hashing prevents every Windows
     (CRLF) file from falsely reading as stale at apply time.
+
+    Separately: `open(path, encoding="utf-8")` decodes a leading UTF-8 BOM as a
+    literal U+FEFF character (only `encoding="utf-8-sig"` strips it), while VS
+    Code's `TextDocument.getText()` never includes the BOM. Any file saved with a
+    BOM (e.g. PowerShell's `Out-File`/`Set-Content`, which default to BOM-prefixed
+    UTF-8) would otherwise hash differently here than on the host's side of the
+    stale guard — a permanent, deterministic false "changed since the proposal"
+    for that file regardless of whether anything actually changed. Stripping the
+    BOM before hashing keeps both sides comparing the same logical text.
     """
     normalized = s.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized.startswith("\ufeff"):
+        normalized = normalized[1:]
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 

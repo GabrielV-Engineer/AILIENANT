@@ -176,6 +176,32 @@ suite('11.5.C.2 — AgentTimeline', function () {
         container.remove();
     });
 
+    test('a SETTLED diff row defaults to OPEN on a done turn (auto-apply visibility)', () => {
+        // A settled diff already landed on disk (RENDER_DIFF fires only after
+        // PatchActuator.apply commits), so it is a confirmed record of what happened,
+        // not a pending decision. In Auto mode the turn settles almost immediately —
+        // under the plain "only the last row, only while streaming" default every
+        // applied diff collapsed the instant the turn finished, so a multi-file
+        // auto-applied turn showed no visible diff at all. Contrast with the
+        // unsettled case directly above, which must still default collapsed.
+        const diff: DiffBlockShape = {
+            patch_id: 'p1', file_path: 'calc.py', old_content: 'a', new_content: 'b',
+            status: 'edit', settled: true,
+        };
+        const { container, root } = render({
+            entries: [entry({ id: 'calc.py', kind: 'diff', target: 'calc.py', metric: '+2 -1', diff })],
+            streaming: false,
+        });
+        // Re-expand the outer timeline first (it auto-collapses on done).
+        act(() => { container.querySelector<HTMLButtonElement>('.ws-timeline-header')?.click(); });
+
+        const rowHeader = container.querySelector<HTMLButtonElement>('.ws-timeline-row[data-kind="diff"] .ws-timeline-row-header');
+        assert.ok(rowHeader, 'diff row header missing');
+        assert.strictEqual(rowHeader!.getAttribute('aria-expanded'), 'true');
+        act(() => root.unmount());
+        container.remove();
+    });
+
     test('a cell row renders CellAuditWidget for its single iteration (not the plain-label fallback)', () => {
         const cell: CellIterationShape = {
             iteration: 1,

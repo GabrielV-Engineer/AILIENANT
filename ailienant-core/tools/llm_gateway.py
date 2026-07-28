@@ -513,6 +513,10 @@ class LLMGateway:
         # back to the LiteLLM proxy when no preset is active (back-compat). This is
         # the single chokepoint that un-stubs the planner + mini-judge + coder.
         byom_kwargs: Optional[dict[str, Any]] = None
+        # Authoritative local/cloud signal for the ledger — the physically resolved
+        # target, not the alias name. Stays None only when no BYOM preset resolves
+        # (back-compat litellm-proxy path), where the alias-name classifier applies.
+        resolved_is_local: Optional[bool] = None
         _effective_timeout = timeout  # default; overridden below for a resolved local target
         if effective_model.startswith("ailienant/"):
             from core.config.model_resolver import get_chat_target
@@ -521,6 +525,7 @@ class LLMGateway:
                 _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
             )
             if _target is not None:
+                resolved_is_local = _target.is_local
                 _effective_timeout = _LOCAL_LLM_TIMEOUT_S if _target.is_local else timeout
                 byom_kwargs = {"model": _target.model}
                 if _target.api_base:
@@ -606,9 +611,21 @@ class LLMGateway:
             if usage is not None:
                 prompt_tokens: int = int(getattr(usage, "prompt_tokens", 0) or 0)
                 completion_tokens: int = int(getattr(usage, "completion_tokens", 0) or 0)
-                resolved_tier: TaskPriority = (
-                    tier if tier is not None else _classify_model_as_tier(effective_model)
-                )
+                # Accuracy order: a physically resolved target's `is_local` is the
+                # ground truth (it reflects what actually served the call and burned
+                # local GPU vs cloud API budget), so it wins even over an explicit
+                # `tier` — a `tier=CLOUD` alias that BYOM resolves to a local model is
+                # local spend. Only when no target resolved do we fall back to the
+                # requested tier, then to the alias-name heuristic.
+                resolved_tier: TaskPriority
+                if resolved_is_local is not None:
+                    resolved_tier = (
+                        TaskPriority.LOCAL if resolved_is_local else TaskPriority.CLOUD
+                    )
+                elif tier is not None:
+                    resolved_tier = tier
+                else:
+                    resolved_tier = _classify_model_as_tier(effective_model)
                 if resolved_tier == TaskPriority.CLOUD:
                     token_ledger.record_cloud(prompt_tokens, completion_tokens)
                 else:

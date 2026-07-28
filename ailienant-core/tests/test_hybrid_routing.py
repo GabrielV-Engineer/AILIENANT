@@ -109,10 +109,17 @@ async def test_ainvoke_tier_local_records_to_local() -> None:
 
 @pytest.mark.anyio
 async def test_ainvoke_tier_cloud_records_to_cloud() -> None:
+    """No active BYOM preset → the requested tier is the only signal available, so
+    CLOUD books cloud tokens. `get_chat_target` is pinned to None to isolate from any
+    preset on the test machine (same rationale as
+    ``test_ainvoke_tier_overrides_explicit_model``); without it, a machine whose
+    preset maps the big tier to a local model correctly books LOCAL instead — see
+    ``test_ainvoke_tier_cloud_records_local_when_byom_resolves_local``."""
     fake = _fake_llm_response("ok", prompt_tokens=20, completion_tokens=15)
-    with patch(
-        "tools.llm_gateway.litellm.acompletion",
-        new=AsyncMock(return_value=fake),
+    with patch("core.config.model_resolver.get_chat_target", return_value=None), \
+         patch(
+            "tools.llm_gateway.litellm.acompletion",
+            new=AsyncMock(return_value=fake),
     ):
         await LLMGateway.ainvoke(messages=[{"role": "user", "content": "x"}], tier=Tier.CLOUD)
     snap = token_ledger.snapshot()
@@ -122,11 +129,15 @@ async def test_ainvoke_tier_cloud_records_to_cloud() -> None:
 
 @pytest.mark.anyio
 async def test_ainvoke_without_tier_classifies_model_big_as_cloud() -> None:
+    """Fallback path: no tier AND no resolvable BYOM target → the alias-name
+    heuristic classifies the big alias as cloud. Pinned to None for the same
+    isolation reason as above."""
     from shared.config import MODEL_BIG
     fake = _fake_llm_response("ok", prompt_tokens=5, completion_tokens=2)
-    with patch(
-        "tools.llm_gateway.litellm.acompletion",
-        new=AsyncMock(return_value=fake),
+    with patch("core.config.model_resolver.get_chat_target", return_value=None), \
+         patch(
+            "tools.llm_gateway.litellm.acompletion",
+            new=AsyncMock(return_value=fake),
     ):
         await LLMGateway.ainvoke(
             messages=[{"role": "user", "content": "x"}],
@@ -134,6 +145,52 @@ async def test_ainvoke_without_tier_classifies_model_big_as_cloud() -> None:
         )
     snap = token_ledger.snapshot()
     assert snap["cloud_tokens"] == 7.0
+    assert snap["local_tokens"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_ainvoke_tier_cloud_records_local_when_byom_resolves_local() -> None:
+    """A BYOM-resolved LOCAL target books LOCAL tokens even when CLOUD was requested.
+
+    The ledger is a COST ledger (``snapshot()`` prices cloud tokens at
+    _USD_PER_K_CLOUD), so what matters is which machine physically served the call,
+    not which tier was asked for. `tier`/`model` are routing directives: the big-tier
+    alias resolves through BYOM, and a preset that maps it to a local model means the
+    tokens burned local GPU time and cost nothing in API fees. Booking those as cloud
+    reports phantom spend for an entirely local session.
+    """
+    from core.config.byom_config import ModelTarget
+    local_target = ModelTarget(
+        model="ollama_chat/qwen2.5-coder:7b", provider="ollama",
+        api_base="http://localhost:11434", is_local=True,
+    )
+    fake = _fake_llm_response("ok", prompt_tokens=20, completion_tokens=15)
+    with patch("core.config.model_resolver.get_chat_target", return_value=local_target), \
+         patch(
+            "tools.llm_gateway.litellm.acompletion",
+            new=AsyncMock(return_value=fake),
+    ):
+        await LLMGateway.ainvoke(messages=[{"role": "user", "content": "x"}], tier=Tier.CLOUD)
+    snap = token_ledger.snapshot()
+    assert snap["local_tokens"] == 35.0
+    assert snap["cloud_tokens"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_ainvoke_records_cloud_when_byom_resolves_remote() -> None:
+    """The converse: a BYOM target that is NOT local books cloud, so the fix cannot
+    silently under-report real API spend."""
+    from core.config.byom_config import ModelTarget
+    remote_target = ModelTarget(model="gpt-4o", provider="openai", is_local=False)
+    fake = _fake_llm_response("ok", prompt_tokens=6, completion_tokens=4)
+    with patch("core.config.model_resolver.get_chat_target", return_value=remote_target), \
+         patch(
+            "tools.llm_gateway.litellm.acompletion",
+            new=AsyncMock(return_value=fake),
+    ):
+        await LLMGateway.ainvoke(messages=[{"role": "user", "content": "x"}], tier=Tier.CLOUD)
+    snap = token_ledger.snapshot()
+    assert snap["cloud_tokens"] == 10.0
     assert snap["local_tokens"] == 0.0
 
 

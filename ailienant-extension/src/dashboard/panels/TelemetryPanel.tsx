@@ -8,6 +8,7 @@ import { formatAgo, formatUsd } from '../format';
 interface TokenSnapshot {
     local_tokens:           number;
     cloud_tokens:           number;
+    token_budget?:          number;  // additive: absolute ceiling the usage gauge scales against
     estimated_savings_usd:  number;
     estimated_invested_usd: number;
 }
@@ -63,6 +64,11 @@ function CostCard(): JSX.Element {
     }, COST_POLL_MS);
 
     const total = snap ? snap.local_tokens + snap.cloud_tokens : 0;
+    // Primary gauge scales against the absolute budget ceiling — a proportional
+    // local-vs-cloud split reads "almost full" at trivial volumes, which misleads.
+    const budget = snap && snap.token_budget && snap.token_budget > 0 ? snap.token_budget : 0;
+    const budgetPct = budget > 0 ? Math.min(100, (total / budget) * 100) : 0;
+    // Secondary split (composition of what has been spent), still meaningful.
     const localPct = total > 0 ? (snap!.local_tokens / total) * 100 : 0;
     const cloudPct = total > 0 ? (snap!.cloud_tokens / total) * 100 : 0;
     const lastVel = velocity.samples.length > 0 ? velocity.samples[velocity.samples.length - 1].v : 0;
@@ -100,9 +106,20 @@ function CostCard(): JSX.Element {
                         warmingHint="Warming up — spend velocity appears after two polls…"
                     />
 
-                    <div className="db-label" style={{ marginTop: 12 }}>Local tokens · {Math.round(snap.local_tokens).toLocaleString()}</div>
+                    {budget > 0 && (
+                        <>
+                            <div className="db-row" style={{ justifyContent: 'space-between', marginTop: 12 }}>
+                                <span className="db-label" style={{ marginBottom: 0 }}>Token budget used</span>
+                                <span className="db-muted" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                                    {Math.round(total).toLocaleString()} / {Math.round(budget).toLocaleString()} · {budgetPct < 0.1 && total > 0 ? '<0.1' : budgetPct.toFixed(1)}%
+                                </span>
+                            </div>
+                            <div className="db-gauge-track"><div className="db-gauge-fill" style={{ width: `${budgetPct}%` }} /></div>
+                        </>
+                    )}
+                    <div className="db-label" style={{ marginTop: 12 }}>Local tokens · {Math.round(snap.local_tokens).toLocaleString()} <span className="db-muted">({localPct.toFixed(0)}% of spend)</span></div>
                     <div className="db-gauge-track"><div className="db-gauge-fill" style={{ width: `${localPct}%` }} /></div>
-                    <div className="db-label" style={{ marginTop: 8 }}>Cloud tokens · {Math.round(snap.cloud_tokens).toLocaleString()}</div>
+                    <div className="db-label" style={{ marginTop: 8 }}>Cloud tokens · {Math.round(snap.cloud_tokens).toLocaleString()} <span className="db-muted">({cloudPct.toFixed(0)}% of spend)</span></div>
                     <div className="db-gauge-track"><div className="db-gauge-fill" data-warn="true" style={{ width: `${cloudPct}%` }} /></div>
                 </>}
         </div>

@@ -161,6 +161,12 @@ export interface DiffBlockShape {
     // alignment) and keeps the AST off the webview bundle.
     old_ast_lines?: ASTToken[][];
     new_ast_lines?: ASTToken[][];
+    // True when this block arrived post-apply (RENDER_DIFF, after PatchActuator.apply
+    // committed the write) rather than as a pending review preview
+    // (server_hitl_approval_request, before the user has decided). A settled block is
+    // a durable record of what already happened — regardless of Auto or Ask mode — so
+    // it should default open rather than collapse the instant the turn settles.
+    settled?: boolean;
 }
 
 // Glass-Box Timeline (Phase 11.5.C) — the per-turn, seq-ordered agent-activity

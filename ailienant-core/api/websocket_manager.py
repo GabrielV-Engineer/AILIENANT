@@ -476,6 +476,34 @@ class ConnectionManager:
         """Signal 100% indexing completion to the IDE."""
         await self.broadcast_indexing_progress(session_id, current=1, total=1)
 
+    async def broadcast_indexing_progress_for_project(
+        self, project_id: str, current: int, total: int
+    ) -> None:
+        """Fan the indexing-progress signal out to every session currently open on
+        ``project_id``.
+
+        The lazy (full-crawl) indexer knows its session_id directly — it is triggered
+        by that session's own `client_workspace_init`. Reactive (per-save/per-write)
+        re-indexing has no such session in scope: it is dispatched from a project-
+        scoped file-watcher signal (io_coalescer), decoupled from whichever coding
+        turn or human edit produced the write. Without this fan-out, a reactive
+        re-index runs completely silently and the indexing pill never leaves its
+        idle state even while files are actively being re-indexed. A connection
+        lookup failure for one session must never block delivery to the others.
+        """
+        from brain.checkpoint import project_id_for_thread
+
+        for session_id in list(self.active_connections.keys()):
+            try:
+                if project_id_for_thread(session_id) == project_id:
+                    await self.broadcast_indexing_progress(session_id, current, total)
+            except Exception:  # noqa: BLE001 — one session's lookup fault must not
+                # suppress the signal to every other session watching this project.
+                logger.debug(
+                    "broadcast_indexing_progress_for_project: lookup failed for session=%s",
+                    session_id, exc_info=True,
+                )
+
     async def broadcast_byom_config_applied(self, preset_id: str, preset_name: str) -> None:
         """Notify all connected clients that a BYOM preset was applied."""
         event = ServerByomConfigAppliedEvent(

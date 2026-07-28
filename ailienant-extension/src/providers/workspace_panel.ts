@@ -577,6 +577,17 @@ export class WorkspacePanelManager {
                             type: 'RENDER_DIFF',
                             payload: { patch_id: result.patch_id, files: result.diffs },
                         });
+                        // A file-write burst is exactly the moment the ring can go stale:
+                        // this fires once per applied patch-set (never per-file — the
+                        // backend batches every file into one server_apply_workspace_edit),
+                        // in addition to the task-start/stream-end reads above, so a
+                        // multi-file turn's occupancy is never left showing a pre-write
+                        // reading. Fire-and-forget, null-safe, same pattern as those reads.
+                        void APIClient.getInstance().fetchContextOccupancy(session.id).then((occ) => {
+                            if (occ) {
+                                panel.webview.postMessage({ type: 'CONTEXT_OCCUPANCY', payload: occ });
+                            }
+                        });
                     }
                 });
                 return;

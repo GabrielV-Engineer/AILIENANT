@@ -428,7 +428,14 @@ async def test_v3_local_fixer_three_strikes_keeps_cloud_tokens_at_zero() -> None
 
 @pytest.mark.anyio
 async def test_v3_surgeon_escalation_resets_streak_and_charges_cloud_tier() -> None:
-    """After local exhaustion, surgeon (Tier.CLOUD) repairs and resets error_streak."""
+    """After local exhaustion, surgeon (Tier.CLOUD) repairs and resets error_streak.
+
+    `get_chat_target` is pinned to None so the escalation genuinely routes to a cloud
+    model: the ledger books by the target that PHYSICALLY served the call, so on a
+    machine whose BYOM preset maps the big tier to a local model this call is local
+    spend and correctly books LOCAL. Pinning keeps the assertion about the escalation
+    path itself rather than about the test machine's preset.
+    """
     tree = MCTSTree(root_state=_make_mission(), root_vfs_view={})
     node = tree.expand(tree.root_id, "a", {}, _make_mission())
     node.error_streak = MAX_LOCAL_ATTEMPTS  # pre-condition: just tripped the breaker
@@ -436,7 +443,8 @@ async def test_v3_surgeon_escalation_resets_streak_and_charges_cloud_tier() -> N
     ok: PipelineResult = PipelineResult(passed=True)
     fake = _fake_llm_response("def fixed(): pass", prompt_tokens=50, completion_tokens=20)
 
-    with patch("agents.mcts_coder.validate_delta", new=AsyncMock(return_value=ok)), \
+    with patch("core.config.model_resolver.get_chat_target", return_value=None), \
+         patch("agents.mcts_coder.validate_delta", new=AsyncMock(return_value=ok)), \
          patch("tools.llm_gateway.litellm.acompletion", new=AsyncMock(return_value=fake)):
         fixed: str = await surgeon_escalation(
             "broken code", "bad.py", "stuck error", node,

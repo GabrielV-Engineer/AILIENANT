@@ -112,14 +112,45 @@ class IOCoalescer:
                         logger.error("IOCoalescer: mass handler error for %s: %s", pid, exc)
             return
 
-        # 3. Normal sequential dispatch
+        # 3. Normal sequential dispatch. Reactive (re)indexing has no session_id of
+        # its own — it's triggered by a project-scoped file-watcher signal, decoupled
+        # from whichever turn or edit produced the write — so without an explicit
+        # progress signal here the IDE's indexing pill never leaves 'idle' while this
+        # runs, and a multi-file coding turn silently reindexes with no visible
+        # feedback. Broadcast against the EXISTING indexing-progress contract (same
+        # one the full-crawl lazy indexer uses) so no new UI is needed; fan out to
+        # every session open on each affected project_id.
         logger.info("IOCoalescer: flushing %d file(s) as one batch", len(updates))
+        totals_by_project: Dict[str, int] = {}
+        for _, project_id in updates.values():
+            totals_by_project[project_id] = totals_by_project.get(project_id, 0) + 1
+        # Only signal for a genuine burst (a coding turn writing several files, a
+        # multi-file refactor) — an ordinary single-file human save stays exactly as
+        # silent as before. Flashing the pill on every keystroke-triggered save would
+        # be noise, not signal.
+        notify_projects = {pid for pid, total in totals_by_project.items() if pid and total > 1}
+        progress_by_project: Dict[str, int] = dict.fromkeys(totals_by_project, 0)
+
+        async def _notify(project_id: str) -> None:
+            if project_id not in notify_projects:
+                return
+            try:
+                from api.websocket_manager import vfs_manager
+                await vfs_manager.broadcast_indexing_progress_for_project(
+                    project_id, progress_by_project[project_id], totals_by_project[project_id],
+                )
+            except Exception as exc:  # noqa: BLE001 — a notify fault must never stall indexing
+                logger.debug("IOCoalescer: progress notify failed for %s: %s", project_id, exc)
+
         for filepath, (content, project_id) in updates.items():
             if self._dispatch_fn:
                 try:
                     await self._dispatch_fn(filepath, content, project_id)
                 except Exception as exc:
                     logger.warning("IOCoalescer: dispatch error for %s: %s", filepath, exc)
+                finally:
+                    progress_by_project[project_id] = progress_by_project.get(project_id, 0) + 1
+                    await _notify(project_id)
 
 
 # Global singleton imported by main.py

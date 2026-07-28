@@ -175,9 +175,15 @@ function AgentTimelineImpl({
                         }
 
                         if (entry.kind === 'diff' && entry.diff) {
+                            // A settled diff (already applied to disk — Auto or a decided
+                            // Ask-mode approval) is a confirmed record, not a pending
+                            // decision — default it open regardless of turn-settle so it
+                            // doesn't vanish the instant the turn finishes (which, in Auto
+                            // mode, is nearly immediate). An unsettled diff keeps the old
+                            // "only the last one, only while streaming" default.
                             const isOpen = entry.id in manualDiffOpen
                                 ? manualDiffOpen[entry.id]
-                                : (entry.id === lastDiffId && !done);
+                                : (entry.diff.settled || (entry.id === lastDiffId && !done));
                             const hitlActive = !!hitlApprovalId && entry.diff.patch_id === hitlApprovalId;
                             return (
                                 <div key={entry.id} className="ws-timeline-row" data-kind="diff">

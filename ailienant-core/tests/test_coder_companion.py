@@ -169,10 +169,14 @@ async def test_call_analyst_llm_timeout_degrades():
     async def hang():
         await asyncio.sleep(100)
 
-    with patch("brain.coder_companion.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
-        mock_llm.side_effect = hang
-        with patch("core.response_cache.response_cache.probe", return_value=None):
-            result = await _call_analyst_llm(request)
+    # Force the cloud deadline (12s) deterministically — without this, whether the
+    # judge alias resolves to a local target (45s) depends on ambient global BYOM
+    # preset state, which would make this test's real wall-clock duration flaky.
+    with patch("core.config.model_resolver.get_chat_target", return_value=None):
+        with patch("brain.coder_companion.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
+            mock_llm.side_effect = hang
+            with patch("core.response_cache.response_cache.probe", return_value=None):
+                result = await _call_analyst_llm(request)
 
     assert result.degraded
     assert "unavailable" in result.objective.lower()
@@ -229,25 +233,34 @@ async def test_call_analyst_llm_cache_reuse():
 # ─── INTEGRATION TESTS: _run_coder_companion ──────────────────────────────────
 
 async def test_run_coder_companion_outer_guard_catches_exceptions(mock_state):
-    """Outer try/except catches pipeline faults, never raises."""
+    """Outer try/except catches pipeline faults, never raises, and still emits a
+    terminal (degraded) broadcast — the frontend card must never be left waiting on
+    a producer that silently died."""
     with patch("brain.coder_companion._build_companion_request") as mock_build:
         mock_build.side_effect = RuntimeError("Request build failed")
-        with patch("brain.coder_companion.logger") as mock_logger:
-            # Should not raise, should log the exception
-            await _run_coder_companion(mock_state, attempt_ordinal=0)
-            mock_logger.warning.assert_called_once()
-            assert "pipeline failed" in mock_logger.warning.call_args[0][0]
+        with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
+            with patch("brain.coder_companion.logger") as mock_logger:
+                # Should not raise, should log the exception
+                await _run_coder_companion(mock_state, attempt_ordinal=0)
+                mock_logger.warning.assert_called_once()
+                assert "pipeline failed" in mock_logger.warning.call_args[0][0]
+
+    mock_broadcast.assert_called_once()
+    assert mock_broadcast.call_args[1]["analysis"].degraded is True
 
 
 async def test_run_coder_companion_budget_skip(mock_state):
-    """Budget ceiling reached → skip silently (no event sent)."""
+    """Budget ceiling reached → skip the LLM call, but still broadcast a degraded
+    terminal event (not silence) so the frontend never hangs on a card that will
+    never resolve on its own."""
     mock_state["current_cost_usd"] = 100.0
     mock_state["max_budget_usd"] = 50.0
 
-    with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion") as mock_broadcast:
+    with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
         await _run_coder_companion(mock_state, attempt_ordinal=0)
 
-    mock_broadcast.assert_not_called()
+    mock_broadcast.assert_called_once()
+    assert mock_broadcast.call_args[1]["analysis"].degraded is True
 
 
 async def test_run_coder_companion_broadcasts_on_success(mock_state):

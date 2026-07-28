@@ -9,6 +9,7 @@ Exposed to the IDE via GET /api/v1/telemetry/tokens (see main.py).
 """
 from __future__ import annotations
 
+import os
 import threading
 from typing import Dict
 
@@ -16,6 +17,19 @@ from typing import Dict
 _USD_PER_K_LOCAL: float = 0.001
 _USD_PER_K_CLOUD: float = 0.030      # C_in  — input (prompt) token cost
 _USD_PER_K_CLOUD_OUT: float = 0.150  # C_out — output (completion) token cost (~5× input)
+
+# Absolute token budget the usage gauge scales against. A local-vs-cloud proportional
+# split makes any dominant bucket look "almost full" at trivial volumes; an absolute
+# ceiling gives a meaningful "how much of my budget have I spent" reading. Defaults to
+# 10M tokens (a developer can burn 20M+/month) and is env-overridable per deployment.
+def _read_budget() -> int:
+    try:
+        return max(1, int(os.getenv("AILIENANT_TOKEN_BUDGET_TOTAL", "10000000")))
+    except (TypeError, ValueError):
+        return 10_000_000
+
+
+_TOKEN_BUDGET_TOTAL: int = _read_budget()
 
 
 class TokenLedger:
@@ -55,6 +69,7 @@ class TokenLedger:
         return {
             "local_tokens": float(local_total),
             "cloud_tokens": float(cloud_total),
+            "token_budget": float(_TOKEN_BUDGET_TOTAL),
             "estimated_savings_usd": saved_usd,
             "estimated_invested_usd": invested_usd,
         }

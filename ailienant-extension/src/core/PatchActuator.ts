@@ -68,9 +68,19 @@ export class PatchActuator {
         return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     }
 
-    /** SHA-256 over EOL-normalized text — must match the Python coder's content_hash. */
+    /**
+     * SHA-256 over EOL- and BOM-normalized text — must match the Python coder's
+     * content_hash(). `TextDocument.getText()` never includes a leading BOM, while
+     * Python's `open(path, encoding="utf-8")` decodes one as a literal U+FEFF
+     * character. Without stripping it here too, any file saved with a BOM (e.g.
+     * PowerShell's `Out-File`/`Set-Content`, which default to BOM-prefixed UTF-8)
+     * would hash differently on this side than on the Python side of the stale
+     * guard — a permanent, deterministic false "changed since the proposal" for
+     * that file regardless of whether anything actually changed.
+     */
     private static _hash(text: string): string {
-        return crypto.createHash('sha256').update(PatchActuator._normalizeEol(text), 'utf8').digest('hex');
+        const normalized = PatchActuator._normalizeEol(text).replace(/^\uFEFF/, '');
+        return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
     }
 
     private static _resolveUri(filePath: string): vscode.Uri {

@@ -145,7 +145,11 @@ export function useWSMessageHandler(): void {
                     // already ended). Built once on edit-arrival — never per token.
                     const d = msg.payload as { patch_id: string; files: Omit<DiffBlockShape, 'patch_id'>[] };
                     if (!d?.files?.length) { break; }
-                    const incoming: DiffBlockShape[] = d.files.map(f => ({ ...f, patch_id: d.patch_id }));
+                    // `settled: true` — this diff already landed on disk (RENDER_DIFF only
+                    // fires after PatchActuator.apply commits), so it's a confirmed record
+                    // of what happened, not a pending decision. AgentTimeline uses this to
+                    // keep it open on turn-settle instead of collapsing it away.
+                    const incoming: DiffBlockShape[] = d.files.map(f => ({ ...f, patch_id: d.patch_id, settled: true }));
                     cs.setMessages(prev => {
                         const last = prev[prev.length - 1];
                         if (last?.role === 'assistant') {
@@ -167,11 +171,21 @@ export function useWSMessageHandler(): void {
                     });
                     // Glass-Box Timeline: correlate each settled diff into its 'diff'
                     // node by file_path — the same ref the backend's activity marker
-                    // uses, so this can land before or after that marker.
+                    // uses, so this can land before or after that marker. One shared
+                    // `ts` for the whole batch: `upsertDiffBody`'s default is
+                    // `Date.now()`, so N calls in this tight loop would otherwise each
+                    // stamp a slightly different instant — for a multi-file apply
+                    // (RENDER_DIFF ships every file from one server_apply_workspace_edit
+                    // as a single array), that made the timeline summary's "Worked for
+                    // Ns" collapse to ~0.0s: when a turn's ENTIRE timeline is this one
+                    // settled batch (no earlier marker in the same message), first and
+                    // last both land in this loop, so their multi-millisecond jitter —
+                    // not real elapsed work — was what got measured.
+                    const batchTs = Date.now() / 1000;
                     cs.setMessages(prev => attachOrUpdateTimeline(prev, prior => {
                         let next = prior ?? [];
                         for (const f of incoming) {
-                            next = upsertDiffBody(next, f.file_path, f);
+                            next = upsertDiffBody(next, f.file_path, f, batchTs);
                         }
                         return next;
                     }, nattName));
@@ -689,11 +703,14 @@ export function useWSMessageHandler(): void {
                         // Glass-Box Timeline: correlate each proposed diff into its 'diff'
                         // node by file_path — the same ref the eventual post-apply
                         // server_activity_event uses, so a pending-approval diff and its
-                        // later confirmed-applied marker resolve to ONE entry.
+                        // later confirmed-applied marker resolve to ONE entry. One shared
+                        // `ts` for the whole batch — see the RENDER_DIFF handler above for
+                        // why per-call Date.now() jitter matters for the timeline summary.
+                        const proposedBatchTs = Date.now() / 1000;
                         cs.setMessages(prev => attachOrUpdateTimeline(prev, prior => {
                             let next = prior ?? [];
                             for (const b of blocks) {
-                                next = upsertDiffBody(next, b.file_path, b);
+                                next = upsertDiffBody(next, b.file_path, b, proposedBatchTs);
                             }
                             return next;
                         }, nattName));
@@ -797,11 +814,6 @@ export function useWSMessageHandler(): void {
                         }
                         return [...prev, chip];
                     });
-                    break;
-                }
-                case 'server_indexing_started': {
-                    const d = msg.payload as { total_files?: number };
-                    cs.setIndexing({ state: 'indexing', pct: 0, total_files: d?.total_files, files_indexed: 0 });
                     break;
                 }
                 case 'server_indexing_progress':

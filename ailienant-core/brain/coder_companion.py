@@ -25,7 +25,13 @@ _companion_background_tasks: Set[asyncio.Task[None]] = set()
 _companion_semaphore = asyncio.Semaphore(3)
 
 _MAX_TOKENS_BY_VERBOSITY = {"minimal": 220, "normal": 420, "deep": 800}
-_COMPANION_LLM_TIMEOUT_S = 12.0
+# A local judge model needs far more than a cloud call's latency budget (the gateway
+# itself grants local calls up to 300s, see llm_gateway._LOCAL_LLM_TIMEOUT_S) — 12s
+# was calibrated for a cloud round-trip and reliably starves a local completion before
+# it can finish. Kept as two named constants (rather than one bumped flat value) so a
+# fast cloud judge still gets a fast unavailable-fallback instead of waiting needlessly.
+_COMPANION_LLM_TIMEOUT_CLOUD_S = 12.0
+_COMPANION_LLM_TIMEOUT_LOCAL_S = 45.0
 _MAX_CONCURRENT_COMPANIONS = 3
 _MAX_DIFF_CHARS_PER_FILE = 4000
 _MAX_FILES_IN_PAYLOAD = 8
@@ -242,6 +248,22 @@ async def _call_analyst_llm(request: CompanionAnalysisRequest) -> CompanionAnaly
     if cached is not None:
         return _parse_companion_json(cached)
 
+    # Resolve whether the judge alias points at a local target BEFORE picking the
+    # deadline: a local model routinely needs tens of seconds, while a cloud model's
+    # round-trip is comparable to the old flat 12s. Best-effort — an unresolved alias
+    # (no BYOM preset active yet) falls back to the cloud deadline, matching prior
+    # behavior exactly.
+    llm_timeout = _COMPANION_LLM_TIMEOUT_CLOUD_S
+    if MINI_JUDGE_MODEL.startswith("ailienant/"):
+        try:
+            from core.config.model_resolver import get_chat_target
+            _alias_tier = MINI_JUDGE_MODEL.split("/", 1)[1]
+            _target = get_chat_target(_alias_tier if _alias_tier in ("small", "medium", "big") else "medium")
+            if _target is not None and _target.is_local:
+                llm_timeout = _COMPANION_LLM_TIMEOUT_LOCAL_S
+        except Exception:  # noqa: BLE001 — resolution is advisory; keep the cloud default on any fault
+            logger.debug("coder_companion: judge-tier resolution failed; using cloud deadline", exc_info=True)
+
     try:
         response = await asyncio.wait_for(
             LLMGateway.ainvoke(
@@ -255,7 +277,7 @@ async def _call_analyst_llm(request: CompanionAnalysisRequest) -> CompanionAnaly
                 max_tokens=_MAX_TOKENS_BY_VERBOSITY[request.verbosity],
                 session_id=request.session_id,
             ),
-            timeout=_COMPANION_LLM_TIMEOUT_S,
+            timeout=llm_timeout,
         )
         if response and response.choices:
             raw_content = response.choices[0].message.content
@@ -293,33 +315,45 @@ def schedule_coder_companion(state: Dict[str, Any], attempt_ordinal: int) -> Non
 
 async def _run_coder_companion(state: Dict[str, Any], attempt_ordinal: int) -> None:
     """Background task body. Must never raise into the event loop — a fault here must
-    not affect the coder's checkpoint or the graph's control flow."""
+    not affect the coder's checkpoint or the graph's control flow.
+
+    Every exit path (budget-skip, VRAM-skip, LLM success/degrade, or an unexpected
+    fault) converges on exactly ONE broadcast below, so the frontend card always
+    receives a terminal signal instead of waiting on a producer that silently never
+    emits — it can wait for this event instead of racing an independent local clock.
+    """
     session_id = state.get("task_id", "")
     task_id = state.get("task_id", "")
+    analysis: CompanionAnalysis
 
     try:
         if not _companion_budget_available(state):
             logger.debug("coder_companion: skipped — over budget ceiling")
-            return
-
-        async with _companion_semaphore:  # bounds SWARM fan-out bursts
-            if not await _companion_gpu_slot_available():
-                logger.debug("coder_companion: skipped — local tier VRAM lock busy")
-                return
-
-            request = _build_companion_request(state, attempt_ordinal)
-            analysis = await _call_analyst_llm(request)
-
-            # Import here to avoid circular dependency.
-            from api.websocket_manager import vfs_manager
-
-            await vfs_manager.broadcast_coder_companion(
-                session_id=session_id,
-                task_id=task_id,
-                correlation_id=f"{task_id}:{attempt_ordinal}",
-                analysis=analysis,
-            )
-
+            analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
+        else:
+            async with _companion_semaphore:  # bounds SWARM fan-out bursts
+                if not await _companion_gpu_slot_available():
+                    logger.debug("coder_companion: skipped — local tier VRAM lock busy")
+                    analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
+                else:
+                    request = _build_companion_request(state, attempt_ordinal)
+                    analysis = await _call_analyst_llm(request)
     except Exception as exc:  # noqa: BLE001 — outer safety net: a best-effort explainer
         # must never propagate a fault, from anywhere in this pipeline, to its caller.
         logger.warning("coder_companion: pipeline failed for task=%s — %s", task_id, exc, exc_info=True)
+        analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
+
+    try:
+        # Import here to avoid circular dependency.
+        from api.websocket_manager import vfs_manager
+
+        await vfs_manager.broadcast_coder_companion(
+            session_id=session_id,
+            task_id=task_id,
+            correlation_id=f"{task_id}:{attempt_ordinal}",
+            analysis=analysis,
+        )
+    except Exception as exc:  # noqa: BLE001 — a broadcast fault must not crash this
+        # fire-and-forget background task; the card simply falls back to its own
+        # client-side safety-net timeout in that (rare) case.
+        logger.debug("coder_companion: broadcast failed — %s", exc, exc_info=True)

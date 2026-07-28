@@ -187,7 +187,7 @@ _MAX_HISTORY_MESSAGES: int = 24      # ~12 turns retained per conversation
 _RAG_TOP_K: int = 5
 _conversations: Dict[str, List[Dict[str, str]]] = {}
 
-# Phase 7.9.B.16 — intent routing (edit/coding task vs conversational question).
+# Intent routing (edit/coding task vs conversational question).
 _EDIT_VERBS: tuple[str, ...] = (
     "add", "create", "write", "implement", "refactor", "fix", "rename", "delete",
     "remove", "change", "modify", "update", "move", "replace", "insert", "extract",
@@ -196,6 +196,18 @@ _EDIT_VERBS: tuple[str, ...] = (
 _QUESTION_STARTERS: tuple[str, ...] = (
     "how", "what", "why", "when", "where", "who", "which", "is ", "are ", "can ",
     "does ", "do ", "should ", "explain", "describe", "summarize", "list ",
+)
+# Explanation/analysis cues checked ANYWHERE in the text, not just at the start — a
+# request like "Analyze the code you implemented and explain it... how can we
+# improve it?" puts its edit verb ("make"/"improve") mid-sentence and its real ask
+# (an explanation) elsewhere, so an anchored-at-start check alone misses it. When
+# one of these co-occurs with an edit verb, the heuristic must not eagerly commit to
+# "edit" — a misrouted edit turn is disruptive (unwanted files/diffs, a stale-guard
+# trip on the next real edit) while a misrouted question merely under-delivers.
+_EXPLAIN_SIGNALS: tuple[str, ...] = (
+    "explain", "describe", "tell me", "walk me through", "summarize", "summarise",
+    "analyze", "analyse", "review the code", "what did you", "how does", "how did",
+    "why did", "why does",
 )
 _INTENT_SYSTEM_PROMPT: str = (
     "Classify the user's message for a coding IDE assistant as either an 'edit' "
@@ -521,9 +533,10 @@ class TaskService:
             return "question"
         starts_question = text.startswith(_QUESTION_STARTERS) or text.endswith("?")
         has_edit_verb = any(re.search(rf"\b{v}\b", text) for v in _EDIT_VERBS)
-        if has_edit_verb and not starts_question:
+        has_explain_signal = any(sig in text for sig in _EXPLAIN_SIGNALS)
+        if has_edit_verb and not starts_question and not has_explain_signal:
             return "edit"
-        if starts_question and not has_edit_verb:
+        if (starts_question or has_explain_signal) and not has_edit_verb:
             return "question"
         # Ambiguous → cheap small-tier classifier; default to 'question' (never silently edit).
         try:
@@ -953,32 +966,14 @@ class TaskService:
             # Plan mode is the only surface where the rich Plan panel renders; in
             # Ask/Auto the diff is shown inline in the chat, so the pointer text
             # must not send the user to a panel that won't appear.
-            _raw_mode = str(final_state.get("session_permission_mode") or "DEFAULT").lower()
-            _is_plan = _raw_mode == "plan"
-            # Auto mode applies without an authorize step, so the pointer must not
-            # tell the user to "review and authorize" a diff that never appears.
-            _is_auto = _raw_mode == "auto"
-            summary = self._format_coding_summary(
-                mission, patches, errors, plan_surface=_is_plan, auto_apply=_is_auto
-            )
-            gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
-            await vfs_manager.broadcast_plan_document(
-                session_id, self._build_plan_payload(mission, summary)
-            )
-            await self._finalize_stream(session_id)
-            self._append_history(session_id, "user", payload.task_prompt)
-            self._append_history(session_id, "assistant", summary)
-
-            # 2) No concrete edits → nothing to apply.
-            if not contents:
-                return
-
-            # 3) Permission gate. The session mode (driven by the user's mode
-            # selector) composes with the WRITE tier and the coder's identity
-            # floor into a single verdict: DENY blocks the write outright (Plan
-            # mode), HITL routes through the approval card (Ask), ALLOW applies
-            # without interruption (Auto). The channel stores uppercase; the
-            # enum is lowercase, so lowercase before constructing it.
+            # Resolve the permission verdict ONCE, up-front, so the chat pointer and
+            # the actuation path below share a single source of truth. Deriving the
+            # pointer from a separate string check (mode == "auto") let a mode that
+            # resolves to ALLOW without being literally "auto" render the Ask-style
+            # "review and authorize" pointer while the write auto-applied — the two
+            # must never diverge. evaluate_action is pure, so computing it here (before
+            # the summary) is side-effect-free. The channel stores uppercase; the enum
+            # is lowercase, so lowercase before constructing it.
             from core.permissions import (
                 PermissionDecision,
                 SessionPermissionMode,
@@ -992,11 +987,34 @@ class TaskService:
                 session_mode = SessionPermissionMode(raw_mode)
             except ValueError:
                 session_mode = SessionPermissionMode.DEFAULT
-
             verdict = evaluate_action(
                 session_mode, ToolPrivilegeTier.WRITE, PermissionMode.EDIT_EXECUTE_RBW
             )
 
+            # Plan mode is the only surface that renders the rich Plan panel; ALLOW
+            # (Auto) applies without an authorize step, so its pointer announces the
+            # apply rather than asking the user to review/authorize a vanishing diff.
+            summary = self._format_coding_summary(
+                mission, patches, errors,
+                plan_surface=(raw_mode == "plan"),
+                auto_apply=(verdict is PermissionDecision.ALLOW),
+            )
+            gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
+            await vfs_manager.broadcast_plan_document(
+                session_id, self._build_plan_payload(mission, summary)
+            )
+            await self._finalize_stream(session_id)
+            self._append_history(session_id, "user", payload.task_prompt)
+            self._append_history(session_id, "assistant", summary)
+
+            # 2) No concrete edits → nothing to apply.
+            if not contents:
+                return
+
+            # 3) Permission gate. The verdict resolved above composes the session mode
+            # (driven by the user's mode selector) with the WRITE tier and the coder's
+            # identity floor: DENY blocks the write outright (Plan mode), HITL routes
+            # through the approval card (Ask), ALLOW applies without interruption (Auto).
             if verdict is PermissionDecision.DENY:
                 blocked = (
                     "Plan mode is read-only — no files were changed. "

@@ -35,13 +35,29 @@ export function OccContextRing({ status, lockedFiles, ctxUsed, ctxWindow }: OccC
     const ctxOpacity = 0.22 + 0.78 * ctxPct;
     const pctLabel = (ctxPct * 100).toFixed(ctxPct >= 0.1 ? 0 : 1);
 
-    const occLabel = status === 'clear'
+    // Explicit health verdict per half, not just the raw reading — a hover should
+    // answer "is this OK?" without the user having to interpret a number.
+    const occHealthy = status === 'clear';
+    const occVerdict = occHealthy ? 'Healthy' : (status === 'hard_conflict' ? 'Blocked' : 'Contended');
+    const occDetail = occHealthy
         ? 'no concurrent file locks'
         : `${status.replace('_', ' ')} · ${lockedFiles} file(s) locked`;
-    const ctxLabel = hasWindow
-        ? `${Math.round(ctxUsed).toLocaleString()} / ${ctxWindow.toLocaleString()} tokens (${pctLabel}% full)`
-        : 'warming up';
-    const tip = `OCC (left) — ${occLabel}  ·  Context window (right) — ${ctxLabel}. `
+
+    // "No data yet" (never successfully read this session) is a distinct state from a
+    // genuine, successfully-read 0-token window — collapsing them into one "warming up"
+    // label (as before) makes a real empty window indistinguishable from a fetch that
+    // never landed. `ctxWindow > 0` can't tell them apart on its own (the backend's
+    // context-window default is always positive once a read succeeds), so the true
+    // "no data" case is ctxWindow <= 0 — surfaced as its own explicit reading below.
+    const ctxNoData = !hasWindow;
+    const ctxHealthy = hasWindow && ctxPct < 0.85;
+    const ctxVerdict = ctxNoData ? 'No data yet' : (ctxHealthy ? 'Healthy' : 'Filling up');
+    const ctxDetail = ctxNoData
+        ? 'no successful read yet this session — retries at the next turn'
+        : `${Math.round(ctxUsed).toLocaleString()} / ${ctxWindow.toLocaleString()} tokens (${pctLabel}% full)`;
+
+    const tip = `OCC (left) — ${occVerdict}: ${occDetail}.  ·  `
+        + `Context window (right) — ${ctxVerdict}: ${ctxDetail}. `
         + 'The context reading reflects the live window and drops when the agent summarizes old turns.';
 
     return (

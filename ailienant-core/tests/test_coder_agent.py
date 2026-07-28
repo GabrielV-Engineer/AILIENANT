@@ -238,6 +238,32 @@ async def test_coder_produces_unified_diff_for_valid_edit() -> None:
     assert result["pending_base_hash"]["calc.py"] == content_hash(content)
 
 
+def test_content_hash_is_crlf_stable() -> None:
+    """Python text-mode reads collapse CRLF->LF while VS Code's doc.getText() keeps
+    the editor EOL — content_hash must treat both representations as identical, or
+    every Windows (CRLF) file falsely reads as stale at apply time."""
+    from agents.coder import content_hash
+
+    lf = "line one\nline two\n"
+    crlf = "line one\r\nline two\r\n"
+    assert content_hash(lf) == content_hash(crlf)
+
+
+def test_content_hash_is_bom_stable() -> None:
+    """A leading UTF-8 BOM must not change the hash: open(path, encoding='utf-8')
+    decodes a BOM as a literal U+FEFF character, while VS Code's TextDocument.getText()
+    never includes it — without stripping the BOM here, any file saved with one (e.g.
+    PowerShell's Out-File/Set-Content, which default to BOM-prefixed UTF-8) would
+    permanently, deterministically read as stale even when nothing actually changed."""
+    from agents.coder import content_hash
+
+    plain = "def calculate(x):\n    return x + 1\n"
+    with_bom = "\ufeff" + plain
+    assert content_hash(plain) == content_hash(with_bom)
+    # Only a genuinely different body still produces a different hash.
+    assert content_hash(plain) != content_hash(plain + "extra\n")
+
+
 # ── Test F — SEARCH/REPLACE block parser ──────────────────────────────────────
 
 

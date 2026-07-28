@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.10: Live-Test Correctness Sweep (Phase 1) — 2026-07-28
+**Status:** COMPLETE | **Gates:** mypy 0/441 · pyright 0 · pytest 2551 passed · npm compile 0 · npm test 126 passed
+- Shipped: nine defects from two live test runs fixed: AUTO summary/actuation divergence (verdict-driven unification), companion timeout tier-aware (45s local vs 12s cloud), token bucketing (resolved BYOM is_local, not alias name), absolute token ceiling on telemetry, OCC/context ring stale (post-write refresh + health verdicts), indexing pill silent (broadcast to active session), intent misroute (explanation-signal detection), stale-guard BOM false positive (UTF-8 BOM stripping on both sides), and timeline 0.0s (shared batch timestamp). Added 10 new regression tests covering the bounds and fixed 3 existing tests that were encoding the bugs. No new technical debt.
+- Key decision: token bucketing fix revealed that tests read ambient BYOM config (local Ollama tiers) rather than isolating fixtures — corrected via `patch(get_chat_target, return_value=None)` + added new BYOM-resolution regression tests; three failing tests became fixtures, never regressions.
+- Deferred: DEBT-126 — minor investigation backlog (turn-duration measure span, dead `server_indexing_started` handler).
+
 ## 11.8: Auto-Accept Shift-Left — 2026-07-27
 **Status:** COMPLETE | **Gates:** mypy 0/440 · pyright 0 · pytest 2541 passed/2 skipped · tsc 0 · eslint 0 · npm compile 0
 - Shipped: `autoAcceptLowRisk` now rides `TaskPayload` client→host→backend; the apply edge judges each pending edit's **added diff lines** against `permissions.py::scan_risk_patterns` (new shared helper) and, when set and no pattern matches, applies server-side with zero `server_hitl_approval_request` emissions — the blast-radius gate still guards both paths. Removed the prior webview short-circuit that read a never-sent `risk_metrics` field (vacuously true, so it silently auto-accepted every edit regardless of risk).

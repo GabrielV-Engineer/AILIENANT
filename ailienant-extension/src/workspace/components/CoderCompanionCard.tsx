@@ -23,9 +23,16 @@ interface Props {
     taskId: string;
 }
 
-// Backend LLM timeout is 12s; the card gives up sooner and shows "unavailable" so it
-// never out-waits the producer. See SCHEMA_EVOLUTION §37 (limitation 6).
-const COMPANION_TIMEOUT_MS = 8000;
+// Safety-net only: the backend now GUARANTEES a `server_coder_companion` broadcast on
+// every exit path (success, degraded, budget/VRAM-skip, or an unexpected fault — see
+// brain/coder_companion.py::_run_coder_companion, which converges every branch on one
+// broadcast), so under normal operation this timer never fires before the payload
+// arrives. It exists only to bound the wait if that broadcast itself is lost in
+// transit (a dropped WS frame). Set comfortably above the backend's worst realistic
+// deadline — a local-tier judge call (45s, _COMPANION_LLM_TIMEOUT_LOCAL_S) plus
+// semaphore queueing + network margin — so it is a true last resort, not a race.
+// See SCHEMA_EVOLUTION §37 (limitation 6).
+const COMPANION_TIMEOUT_MS = 60000;
 
 export function CoderCompanionCard({ taskId }: Props): JSX.Element {
     const payload = useWorkspaceStore(s => s.coderCompanions[taskId]);
