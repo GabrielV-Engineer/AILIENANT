@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.11: Agent Output Quality & Narration Depth (Phase 2) — 2026-07-28
+**Status:** COMPLETE | **Gates:** mypy 0/441 · pyright 0 · pytest 2588 passed/2 skipped · npm compile 0 · npm test 126 passed
+- Shipped: the five behavioral defects from the same live-test sweep. Analyst free-form narration streamed to the Thought Box via a second `astream_reasoning(free_form_answer=True)` pass, gated by the turn's own Reasoning Mode toggle (the Coder's own SEARCH/REPLACE generation never narrates on non-native models — strict contracts stay un-scaffolded by design). Cross-project RAG bleed fixed via `core/utils.py::filter_relevant_snippets` (top-level path scoping, explicit mentions always win) wired into both the coder and chat-question RAG paths. Coder/planner output ceilings now scale with step/request complexity instead of a flat 4096, hard-capped at half the resolved model's real context window. Chat answer depth is prompt-adaptive on `_EXPLAIN_SIGNALS`. Planner gained stack-choice guidance (infer from artifact class) and proportional (not uniformly-minimal) WBS scope discipline.
+- Key decision: exploration overturned 3 of the original brief's root causes before any code changed — `fast_path.py` is SEQUENTIAL-mode only (never the question path), `_PLANNER_REASONING_MAX_TOKENS` budgets the pre-draft narrative not the plan, and the workspace tree/RAG query were already bounded (the real bleed vector was `project_id` granularity). Corrected in the blueprint and manifest spec before implementation.
+- Deferred: none — no new tactical patches or technical debt introduced this phase.
+
 ## 11.10: Live-Test Correctness Sweep (Phase 1) — 2026-07-28
 **Status:** COMPLETE | **Gates:** mypy 0/441 · pyright 0 · pytest 2551 passed · npm compile 0 · npm test 126 passed
 - Shipped: nine defects from two live test runs fixed: AUTO summary/actuation divergence (verdict-driven unification), companion timeout tier-aware (45s local vs 12s cloud), token bucketing (resolved BYOM is_local, not alias name), absolute token ceiling on telemetry, OCC/context ring stale (post-write refresh + health verdicts), indexing pill silent (broadcast to active session), intent misroute (explanation-signal detection), stale-guard BOM false positive (UTF-8 BOM stripping on both sides), and timeline 0.0s (shared batch timestamp). Added 10 new regression tests covering the bounds and fixed 3 existing tests that were encoding the bugs. No new technical debt.

@@ -36,6 +36,11 @@ _MAX_CONCURRENT_COMPANIONS = 3
 _MAX_DIFF_CHARS_PER_FILE = 4000
 _MAX_FILES_IN_PAYLOAD = 8
 
+# Free-form narration pass (Item A) — a second, independent completion streamed
+# live to the Thought Box. Small budget: this is conversational color, not the
+# structured analysis (which already carries the substantive detail).
+_NARRATION_MAX_TOKENS: int = 420
+
 
 @dataclass(frozen=True)
 class CompanionAnalysisRequest:
@@ -231,6 +236,39 @@ def _build_companion_user_payload(request: CompanionAnalysisRequest) -> str:
     return "\n".join(lines)
 
 
+def _resolve_judge_tier() -> str:
+    """The BYOM tier MINI_JUDGE_MODEL resolves to (small/medium/big).
+
+    Defaults to "medium" for a non-``ailienant/`` alias or an unrecognized tier
+    suffix — matches the fallback ``_call_analyst_llm`` always used before this
+    was extracted into a shared helper.
+    """
+    if MINI_JUDGE_MODEL.startswith("ailienant/"):
+        _alias_tier = MINI_JUDGE_MODEL.split("/", 1)[1]
+        if _alias_tier in ("small", "medium", "big"):
+            return _alias_tier
+    return "medium"
+
+
+def _resolve_companion_llm_timeout(tier: str) -> float:
+    """Tier-aware deadline shared by the structured analysis and narration calls.
+
+    A local judge target needs far more than a cloud round-trip's budget (the
+    gateway itself grants local calls up to 300s, see
+    llm_gateway._LOCAL_LLM_TIMEOUT_S) — 12s reliably starves a local completion
+    before it can finish. Best-effort: an unresolved alias (no BYOM preset active
+    yet) falls back to the cloud deadline.
+    """
+    try:
+        from core.config.model_resolver import get_chat_target
+        _target = get_chat_target(tier)
+        if _target is not None and _target.is_local:
+            return _COMPANION_LLM_TIMEOUT_LOCAL_S
+    except Exception:  # noqa: BLE001 — resolution is advisory; keep the cloud default on any fault
+        logger.debug("coder_companion: judge-tier resolution failed; using cloud deadline", exc_info=True)
+    return _COMPANION_LLM_TIMEOUT_CLOUD_S
+
+
 async def _call_analyst_llm(request: CompanionAnalysisRequest) -> CompanionAnalysis:
     """Best-effort LLM call. Never raises — returns degraded=True on any failure."""
     from core.response_cache import response_cache  # deferred — avoid circular import
@@ -248,21 +286,7 @@ async def _call_analyst_llm(request: CompanionAnalysisRequest) -> CompanionAnaly
     if cached is not None:
         return _parse_companion_json(cached)
 
-    # Resolve whether the judge alias points at a local target BEFORE picking the
-    # deadline: a local model routinely needs tens of seconds, while a cloud model's
-    # round-trip is comparable to the old flat 12s. Best-effort — an unresolved alias
-    # (no BYOM preset active yet) falls back to the cloud deadline, matching prior
-    # behavior exactly.
-    llm_timeout = _COMPANION_LLM_TIMEOUT_CLOUD_S
-    if MINI_JUDGE_MODEL.startswith("ailienant/"):
-        try:
-            from core.config.model_resolver import get_chat_target
-            _alias_tier = MINI_JUDGE_MODEL.split("/", 1)[1]
-            _target = get_chat_target(_alias_tier if _alias_tier in ("small", "medium", "big") else "medium")
-            if _target is not None and _target.is_local:
-                llm_timeout = _COMPANION_LLM_TIMEOUT_LOCAL_S
-        except Exception:  # noqa: BLE001 — resolution is advisory; keep the cloud default on any fault
-            logger.debug("coder_companion: judge-tier resolution failed; using cloud deadline", exc_info=True)
+    llm_timeout = _resolve_companion_llm_timeout(_resolve_judge_tier())
 
     try:
         response = await asyncio.wait_for(
@@ -306,14 +330,86 @@ def _parse_companion_json(raw_content: str) -> CompanionAnalysis:
     return analysis
 
 
-def schedule_coder_companion(state: Dict[str, Any], attempt_ordinal: int) -> None:
-    """Fire-and-forget entry point. Synchronous, never awaited. Called from run_coder_node."""
-    task = asyncio.create_task(_run_coder_companion(state, attempt_ordinal))
+async def _stream_narration(request: CompanionAnalysisRequest) -> None:
+    """Best-effort free-form narration of the patch, streamed live to the Thought Box.
+
+    A second, INDEPENDENT completion from ``_call_analyst_llm``'s structured JSON
+    analysis above — that call's strict-JSON contract cannot safely carry a
+    reasoning preamble, the same SAFETY INVARIANT that keeps the Coder's own
+    SEARCH/REPLACE generation scaffold-free (tools/llm_gateway.py::
+    astream_reasoning). Consequently the Coder's own generation call never
+    narrates for a non-native model — no ``response_format``, and
+    ``acomplete_with_thinking`` never passes ``free_form_answer=True`` — which is
+    exactly the empty-Thought-Box gap this pass closes. Sets
+    ``free_form_answer=True`` with no ``response_format``, the one combination
+    ``astream_reasoning`` treats as safe to scaffold and stream.
+
+    Pure color, never load-bearing: the deterministic status strings and the
+    structured companion analysis already narrate the turn on their own. Any
+    fault (timeout, provider error, dead sink) degrades to silence and must
+    never propagate — a narration failure must not be mistaken for a failure of
+    the structured analysis this runs alongside.
+    """
+    if not request.session_id:
+        return
+
+    system_prompt = (
+        "You are the code reviewer narrating, in the first person and in plain "
+        "prose, what this patch does and why — a short, conversational commentary "
+        "for the developer watching, not a report. One to three short paragraphs. "
+        "No JSON, no markdown fences, no headings, no preamble."
+    )
+    user_payload = _build_companion_user_payload(request)
+    tier = _resolve_judge_tier()
+    llm_timeout = _resolve_companion_llm_timeout(tier)
+
+    async def _consume() -> None:
+        from api.websocket_manager import vfs_manager  # deferred — avoid circular import
+
+        async for delta in LLMGateway.astream_reasoning(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            tier=tier,
+            temperature=0.4,
+            max_tokens=_NARRATION_MAX_TOKENS,
+            session_id=request.session_id,
+            thinking_budget_tokens=_NARRATION_MAX_TOKENS,
+            free_form_answer=True,
+        ):
+            if delta.text:
+                await vfs_manager.broadcast_thinking_chunk(
+                    request.session_id, delta.text, source="simulated",
+                )
+
+    try:
+        await asyncio.wait_for(_consume(), timeout=llm_timeout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — narration is pure color; any fault degrades to silence
+        logger.debug("coder_companion: narration stream failed (non-fatal) — %s", exc, exc_info=True)
+
+
+def schedule_coder_companion(
+    state: Dict[str, Any], attempt_ordinal: int, enable_narration: bool = False,
+) -> None:
+    """Fire-and-forget entry point. Synchronous, never awaited. Called from run_coder_node.
+
+    ``enable_narration`` mirrors the caller's own Reasoning Mode toggle
+    (``config.configurable.enable_native_thinking``) — the free-form narration
+    pass (Item A) only fires when the user has reasoning display on; the
+    structured analysis card is unaffected either way. Defaults False so any
+    other/legacy caller (tests, a future dispatch path) keeps today's behavior.
+    """
+    task = asyncio.create_task(_run_coder_companion(state, attempt_ordinal, enable_narration))
     _companion_background_tasks.add(task)
     task.add_done_callback(_companion_background_tasks.discard)
 
 
-async def _run_coder_companion(state: Dict[str, Any], attempt_ordinal: int) -> None:
+async def _run_coder_companion(
+    state: Dict[str, Any], attempt_ordinal: int, enable_narration: bool = False,
+) -> None:
     """Background task body. Must never raise into the event loop — a fault here must
     not affect the coder's checkpoint or the graph's control flow.
 
@@ -338,6 +434,13 @@ async def _run_coder_companion(state: Dict[str, Any], attempt_ordinal: int) -> N
                 else:
                     request = _build_companion_request(state, attempt_ordinal)
                     analysis = await _call_analyst_llm(request)
+                    # Item A — free-form narration streamed to the Thought Box.
+                    # Sequential, after the structured analysis: simpler than a
+                    # concurrent race, and _stream_narration is fully self-contained
+                    # (never raises, own timeout) so it cannot degrade `analysis`
+                    # above even if it fails outright.
+                    if enable_narration:
+                        await _stream_narration(request)
     except Exception as exc:  # noqa: BLE001 — outer safety net: a best-effort explainer
         # must never propagate a fault, from anywhere in this pipeline, to its caller.
         logger.warning("coder_companion: pipeline failed for task=%s — %s", task_id, exc, exc_info=True)

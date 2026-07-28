@@ -12,7 +12,7 @@ Four tests cover:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -262,6 +262,107 @@ def test_content_hash_is_bom_stable() -> None:
     assert content_hash(plain) == content_hash(with_bom)
     # Only a genuinely different body still produces a different hash.
     assert content_hash(plain) != content_hash(plain + "extra\n")
+
+
+# \u2500\u2500 Item C \u2014 complexity-scaled coder output ceiling \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+class TestResolveCoderMaxTokens:
+    """`_resolve_coder_max_tokens` scales the SEARCH/REPLACE output ceiling by
+    step complexity instead of the flat 4096 default that produced stub files
+    on a write_file step for a whole new module (audited 2026-07-28 live-test
+    sweep)."""
+
+    def test_never_below_flat_default(self) -> None:
+        from agents.coder import _resolve_coder_max_tokens, _CODER_MIN_MAX_TOKENS
+
+        step = _make_step(action="edit_file", description="Tiny fix.")
+        assert _resolve_coder_max_tokens(step, "x", budget=200_000) >= _CODER_MIN_MAX_TOKENS
+
+    def test_new_file_scales_with_description_length(self) -> None:
+        """A write_file step's ceiling grows with how much the task describes,
+        since a new file IS the entire REPLACE-side output."""
+        from agents.coder import _resolve_coder_max_tokens
+
+        short_step = _make_step(action="write_file", description="A tiny script.")
+        long_step = _make_step(action="write_file", description="Implement " * 500)
+        short_ceiling = _resolve_coder_max_tokens(short_step, None, budget=200_000)
+        long_ceiling = _resolve_coder_max_tokens(long_step, None, budget=200_000)
+        assert long_ceiling > short_ceiling
+
+    def test_edit_scales_with_existing_file_size(self) -> None:
+        """An edit_file step's ceiling grows with the target file's own size \u2014
+        more file to anchor SEARCH blocks against and reproduce."""
+        from agents.coder import _resolve_coder_max_tokens
+
+        step = _make_step(action="edit_file", description="Refactor it.")
+        small_ceiling = _resolve_coder_max_tokens(step, "x" * 100, budget=200_000)
+        large_ceiling = _resolve_coder_max_tokens(step, "x" * 50_000, budget=200_000)
+        assert large_ceiling > small_ceiling
+
+    def test_bounded_by_half_the_resolved_budget(self) -> None:
+        """Never exceeds half the resolved model's real context window, even for
+        a huge file/description \u2014 the prompt itself needs the other half."""
+        from agents.coder import _resolve_coder_max_tokens
+
+        step = _make_step(action="write_file", description="Implement " * 5000)
+        ceiling = _resolve_coder_max_tokens(step, None, budget=200_000)
+        assert ceiling <= 100_000
+
+    def test_real_context_window_wins_over_the_flat_floor(self) -> None:
+        """A genuinely tiny context window (small local model) must cap max_tokens
+        at half its real budget even when that dips below the historical 4096
+        floor \u2014 asking for more completion tokens than the window has room for
+        is a real correctness bug, not a safe default."""
+        from agents.coder import _resolve_coder_max_tokens
+
+        step = _make_step(action="write_file", description="Implement " * 5000)
+        ceiling = _resolve_coder_max_tokens(step, None, budget=2048)
+        assert ceiling <= 1024
+
+    def test_malformed_input_degrades_to_flat_default(self) -> None:
+        """Any unexpected input (e.g. a step missing an attribute) never raises \u2014
+        it degrades to the historical flat default."""
+        from agents.coder import _resolve_coder_max_tokens, _CODER_MIN_MAX_TOKENS
+
+        broken_step = cast(WBSStep, object())  # deliberately wrong shape — no .action/.description
+        assert _resolve_coder_max_tokens(broken_step, "x", budget=200_000) == _CODER_MIN_MAX_TOKENS
+
+
+# \u2500\u2500 Item B \u2014 cross-project RAG relevance filtering \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+@pytest.mark.anyio
+async def test_fetch_rag_snippets_filters_unrelated_top_level_project() -> None:
+    """A workspace root spanning two unrelated projects must not inject the
+    other project's code into this one's context \u2014 see core/utils.py's
+    filter_relevant_snippets, applied inside _fetch_rag_snippets."""
+    from agents.coder import _fetch_rag_snippets
+
+    async def fake_search(*args, **kwargs):
+        return [
+            ("GameData/player.py", "class Player: ..."),
+            ("App_transcription/audio.py", "def transcribe(): ..."),
+        ]
+
+    result = await _fetch_rag_snippets(
+        "GameData/score.py", "add scoring", "proj-1", retrieval_fn=fake_search,
+    )
+    assert result == [("GameData/player.py", "class Player: ...")]
+
+
+@pytest.mark.anyio
+async def test_fetch_rag_snippets_keeps_explicit_mentions() -> None:
+    from agents.coder import _fetch_rag_snippets
+
+    async def fake_search(*args, **kwargs):
+        return [("App_transcription/audio.py", "def transcribe(): ...")]
+
+    result = await _fetch_rag_snippets(
+        "GameData/score.py", "add scoring", "proj-1", retrieval_fn=fake_search,
+        explicit_mentions=["App_transcription/audio.py"],
+    )
+    assert result == [("App_transcription/audio.py", "def transcribe(): ...")]
 
 
 # ── Test F — SEARCH/REPLACE block parser ──────────────────────────────────────

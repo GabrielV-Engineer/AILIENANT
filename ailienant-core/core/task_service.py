@@ -180,6 +180,23 @@ _CHAT_SYSTEM_PROMPT: str = compose(
     "simple answers and never force a table where a sentence is clearer."
 )
 
+# Expansive variant for requests that explicitly ask for depth ("explain in detail",
+# "analyze", "walk me through"). The default prompt above says "concisely"/"briefly" —
+# correct for a quick question, but that same wording also stunted answers when the
+# user explicitly asked for depth (audited 2026-07-28 live-test sweep: the question
+# route passes no max_tokens at all, so the brevity was authored, not a truncation).
+# Reuses _EXPLAIN_SIGNALS below rather than a separate keyword list, so intent
+# classification and answer depth agree on what counts as an explanation request.
+_CHAT_SYSTEM_PROMPT_EXPANSIVE: str = compose(
+    "An expert AI coding assistant embedded in the user's IDE. "
+    "The user is explicitly asking for an explanation, analysis, or walkthrough — answer "
+    "in full depth: cover what the relevant code does, the key decisions and trade-offs "
+    "behind it, and how the pieces fit together, not a one-line summary. Provide correct, "
+    "idiomatic snippets where useful. If the request is ambiguous, state the assumption "
+    "you are making and proceed. When structured data, comparisons, or multi-step results "
+    "would be clearer that way, you may use GitHub-flavored Markdown tables or lists."
+)
+
 # Phase 7.9.B.15 — short-term session memory + GraphRAG injection.
 # In-memory and ephemeral by design (matches the "/context clear" UX wording);
 # keyed by the stable session_id (== WS client_id == X-Task-ID).
@@ -217,7 +234,21 @@ _INTENT_SYSTEM_PROMPT: str = (
 )
 
 
-# Replicamos el contrato del frontend (api_client.ts)
+def _resolve_chat_system_prompt(task_prompt: str) -> str:
+    """Pick the concise or expansive chat system prompt from the request's intent.
+
+    Reuses ``_EXPLAIN_SIGNALS`` (the same set the intent classifier uses to detect
+    an explanation ask co-occurring with an edit verb) so a request that reads as
+    "explain/analyze/walk me through" gets the depth variant while a short
+    factual question keeps the default concise one.
+    """
+    text = task_prompt.lower()
+    if any(sig in text for sig in _EXPLAIN_SIGNALS):
+        return _CHAT_SYSTEM_PROMPT_EXPANSIVE
+    return _CHAT_SYSTEM_PROMPT
+
+
+# Mirrors the frontend contract (api_client.ts).
 class TaskPayload(BaseModel):
     task_prompt: str
     dirty_buffers: List[DirtyBuffer]
@@ -419,6 +450,8 @@ class TaskService:
                 payload.project_id,
                 enable_native_thinking=payload.enable_native_thinking,
                 thinking_budget_tokens=payload.thinking_budget_tokens,
+                active_file_path=payload.active_file_path or "",
+                explicit_mentions=payload.explicit_mentions,
             )
 
         return {"status": "success", "message": "Task completed.", "session_id": session_id}
@@ -1562,19 +1595,34 @@ class TaskService:
                 session_id, len(_conversations[session_id]),
             )
 
-    async def _build_rag_context(self, task_prompt: str, project_id: Optional[str]) -> str:
+    async def _build_rag_context(
+        self,
+        task_prompt: str,
+        project_id: Optional[str],
+        *,
+        anchor_file: str = "",
+        explicit_mentions: Optional[List[str]] = None,
+    ) -> str:
         """Fetch top-k LanceDB snippets for the prompt and format them for the system prompt.
 
         Returns '' when no project, no index, or any failure — RAG is best-effort
-        and must never block or break a chat turn.
+        and must never block or break a chat turn. When ``anchor_file`` (the
+        user's active tab, if any) is given, results are filtered through
+        ``filter_relevant_snippets`` so a workspace root spanning two unrelated
+        projects never explains one project using the other's code — see
+        core/utils.py. No anchor (no active tab) means no filtering: there is
+        nothing to judge relevance against.
         """
         if not project_id:
             return ""
         try:
             from core.memory.semantic_memory import SemanticMemoryManager
+            from core.utils import filter_relevant_snippets
             snippets = await SemanticMemoryManager().search_snippets(
                 task_prompt, workspace_hash=project_id, k=_RAG_TOP_K
             )
+            if anchor_file:
+                snippets = filter_relevant_snippets(snippets, anchor_file, explicit_mentions)
         except Exception as exc:  # noqa: BLE001 — RAG fetch is non-fatal
             logger.debug("RAG context fetch failed (non-fatal): %s", exc)
             return ""
@@ -1690,6 +1738,8 @@ class TaskService:
         *,
         enable_native_thinking: bool = True,
         thinking_budget_tokens: int = 4096,
+        active_file_path: str = "",
+        explicit_mentions: Optional[List[str]] = None,
     ) -> None:
         """Stream a live completion from the active BYOM chat model to the IDE.
 
@@ -1704,8 +1754,9 @@ class TaskService:
         models simply never emit thinking deltas. When false, the legacy
         flat-text ``astream_byom`` path runs unchanged (true zero-regression).
         """
-        system_content = _CHAT_SYSTEM_PROMPT + await self._build_rag_context(
-            task_prompt, project_id
+        system_content = _resolve_chat_system_prompt(task_prompt) + await self._build_rag_context(
+            task_prompt, project_id,
+            anchor_file=active_file_path, explicit_mentions=explicit_mentions,
         )
         history = _conversations.get(session_id, [])
         messages: List[Dict[str, str]] = [

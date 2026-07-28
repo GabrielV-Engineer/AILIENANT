@@ -86,9 +86,11 @@ Source: `agents/contract_guard.py`.
 
 **Prompt source:** Built dynamically in `agents/planner.py` from two directives injected based on state:
 
-**`_SCOPE_DISCIPLINE_DIRECTIVE`:** Only propose edits to files explicitly named in the user request or in `researcher_skeleton`. Editing files not in scope is a contract violation.
+**`_SCOPE_DISCIPLINE_DIRECTIVE`:** Only propose edits to files explicitly named in the user request or in `researcher_skeleton`. Editing files not in scope is a contract violation. The WBS depth is proportional to request breadth — minimal for a narrow/named-file ask, adequately deep for a broad build-out; neither over- nor under-building is acceptable.
 
 **`_WBS_SEED_DIRECTIVE`:** If the user supplies a task list, treat it as an immutable seed. Translate it to `MissionSpecification` format; inject missing infrastructure steps (e.g. dependency installs) silently as step 0, but never alter the business logic steps.
+
+**`_STACK_GUIDANCE_DIRECTIVE`:** For requests that don't specify a technology, infer it from the artifact class being built (a game implies a game engine, not a web framework) rather than defaulting to a generic web stack; match an existing stack already visible in the workspace overview; state the choice as WBS step 1 when genuinely ambiguous.
 
 **Planning strategies (injected from `planner_mode_active` / `hitl_response` state):**
 

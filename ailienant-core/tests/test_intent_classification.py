@@ -17,7 +17,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.task_service import TaskService
+from core.task_service import (
+    TaskService,
+    _resolve_chat_system_prompt,
+    _CHAT_SYSTEM_PROMPT,
+    _CHAT_SYSTEM_PROMPT_EXPANSIVE,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -81,3 +86,41 @@ async def test_mixed_signal_defaults_to_question_when_llm_call_fails(
 
 async def test_empty_prompt_routes_to_question(service: TaskService) -> None:
     assert await service._classify_intent("   ") == "question"
+
+
+# ─── _resolve_chat_system_prompt — adaptive answer depth (Item C) ─────────────
+#
+# The question route (_stream_chat_answer) passes no max_tokens at all — the
+# terse answers reported in the live-test sweep were authored by
+# _CHAT_SYSTEM_PROMPT's "directly and concisely"/"briefly" wording, not a
+# truncation. Reuses _EXPLAIN_SIGNALS so intent classification and answer depth
+# agree on what counts as an explanation request.
+
+
+def test_short_question_gets_the_concise_prompt() -> None:
+    # Deliberately avoids every _EXPLAIN_SIGNALS term (including "how does"/"why
+    # does", which do count as explanation signals by design) — a genuinely
+    # short factual question with no explanation cue.
+    assert _resolve_chat_system_prompt("Is the database connected right now?") == _CHAT_SYSTEM_PROMPT
+
+
+def test_explain_request_gets_the_expansive_prompt() -> None:
+    assert (
+        _resolve_chat_system_prompt("Explain the code you wrote in detail.")
+        == _CHAT_SYSTEM_PROMPT_EXPANSIVE
+    )
+
+
+def test_explain_signal_detection_is_case_insensitive() -> None:
+    assert (
+        _resolve_chat_system_prompt("ANALYZE what you built and WALK ME THROUGH it")
+        == _CHAT_SYSTEM_PROMPT_EXPANSIVE
+    )
+
+
+def test_expansive_prompt_does_not_say_concisely_or_briefly() -> None:
+    """The whole point of the swap: the depth variant must not contradict itself
+    by keeping the brevity wording that caused the original bug."""
+    text = _CHAT_SYSTEM_PROMPT_EXPANSIVE.lower()
+    assert "concisely" not in text
+    assert "briefly" not in text

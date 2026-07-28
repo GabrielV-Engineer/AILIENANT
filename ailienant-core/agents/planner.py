@@ -40,6 +40,37 @@ MAX_PLANNER_RETRIES: int = PLANNER_MAX_RETRIES
 # plan itself — the strict WBS draft that follows carries the real output budget.
 _PLANNER_REASONING_MAX_TOKENS: int = 512
 
+# Output ceiling for the strict WBS draft itself (the MissionSpecification JSON —
+# outcome/scope/constraints/decisions/tasks/checks). Distinct from the reasoning
+# ceiling above. The gateway default (4096, applied whenever no max_tokens is passed)
+# budgets a narrow, single-file request comfortably, but a broad "build an MVP"
+# request needs a WBS with many tasks and correspondingly more JSON — a flat ceiling
+# there produces exactly the shallow/truncated plans this phase corrects (audited
+# 2026-07-28 live-test sweep). Scale by the request's length (a longer, more detailed
+# ask usually specifies a broader build) rather than bumping the default globally,
+# bounded by half the resolved model's real context window.
+_PLANNER_DRAFT_MIN_MAX_TOKENS: int = 4096
+_PLANNER_DRAFT_MAX_MAX_TOKENS: int = 16384
+
+
+def _resolve_planner_draft_max_tokens(user_input: str, budget: int) -> int:
+    """Derive the WBS draft's output-token ceiling from request breadth.
+
+    Never raises — any unexpected input degrades to the historical flat default.
+    """
+    try:
+        scaled = _PLANNER_DRAFT_MIN_MAX_TOKENS + len(user_input or "") * 6
+        # The real context window is the HARD ceiling — it must win even over the
+        # historical flat floor, or a small-window local model would be asked for
+        # more completion tokens than its window has room for. Only within that
+        # hard ceiling do we prefer at least the flat floor.
+        hard_ceiling = min(_PLANNER_DRAFT_MAX_MAX_TOKENS, budget // 2)
+        floor = min(_PLANNER_DRAFT_MIN_MAX_TOKENS, hard_ceiling)
+        return int(max(floor, min(scaled, hard_ceiling)))
+    except Exception:  # noqa: BLE001 — a budget-derivation fault must not block planning
+        logger.debug("planner: max_tokens scaling failed; falling back to flat default", exc_info=True)
+        return _PLANNER_DRAFT_MIN_MAX_TOKENS
+
 # Scope discipline injected into the planner instruction. Without it the model
 # treats every file it sees in the injected context as a backlog to edit and
 # sprawls into unrelated documents.
@@ -52,8 +83,32 @@ _SCOPE_DISCIPLINE_DIRECTIVE: str = (
     "understand the project. It is NOT a list of files to modify. Seeing a file in "
     "context is NEVER a reason to edit it.\n"
     "- Do NOT invent documentation updates, refactors, READMEs, tests, or edits to any "
-    "file the user did not ask about. Stay minimal: the smallest WBS that satisfies the "
-    "request is the correct one.\n\n"
+    "file the user did not ask about.\n"
+    "- Scale the WBS to the request's real breadth: a narrow or single-file request gets "
+    "the smallest WBS that satisfies it — do not pad it with unrequested steps. A broad "
+    "request (e.g. 'build an MVP', 'implement the whole feature') gets as many steps as "
+    "the artifact genuinely needs to be complete and working — do not compress a "
+    "multi-module build into one or two steps just to appear minimal. Under-building a "
+    "broad request is as much a violation of this directive as over-building a narrow "
+    "one.\n\n"
+)
+
+# Counter-bias for unconstrained "build X" requests. Absent this, an ambiguous request
+# is filled by the model's own training prior — historically a generic web stack
+# (Django/React) even when it plainly does not fit the artifact class (a game, a CLI
+# tool, a data pipeline). This does not force a stack; it asks the model to reason
+# about fit, or say so, before committing a WBS (audited 2026-07-28 live-test sweep).
+_STACK_GUIDANCE_DIRECTIVE: str = (
+    "STACK CHOICE (when the user has not specified one):\n"
+    "- Infer the technology from the ARTIFACT CLASS being requested, not from habit. "
+    "A game needs a game engine or a game-appropriate rendering/loop library, not a web "
+    "CRUD framework. A CLI tool needs an argument-parsing library, not a server "
+    "framework. A data pipeline needs data tooling, not a UI framework.\n"
+    "- If the workspace overview or an existing manifest already shows a stack in use, "
+    "match it rather than introducing a second, competing one.\n"
+    "- If the artifact class is genuinely ambiguous even after reading the request, make "
+    "the first WBS step state the chosen stack and the one-sentence reason, rather than "
+    "silently defaulting to a generic web stack.\n\n"
 )
 
 _WBS_SEED_DIRECTIVE: str = (
@@ -261,10 +316,10 @@ async def run_planner_node(
         )
 
     if not dirty_buffers and not _active_content:
-        context_str = f"<{boundary}>No se detectaron archivos sucios ni contexto activo en el IDE.</{boundary}>"
+        context_str = f"<{boundary}>No dirty buffers or active IDE context detected.</{boundary}>"
     elif dirty_buffers:
         for buf in dirty_buffers:
-            # Compatibilidad dict vs Pydantic object
+            # dict vs Pydantic object compatibility
             filepath = buf.get("path") if isinstance(buf, dict) else buf.path
             content = buf.get("content") if isinstance(buf, dict) else buf.content
 
@@ -411,7 +466,8 @@ async def run_planner_node(
         "Strictly define the Outcome, Scope, Constraints, Decisions, and sequential Tasks (WBS)"
         "assigning a valid target_role to each task, and the QA validation checks.\n\n"
         + _SCOPE_DISCIPLINE_DIRECTIVE
-        + _WBS_SEED_DIRECTIVE +
+        + _WBS_SEED_DIRECTIVE
+        + _STACK_GUIDANCE_DIRECTIVE +
         # explicit type discipline. The LLM intermittently emits objects
         # where strings belong, and arbitrary role strings; spell out the contract.
         "STRICT TYPE RULES:\n"
@@ -610,6 +666,7 @@ async def run_planner_node(
                         model=decision.effective_model,
                         temperature=0.0,
                         response_format={"type": "json_object"},
+                        max_tokens=_resolve_planner_draft_max_tokens(user_input, _budget),
                         session_id=session_id,
                         on_thinking=_on_thinking,
                         enable_thinking=_thinking_on,

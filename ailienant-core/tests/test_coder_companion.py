@@ -1,7 +1,8 @@
 # ailienant-core/tests/test_coder_companion.py
 #
-# Phase 11.5.B — Coder Companion Tests
-# Coverage: background-task lifecycle, LLM call resilience, parsing, UI safety.
+# Coder Companion tests.
+# Coverage: background-task lifecycle, LLM call resilience, parsing, UI safety,
+# and the free-form narration pass streamed to the Thought Box.
 
 import asyncio
 import pytest
@@ -14,7 +15,10 @@ from brain.coder_companion import (
     schedule_coder_companion,
     _companion_background_tasks,
     _resolve_verbosity,
+    _resolve_judge_tier,
+    _resolve_companion_llm_timeout,
     _call_analyst_llm,
+    _stream_narration,
     _parse_companion_json,
     _run_coder_companion,
     CompanionAnalysis,
@@ -287,7 +291,7 @@ async def test_schedule_coder_companion_gc_safety(mock_state):
     # Clear the set to start clean.
     _companion_background_tasks.clear()
 
-    async def quick_task(state, ordinal):
+    async def quick_task(state, ordinal, enable_narration=False):
         pass
 
     with patch("brain.coder_companion._run_coder_companion", new_callable=AsyncMock) as mock_run:
@@ -424,3 +428,162 @@ async def test_broadcast_coder_companion_contract(mock_state):
         assert isinstance(event, ServerCoderCompanionEvent)
         assert event.data.objective == "Fixed bug X"
         assert "Security issue patched" in event.data.security_notes
+
+
+# ─── NARRATION TESTS (Item A — free-form pass streamed to the Thought Box) ────
+
+def test_resolve_judge_tier_defaults_medium():
+    """A non-ailienant/ alias (or unrecognized suffix) resolves to 'medium'."""
+    with patch("brain.coder_companion.MINI_JUDGE_MODEL", "gpt-4o-mini"):
+        assert _resolve_judge_tier() == "medium"
+
+
+def test_resolve_judge_tier_reads_alias_suffix():
+    """An ailienant/<tier> alias resolves to its literal tier suffix."""
+    with patch("brain.coder_companion.MINI_JUDGE_MODEL", "ailienant/small"):
+        assert _resolve_judge_tier() == "small"
+
+
+def test_resolve_companion_llm_timeout_local_vs_cloud():
+    """A resolved local target gets the local deadline; a remote one the cloud deadline."""
+    local_target = Mock(is_local=True)
+    with patch("core.config.model_resolver.get_chat_target", return_value=local_target):
+        assert _resolve_companion_llm_timeout("medium") == 45.0
+
+    remote_target = Mock(is_local=False)
+    with patch("core.config.model_resolver.get_chat_target", return_value=remote_target):
+        assert _resolve_companion_llm_timeout("medium") == 12.0
+
+
+def test_resolve_companion_llm_timeout_unresolved_alias_falls_back_to_cloud():
+    """No active BYOM preset (unresolved alias) — advisory failure, cloud default."""
+    with patch("core.config.model_resolver.get_chat_target", return_value=None):
+        assert _resolve_companion_llm_timeout("medium") == 12.0
+
+
+def _narration_request(session_id: str = "sess1") -> CompanionAnalysisRequest:
+    return CompanionAnalysisRequest(
+        session_id=session_id,
+        task_id="task1",
+        attempt_ordinal=0,
+        task_description="Fix bug",
+        pending_patches={"file.py": "diff"},
+        pending_contents={"file.py": "content"},
+        file_context={},
+        relevant_errors=[],
+        security_flags=[],
+        verbosity="normal",
+    )
+
+
+async def test_stream_narration_skips_without_session_id():
+    """No session_id → nothing to correlate the stream to; returns immediately."""
+    request = _narration_request(session_id="")
+    with patch("brain.coder_companion.LLMGateway.astream_reasoning") as mock_stream:
+        await _stream_narration(request)
+    mock_stream.assert_not_called()
+
+
+async def test_stream_narration_forwards_deltas_to_thought_box():
+    """Each non-empty text delta is forwarded to broadcast_thinking_chunk with
+    source='simulated' — the narration is always a simulated (non-native) stream
+    by construction (free_form_answer=True)."""
+    from tools.stream_delta import StreamDelta
+
+    async def fake_stream(*args, **kwargs):
+        assert kwargs["free_form_answer"] is True
+        assert kwargs.get("response_format") is None
+        yield StreamDelta("text", "This patch ", "simulated")
+        yield StreamDelta("text", "adds input validation.", "simulated")
+
+    request = _narration_request()
+    with patch("brain.coder_companion.LLMGateway.astream_reasoning", side_effect=fake_stream):
+        with patch(
+            "api.websocket_manager.vfs_manager.broadcast_thinking_chunk", new_callable=AsyncMock
+        ) as mock_broadcast:
+            await _stream_narration(request)
+
+    assert mock_broadcast.call_count == 2
+    first_call = mock_broadcast.call_args_list[0]
+    assert first_call[0][0] == "sess1"
+    assert first_call[0][1] == "This patch "
+    assert first_call[1]["source"] == "simulated"
+
+
+async def test_stream_narration_timeout_degrades_to_silence():
+    """A hung stream never raises past the deadline — degrades to silence, exactly
+    like the structured analysis call's own timeout handling."""
+    async def hang(*args, **kwargs):
+        await asyncio.sleep(100)
+        yield  # pragma: no cover — unreachable, keeps this an async generator
+
+    request = _narration_request()
+    with patch("core.config.model_resolver.get_chat_target", return_value=None):  # force cloud (12s) deadline
+        with patch("brain.coder_companion.LLMGateway.astream_reasoning", side_effect=hang):
+            with patch("brain.coder_companion._COMPANION_LLM_TIMEOUT_CLOUD_S", 0.05):
+                # Must not raise.
+                await _stream_narration(request)
+
+
+async def test_stream_narration_provider_exception_degrades_to_silence():
+    """A provider fault during streaming must never propagate — pure color, never
+    load-bearing for the structured companion result running alongside it."""
+    async def boom(*args, **kwargs):
+        raise RuntimeError("provider exploded")
+        yield  # pragma: no cover — unreachable, keeps this an async generator
+
+    request = _narration_request()
+    with patch("brain.coder_companion.LLMGateway.astream_reasoning", side_effect=boom):
+        # Must not raise.
+        await _stream_narration(request)
+
+
+async def test_run_coder_companion_narration_gated_by_flag(mock_state):
+    """enable_narration=False (the default) never invokes the narration pass."""
+    mock_analysis = CompanionAnalysis(objective="Fixed bug X", degraded=False)
+
+    with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
+        with patch("brain.coder_companion._stream_narration", new_callable=AsyncMock) as mock_narrate:
+            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock):
+                with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
+                    await _run_coder_companion(mock_state, attempt_ordinal=0, enable_narration=False)
+
+    mock_narrate.assert_not_called()
+
+
+async def test_run_coder_companion_narration_runs_when_enabled(mock_state):
+    """enable_narration=True (mirrors the turn's Reasoning Mode toggle) fires the
+    narration pass after a successful structured analysis."""
+    mock_analysis = CompanionAnalysis(objective="Fixed bug X", degraded=False)
+
+    with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
+        with patch("brain.coder_companion._stream_narration", new_callable=AsyncMock) as mock_narrate:
+            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock):
+                with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
+                    await _run_coder_companion(mock_state, attempt_ordinal=0, enable_narration=True)
+
+    mock_narrate.assert_called_once()
+
+
+async def test_run_coder_companion_narration_never_fires_on_budget_skip(mock_state):
+    """A budget-ceiling skip must not attempt narration either — no request was
+    ever built, so there's nothing to narrate."""
+    mock_state["current_cost_usd"] = 100.0
+    mock_state["max_budget_usd"] = 50.0
+
+    with patch("brain.coder_companion._stream_narration", new_callable=AsyncMock) as mock_narrate:
+        with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock):
+            await _run_coder_companion(mock_state, attempt_ordinal=0, enable_narration=True)
+
+    mock_narrate.assert_not_called()
+
+
+async def test_schedule_coder_companion_threads_enable_narration(mock_state):
+    """schedule_coder_companion forwards enable_narration to the background task."""
+    _companion_background_tasks.clear()
+
+    with patch("brain.coder_companion._run_coder_companion", new_callable=AsyncMock) as mock_run:
+        schedule_coder_companion(mock_state, attempt_ordinal=0, enable_narration=True)
+        await asyncio.gather(*_companion_background_tasks)
+
+    mock_run.assert_called_once_with(mock_state, 0, True)

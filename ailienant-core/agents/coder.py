@@ -54,6 +54,49 @@ def content_hash(s: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+# Coder generation output ceiling. The gateway default (4096, applied whenever no
+# max_tokens is passed) budgets the ENTIRE SEARCH/REPLACE output for one WBS step —
+# a write_file step producing a whole new module, or an edit_file step touching a
+# large existing file, truncates mid-file at that flat ceiling (audited 2026-07-28
+# live-test sweep: stub-sized generated game files). Scale by two cheap, independent
+# complexity signals instead of bumping the default globally — a global bump raises
+# cost/latency on every trivial rename: the size of the file being touched (a bigger
+# file needs more room to both anchor SEARCH blocks and emit REPLACE content) and the
+# step's description length (a longer, more detailed instruction usually asks for
+# more code). Bounded by half the resolved model's real context window so the
+# ceiling can never exceed what the active BYOM target can actually return.
+_CODER_MIN_MAX_TOKENS: int = 4096
+_CODER_MAX_MAX_TOKENS: int = 16384
+
+
+def _resolve_coder_max_tokens(target_step: WBSStep, current_content: Optional[str], budget: int) -> int:
+    """Derive the coder's output-token ceiling from step complexity.
+
+    See the constants above for rationale. Never raises — any unexpected input
+    (e.g. a malformed step) degrades to the historical flat default.
+    """
+    try:
+        is_new_file = target_step.action == "write_file" or current_content is None
+        if is_new_file:
+            # A new file IS the entire REPLACE-side output; scale with how much
+            # the task description asks for.
+            scaled = _CODER_MIN_MAX_TOKENS + len(target_step.description or "") * 4
+        else:
+            # An edit's output is bounded by how much of the existing file it
+            # must reproduce/touch; the file's total size is the cheapest proxy.
+            scaled = _CODER_MIN_MAX_TOKENS + len(current_content or "") // 2
+        # The real context window is the HARD ceiling — it must win even over the
+        # historical flat floor, or a small-window local model would be asked for
+        # more completion tokens than its window has room for. Only within that
+        # hard ceiling do we prefer at least the flat floor.
+        hard_ceiling = min(_CODER_MAX_MAX_TOKENS, budget // 2)
+        floor = min(_CODER_MIN_MAX_TOKENS, hard_ceiling)
+        return int(max(floor, min(scaled, hard_ceiling)))
+    except Exception:  # noqa: BLE001 — a budget-derivation fault must not block generation
+        logger.debug("coder: max_tokens scaling failed; falling back to flat default", exc_info=True)
+        return _CODER_MIN_MAX_TOKENS
+
+
 def _make_vfs_reader(project_id: str, workspace_root: str, session_id: str) -> Callable[[str], Optional[str]]:
     """Return a callable(path) -> Optional[str] backed by the VFS firewall."""
     from core.vfs_middleware import make_safe_reader
@@ -136,6 +179,7 @@ async def _fetch_rag_snippets(
     description: str,
     project_id: str,
     retrieval_fn: Any = None,
+    explicit_mentions: Optional[list[str]] = None,
 ) -> list[tuple[str, str]]:
     """Single GraphRAG retrieval shared by the topology and style blocks.
 
@@ -143,15 +187,21 @@ async def _fetch_rag_snippets(
     the vector store. ``retrieval_fn`` is an optional injectable override (the
     default is the real ``search_snippets``); a benchmark supplies a degraded
     variant. Best-effort: returns [] on missing project or any failure.
+
+    Results are filtered through ``filter_relevant_snippets`` (keyed off
+    ``target_file``) so a workspace root spanning two unrelated projects never
+    injects the other project's code into this one — see core/utils.py.
     """
     if not project_id:
         return []
     try:
         from core.memory.semantic_memory import SemanticMemoryManager
+        from core.utils import filter_relevant_snippets
         _search_snippets = retrieval_fn or SemanticMemoryManager().search_snippets
-        return await _search_snippets(
+        raw = await _search_snippets(
             f"{target_file} {description}", workspace_hash=project_id, k=3
         )
+        return filter_relevant_snippets(raw, target_file, explicit_mentions)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Coder RAG fetch failed (non-fatal): %s", exc)
         return []
@@ -462,7 +512,8 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     _prior_this_file = (state.get("pending_contents") or {}).get(target_file)
     current_content = _prior_this_file if _prior_this_file is not None else _read_vfs(target_file)
     rag_snippets = await _fetch_rag_snippets(
-        target_file, target_step.description, project_id, _coder_retrieval_fn
+        target_file, target_step.description, project_id, _coder_retrieval_fn,
+        explicit_mentions=state.get("explicit_mentions"),
     )
     rag_block = _build_rag_block(rag_snippets)
     style_block = _build_style_block(target_file, rag_snippets)
@@ -589,6 +640,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
                 messages=messages,
                 model=MODEL_BIG,
                 temperature=0.0,
+                max_tokens=_resolve_coder_max_tokens(target_step, current_content, _budget),
                 session_id=session_id,
                 state=state,
                 on_thinking=_on_thinking,
@@ -689,8 +741,15 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
     # Fire-and-forget structured explanation of this patch set, rendered beside the
     # diff-approval UI. Best-effort side channel — never gates the graph's control flow.
+    # enable_narration mirrors this turn's own Reasoning Mode toggle: the coder's own
+    # generation call above never streams reasoning for a non-native model (the
+    # SEARCH/REPLACE contract is strict and never scaffolded), so the companion's
+    # free-form narration pass fills that gap — but only when the user actually has
+    # reasoning display on.
     from brain.coder_companion import schedule_coder_companion
-    schedule_coder_companion(state, attempt_ordinal=state.get("retry_count", 0))
+    schedule_coder_companion(
+        state, attempt_ordinal=state.get("retry_count", 0), enable_narration=_thinking_on,
+    )
 
     result: Dict[str, Any] = {
         "mission_spec": _mark_step_status(
