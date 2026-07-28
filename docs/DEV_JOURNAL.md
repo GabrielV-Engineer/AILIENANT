@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## CoderAgent Role-Prompt Debiasing — 2026-07-28
+**Status:** COMPLETE | **Gates:** mypy 0/441 · pyright 0 · pytest 2602 passed/2 skipped
+- Shipped: `qa_tester`'s directive named `pytest` specifically and `secops` named `Bandit`/`Semgrep` — neither tool exists in this codebase. Both reworded as content-generation guidance (infer the project's real test framework from the target file's language and neighboring tests; review each patch for language-appropriate OWASP risks) rather than instructions to invoke a specific tool by name. Also fixed `_BASE_CODER_PROMPT`'s stale "Emit unified diffs" line to match the actual SEARCH/REPLACE output contract.
+- Key decision: an initial design generalized `tools/coder_tools.py::RunTestsTool`/`LinterAutoFixTool` (hardcoded to `pytest`/`ruff`) across 13 ecosystems, but investigation found that whole module has zero production callers — the CoderAgent has no tool-calling wiring at all (single-shot SEARCH/REPLACE text, not `bind_tools`). Building a generalized tool arsenal for tools nothing can call would have been effort spent on dead code; the design was preserved as the binding spec for Division 8.18 instead of discarded or built prematurely.
+- Deferred: Division 8.18 — CoderAgent EXECUTE-Tier Tool Arsenal Correctness, gated on real tool-calling landing for the coder.
+
 ## 11.12: Complete Stack Guidance (11.11 Item D follow-up) — 2026-07-28
 **Status:** COMPLETE | **Gates:** mypy 0/441 · pyright 0 · pytest 2602 passed/2 skipped · npm compile 0 · npm test 126 passed
 - Shipped: a user audit found 11.11's stack guidance covering only 3 named artifact classes with no propagation path. A hardcoded stack catalog was proposed and rejected (token cost on every planner call, staleness, overrides the model's own knowledge). Two real gaps fixed instead: `MissionSpecification.decisions` was write-only across the whole backend (planner fills it, frontend renders it, no agent read it back), and `engine.py` routes `requires_iteration` steps to `brain/agentic_cell.py`, a second code generator that never saw mission context at all. `_STACK_GUIDANCE_DIRECTIVE` rewritten as an open-ended procedure (classify → constrain → choose → record as `decisions[0]` → require `target_file` consistency); new `MissionSpecification.to_context_block()` (`brain/state.py`) propagates the bounded decision/constraint block to both `agents/coder.py`'s budget-guarded prompt and `brain/agentic_cell.py`'s per-iteration ReAct messages.

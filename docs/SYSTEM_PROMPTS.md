@@ -110,9 +110,9 @@ Source: `agents/contract_guard.py`.
 
 ### 3.3 CoderAgent (8 Dynamic Roles)
 
-**Prompt source:** `build_coder_system_prompt(role)` in `agents/coder.py`, composing `BASE_SYSTEM_PROMPT` + role directive from `agents/roles.py`.
+**Prompt source:** `build_coder_system_prompt(role)` in `agents/roles.py`, composing `_BASE_CODER_PROMPT` + the role directive, both defined in that same module. (Not to be confused with `agents/prompts.py::BASE_SYSTEM_PROMPT`, a separate identity template used only by the Planner/Researcher's `build_safe_prompt` — never role-injected into the Coder.)
 
-**Base prompt (`agents/prompts.py::BASE_SYSTEM_PROMPT`, paraphrased):**
+**Base prompt (`agents/roles.py::_BASE_CODER_PROMPT`, paraphrased):**
 > "You are the CoderAgent. You produce concrete code changes for the active WBS step. Read files before writing. Emit SEARCH/REPLACE blocks when patching. Honor the role-specific rules below."
 
 **All 8 roles (from `agents/roles.py::ROLE_REGISTRY`):**
@@ -122,8 +122,8 @@ Source: `agents/contract_guard.py`.
 | `core_dev` | "Implement business logic. Prefer existing utilities. No abstractions for hypothetical futures." | — | — |
 | `architect_refactor` | "SOLID enforced. MUST use BatchEditTool. Rewriting whole files is a contract violation." | — | `BatchEditTool` mandatory |
 | `devops_infra` | "Docker/CI/Bash work. Any `sudo` or `.env` mutation pauses for HITL approval before applying." | `.env`, `sudo ` | `BashTool` available |
-| `secops` | "OWASP Top-10 enforced. Run Bandit/Semgrep after every patch. Quote CVE IDs when relevant." | — | — |
-| `qa_tester` | "Write tests first. NEVER mark step complete without pytest exit code 0. Always read `stderr` before emitting a patch." | — | `BashTool` for test runs |
+| `secops` | "OWASP Top-10 enforced — review each patch yourself for injection, unsafe deserialization, hardcoded secrets, and unsafe eval/exec appropriate to the target language. Quote CVE IDs when relevant." | — | — |
+| `qa_tester` | "Write tests using the project's existing test framework and conventions, inferred from the target file's language and neighboring test files. Write real assertions, never a fabricated pass. Read prior error feedback before a retry patch." | — | `BashTool` available |
 | `doc_manager` | "JSDoc, docstrings, and `.md` files ONLY. BashTool disabled. Never touch logic." | — | `BashTool` disabled |
 | `vcs_manager` | "Git operations only. Conventional Commits format. Never use `--force` without explicit HITL approval." | `--force` | `BashTool` for git only |
 | `data_ml_engineer` | "Tensors, pipelines, analytics. Validate dataframe shapes before any write." | — | `BashTool` available |

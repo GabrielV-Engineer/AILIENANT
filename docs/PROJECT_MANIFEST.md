@@ -50,6 +50,7 @@
 | 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.0 polyglot dependency-extraction registry (Python + TS/JS); then 8.14.1 blast-radius mapper |
 | 8.15 Dynamic Subagent Dispatch | ⬜ PENDING | — | 8.15.0 structured dispatch schema |
 | 8.16 Importance-Aware Session Memory | ⬜ PENDING | — | 8.16.0 context-utilization telemetry (GO/NO-GO gate) |
+| 8.18 CoderAgent EXECUTE-Tier Tool Arsenal Correctness | ⬜ PENDING (dormant, pre-wiring) | — | gated on CoderAgent tool-calling landing — not yet scheduled |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.9 Dashboard checkpoint gate (11.0–11.8 + 11.3.B + 11.10 + 11.11 + 11.12 shipped) |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
@@ -91,6 +92,7 @@
 | 8.14 | Graph Intelligence Upgrade (10 sub-phases) | ⬜ |
 | 8.15 | Dynamic Subagent Dispatch (6 sub-phases) | ⬜ |
 | 8.16 | Importance-Aware Session Memory (5 sub-phases) | ⬜ |
+| 8.18 | CoderAgent EXECUTE-Tier Tool Arsenal Correctness (dormant, pre-wiring) | ⬜ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
 | 11 | Web Dashboard Enterprise Redesign (10 sub-phases) | ⬜ |
@@ -830,6 +832,49 @@
 
 - [ ] **8.16.4 — Division 8.16 Checkpoint Gate.**
   `tests/test_phase8_16_checkpoint_gate.py` (sibling convention, test-only): re-certifies 8.16.1 (error/decision message retained past the `KEEP_LAST_N` boundary) · 8.16.2 (single-fire idempotency, no thrash) · 8.16.3 (write → `SessionStore.find_related` → injected as an L3 chunk, round-trip) · **precision regression guard:** a synthetic 50+-turn session fixture (reusing the Division 8.3 benchmark harness pattern) shows zero information loss on every message flagged important by the 8.16.1 probe · existing `tests/test_infrastructure.py` `KEEP_LAST_N` assertions pass unmodified. **DoD:** `mypy .` 0 · `pytest` green · `npx pyright` 0. No FE surface required (a session-resumption HUD indicator is an optional Phase 11 follow-up, same deferral precedent as 8.2.6.5's "Warm-up mode" badge).
+
+---
+
+### Division 8.18 — CoderAgent EXECUTE-Tier Tool Arsenal Correctness (Dormant, Pre-Wiring) ⬜
+
+> Surfaced during a role-prompt debiasing pass (qa_tester's directive named `pytest` specifically; secops named `Bandit`/`Semgrep`, neither of which exists in this codebase). Investigating the fix found `tools/coder_tools.py::RunTestsTool`/`LinterAutoFixTool`/`SecurityAuditTool` (constructed only via `make_coder_execute_tools`) have **zero production callers** — confirmed by exhaustive grep; `agents/coder.py::run_coder_node` never imports `tools/coder_tools.py`. More fundamentally, the CoderAgent has **no tool-calling wiring at all**: it is a single-shot call returning SEARCH/REPLACE text, not `bind_tools`/function-calling (per `core/tool_dispatch.py`'s own architectural note that the model gateway returns plain text). `role_cfg["allowed_tools"]` is likewise never read by `run_coder_node` (only `role_cfg["hitl_triggers"]` is) — it is inert metadata, documented in `RoleConfig`'s own docstring as "consulted by Phase 5 MCP executor," which hasn't landed. The role-prompt fix itself (rewording `qa_tester`/`secops` as content-generation guidance rather than tool-invocation instructions — since the model cannot invoke *any* named tool today) shipped separately, ahead of and independent of this division. **This division builds nothing until its gate condition is met** — implementing a generalized multi-language tool arsenal for tools nothing can call would be effort spent on dead code.
+>
+> **Gate condition (binding — do not start until one of these lands):** either the "Phase 5 MCP executor" referenced in `RoleConfig`'s docstring is actually implemented, or the CoderAgent adopts the JSON-envelope `core/tool_dispatch.py::ToolDispatcher` pattern already live for the Analyst agent (`agents/analyst.py:290`) — a concrete, already-proven alternative in this codebase, not a speculative one. Either constitutes real tool-calling for the coder; until then this stays `[ ]` and unscheduled.
+>
+> Command execution for `run_command`-action WBS steps is a **separate, already-correct path** and out of scope here: the planner LLM authors the literal shell command into the step (`agents/coder.py` lines 356-499, the Phase 7.18 closed loop) — no hardcoded runner, nothing to generalize.
+
+- [ ] **8.18.0 — Framework-agnostic test/lint command detection (`core/stack_detection.py`).**
+  New, pure-`pathlib` module (zero token cost — runs in tool code, never the prompt): `detect_test_command(workspace_root, target) -> Optional[str]` / `detect_lint_command(workspace_root, target, apply) -> Optional[str]`, first-match-wins on root-manifest presence, replacing `RunTestsTool`'s current hardcoded `pytest -q -- {target}` and `LinterAutoFixTool`'s hardcoded `ruff check`:
+
+  | Manifest signal | Whole-suite (`target in ("", ".")`) | Scoped (`target` given) |
+  |---|---|---|
+  | `pyproject.toml`/`setup.py`/`setup.cfg`/`pytest.ini`/`tox.ini` | `pytest -q` | `pytest -q -- {target}` |
+  | `package.json` | `npm test --silent` | `npm test --silent -- {target}` (npm forwards args after `--`) |
+  | `go.mod` | `go test ./...` | `go test ./{dir}/...` where `{dir}` is target's containing directory |
+  | `Cargo.toml` | `cargo test` | `cargo test --test {name}` if under `tests/`, else `cargo test {name}` |
+  | `pom.xml` | `mvn -q test` | `mvn -q test -Dtest={name}` |
+  | `build.gradle`/`build.gradle.kts` | `gradle test` | `gradle test --tests "*{name}*"` |
+  | `Gemfile` | `.rspec` present → `bundle exec rspec`, else `rake test` | rspec: `bundle exec rspec {target}`; rake: whole-suite only |
+  | `composer.json` | `composer test` | `composer test -- {target}` |
+  | any root `*.csproj`/`*.sln` | `dotnet test` | `dotnet test --filter {name}` |
+  | `Package.swift` | `swift test` | `swift test --filter {name}` |
+  | `build.sbt` | `sbt test` | `sbt "testOnly *{name}*"` |
+  | `mix.exs` | `mix test` | `mix test {target}` |
+  | `stack.yaml` or any `*.cabal` | `stack test` / `cabal test` | whole-suite only |
+
+  Returns `None` when nothing matches or `workspace_root` is empty — the caller surfaces this honestly, never falling back to a default framework. `detect_lint_command` stays at two-ecosystem parity (Python `ruff` / JS-TS `eslint`), mirroring the existing read-only `tools/validation/lsp_filter.py::validate_lsp` precedent rather than expanding independently — each additional linter's `--fix`/diff-preview flag semantics is its own research effort. **Class-filter helper** (`{name}` above, used by Cargo/Maven/Gradle/dotnet/sbt): take the target's final `/`-segment, then strip a trailing extension **only** if it's one of a fixed known set of source extensions (`.java`, `.kt`, `.scala`, `.cs`, `.rs`) — never a naive `Path(target).stem`, which mis-splits dotted class names (`Path("com.foo.BarTest").stem == "com.foo"`, since pathlib treats everything after the *last* dot as a suffix). `"src/test/java/com/foo/BarTest.java"` → `"BarTest"`; `"com.foo.BarTest"` (no path separator, no recognized trailing source extension) passes through unchanged — already valid Maven/Gradle FQCN filter syntax. **Known, accepted limitation:** `cargo test <bad-filter>` and `mvn -Dtest=<bad-name>` exit 0 with "0 tests run" rather than erroring (unlike `pytest`, which fails loudly on an unresolvable node id) — mitigate via the tool's existing full-stdout/stderr return contract plus the qa_tester prompt's "read error feedback" instruction, not new validation machinery. **DoD:** `pytest test_stack_detection.py` — every ecosystem row + the class-filter dotted-name case + no-manifest → `None` · `mypy .` 0 · `npx pyright` 0.
+
+- [ ] **8.18.1 — Explicit override + agent-self-persist resolution tiers.**
+  Three-tier resolution inside `RunTestsTool`/`LinterAutoFixTool`: (1) explicit override — a `"test_command"`/`"lint_command"` key in `.ailienant/.ailienant.json`, read via a new `core/rules.py::RuleManager.get_config_value(project_path, key) -> Optional[str]` accessor reusing the existing local-then-global merge helpers (`_candidate_paths`/`_load_one`/`_compose`) without touching `get_combined_rules`'s own cache fields; (2) `core/stack_detection.py` auto-detection from 8.18.0; (3) when both are empty, the tool's return message nudges the agent to investigate (it already has `FileReadTool`/`GrepTool`/`BashTool`) and persist the answer itself via `apply_patch` on `.ailienant/.ailienant.json`, so tier 1 catches it on every subsequent step. Chosen over building a new free-text HITL prompt (a new WS message type + frontend input card + round-trip correlation) since the agent can already self-serve with existing tools — reconsider only if 8.18's gate condition lands alongside a broader HITL-input capability elsewhere in the roadmap. **DoD:** `pytest test_rules.py` (local override wins over global, absent → `None`, non-string value → `None`, doesn't disturb `get_combined_rules`'s cache) + `pytest test_phase8_8_5_coder_arsenal.py` (override wins over a matching manifest, not just over "nothing detected") · `mypy .` 0.
+
+- [ ] **8.18.2 — `allowed_tools` naming-drift fix + `security_audit` registration.**
+  Every role's `allowed_tools` list uses invented strings (`"pytest"`, `"RunLinterTool"`) that don't match any tool's actual registered `name` (`"run_tests"`, `"linter_autofix"`) — harmless while the list is unread, but must be corrected before whatever lands per this division's gate condition starts consulting it, or every role would find its own tools denied on day one. Add `"security_audit"` to `secops.allowed_tools` (currently absent despite being its one real capability). **DoD:** `pytest test_phase8_8_tool_parity_gate.py` (frozensets updated to match) · `mypy .` 0.
+
+- [ ] **8.18.3 — `SecurityAuditTool` pattern broadening.**
+  Three additive `_OWASP_PATTERNS` entries (existing six untouched): `node_shell_exec` (Node's `exec`/`execSync`), `java_runtime_exec` (`Runtime.getRuntime().exec`), `insecure_deserialization` (PHP `unserialize`/Java `readObject`). Go (`os/exec.Command`) and Rust (`std::process::Command`) deliberately excluded — both are commonly safe by default (unlike Python `shell=True`/Node `exec()`), so a bare-call regex there would mostly flag safe code, a precision judgment not an oversight. **DoD:** `pytest test_coder_arsenal.py` — one fixture per new pattern, plus a negative fixture confirming the six existing patterns are untouched · `mypy .` 0.
+
+- [ ] **8.18.4 — `select_parser` completeness + Division 8.18 Checkpoint Gate.**
+  Extend `tools/validation/diagnostics.py::select_parser`'s substring dispatch to explicitly name every runner 8.18.0's table can emit, routing to the existing `parse_generic` fallback (never `parse_mypy` — none of these tools' native output matches its structured format). `tests/test_phase8_18_checkpoint_gate.py` (sibling convention, test-only): re-certifies 8.18.0 (every ecosystem branch + class-filter) · 8.18.1 (override tier wins over detection) · 8.18.2 (no stale tool-name strings remain) · 8.18.3 (new OWASP patterns fire, old ones unchanged). **DoD:** `mypy .` 0 · `pytest` green · `npx pyright` 0.
 
 ---
 

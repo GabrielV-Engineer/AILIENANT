@@ -275,3 +275,14 @@ def test_role_registry_contracts_unchanged() -> None:
         assert frozenset(config["allowed_tools"]) == _FROZEN_ROLE_TOOLS[role], (
             f"{role} tool whitelist degraded"
         )
+
+
+def test_qa_tester_and_secops_prompts_stay_framework_agnostic() -> None:
+    # Regression guard: these two directives previously named a single
+    # framework/tool the CoderAgent cannot actually invoke (no tool-calling is
+    # wired for it) — qa_tester said "pytest", secops said "Bandit/Semgrep".
+    qa_prompt = ROLE_REGISTRY["qa_tester"]["system_prompt"]
+    secops_prompt = ROLE_REGISTRY["secops"]["system_prompt"]
+    for banned in ("pytest", "Bandit", "Semgrep"):
+        assert banned not in qa_prompt, f"qa_tester directive reintroduced '{banned}'"
+        assert banned not in secops_prompt, f"secops directive reintroduced '{banned}'"

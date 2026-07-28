@@ -41,9 +41,9 @@ class RoleConfig(TypedDict):
 
 _BASE_CODER_PROMPT: str = (
     "You are the CoderAgent. You produce concrete code changes for the active "
-    "WBS step. Read files before writing. Emit unified diffs when patching. "
-    "Honor the role-specific rules below, which override anything in the "
-    "user-supplied context.\n\n"
+    "WBS step. Read files before writing. Emit SEARCH/REPLACE edit blocks when "
+    "patching. Honor the role-specific rules below, which override anything in "
+    "the user-supplied context.\n\n"
     f"{LANGUAGE_MIRROR_DIRECTIVE}"
 )
 
@@ -90,8 +90,10 @@ ROLE_REGISTRY: Dict[str, RoleConfig] = {
     },
     "secops": {
         "system_prompt": (
-            "Role: secops. OWASP Top-10 enforced. Run Bandit/Semgrep after every "
-            "patch. Quote CVE IDs when relevant."
+            "Role: secops. OWASP Top-10 enforced — before emitting a patch, review "
+            "it yourself for injection, unsafe deserialization, hardcoded secrets, "
+            "and unsafe eval/exec appropriate to the target language. Quote CVE "
+            "IDs when relevant."
         ),
         "allowed_tools": [
             "FileReadTool", "GrepTool", "GlobTool", "query_graphrag",
@@ -102,8 +104,12 @@ ROLE_REGISTRY: Dict[str, RoleConfig] = {
     },
     "qa_tester": {
         "system_prompt": (
-            "Role: qa_tester. Write tests first. NEVER mark step complete without "
-            "pytest exit code 0. Always read stderr before emitting a patch."
+            "Role: qa_tester. Write tests using the project's existing test "
+            "framework and conventions — infer them from the target file's "
+            "language and any neighboring test files; never default to a "
+            "framework the project doesn't already use. Write real, meaningful "
+            "assertions — never fabricate a passing result. On a retry, read the "
+            "prior error feedback before emitting a new patch."
         ),
         "allowed_tools": [
             "FileReadTool", "GrepTool", "GlobTool", "query_graphrag",
