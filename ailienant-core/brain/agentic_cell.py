@@ -708,8 +708,21 @@ def _build_messages(state: Dict[str, Any]) -> List[Dict[str, str]]:
             "content": "You are an autonomous coding agent driving a live terminal. Run "
             "commands, read the structured verdict, edit, and re-run until the task passes.",
         },
-        {"role": "user", "content": str(state.get("user_input", ""))},
     ]
+
+    # Mission-level decisions/constraints (e.g. the stack chosen by planner.py's
+    # _STACK_GUIDANCE_DIRECTIVE) were previously read here only for MCTS candidate scoring,
+    # never fed to the model's own reasoning — a live multi-iteration loop drifted from the
+    # plan's stack choice worse than the single-shot coder does. This rebuilds the message
+    # list fresh from state every iteration, so re-injecting it here means it cannot decay
+    # across a long autonomous run.
+    mission_spec = state.get("mission_spec")
+    mission_block = mission_spec.to_context_block() if mission_spec is not None else ""
+    if mission_block:
+        messages.append({"role": "system", "content": mission_block})
+
+    messages.append({"role": "user", "content": str(state.get("user_input", ""))})
+
     for record in state.get("agentic_trajectory") or []:
         if record.get("role") == "system":
             messages.append({"role": "system", "content": str(record.get("content", ""))})

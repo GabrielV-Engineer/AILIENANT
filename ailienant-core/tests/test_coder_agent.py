@@ -365,6 +365,99 @@ async def test_fetch_rag_snippets_keeps_explicit_mentions() -> None:
     assert result == [("App_transcription/audio.py", "def transcribe(): ...")]
 
 
+# ── 11.12 — MissionSpecification.to_context_block() ───────────────────────────
+#
+# The stack decision the planner records in `decisions` was write-only across the
+# whole backend: the planner filled it, PlanPanel/PlanAcceptancePanel rendered it,
+# but no code generator ever read it back, so a correct choice evaporated before
+# generation. This bounded projection is the propagation fix.
+
+
+class TestMissionSpecificationToContextBlock:
+    def test_empty_spec_returns_empty_string(self) -> None:
+        mission = MissionSpecification(
+            outcome="x", scope=[], constraints=[], decisions=[], tasks=[], checks=[],
+        )
+        assert mission.to_context_block() == ""
+
+    def test_includes_decisions_and_constraints(self) -> None:
+        mission = _make_mission([_make_step()])
+        mission.constraints.append("Follow house style.")
+        block = mission.to_context_block()
+        assert "Use the test runner." in block
+        assert "Follow house style." in block
+
+    def test_decisions_ordered_before_constraints(self) -> None:
+        """The stack decision is convention-first in `decisions` — it must survive
+        truncation, which only holds if decisions are emitted first."""
+        mission = _make_mission([_make_step()])
+        mission.decisions = ["Stack: Godot — 2D game, GDScript is the native fit."]
+        mission.constraints = ["No external dependencies."]
+        block = mission.to_context_block()
+        assert block.index("Stack: Godot") < block.index("No external dependencies")
+
+    def test_respects_entry_cap(self) -> None:
+        mission = _make_mission([_make_step()])
+        mission.decisions = [f"Decision {i}" for i in range(20)]
+        block = mission.to_context_block(max_entries=3)
+        assert block.count("Decision ") == 3
+
+    def test_respects_char_cap_and_truncates_rather_than_raises(self) -> None:
+        mission = _make_mission([_make_step()])
+        mission.decisions = ["Stack: " + ("x" * 5000)]
+        block = mission.to_context_block(max_chars=100)
+        assert len(block) < 200  # header + capped body, not the full 5000-char entry
+
+    def test_malformed_spec_field_never_raises(self) -> None:
+        """A defensively-typed caller (Any from state.get) must not crash the turn
+        even if a field somehow ended up wrong-shaped after LLM coercion quirks."""
+        mission = _make_mission([_make_step()])
+        mission.decisions = []  # empty is a legitimate, common case — must not raise
+        mission.constraints = []
+        assert mission.to_context_block() == ""
+
+
+# ── 11.12 — mission context reaches BOTH code generators ──────────────────────
+
+
+@pytest.mark.anyio
+async def test_coder_prompt_includes_mission_context_block() -> None:
+    """agents/coder.py previously read mission_spec only for step lookup/status —
+    the stack decision never reached the generation prompt. Assert it now does,
+    and that it precedes the file content (mission context leads L5, so it is the
+    last chunk trimmed under budget pressure)."""
+    from core.vfs_middleware import VFSReadResult
+    from agents.coder import run_coder_node
+
+    mission = _make_mission([_make_step(target_file="calc.py")])
+    mission.decisions = ["Stack: Godot — 2D game, GDScript is the native fit."]
+    state = _make_state(mission, step_id=1)
+    content = "def calculate(x):\n    return x + 1\n"
+    edit_blob = (
+        "### EDIT calc.py\n<<<<<<< SEARCH\n    return x + 1\n=======\n"
+        "    return x + 2\n>>>>>>> REPLACE\n"
+    )
+
+    captured_messages: List[Any] = []
+
+    async def _capture_ainvoke(*, messages: Any, **_kwargs: Any) -> Any:
+        captured_messages.extend(messages)
+        return _fake_llm_response(edit_blob)
+
+    with patch(
+        "core.vfs_middleware.VFSMiddleware.read_safe",
+        return_value=VFSReadResult(content=content),
+    ), patch(
+        "tools.llm_gateway.LLMGateway.ainvoke",
+        new=AsyncMock(side_effect=_capture_ainvoke),
+    ):
+        await run_coder_node(state)
+
+    user_content = next(m["content"] for m in captured_messages if m["role"] == "user")
+    assert "Stack: Godot" in user_content
+    assert user_content.index("Stack: Godot") < user_content.index(content.splitlines()[0])
+
+
 # ── Test F — SEARCH/REPLACE block parser ──────────────────────────────────────
 
 

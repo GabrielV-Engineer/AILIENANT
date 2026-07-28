@@ -96,19 +96,40 @@ _SCOPE_DISCIPLINE_DIRECTIVE: str = (
 # Counter-bias for unconstrained "build X" requests. Absent this, an ambiguous request
 # is filled by the model's own training prior — historically a generic web stack
 # (Django/React) even when it plainly does not fit the artifact class (a game, a CLI
-# tool, a data pipeline). This does not force a stack; it asks the model to reason
-# about fit, or say so, before committing a WBS (audited 2026-07-28 live-test sweep).
+# tool, a data pipeline). Deliberately a PROCEDURE, not a catalog of named frameworks:
+# a hardcoded stack list would cost real tokens on every planner call (including trivial
+# ones), goes stale as the framework landscape moves, and would override the model's own
+# (more current) knowledge with a hand-maintained one. This asks the model to reason about
+# fit, record what it decided, and never end up in a state where the decision and the plan
+# disagree (audited 2026-07-28 live-test sweep; widened after a follow-up audit found the
+# first version too narrow and its decision unable to reach either code generator — see
+# MissionSpecification.to_context_block in brain/state.py for the propagation half).
 _STACK_GUIDANCE_DIRECTIVE: str = (
-    "STACK CHOICE (when the user has not specified one):\n"
-    "- Infer the technology from the ARTIFACT CLASS being requested, not from habit. "
-    "A game needs a game engine or a game-appropriate rendering/loop library, not a web "
-    "CRUD framework. A CLI tool needs an argument-parsing library, not a server "
-    "framework. A data pipeline needs data tooling, not a UI framework.\n"
-    "- If the workspace overview or an existing manifest already shows a stack in use, "
-    "match it rather than introducing a second, competing one.\n"
-    "- If the artifact class is genuinely ambiguous even after reading the request, make "
-    "the first WBS step state the chosen stack and the one-sentence reason, rather than "
-    "silently defaulting to a generic web stack.\n\n"
+    "STACK CHOICE:\n"
+    "1. If the user named a stack or framework, use it — the rest of this section applies "
+    "only when they did not.\n"
+    "2. If the workspace overview or an existing manifest/lockfile already shows a stack in "
+    "use, extend it rather than introducing a second, competing one.\n"
+    "3. Otherwise, before writing any task: (a) name the artifact class being requested in "
+    "your own words — do not force it into a category you happen to know well; (b) name the "
+    "constraints that genuinely narrow the choice (where it must run, whether it is "
+    "interactive/realtime/batch, anything the user stated outright); (c) choose the "
+    "technology a practitioner building THAT artifact class would reach for by default — "
+    "not the most popular technology in general. A game needs a game engine or a "
+    "game-appropriate library, not a web CRUD framework; a CLI tool needs an "
+    "argument-parsing library, not a server framework; a data pipeline needs data tooling, "
+    "not a UI framework — but reason to the answer, do not just match these examples.\n"
+    "4. Record the outcome as the FIRST entry of 'decisions', in the exact form "
+    "'Stack: <specific named technologies> — <one-sentence reason tied to the artifact "
+    "class>'. A vague answer like 'a game engine' with no name is not acceptable.\n"
+    "5. Every task's target_file must be consistent with the chosen stack — its language, "
+    "file extensions, and conventional project layout. Do not choose a stack in 'decisions' "
+    "and then write tasks for a different one.\n"
+    "6. If the artifact class is genuinely ambiguous even after reasoning about it, still "
+    "choose and still record it as in step 4, additionally naming the ambiguity and the "
+    "alternative you rejected in that same entry.\n"
+    "7. A generic web stack is correct only when the artifact genuinely is a web "
+    "application — never as a default filled in because nothing more specific was named.\n\n"
 )
 
 _WBS_SEED_DIRECTIVE: str = (

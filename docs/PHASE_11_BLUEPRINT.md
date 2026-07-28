@@ -67,6 +67,26 @@ Both derive their budget from task complexity and are bounded by the resolved mo
 
 **D — stack choice.** No stack guidance exists anywhere in the prompt surface today, so the model's own prior decides unchallenged. The planner gains guidance to infer the stack from the **artifact class** (a game implies a game engine, not web CRUD) for unconstrained requests, or to confirm the stack briefly before committing a WBS.
 
+### 5.1 Item D amendment — 11.12, procedure over catalog, and propagation to both code generators
+
+11.11's Item D shipped three worked examples (game/web/CLI) inside `_STACK_GUIDANCE_DIRECTIVE`. A follow-up audit found this incomplete on two axes, and a hardcoded `ARTIFACT_CLASS_TO_STACK_OPTIONS` catalog (10+ classes × several named stacks each) was considered and **rejected** as the fix:
+
+- A static catalog costs 3–8k tokens on *every* planner call, including trivial ones, worsening how often `ContextBudgetError` (§4 of this blueprint, planner.py) degrades to identity-only.
+- It freezes a framework landscape that turns over yearly, with no test able to catch staleness.
+- It overrides the model's own (fresher-trained) knowledge of frameworks with a hand-maintained dict.
+- It does not address the real defect, which is procedural, not informational — see below.
+
+**Hole 1 — the decision never reached a code generator.** `MissionSpecification.decisions` was write-only across the whole backend: the planner fills it, `PlanPanel.tsx`/`PlanAcceptancePanel.tsx` render it, and no agent ever reads it back. `agents/coder.py` touched `mission_spec` only to locate its step and mark status — its prompt never carried `decisions` or `constraints`. A correct planner-side stack choice therefore evaporated before code generation, and a multi-step build could drift per step (step 1 writes `main.gd`, step 7 writes `main.py`).
+
+**Hole 2 — there are two code generators, not one.** `engine.py`'s WBS-step router sends `requires_iteration` steps to `brain/agentic_cell.py` (a live ReAct loop) and everything else to `agents/coder.py`. The cell reads `mission_spec` only for MCTS candidate scoring — its own `_build_messages` seeds the model with a generic system line and raw `user_input`, carrying no mission context at all. It drifts worse than the coder because it iterates autonomously over many turns without ever re-anchoring to the stack decision.
+
+**Fix, three layers:**
+1. `_STACK_GUIDANCE_DIRECTIVE` becomes an ordered procedure (classify artifact class → name genuine constraints → choose what a practitioner in that class reaches for → record as `decisions[0]` in a fixed `Stack: <names> — <reason>` form → require every `target_file` be consistent with that stack) rather than named examples. It stays open-ended by design — no framework names are hardcoded into the prompt.
+2. `MissionSpecification.decisions` is reused as-is (no contract change) as the sole record of the choice; plan review is the existing confirmation mechanism now that the entry is specific and visible.
+3. `MissionSpecification.to_context_block()` projects a bounded (`decisions` before `constraints`, entry- and char-capped) block, consumed by **both** `agents/coder.py` (prepended into the existing budget-guarded `execution=[...]` list, so it is tail-truncated rather than dropped under pressure) and `brain/agentic_cell.py::_build_messages` (re-injected every ReAct iteration, so it cannot decay across the loop).
+
+Manifest item: **11.12**.
+
 **E — proportional scope.** `_SCOPE_DISCIPLINE_DIRECTIVE` currently asserts that the smallest WBS is always correct, which under-plans broad requests. It becomes proportional — minimal for narrow or named-file requests, adequately deep for broad build-outs. **The "injected context is READ-ONLY reference; seeing a file is never a reason to edit it" clause is retained verbatim** — that half is what prevents sprawl and is load-bearing for Item B.
 
 ## 6. Interaction between items

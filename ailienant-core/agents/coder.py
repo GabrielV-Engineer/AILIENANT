@@ -267,7 +267,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
     if mission_spec is None:
         logger.error("CoderAgent invoked without mission_spec in state.")
-        return {"errors": ["CoderAgent: mission_spec ausente — abortando paso."]}
+        return {"errors": ["CoderAgent: mission_spec missing — aborting step."]}
 
     target_step: WBSStep | None = next(
         (t for t in mission_spec.tasks if t.step_number == step_id),
@@ -564,18 +564,26 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         "do NOT escape or wrap it."
     )
 
+    # Mission-level decisions/constraints (e.g. the stack chosen in planner.py's
+    # _STACK_GUIDANCE_DIRECTIVE) never reached this prompt before — mission_spec was read
+    # only for step lookup/status, so a correct planner-side choice could still drift per
+    # step across a multi-step build. Bounded projection; "" when there is nothing to add.
+    # (mission_spec is already guaranteed non-None here by the early return above.)
+    _mission_block = mission_spec.to_context_block()
+
     # ── Budget-guarded assembly (five-layer ContextPipeline) ──
     # L1 foundation = identity+role+project-instructions+skills (already aggregated on
     # system_prompt; never silently truncated). The volatile current file, GraphRAG
     # topology, and style exemplars are the Execution layer (L5) — trimmed first when
-    # the window is tight. A single-shot coder turn carries no conversation list, so
-    # L4 stays empty and on_compacted is omitted.
+    # the window is tight. Mission context leads L5 so it is the last chunk trimmed under
+    # pressure. A single-shot coder turn carries no conversation list, so L4 stays empty
+    # and on_compacted is omitted.
     _budget = resolve_context_budget(state)
     try:
         _agent_ctx = await build_agent_context(
             total_token_budget=_budget,
             foundation=[system_prompt],
-            execution=[file_block, rag_block, style_block],
+            execution=[_mission_block, file_block, rag_block, style_block],
             session_id=session_id,
             session_start_time=state.get("session_start_time"),
         )
@@ -592,7 +600,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         )
         _system_content = system_prompt
         _context_block = (
-            f"{file_block}\n\n{rag_block}\n\n{style_block}\n\n{AMNESIA_ALERT}"
+            f"{_mission_block}\n\n{file_block}\n\n{rag_block}\n\n{style_block}\n\n{AMNESIA_ALERT}"
         )
 
     instruction = _task_preamble + _context_block + "\n\n" + _format_postamble

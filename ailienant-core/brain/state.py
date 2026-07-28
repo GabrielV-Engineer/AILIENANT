@@ -144,29 +144,33 @@ class WBSStep(BaseModel):
 
 class MissionSpecification(BaseModel):
     """
-    EL MACRO-CONTRATO (Spec-Driven Development).
-    Forza al PlannerAgent a definir la arquitectura completa antes de escribir una línea de código.
+    THE MACRO-CONTRACT (Spec-Driven Development).
+    Forces the PlannerAgent to define the complete architecture before writing a single line of code.
     """
 
     outcome: str = Field(
-        description="El resultado final esperado y el valor aportado por esta misión."
+        description="The final expected result and the value this mission delivers."
     )
     scope: List[str] = Field(
-        description="Definición estricta de lo que está DENTRO y FUERA del alcance. Qué archivos tocar y cuáles NO."
+        description="Strict definition of what is IN and OUT of scope. Which files to touch and which NOT to."
     )
     constraints: List[str] = Field(
-        description="Limitaciones técnicas (ej. sin librerías externas, complejidad O(n), convenciones del proyecto)."
+        description="Technical limitations (e.g. no external libraries, O(n) complexity, project conventions)."
     )
     decisions: List[str] = Field(
-        description="Decisiones de diseño o arquitectura adoptadas para resolver este problema en particular."
+        description="Design or architecture decisions adopted to solve this particular problem. "
+        "Convention: when a technology stack was chosen or confirmed for this mission, it is "
+        "recorded as the first entry (see agents/planner.py::_STACK_GUIDANCE_DIRECTIVE) — "
+        "to_context_block() below relies on that ordering to survive truncation."
     )
     tasks: List[WBSStep] = Field(
-        description="Work Breakdown Structure (WBS). La lista secuencial y estricta de pasos a ejecutar."
+        description="Work Breakdown Structure (WBS). The strict, sequential list of steps to execute."
     )
     checks: List[str] = Field(
-        description="Criterios de aceptación técnicos. ¿Cómo sabrá el micro-enjambre de Testing que la tarea fue un éxito?"
+        description="Technical acceptance criteria. How will the Testing micro-swarm know the task succeeded?"
     )
-    # Phase 2.21 — DDD Ubiquitous Language + SDD + TDD (optional; defaults preserve backward compat)
+    # Optional; defaults preserve backward compatibility with plans authored before
+    # these DDD/SDD/TDD fields existed.
     ubiquitous_language: Dict[str, str] = Field(
         default_factory=dict,
         description="DDD: domain terms → definitions extracted from the Socratic session.",
@@ -183,7 +187,7 @@ class MissionSpecification(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_hallucinated_str_lists(cls, data: Any) -> Any:
-        """Phase 7.12 — coerce dict/scalar hallucinations in the ``List[str]`` fields.
+        """Coerce dict/scalar hallucinations in the ``List[str]`` fields.
 
         The contract (immutable per SCHEMA_EVOLUTION.MD) is unchanged: these fields
         remain ``List[str]``. This before-validator only normalises malformed LLM
@@ -196,6 +200,34 @@ class MissionSpecification(BaseModel):
                 if _field in data and data[_field] is not None:
                     data[_field] = _coerce_str_list(data[_field])
         return data
+
+    def to_context_block(self, max_entries: int = 6, max_chars: int = 600) -> str:
+        """Bounded projection of this mission's ``decisions``/``constraints`` for a code
+        generator's prompt (both `agents/coder.py` and `brain/agentic_cell.py` consume this).
+
+        Neither generator reads `mission_spec` for anything beyond step lookup/status today,
+        so a stack choice recorded in `decisions` (see that field's docstring — the stack
+        entry is convention-first) never reached the code it was meant to constrain, and a
+        multi-step build could drift per step. This method is the single, bounded seam that
+        fixes that without widening the wire contract: it emits data, not a new field.
+
+        `decisions` are emitted before `constraints`, and both are truncated (never silently
+        dropped) once `max_chars` is exhausted — the stack decision, always the first `decisions`
+        entry by convention, is therefore the last thing to be cut under pressure. Returns ""
+        when there is nothing to say, so a caller can splice it in unconditionally.
+        """
+        lines: List[str] = []
+        for label, items in (("Decision", self.decisions), ("Constraint", self.constraints)):
+            for item in items[:max_entries]:
+                lines.append(f"- {label}: {item}")
+
+        if not lines:
+            return ""
+
+        body = "\n".join(lines)
+        if len(body) > max_chars:
+            body = body[:max_chars].rstrip() + " …"
+        return "MISSION CONTEXT (binding — decisions already made for this build):\n" + body
 
 
 class ContextMeter(BaseModel):

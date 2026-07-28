@@ -407,3 +407,56 @@ def test_mission_spec_requires_iteration_field_default() -> None:
         checks=["e"],
     )
     assert spec.tasks[0].requires_iteration is False
+
+
+# ── 11.12 — mission context reaches the cell on every ReAct iteration ─────────
+#
+# `requires_iteration` steps route here instead of agents/coder.py (engine.py's
+# router). Previously `mission_spec` was read only for MCTS candidate scoring —
+# `_build_messages` never saw it, so a stack decision made by the planner could
+# drift across a long autonomous run worse than the single-shot coder does,
+# since this loop re-seeds itself from state on every visit.
+
+
+def test_build_messages_omits_mission_block_when_no_mission_spec() -> None:
+    """mission_spec is legitimately None for a cell reached outside the WBS flow
+    (e.g. a direct chat-driven run) — must degrade to the historical shape."""
+    state = _base_state()  # mission_spec: None, per the fixture default
+    messages = ac._build_messages(state)
+    assert all("MISSION CONTEXT" not in m["content"] for m in messages)
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {"role": "user", "content": "make the tests pass"}
+
+
+def test_build_messages_includes_mission_block_when_present() -> None:
+    mission = MissionSpecification(
+        outcome="x", scope=["a"], constraints=["No external deps."],
+        decisions=["Stack: Godot — 2D game, GDScript is the native fit."],
+        tasks=[WBSStep(step_number=1, action="edit_file", target_file="a.gd", description="d")],
+        checks=["e"],
+    )
+    state = _base_state(mission_spec=mission)
+    messages = ac._build_messages(state)
+    mission_messages = [m for m in messages if "Stack: Godot" in m.get("content", "")]
+    assert len(mission_messages) == 1
+    assert mission_messages[0]["role"] == "system"
+
+
+def test_build_messages_reinjects_mission_block_every_iteration() -> None:
+    """The loop rebuilds its message list from state fresh each visit — assert the
+    block survives that rebuild identically across a simulated multi-turn run,
+    which is exactly the drift this closes (a live loop iterating many turns
+    without ever re-anchoring to the plan's stack decision)."""
+    mission = MissionSpecification(
+        outcome="x", scope=["a"], constraints=[],
+        decisions=["Stack: Godot — 2D game, GDScript is the native fit."],
+        tasks=[WBSStep(step_number=1, action="edit_file", target_file="a.gd", description="d")],
+        checks=["e"],
+    )
+    state = _base_state(mission_spec=mission)
+    for _ in range(3):
+        messages = ac._build_messages(state)
+        assert any("Stack: Godot" in m.get("content", "") for m in messages)
+        state["agentic_trajectory"] = (state["agentic_trajectory"] or []) + [
+            {"diagnostics": "exit=1"}
+        ]
