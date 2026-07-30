@@ -198,7 +198,7 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
                 )}
                 <p className="ws-models-note">
                     Activating a preset rewrites the LiteLLM config and signals a proxy reload.
-                    Manage presets in the <button className="ws-core-menu-btn" style={{ display: 'inline', padding: 0, background: 'none', border: 'none', color: 'var(--accent-primary, #63a583)', cursor: 'pointer', fontSize: 'inherit' }} onClick={() => { vscode.postMessage({ type: 'OPEN_DASHBOARD', tab: 'byom' }); onClose(); }}>BYOM panel</button>.
+                    Manage presets in the <button className="ws-link-btn" onClick={() => { vscode.postMessage({ type: 'OPEN_DASHBOARD', tab: 'byom' }); onClose(); }}>BYOM panel</button>.
                 </p>
             </div>
         );

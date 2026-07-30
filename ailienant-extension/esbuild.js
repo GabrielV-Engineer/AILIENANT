@@ -105,6 +105,8 @@ async function main() {
 	// Copy dashboard index.html into dist on every build
 	fs.copyFileSync('src/dashboard/index.html', 'dist/dashboard/index.html');
 
+	copyUserGuides();
+
 	if (watch) {
 		await ctx.watch();
 		await sidebarCtx.watch();
@@ -117,6 +119,26 @@ async function main() {
 		assertGrammarEngineOffWebview();
 		assertWebviewBundleUnderCeiling();
 		await dashboardCtx.rebuild(); await dashboardCtx.dispose();
+	}
+}
+
+// The end-user guides live at the repository root, one level above the packaged
+// extension folder, so `vsce` cannot see them. Copy them into dist/docs/ (which
+// .vscodeignore does not exclude) so the Support → Help documents action works
+// offline in a published VSIX. Missing sources are skipped, never fatal: a
+// partial checkout must not break the build, and docsCatalog.ts probes for
+// existence before offering an entry.
+const USER_GUIDES = ['README.md', 'HowToUseIt.md', 'HowItWorks.md'];
+function copyUserGuides() {
+	const outDir = path.join('dist', 'docs');
+	fs.mkdirSync(outDir, { recursive: true });
+	for (const name of USER_GUIDES) {
+		const src = path.join('..', name);
+		if (fs.existsSync(src)) {
+			fs.copyFileSync(src, path.join(outDir, name));
+		} else {
+			console.warn(`[docs] skipped missing user guide: ${src}`);
+		}
 	}
 }
 

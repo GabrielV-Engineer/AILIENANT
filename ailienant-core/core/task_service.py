@@ -234,18 +234,68 @@ _INTENT_SYSTEM_PROMPT: str = (
 )
 
 
+# User-selected answer style, applied to the conversational surface ONLY.
+#
+# Deliberately not injected into the CoderAgent's prompt: that prompt mandates
+# SEARCH/REPLACE edit blocks, a strict machine-parsed output contract, and a
+# directive like "just the code, minimal prose" or "narrate every step" pushes
+# directly against it — the same failure class as attaching a reasoning scaffold
+# to a JSON-schema call. Style governs how the assistant talks to the user, not
+# how a patch is encoded. "default" contributes nothing, so an unset preference
+# leaves the prompt byte-identical to having no style feature at all.
+_OUTPUT_STYLE_DIRECTIVES: Dict[str, str] = {
+    "concise": (
+        "STYLE: Answer in as few words as the question honestly allows. Lead with the "
+        "answer, omit preamble and restatement, and skip background the user did not "
+        "ask for. Never sacrifice a correctness-relevant caveat for brevity."
+    ),
+    "explanatory": (
+        "STYLE: Show your reasoning. Walk through the relevant steps in order, name the "
+        "trade-offs behind each decision, and explain why the alternatives are worse. "
+        "Assume the user wants to understand the result, not just receive it."
+    ),
+    "code_only": (
+        "STYLE: Reply with code. Emit the snippet or file content and nothing else beyond "
+        "the comments needed to make it readable — no introduction, no summary, no closing "
+        "commentary. If the request genuinely cannot be answered with code, answer in one "
+        "short sentence."
+    ),
+}
+
+
+def _resolve_output_style_directive() -> str:
+    """Return the active answer-style directive, or "" when none applies.
+
+    Reads the same settings file the permission-mode preference comes from. Never
+    raises: a malformed or unreadable settings file must degrade to the default
+    style, not fail the turn.
+    """
+    try:
+        from api.system_settings import _read_settings as _read_sys_settings
+        style = str(_read_sys_settings().get("output_style", "default")).strip()
+    except Exception:  # noqa: BLE001 — a preference read must never block a task
+        logger.debug("output_style read failed; using the default style", exc_info=True)
+        return ""
+    return _OUTPUT_STYLE_DIRECTIVES.get(style, "")
+
+
 def _resolve_chat_system_prompt(task_prompt: str) -> str:
     """Pick the concise or expansive chat system prompt from the request's intent.
 
     Reuses ``_EXPLAIN_SIGNALS`` (the same set the intent classifier uses to detect
     an explanation ask co-occurring with an edit verb) so a request that reads as
     "explain/analyze/walk me through" gets the depth variant while a short
-    factual question keeps the default concise one.
+    factual question keeps the default concise one. The user's explicit answer
+    style is appended last so it wins over the variant's own wording.
     """
     text = task_prompt.lower()
-    if any(sig in text for sig in _EXPLAIN_SIGNALS):
-        return _CHAT_SYSTEM_PROMPT_EXPANSIVE
-    return _CHAT_SYSTEM_PROMPT
+    base = (
+        _CHAT_SYSTEM_PROMPT_EXPANSIVE
+        if any(sig in text for sig in _EXPLAIN_SIGNALS)
+        else _CHAT_SYSTEM_PROMPT
+    )
+    directive = _resolve_output_style_directive()
+    return f"{base}\n\n{directive}" if directive else base
 
 
 # Mirrors the frontend contract (api_client.ts).
@@ -746,13 +796,27 @@ class TaskService:
                 invoked_skill_id=payload.invoked_skill_id,
             )
 
-            # MCP servers connect once at host startup; this lazy guard only fires on a
-            # cold first task when startup connected nothing (idempotent — the bootstrap
-            # skips servers already in the registry, so there is no per-task DB cost in
-            # steady state).
-            from tools.mcp_adapter import _sessions, autoconnect_enabled_mcp_servers
-            if not _sessions:
-                await autoconnect_enabled_mcp_servers(state)
+            # User-authored per-role prompt directives, resolved once per task and
+            # threaded as a loose state key (the same pattern as active_skills):
+            # build_coder_system_prompt is sync and pure, so the async catalog read
+            # cannot live inside it. An empty map is the no-override common case.
+            try:
+                from core.db import list_agent_overrides
+                state["agent_role_overrides"] = await list_agent_overrides()
+            except Exception:  # noqa: BLE001 — a customization read must not block a task
+                logger.warning("agent role override read failed", exc_info=True)
+                state["agent_role_overrides"] = {}
+
+            # Reconcile the enabled-MCP-server set at the start of every task.
+            # Startup connects them once, and the save endpoint connects a newly
+            # added server immediately — but neither covers a server that was
+            # saved while the core was down or whose connect attempt failed. The
+            # sweep is idempotent per server name (already-live servers are
+            # skipped), so the steady-state cost is one bounded DB read; guarding
+            # it on an empty session registry, as this once did, silently stranded
+            # any server added while another was already connected.
+            from tools.mcp_adapter import autoconnect_enabled_mcp_servers
+            await autoconnect_enabled_mcp_servers(state)
         else:
             # Resume: durable state lives in the checkpoint. Seed the local dict with the
             # security posture (and orchestration mode) read back from that checkpoint so

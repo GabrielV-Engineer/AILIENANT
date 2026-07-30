@@ -13,6 +13,7 @@ co-occurs with an edit verb; it should escalate to the LLM tie-break instead
 """
 from __future__ import annotations
 
+from typing import Generator
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -30,6 +31,19 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture
 def service() -> TaskService:
     return TaskService()
+
+
+@pytest.fixture(autouse=True)
+def _default_output_style() -> Generator[None, None, None]:
+    """_resolve_chat_system_prompt reads the real ~/.ailienant/settings.json for
+    the output-style preference (11.13). This file's tests assert exact prompt
+    equality and predate that dependency, so they must not be coupled to
+    whatever style happens to be saved on the machine running them."""
+    with patch(
+        "api.system_settings._read_settings",
+        return_value={"output_style": "default", "permission_mode": "default"},
+    ):
+        yield
 
 
 async def test_pure_edit_request_routes_to_edit(service: TaskService) -> None:

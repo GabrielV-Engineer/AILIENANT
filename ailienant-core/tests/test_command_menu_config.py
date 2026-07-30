@@ -345,3 +345,113 @@ def test_delete_wipes_secret_and_session(tmp_path: Any, monkeypatch: pytest.Monk
         assert mcp_secrets.get_server_env("github") == {}
 
     asyncio.run(_run())
+
+
+# ── Save-then-connect: a server added from the command menu must be usable now ──
+
+
+def test_save_server_connects_immediately(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persisting alone left the server dark until a host restart."""
+    _isolate_catalog(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        boot = AsyncMock(return_value=True)
+        with patch.object(mcp_api, "bootstrap_mcp_session", boot):
+            res = await mcp_api.save_server(
+                {"name": "fs", "uri": "stdio:///usr/bin/npx?arg=server-filesystem"}
+            )
+        assert res["ok"] is True
+        assert res["connected"] is True
+        boot.assert_awaited_once()
+        assert boot.await_args is not None
+        assert boot.await_args.kwargs["server_name"] == "fs"
+        assert [s["name"] for s in await catalog_db.list_mcp_servers()] == ["fs"]
+
+    try:
+        asyncio.run(_run())
+    finally:
+        mcp_adapter._reset_mcp_session_for_tests()
+
+
+def test_save_server_keeps_row_when_connect_raises(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connect fault must never lose the saved row or fail the request."""
+    _isolate_catalog(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        boot = AsyncMock(side_effect=RuntimeError("cold npx download timed out"))
+        with patch.object(mcp_api, "bootstrap_mcp_session", boot):
+            res = await mcp_api.save_server(
+                {"name": "fs", "uri": "stdio:///usr/bin/npx?arg=server-filesystem"}
+            )
+        assert res["ok"] is True
+        assert res["connected"] is False
+        assert [s["name"] for s in await catalog_db.list_mcp_servers()] == ["fs"]
+
+    try:
+        asyncio.run(_run())
+    finally:
+        mcp_adapter._reset_mcp_session_for_tests()
+
+
+def test_save_disabled_server_does_not_connect(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_catalog(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        boot = AsyncMock(return_value=True)
+        with patch.object(mcp_api, "bootstrap_mcp_session", boot):
+            res = await mcp_api.save_server(
+                {"name": "fs", "uri": "stdio:///usr/bin/npx", "enabled": False}
+            )
+        assert res["ok"] is True
+        assert res["connected"] is None
+        boot.assert_not_awaited()
+
+    try:
+        asyncio.run(_run())
+    finally:
+        mcp_adapter._reset_mcp_session_for_tests()
+
+
+def test_autoconnect_reconciles_while_another_server_is_live(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep was guarded on an empty session registry, so a server added
+    while any other was already connected stayed dark until a host restart."""
+    _isolate_catalog(tmp_path, monkeypatch)
+    mcp_adapter._reset_mcp_session_for_tests()
+
+    async def _run() -> None:
+        await catalog_db.init_db()
+        await catalog_db.upsert_mcp_server("a", "already", "stdio:///usr/bin/npx", "stdio", True)
+        await catalog_db.upsert_mcp_server("b", "fresh", "stdio:///usr/bin/npx", "stdio", True)
+        # Simulate "already" holding a live session.
+        mcp_adapter._sessions["already"] = MagicMock()
+
+        seen: list[str] = []
+
+        async def _fake_bootstrap(uri: Any, state: Any, server_name: Any = None) -> bool:
+            seen.append(str(server_name))
+            return True
+
+        with patch.object(mcp_adapter, "bootstrap_mcp_session", _fake_bootstrap):
+            live = await mcp_adapter.autoconnect_enabled_mcp_servers({})
+
+        assert "fresh" in seen, "the newly saved server must be reconciled"
+        assert live == 2
+
+    try:
+        asyncio.run(_run())
+    finally:
+        mcp_adapter._reset_mcp_session_for_tests()

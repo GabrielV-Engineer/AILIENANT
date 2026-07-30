@@ -62,6 +62,9 @@ export interface ChatState {
     budgetWeeklyUsd: number;
     budgetMonthlyUsd: number;
     workspaceFolder: string;
+    /** Mirrors the host's `ailienant.developerMode`; gates developer-only
+     *  affordances. Pushed at creation and again whenever the setting changes. */
+    developerMode: boolean;
     attachedItems: AttachedItem[];
     nattAttachedItems: AttachedItem[];
     plan: PlanDocumentShape | null;
@@ -87,6 +90,7 @@ export interface ChatState {
     setBudgetWeeklyUsd: Dispatch<SetStateAction<number>>;
     setBudgetMonthlyUsd: Dispatch<SetStateAction<number>>;
     setWorkspaceFolder: Dispatch<SetStateAction<string>>;
+    setDeveloperMode: Dispatch<SetStateAction<boolean>>;
     setAttachedItems: Dispatch<SetStateAction<AttachedItem[]>>;
     setNattAttachedItems: Dispatch<SetStateAction<AttachedItem[]>>;
     setPlan: Dispatch<SetStateAction<PlanDocumentShape | null>>;
@@ -118,6 +122,7 @@ export const useChatStore = create<ChatState>((set) => ({
     budgetWeeklyUsd: 0,
     budgetMonthlyUsd: 0,
     workspaceFolder: '',
+    developerMode: false,
     attachedItems: [],
     nattAttachedItems: [],
     plan: null,
@@ -143,6 +148,7 @@ export const useChatStore = create<ChatState>((set) => ({
     setBudgetWeeklyUsd:   (v) => set((s) => ({ budgetWeeklyUsd: apply(v, s.budgetWeeklyUsd) })),
     setBudgetMonthlyUsd:  (v) => set((s) => ({ budgetMonthlyUsd: apply(v, s.budgetMonthlyUsd) })),
     setWorkspaceFolder:   (v) => set((s) => ({ workspaceFolder: apply(v, s.workspaceFolder) })),
+    setDeveloperMode:     (v) => set((s) => ({ developerMode: apply(v, s.developerMode) })),
     setAttachedItems:     (v) => set((s) => ({ attachedItems: apply(v, s.attachedItems) })),
     setNattAttachedItems: (v) => set((s) => ({ nattAttachedItems: apply(v, s.nattAttachedItems) })),
     setPlan:              (v) => set((s) => ({ plan: apply(v, s.plan) })),
@@ -163,6 +169,7 @@ export const useChatStore = create<ChatState>((set) => ({
             budgetWeeklyUsd: initial.budgetWeeklyUsd,
             budgetMonthlyUsd: initial.budgetMonthlyUsd,
             workspaceFolder: initial.workspaceFolder,
+            developerMode: initial.developerMode ?? false,
             messages: initial.initialMessages ?? [],
             nattMessages: initial.initialNattMessages ?? [],
         });

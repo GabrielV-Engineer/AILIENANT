@@ -64,8 +64,9 @@ ROLE_REGISTRY: Dict[str, RoleConfig] = {
     },
     "architect_refactor": {
         "system_prompt": (
-            "Role: architect_refactor. SOLID enforced. You MUST use BatchEditTool. "
-            "Rewriting whole files is a contract violation."
+            "Role: architect_refactor. SOLID enforced. Prefer several small, "
+            "targeted edits over rewriting a whole file — treat a full-file "
+            "rewrite as a contract violation."
         ),
         "allowed_tools": [
             "FileReadTool", "GrepTool", "GlobTool", "query_graphrag",
@@ -172,13 +173,20 @@ def get_role_config(role: Optional[str]) -> RoleConfig:
     return ROLE_REGISTRY["core_dev"]
 
 
-def build_coder_system_prompt(role: Optional[str]) -> str:
+def build_coder_system_prompt(role: Optional[str], override: Optional[str] = None) -> str:
     """Compose the ephemeral system prompt for the given role.
 
     Returns a fresh string — NEVER cached, NEVER persisted to state.messages.
     The CoderAgent passes this directly to the LLM call when tools are wired.
     For now it is held as a local variable in run_coder_node and
     discarded when the function returns.
+
+    ``override`` replaces the role's directive only. ``_BASE_CODER_PROMPT`` — which
+    carries the SEARCH/REPLACE output contract and the clause subordinating role
+    rules to it — is never user-replaceable, so a user-authored directive cannot
+    break the machine-parsed edit format. A blank override reverts to the built-in
+    directive, matching the "empty reverts to base" semantics of the save endpoint.
     """
     cfg = get_role_config(role)
-    return f"{_BASE_CODER_PROMPT}\n\n{cfg['system_prompt']}"
+    directive = (override or "").strip() or cfg["system_prompt"]
+    return f"{_BASE_CODER_PROMPT}\n\n{directive}"

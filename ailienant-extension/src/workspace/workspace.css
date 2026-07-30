@@ -467,6 +467,11 @@ html, body, #root { height: 100%; }
   transition: background 0.1s, border-color 0.1s;
 }
 .ws-mode-row:hover { background: var(--bg-hover); }
+.ws-mode-row:focus-visible {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: var(--focus-ring);
+}
 .ws-mode-row[data-active="true"] {
   border-color: var(--accent-primary);
   background: rgba(99, 165, 131, 0.06);
@@ -639,6 +644,11 @@ html, body, #root { height: 100%; }
   background: var(--bg-hover);
   border-color: var(--accent-primary);
 }
+.ws-palette-item:focus-visible {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: var(--focus-ring);
+}
 .ws-palette-cmd {
   font-family: monospace;
   font-weight: 600;
@@ -661,19 +671,34 @@ html, body, #root { height: 100%; }
 .ws-menu-item-icon { flex-shrink: 0; margin-top: 1px; color: var(--accent-primary); }
 .ws-menu-item-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .ws-menu-item-label { font-weight: 600; color: var(--text-primary); }
-.ws-menu-item[data-soon="true"] { cursor: default; opacity: 0.55; }
-.ws-menu-item[data-soon="true"]:hover { background: transparent; }
-.ws-menu-soon {
-  flex-shrink: 0;
+.ws-menu-empty {
+  padding: 10px 9px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+/* Immutable prompt text shown beside an editable override field. */
+.ws-readonly-block {
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  max-height: 88px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.ws-readonly-block-label {
+  display: block;
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  padding: 1px 6px;
-  align-self: center;
+  color: var(--text-disabled);
+  margin-bottom: 3px;
 }
+/* Same resting-state contract as .ws-core-menu-btn: the chevron carries the
+   accent, the title stays neutral, hover only washes the background. */
 .ws-menu-back {
   appearance: none;
   background: transparent;
@@ -688,9 +713,17 @@ html, body, #root { height: 100%; }
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
+  width: 100%;
+  text-align: left;
+  transition: background 0.12s;
 }
-.ws-menu-back:hover { color: var(--accent-primary); }
-.ws-menu-back-icon { transform: rotate(180deg); }
+.ws-menu-back:hover { background: var(--bg-hover); }
+.ws-menu-back:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: var(--focus-ring);
+}
+.ws-menu-back-icon { transform: rotate(180deg); color: var(--accent-primary); flex-shrink: 0; }
 
 /* Models nested views */
 .ws-models-body { display: flex; flex-direction: column; gap: 6px; padding: 2px; }
@@ -710,6 +743,11 @@ html, body, #root { height: 100%; }
   text-align: left;
 }
 .ws-models-row:hover { background: var(--bg-hover); }
+.ws-models-row:focus-visible {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: var(--focus-ring);
+}
 .ws-models-row[data-active="true"] { background: var(--bg-hover); border-color: var(--accent-primary); }
 .ws-models-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ws-models-row-name { font-size: 12px; font-weight: 600; }
@@ -1196,6 +1234,11 @@ html, body, #root { height: 100%; }
   white-space: nowrap;
 }
 .ws-core-menu-actions { display: flex; flex-direction: column; gap: 4px; }
+/* Secondary action button. The icon carries the accent at rest while the label
+   stays on the neutral text token for readability; hover adds emphasis
+   (background wash + border) rather than changing identity. Keeping the accent
+   out of the hover state is deliberate: a control whose color only becomes
+   correct under the pointer reads as broken. */
 .ws-core-menu-btn {
   appearance: none;
   background: transparent;
@@ -1209,12 +1252,56 @@ html, body, #root { height: 100%; }
   display: flex;
   align-items: center;
   gap: 7px;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background 0.12s, border-color 0.12s;
 }
+.ws-core-menu-btn > svg { color: var(--accent-primary); flex-shrink: 0; }
 .ws-core-menu-btn:hover {
   background: rgba(99, 165, 131, 0.08);
   border-color: var(--accent-primary);
+}
+.ws-core-menu-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: var(--focus-ring);
+}
+.ws-core-menu-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ws-core-menu-btn:disabled:hover {
+  background: transparent;
+  border-color: var(--border-subtle);
+}
+/* Destructive actions: a brand-green trash icon misreads as safe. */
+.ws-core-menu-btn[data-variant="danger"] > svg { color: var(--accent-alert); }
+.ws-core-menu-btn[data-variant="danger"]:hover {
+  background: rgba(248, 81, 73, 0.08);
+  border-color: var(--accent-alert);
+}
+.ws-core-menu-btn[data-variant="danger"]:focus-visible {
+  border-color: var(--accent-alert);
+  box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.35);
+}
+
+/* Inline text link rendered inside a paragraph — a real class rather than the
+   inline-style overrides that previously reset .ws-core-menu-btn per call site. */
+.ws-link-btn {
+  appearance: none;
+  display: inline;
+  padding: 0;
+  background: none;
+  border: none;
   color: var(--accent-primary);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.ws-link-btn:hover { color: var(--accent-hover); text-decoration: underline; }
+.ws-link-btn:focus-visible {
+  outline: none;
+  border-radius: 2px;
+  box-shadow: var(--focus-ring);
 }
 
 /* ── Smaller send / abort button ─────────────────────────────── */

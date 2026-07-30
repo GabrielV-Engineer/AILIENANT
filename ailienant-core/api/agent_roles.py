@@ -1,14 +1,17 @@
 # ailienant-core/api/agent_roles.py
 # NOTE: deliberately NOT named api/agents.py — that would shadow the top-level
 # `agents/` package and break `from agents.roles import ...`.
-"""Phase 7.9.A.7.b — Agents (role system-prompt overrides).
+"""Agents — per-role system-prompt overrides.
 
 Surfaces the 8 hardcoded RBAC roles from agents/roles.py and lets the user
-persist a per-role system-prompt override into the WAL-mode catalog DB.
+persist a per-role directive override into the WAL-mode catalog DB.
 
-Config-capture only: applying overrides inside build_coder_system_prompt() is a
-tracked follow-up. The orchestrator persona (SOUL.md) + Analyst name remain
-editable via /api/v1/system/soul and /api/v1/system/settings.
+An override replaces the role's directive only; ``_BASE_CODER_PROMPT`` (returned
+separately as ``base_coder_prompt`` so the UI can show what always applies)
+carries the SEARCH/REPLACE output contract and stays immutable. Overrides are
+resolved once per task and threaded to build_coder_system_prompt(). The
+orchestrator persona (SOUL.md) + Analyst name remain editable via
+/api/v1/system/soul and /api/v1/system/settings.
 """
 from fastapi import APIRouter
 from typing import Any, Dict

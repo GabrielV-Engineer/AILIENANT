@@ -13,6 +13,7 @@ import type {
     ReasoningPreset, DreamingProfile, OrchestrationMode, MentionItem,
 } from '../../shared/config';
 import { useWorkspaceStore } from '../workspaceStore';
+import { useChatStore } from '../chatStore';
 
 interface Props {
     disabled: boolean;
@@ -61,6 +62,7 @@ export function PromptBar({
     const setContextOpen = useWorkspaceStore((s) => s.setContextOpen);
     const paletteOpen    = useWorkspaceStore((s) => s.paletteOpen);
     const setPaletteOpen = useWorkspaceStore((s) => s.setPaletteOpen);
+    const developerMode  = useChatStore((s) => s.developerMode);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     useAutoResizeTextarea(textareaRef, value);
     const { slashActive, slashQuery } = useSlashDetect(value);
@@ -227,9 +229,14 @@ export function PromptBar({
                     config={config}
                     activeModelId={activeModelId}
                     orchestrationMode={orchestrationMode}
+                    developerMode={developerMode}
                     onPrefChange={onModelPrefChange}
                     onOpenContext={() => { setContextOpen(true); setPaletteOpen(false); if (slashActive) { setValue(''); } }}
                     onClose={() => { setPaletteOpen(false); if (slashActive) { setValue(''); } }}
+                    // A press outside the menu only retracts it. The draft is left
+                    // alone — while slash-active the menu is autocomplete for text
+                    // the user is still writing, and clearing it would lose work.
+                    onDismiss={() => setPaletteOpen(false)}
                 />
             )}
             {/* Phase 7.11.4 — @mention autocomplete (palette has priority). */}
@@ -290,6 +297,8 @@ export function PromptBar({
                     <Tooltip content="Open the command menu (type / in the input for quick access)">
                         <button
                             className="ws-prompt-icon-btn"
+                            data-palette-trigger
+                            aria-expanded={paletteVisible}
                             onClick={() => { setPaletteOpen(!paletteOpen); setContextOpen(false); }}
                             aria-label="Commands"
                             disabled={disabled}

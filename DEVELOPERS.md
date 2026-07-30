@@ -408,10 +408,12 @@ Proyect_Ailienant/
 │   │   │                        #     devcontainerProvisioner.ts (vscode-free lifecycle driver — probe/up/exec/degrade),
 │   │   │                        #     devcontainerFactory.ts (vscode wiring + lazy singleton),
 │   │   │                        #     devcontainerExecHandler.ts (host-side bridge handler — provision/exec, streams back),
-│   │   │                        #     devcontainerScaffold.ts (idempotent .devcontainer/devcontainer.json starter)
+│   │   │                        #     devcontainerScaffold.ts (idempotent .devcontainer/devcontainer.json starter),
+│   │   │                        #     docsCatalog.ts (vscode-free Help-documents resolver over dist/docs/)
 │   │   └── test/                #     vscode-test mocha suite
 │   ├── media/                   #   source logos (logo.svg, icon-color.svg, icon.svg)
-│   └── esbuild.js               #   3 build contexts (extension CJS · webview IIFE · dashboard ESM)
+│   ├── dist/docs/               #   build-copied user guides (README · HowToUseIt · HowItWorks) shipped in the VSIX
+│   └── esbuild.js               #   3 build contexts (extension CJS · webview IIFE · dashboard ESM) + user-guide copy
 ├── docs/                        # Manifest, blueprints, dev journal, schema, system prompts, tech debt
 ├── README.md  (+ 6 translations)# Public landing page
 ├── HowToUseIt.md · HowItWorks.md# User & architecture guides

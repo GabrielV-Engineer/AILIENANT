@@ -8,7 +8,9 @@ throwaway stdio MCP session purely to count the server's tools, then ruthlessly
 reaps the spawned subprocess tree (it never touches the live process-singleton
 session used by tools.mcp_adapter.bootstrap_mcp_session).
 
-Auto-connecting saved servers at task time is a tracked follow-up.
+A saved enabled server is connected immediately (best-effort) so it is usable
+without a host restart; the per-task reconcile in core.task_service is the
+backstop when that connect fails.
 """
 import asyncio
 import logging
@@ -97,7 +99,27 @@ async def save_server(body: Dict[str, Any]) -> Dict[str, Any]:
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
     await catalog_db.upsert_mcp_server(server_id, name, uri, transport, enabled)
-    return {"ok": True, "servers": await catalog_db.list_mcp_servers()}
+
+    # Connect right away so a server added from the command menu is usable in the
+    # current session. Idempotent per server name, so re-saving an already-live
+    # server is a no-op. A failure is non-fatal — the row stays enabled and the
+    # per-task reconcile retries — but it must never fail the save itself.
+    connected: Optional[bool] = None
+    if enabled and transport == "stdio":
+        state: Dict[str, Any] = {}
+        try:
+            connected = await bootstrap_mcp_session(
+                uri, cast("AIlienantGraphState", state), server_name=name
+            )
+        except Exception:  # noqa: BLE001 — a connect fault must not lose the saved row
+            logger.warning("MCP connect after save failed for %r", name, exc_info=True)
+            connected = False
+
+    return {
+        "ok": True,
+        "connected": connected,
+        "servers": await catalog_db.list_mcp_servers(),
+    }
 
 
 @router.delete("/servers/{server_id}")

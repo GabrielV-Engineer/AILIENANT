@@ -133,7 +133,12 @@
         "ailienant.docsUrl": {
           "type": "string",
           "default": "",
-          "description": "URL opened by the command menu's Support → Help documents action. Leave empty to be prompted to configure it."
+          "description": "Optional online documentation URL, offered as an extra entry alongside the bundled guides in the command menu's Support → Help documents action."
+        },
+        "ailienant.developerMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the command menu's Developer section. Its commands run arbitrary shell commands in the workspace root and are intended for contributors debugging AILIENANT itself."
         },
         "ailienant.notifications.hitlNativeMode": {
           "type": "string",

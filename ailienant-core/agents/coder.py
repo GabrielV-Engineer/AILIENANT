@@ -288,7 +288,11 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     target_file: str = target_step.target_file
 
     role_cfg = get_role_config(target_step.target_role)
-    system_prompt: str = build_coder_system_prompt(target_step.target_role)
+    _role_overrides = state.get("agent_role_overrides") or {}
+    system_prompt: str = build_coder_system_prompt(
+        target_step.target_role,
+        override=_role_overrides.get(target_step.target_role or ""),
+    )
 
     # Freeform project instructions (AILIENANT.md) — standing implementation
     # guidance (conventions, domain notes) the coder honors on every step.

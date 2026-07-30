@@ -645,28 +645,39 @@ async def bootstrap_mcp_session(
 async def autoconnect_enabled_mcp_servers(
     state: Optional[MutableMapping[str, Any]] = None,
 ) -> int:
-    """Connect every enabled MCP server in the catalog. Returns the count connected.
+    """Connect every enabled MCP server in the catalog. Returns the count now live.
 
     Idempotent via bootstrap_mcp_session's skip-if-connected guard, so it is safe
-    to call at app startup and again as a lazy first-task fallback. Never raises —
-    each per-server failure is already absorbed into the audit log.
+    to call at app startup and again as a per-task reconcile. Never raises — each
+    per-server failure is already absorbed into the audit log.
     """
     if state is None:
         state = {}
 
     from core.db import list_mcp_servers  # local import to avoid top-level cycles
 
-    connected = 0
+    live = 0
+    newly = 0
     for row in await list_mcp_servers():
         if not row.get("enabled"):
             continue
+        was_connected = row["name"] in _sessions
         ok = await bootstrap_mcp_session(
             row["uri"], state, server_name=row["name"]  # type: ignore[arg-type]
         )
         if ok:
-            connected += 1
-    logger.info("autoconnect_enabled_mcp_servers: %d server(s) connected.", connected)
-    return connected
+            live += 1
+            if not was_connected:
+                newly += 1
+    # Called on every task, so a steady state where nothing changed must not
+    # emit a line per turn; only an actual transition is noteworthy.
+    if newly:
+        logger.info(
+            "autoconnect_enabled_mcp_servers: %d newly connected, %d live.", newly, live
+        )
+    else:
+        logger.debug("autoconnect_enabled_mcp_servers: %d server(s) already live.", live)
+    return live
 
 
 async def close_mcp_session(server_name: str) -> None:

@@ -115,7 +115,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-049 | SkillInvokeTool passes embed_fn=None — semantic skill auto-matching disabled | LOW | Feature gap | post-8.8.6 | Floating |
 | DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | DB-layer async migration | Floating |
 | DEBT-054 | todo_write / agent_todos channel unbound — no cognitive node wiring | LOW | Integration gap | future integration sprint | Floating |
-| DEBT-027 | MCP servers not auto-connected at launch | LOW | Feature gap | dedicated slice | Floating |
+| ~~DEBT-027~~ | ~~MCP servers not auto-connected at launch~~ — **RESOLVED (11.13)**: connected at host start, on save, and reconciled per task | LOW | Feature gap | 11.13 | RESOLVED |
+| DEBT-127 | Per-role prompt overrides are ignored by dispatched subagents (`subagent_worker_node` builds a user-role seed, not a system prompt) | LOW | Integration gap | after DEBT-106 | Blocked |
+| DEBT-128 | `analyst_name` setting is persisted but never read — the persona path reads SOUL.md only | LOW | Integration gap | dashboard Rules slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
@@ -736,16 +738,37 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolved:** `agents/coder.py` now mirrors the planner seam — after the per-turn boundary UUID is minted, it reads `state.get("active_skills")` and appends `build_skill_directive_block(_skills, boundary)` to the coder system prompt (same ephemeral XML boundary as every other injected directive). No new state field — `active_skills` is already populated at task init.
 - **Notes:** the planner-mediated path still shapes the whole task; the coder-side injection makes skill directives robust across multi-step coder turns.
 
-### DEBT-027 [LOW · Floating] — MCP servers testable but not auto-connected at task launch
+### DEBT-027 [LOW · RESOLVED 2026-07-30, 11.13] — MCP servers testable but not auto-connected at task launch
 
 - **Date:** 2026-06-10
 - **Updated:** 2026-06-13 — Confirmed still open. `bootstrap_mcp_session` is not called anywhere in `core/task_service.py`. Comment in `api/mcp_servers.py:11` explicitly notes: "Auto-connecting saved servers at task time is a tracked follow-up." Reclassified from "Phase: 8.4.4" to Floating (8.4.4 shipped other MCP work but not this auto-connect wiring).
+- **Resolved:** the 2026-06-13 update above went stale — auto-connect had in fact landed in two places (`main.py`'s `autoconnect_enabled_mcp_servers()` at host start, and a lazy first-task fallback in `core/task_service.py`), while the source comment kept asserting otherwise. 11.13 closed the one genuine remaining hole: the task-time sweep was guarded by `if not _sessions`, so *any* already-connected server suppressed it and a server added afterwards stayed dark until a host restart. The guard is gone (the sweep is idempotent per server name, so steady-state cost is one bounded DB read per task), `POST /api/v1/mcp/servers` now connects a saved enabled server immediately — best-effort, never failing the save — and `autoconnect_enabled_mcp_servers` distinguishes newly-connected from already-live so a per-task call cannot spam the log. Regression tests in `tests/test_command_menu_config.py`.
 - **Reproduce:** `POST /api/v1/mcp/test` probes a server successfully, but starting a new task does not open sessions to `enabled` servers — their tools are absent from the task's `ToolRAGStore` selection.
-- **File(s):** `ailienant-core/api/mcp_servers.py` (test endpoint exists, no auto-connect hook); `ailienant-core/tools/mcp_adapter.py::bootstrap_mcp_session` (not invoked at task launch); `ailienant-core/core/task_service.py` (task entry, no MCP bootstrap pass).
+- **File(s):** `ailienant-core/api/mcp_servers.py`; `ailienant-core/tools/mcp_adapter.py::autoconnect_enabled_mcp_servers`; `ailienant-core/core/task_service.py`.
 - **Error:** coverage/wiring gap — a configured-and-enabled MCP server contributes no tools until manually bootstrapped.
 - **Blocked by:** none.
-- **Phase:** dedicated auto-connect wiring slice (Floating — assign to next 8.x window).
-- **Notes:** The `autoconnect_enabled_mcp_servers()` function in `tools/mcp_adapter.py` is correct and ready; only the invocation at task startup in `core/task_service.py` is missing.
+- **Phase:** 11.13.
+- **Notes:** cautionary case for the ledger itself — a stale "confirmed still open" note outlived the fix and was contradicted only by reading the code.
+
+### DEBT-127 [LOW · Blocked] — Per-role prompt overrides are ignored by dispatched subagents
+
+- **Date:** 2026-07-30
+- **Reproduce:** save a directive override for a role in the command menu's Customize → Agents view, then have that role run as a *dispatched subagent* rather than through `run_coder_node`. The override is applied by the coder (11.13) but never reaches the subagent.
+- **File(s):** `ailienant-core/brain/nodes/subagent_worker_node.py` (builds its prompt inline), `ailienant-core/agents/roles.py::build_coder_system_prompt` (not called from the subagent path).
+- **Error:** integration gap. The subagent worker composes a *user-role* seed message feeding a `_validate_against_schema`-constrained answer, not a system prompt — so there is no equivalent seam, and injecting free-text user content there risks the structured-answer contract.
+- **Blocked by:** DEBT-106 (dispatch dev roles are still tool-less, so the subagent path is not yet doing real role work). Same scoping precedent 11.12 set for this file.
+- **Phase:** revisit with the DEBT-106 slice.
+- **Notes:** the fix is likely a dedicated system-prompt seam in the subagent worker rather than reusing the coder builder verbatim.
+
+### DEBT-128 [LOW · Floating] — `analyst_name` setting is persisted but never read
+
+- **Date:** 2026-07-30
+- **Reproduce:** set the Analyst name via `POST /api/v1/system/settings`; the value round-trips through `~/.ailienant/settings.json` and the dashboard, but the persona the agent actually adopts is unchanged.
+- **File(s):** `ailienant-core/api/system_settings.py:19` (default `"Natt"`, written and read back), `ailienant-core/brain/personality.py` / `shared/persona.py` (read SOUL.md, never the configured name).
+- **Error:** integration gap — the same class as the output-style and role-override stubs 11.13 closed, but this control lives in the dashboard Rules panel, not the command menu, so it was out of that phase's scope.
+- **Blocked by:** none.
+- **Phase:** Floating — fold into a dashboard Rules-panel slice.
+- **Notes:** found while auditing the command menu; the menu only links out to the Rules panel, it does not own this control.
 
 ### DEBT-025 [LOW · Blocked] — Docker persistent-PTY backend has no daemon integration test
 

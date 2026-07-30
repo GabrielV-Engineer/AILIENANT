@@ -125,6 +125,9 @@ export interface InitialState {
     activeModelId:    string;
     orchestrationMode: OrchestrationMode;
     workspaceFolder:  string;
+    /** Host-side `ailienant.developerMode`. Gates developer-only affordances that
+     *  execute arbitrary shell; a host that omits it is treated as off. */
+    developerMode?:   boolean;
     initialMessages?:     Message[];      // restored chat transcript
     initialNattMessages?: NattMessage[];  // restored analyst transcript
 }

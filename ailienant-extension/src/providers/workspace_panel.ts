@@ -21,6 +21,7 @@ import { WorkspacePathIndex, extractMentions, FOLDER_EXPANSION_CAP, FOLDER_EXPAN
 import { HitlNotifier, type HITLApprovalRequestPayload, type HitlMode } from './hitlNotifier';
 import { getDevcontainerProvisioner } from './devcontainerFactory';
 import { handleDevcontainerServerEvent } from './devcontainerExecHandler';
+import { resolveDocEntries } from './docsCatalog';
 
 function findBackendPath(extensionFsPath: string): string | null {
     const candidates = [
@@ -267,6 +268,20 @@ export class WorkspacePanelManager {
                 const folder = vscode.workspace.workspaceFolders?.[0]?.name ?? '';
                 for (const panel of this._panels.values()) {
                     panel.webview.postMessage({ type: 'WORKSPACE_UPDATED', workspaceFolder: folder });
+                }
+            })
+        );
+
+        // Developer mode gates a menu section, so it must take effect on toggle
+        // rather than only at panel creation.
+        this._disposables.push(
+            vscode.workspace.onDidChangeConfiguration((e) => {
+                if (!e.affectsConfiguration('ailienant.developerMode')) { return; }
+                const developerMode = vscode.workspace
+                    .getConfiguration('ailienant')
+                    .get<boolean>('developerMode', false);
+                for (const panel of this._panels.values()) {
+                    panel.webview.postMessage({ type: 'DEVELOPER_MODE', developerMode });
                 }
             })
         );
@@ -1053,18 +1068,37 @@ export class WorkspacePanelManager {
                 }
                 case 'OPEN_DOCS': {
                     const cfg = vscode.workspace.getConfiguration('ailienant');
-                    const docsUrl = cfg.get<string>('docsUrl', '').trim();
-                    if (docsUrl) {
-                        void vscode.env.openExternal(vscode.Uri.parse(docsUrl));
-                    } else {
-                        void vscode.window.showInformationMessage(
-                            'AILIENANT documentation link is not configured. Set "ailienant.docsUrl" in VS Code Settings.',
+                    const entries = resolveDocEntries({
+                        extensionPath: this._extensionUri.fsPath,
+                        docsUrl: cfg.get<string>('docsUrl', ''),
+                        exists: fs.existsSync,
+                        join: path.join,
+                    });
+                    if (entries.length === 0) {
+                        void vscode.window.showWarningMessage(
+                            'AILIENANT documentation was not found in this build. Set "ailienant.docsUrl" to open it online instead.',
                             'Open Settings',
                         ).then((choice) => {
                             if (choice === 'Open Settings') {
                                 void vscode.commands.executeCommand('workbench.action.openSettings', 'ailienant.docsUrl');
                             }
                         });
+                        break;
+                    }
+                    const picked = await vscode.window.showQuickPick(
+                        entries.map(e => ({ label: e.label, detail: e.detail, entry: e })),
+                        { title: 'AILIENANT documentation', matchOnDetail: true },
+                    );
+                    if (!picked) { break; }
+                    if (picked.entry.url) {
+                        void vscode.env.openExternal(vscode.Uri.parse(picked.entry.url));
+                    } else if (picked.entry.relativePath) {
+                        const uri = vscode.Uri.joinPath(
+                            this._extensionUri, ...picked.entry.relativePath.split(/[\\/]/),
+                        );
+                        // Rendered preview rather than raw source: this is end-user
+                        // help, not a file the reader is expected to edit.
+                        void vscode.commands.executeCommand('markdown.showPreview', uri);
                     }
                     break;
                 }
@@ -1433,6 +1467,7 @@ export class WorkspacePanelManager {
             activeModelId:    this._workspaceState.get<string>(WORKSPACE_STATE_KEYS.activeModelId, ''),
             orchestrationMode: this._workspaceState.get<OrchestrationMode>(WORKSPACE_STATE_KEYS.orchestrationMode, 'auto'),
             workspaceFolder:  vscode.workspace.workspaceFolders?.[0]?.name ?? '',
+            developerMode:    vscode.workspace.getConfiguration('ailienant').get<boolean>('developerMode', false),
             initialMessages:     transcript.messages,      // Phase 7.9.B.20 — restore chat
             initialNattMessages: transcript.nattMessages,  // Phase 7.9.B.20 — restore analyst
         };

@@ -31,6 +31,9 @@ const HOOK_EVENTS: HookEvent[] = ['pre_patch', 'post_patch'];
 export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
     const [settings, setSettings] = useState<SystemSettings | null>(null);
     const [roles, setRoles] = useState<AgentRoleInfo[] | null>(null);
+    // The immutable CoderAgent contract an override extends. Surfaced read-only so
+    // the user can see what their directive is subordinate to rather than guessing.
+    const [baseCoderPrompt, setBaseCoderPrompt] = useState('');
     const [hooks, setHooks] = useState<Hook[] | null>(null);
     const [servers, setServers] = useState<McpServer[] | null>(null);
     const [mcpTests, setMcpTests] = useState<Record<string, McpTestResult | 'loading'>>({});
@@ -47,12 +50,16 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
         const handler = (event: MessageEvent): void => {
             const msg = event.data as {
                 type: string;
-                data?: SystemSettings | { roles?: AgentRoleInfo[] } | null;
+                data?: SystemSettings | { roles?: AgentRoleInfo[]; base_coder_prompt?: string } | null;
                 hooks?: Hook[]; servers?: McpServer[];
                 id?: string; result?: McpTestResult | null;
             };
             if (msg.type === 'SYSTEM_SETTINGS') { setSettings((msg.data as SystemSettings) ?? null); }
-            else if (msg.type === 'AGENT_ROLES') { setRoles(((msg.data as { roles?: AgentRoleInfo[] })?.roles) ?? []); }
+            else if (msg.type === 'AGENT_ROLES') {
+                const payload = msg.data as { roles?: AgentRoleInfo[]; base_coder_prompt?: string } | null;
+                setRoles(payload?.roles ?? []);
+                setBaseCoderPrompt(payload?.base_coder_prompt ?? '');
+            }
             else if (msg.type === 'HOOKS_DATA') { setHooks(msg.hooks ?? []); }
             else if (msg.type === 'MCP_SERVERS') { setServers(msg.servers ?? []); }
             else if (msg.type === 'MCP_TEST_RESULT' && msg.id) {
@@ -110,7 +117,10 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                         {active === s.id && <Icon name="check" size={13} />}
                     </button>
                 ))}
-                <p className="ws-models-note">Saved as a preference. Prompt-injection enforcement is a follow-up.</p>
+                <p className="ws-models-note">
+                    Shapes how answers and explanations are written. Generated patches are
+                    unaffected — their format is fixed by the edit contract.
+                </p>
             </div>
         );
     }
@@ -141,12 +151,18 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                                 </button>
                                 {isOpen && (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                        {baseCoderPrompt && (
+                                            <div className="ws-readonly-block">
+                                                <span className="ws-readonly-block-label">Always applied (not editable)</span>
+                                                {baseCoderPrompt}
+                                            </div>
+                                        )}
                                         <textarea
                                             className="ws-input"
                                             rows={4}
                                             value={roleDraft}
                                             onChange={e => setRoleDraft(e.target.value)}
-                                            placeholder="System-prompt override (empty reverts to base)"
+                                            placeholder="Role directive override (empty reverts to the built-in directive)"
                                         />
                                         <div style={{ display: 'flex', gap: 6 }}>
                                             <button
@@ -165,12 +181,13 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                     })}
                 </div>
                 <p className="ws-models-note">
-                    Edit the orchestrator persona &amp; Analyst name in the{' '}
+                    An override replaces this role&apos;s directive only — the base CoderAgent
+                    contract above always applies. Edit the orchestrator persona &amp; Analyst
+                    name in the{' '}
                     <button
-                        className="ws-core-menu-btn"
-                        style={{ display: 'inline', padding: 0, background: 'none', border: 'none', color: 'var(--accent-primary, #63a583)', cursor: 'pointer', fontSize: 'inherit' }}
+                        className="ws-link-btn"
                         onClick={() => { vscode.postMessage({ type: 'OPEN_DASHBOARD', tab: 'rules' }); onClose(); }}
-                    >Rules panel</button>. Overrides are saved; runtime application is a follow-up.
+                    >Rules panel</button>.
                 </p>
             </div>
         );
@@ -199,7 +216,12 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                                     className="ws-core-menu-btn"
                                     onClick={() => vscode.postMessage({ type: 'SAVE_HOOK', hook: { ...h, enabled: !h.enabled } })}
                                 >{h.enabled ? 'On' : 'Off'}</button>
-                                <button className="ws-core-menu-btn" onClick={() => vscode.postMessage({ type: 'DELETE_HOOK', id: h.id })}>
+                                <button
+                                    className="ws-core-menu-btn"
+                                    data-variant="danger"
+                                    aria-label={`Delete hook: ${h.command}`}
+                                    onClick={() => vscode.postMessage({ type: 'DELETE_HOOK', id: h.id })}
+                                >
                                     <Icon name="trash" size={13} />
                                 </button>
                             </div>
@@ -212,7 +234,10 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                     <input className="ws-input" placeholder="command, e.g. npm run lint" value={hookCmd} onChange={e => setHookCmd(e.target.value)} />
                     <button className="ws-core-menu-btn" onClick={addHook}><Icon name="plus" size={13} /> Add hook</button>
                 </div>
-                <p className="ws-models-note">Hooks are saved but not yet executed (execution wiring is a follow-up).</p>
+                <p className="ws-models-note">
+                    Hooks run around the file-write commit. A <code>pre_patch</code> command that
+                    exits non-zero blocks the write; <code>post_patch</code> is advisory.
+                </p>
             </div>
         );
     }
@@ -248,7 +273,12 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                                         disabled={test === 'loading'}
                                         onClick={() => { setMcpTests(p => ({ ...p, [s.id]: 'loading' })); vscode.postMessage({ type: 'TEST_MCP_SERVER', id: s.id, uri: s.uri }); }}
                                     >{test === 'loading' ? 'Testing…' : 'Test'}</button>
-                                    <button className="ws-core-menu-btn" onClick={() => vscode.postMessage({ type: 'DELETE_MCP_SERVER', id: s.id })}>
+                                    <button
+                                        className="ws-core-menu-btn"
+                                        data-variant="danger"
+                                        aria-label={`Delete MCP server: ${s.name}`}
+                                        onClick={() => vscode.postMessage({ type: 'DELETE_MCP_SERVER', id: s.id })}
+                                    >
                                         <Icon name="trash" size={13} />
                                     </button>
                                 </div>
@@ -260,7 +290,10 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                     <input className="ws-input" placeholder="stdio:///abs/path/to/server?arg=x" value={mcpUri} onChange={e => setMcpUri(e.target.value)} />
                     <button className="ws-core-menu-btn" onClick={addServer}><Icon name="plus" size={13} /> Add server</button>
                 </div>
-                <p className="ws-models-note">Servers are saved &amp; testable. Auto-connect at task time is a follow-up.</p>
+                <p className="ws-models-note">
+                    Enabled servers connect when the core starts and are reconciled at the start
+                    of each task; a server saved here connects immediately.
+                </p>
             </div>
         );
     }

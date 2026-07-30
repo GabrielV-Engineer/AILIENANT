@@ -367,7 +367,7 @@ export class APIClient {
         return this._json('/system/settings', { method: 'POST', body: JSON.stringify(patch) });
     }
 
-    // Hooks (config-capture only)
+    // Hooks — executed backend-side around the patch-apply commit
     public getHooks(): Promise<{ hooks: unknown[] } | null> {
         return this._json('/system/hooks', { method: 'GET' });
     }

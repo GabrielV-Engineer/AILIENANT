@@ -945,6 +945,11 @@ export function useWSMessageHandler(): void {
                     cs.setWorkspaceFolder(d.workspaceFolder);
                     break;
                 }
+                case 'DEVELOPER_MODE': {
+                    const d = msg as unknown as { developerMode?: boolean };
+                    cs.setDeveloperMode(d.developerMode === true);
+                    break;
+                }
                 case 'CONVERSATION_CLEARED': {
                     cs.setMessages([]);
                     cs.setPlan(null);

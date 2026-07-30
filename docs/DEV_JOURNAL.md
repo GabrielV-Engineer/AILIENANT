@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 11.13: Command Menu Completion & Polish — 2026-07-30
+**Status:** COMPLETE | **Gates:** mypy 0/442 · pyright 0 · pytest 2624 passed/2 skipped · npm compile 0 · npm lint 0 · npm test 132 passed
+- Shipped: full audit of the command menu closed every gap it found — a systemic resting-state color bug (`.ws-core-menu-btn`/`.ws-menu-back` were near-white until hovered; icons now carry the accent at rest, matching the root menu's own convention), outside-click dismissal + `aria-activedescendant` + an empty-results state, `Help documents` (previously always dead-ending) now opens bundled local guides via a new vscode-free `docsCatalog.ts`, the `/dev` shell-exec section is gated behind `ailienant.developerMode` (default off), three false "not yet wired" UI notes were corrected (hooks and MCP auto-connect were already real), and the two genuine MVP stubs — output style and per-role prompt overrides — now reach the LLM.
+- Key decision: output style is injected only into the chat prompt, never the CoderAgent's — its SEARCH/REPLACE contract is machine-parsed and a style directive would fight it, the same failure class as an unscaffolded reasoning injection. A test locks the boundary. Role overrides resolve once per task into a loose `agent_role_overrides` state key (the `active_skills` pattern, since the catalog read is async and the prompt builder is sync/pure) and replace only the role directive, never `_BASE_CODER_PROMPT`.
+- Deferred: DEBT-127 (dispatched subagents don't see role overrides, blocked on DEBT-106) and DEBT-128 (`analyst_name` persisted but inert — dashboard scope).
+
 ## CoderAgent Role-Prompt Debiasing — 2026-07-28
 **Status:** COMPLETE | **Gates:** mypy 0/441 · pyright 0 · pytest 2602 passed/2 skipped
 - Shipped: `qa_tester`'s directive named `pytest` specifically and `secops` named `Bandit`/`Semgrep` — neither tool exists in this codebase. Both reworded as content-generation guidance (infer the project's real test framework from the target file's language and neighboring tests; review each patch for language-appropriate OWASP risks) rather than instructions to invoke a specific tool by name. Also fixed `_BASE_CODER_PROMPT`'s stale "Emit unified diffs" line to match the actual SEARCH/REPLACE output contract.

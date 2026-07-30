@@ -86,7 +86,9 @@ async def save_settings(body: Dict[str, Any]) -> Dict[str, Any]:
         return settings
 
 
-# ── Phase 7.9.A.7.d — Hooks (config-capture; execution wiring is a follow-up) ──
+# ── Hooks ────────────────────────────────────────────────────────────────────
+# Executed by core.task_service._run_patch_hooks around the patch-apply commit:
+# a non-zero pre_patch exit vetoes the write, post_patch is advisory.
 
 
 @router.get("/hooks")

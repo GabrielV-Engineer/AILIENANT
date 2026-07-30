@@ -64,7 +64,12 @@ export function SkillsMenu({ view, onClose, onSwitchView }: Props): JSX.Element 
                                         </span>
                                     </div>
                                 </button>
-                                <button className="ws-core-menu-btn" onClick={() => vscode.postMessage({ type: 'DELETE_SKILL', id: s.id })}>
+                                <button
+                                    className="ws-core-menu-btn"
+                                    data-variant="danger"
+                                    aria-label={`Delete skill: ${s.name}`}
+                                    onClick={() => vscode.postMessage({ type: 'DELETE_SKILL', id: s.id })}
+                                >
                                     <Icon name="trash" size={13} />
                                 </button>
                             </div>
