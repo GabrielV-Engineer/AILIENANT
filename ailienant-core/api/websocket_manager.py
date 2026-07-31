@@ -31,6 +31,7 @@ from api.ws_contracts import (
     ServerNattStreamEndEvent, NattStreamEndPayload,
     ServerPipelineStepEvent, PipelineStepPayload,
     ServerActivityEvent, ActivityEventPayload,
+    ServerActivityDetailEvent, ActivityDetailPayload,
     ServerPlanDocumentEvent, PlanDocumentPayload,
     ServerStreamEndEvent,
     ServerInlineEditStartEvent, InlineEditStartPayload,
@@ -574,6 +575,47 @@ class ConnectionManager:
                     target=target,
                     metric=metric,
                     ref=ref,
+                )
+            ),
+        )
+
+    async def broadcast_activity_detail(
+        self,
+        session_id: str,
+        *,
+        ref: str,
+        source: str,
+        cwd: Optional[str] = None,
+        initiator: Optional[str] = None,
+        stdout: Optional[str] = None,
+        stderr: Optional[str] = None,
+        exit_code: Optional[int] = None,
+        duration_ms: Optional[float] = None,
+        truncated: bool = False,
+        error: Optional[str] = None,
+    ) -> None:
+        """Emit the I/O body for one "command" Glass-Box Timeline node.
+
+        Correlated to its marker (broadcast_activity_event, kind="command") by
+        ``ref``, the same body-on-a-separate-channel pattern already used for
+        reasoning deltas and diff blocks. Un-gated like its marker — this is a
+        single structured frame per execution, not free narration.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerActivityDetailEvent(
+                data=ActivityDetailPayload(
+                    session_id=session_id,
+                    ref=ref,
+                    source=source,  # type: ignore[arg-type]  # validated against ExecutionSource at the edge
+                    cwd=cwd,
+                    initiator=initiator,
+                    stdout=stdout,
+                    stderr=stderr,
+                    exit_code=exit_code,
+                    duration_ms=duration_ms,
+                    truncated=truncated,
+                    error=error,
                 )
             ),
         )

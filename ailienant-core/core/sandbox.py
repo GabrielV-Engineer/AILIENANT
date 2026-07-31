@@ -147,6 +147,16 @@ class SandboxAdapter(ABC):
         """
         ...
 
+    execution_source: str = "unknown"
+    """Wire identity for the Glass-Box Timeline's execution-detail channel
+    (``api.ws_contracts.ExecutionSource``). Overridden per concrete tier so
+    ``core/exec_log.py`` can label a command's execution envelope without
+    importing any adapter class — read via
+    ``getattr(adapter, "execution_source", "unknown")``, so a bare test double
+    conforming only to the narrower ``_ExecAdapter`` protocol still resolves
+    safely to the "unknown" default.
+    """
+
     supports_sessions: bool = False
     """Whether the tier can open a persistent interactive :class:`SandboxSession`.
 
@@ -204,6 +214,8 @@ class DockerSandboxAdapter(SandboxAdapter):
     worker thread because the synchronous SDK call cannot be interrupted from
     Python. The Phase 6.1.4 resolver will surface this via a startup probe.
     """
+
+    execution_source = "docker"
 
     supports_sessions = True
 
@@ -530,6 +542,8 @@ class NativeHITLSandboxAdapter(SandboxAdapter):
           added in 6.1.2.b if telemetry shows orphan accumulation.
     """
 
+    execution_source = "native_host"
+
     _HITL_ACTION: str = "SANDBOX_DEGRADED_EXEC"
     _HITL_TIMEOUT_S: float = 300.0  # matches resource_manager + finops defaults
 
@@ -727,6 +741,7 @@ class DevcontainerSandboxAdapter(SandboxAdapter):
     the same off-process discipline as :class:`NativeHITLSandboxAdapter`.
     """
 
+    execution_source = "devcontainer"
     supports_sessions = True
 
     def __init__(
@@ -987,6 +1002,8 @@ class WasmSandboxAdapter(SandboxAdapter):
     ignored — the Wasm tier has no wall-clock kill, no filesystem cwd, and no
     HITL surface.
     """
+
+    execution_source = "wasm"
 
     def __init__(self) -> None:
         config = wasmtime.Config()

@@ -118,6 +118,12 @@ Decision    Not a defect — see [DECISION] tier.
 | ~~DEBT-027~~ | ~~MCP servers not auto-connected at launch~~ — **RESOLVED (11.13)**: connected at host start, on save, and reconciled per task | LOW | Feature gap | 11.13 | RESOLVED |
 | DEBT-127 | Per-role prompt overrides are ignored by dispatched subagents (`subagent_worker_node` builds a user-role seed, not a system prompt) | LOW | Integration gap | after DEBT-106 | Blocked |
 | DEBT-128 | `analyst_name` setting is persisted but never read — the persona path reads SOUL.md only | LOW | Integration gap | dashboard Rules slice | Floating |
+| DEBT-129 | Coder's registry-fallback tools (Division 8.18) have no interactive HITL approval channel — a HITL-tier tool is safely denied, not shown a card | MEDIUM | Capability gap | future HITL-in-loop slice | Floating |
+| DEBT-130 | `run_coder_node`'s one-shot SEARCH/REPLACE path still has zero tool-calling — only the iterative `agentic_cell.py` path was activated in Division 8.18 | MEDIUM | Capability gap | future coder tool-calling slice | Floating |
+| DEBT-131 | `core/tool_registry.py::_INTENTIONALLY_UNREGISTERED` — 11 tools deliberately left unwired: decision record | DECISION | Architecture | N/A | Decision |
+| DEBT-132 | `BackgroundTaskManager.create` bypasses `record_execution` (own `create_subprocess_shell` path) — background tasks get no Glass-Box Timeline I/O detail box | LOW | Feature gap | future EXECUTE-tier ABC background-exec method | Floating |
+| DEBT-133 | File-read and MCP-tool-call I/O detail not on the Glass-Box Timeline (11.5.D scoped to `command` only) — different chokepoints (`make_safe_reader`, `tool_dispatch.py`), separate PII/token-budget call for file content | LOW | Feature gap | future timeline-depth slice | Floating |
+| DEBT-134 | Execution-detail I/O fills on completion, not incrementally — `SandboxSession.stream()` (persistent-PTY path) is unused by the one-shot `execute()` path 11.5.D instruments | LOW | UX polish | future streaming-output slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
@@ -770,6 +776,56 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** Floating — fold into a dashboard Rules-panel slice.
 - **Notes:** found while auditing the command menu; the menu only links out to the Rules panel, it does not own this control.
 
+### DEBT-129 [MEDIUM · Floating] — Coder registry-fallback tools have no interactive HITL approval channel
+
+- **Date:** 2026-07-30
+- **Reproduce:** drive `run_agentic_cell_node` with a reasoner that proposes a tool name outside the 3 `CELL_TOOLS` primitives, resolving to an EXECUTE/WRITE-tier tool under a session mode that would normally trigger HITL (e.g. DEFAULT). The `ToolDispatcher.dispatch()` call denies with "requires human approval, but no approval channel is available" instead of raising the interactive approval card.
+- **File(s):** `ailienant-core/brain/agentic_cell.py::_build_fallback_dispatcher` (constructs `ToolDispatcher(..., approval_fn=None)`); `ailienant-core/core/tool_dispatch.py::make_websocket_approval_fn` (the ready-built approval function this path deliberately does not use).
+- **Error:** capability gap, not a safety defect — the fallback fails closed (safe deny), never hangs or silently allows. `make_websocket_approval_fn` exists and is otherwise ready, but its own docstring warns that a mid-loop `interrupt()` must adopt the agentic cell's existing defer-then-interrupt-first replay-safety pattern (the same one `run_terminal`'s own HITL branch already uses via `pending_exec_command`) — wiring it in naively would risk re-executing an already-committed side effect on graph replay/resume.
+- **Blocked by:** none technically; needs the interrupt to be generalized to a lazily-resolved, arbitrary tool call rather than the single hardcoded `run_terminal` command the current defer mechanism was built for.
+- **Phase:** future HITL-in-loop slice, scoped as its own increment rather than rushed into Division 8.18.
+- **Notes:** until this lands, any coder task that genuinely needs a mutating registry-fallback tool under a HITL-triggering session mode cannot complete that step via the fallback path — it can still fall back to the 3 primitives (`run_terminal` included), which already have their own, correctly-wired HITL defer mechanism.
+
+### DEBT-130 [MEDIUM · Floating] — Coder's one-shot path (`run_coder_node`) still has no tool-calling
+
+- **Date:** 2026-07-30
+- **Reproduce:** any WBS step the planner does NOT flag as `requires_iteration` routes to `agents/coder.py::run_coder_node`'s single-shot SEARCH/REPLACE call — no `ToolDispatcher`, no `core/tool_registry.py` resolution, same as before Division 8.18.
+- **File(s):** `ailienant-core/agents/coder.py::run_coder_node`; `ailienant-core/agents/roles.py::build_coder_system_prompt` (its docstring documents this split as of Division 8.18).
+- **Error:** capability gap. Division 8.18 activated only the iterative path (`brain/agentic_cell.py`) per DEBT-068's ruling that the cell — not a second loop bolted onto `run_coder_node` — is the coder's mutation surface; the one-shot path was explicitly out of scope for that division, not overlooked.
+- **Blocked by:** none technically; the one-shot path's SEARCH/REPLACE output contract is machine-parsed and would need its own tool-calling seam (likely mirroring the cell's additive-fallback pattern) rather than a straight port.
+- **Phase:** future slice — revisit once there's a concrete need for tool access on non-iterative steps (most simple write_file/edit_file steps don't need it; the cases that would benefit are the ones already flagged for iteration).
+- **Notes:** the majority of WBS steps are simple and route through this path, so this is the larger of the two coder-side gaps by volume of steps affected, even though the iterative path was the higher-value target (it's where multi-step, test-and-fix work happens).
+
+### DEBT-132 [LOW · Floating] — Background-task executions get no Glass-Box Timeline I/O detail
+
+- **Date:** 2026-07-30
+- **Reproduce:** drive a task through `tools.execution_tools.BackgroundTaskManager.create` (the `task_create` tool) rather than `sandbox_bash`/`check_type_integrity`. The spawned command never appears with an expandable execution box on the timeline — no marker, no detail.
+- **File(s):** `ailienant-core/tools/execution_tools.py::BackgroundTaskManager.create` (own `asyncio.create_subprocess_shell` path, bypasses `core/exec_log.py::record_execution` entirely).
+- **Error:** capability gap, deliberately scoped out of 11.5.D. `record_execution`'s marker/detail pair models one bounded call with a single completion moment; a fire-and-forget background task has no such moment within the turn that spawned it — its own polling reads (`task_get`) would need a different Glass-Box representation, not the same one.
+- **Blocked by:** none technically; needs a background-execution method added to the `SandboxAdapter` ABC first (the `execution_tools.py` module docstring already flags this as deferred, independent of this division), then a timeline shape for "spawned, still running, polled N times."
+- **Phase:** future EXECUTE-tier ABC background-exec method slice.
+- **Notes:** the blocking, bounded call sites (`sandbox_bash`, `check_type_integrity`, `coder_verify`, `_gated_exec`) are exactly the ones 11.5.D covers — this is the one execution path deliberately left out.
+
+### DEBT-133 [LOW · Floating] — File-read and MCP-tool-call I/O not on the Glass-Box Timeline
+
+- **Date:** 2026-07-30
+- **Reproduce:** any `read`-kind timeline node (a file read) or an MCP tool call renders as a plain one-line marker — no expandable body, unlike a `command` node after 11.5.D.
+- **File(s):** would touch `core/vfs_middleware.py::make_safe_reader` (file reads) and `tools/mcp_adapter.py`/`core/tool_dispatch.py` (MCP tool calls) — two different chokepoints, neither the one 11.5.D instrumented.
+- **Error:** capability gap, explicitly out of scope for 11.5.D (see its Scope section: "Commands only"). Extending the same `ActivityDetailPayload`/`ActivitySink` pattern to file content raises a distinct question 11.5.D's command output didn't: file content is unbounded and potentially sensitive in a different way than command stdout (source code vs. arbitrary shell output), so the truncation/redaction policy needs its own design pass, not a copy-paste of `record_exec`'s masking.
+- **Blocked by:** a token-hygiene decision for how much of a read file's content is safe/useful to surface in a detail box (charter §5.5 — never inject unbounded raw I/O).
+- **Phase:** future timeline-depth slice, after real usage of the 11.5.D command box shows whether the same treatment is wanted for reads/tool calls.
+- **Notes:** MCP tool-call detail is a smaller lift than file-read detail (tool results are already structured, not raw file bytes) — a natural first target if this is picked up.
+
+### DEBT-134 [LOW · Floating] — Execution-detail output fills on completion, not incrementally
+
+- **Date:** 2026-07-30
+- **Reproduce:** run a long-lived command through `sandbox_bash` (e.g. a slow test suite) — the timeline node's I/O box stays empty (just an "active" spinner state) until the command finishes, then fills all at once. No line-by-line streaming like a live terminal.
+- **File(s):** `ailienant-core/core/pty_session.py::SandboxSession.stream()` (the `AsyncIterator[bytes]` primitive that WOULD enable this) is real and used by the persistent-PTY agentic-cell path, but `core/exec_log.py::record_execution` wraps the one-shot `adapter.execute()` call, which returns a single `SandboxResult` only on completion — there is no incremental hook for it to forward.
+- **Error:** UX limitation, explicitly scoped out of 11.5.D (see its Scope section: "Filled on completion"). Wiring true streaming would need a new throttled delta channel (mirroring `server_thinking_chunk`'s chunking discipline) and only serves the subset of commands that go through a PTY session, not the plain `execute()` path `sandbox_bash`/`check_type_integrity` use today.
+- **Blocked by:** a decision on whether one-shot EXECUTE-tier tools should be rebuilt on top of `SandboxSession` (a bigger change than adding a streaming channel) or whether streaming stays PTY-session-exclusive.
+- **Phase:** future streaming-output slice.
+- **Notes:** the marker-fires-before-execution design (this division) already gives a live "active" state for free without streaming — this debt is specifically about the *body* appearing incrementally, not the node's status.
+
 ### DEBT-025 [LOW · Blocked] — Docker persistent-PTY backend has no daemon integration test
 
 - **Date:** 2026-06-09
@@ -902,6 +958,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** N/A — **resolved as Option A (Pivot):** the intent (zero state-corruption under concurrency) is treated as already satisfied; the 7.18.6 gate row **OCC1** *asserts* the existing reducer + `base_hash` guarantee rather than adding a mechanism.
 - **Phase:** Decision recorded under **7.18 (ADR-746)**. Re-open **only** if a demonstrated corruption bug proves reducers insufficient.
 - **Notes:** A genuine future risk: once 7.18 wires execute-tier dispatch, **async MCP tool calls** mutating state mid-node could warrant Option B (targeted execute-tier write idempotency) — a small hardening, not a global OCC rewrite.
+
+### DEBT-131 [DECISION] — 11 tools deliberately left unwired in `core/tool_registry.py` (decision record)
+
+- **Date:** 2026-07-30
+- **Reproduce:** N/A (architecture decision, not an error). Division 8.18 built a reachability gate asserting every `BaseTool` class is either resolvable or explicitly excluded; 11 names are excluded by design.
+- **File(s):** `ailienant-core/core/tool_registry.py::_INTENTIONALLY_UNREGISTERED` (the authoritative, reasoned list); `ailienant-core/tests/test_phase8_18_checkpoint_gate.py::test_r1_every_basetool_class_is_reachable_or_allowlisted` (the gate that enforces the list stays exhaustive).
+- **Error:** Not a defect. Two distinct rationales, both judgment calls made during Division 8.18 rather than oversights: (a) `atomic_code_patch`, `batch_semantic_edit`, `file_write`, `generate_docstring` (4 tools) are redundant with `brain/agentic_cell.py`'s own `apply_granular_edit` primitive, and no safe `vfs_write(path, content)` closure exists in production to back them anyway (writes flow through `VFSMiddleware.ingest_dirty_buffers`, not a simple write API) — wiring them would mean inventing new, riskier write plumbing to duplicate a capability the coder already has. `guard_env_file` is excluded because it already emits its own content-hash-idempotent HITL gate and must not be double-gated by a generic dispatch wrapper. (b) `run_benchmark`, `get_benchmark_report`, `list_capabilities`, `skill_invoke`, `task_list`, `task_stop` (6 tools) duplicate `gateway/handlers.py`'s real, already-live MCP-gateway logic — the canonical owner is that standalone process, not this in-process registry; wiring both would create two competing implementations of the same capability.
+- **Blocked by:** N/A — resolved as: leave excluded, documented, and gate-enforced rather than wired or deleted.
+- **Phase:** Decision recorded under Division 8.18. Re-open only if a concrete need surfaces for the coder to mutate files through a path other than `apply_granular_edit` (would need a real `vfs_write` closure design first), or if the gateway package's tool classes are ever deleted outright rather than kept as intentionally-dormant duplicates.
+- **Notes:** the gateway_tools.py duplication (6 of the 11) is a stronger candidate for outright deletion than permanent exclusion — tracked here rather than acted on, since deleting live (if dormant) classes was out of scope for a wiring-focused division.
 
 ---
 

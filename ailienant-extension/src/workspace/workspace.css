@@ -2147,6 +2147,92 @@ html, body, #root { height: 100%; }
   .ws-timeline-rows { scroll-behavior: auto; }
 }
 
+/* ── Execution Detail (command I/O box) ───────────────────────────── */
+/* The I/O body for a 'command' timeline node. Reuses the diff card's box
+   conventions (bordered surface, --bg-surface header/footer) so the two
+   heavy timeline bodies read as one visual family rather than two competing
+   styles. The source label is plain uppercase text, not a colored badge —
+   this is provenance, not a status signal. */
+.ws-exec {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--vscode-editor-background, var(--bg-main));
+  margin-top: 4px;
+}
+.ws-exec-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.ws-exec-source {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.ws-exec-cwd {
+  font-family: var(--vscode-editor-font-family, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.ws-exec-initiator { flex-shrink: 0; opacity: 0.75; }
+/* Output is its own horizontal-scroll container — a long line never widens
+   the panel or the timeline column it sits in. */
+.ws-exec-stdout,
+.ws-exec-stderr,
+.ws-exec-error {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}
+.ws-exec-stdout { color: var(--text-primary); }
+.ws-exec-stderr,
+.ws-exec-error {
+  color: var(--vscode-errorForeground, #e5534b);
+  border-top: 1px solid var(--border-subtle);
+}
+.ws-exec-empty {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.ws-exec-note {
+  padding: 3px 10px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-subtle);
+}
+.ws-exec-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+.ws-exec-footer[data-failed="true"] { color: var(--vscode-errorForeground, #e5534b); }
+.ws-exec-duration { opacity: 0.75; }
+
 /* ── Inline Elite Diff Engine ─────────────────────────────────────── */
 /* Diffs bind to the editor's own diff palette so a theme switch repaints
    without reload — never hard-coded reds/greens. */

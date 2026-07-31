@@ -17,7 +17,7 @@ import type {
 } from '../../shared/config';
 import type { AilienantConfig } from '../../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../../shared/types';
-import type { CoderCompanionPayload, ActivityEventPayload } from '../../api/contracts';
+import type { CoderCompanionPayload, ActivityEventPayload, ActivityDetailPayload } from '../../api/contracts';
 import type { Message, NattMessage, ConversationMessage, SystemMessage, ToastLevel } from '../types';
 import type { HITLIntervention } from '../components/HITLInterventionCard';
 import type { CheckpointEntry } from '../components/CheckpointPicker';
@@ -33,7 +33,7 @@ import {
     STREAM_ACTIVITY_EVENTS,
 } from '../utils/messageDispatchHelpers';
 import { accumulateThinking, newThinkingTurn, freezeThinkingOnText, bumpLiveTokens } from '../utils/thinkingReducer';
-import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody } from '../utils/timelineBuilder';
+import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody, upsertExecutionBody } from '../utils/timelineBuilder';
 import { INITIAL_STATE as MD_INITIAL_STATE, pushToken as mdPushToken } from '../utils/StreamingMarkdownParser';
 import { mergeStreamEmits, type StreamLineEmit } from '../utils/streamTokenBuffer';
 import { sanitizePtyChunk } from '../utils/sanitizePty';
@@ -303,6 +303,26 @@ export function useWSMessageHandler(): void {
                     const d = msg.payload as ActivityEventPayload;
                     cs.setMessages(prev => attachOrUpdateTimeline(
                         prev, prior => upsertActivityMarker(prior ?? [], d), nattName,
+                    ));
+                    break;
+                }
+                case 'server_activity_detail': {
+                    // Execution provenance: the I/O body for a 'command' timeline
+                    // node, correlated to its marker by `ref` (the execution id).
+                    // Order-agnostic with server_activity_event — see upsertExecutionBody.
+                    const d = msg.payload as ActivityDetailPayload;
+                    cs.setMessages(prev => attachOrUpdateTimeline(
+                        prev, prior => upsertExecutionBody(prior ?? [], d.ref, {
+                            source: d.source,
+                            cwd: d.cwd ?? undefined,
+                            initiator: d.initiator ?? undefined,
+                            stdout: d.stdout ?? undefined,
+                            stderr: d.stderr ?? undefined,
+                            exit_code: d.exit_code ?? undefined,
+                            duration_ms: d.duration_ms ?? undefined,
+                            truncated: d.truncated,
+                            error: d.error ?? undefined,
+                        }), nattName,
                     ));
                     break;
                 }

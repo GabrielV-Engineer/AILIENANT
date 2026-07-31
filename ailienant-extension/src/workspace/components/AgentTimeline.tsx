@@ -40,6 +40,7 @@ import { ReasoningStream } from './ReasoningStream';
 import { ExecutionChecklist } from './ExecutionChecklist';
 import { DiffBlock } from './DiffBlock';
 import { CellAuditWidget } from './CellAuditWidget';
+import { ExecutionDetail } from './ExecutionDetail';
 
 export interface AgentTimelineProps {
     entries: TimelineEntry[];
@@ -90,6 +91,7 @@ function AgentTimelineImpl({
     useEffect(() => { if (done) { setContainerOpen(false); } }, [done]);
 
     const [manualDiffOpen, setManualDiffOpen] = useState<Record<string, boolean>>({});
+    const [manualExecOpen, setManualExecOpen] = useState<Record<string, boolean>>({});
     const lastDiffId = useMemo(() => {
         let id: string | null = null;
         for (const e of entries) { if (e.kind === 'diff') { id = e.id; } }
@@ -98,6 +100,11 @@ function AgentTimelineImpl({
     const lastCellId = useMemo(() => {
         let id: string | null = null;
         for (const e of entries) { if (e.kind === 'cell') { id = e.id; } }
+        return id;
+    }, [entries]);
+    const lastExecId = useMemo(() => {
+        let id: string | null = null;
+        for (const e of entries) { if (e.kind === 'command' && e.execution) { id = e.id; } }
         return id;
     }, [entries]);
 
@@ -233,6 +240,38 @@ function AgentTimelineImpl({
                                             streaming={live}
                                             onStdin={onCellStdin}
                                         />
+                                    </div>
+                                </div>
+                            );
+                        }
+
+                        if (entry.kind === 'command' && entry.execution) {
+                            // A command that actually reached an adapter: expandable,
+                            // showing the execution envelope + I/O. A 'command' entry
+                            // with NO `execution` (e.g. a "blocked" outcome that never
+                            // reached one — no I/O body ever exists for it) falls
+                            // through to the plain single-line render below instead.
+                            const isOpen = entry.id in manualExecOpen
+                                ? manualExecOpen[entry.id]
+                                : (entry.id === lastExecId && !done);
+                            return (
+                                <div key={entry.id} className="ws-timeline-row" data-kind="command">
+                                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
+                                    <div className="ws-timeline-row-body">
+                                        <button
+                                            type="button"
+                                            className="ws-timeline-row-header"
+                                            onClick={() => setManualExecOpen(prev => ({ ...prev, [entry.id]: !isOpen }))}
+                                            aria-expanded={isOpen}
+                                        >
+                                            <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
+                                            <Icon
+                                                name={isOpen ? 'chevron-down' : 'chevron-right'}
+                                                size={12}
+                                                className="ws-timeline-chevron"
+                                            />
+                                        </button>
+                                        {isOpen && <ExecutionDetail execution={entry.execution} />}
                                     </div>
                                 </div>
                             );

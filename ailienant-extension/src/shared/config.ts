@@ -169,6 +169,26 @@ export interface DiffBlockShape {
     settled?: boolean;
 }
 
+// The I/O body for one 'command' timeline entry, attached once
+// server_activity_detail arrives (correlated to the entry's `ref`). Mirrors
+// the backend ActivityDetailPayload (SCHEMA_EVOLUTION §39). stdout/stderr
+// arrive already masked and capped by the backend's single masking site
+// (core/exec_log.py::record_exec) — the frontend renders them verbatim and
+// never re-derives what is safe to show. `exit_code` stays undefined while
+// the node is still 'active' (detail not yet arrived); `error` is set only
+// on the fault path, when the adapter raised before a verdict existed.
+export interface ExecutionDetailShape {
+    source: 'devcontainer' | 'docker' | 'wasm' | 'native_host' | 'unknown';
+    cwd?: string;
+    initiator?: string;
+    stdout?: string;
+    stderr?: string;
+    exit_code?: number;
+    duration_ms?: number;
+    truncated?: boolean;
+    error?: string;
+}
+
 // Glass-Box Timeline (Phase 11.5.C) — the per-turn, seq-ordered agent-activity
 // trace. Mirrors the backend ActivityKind Literal (SCHEMA_EVOLUTION §38); the
 // frontend composes a human label from `kind` (+ `target`), so a raw internal
@@ -177,11 +197,13 @@ export type TimelineEntryKind =
     | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
     | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell';
 
-// 'active' only meaningfully applies to a 'reasoning' or 'cell' entry (both fire
-// their marker at the start of an open-ended span — deltas / further iteration
-// body still incoming); every other kind is a one-shot, self-contained marker
-// and settles to 'done' immediately on arrival. 'failed' is reserved for a
-// future slice once failure-carrying markers exist.
+// 'active' applies to a 'reasoning' or 'cell' entry (both fire their marker at
+// the start of an open-ended span — deltas / further iteration body still
+// incoming), and to a 'command' entry that carries a `ref` (marker fired
+// before execution; the matching detail resolves it to 'done' or 'failed').
+// Every other kind — including a ref-less 'command' entry, e.g. a 'blocked'
+// outcome that never reached an adapter — is a one-shot, self-contained
+// marker and settles to 'done' immediately on arrival.
 export type TimelineEntryStatus = 'active' | 'done' | 'failed';
 
 export interface TimelineEntry {
@@ -204,6 +226,7 @@ export interface TimelineEntry {
     diff?: DiffBlockShape;     // kind: 'diff'
     tool?: ToolCallShape;      // kind: 'command', when ref === tool_call_id
     cell?: CellIterationShape; // kind: 'cell', when ref === cell:{iteration}
+    execution?: ExecutionDetailShape; // kind: 'command', when ref is an execution id
 }
 
 // Discriminated union of every message the webview can post.

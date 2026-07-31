@@ -402,10 +402,16 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             }
 
         command = target_step.target_file
-        await _emit(f"running {command}")
 
         # Execute-tier gate, consulted before any spawn — the same choke point
         # SandboxBashTool uses (imported, not duplicated). PLAN denies outright.
+        # No "running {command}" announcement here: record_execution
+        # (core/exec_log.py) is now the sole emitter of the "command" timeline
+        # marker, and only once execution is actually attempted below — a
+        # narration fired before this gate would falsely show a denied command
+        # as having run. The DENY branch narrates its own "blocked" marker
+        # instead, so a command intercepted here still surfaces on the
+        # timeline, distinctly, rather than vanishing.
         from core.permissions import (
             PermissionDecision,
             gate_execute_action,
@@ -414,6 +420,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
         session_mode = session_mode_from_channel(state.get("session_permission_mode"))
         if gate_execute_action(session_mode) is PermissionDecision.DENY:
+            await _emit(f"blocked {command}")
             _notify_status("failed")
             return {
                 "mission_spec": _mark_step_status(

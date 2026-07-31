@@ -1695,3 +1695,99 @@ Cursor/timeline keys off the monotonic `seq`, never the display `ts` (tie-safe).
 - **Deferred (DEBT-125):** a real diff-aware/semantic edit-risk classifier and the
   `risk_metrics` (FE) ↔ `risk_patterns_matched` (BE) name-mismatch fix so the card can display why
   an edit was flagged. The current gate is a conservative proxy that fails toward the card.
+
+---
+
+## §40 — Execution Provenance: Glass-Box Timeline I/O Detail (Division 11.5.D)
+
+**Change:** new WebSocket event `server_activity_detail` — the I/O body for one `command` node on
+the §38 Glass-Box Timeline: which isolation envelope actually ran a command, its output, exit
+code, and duration. Correlated to its `ActivityEventPayload` marker (`kind="command"`) by a shared
+`ref` (a fresh execution id), the same body-on-a-separate-channel pattern §38 already established
+for `reasoning` (`server_thinking_chunk`) and `diff` (`RENDER_DIFF`) — kept off the marker channel
+itself so the cheap, un-throttled, `ACTIVITY_CAP`-bounded spine never carries a multi-KB body.
+**Location:** `ailienant-core/api/ws_contracts.py` (new `ActivityDetailPayload`,
+`ServerActivityDetailEvent`, `ExecutionSource` Literal); `api/websocket_manager.py`
+(`broadcast_activity_detail`, un-gated); `core/activity_context.py` (new — the turn-scoped
+`ActivitySink` Protocol and its binding `ContextVar`); `core/exec_log.py` (`record_execution` is
+the sole emitter — see Producer contract).
+**Schema version:** additive, backward-compatible. Consumers that ignore this event are unaffected.
+
+**Payload:**
+```python
+ExecutionSource = Literal["devcontainer", "docker", "wasm", "native_host", "unknown"]
+
+class ActivityDetailPayload(BaseModel):
+    session_id: str
+    ref: str                            # matches the ActivityEventPayload.ref of its marker
+    source: ExecutionSource             # read off the adapter's own `execution_source` attribute
+    cwd: Optional[str] = None
+    initiator: Optional[str] = None     # record_exec's `source` arg, e.g. "coder_verify"
+    stdout: Optional[str] = None        # masked + capped by core/exec_log.py::record_exec
+    stderr: Optional[str] = None        # masked + capped by core/exec_log.py::record_exec
+    exit_code: Optional[int] = None     # None only on the fault path (see below)
+    duration_ms: Optional[float] = None
+    truncated: bool = False
+    error: Optional[str] = None         # set only when adapter.execute() raised
+```
+
+**Producer contract:**
+- One choke point: `core/exec_log.py::record_execution` — every EXECUTE-tier call site
+  (`sandbox_bash`, `check_type_integrity`, the coder's `_gated_exec`/`coder_verify` paths) already
+  routed through it before this division; nothing new calls it.
+- **Correlation without touching a tool signature:** `core/task_service.py::_run_coding_task` binds
+  a turn-scoped `ActivitySink` via `core.activity_context.bind_activity_sink` before entering the
+  graph and resets the token in the same outer `finally` that already resets the MCP session
+  `ContextVar`s (charter §5.1). `record_execution` reads it back with
+  `current_activity_sink()` — a `contextvars.ContextVar`, so it propagates through the LangGraph
+  node → LangChain tool call stack, and through the `asyncio.to_thread` hops the Docker/Wasm tiers
+  use, without any LLM-facing tool gaining a new parameter. Outside any bound turn (the dev-palette
+  `execute_tracked_tool` smoke path — DEBT-122) the sink is `None` and nothing is emitted; this is
+  the expected, not an error, path.
+- **Sequencing:** the marker (`kind="command"`, `ref=exec_id`) fires **before** `adapter.execute`
+  is awaited, giving the timeline node a live "active" state for free — no output streaming
+  required. The detail fires after: on the success path, sourced from the same masked record
+  `record_exec` already returns for the dashboard's exec-log ring (one masking site, never two —
+  see below); on the fault path (`adapter.execute` raises), a terminal detail fires with
+  `exit_code=None` and `error` set, from the `except` block, and the original exception is then
+  **re-raised** — emission never masks or replaces the real outcome.
+- **Single masking site:** `record_exec` (unchanged masking/capping logic) now additionally
+  returns the record it builds — `stdout`/`stderr` masked and capped **independently** (not
+  sharing one combined budget, unlike the pre-existing ring `output` field, which is untouched for
+  the dashboard's own contract) — so the WebSocket path can never diverge from the HTTP dashboard's
+  exec-log tail on what is safe to show.
+- **A command a permission gate or the dangerous-pattern intercept refuses never reaches
+  `record_execution`**, so it would otherwise vanish from the timeline entirely. §38's
+  `_classify_activity` verb table drops `("running ", "command")` (now redundant with the marker
+  above) and gains `("blocked ", "command")`, `metric="denied"` — narrated by `agents/coder.py`'s
+  permission-deny branch via the existing `_emit`/`_narrate` closure, and by
+  `tools/execution_tools.py`'s `sandbox_bash` dangerous-pattern intercept via the new
+  `ActivitySink.emit_blocked(target)` method (no `_narrate` closure is reachable from that leaf
+  tool, hence the second, narrower sink method). A `blocked` marker carries no `ref` and never gets
+  a matching detail — the frontend resolves it to `done` immediately, same as any other
+  self-contained marker.
+
+**Consumer contract (frontend):**
+- `timelineBuilder.ts::upsertExecutionBody(entries, ref, execution, ts)` — identity-keyed by `ref`,
+  order-agnostic like every other §38 body upsert: if the detail arrives before its marker, it
+  creates an already-resolved placeholder (`status` derived from `exit_code`/`error`) that the
+  later marker's merge path in `upsertActivityMarker` adopts **without** touching `status` — the
+  outcome is already final by the time the marker shows up.
+- `upsertActivityMarker`'s active-status rule gains one case: a `command` marker **carrying a
+  `ref`** now starts `active` (mirroring `reasoning`/`cell`), resolving to `done`/`failed` once the
+  detail lands. A ref-less `command` marker (including the new `blocked` outcome, and any frame
+  from an older server) keeps the pre-existing immediate-`done` behavior — fully backward
+  compatible.
+- `AgentTimeline.tsx` renders a `command` entry carrying `execution` as an expandable node (new
+  `ExecutionDetail.tsx`): a header naming the execution tier + working directory + initiating tool,
+  then stdout/stderr (or `error`), then exit code + duration. `activityLabels.ts::timelineEntryLabel`
+  special-cases `metric === 'denied'` to read "Blocked …" rather than "Running …" — a command a
+  permission gate refused must not be mislabeled as having run.
+
+**Backward-compat guarantee:**
+- Old clients ignoring `server_activity_detail` see an unresolved `command` marker with no I/O
+  body — no crash, no missing-field error (unknown events are silently dropped on the multiplexed
+  socket, same as every other additive event in this document).
+
+Additive-only. No existing field changed shape; `docs/TECH_DEBT_BACKLOG.md` carries the deferred
+scope (background-task executions, file-read/MCP-tool detail, live incremental streaming).

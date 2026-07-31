@@ -30,10 +30,19 @@ def test_classify_free_text_action_verbs() -> None:
     assert _classify_activity("reading fibonacci.py") == ("read", "fibonacci.py", None)
     assert _classify_activity("editing app.py") == ("edit", "app.py", None)
     assert _classify_activity("writing gui.py") == ("edit", "gui.py", None)
-    assert _classify_activity("running pytest -q") == ("command", "pytest -q", None)
     assert _classify_activity("verified mypy .") == ("command", "mypy .", None)
     assert _classify_activity("self-healing coder_agent") == ("heal", "coder_agent", None)
     assert _classify_activity("recovered coder_agent") == ("heal", "coder_agent", None)
+
+
+def test_classify_blocked_command_carries_denied_metric() -> None:
+    # A command intercepted before record_execution ever runs (a permission-gate
+    # denial or a dangerous-pattern match) still surfaces on the timeline — as a
+    # distinct "denied" outcome rather than the ordinary "command" a completed
+    # execution produces. "running " is deliberately absent from the verb table:
+    # record_execution itself is now the sole emitter of that marker, correlated
+    # by `ref` to the I/O detail channel — see core/exec_log.py.
+    assert _classify_activity("blocked rm -rf /") == ("command", "rm -rf /", "denied")
 
 
 def test_classify_phase_tokens() -> None:
@@ -62,7 +71,7 @@ def test_classify_kinds_are_all_in_the_contract_enum() -> None:
     import typing
     allowed = set(typing.get_args(ActivityEventPayload.model_fields["kind"].annotation))
     labels = [
-        "reading x", "editing x", "writing x", "running x", "verified x",
+        "reading x", "editing x", "writing x", "blocked x", "verified x",
         "giving up on x after 3 attempts", "self-healing x", "recovered x",
         "could not auto-fix x", "retrieving context",
         "context_gather", "synthesizing_intent", "handoff_to_planner",

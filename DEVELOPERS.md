@@ -315,7 +315,8 @@ Proyect_Ailienant/
 │   │   ├── graph_weight.py      #     pre-execution context-OOM predictor (state tokens vs candidate window)
 │   │   ├── observability.py     #     env-gated LangSmith tracing bootstrap (no new sink)
 │   │   ├── redaction.py         #     shared ReDoS-safe secret masker (mask_secrets; used by telemetry + exec_log)
-│   │   ├── exec_log.py          #     bounded in-memory per-exec command-output ring (non-persistent, source-tagged, seq-cursor)
+│   │   ├── exec_log.py          #     bounded in-memory per-exec command-output ring (non-persistent, source-tagged, seq-cursor); sole emitter of the Glass-Box Timeline execution-detail channel
+│   │   ├── activity_context.py  #     turn-scoped ActivitySink Protocol + ContextVar (Glass-Box Timeline execution-detail correlation, no tool-signature changes)
 │   │   ├── deferred_tool_loader.py # eager-vs-deferred tool injection over ToolRAGStore (~10%-budget gate)
 │   │   ├── tool_dispatch.py     #     runtime tool-dispatch loop (gated, self-correcting; live on Analyst/Researcher + Coder's registry fallback)
 │   │   ├── tool_registry.py     #     ToolSchema name -> constructed RegisteredTool bridge (resolve_tools)

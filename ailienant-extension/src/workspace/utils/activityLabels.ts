@@ -30,7 +30,14 @@ export function timelineEntryLabel(entry: Pick<TimelineEntry, 'kind' | 'target' 
         case 'read':
         case 'edit':
         case 'heal':
+            return entry.target ? `${verb} ${entry.target}` : verb;
         case 'command':
+            // A command a permission gate or the dangerous-pattern intercept
+            // refused never reaches an adapter — labeling it "Running" would
+            // claim the opposite of what happened.
+            if (entry.metric === 'denied') {
+                return entry.target ? `Blocked ${entry.target}` : 'Blocked';
+            }
             return entry.target ? `${verb} ${entry.target}` : verb;
         case 'diff':
             return entry.target

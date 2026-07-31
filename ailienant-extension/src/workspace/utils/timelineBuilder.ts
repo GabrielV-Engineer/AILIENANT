@@ -15,7 +15,10 @@
  * `AgentTimeline` renderer.
  */
 import type { ActivityEventPayload } from '../../api/contracts';
-import type { CellIterationShape, DiffBlockShape, ToolCallShape, TimelineEntry } from '../../shared/config';
+import type {
+    CellIterationShape, DiffBlockShape, ExecutionDetailShape, ToolCallShape,
+    TimelineEntry, TimelineEntryStatus,
+} from '../../shared/config';
 
 /** Insert `entry` keeping the array sorted ascending by `seq` (an unresolved
  *  placeholder's `Number.POSITIVE_INFINITY` sorts last until a marker resolves it). */
@@ -30,8 +33,17 @@ function insertSorted(entries: TimelineEntry[], entry: TimelineEntry): TimelineE
  * event already created a placeholder under the same key — adopt it (resolve
  * seq/ts/kind/target/metric/ref onto the placeholder, preserving any body already
  * attached). Keyed by `payload.ref` when present, else a synthetic `seq:<n>` (a
- * marker with no ref is always self-contained — read/edit/command/understanding/
- * planning/reviewing/heal/retrieval — so it can never collide with a later one).
+ * marker with no ref is always self-contained — read/edit/understanding/
+ * planning/reviewing/heal/retrieval, or a ref-less 'command' — e.g. a
+ * "blocked" outcome that never reached an adapter — so it can never collide
+ * with a later one).
+ *
+ * A ref-carrying 'command' marker starts 'active': it fires BEFORE execution
+ * (core/exec_log.py::record_execution), and the matching `server_activity_detail`
+ * resolves it via `upsertExecutionBody`. When that detail arrives first (WS
+ * delivery is ordered per-channel but not across channels), the merge branch
+ * below deliberately leaves `status` untouched — the placeholder it adopts is
+ * already resolved to its final 'done'/'failed'.
  */
 export function upsertActivityMarker(
     entries: TimelineEntry[],
@@ -40,6 +52,8 @@ export function upsertActivityMarker(
     const key = payload.ref ?? `seq:${payload.seq}`;
     const idx = entries.findIndex(e => e.id === key);
     if (idx === -1) {
+        const isOpenSpan = payload.kind === 'reasoning' || payload.kind === 'cell'
+            || (payload.kind === 'command' && payload.ref !== undefined && payload.ref !== null);
         const entry: TimelineEntry = {
             id: key,
             seq: payload.seq,
@@ -48,7 +62,7 @@ export function upsertActivityMarker(
             target: payload.target ?? undefined,
             metric: payload.metric ?? undefined,
             ref: payload.ref ?? undefined,
-            status: (payload.kind === 'reasoning' || payload.kind === 'cell') ? 'active' : 'done',
+            status: isOpenSpan ? 'active' : 'done',
         };
         return insertSorted(entries, entry);
     }
@@ -194,6 +208,44 @@ export function upsertCellBody(
         cell,
         target: cell.tools[cell.tools.length - 1]?.tool_name ?? next[idx].target,
     };
+    return next;
+}
+
+/**
+ * Attach the I/O detail to a 'command' timeline entry, keyed by the execution
+ * id both `server_activity_event` (the marker, kind='command') and
+ * `server_activity_detail` (this body) carry as `ref`. Order-agnostic like
+ * every other upsert here: if the detail arrives before its marker, it
+ * creates an already-resolved placeholder that the later marker's merge path
+ * (in `upsertActivityMarker`) simply adopts without touching `status` — the
+ * outcome is already final by the time the marker shows up. Status resolves
+ * to 'failed' on a non-zero exit code or a reported `error`, 'done' otherwise.
+ */
+export function upsertExecutionBody(
+    entries: TimelineEntry[],
+    ref: string,
+    execution: ExecutionDetailShape,
+    ts: number = Date.now() / 1000,
+): TimelineEntry[] {
+    const status: TimelineEntryStatus =
+        execution.error !== undefined || (execution.exit_code !== undefined && execution.exit_code !== 0)
+            ? 'failed'
+            : 'done';
+    const idx = entries.findIndex(e => e.id === ref);
+    if (idx === -1) {
+        const entry: TimelineEntry = {
+            id: ref,
+            seq: Number.POSITIVE_INFINITY,
+            ts,
+            kind: 'command',
+            ref,
+            status,
+            execution,
+        };
+        return insertSorted(entries, entry);
+    }
+    const next = [...entries];
+    next[idx] = { ...next[idx], execution, status };
     return next;
 }
 

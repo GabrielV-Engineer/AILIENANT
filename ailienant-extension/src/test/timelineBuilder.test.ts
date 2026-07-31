@@ -7,10 +7,10 @@
  */
 import * as assert from 'assert';
 import type { ActivityEventPayload } from '../api/contracts';
-import type { CellIterationShape, DiffBlockShape, TimelineEntry } from '../shared/config';
+import type { CellIterationShape, DiffBlockShape, ExecutionDetailShape, TimelineEntry } from '../shared/config';
 import {
     upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertToolBody, upsertCellBody,
-    stripReasoningForPersist,
+    upsertExecutionBody, stripReasoningForPersist,
 } from '../workspace/utils/timelineBuilder';
 
 function marker(over: Partial<ActivityEventPayload> & { seq: number; kind: ActivityEventPayload['kind'] }): ActivityEventPayload {
@@ -206,6 +206,78 @@ suite('11.5.C.1 — timelineBuilder', () => {
         entries = upsertCellBody(entries, 'cell:1', cellIteration({ iteration: 1 }), 100);
         assert.strictEqual(entries.length, 2);
         assert.deepStrictEqual(entries.map(e => e.id).sort(), ['cell:0', 'cell:1']);
+    });
+
+    // ── Execution detail — order-agnostic correlation by execution-id ref ────
+
+    function execDetail(over: Partial<ExecutionDetailShape> = {}): ExecutionDetailShape {
+        return { source: 'devcontainer', truncated: false, ...over };
+    }
+
+    test('a ref-carrying command marker starts active (unlike a ref-less one)', () => {
+        const entries = upsertActivityMarker([], marker({
+            seq: 6, kind: 'command', target: 'pytest -q', ref: 'exec-1',
+        }));
+        assert.strictEqual(entries[0].status, 'active');
+    });
+
+    test('a ref-less command marker (e.g. blocked) still settles immediately', () => {
+        const entries = upsertActivityMarker([], marker({
+            seq: 6, kind: 'command', target: 'rm -rf /', metric: 'denied',
+        }));
+        assert.strictEqual(entries[0].status, 'done');
+        assert.strictEqual(entries[0].id, 'seq:6');
+    });
+
+    test('execution: marker arrives first, detail attaches by ref and resolves to done', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertActivityMarker(entries, marker({
+            seq: 6, kind: 'command', target: 'pytest -q', ref: 'exec-1',
+        }));
+        assert.strictEqual(entries[0].status, 'active');
+
+        entries = upsertExecutionBody(entries, 'exec-1', execDetail({ exit_code: 0, stdout: '2 passed' }), 100);
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].id, 'exec-1');
+        assert.strictEqual(entries[0].seq, 6);
+        assert.strictEqual(entries[0].status, 'done');
+        assert.strictEqual(entries[0].execution?.stdout, '2 passed');
+    });
+
+    test('execution: detail arrives first, marker resolves it without touching the already-final status', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertExecutionBody(entries, 'exec-1', execDetail({ exit_code: 1, stderr: 'boom' }), 100);
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].seq, Number.POSITIVE_INFINITY);
+        assert.strictEqual(entries[0].status, 'failed');
+
+        entries = upsertActivityMarker(entries, marker({
+            seq: 6, kind: 'command', target: 'pytest -q', ref: 'exec-1',
+        }));
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].seq, 6);
+        // The merge path must NOT clobber a status the detail already resolved.
+        assert.strictEqual(entries[0].status, 'failed');
+        assert.ok(entries[0].execution, 'execution body must survive the marker merge');
+    });
+
+    test('non-zero exit code resolves to failed', () => {
+        const entries = upsertExecutionBody([], 'exec-2', execDetail({ exit_code: 2 }), 100);
+        assert.strictEqual(entries[0].status, 'failed');
+    });
+
+    test('a reported error resolves to failed even with no exit code', () => {
+        const entries = upsertExecutionBody([], 'exec-3', execDetail({ error: 'adapter fault' }), 100);
+        assert.strictEqual(entries[0].status, 'failed');
+        assert.strictEqual(entries[0].execution?.exit_code, undefined);
+    });
+
+    test('two different executions never collide (distinct refs)', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertExecutionBody(entries, 'exec-1', execDetail({ exit_code: 0 }), 100);
+        entries = upsertExecutionBody(entries, 'exec-2', execDetail({ exit_code: 0 }), 100);
+        assert.strictEqual(entries.length, 2);
+        assert.deepStrictEqual(entries.map(e => e.id).sort(), ['exec-1', 'exec-2']);
     });
 
     // ── Pure-on-inputs guarantee ──────────────────────────────────────────────

@@ -643,6 +643,52 @@ class ServerActivityEvent(BaseModel):
     data: ActivityEventPayload
 
 
+# The closed vocabulary of execution envelopes a "command" activity node can have
+# run inside. Read off the adapter's own `execution_source` class attribute at
+# emission time (core/exec_log.py) — never inferred from the command string.
+ExecutionSource = Literal[
+    "devcontainer",   # DevcontainerSandboxAdapter — trusted project container
+    "docker",         # DockerSandboxAdapter — locked oracle cage
+    "wasm",           # WasmSandboxAdapter — pure-compute WASI tier
+    "native_host",    # NativeHITLSandboxAdapter — host exec, human-approved
+    "unknown",        # adapter declared no source
+]
+
+
+class ActivityDetailPayload(BaseModel):
+    """Server → client: the I/O body for one "command" Glass-Box Timeline node.
+
+    Correlated to its `ActivityEventPayload` marker by `ref` (the execution id),
+    the same body-on-a-separate-channel pattern already used for `reasoning`
+    (server_thinking_chunk) and `diff` (RENDER_DIFF). Deliberately NOT merged into
+    the marker itself — the marker channel is exempt from the NarrationGate and
+    bounded by ACTIVITY_CAP specifically because it stays cheap; a multi-KB I/O
+    body on every marker would defeat that.
+
+    `stdout`/`stderr`/`command` — wherever surfaced — are masked and length-capped
+    by the single site in `core/exec_log.py::record_exec`, the same function that
+    feeds the HTTP dashboard's exec-log tail, so the two consumers can never
+    diverge on what is safe to show. `exit_code=None` with `error` set means the
+    adapter raised before a verdict existed (`SandboxAdapter.execute` faulted).
+    """
+    session_id: str
+    ref: str
+    source: ExecutionSource
+    cwd: Optional[str] = None
+    initiator: Optional[str] = None     # record_exec's `source`, e.g. "coder_verify"
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    exit_code: Optional[int] = None
+    duration_ms: Optional[float] = None
+    truncated: bool = False
+    error: Optional[str] = None
+
+
+class ServerActivityDetailEvent(BaseModel):
+    event_type: Literal["server_activity_detail"] = "server_activity_detail"
+    data: ActivityDetailPayload
+
+
 class PlanDocumentPayload(BaseModel):
     """Server → client: the finalized plan as structured data for the rich Plan
     surface (NOT chat prose). Mirrors MissionSpecification's public shape.
@@ -1292,6 +1338,7 @@ WebSocketMessage = Union[
     ServerNattStreamEndEvent,        # analyst stream finalized (+ context_version)
     ServerPipelineStepEvent,         # pipeline node progress
     ServerActivityEvent,             # Glass-Box Timeline: ordered, un-throttled activity event
+    ServerActivityDetailEvent,       # Glass-Box Timeline: I/O body for a "command" node
     ServerPlanDocumentEvent,         # finalized plan → rich Plan surface
     ServerStreamEndEvent,            # assistant stream finalized
     ClientClearConversationEvent,    # clear short-term chat memory

@@ -6,15 +6,24 @@
 # sandbox, and how did they exit?". Deliberately non-persistent: a live tail
 # should not survive a restart, and keeping it in memory avoids write
 # amplification (a task can exec dozens of times) and any retention burden.
+#
+# This module is also the SOLE masking site for the Glass-Box Timeline's
+# execution-detail channel (server_activity_detail): record_execution feeds
+# the turn-scoped ActivitySink (core/activity_context.py) the exact same
+# masked, capped stdout/stderr this module already builds for the dashboard,
+# so the WebSocket path can never diverge from the dashboard path on what is
+# safe to show.
 
 from __future__ import annotations
 
 import logging
 import threading
 import time
+import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Deque, Dict, List, Optional, Protocol, cast
 
+from core.activity_context import current_activity_sink
 from core.redaction import mask_secrets
 
 if TYPE_CHECKING:  # avoid importing core.sandbox at runtime (keeps this leaf-light)
@@ -74,18 +83,39 @@ def record_exec(
     command: str,
     result: "SandboxResult",
     duration_ms: float,
-) -> None:
-    """Append one execution to the ring. Best-effort — never raises.
+) -> Dict[str, object]:
+    """Append one execution to the ring and return its masked, capped record.
 
     All bounding and secret-masking happens BEFORE the lock is taken; the
     critical section is only the sequence bump and the O(1) ``deque.append``,
     so a multi-megabyte stdout can never block readers or other writers.
+
+    The ring entry keeps its pre-existing shape (a single combined ``output``
+    field) so the dashboard's exec-log contract does not move. The returned
+    dict is a SEPARATE object carrying ``stdout``/``stderr`` masked and capped
+    independently (not sharing one combined budget), plus a ``truncated``
+    flag — built for ``record_execution`` to hand to the Glass-Box Timeline
+    detail sink without that sink re-deriving (and potentially diverging on)
+    what is safe to show.
+
+    Best-effort — never raises. On an internal fault returns ``{}``; the
+    caller must treat that as "nothing to report", never as data.
     """
     global _seq
     try:
-        combined = (result.stdout or "") + (result.stderr or "")
+        raw_stdout = result.stdout or ""
+        raw_stderr = result.stderr or ""
+        combined = raw_stdout + raw_stderr
         safe_command = mask_secrets(_truncate_middle(command, _COMMAND_CAP)) or ""
         safe_output = mask_secrets(_truncate_middle(combined, _OUTPUT_CAP)) or ""
+        safe_stdout = mask_secrets(_truncate_middle(raw_stdout, _OUTPUT_CAP)) or ""
+        safe_stderr = mask_secrets(_truncate_middle(raw_stderr, _OUTPUT_CAP)) or ""
+        truncated = (
+            len(raw_stdout) > _OUTPUT_CAP
+            or len(raw_stderr) > _OUTPUT_CAP
+            or len(command) > _COMMAND_CAP
+        )
+        safe_duration_ms = round(float(duration_ms), 2)
         entry: Dict[str, object] = {
             "ts": int(time.time() * 1000),
             "session_id": session_id,
@@ -93,14 +123,23 @@ def record_exec(
             "command": safe_command,
             "exit_code": int(result.exit_code),
             "output": safe_output,
-            "duration_ms": round(float(duration_ms), 2),
+            "duration_ms": safe_duration_ms,
         }
         with _lock:
             _seq += 1
             entry["seq"] = _seq
             _RING.append(entry)
+        return {
+            "command": safe_command,
+            "exit_code": int(result.exit_code),
+            "stdout": safe_stdout,
+            "stderr": safe_stderr,
+            "duration_ms": safe_duration_ms,
+            "truncated": truncated,
+        }
     except Exception:  # noqa: BLE001 — observability must never affect the caller
         logger.debug("exec-log record skipped", exc_info=True)
+        return {}
 
 
 async def record_execution(
@@ -120,25 +159,77 @@ async def record_execution(
     swallow — a real infrastructure fault propagates exactly as before; only
     the recording is best-effort. Non-zero exit codes are ordinary returns and
     are captured.
+
+    When a turn-scoped :class:`~core.activity_context.ActivitySink` is bound
+    (``core/task_service.py`` binds one per coding turn; the dev-palette smoke
+    path binds none — DEBT-122), this also drives the Glass-Box Timeline's
+    execution-detail channel: a "command" marker fires before the call, keyed
+    by a fresh execution id, and a matching detail fires after — on the
+    success path from the masked record above, or on the fault path with
+    ``error`` set and ``exit_code=None``. Emission is best-effort on both ends
+    and never masks or replaces the real outcome: a raised fault is always
+    re-raised after its detail is (attempted to be) reported.
     """
+    sink = current_activity_sink()
+    exec_id = uuid.uuid4().hex
+    if sink is not None:
+        try:
+            await sink.emit_marker(ref=exec_id, target=command)
+        except Exception:  # noqa: BLE001 — observability must never break the tool
+            logger.debug("activity marker emit skipped (%s)", source, exc_info=True)
+
     t0 = time.perf_counter()
-    result = await adapter.execute(
-        command,
-        timeout_s=timeout_s,
-        cwd=cwd,
-        env_whitelist=env_whitelist,
-        session_id=session_id,
-    )
     try:
-        record_exec(
-            source,
-            session_id or "",
+        result = await adapter.execute(
             command,
-            result,
-            (time.perf_counter() - t0) * 1000.0,
+            timeout_s=timeout_s,
+            cwd=cwd,
+            env_whitelist=env_whitelist,
+            session_id=session_id,
         )
+    except Exception as exc:
+        if sink is not None:
+            try:
+                await sink.emit_detail(
+                    ref=exec_id,
+                    source=getattr(adapter, "execution_source", "unknown"),
+                    cwd=cwd,
+                    initiator=source,
+                    stdout=None,
+                    stderr=None,
+                    exit_code=None,
+                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                    truncated=False,
+                    error=str(exc),
+                )
+            except Exception:  # noqa: BLE001 — must never mask the real fault below
+                logger.debug("activity detail emit skipped (fault, %s)", source, exc_info=True)
+        raise
+
+    duration_ms = (time.perf_counter() - t0) * 1000.0
+    record: Dict[str, object] = {}
+    try:
+        record = record_exec(source, session_id or "", command, result, duration_ms)
     except Exception:  # noqa: BLE001 — observability must never break the tool
         logger.debug("exec-log emit skipped (%s)", source, exc_info=True)
+
+    if sink is not None:
+        try:
+            await sink.emit_detail(
+                ref=exec_id,
+                source=getattr(adapter, "execution_source", "unknown"),
+                cwd=cwd,
+                initiator=source,
+                stdout=cast(Optional[str], record.get("stdout")),
+                stderr=cast(Optional[str], record.get("stderr")),
+                exit_code=int(result.exit_code),
+                duration_ms=duration_ms,
+                truncated=bool(record.get("truncated", False)),
+                error=None,
+            )
+        except Exception:  # noqa: BLE001 — observability must never break the tool
+            logger.debug("activity detail emit skipped (%s)", source, exc_info=True)
+
     return result
 
 

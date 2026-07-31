@@ -21,6 +21,7 @@ import logging
 
 if TYPE_CHECKING:
     from api.ws_contracts import PlanDocumentPayload
+from core.activity_context import bind_activity_sink, reset_activity_sink
 from core.storage_paths import is_ailienant_internal_path
 from shared.persona import compose
 from transport.token_batcher import batch_tokens, NarrationGate
@@ -92,11 +93,18 @@ def _classify_activity(
     """
     s = raw.strip()
     low = s.lower()
+    # "running " is deliberately absent: record_execution (core/exec_log.py) is
+    # now authoritative for every command that actually reaches an adapter — it
+    # emits the "command" marker itself, correlated by `ref` to the I/O detail
+    # that follows. A bare narration marker here would race that ref-correlated
+    # one and, worse, would still fire on a command a permission gate denies
+    # BEFORE record_execution is ever reached — see "blocked " below, which
+    # exists precisely to keep that denied attempt visible on the timeline.
     for verb, kind in (
         ("reading ", "read"),
         ("editing ", "edit"),
         ("writing ", "edit"),
-        ("running ", "command"),
+        ("blocked ", "command"),
         ("verified ", "command"),
         ("giving up on ", "command"),
         ("self-healing ", "heal"),
@@ -105,7 +113,8 @@ def _classify_activity(
         ("retrieving ", "retrieval"),
     ):
         if low.startswith(verb):
-            return kind, (s[len(verb):].strip() or None), None
+            metric = "denied" if verb == "blocked " else None
+            return kind, (s[len(verb):].strip() or None), metric
     phase = {
         "context_gather": "understanding",
         "synthesizing_intent": "understanding",
@@ -900,6 +909,39 @@ class TaskService:
             on_span_start=lambda ref: _push_activity("reasoning", ref=ref),
         )
 
+        # Bind this turn's Glass-Box Timeline execution-detail sink so
+        # core/exec_log.py::record_execution — running several layers below,
+        # inside a LangChain tool inside a LangGraph node — can report a
+        # "command" marker + I/O detail without any change to a tool's
+        # LLM-facing signature. Same ambient-context discipline as the MCP
+        # session vars just below: bound here, reset in the outer finally
+        # regardless of exit path, so one turn's sink can never leak into
+        # the next (charter §5.1).
+        class _TurnActivitySink:
+            async def emit_marker(
+                self, *, ref: str, target: Optional[str]
+            ) -> None:
+                await _push_activity("command", target, ref=ref)
+
+            async def emit_blocked(self, *, target: str) -> None:
+                await _push_activity("command", target, metric="denied")
+
+            async def emit_detail(
+                self, *, ref: str, source: str, cwd: Optional[str],
+                initiator: Optional[str], stdout: Optional[str],
+                stderr: Optional[str], exit_code: Optional[int],
+                duration_ms: Optional[float], truncated: bool,
+                error: Optional[str],
+            ) -> None:
+                await vfs_manager.broadcast_activity_detail(
+                    session_id,
+                    ref=ref, source=source, cwd=cwd, initiator=initiator,
+                    stdout=stdout, stderr=stderr, exit_code=exit_code,
+                    duration_ms=duration_ms, truncated=truncated, error=error,
+                )
+
+        _activity_sink_tok = bind_activity_sink(_TurnActivitySink())
+
         # Set ambient MCP session context so McpToolAdapter._arun can gate
         # tool calls even when LangChain does not thread these as kwargs.
         # Tokens are reset in the finally block regardless of exit path.
@@ -1361,6 +1403,7 @@ class TaskService:
             _mcp_sid_var.reset(_mcp_sid_tok)
             _mcp_mode_var.reset(_mcp_mode_tok)
             clear_session_trust(session_id)
+            reset_activity_sink(_activity_sink_tok)
             # Record end-to-end request latency for the dashboard's P50/P95 view.
             # Best-effort: the writer swallows its own errors, and this guard keeps
             # any unexpected fault from disturbing task teardown.

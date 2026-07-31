@@ -303,6 +303,35 @@ export interface ServerActivityEvent {
     data: ActivityEventPayload;
 }
 
+// The closed vocabulary of execution envelopes a "command" activity node can
+// have run inside. Mirrors the backend ExecutionSource Literal (SCHEMA_EVOLUTION §39).
+export type ExecutionSource = 'devcontainer' | 'docker' | 'wasm' | 'native_host' | 'unknown';
+
+// The I/O body for one "command" node, correlated to its ActivityEventPayload
+// marker by `ref` — the same body-on-a-separate-channel pattern already used
+// for `reasoning` (server_thinking_chunk) and `diff` (RENDER_DIFF). stdout/
+// stderr arrive already masked and length-capped by the backend's single
+// masking site (core/exec_log.py::record_exec); the frontend never re-derives
+// what is safe to show. `exit_code: null` with `error` set means the adapter
+// raised before a verdict existed.
+export interface ActivityDetailPayload {
+    session_id: string;
+    ref: string;
+    source: ExecutionSource;
+    cwd?: string | null;
+    initiator?: string | null;
+    stdout?: string | null;
+    stderr?: string | null;
+    exit_code?: number | null;
+    duration_ms?: number | null;
+    truncated: boolean;
+    error?: string | null;
+}
+export interface ServerActivityDetailEvent {
+    event_type: 'server_activity_detail';
+    data: ActivityDetailPayload;
+}
+
 export interface PlanDocumentPayload {
     summary: string;
     outcome: string;
@@ -792,6 +821,7 @@ export type ServerWSMessage =
     | ServerNattStreamEndEvent
     | ServerPipelineStepEvent
     | ServerActivityEvent
+    | ServerActivityDetailEvent
     | ServerPlanDocumentEvent
     | ServerStreamEndEvent
     | ServerInlineEditStartEvent

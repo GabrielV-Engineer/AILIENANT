@@ -56,6 +56,7 @@ from typing import (
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
+from core.activity_context import current_activity_sink
 from core.permissions import ToolPrivilegeTier
 from core.sandbox import get_active_adapter, resolve_execution_adapter
 from core.tool_rag import ToolRAGStore, ToolSchema
@@ -259,6 +260,17 @@ class SandboxBashTool(BaseTool):
                 pattern,
                 command,
             )
+            # This tool runs several call-stack layers below the coding turn
+            # (no `_narrate` closure in scope), so the turn-scoped ContextVar
+            # sink is the only way to keep an intercepted command from simply
+            # vanishing off the Glass-Box Timeline. Best-effort: observability
+            # must never interfere with the refusal already decided above.
+            _sink = current_activity_sink()
+            if _sink is not None:
+                try:
+                    await _sink.emit_blocked(target=command)
+                except Exception:  # noqa: BLE001 — must never block the refusal
+                    logger.debug("blocked-command activity emit skipped", exc_info=True)
             return (
                 f"[sandbox_bash] DANGEROUS_COMMAND_INTERCEPTED — pattern {pattern!r} "
                 f"matched. Use ask_user_question to request HITL approval before retrying."
