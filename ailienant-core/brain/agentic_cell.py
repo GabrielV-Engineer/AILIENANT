@@ -348,6 +348,8 @@ async def run_agentic_cell_node(
 ) -> Dict[str, Any]:
     """One ReAct iteration. See module docstring for the loop contract."""
     from core.blob_storage import blob_storage
+    from core.permissions import session_mode_from_channel
+    from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
     from core.workspace_sync import push_vfs_to_surface, pull_surface_to_vfs
 
     task_id: str = str(state.get("task_id", ""))
@@ -458,7 +460,25 @@ async def run_agentic_cell_node(
         )
 
         # ── Reason (cache bypassed — never probe; each iteration is fresh) ───────
+        # Division 8.18.2: select (not construct) the role/session-scoped catalog
+        # before reasoning, so the model can actually name one of these tools in
+        # its response — a tool it's never told about can never be requested.
+        # Advertised as an extra system message rather than a CellReasoner
+        # signature change, so an existing config["configurable"]["cell_reasoner"]
+        # injected by a caller/test with the old 1-arg signature keeps working
+        # unmodified. Construction (resolve_tools/ToolDispatcher) stays lazy —
+        # only paid if the model actually proposes one of these names.
+        active_role = _resolve_active_role(state)
+        session_mode = session_mode_from_channel(state.get("session_permission_mode"))
+        fallback_schemas = await tool_rag_store.select_tools(
+            str(state.get("user_input") or ""),
+            k=TOOL_RAG_TOP_K,
+            active_role=active_role,
+            session_mode=session_mode,
+        )
         messages = _build_messages(state)
+        if fallback_schemas:
+            messages = [*messages, {"role": "system", "content": _format_fallback_tools_hint(fallback_schemas)}]
         tool_calls = await reasoner(messages)
 
         record: Dict[str, Any] = {
@@ -476,10 +496,24 @@ async def run_agentic_cell_node(
         edited_paths: List[str] = []
         last_exit: Optional[int] = None
         mission_state = state.get("mission_spec")
+        fallback_observations: List[Dict[str, str]] = []
+        _fallback_dispatcher_box: List[Any] = []
 
         async def _verify(cmd: str) -> Tuple[int, str]:
             code, out = await _run_on_surface(cell, cmd, _RUN_TERMINAL_TIMEOUT_S)
             return code, _structured_verdict(cmd, out)
+
+        def _get_fallback_dispatcher() -> Any:
+            # One-element box rather than an Optional local: a conditionally
+            # reassigned Optional narrows fine in a straight-line flow, but
+            # pyright re-widens it to its declared type at the top of each
+            # `for` loop iteration, so `.dispatch(...)` below would otherwise
+            # flag as a possible None-access despite the runtime guarantee.
+            if not _fallback_dispatcher_box:
+                _fallback_dispatcher_box.append(
+                    _build_fallback_dispatcher(fallback_schemas, state, active_role, session_mode)
+                )
+            return _fallback_dispatcher_box[0]
 
         # ── Dispatch each proposed tool call, in the order the model emitted them ─
         # Edits land in the working set and are flushed to the surface before any
@@ -599,6 +633,18 @@ async def run_agentic_cell_node(
                 version_ids[path] = vfs_files[path].document_version_id
                 pending_contents[path] = new_content
 
+            else:
+                # Division 8.18.2 — additive fallback: any name outside the 3
+                # primitives resolves through the tool registry. Construction is
+                # lazy — deferred until a fallback name is actually proposed —
+                # and memoized for the rest of this iteration; schema *selection*
+                # already happened before reasoning (see above) so the model
+                # could name this tool in the first place.
+                result = await _get_fallback_dispatcher().dispatch(call)
+                fallback_observations.append(
+                    {"role": "system", "content": f"[{call.name}] {result.observation}"}
+                )
+
         # ── Branch governance: >=2 competing candidates for one file → MCTS ──────
         for path, replacements in candidate_edits.items():
             if len(replacements) < 2:
@@ -655,7 +701,7 @@ async def run_agentic_cell_node(
 
         delta: Dict[str, Any] = {
             "agentic_iteration": iteration + 1,
-            "agentic_trajectory": [record, *occ_messages],
+            "agentic_trajectory": [record, *occ_messages, *fallback_observations],
             "current_cost_usd": cost_delta,
         }
         # Carry edits forward: vfs_buffer keeps the loop-back iteration consistent;
@@ -689,6 +735,90 @@ def route_after_cell(state: Dict[str, Any]) -> str:
     if trajectory[-1].get("status") == "continue":
         return "agentic_cell"
     return "contract_guard"
+
+
+# =====================================================================
+# Registry fallback (Division 8.18.2) — tool names outside the 3 hardcoded
+# primitives (CELL_TOOLS) resolve through core/tool_registry.py's bridge and
+# execute via core/tool_dispatch.py::ToolDispatcher, which already implements
+# tier gating. Built lazily — only if the model actually proposes a name
+# outside CELL_TOOLS — and memoized for the rest of the current iteration, so
+# an iteration that only uses the 3 primitives pays zero extra cost (no
+# embedding-backed select_tools() call).
+#
+# Deliberately built with approval_fn=None (ToolDispatcher's own documented
+# "no approval channel -> deny-with-report" degradation) rather than wiring
+# core/tool_dispatch.py::make_websocket_approval_fn: that helper's own
+# docstring warns a mid-loop interrupt() must adopt this cell's
+# defer-then-interrupt-first replay-safety pattern (the same one the
+# run_terminal HITL branch above already uses via pending_exec_command) —
+# generalizing that safely is follow-up work, not a one-line wire-up. A
+# HITL-tier retrieved tool is therefore safely denied with a clear message
+# rather than risking a replay-unsafe interrupt; READ_ONLY and ALLOW-tier
+# retrieved tools are unaffected and execute normally.
+# =====================================================================
+
+
+def _resolve_active_role(state: Dict[str, Any]) -> str:
+    """Best-effort target_role for the active WBS step; 'core_dev' if unresolvable.
+
+    Mirrors agents/coder.py's own current_step_id -> target_step lookup so the
+    fallback dispatcher's RBAC gate matches the role the step was actually
+    assigned, not a guess.
+    """
+    mission_spec = state.get("mission_spec")
+    step_id = state.get("current_step_id")
+    if mission_spec is None or step_id is None:
+        return "core_dev"
+    target_step = next(
+        (t for t in mission_spec.tasks if t.step_number == step_id), None
+    )
+    if target_step is None:
+        return "core_dev"
+    return str(target_step.target_role or "core_dev")
+
+
+def _format_fallback_tools_hint(schemas: Sequence[Any]) -> str:
+    """Bounded name+description listing so the reasoner can name one of these tools.
+
+    Deliberately not the full json_schema (that's for argument shape, resolved by
+    the tool's own args_schema at dispatch time) — a short catalog is enough for
+    the model to decide *whether* to reach for one; ToolDispatcher.dispatch()
+    reports an argument-shape mismatch back as a recoverable observation if the
+    model gets the args wrong.
+    """
+    lines = [
+        f"- {s.name}: {s.description}" for s in schemas
+    ]
+    return (
+        "Additional tools are available beyond run_terminal/read_file_ast/"
+        "apply_granular_edit — call one by name with args matching its purpose "
+        "if it fits better than the 3 primitives:\n" + "\n".join(lines)
+    )
+
+
+def _build_fallback_dispatcher(
+    schemas: Sequence[Any], state: Dict[str, Any], active_role: str, session_mode: Any
+) -> Any:
+    """Construct the registry-backed ToolDispatcher from already-selected schemas.
+
+    Schema *selection* (the embedding-backed call) already happened before
+    reasoning so the model could see these tools; this step only *constructs*
+    the live instances, paid once, lazily, only if a fallback name is proposed.
+    """
+    from core.permissions import PermissionMode
+    from core.tool_dispatch import ToolDispatcher
+    from core.tool_registry import resolve_tools
+
+    tools = resolve_tools(schemas, state)
+    return ToolDispatcher(
+        tools,
+        active_role=active_role,
+        session_mode=session_mode,
+        state=state,
+        agent_permission=PermissionMode.EDIT_EXECUTE_RBW,
+        approval_fn=None,
+    )
 
 
 # =====================================================================
@@ -762,7 +892,8 @@ def _classify_execute(state: Dict[str, Any]) -> str:
     the approval itself — a HITL verdict triggers the deferral, and the approval happens
     interrupt-first in the next super-step's exec-approval phase.
     """
-    from core.permissions import (  # type: ignore[attr-defined]  # noqa: attr-defined — PermissionMode re-exported without __all__
+    # PermissionMode is re-exported without __all__, hence the ignore below.
+    from core.permissions import (  # type: ignore[attr-defined]
         PermissionDecision,
         PermissionMode,
         ToolPrivilegeTier,

@@ -27,12 +27,14 @@ import json
 import logging
 import zipfile
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
     FrozenSet,
     List,
     Literal,
+    Mapping,
     Optional,
     Tuple,
     Type,
@@ -45,6 +47,9 @@ from pydantic import BaseModel, Field, PrivateAttr
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.quarantine import wrap_boundary
+
+if TYPE_CHECKING:
+    from core.tool_dispatch import RegisteredTool
 
 logger = logging.getLogger("PERCEPTION_TOOLS")
 
@@ -905,3 +910,57 @@ async def register_perception_tools(store: ToolRAGStore) -> int:
     for schema in schemas:
         await store.register_schema(schema)
     return len(schemas)
+
+
+def build_perception_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]:
+    """Construct the five perception tools bound to live session context.
+
+    Mirrors ``analyst_tools.build_analyst_tools`` / ``researcher_tools.build_researcher_tools``:
+    the metadata-only schemas registered by ``register_perception_tools`` are inert;
+    this is where the executable callables are instantiated. Allowed roles are
+    copied verbatim from ``register_perception_tools``'s own schema construction
+    (base perception roles ∪ each tool's ``extra_roles``) so the two never drift —
+    a caller merging this dict (the Coder's tool registry, the Analyst's own tool
+    set) relies on ``RegisteredTool.allowed_roles`` as the actual RBAC gate, not on
+    which ``build_*`` function happened to include the entry.
+    """
+    from core.ast_engine import ASTEngine
+    from core.db import get_dependents
+    from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
+    from core.tool_dispatch import RegisteredTool
+    from core.vfs_middleware import make_safe_reader
+
+    project_id = str(state.get("project_id") or "")
+    workspace_root = str(state.get("workspace_root") or "")
+    session_id_raw = state.get("session_id")
+    session_id = str(session_id_raw) if session_id_raw else None
+
+    vfs_read = make_safe_reader(project_id or None, workspace_root or None, session_id)
+
+    return {
+        "document_parser": RegisteredTool(
+            DocumentParserTool(),
+            ToolPrivilegeTier.READ_ONLY,
+            _ALLOWED_PERCEPTION_ROLES | _RESEARCHER_ROLE,
+        ),
+        "inspect_ast_node": RegisteredTool(
+            InspectASTNodeTool(vfs_read=vfs_read, ast_engine=ASTEngine()),
+            ToolPrivilegeTier.READ_ONLY,
+            _ALLOWED_PERCEPTION_ROLES | _RESEARCHER_AND_ANALYST_AND_PLANNER,
+        ),
+        "get_symbol_references": RegisteredTool(
+            GetSymbolReferencesTool(get_dependents=get_dependents),
+            ToolPrivilegeTier.READ_ONLY,
+            _ALLOWED_PERCEPTION_ROLES | _RESEARCHER_AND_ANALYST,
+        ),
+        "trace_data_flow": RegisteredTool(
+            TraceDataFlowTool(extractor=GraphRAGDynamicExtractor(project_id=project_id)),
+            ToolPrivilegeTier.READ_ONLY,
+            _ALLOWED_PERCEPTION_ROLES | _RESEARCHER_AND_ANALYST,
+        ),
+        "web_fetch": RegisteredTool(
+            WebFetchTool(),
+            ToolPrivilegeTier.READ_ONLY,
+            _ALLOWED_PERCEPTION_ROLES | _ANALYST_ROLE,
+        ),
+    }

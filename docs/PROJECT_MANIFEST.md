@@ -50,7 +50,7 @@
 | 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.0 polyglot dependency-extraction registry (Python + TS/JS); then 8.14.1 blast-radius mapper |
 | 8.15 Dynamic Subagent Dispatch | ⬜ PENDING | — | 8.15.0 structured dispatch schema |
 | 8.16 Importance-Aware Session Memory | ⬜ PENDING | — | 8.16.0 context-utilization telemetry (GO/NO-GO gate) |
-| 8.18 CoderAgent Tool Activation | ⬜ PENDING | — | 8.18.0 the bridge (core/tool_registry.py) |
+| 8.18 CoderAgent Tool Activation | ✅ CLOSED | 2026-07-30 | — |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.9 Dashboard checkpoint gate (11.0–11.8 + 11.3.B + 11.10 + 11.11 + 11.12 shipped) |
 | Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
@@ -92,7 +92,7 @@
 | 8.14 | Graph Intelligence Upgrade (10 sub-phases) | ⬜ |
 | 8.15 | Dynamic Subagent Dispatch (6 sub-phases) | ⬜ |
 | 8.16 | Importance-Aware Session Memory (5 sub-phases) | ⬜ |
-| 8.18 | CoderAgent Tool Activation (5 sub-phases) | ⬜ |
+| 8.18 | CoderAgent Tool Activation (5 sub-phases) | ✅ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
 | 11 | Web Dashboard Enterprise Redesign (10 sub-phases) | ⬜ |
@@ -835,7 +835,7 @@
 
 ---
 
-### Division 8.18 — CoderAgent Tool Activation ⬜
+### Division 8.18 — CoderAgent Tool Activation ✅
 
 > ~53 tool classes exist in `tools/*.py`; ~35 have zero production callers — and the dead ones are almost entirely the CoderAgent's (`coder_tools.py`, `agent_tools.py`, `mutation_tools.py`, `patch_tool.py`, `execution_tools.py`, `control_tools.py`, `orchestrator_tools.py`, `universal_tools.py`, `meta_tools.py`, `gateway_tools.py`, 5/8 of `perception_tools.py`). The live ~15 are the Analyst's and Researcher's — each already runs a working `core/tool_dispatch.py::ToolDispatcher` loop (`agents/analyst.py:290`, `agents/researcher.py:106`, `brain/nodes/subagent_worker_node.py:141`), independently, with no central hub — `agents/orchestrator.py` has no tool code and is not even wired into the production graph (`brain/engine.py::alienant_app`; it exists only in the untested-in-production `brain/swarms.py::build_full_swarm`). **So this is not a system-wide outage — it is one agent, the Coder, with zero tools.**
 >
@@ -845,19 +845,19 @@
 >
 > **Scope discipline:** the Analyst/Researcher/subagent dispatch sites already work and are left untouched — rerouting them through retrieval was evaluated and dropped as needless regression risk at this catalog size (their visible catalogs sit under the eager threshold, so retrieval would return the same set they already hardcode). Retrieval is introduced only where the gap actually is: the Coder. Consulted external research (tool-count degradation studies, Anthropic's tool-design guidance, harness-design literature) before finalizing scope — see DEV_JOURNAL for the citations; conclusion was that a large catalog behind a per-turn selector is the correct, research-endorsed shape, and that a hardcoded per-language command table (this division's original, since-deleted draft) is exactly what that research warns against — framework detection belongs to the model via a general `run_terminal` primitive, not a lookup table.
 
-- [ ] **8.18.0 — The bridge: `core/tool_registry.py`.**
+- [x] **8.18.0 — The bridge: `core/tool_registry.py`.**
   Maps tool name → factory callable for every schema across all 12 `register_*_tools()`, plus `resolve_tools(schemas, state) -> Dict[str, RegisteredTool]`. Factories take the live graph `state`, mirroring the existing `build_analyst_tools(state)`/`make_coder_execute_tools(state)` signatures (already thread `session_id`/`session_permission_mode`); reuse each module's existing `build_*`/`make_*` factory rather than reimplementing construction. `RegisteredTool` is assembled from the schema's own `tier`/`allowed_roles`. A registered name with no factory fails at import time, never as a silent runtime skip. Also resolves, in this same change, whether `agents/roles.py::allowed_tools` or `ToolSchema.allowed_roles` is the single RBAC source of truth — do not ship both. **DoD:** `pytest test_tool_registry.py` — every name across all 12 `register_*_tools` resolves; resolution is total; resolved tier/roles match the schema · `mypy .` 0 · `npx pyright` 0.
 
-- [ ] **8.18.1 — Populate the catalog at startup.**
+- [x] **8.18.1 — Populate the catalog at startup.**
   Call the 12 `register_*_tools(tool_rag_store)` from the FastAPI lifespan in `main.py`, alongside the existing `autoconnect_enabled_mcp_servers()` (`main.py:187`); idempotent (re-registration adds no duplicate rows). Zero behavioral risk in isolation — nothing reads the store in production yet, so this alone cannot change existing behavior; landed separately so any fallout is trivially isolated. **DoD:** `pytest` — booted app exposes all 53 schemas via `all_schemas()`; double-registration is a no-op; existing suite byte-identical · `mypy .` 0.
 
-- [ ] **8.18.2 — Activate the CoderAgent via an additive fallback branch.**
+- [x] **8.18.2 — Activate the CoderAgent via an additive fallback branch.**
   Per DEBT-068's still-standing ruling, the coder's mutation surface is `brain/agentic_cell.py`, which already runs a real tool-calling loop (`_default_reasoner` → JSON `tool_calls` envelope) over 3 hardcoded primitives (`CELL_TOOLS`: `run_terminal`, `read_file_ast`, `apply_granular_edit`). The cell dispatches via a chain of `if call.name == "..."` branches carrying bespoke security logic (`_classify_execute`, YOLO Guard, `risk_intercept_guard`) — rewriting this into a generic registry-driven dispatch would be a high-risk refactor of a working, carefully-gated loop, so the 3 existing branches are left **exactly as they are**. Add one additive fallback at the end of the chain: any tool name matching none of the 3 primitives resolves via `resolve_tools()` and executes through `ToolDispatcher`, inheriting its existing tier gating and HITL card. Tool set resolves once at cell entry (matching `tool_rag_select_node`'s own "runs once per invocation" contract) — not per iteration, which would re-embed every loop turn and destabilize envelope parsing. The 3 primitives remain an always-available floor regardless of retrieval outcome. **DoD:** `pytest` — the 3 primitives behave identically to today (explicit no-regression assertions per existing branch, including YOLO-Guard/risk-intercept paths); a coder task retrieves and executes a previously-orphaned tool end-to-end; an EXECUTE-tier retrieved tool raises the HITL card before running; PLAN mode short-circuits pre-spawn; tool set is identical across all iterations of one invocation · `mypy .` 0 · `npx pyright` 0.
 
-- [ ] **8.18.3 — Analyst gap closure (additive, no re-architecture).**
+- [x] **8.18.3 — Analyst gap closure (additive, no re-architecture).**
   Five orphaned `perception_tools.py` classes are genuinely Analyst-relevant: `DocumentParserTool`, `InspectASTNodeTool`, `GetSymbolReferencesTool`, `TraceDataFlowTool`, `WebFetchTool`. Append them to the existing `build_analyst_tools()` list rather than rerouting the Analyst through retrieval — no new machinery, no dispatch-architecture change. Revisit retrieval for the Analyst only if a later measurement shows its visible catalog exceeding the eager threshold. **DoD:** `pytest` — Analyst dispatches the newly-added tools; its existing 10 remain unchanged; `researcher.py`/`subagent_worker_node.py` untouched · `mypy .` 0.
 
-- [ ] **8.18.4 — Reachability gate (anti-recurrence control) — Division 8.18 Checkpoint Gate.**
+- [x] **8.18.4 — Reachability gate (anti-recurrence control) — Division 8.18 Checkpoint Gate.**
   `tests/test_phase8_18_checkpoint_gate.py` (sibling convention, test-only): **reachability** — every `BaseTool` subclass in `tools/*.py` is either in `core/tool_registry.py`'s factory map or on an explicit, commented `_INTENTIONALLY_UNREGISTERED` allowlist (a new tool class with neither fails CI — the first assertion in this codebase's history to check production reachability rather than mere existence); **context budget** — deferred-mode selection returns ≤ `TOOL_RAG_TOP_K` and meets `TOOL_RAG_MIN_REDUCTION = 0.70` against the full catalog on the live path; **duplicate ownership** — `tools/gateway_tools.py`'s 6 classes duplicate `gateway/handlers.py`'s real logic, assert one canonical owner or allowlist with justification (candidate for deletion). **DoD:** `mypy .` 0 · `npx pyright` 0 · `pytest` green.
 
 ---

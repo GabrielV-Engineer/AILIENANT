@@ -1,6 +1,4 @@
-"""Phase 5.2 — Tool RAG: just-in-time tool-schema injection.
-
-See docs/PHASE_5_BLUEPRINT.md §3 for the architectural contract.
+""" Tool RAG: just-in-time tool-schema injection.
 
 ToolRAGStore owns a RAM-resident, schemas-only LanceDB instance backed by a
 tempfile.mkdtemp() directory that is purged at process exit. It is independent
@@ -328,3 +326,61 @@ class ToolRAGStore:
 # =====================================================================
 
 tool_rag_store: ToolRAGStore = ToolRAGStore()
+
+
+async def populate_tool_catalog(store: ToolRAGStore) -> int:
+    """Register every tool family's schemas into ``store``. Idempotent.
+
+    Called once from the FastAPI lifespan (``main.py``); safe to call again
+    (each underlying ``register_schema`` is an upsert on ``schema.name``, so a
+    second call adds no duplicate rows).
+
+    Never raises — mirrors ``tools/mcp_adapter.py::autoconnect_enabled_mcp_servers``'s
+    startup-resilience contract. Each family's registration embeds every
+    schema's description via ``store``'s ``embed_fn``; a host with no working
+    embedding provider configured must still boot (degrading to an empty or
+    partial catalog, logged) rather than crash — the alternative failed every
+    test and every deployment that boots the real app without live embedding
+    credentials, for what is a non-critical warm-up step, not a request path.
+    """
+    from tools.analyst_tools import register_analyst_tools
+    from tools.coder_tools import register_coder_tools
+    from tools.control_tools import register_control_tools
+    from tools.execution_tools import register_execution_tools
+    from tools.gateway_tools import register_gateway_tools
+    from tools.meta_tools import register_meta_tools
+    from tools.mutation_tools import register_mutation_tools
+    from tools.orchestrator_tools import register_orchestrator_tools
+    from tools.perception_tools import register_perception_tools
+    from tools.planner_tools import register_planner_tools
+    from tools.researcher_tools import register_researcher_tools
+    from tools.universal_tools import register_universal_tools
+
+    registrars = (
+        register_analyst_tools, register_coder_tools, register_control_tools,
+        register_execution_tools, register_gateway_tools, register_meta_tools,
+        register_mutation_tools, register_orchestrator_tools, register_perception_tools,
+        register_planner_tools, register_researcher_tools, register_universal_tools,
+    )
+    total = 0
+    failed = 0
+    for register in registrars:
+        try:
+            total += await register(store)
+        except Exception:  # noqa: BLE001 — a broken embedding provider must not crash app boot
+            failed += 1
+            logger.warning(
+                "populate_tool_catalog: %s failed (embedding provider unreachable?); "
+                "catalog will be partial for this family.",
+                register.__name__,
+                exc_info=True,
+            )
+    if failed:
+        logger.warning(
+            "populate_tool_catalog: %d/%d familie(s) failed to register.", failed, len(registrars)
+        )
+    else:
+        logger.info(
+            "populate_tool_catalog: %d schema registration(s) across %d families.", total, len(registrars)
+        )
+    return total

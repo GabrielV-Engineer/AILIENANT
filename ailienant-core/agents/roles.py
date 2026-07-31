@@ -3,13 +3,20 @@
 
 ROLE_REGISTRY maps each of the 8 RBAC roles
 to (a) a System Prompt directive concatenated to the base Coder prompt, (b) a
-tool whitelist (strings — execution lives in Phase 5 MCP), and (c) optional
-blocking-rule keys consulted by run_coder_node's gate evaluator.
+legacy tool-name whitelist (see note below), and (c) optional blocking-rule
+keys consulted by run_coder_node's gate evaluator.
 
 This module is PURE DATA + two builder helpers. No I/O, no LLM, no tool execution.
-The registry is a module-level singleton dict; lookups are O(1) and the Phase 5
-MCP executor re-resolves the role config at runtime (no state-bloat, no phantom
-keys returned by the Coder node.
+The registry is a module-level singleton dict; lookups are O(1) and never
+mutate state, so re-resolving a role's config on every call is free (no
+state-bloat, no phantom keys returned by the Coder node).
+
+``allowed_tools`` is superseded by ``core/tool_rag.py::ToolSchema.allowed_roles``
+as the single RBAC source of truth for tool access (Division 8.18): the former
+is a hand-maintained string list never consulted by any dispatch path; the
+latter is what ``core/tool_registry.py::resolve_tools()`` and
+``core/tool_dispatch.py::ToolDispatcher`` actually check on every call. The
+field is kept for backward-compatible role-config shape, not as a live gate.
 """
 from __future__ import annotations
 
@@ -34,7 +41,7 @@ LANGUAGE_MIRROR_DIRECTIVE = (
 
 class RoleConfig(TypedDict):
     system_prompt: str               # Directive appended to the base Coder prompt.
-    allowed_tools: List[str]         # Whitelist consulted by Phase 5 MCP executor.
+    allowed_tools: List[str]         # Vestigial — see module docstring; ToolSchema.allowed_roles governs RBAC.
     forbidden_phrases: List[str]     # Heuristic filters applied to LLM output later.
     hitl_triggers: List[str]         # Substrings in task description → HITL flag.
 
@@ -177,9 +184,11 @@ def build_coder_system_prompt(role: Optional[str], override: Optional[str] = Non
     """Compose the ephemeral system prompt for the given role.
 
     Returns a fresh string — NEVER cached, NEVER persisted to state.messages.
-    The CoderAgent passes this directly to the LLM call when tools are wired.
-    For now it is held as a local variable in run_coder_node and
-    discarded when the function returns.
+    Consumed by ``agents/coder.py::run_coder_node``'s one-shot SEARCH/REPLACE
+    path, which has no tool-calling of its own (held as a local variable and
+    discarded when the function returns) — distinct from the iterative,
+    tool-calling path in ``brain/agentic_cell.py`` for steps the planner flags
+    as needing iteration, which resolves tools via ``core/tool_registry.py``.
 
     ``override`` replaces the role's directive only. ``_BASE_CODER_PROMPT`` — which
     carries the SEARCH/REPLACE output contract and the clause subordinating role

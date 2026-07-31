@@ -22,18 +22,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import struct
-import tempfile
 from pathlib import Path
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import List, Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from core.permissions import SessionPermissionMode, ToolPrivilegeTier
 from core.token_ledger import TokenLedger
-from core.tool_rag import ToolRAGStore, ToolSchema
+from core.tool_rag import ToolRAGStore
 from tools.analyst_tools import (
     CodeDiffTool,
     ComplexityAnalysisTool,
@@ -46,8 +44,7 @@ from tools.analyst_tools import (
     register_analyst_tools,
 )
 from tools.perception_tools import register_perception_tools
-from tools.researcher_tools import make_vfs_path_provider, register_researcher_tools
-from tools.validation.result import ValidationError, ValidationResult
+from tools.validation.result import ValidationResult
 
 
 # =====================================================================
@@ -431,7 +428,6 @@ async def test_code_diff_workspace_jail(tmp_path: Path) -> None:
     def ram_reader(p: str) -> Optional[str]:
         return "sensitive_content\n"
 
-    tool = CodeDiffTool(workspace_root=workspace, ram_reader=ram_reader)
     # Attempt to read /etc/passwd (or equivalent escapee path)
     outside_path = str(tmp_path / "outside.py")  # outside the workspace subdir
     # _jailed_disk_read should return None for this path
@@ -728,3 +724,30 @@ async def test_make_dependency_audit_tool_injects_search_fn() -> None:
         search_fn=stub,
     )
     assert tool._search_fn is stub  # CVE lookup is wired when a provider is supplied
+
+
+# =====================================================================
+# Division 8.18.3 — build_analyst_tools() merges build_perception_tools()
+# =====================================================================
+
+
+def test_build_analyst_tools_gains_the_five_perception_tools() -> None:
+    from tools.analyst_tools import build_analyst_tools
+
+    original_ten = {
+        "run_linter", "analyze_complexity", "diff_changes", "audit_dependencies",
+        "web_search", "read_token_ledger", "detect_dead_code", "architecture_digest",
+        "find_symbol_callers", "trace_cross_boundary",
+    }
+    perception_five = {
+        "document_parser", "inspect_ast_node", "get_symbol_references",
+        "trace_data_flow", "web_fetch",
+    }
+    state = {"workspace_root": "/ws", "project_id": "p1", "session_id": "s1"}
+
+    tools = build_analyst_tools(state)
+
+    assert original_ten <= set(tools), "an original analyst tool went missing"
+    assert perception_five <= set(tools), "the 5 perception tools were not merged in"
+    for name in perception_five:
+        assert tools[name].tool.name == name

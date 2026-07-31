@@ -58,6 +58,7 @@ from brain.state import AIlienantGraphState
 from core.dead_letter import get_pending_dlqs, init_dlq_table, mark_dlq_resolved
 from core.audit import init_audit_table  # Phase 6.6 — HITL audit ledger
 from core.mcp_registry import init_registry
+from core.tool_rag import populate_tool_catalog, tool_rag_store
 from tools.mcp_adapter import autoconnect_enabled_mcp_servers, shutdown_mcp_sessions
 from shared.logging_filters import SecretsScrubberFilter  # Phase 6.7 — DLP scrubber
 from langchain_core.runnables import RunnableConfig
@@ -120,7 +121,7 @@ from shared.contracts import (
 )
 from api.api_contracts import DirtyBuffer
 from core.vfs_middleware import DirtyBuffer as VfsDirtyBuffer
-from api.ws_contracts import IdeTelemetryPayload, DreamingRunPayload
+from api.ws_contracts import IdeTelemetryPayload
 
 # Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
 # When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
@@ -185,6 +186,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_audit_table()                 # Phase 6.6 — hitl_audit_log ledger
     init_registry()                          # curated regulated-server tier overrides
     await autoconnect_enabled_mcp_servers()  # connect enabled MCP servers once per host lifecycle
+    await populate_tool_catalog(tool_rag_store)  # Division 8.18.1 — populate the tool RAG catalog
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)

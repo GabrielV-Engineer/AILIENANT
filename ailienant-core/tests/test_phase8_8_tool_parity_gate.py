@@ -286,3 +286,17 @@ def test_qa_tester_and_secops_prompts_stay_framework_agnostic() -> None:
     for banned in ("pytest", "Bandit", "Semgrep"):
         assert banned not in qa_prompt, f"qa_tester directive reintroduced '{banned}'"
         assert banned not in secops_prompt, f"secops directive reintroduced '{banned}'"
+
+
+def test_no_role_prompt_instructs_an_unreachable_tool() -> None:
+    # The CoderAgent has no tool-calling wiring at all (single-shot SEARCH/REPLACE
+    # text, confirmed via core/tool_dispatch.py's own architectural note) — so a
+    # directive telling it to "use"/"run" a specific named tool describes an action
+    # it structurally cannot take, regardless of whether that tool name is real.
+    # architect_refactor previously said "You MUST use BatchEditTool" (a tool that
+    # does exist, in tools/mutation_tools.py, but — like tools/coder_tools.py's
+    # RunTestsTool — is never constructed by any production caller). This is a
+    # blanket regression guard against any role prompt reintroducing that pattern.
+    for role, config in ROLE_REGISTRY.items():
+        prompt = config["system_prompt"]
+        assert "MUST use" not in prompt, f"{role} directive instructs an unreachable tool call"

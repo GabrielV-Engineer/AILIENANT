@@ -853,6 +853,15 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
     Heavy providers resolve lazily (no DB/network I/O at construction): the VFS
     RAM reader, the RAM ∪ catalog path provider, and the brave-search callable
     all defer their work to first use.
+
+    Also merges in ``perception_tools.build_perception_tools`` — of the five,
+    ``inspect_ast_node``, ``get_symbol_references``, ``trace_data_flow``, and
+    ``web_fetch`` list the analyst in their schema's ``allowed_roles`` (checked
+    against ``RegisteredTool.allowed_roles`` by the dispatch gate regardless of
+    which ``build_*`` function constructed the entry); ``document_parser`` does
+    not and is included here only so a single merge covers the whole family —
+    the dispatch gate rejects it for this role exactly as it would any tool
+    outside the schema's role set.
     """
     from core.tool_dispatch import RegisteredTool
     from core.token_ledger import token_ledger
@@ -861,6 +870,7 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
         ArchitectureDigestTool,
         FindSymbolCallersTool,
         TraceCrossBoundaryTool,
+        build_perception_tools,
     )
     from tools.researcher_tools import make_vfs_path_provider
 
@@ -872,7 +882,7 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
     ram_reader = vfs.read_ram_only
     path_provider = make_vfs_path_provider(project_id, vfs=vfs)
 
-    return {
+    tools: Dict[str, RegisteredTool] = {
         "run_linter": RegisteredTool(
             RunLinterTool(workspace_root=workspace_root, ram_reader=ram_reader),
             ToolPrivilegeTier.READ_ONLY,
@@ -944,3 +954,5 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
             _ANALYST_ROLES,
         ),
     }
+    tools.update(build_perception_tools(state))
+    return tools

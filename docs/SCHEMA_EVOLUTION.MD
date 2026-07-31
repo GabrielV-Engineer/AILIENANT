@@ -520,7 +520,7 @@ agent_todos: Annotated[List[Dict[str, Any]], _merge_todos]
   - `right is not None` → return `right` (including `[]`, which explicitly clears the list).
   - `right is None` → return `left or []` (no-op for turns that do not call `todo_write`).
   - Tests `is not None`, never truthiness, so an empty list is a valid "clear" signal — the anti-immortal-TODO invariant.
-- **No runtime call site yet:** `todo_write._arun` returns a JSON string keyed `agent_todos`; a future graph node will `json.loads` it and write the delta through this channel. Registration-surface only as of Division 8.8.
+- **Dispatchable since Division 8.18, `agent_todos` write-through still not automatic:** `core/tool_registry.py` resolves `todo_write` to a live `TodoWriteTool`, so any dispatch loop (including the CoderAgent's registry fallback in `brain/agentic_cell.py`) can invoke it and receive its JSON string keyed `agent_todos`. `ToolDispatcher.dispatch()` surfaces that string as a text observation to the model, not as a parsed state delta — a graph node that `json.loads`-es the observation and writes it through this channel via `_merge_todos` is still unbuilt.
 
 ## 14. Skills, MCP Config, Hooks, Agent Role Override Tables
 
