@@ -195,6 +195,7 @@ export function CodeGraphLayer({ graph, search, onSelectNode }: CodeGraphLayerPr
             out_degree: node.data.out_degree,
             is_external: node.data.is_external,
             full_path: node.data.full_path,
+            is_god_node: node.data.is_god_node,
         });
     }, [onSelectNode]);
 

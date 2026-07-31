@@ -369,7 +369,8 @@ Proyect_Ailienant/
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
 │   └── tests/                   #   pytest suite + per-phase checkpoint gates + chaos crucible
-│       ├── e2e/                 #     real HTTP/WS end-to-end (SSoT prompt→graph→WS→applied patch)
+│       ├── e2e/                 #     real HTTP/WS end-to-end (SSoT prompt→graph→WS→applied patch);
+│       │                        #       seed_dashboard_fixture.py hermetically seeds the Playwright dashboard suite
 │       └── benchmark/           #     hermetic gates for the core/benchmark harness (harness itself lives in core/)
 │           ├── test_ablation_verdicts.py  #  5-arm comparable verdicts, provider seam, drain, normalize
 │           ├── test_codegen_pass1.py      #  plain-codegen Pass@1 over the frozen dataset subset
@@ -414,9 +415,13 @@ Proyect_Ailienant/
 │   │   │                        #     devcontainerExecHandler.ts (host-side bridge handler — provision/exec, streams back),
 │   │   │                        #     devcontainerScaffold.ts (idempotent .devcontainer/devcontainer.json starter),
 │   │   │                        #     docsCatalog.ts (vscode-free Help-documents resolver over dist/docs/)
-│   │   └── test/                #     vscode-test mocha suite
+│   │   └── test/                #     vscode-test mocha suite (webview components + dispatch logic)
+│   ├── e2e/                     #   Playwright suite for the browser-reachable dashboard SPA (Phase 11.9);
+│   │                            #     run-backend.mjs boots a hermetically-seeded ailienant-core, fixtures.ts
+│   │                            #     reads the seeded ids, playwright.config.ts owns the webServer/browser wiring
 │   ├── media/                   #   source logos (logo.svg, icon-color.svg, icon.svg)
 │   ├── dist/docs/               #   build-copied user guides (README · HowToUseIt · HowItWorks) shipped in the VSIX
+│   ├── playwright.config.ts     #   Chromium-only smoke config for e2e/ (separate from the tsc/eslint compile gate)
 │   └── esbuild.js               #   3 build contexts (extension CJS · webview IIFE · dashboard ESM) + user-guide copy
 ├── docs/                        # Manifest, blueprints, dev journal, schema, system prompts, tech debt
 ├── README.md  (+ 6 translations)# Public landing page
