@@ -53,9 +53,8 @@
 | 8.18 CoderAgent Tool Activation | ✅ CLOSED | 2026-07-30 | — |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.9 Dashboard checkpoint gate (11.0–11.8 + 11.3.B + 11.10 + 11.11 + 11.12 shipped) |
-| Phase 12 Human Evaluation Execution | ⬜ PENDING | — | 12.1 Corpus curation |
-| Phase 13 Pre-Launch Innovation Sprint | ⬜ PENDING | — | 13.1 Prompt caching |
-| Phase 14 Portfolio Level Release | ⬜ PENDING | — | 14.1 Dockerization |
+| Phase 12 Pre-Launch Innovation Sprint | ⬜ PENDING | — | 12.1 Prompt caching |
+| Phase 13 Portfolio Level Release | ⬜ PENDING | — | 13.1 Dockerization |
 
 ---
 
@@ -96,9 +95,8 @@
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
 | 11 | Web Dashboard Enterprise Redesign (10 sub-phases) | ⬜ |
-| 12 | Human Evaluation Execution | ⬜ |
-| 13 | Pre-Launch Innovation Sprint | ⬜ |
-| 14 | Portfolio Level (Standout Release) | ⬜ |
+| 12 | Pre-Launch Innovation Sprint | ⬜ |
+| 13 | Portfolio Level (Standout Release) | ⬜ |
 
 **Legend:** ✅ Closed · 🟡 Active · ⬜ Pending
 
@@ -573,7 +571,7 @@
   - **DoD:** `mypy .` 0 · `pytest` green · `npm run compile` + `npm run lint` 0 (DEBT-024 host).
 
 - [x] **8.10.7 — Pre-launch gap audit (docs-only)**
-  Update `DEVELOPERS.md` honest list to reflect completions (56-tool catalog, MCP wiring, orchestrator/researcher nodes), remaining deferrals (Wasm default, full MCTS, autonomous dreaming, auth), and planned implementations (prompt caching → Phase 13.1). **DoD:** honest list accurate; no code changes.
+  Update `DEVELOPERS.md` honest list to reflect completions (56-tool catalog, MCP wiring, orchestrator/researcher nodes), remaining deferrals (Wasm default, full MCTS, autonomous dreaming, auth), and planned implementations (prompt caching → Phase 12.1). **DoD:** honest list accurate; no code changes.
 
 - [x] **8.10.8 — Runtime Tool Dispatch Activation**
   The tool factories created in 8.10.2 are never invoked at runtime — the LLM cannot call registered orchestrator/coder/analyst tools from inside the agent loop. This sub-phase closes the activation gap.
@@ -589,9 +587,9 @@
   - **DoD:** `mypy .` 0 · `pytest` green; all three debt assertions verified.
 
 - [x] **8.10.10 — WBS Contract Correctness (pre-8.11 prep)**
-  Two correctness gaps in the planning and role contracts that 8.11 (7-Mode Permission System) will build on top of. Accelerated from Phase 13.2 and Phase 13.3 respectively — closing these in 8.10 prevents 8.11 from inheriting a broken WBS contract or a missing role-isolation field. Phase 13.2 and 13.3 references to these debts will be updated to reflect early closure when this sub-phase completes.
-  - DEBT-044 (MEDIUM): `ValidateWBSDependenciesTool` detects step-ordering violations only; it cannot detect true DAG cycles (steps that depend on each other circularly through `depends_on` links). Add `depends_on: Optional[List[int]] = None` additively to `WBSStep` in `brain/state.py` (default `None` is backward-compatible; existing checkpoints deserialize safely). Update `ValidateWBSDependenciesTool` to run a topological sort over `depends_on` links and reject plans containing a cycle before the Planner commits. Add a `SCHEMA_EVOLUTION.MD §15` versioned entry for the additive field. *DoD:* a `MissionSpecification` draft with a circular `depends_on` is rejected at validation; linear chains pass. Target files: `brain/state.py`, `tools/` (validation bundle), `docs/SCHEMA_EVOLUTION.MD`. *(Accelerated from Phase 13.2.)*
-  - DEBT-051 (LOW): `list_tasks` / `TaskListTool` returns all active tasks to every caller regardless of role; the orchestrator sees tasks owned by the coder. Add `owner_role: Optional[str] = None` additively to the task entry schema; set it from `active_role` at `task_create` time. `TaskListTool._execute` filters by `owner_role == caller_role` for non-orchestrator callers; the orchestrator retains full visibility. *DoD:* a coder-role call to `list_tasks` sees only its own tasks; an orchestrator-role call sees all. Target files: `tools/` (control bundle), `brain/state.py`. *(Accelerated from Phase 13.3.)*
+  Two correctness gaps in the planning and role contracts that 8.11 (7-Mode Permission System) will build on top of. Accelerated from Phase 12.2 and Phase 12.3 respectively — closing these in 8.10 prevents 8.11 from inheriting a broken WBS contract or a missing role-isolation field. Phase 12.2 and 12.3 references to these debts will be updated to reflect early closure when this sub-phase completes.
+  - DEBT-044 (MEDIUM): `ValidateWBSDependenciesTool` detects step-ordering violations only; it cannot detect true DAG cycles (steps that depend on each other circularly through `depends_on` links). Add `depends_on: Optional[List[int]] = None` additively to `WBSStep` in `brain/state.py` (default `None` is backward-compatible; existing checkpoints deserialize safely). Update `ValidateWBSDependenciesTool` to run a topological sort over `depends_on` links and reject plans containing a cycle before the Planner commits. Add a `SCHEMA_EVOLUTION.MD §15` versioned entry for the additive field. *DoD:* a `MissionSpecification` draft with a circular `depends_on` is rejected at validation; linear chains pass. Target files: `brain/state.py`, `tools/` (validation bundle), `docs/SCHEMA_EVOLUTION.MD`. *(Accelerated from Phase 12.2.)*
+  - DEBT-051 (LOW): `list_tasks` / `TaskListTool` returns all active tasks to every caller regardless of role; the orchestrator sees tasks owned by the coder. Add `owner_role: Optional[str] = None` additively to the task entry schema; set it from `active_role` at `task_create` time. `TaskListTool._execute` filters by `owner_role == caller_role` for non-orchestrator callers; the orchestrator retains full visibility. *DoD:* a coder-role call to `list_tasks` sees only its own tasks; an orchestrator-role call sees all. Target files: `tools/` (control bundle), `brain/state.py`. *(Accelerated from Phase 12.3.)*
   - **DoD:** `mypy .` 0 · `pytest` green; DAG cycle rejection test green; cross-role visibility filter test green.
 
 - [x] **8.10.11 — Remaining-role Tool Dispatch Wiring**
@@ -936,51 +934,33 @@
 
 ---
 
-## PHASE 12 — Human Evaluation Execution ⬜
-
-> Run the Division 8.3 benchmark harness end-to-end with a curated corpus and human judges, producing exact accuracy percentages with statistical confidence bounds — the "moat proof" document backing every quality claim in the portfolio. **Acknowledged out of scope:** DEBT-035 (untrusted MultiPL-E TypeScript execution has no locked Node-capable sandbox tier) stays out of scope for this evaluation round — Python (HumanEval) Pass@1 is the certified subset; TS Pass@1 remains `unsupported_runtime`, consistent with DEBT-035's own entry in `docs/TECH_DEBT_BACKLOG.md`.
-
-**Output metrics (exact percentages + Wilson CI):**
-- **Pass@1**: % correct on first attempt. **Resolve@k** (k≤3): % correct within k retries.
-- **Ablation delta**: G1 (full arch) vs G2 (vector-only) vs G3 (no RAG) vs G4 (no HITL) — exact ΔPass@1 per component.
-- **Human judge scores**: correctness (0/1), code quality (1–5), intent alignment (1–5), HITL appropriateness (1–5) — averaged per problem per arm.
-- **H₁/H₂ verdicts** with Wilson CI: e.g. "Pass@1 = 74% ± 6%; ΔG1-G2 = +18 pp (p<0.05)".
-- Final artifact: `docs/HUMAN_EVAL_REPORT.md` — structured, versioned, public-ready.
-
-- [ ] **12.1 — Problem Set Curation.** Freeze 30–50 real-world multi-file problems with known-correct solutions, difficulty tags (easy/medium/hard), Python + TS language split. Each problem attempted by all 4 arms under identical conditions.
-- [ ] **12.2 — Blind Evaluation Protocol.** Judge assignment rubric (correctness, code quality, intent alignment, HITL appropriateness); arm identity hidden at scoring time; Cohen's κ inter-rater reliability check before final scoring.
-- [ ] **12.3 — Data Collection & Report.** Run `run_benchmark` via gateway for G1–G4 arms; collect judge scores; pipe into `BenchmarkReport` with Wilson CI; compare H₁/H₂. Output: `docs/HUMAN_EVAL_REPORT.md`.
-- [ ] **12.4 — Human Eval Gate.** Report artifact exists; Wilson CI columns populated; H₁/H₂ verdict rendered. **DoD:** `get_report` returns a valid, non-empty report.
-
----
-
-## PHASE 13 — Pre-Launch Innovation Sprint ⬜
+## PHASE 12 — Pre-Launch Innovation Sprint ⬜
 
 > The "Phase 9 spirit" — a focused innovation wave immediately before the final launch deploying the highest-ROI features not yet in the system.
 
-- [ ] **13.1 — Provider-Native Prompt Caching (~90% input-token discount).**
+- [ ] **12.1 — Provider-Native Prompt Caching (~90% input-token discount).**
   Structure LangGraph message assembly so the stable high-volume prefix (system prompt → tool/MCP schemas → GraphRAG context) is byte-identical and front-loaded across coder/planner iterations; tag `cache_control` breakpoints for Anthropic/OpenAI providers; measure per-session savings in telemetry. Files: `tools/llm_gateway.py`, `agents/planner.py`, `agents/coder.py`. **DoD:** tokens-saved metric > 0 in session telemetry.
-- [x] **13.2 — WBSStep `depends_on` Schema Extension (closes DEBT-044).**
+- [x] **12.2 — WBSStep `depends_on` Schema Extension (closes DEBT-044).**
   Accelerated and closed in 8.10.10: `depends_on: Optional[List[int]] = None` added to `WBSStep`; `ValidateWBSDependenciesTool` Pass 5 (Kahn's BFS) detects DAG cycles; `SCHEMA_EVOLUTION.MD §18` entry added.
-- [ ] **13.3 — Remaining Integration DEBTs Sprint.**
+- [ ] **12.3 — Remaining Integration DEBTs Sprint.**
   Close DEBT-049 (`SkillInvokeTool` embedder injection via graph-level factory), DEBT-054 (`agent_todos` channel runtime wiring into a cognitive node). *(DEBT-051 `task_list` owner-scoped visibility accelerated and closed in 8.10.10.)*
-- [ ] **13.4 — Devcontainer Follow-Ups (orphaned by 8.13 closure).**
+- [ ] **12.4 — Devcontainer Follow-Ups (orphaned by 8.13 closure).**
   Close DEBT-083 (buffered exec output → true incremental streaming via the provisioner's child `stdout`/`stderr` `data` events), DEBT-084 (`open_host_session` interactive PTY contract over the host bridge), DEBT-085 (host↔container `cwd` path translation for devcontainer exec), DEBT-086 (thread `session_id` through `check_type_integrity`/`coder_tools._exec` so they route through the trusted tier via `resolve_execution_adapter`). All four were scoped "future 8.13 slice" before Division 8.13 closed (2026-06-30) without them.
-- [ ] **13.5 — Quality & Polish Debt Sweep.**
+- [ ] **12.5 — Quality & Polish Debt Sweep.**
   Close DEBT-027 (wire the already-correct `autoconnect_enabled_mcp_servers()` into task startup in `core/task_service.py`), DEBT-045 (calibrate `BudgetEstimatorTool` from `TokenLedger` session history instead of fixed heuristics), DEBT-047 (signature-aware Google/Numpy `generate_docstring` renderer), DEBT-052 (move `resolve_active_skills`'s LanceDB calls off the event loop), DEBT-067 (env-gated real-RAM/VRAM hardware stress script, opt-in/CI-skipped), DEBT-012 (word-diff-aware token slicer for intra-line highlight), DEBT-079 (persist original `TaskPayload`/thinking-config across a cross-restart HITL resume). DEBT-014 (retype `run_coder_node`/`run_planner_node`/`run_analyst_node` to `AIlienantGraphState`) closes only if LangGraph's stub situation has improved by this point — otherwise re-log and defer, since it remains upstream-blocked.
-- [ ] **13.6 — Pre-Launch Innovation Gate.** Prompt caching tokens-saved metric > 0; DEBT-049/054/051/083/084/085/086/027/045/047/052/067/012/079 closed (DEBT-014 closed only if unblocked); `pytest` green · `mypy .` 0 · `npm run compile` 0.
+- [ ] **12.6 — Pre-Launch Innovation Gate.** Prompt caching tokens-saved metric > 0; DEBT-049/054/051/083/084/085/086/027/045/047/052/067/012/079 closed (DEBT-014 closed only if unblocked); `pytest` green · `mypy .` 0 · `npm run compile` 0.
 
 ---
 
-## PHASE 14 — Portfolio Level (Standout Release) ⬜
+## PHASE 13 — Portfolio Level (Standout Release) ⬜
 
 > Final preparation to showcase the tool. Content migrated from old Phase 11.
 
-- [ ] **14.1. Full Dockerization.** `Dockerfile` + `docker-compose.yml` to launch the full architecture (LanceDB + Backend) with a single command.
-- [ ] **14.2. Binary Packaging (Zero-Friction Install).** **PyInstaller / Nuitka:** compile `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) into a per-OS binary (`.exe` / macOS / Linux). **VS Code Extension Bundling:** the TS extension unpacks and executes the local binary in background on install. The user needs no Python, Docker, or Node installed.
-- [ ] **14.3. Visual Documentation.** `README.md` final with real architecture diagrams.
-- [ ] **14.4. Autonomous Demo.** Recording where TestAgent + LogicAgent + AnalystAgent solve a cyclic bug unattended.
-- [ ] **14.5. Final Checkpoint Gate.** Zero-Friction Install E2E validation + project closure.
+- [ ] **13.1. Full Dockerization.** `Dockerfile` + `docker-compose.yml` to launch the full architecture (LanceDB + Backend) with a single command.
+- [ ] **13.2. Binary Packaging (Zero-Friction Install).** **PyInstaller / Nuitka:** compile `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) into a per-OS binary (`.exe` / macOS / Linux). **VS Code Extension Bundling:** the TS extension unpacks and executes the local binary in background on install. The user needs no Python, Docker, or Node installed.
+- [ ] **13.3. Visual Documentation.** `README.md` final with real architecture diagrams.
+- [ ] **13.4. Autonomous Demo.** Recording where TestAgent + LogicAgent + AnalystAgent solve a cyclic bug unattended.
+- [ ] **13.5. Final Checkpoint Gate.** Zero-Friction Install E2E validation + project closure.
 
 ---
 

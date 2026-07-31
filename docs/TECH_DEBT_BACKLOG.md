@@ -590,7 +590,7 @@ Decision    Not a defect — see [DECISION] tier.
 
 - **Date:** 2026-06-14 · **Resolved:** 2026-06-20 (8.10.10)
 - **Resolved:** `BackgroundTaskManager.create()` now accepts `owner_role: Optional[str] = None` and stamps it into the task registry entry. `list_tasks(caller_role)` filters the snapshot so non-orchestrator callers see only their own tasks; `caller_role="orchestrator"` or `None` returns the full view (backward-compatible default). `TaskCreateInput` gains `owner_role` field; `TaskCreateTool._arun()` threads it to the manager. `TaskListInput` gains `caller_role` field; `TaskListTool._arun()` passes it to `list_tasks()`. Changes are additive — callers that don't supply the new fields get unchanged behavior.
-- **Notes:** accelerated from Phase 13.3 to close before 8.11 inherits the gap.
+- **Notes:** accelerated from Phase 12.3 to close before 8.11 inherits the gap.
 
 ### DEBT-052 [LOW · Floating] — resolve_active_skills may execute synchronous LanceDB queries
 
