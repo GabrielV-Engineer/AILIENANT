@@ -47,8 +47,8 @@
 | 8.11.5 YOLO Guard + Matrix Combined Gate | ✅ CLOSED | 2026-06-23 | — (composed pipeline; no-double-interception locked; test-only) |
 | 8.12 Five-Layer Context Pipeline | ✅ CLOSED | 2026-06-23 | context_pipeline.py + agent_context.py budget-guard; STATE_COMPACTED wire contract; gate test_context_pipeline.py |
 | 8.13 Devcontainer Execution Layer | ✅ CLOSED | 2026-06-30 | trusted tier + host bridge + Selective HITL Fallback; DEBT-082 resolved (DEBT-035's untrusted-TS lane stays unsupported_runtime by design, §2) |
-| 8.14 Graph Intelligence Upgrade | ⬜ PENDING | — | 8.14.0 polyglot dependency-extraction registry (Python + TS/JS); then 8.14.1 blast-radius mapper |
-| 8.15 Dynamic Subagent Dispatch | ⬜ PENDING | — | 8.15.0 structured dispatch schema |
+| 8.14 Graph Intelligence Upgrade | ✅ CLOSED | 2026-07-02 | — (8.14.0-8.14.12 shipped, 8.14.4 NO-GO; checkpoint gate 8.14.9 + amendment 8.14.12) |
+| 8.15 Dynamic Subagent Dispatch | ✅ CLOSED | 2026-07-04 | — (8.15.0-8.15.6 shipped; checkpoint gate 8.15.6) |
 | 8.16 Importance-Aware Session Memory | ⬜ PENDING | — | 8.16.0 context-utilization telemetry (GO/NO-GO gate) |
 | 8.18 CoderAgent Tool Activation | ✅ CLOSED | 2026-07-30 | — |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
@@ -88,8 +88,8 @@
 | 8.10 | Debt Reduction + Complete 8.2 + 8.6 (26 sub-phases) | ✅ |
 | 8.11 | 7-Mode Permission System | ✅ |
 | 8.12 | Five-Layer Context Compression Pipeline | ✅ |
-| 8.14 | Graph Intelligence Upgrade (10 sub-phases) | ⬜ |
-| 8.15 | Dynamic Subagent Dispatch (6 sub-phases) | ⬜ |
+| 8.14 | Graph Intelligence Upgrade (10 sub-phases) | ✅ |
+| 8.15 | Dynamic Subagent Dispatch (6 sub-phases) | ✅ |
 | 8.16 | Importance-Aware Session Memory (5 sub-phases) | ⬜ |
 | 8.18 | CoderAgent Tool Activation (5 sub-phases) | ✅ |
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
@@ -720,7 +720,7 @@
 
 ---
 
-### Division 8.14 — Graph Intelligence Upgrade ⬜
+### Division 8.14 — Graph Intelligence Upgrade ✅
 
 > Selective uplift of the retrieval/graph layer, scoped to net-new capability whose substrate already exists. Four engineering items ship; one is a decision spike; two blocked ideas live in the backlog. The graph engine itself is **not** rewritten — multi-hop traversal already exists (`_bfs_k_hop`, `core/memory/graphrag_extractor.py`); only orthogonal capabilities that the existing `dependency_graph` and `.ailienant/` substrate make cheap are added. Note: the `dependency_graph` substrate currently carries edges for Python only (`_extract_python_imports`); 8.14.0 generalizes edge extraction to a language-dispatched registry (Python + TypeScript/JavaScript shipped) so the graph-reading items below (8.14.1 blast-radius, 8.14.3 dead-code) are polyglot rather than silently Python-only. A GraphRAG-MCP evaluation (offline `codebase-memory-mcp`, indexed against this repo: function-level `CALLS`, cross-boundary `HANDLES`/`HTTP_CALLS`, git `FILE_CHANGES_WITH` coupling) validated four further net-new items achievable on this substrate — 8.14.5 (ready digest tool), 8.14.6 (call-graph substrate spike), 8.14.7 (cross-boundary edges, conditional), 8.14.8 (runtime-trace validation spike); the Checkpoint Gate is renumbered 8.14.9 to remain last. **Acknowledged out of scope:** DEBT-074 (`pre_file_read` cost-accounting gap) and DEBT-075 (LSP-style type resolution) were evaluated at 8.14 planning time and remain intentionally deferred — both are blocked on prerequisites (a metered lateral-injection path; a real LSP subprocess) that no sub-phase in this division builds; they stay Floating/Blocked in `docs/TECH_DEBT_BACKLOG.md`, not forced into this WBS.
 
@@ -789,7 +789,7 @@
 
 ---
 
-### Division 8.15 — Dynamic Subagent Dispatch ⬜
+### Division 8.15 — Dynamic Subagent Dispatch ✅
 
 > Native, Pydantic-validated fan-out/tournament/synthesis capability, evaluated against LangChain's "Dynamic Subagents in Deep Agents" (`deepagents`'s QuickJS-interpreter `task()` primitive, confirmed to compile down to a LangGraph `CompiledStateGraph`). Adopting the `deepagents` package or a JS sandboxed interpreter is explicitly REJECTED — see `docs/PHASE_8_15_BLUEPRINT.md` §Rationale: it would fork the architecture against `core/task_service.py`/`core/permissions.py`/VFS middleware, and a code-interpreter for LLM-authored code is a new arbitrary-code-execution trust boundary the Gateway zero-trust posture (§6) and dependency-governance precedent (§9, scipy rejection) do not accept for the value delivered. Instead, this division generalizes what already exists — `route_to_coders`'s `Send()`-fanout (`brain/engine.py`), `agentic_cell.py`'s contained MCTS tournament, and `gateway/ledger.py`'s reserve/refund pattern — into reusable primitives any node can call, with every LLM-authored dispatch instruction validated as a closed Pydantic schema rather than executed as code. Six sub-phases + checkpoint gate; full technical design in `docs/PHASE_8_15_BLUEPRINT.md`.
 
@@ -936,7 +936,7 @@
 
 ## PHASE 12 — Pre-Launch Innovation Sprint ⬜
 
-> The "Phase 9 spirit" — a focused innovation wave immediately before the final launch deploying the highest-ROI features not yet in the system.
+> The "Phase 9 spirit" — a focused innovation wave immediately before the final launch deploying the highest-ROI features not yet in the system, hardened by a full reliability and debt-closure sweep so the first launched version works correctly end to end.
 
 - [ ] **12.1 — Provider-Native Prompt Caching (~90% input-token discount).**
   Structure LangGraph message assembly so the stable high-volume prefix (system prompt → tool/MCP schemas → GraphRAG context) is byte-identical and front-loaded across coder/planner iterations; tag `cache_control` breakpoints for Anthropic/OpenAI providers; measure per-session savings in telemetry. Files: `tools/llm_gateway.py`, `agents/planner.py`, `agents/coder.py`. **DoD:** tokens-saved metric > 0 in session telemetry.
@@ -947,8 +947,16 @@
 - [ ] **12.4 — Devcontainer Follow-Ups (orphaned by 8.13 closure).**
   Close DEBT-083 (buffered exec output → true incremental streaming via the provisioner's child `stdout`/`stderr` `data` events), DEBT-084 (`open_host_session` interactive PTY contract over the host bridge), DEBT-085 (host↔container `cwd` path translation for devcontainer exec), DEBT-086 (thread `session_id` through `check_type_integrity`/`coder_tools._exec` so they route through the trusted tier via `resolve_execution_adapter`). All four were scoped "future 8.13 slice" before Division 8.13 closed (2026-06-30) without them.
 - [ ] **12.5 — Quality & Polish Debt Sweep.**
-  Close DEBT-027 (wire the already-correct `autoconnect_enabled_mcp_servers()` into task startup in `core/task_service.py`), DEBT-045 (calibrate `BudgetEstimatorTool` from `TokenLedger` session history instead of fixed heuristics), DEBT-047 (signature-aware Google/Numpy `generate_docstring` renderer), DEBT-052 (move `resolve_active_skills`'s LanceDB calls off the event loop), DEBT-067 (env-gated real-RAM/VRAM hardware stress script, opt-in/CI-skipped), DEBT-012 (word-diff-aware token slicer for intra-line highlight), DEBT-079 (persist original `TaskPayload`/thinking-config across a cross-restart HITL resume). DEBT-014 (retype `run_coder_node`/`run_planner_node`/`run_analyst_node` to `AIlienantGraphState`) closes only if LangGraph's stub situation has improved by this point — otherwise re-log and defer, since it remains upstream-blocked.
-- [ ] **12.6 — Pre-Launch Innovation Gate.** Prompt caching tokens-saved metric > 0; DEBT-049/054/051/083/084/085/086/027/045/047/052/067/012/079 closed (DEBT-014 closed only if unblocked); `pytest` green · `mypy .` 0 · `npm run compile` 0.
+  Close DEBT-045 (calibrate `BudgetEstimatorTool` from `TokenLedger` session history instead of fixed heuristics), DEBT-047 (signature-aware Google/Numpy `generate_docstring` renderer), DEBT-052 (move `resolve_active_skills`'s LanceDB calls off the event loop), DEBT-067 (env-gated real-RAM/VRAM hardware stress script, opt-in/CI-skipped), DEBT-012 (word-diff-aware token slicer for intra-line highlight), DEBT-079 (persist original `TaskPayload`/thinking-config across a cross-restart HITL resume). DEBT-014 (retype `run_coder_node`/`run_planner_node`/`run_analyst_node` to `AIlienantGraphState`) closes only if LangGraph's stub situation has improved by this point — otherwise re-log and defer, since it remains upstream-blocked. *(DEBT-027 removed from this sweep — already closed by Phase 11.13.)*
+- [ ] **12.6 — Sandbox Reliability Hardening.**
+  Close DEBT-097 (single shared Docker sandbox container across all concurrent sessions — give each session/task its own container or a bounded pool instead of one global mutable tier, eliminating cross-session noisy-neighbor and blast-radius risk) and DEBT-100 (a hung Docker daemon blocks the sandbox worker thread indefinitely — add a native cancellation/timeout path around the synchronous SDK call inside `asyncio.to_thread` so a daemon hang degrades gracefully instead of wedging the host process). These are the only two HIGH-tier open items in the backlog and the last unaddressed reliability risks from the original Phase 6 sandbox blueprint (R5). Files: `core/sandbox.py` and its Docker adapter path.
+- [ ] **12.7 — Coder Tool-Calling Completion (finishes Division 8.18).**
+  Close DEBT-130 (`run_coder_node`'s one-shot path — the majority of WBS steps by volume — still has zero tool-calling; wire it through the same tool-dispatch loop the iterative `agentic_cell.py` path already uses), DEBT-129 (Coder's registry-fallback tools have no interactive HITL approval channel — a HITL-tier tool call is currently silently denied instead of surfaced as an approval card), DEBT-106 (dispatch dev roles resolve tool permissions but run tool-less — build the missing arsenal builder so dispatched dev-role subagents actually have tools). Close DEBT-127 (per-role prompt overrides ignored by dispatched subagents) only if DEBT-106 lands within this sub-phase, since it is blocked on it — otherwise re-log both together.
+- [ ] **12.8 — Fresh Debt Triage Sweep (items logged 2026-07-27 → 2026-07-30).**
+  Close DEBT-121 (`_companion_gpu_slot_available` unconditionally admits — add the deferred yield path), DEBT-123 (sweep the now-vestigial `NarrationGate`/`gate` bookkeeping), DEBT-124 (compaction fold `SessionSummaryCard` state doesn't survive a panel reload — persist it), DEBT-125 (the apply-edge "low-risk" gate is a command-pattern proxy, not a real edit-risk classifier — fix the `risk_metrics`/`risk_patterns_matched` name mismatch at minimum, and note if the deeper classifier is out of scope), DEBT-126 (turn-duration 0.0s residual spans + dead `server_indexing_started` FE handler), DEBT-128 (`analyst_name` setting persisted but never read — wire it or remove the dead persistence), DEBT-132 (`BackgroundTaskManager.create` bypasses `record_execution` — no timeline detail for background-tier executions), DEBT-133 (file-read and MCP-tool-call I/O missing from the Glass-Box Timeline), DEBT-134 (execution-detail output fills on completion instead of incrementally). DEBT-122 (Rich Tool Chips migration — remaining scope architecturally blocked on a main-loop reroute decision) is **not** closed here: make the pivot/defer decision explicit (Section 4 protocol — Pivot, Manifest Update, or Refactor) and log the outcome rather than leaving it silently open.
+- [ ] **12.9 — Manifest & Backlog Ledger Accuracy Pass.**
+  Correct the Status Dashboard table rows for Divisions 8.14 and 8.15 (currently marked "⬜ PENDING" despite every sub-item in both phase bodies already being `[x]`) to reflect their actual shipped status. In `docs/TECH_DEBT_BACKLOG.md`'s Open Items Dashboard, correct the stale rows for DEBT-057/058/059/078 (still shown Locked to Phases 11.5/11.6/11.7, which are all `[x]` closed with explicit "closes DEBT-0XX" language) to reflect their closure. Pure ledger-accuracy fix — no scope or architecture change.
+- [ ] **12.10 — Pre-Launch Innovation Gate.** Prompt caching tokens-saved metric > 0; DEBT-049/054/051(already closed)/083/084/085/086/045/047/052/067/012/079/097/100/106/129/130/127(conditional)/121/123/124/125/126/128/132/133/134 closed (DEBT-014 closed only if unblocked; DEBT-122 has an explicit logged decision, not necessarily closed); manifest and backlog ledger rows internally consistent (12.9); `pytest` green · `mypy .` 0 · `npm run compile` 0.
 
 ---
 

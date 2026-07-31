@@ -59,10 +59,10 @@ Decision    Not a defect — see [DECISION] tier.
 
 | ID | Title (short) | Tier | Type | Target Phase | Schedule |
 |---|---|---|---|---|---|
-| DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | Locked |
-| DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | Locked |
-| DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | Locked |
-| DEBT-078 | Frontend contract mirror for `state_compacted` + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet) | LOW | FE Architecture | Phase 11.7 (see DEBT-059) | Floating |
+| DEBT-057 | Non-native-thinking models produce empty ThoughtBox — appear pre-scripted | MEDIUM | UX gap | Phase 11.5 | RESOLVED |
+| DEBT-058 | Submitted prompt not preserved during task execution (lost in long sessions) | MEDIUM | UX gap | Phase 11.6 | RESOLVED |
+| DEBT-059 | Chat UI has no compaction strategy for long sessions (DOM grows unboundedly) | MEDIUM | FE Architecture | Phase 11.7 + 8.12 | RESOLVED |
+| DEBT-078 | Frontend contract mirror for `state_compacted` + Phase 11.7 `SessionSummaryCard` consumer (extension `contracts.ts` has no server-event union yet) | LOW | FE Architecture | Phase 11.7 (see DEBT-059) | RESOLVED |
 | DEBT-080 | Dependency-graph edge extraction is Python-only; GraphRAG relational features (blast-radius, dead-code, PPR) are Python-only | MEDIUM | Architecture / Graph | 8.14.0 | RESOLVED |
 | DEBT-087 | Python relative imports (`from .mod import x`) skipped by the extractor — asymmetric with TS/JS lexical resolution | LOW | Architecture / Graph | future graph slice | Floating |
 | DEBT-088 | `bfs_k_hop_backward` has the same resolved-form multi-hop gap as pre-8.14.1 blast-radius (dependents referenced by import specifier, not file path) | LOW | Architecture / Graph | future graph slice | Floating |
@@ -211,7 +211,7 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
-### DEBT-057 [MEDIUM · Locked] — Non-native-thinking models produce an empty ThoughtBox and appear pre-scripted
+### DEBT-057 [MEDIUM · RESOLVED 2026-07-25, Phase 11.5] — Non-native-thinking models produce an empty ThoughtBox and appear pre-scripted
 
 - **Date:** 2026-06-14
 - **Reproduce:** Select a model that does not support native extended thinking (any non-Anthropic/non-DeepSeek-R1 model). Submit a complex prompt. The ThoughtBox is empty; the agent's response appears as a fixed, pre-scripted answer with no visible reasoning trace, making the AI look unintelligent.
@@ -220,8 +220,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing — fully self-contained.
 - **Phase:** Phase 11.5.
 - **Notes:** confirmed in live testing session 2026-06-14.
+- **Resolution (2026-07-25, Phase 11.5):** shipped as the verbal reasoning fallback + unified reasoning stream; hardened one day later (11.5.1, 2026-07-25) so the reasoning scaffold defaults off for strict-output-contract calls (DEBT-013 recurrence).
 
-### DEBT-058 [MEDIUM · Locked] — Submitted prompt not preserved during task execution; lost in long sessions
+### DEBT-058 [MEDIUM · RESOLVED 2026-07-27, Phase 11.6] — Submitted prompt not preserved during task execution; lost in long sessions
 
 - **Date:** 2026-06-14
 - **Reproduce:** Submit a long prompt. The input clears immediately. Scroll up in a session with 20+ messages to find the original prompt — difficult to locate. No sticky indicator of what task the AI is currently working on.
@@ -230,8 +231,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing.
 - **Phase:** Phase 11.6.
 - **Notes:** analogous to Claude Code's in-flight task header. Confirmed need in live testing session 2026-06-14.
+- **Resolution (2026-07-27, Phase 11.6):** shipped as the Active Task Header / prompt-preservation feature.
 
-### DEBT-059 [MEDIUM · Locked] — Chat UI has no compaction strategy for long sessions (DOM grows unboundedly)
+### DEBT-059 [MEDIUM · RESOLVED 2026-07-27, Phase 11.7] — Chat UI has no compaction strategy for long sessions (DOM grows unboundedly)
 
 - **Date:** 2026-06-14
 - **Reproduce:** Run a session with 60+ messages. NattCanvas DOM grows unboundedly, causing sluggish rendering and memory pressure in the VS Code webview process. Also mirrors the backend context-window constraint for local models — frequent compaction events would be useful but no FE receiver exists.
@@ -240,6 +242,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** Division 8.12 `STATE_COMPACTED` event contract (8.12.3).
 - **Phase:** Phase 11.7 (FE) + Division 8.12 (backend hook).
 - **Notes:** analogous to Claude Code's `/compact` auto-compact. Addresses both DOM memory pressure AND context-window viability for local model sessions. Confirmed need 2026-06-14.
+- **Resolution (2026-07-27, Phase 11.7):** shipped as chat compaction for long sessions, closing this entry together with DEBT-078. Residual scope (fold durability across a panel reload) re-logged separately as DEBT-124.
 
 ### DEBT-124 [LOW · Floating] — Compaction fold does not survive a panel reload
 
