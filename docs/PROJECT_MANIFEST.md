@@ -53,7 +53,7 @@
 | 8.18 CoderAgent Tool Activation | ✅ CLOSED | 2026-07-30 | — |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
 | Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.9 Dashboard checkpoint gate (11.0–11.8 + 11.3.B + 11.10 + 11.11 + 11.12 shipped) |
-| Phase 12 Pre-Launch Innovation Sprint | ⬜ PENDING | — | 12.1 Prompt caching |
+| Phase 12 Pre-Launch Innovation Sprint | 🟡 Active | — | 12.3 Remaining Integration DEBTs Sprint (12.1 shipped narrowed to prefix stability; 12.2 already closed) |
 | Phase 13 Portfolio Level Release | ⬜ PENDING | — | 13.1 Dockerization |
 
 ---
@@ -95,7 +95,7 @@
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
 | 11 | Web Dashboard Enterprise Redesign (10 sub-phases) | ⬜ |
-| 12 | Pre-Launch Innovation Sprint | ⬜ |
+| 12 | Pre-Launch Innovation Sprint | 🟡 |
 | 13 | Portfolio Level (Standout Release) | ⬜ |
 
 **Legend:** ✅ Closed · 🟡 Active · ⬜ Pending
@@ -934,12 +934,12 @@
 
 ---
 
-## PHASE 12 — Pre-Launch Innovation Sprint ⬜
+## PHASE 12 — Pre-Launch Innovation Sprint 🟡
 
 > The "Phase 9 spirit" — a focused innovation wave immediately before the final launch deploying the highest-ROI features not yet in the system, hardened by a full reliability and debt-closure sweep so the first launched version works correctly end to end.
 
-- [ ] **12.1 — Provider-Native Prompt Caching (~90% input-token discount).**
-  Structure LangGraph message assembly so the stable high-volume prefix (system prompt → tool/MCP schemas → GraphRAG context) is byte-identical and front-loaded across coder/planner iterations; tag `cache_control` breakpoints for Anthropic/OpenAI providers; measure per-session savings in telemetry. Files: `tools/llm_gateway.py`, `agents/planner.py`, `agents/coder.py`. **DoD:** tokens-saved metric > 0 in session telemetry.
+- [x] **12.1 — Cacheable System-Prompt Prefix (prerequisite for provider caching).**
+  Measurement at kickoff showed the original premise didn't hold: the stable prefix (identity + role constraints + language mirror) is ~281-450 tokens — below every current model's minimum-cacheable-token floor (512-4096) — and two of the three named prefix components don't exist as stable content (no tool/MCP schemas on the coder's one-shot path; GraphRAG context is assembled per-`target_file`, genuinely volatile). Applying `cache_control` today would pay the write premium for zero reads. Scope corrected to the actual blocker: the per-turn `uuid.uuid4()` sandbox nonce was interpolated directly into the system prompt's axiom text (`agents/prompts.py::BASE_SYSTEM_PROMPT`'s `{boundary}`), making the prefix change on every call regardless of `cache_control`. Split the system message into a byte-identical HEAD (identity/axiom/rules/project-instructions — new `build_static_identity_prompt`) and a small per-turn TAIL declaring the nonce (`build_boundary_declaration`), appended unconditionally in both the success and `ContextBudgetError`-degrade paths so the sandbox seal is never silently trimmed. An earlier draft relocated the nonce declaration into the user turn instead; rejected in review as a new prompt-injection vector (declaration syntax in the same message role as untrusted content) — the adopted design keeps the declaration exclusively in the system role. Files: `agents/prompts.py`, `agents/planner.py`, `agents/coder.py`. New tests: `tests/test_prompt_prefix_stability.py`. `cache_control` application itself is deferred as DEBT-137, unblocked by 12.7's coder tool-calling (which brings tool schemas into the HEAD, plausibly clearing the token floor). **DoD:** the system-message HEAD is byte-identical across repeated calls with the same agent identity, verified by `tests/test_prompt_prefix_stability.py`; `mypy .` 0 · `pyright` 0 · `pytest` green.
 - [x] **12.2 — WBSStep `depends_on` Schema Extension (closes DEBT-044).**
   Accelerated and closed in 8.10.10: `depends_on: Optional[List[int]] = None` added to `WBSStep`; `ValidateWBSDependenciesTool` Pass 5 (Kahn's BFS) detects DAG cycles; `SCHEMA_EVOLUTION.MD §18` entry added.
 - [ ] **12.3 — Remaining Integration DEBTs Sprint.**

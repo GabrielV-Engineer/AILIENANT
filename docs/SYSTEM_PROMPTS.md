@@ -110,7 +110,7 @@ Source: `agents/contract_guard.py`.
 
 ### 3.3 CoderAgent (8 Dynamic Roles)
 
-**Prompt source:** `build_coder_system_prompt(role)` in `agents/roles.py`, composing `_BASE_CODER_PROMPT` + the role directive, both defined in that same module. (Not to be confused with `agents/prompts.py::BASE_SYSTEM_PROMPT`, a separate identity template used only by the Planner/Researcher's `build_safe_prompt` — never role-injected into the Coder.)
+**Prompt source:** `build_coder_system_prompt(role)` in `agents/roles.py`, composing `_BASE_CODER_PROMPT` + the role directive, both defined in that same module. (Not to be confused with `agents/prompts.py::BASE_SYSTEM_PROMPT`/`build_safe_prompt`, a separate identity template used only by the Researcher, which legitimately embeds retrieved content directly in its system prompt. The Planner's identity instead comes from `agents/prompts.py::build_static_identity_prompt` — see §5.2 for why. The Coder shares that same module's `build_boundary_declaration` for its sandbox seal, though it never used `BASE_SYSTEM_PROMPT` itself.)
 
 **Base prompt (`agents/roles.py::_BASE_CODER_PROMPT`, paraphrased):**
 > "You are the CoderAgent. You produce concrete code changes for the active WBS step. Read files before writing. Emit SEARCH/REPLACE blocks when patching. Honor the role-specific rules below."
@@ -263,6 +263,20 @@ All VFS file reads injected into agent context are wrapped in the XML boundary d
 **Purpose:** Protects against prompt injection from untrusted file content. An LLM receiving a maliciously crafted source file that contains "Ignore previous instructions" inside a `<file_content>` tag treats that text as data, not as instructions. This is the primary injection defense for the CoderAgent.
 
 Source: `core/vfs_middleware.make_safe_reader`.
+
+**The delimiter tag itself is a fresh `uuid.uuid4().hex` nonce, generated once per turn** — an
+attacker cannot forge a matching `<...>`/`</...>` pair without knowing it in advance. The nonce and
+the rule explaining it are declared exclusively in the SYSTEM message
+(`agents/prompts.py::build_boundary_declaration`), never in the user turn: putting the declaration
+in the same message role as the untrusted content it wraps would let injected text forge a
+competing declaration, with no structural way for the model to prefer the real one. The
+COGNITIVE QUARANTINE axiom text (what the delimiter means, how to treat content inside it) is
+static and lives in the Planner's/Coder's byte-identical system-prompt HEAD
+(`agents/prompts.py::build_static_identity_prompt`); only the axiom's *value* — which literal tag
+is in force this turn — is per-turn, appended as a small TAIL fragment. This HEAD/TAIL split is
+what makes the system prompt's leading bytes cacheable across repeated calls (Manifest 12.1; see
+`docs/SCHEMA_EVOLUTION.MD` §41). Full mechanics and the rejected user-turn-declaration design in
+that section's writeup.
 
 ### 5.3 SEARCH/REPLACE Edit Block Format
 

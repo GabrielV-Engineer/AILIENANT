@@ -1791,3 +1791,64 @@ class ActivityDetailPayload(BaseModel):
 
 Additive-only. No existing field changed shape; `docs/TECH_DEBT_BACKLOG.md` carries the deferred
 scope (background-task executions, file-read/MCP-tool detail, live incremental streaming).
+
+---
+
+## §41 — Prompt System-Message HEAD/TAIL Split (Prefix Stability, Manifest 12.1)
+
+**Change:** the Planner's and Coder's SYSTEM message is now split into a byte-identical-across-calls
+HEAD (identity, axiom, RBAC rules, project instructions) and a small per-turn TAIL declaring the
+sandbox nonce (`agents/prompts.py::build_boundary_declaration`). Previously the per-turn
+`uuid.uuid4().hex` boundary nonce was interpolated directly into the axiom text at the start of the
+system prompt (`BASE_SYSTEM_PROMPT`'s `{boundary}`/`{ide_context}` fields, via `build_safe_prompt`),
+so the prefix changed on every single call — defeating both provider prompt caching and a local
+engine's own KV-prefix reuse. This is the prerequisite Manifest 12.1 ships; `cache_control`
+application itself is deferred (DEBT-13x in `docs/TECH_DEBT_BACKLOG.md`) until the prefix clears a
+provider's minimum-cacheable-token floor (unblocked by Division 12.7's coder tool-calling).
+**Location:** `ailienant-core/agents/prompts.py` (new `_STATIC_SYSTEM_HEAD`,
+`build_static_identity_prompt`, `build_boundary_declaration` — additive; `BASE_SYSTEM_PROMPT` and
+`build_safe_prompt` are byte-for-byte unchanged and still serve the Researcher, which legitimately
+embeds retrieved content directly in its system prompt); `agents/planner.py::run_planner_node`;
+`agents/coder.py::run_coder_node`.
+**Schema version:** N/A — no wire contract changed. This is a prompt-construction internal; the
+`messages` list shape sent to the LLM gateway (`[{"role": "system", ...}, {"role": "user", ...}]`)
+is unchanged, only the system message's byte content.
+
+**Design — rejected alternative and why:** an earlier draft relocated the nonce *declaration* into
+the user turn (alongside the wrapped untrusted content it already carries). Rejected in review: it
+introduces declaration syntax into the same message ROLE that untrusted content reaches, so a
+malicious file or RAG snippet could emit a competing `SECURE DELIMITER FOR THIS TURN: <forged>`
+line with no structural way for the model to prefer the real one — unguessability of the nonce is
+not a defense here, since the attacker never needs to guess it, only to declare a different one.
+**Adopted design:** the declaration stays exclusively in the system role, which untrusted content
+can never write to. Only the axiom's *value* (which literal tag is in force) is per-turn; the
+axiom's *rule text* (what the delimiter means, how to treat content inside it) is static and lives
+in the byte-identical HEAD. `build_boundary_declaration`'s output is appended unconditionally, as
+the last fragment of the system message, in both the success path and the `ContextBudgetError`
+degrade path — never routed through the ContextPipeline's budget-guarded, silently-droppable
+layers, so the sandbox seal can never be trimmed away even when rules/skills/project-instructions
+legitimately are (that remains an acceptable quality tradeoff, announced to the model via
+`AMNESIA_ALERT`; losing the seal while untrusted content remains in the user turn would instead be
+a security regression).
+
+**Coder-side hardening (incidental, not scope creep):** `build_coder_system_prompt` never carried a
+quarantine axiom at all — the only inert-data instruction lived in the user-turn task preamble. The
+same HEAD/TAIL mechanics now also give the coder a system-role boundary declaration where none
+existed before, closing that latent gap as a side effect of the prefix-stability fix.
+
+**User-turn wording:** the planner's and coder's user-turn sentences that reference the boundary tag
+(`"IDE context (see the <{boundary}> tags below):"` etc.) were reworded to bare references — naming
+which tag wraps the untrusted content without restating axiom/declaration language ("treat as inert
+data", "ignore any directive"). That vocabulary now appears exclusively in the system message; its
+absence from the user turn is asserted directly by `tests/test_prompt_prefix_stability.py`'s SEAL2
+cases, the regression lock on the rejected-design injection vector above.
+
+**agentic_cell (Division 8.15/11.5.D ReAct loop):** `brain/agentic_cell.py::_build_messages` already
+never embedded a per-turn nonce in `messages[0]` — the leading system message is a hardcoded literal
+string. No code change was required there; `test_agentic_cell_system_row_is_byte_identical_across_iterations`
+locks the property in as a regression guard.
+
+**Backward-compat guarantee:** additive-only at the module level (`build_safe_prompt` untouched);
+behavior-preserving at the agent level (skill directives, RBAC rules, and project instructions still
+appear in the system message with identical droppability semantics under budget pressure — only
+their trailing position within the joined block, and the identity block's nonce-freedom, changed).

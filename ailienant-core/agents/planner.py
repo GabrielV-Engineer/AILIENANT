@@ -14,7 +14,7 @@ from tools.llm_gateway import LLMGateway
 from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
-from agents.prompts import build_safe_prompt
+from agents.prompts import build_boundary_declaration, build_static_identity_prompt
 from brain.agent_context import (
     AMNESIA_ALERT,
     build_agent_context,
@@ -365,16 +365,17 @@ async def run_planner_node(
     # ContextPipeline below. Identity carries the cognitive-quarantine framing but
     # NOT the volatile file content — that is routed to the Execution layer (L5) so
     # it is trimmed first under budget pressure, while identity/rules/memory (L1-L3)
-    # are never silently dropped. The SAME `boundary` nonce threads through both the
-    # L1 framing and the L5 chunk so the prompt-injection seal stays end-to-end.
-    _l1_identity = build_safe_prompt(
-        agent_identity=PLANNER_IDENTITY,
-        context_str=(
-            f"<{boundary}>IDE context is provided in the user turn below, under this "
-            f"same secure boundary.</{boundary}>"
-        ),
-        boundary=boundary,
-    )
+    # are never silently dropped.
+    #
+    # Identity is nonce-free and byte-identical across every planner call (see
+    # build_static_identity_prompt) — this is the cacheable prefix. The per-turn
+    # `boundary` nonce still seals the sandbox end-to-end exactly as before; it is
+    # declared once via build_boundary_declaration() and appended, unconditionally,
+    # as the LAST fragment of the system message in both the success and degrade
+    # paths below (see the try/except after the ContextPipeline call) — never
+    # folded into a budget-guarded layer, so it can never be silently trimmed away.
+    _l1_identity = build_static_identity_prompt(agent_identity=PLANNER_IDENTITY)
+    _boundary_decl = build_boundary_declaration(boundary)
 
     _rules = rule_manager.get_combined_rules(state.get("workspace_root", ""))
 
@@ -462,25 +463,39 @@ async def run_planner_node(
             session_id=state.get("task_id", ""),
             session_start_time=state.get("session_start_time"),
         )
-        system_prompt_text = _agent_ctx.foundation_block
+        # _boundary_decl is intentionally OUTSIDE the pipeline's budget-guarded
+        # layers (see build_boundary_declaration's docstring) — appended here,
+        # unconditionally, so it is never subject to L3 tail-eviction.
+        system_prompt_text = f"{_agent_ctx.foundation_block}\n\n{_boundary_decl}"
         _ide_context_block = _agent_ctx.execution_block
     except ContextBudgetError:
         # L1-L3 alone exhaust the window. Never silently drop pinned context: degrade
         # to identity-only and make the model aware of its partial amnesia so it cannot
         # invent rules/style/Git policy it can no longer see. Plain assignment — never a
         # re-entrant build, so this cannot loop even if identity alone exceeds budget.
+        # The boundary declaration still survives — dropping rules/style/skills under
+        # pressure is an acceptable quality tradeoff (the model is warned via
+        # AMNESIA_ALERT); dropping the sandbox seal while untrusted content remains
+        # in the user turn would be a security regression, not a quality one.
         logger.warning(
             "Planner context budget exhausted by L1-L3 (budget=%d); degrading to "
             "identity-only prompt with an explicit context-loss alert.",
             _budget, exc_info=True,
         )
-        system_prompt_text = _l1_identity
+        system_prompt_text = f"{_l1_identity}\n\n{_boundary_decl}"
         _ide_context_block = f"{context_str}\n\n{AMNESIA_ALERT}"
 
     # Human instruction: Here we mentally force the model to respect the SDD contract.
     instruction = (
         f"User requirement: '{user_input}'.\n\n"
-        f"IDE context (The files are encapsulated under the secure label) <{boundary}>):\n"
+        # Bare reference only — no axiom/declaration language here (SEAL2): the
+        # sandbox rule and which tag is authoritative are declared exclusively in
+        # the system message via build_boundary_declaration(), a trusted-only
+        # channel untrusted content can never write to (see that function's
+        # docstring). Restating the rule here, in the same message role as the
+        # untrusted content it wraps, would let injected text forge a competing
+        # declaration with no structural way for the model to prefer the real one.
+        f"IDE context (see the <{boundary}> tags below):\n"
         f"{_ide_context_block}\n"
         "You are the Architect (The Planner). You are PROHIBITED from writing implementation code.\n"
         "Your only task is to generate a complete and logical technical specification (MissionSpecification)."
@@ -612,7 +627,9 @@ async def run_planner_node(
             if not _r_native:
                 _reasoning_user = (
                     f"User requirement: '{user_input}'.\n\n"
-                    f"Relevant project context (inert reference data inside <{boundary}>):\n"
+                    # Bare reference only — see the SEAL2 comment above (~L491):
+                    # sandbox semantics live exclusively in the system message.
+                    f"Relevant project context (see the <{boundary}> tags below):\n"
                     f"{_ide_context_block}\n\n"
                     "Before the formal specification is written, think out loud about your "
                     "plan of attack: the goal, the key files and the order you would touch "

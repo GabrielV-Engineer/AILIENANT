@@ -126,6 +126,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-134 | Execution-detail I/O fills on completion, not incrementally — `SandboxSession.stream()` (persistent-PTY path) is unused by the one-shot `execute()` path 11.5.D instruments | LOW | UX polish | future streaming-output slice | Floating |
 | DEBT-135 | The 11.9 Playwright dashboard fixture (`ailienant-core/tests/e2e/seed_dashboard_fixture.py`) writes directly into the catalog SQLite + LanceDB stores via existing low-level helpers (`upsert_indexed_file`/`upsert_dependencies`/`SemanticMemoryManager._write_record`), bypassing the real indexer — proves the dashboard's read side, never the indexer→dashboard pipeline end-to-end | LOW | Test fidelity | future e2e-fidelity slice | Floating |
 | DEBT-136 | The 11.9 Playwright suite (`ailienant-extension/playwright.config.ts`) runs Chromium only — no cross-browser (Firefox/WebKit) matrix, accepted as smoke-gate scope for a locally-served SPA | LOW | Test coverage | future cross-browser slice | Floating |
+| DEBT-137 | Provider-native `cache_control` + cache telemetry not implemented — 12.1 shipped only the prefix-stability prerequisite; the cacheable prefix is too small (~300-450 tokens) to clear any provider's minimum-cacheable-token floor today | LOW | Cost optimization | unblocked by 12.7 (coder tool-calling) | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
@@ -800,6 +801,39 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** none technically; the one-shot path's SEARCH/REPLACE output contract is machine-parsed and would need its own tool-calling seam (likely mirroring the cell's additive-fallback pattern) rather than a straight port.
 - **Phase:** future slice — revisit once there's a concrete need for tool access on non-iterative steps (most simple write_file/edit_file steps don't need it; the cases that would benefit are the ones already flagged for iteration).
 - **Notes:** the majority of WBS steps are simple and route through this path, so this is the larger of the two coder-side gaps by volume of steps affected, even though the iterative path was the higher-value target (it's where multi-step, test-and-fix work happens).
+
+### DEBT-137 [LOW · Floating] — Provider-native `cache_control` + cache telemetry not implemented
+
+- **Date:** 2026-07-31
+- **Reproduce:** run any planner/coder turn against Anthropic (or any provider) and inspect the
+  request payload — no `cache_control` block is ever attached, regardless of prefix content.
+  `core/token_ledger.py::TokenLedger.snapshot()` has no cache-read/cache-write fields.
+- **File(s):** would touch `tools/llm_gateway.py::ainvoke`/`astream_byom`/`astream_byom_thinking`
+  (application point, after `_inject_reasoning_scaffold` — ordering matters, see below); a new
+  `tools/prompt_cache.py` (provider gate + minimum-token floor table); `core/token_ledger.py`
+  (additive cache counters); the dashboard's `TelemetryPanel.tsx`.
+- **Error:** capability gap, deliberately deferred — not overlooked. Manifest 12.1 originally asked
+  for full provider caching premised on "the stable high-volume prefix (system prompt → tool/MCP
+  schemas → GraphRAG context)." Measurement (see `docs/SCHEMA_EVOLUTION.MD` §41 and the 12.1 manifest
+  spec) showed that premise doesn't hold today: the actual stable prefix is ~281-450 tokens
+  (identity + role constraints + language mirror), below every current model's minimum-cacheable
+  floor (512-4096 tokens depending on model). Two of the three named prefix components don't exist
+  as stable content — tool/MCP schemas are absent from the coder's one-shot path entirely (blocked
+  on DEBT-130), and GraphRAG context is assembled per-`target_file`, genuinely volatile per WBS step,
+  not prefix. Applying `cache_control` to a sub-floor prefix would pay the 1.25× cache-write premium
+  on every call for zero reads — a net loss, not a saving. 12.1 shipped the prerequisite instead
+  (the HEAD/TAIL prompt split — §41) and deferred the rest here.
+- **Blocked by:** 12.7's coder tool-calling landing (DEBT-130/129/106) — once tool/MCP schemas enter
+  the system-message HEAD, the prefix plausibly clears the 1024-token floor for most current models.
+  Secondary unblocker: bringing the chat path into scope — `core/task_service.py`'s
+  `_MAX_HISTORY_MESSAGES = 24` conversation history is a genuinely growing multi-turn prefix (the
+  textbook caching case) but was outside 12.1's stated scope.
+- **Phase:** re-evaluate at 12.7 close; implement then if the prefix clears the floor, otherwise
+  re-log with an updated blocker.
+- **Notes:** even once unblocked, realistic savings on this codebase's BYOM-local-first deployment
+  are modest — provider caching saves $0 on a local model, and on a cloud model the volatile
+  per-step payload (file content, RAG snippets, mission context) dwarfs the cacheable prefix by
+  roughly an order of magnitude. This is a genuine but small optimization, not a launch blocker.
 
 ### DEBT-132 [LOW · Floating] — Background-task executions get no Glass-Box Timeline I/O detail
 

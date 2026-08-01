@@ -955,3 +955,9 @@ Template (max ~12 lines per entry):
 - Shipped: `brain/coder_companion.py` fire-and-forget explanation pass triggered from `run_coder_node`, emitting `ServerCoderCompanionEvent` (objective/decisions/patterns/bottlenecks/security_notes/errors/follow-ups) rendered by new `CoderCompanionCard.tsx` beside the diff-approval surface.
 - Key decision: reuses the existing droppable-side-channel idiom (strong-ref task set + done-callback, dual narrow exception guards, explicit LLM timeout, concurrency semaphore) rather than adding a blocking graph node; verbosity resolved from structural state signals, `reasoning_summary` schema-present but unpopulated.
 - Deferred: DEBT-121 — non-blocking local-tier VRAM-lock probe for `_companion_gpu_slot_available` (MVP unconditionally admits).
+
+## 12.1: Cacheable System-Prompt Prefix (prerequisite for provider caching) — 2026-07-31
+**Status:** COMPLETE | **Gates:** mypy 0/450 · pytest 2664 passed, 2 skipped · pyright 0 · npm compile 0
+- Shipped: measurement showed 12.1's original "high-volume prefix" premise didn't hold (the real prefix is ~281-450 tokens, below every provider's cacheable floor), so scope narrowed to the actual blocker — the per-turn sandbox nonce interpolated into the system prompt's axiom text. New `agents/prompts.py::build_static_identity_prompt`/`build_boundary_declaration` split the system message into a byte-identical HEAD and a small per-turn TAIL, wired into `agents/planner.py` and `agents/coder.py`, including the `ContextBudgetError` degrade paths.
+- Key decision: rejected relocating the nonce declaration to the user turn (review flagged it as a new prompt-injection vector — untrusted content could forge a competing declaration in the same message role); kept it exclusively in the system role instead.
+- Deferred: DEBT-137 — provider `cache_control` + cache telemetry, unblocked by 12.7's coder tool-calling.
