@@ -74,25 +74,31 @@ _INTENTIONALLY_UNREGISTERED: Dict[str, str] = {
         "owner is the gateway package (a standalone process), not this "
         "in-process registry"
     ),
+    # The following four are scoped to orchestrator and/or planner only (see
+    # each tool's allowed_roles), which is disjoint from resolve_tools()'s only
+    # runtime consumer: brain/agentic_cell.py resolves the active role from the
+    # WBS step's target_role, always one of the 8 canonical coder roles.
+    # Neither orchestrator nor planner runs a ToolDispatcher loop (a permanent
+    # architectural decision — the orchestrator is a deterministic node with no
+    # reasoner to drive a loop, and the planner is PLAN-only; see the DEBT-068
+    # scope correction), so a factory here would build a tool no reachable role
+    # is ever permitted to call. NOT a gateway duplicate — gateway/catalog.py's
+    # CATALOG carries no skill/task-list/task-stop/capability-listing entry.
     "list_capabilities": (
-        "duplicates gateway/handlers.py's real MCP-gateway logic; canonical "
-        "owner is the gateway package (a standalone process), not this "
-        "in-process registry"
+        "scoped to {orchestrator, planner}; disjoint from the coder roles "
+        "resolve_tools() serves, and neither role runs a dispatch loop"
     ),
     "skill_invoke": (
-        "duplicates gateway/handlers.py's real MCP-gateway logic; canonical "
-        "owner is the gateway package (a standalone process), not this "
-        "in-process registry"
+        "scoped to {orchestrator, planner}; disjoint from the coder roles "
+        "resolve_tools() serves, and neither role runs a dispatch loop"
     ),
     "task_list": (
-        "duplicates gateway/handlers.py's real MCP-gateway logic; canonical "
-        "owner is the gateway package (a standalone process), not this "
-        "in-process registry"
+        "scoped to {orchestrator} only; disjoint from the coder roles "
+        "resolve_tools() serves, and orchestrator runs no dispatch loop"
     ),
     "task_stop": (
-        "duplicates gateway/handlers.py's real MCP-gateway logic; canonical "
-        "owner is the gateway package (a standalone process), not this "
-        "in-process registry"
+        "scoped to {orchestrator} only; disjoint from the coder roles "
+        "resolve_tools() serves, and orchestrator runs no dispatch loop"
     ),
 }
 

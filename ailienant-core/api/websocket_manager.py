@@ -45,6 +45,7 @@ from api.ws_contracts import (
     ServerCellPtyChunkEvent, CellPtyChunkPayload,
     ServerCellAstDiffEvent, CellAstDiffPayload,
     ServerCellGovernorTickEvent, CellGovernorTickPayload,
+    ServerAgentTodosEvent, AgentTodosPayload,
     ServerStateCompactedEvent, StateCompactedPayload,
     ServerDevcontainerProvisionRequestEvent, DevcontainerProvisionRequestPayload,
     ServerDevcontainerExecRequestEvent, DevcontainerExecRequestPayload,
@@ -1039,6 +1040,23 @@ class ConnectionManager:
             ),
         )
 
+    async def broadcast_agent_todos(
+        self,
+        session_id: str,
+        iteration: int,
+        todos: List[Dict[str, Any]],
+    ) -> None:
+        await self.send_personal_message(
+            session_id,
+            ServerAgentTodosEvent(
+                data=AgentTodosPayload(
+                    session_id=session_id,
+                    iteration=iteration,
+                    todos=todos,  # type: ignore[arg-type]  # pydantic coerces dict->AgentTodoItemPayload
+                )
+            ),
+        )
+
     async def broadcast_state_compacted(
         self,
         session_id: str,
@@ -1487,6 +1505,11 @@ class LiveCellDispatcher:
         await vfs_manager.broadcast_cell_governor_tick(
             self._session_id, step, cost_usd, elapsed_s, axis
         )
+
+    async def emit_agent_todos(
+        self, *, iteration: int, todos: List[Dict[str, Any]]
+    ) -> None:
+        await vfs_manager.broadcast_agent_todos(self._session_id, iteration, todos)
 
 
 # Global singleton

@@ -1143,6 +1143,29 @@ class ServerCellGovernorTickEvent(BaseModel):
     data: CellGovernorTickPayload
 
 
+class AgentTodoItemPayload(BaseModel):
+    """One TODO item — mirrors tools.universal_tools.TodoItem's wire shape."""
+
+    content: str
+    status: Literal["pending", "in_progress", "completed"]
+    active_form: str
+
+
+class AgentTodosPayload(BaseModel):
+    """The agent's full TODO list for this iteration — replace semantics on the
+    client, mirroring brain.state._merge_todos: an empty ``todos`` list is a real
+    "clear the panel" write, never "no opinion"."""
+
+    session_id: str
+    iteration: int
+    todos: List[AgentTodoItemPayload]
+
+
+class ServerAgentTodosEvent(BaseModel):
+    event_type: Literal["server_agent_todos"] = "server_agent_todos"
+    data: AgentTodosPayload
+
+
 # =====================================================================
 # 17b. Context Pipeline — Layer 4 FIFO compaction event
 # =====================================================================
@@ -1371,4 +1394,5 @@ WebSocketMessage = Union[
     ClientDevcontainerExecStreamEvent,         # devcontainer bridge: exec stdout/stderr chunk (← host)
     ClientDevcontainerExecExitEvent,           # devcontainer bridge: exec exit code (← host)
     ServerCoderCompanionEvent,                 # coder companion: structured post-turn explanation
+    ServerAgentTodosEvent,                     # cell glass-box: agent's structured TODO list
 ]

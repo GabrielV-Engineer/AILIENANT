@@ -27,8 +27,21 @@
  */
 import type { ExecutionMode } from '../shared/types';
 import type { ReasoningPreset, InferenceTier } from '../shared/config';
-import type { CoderCompanionPayload } from '../api/contracts';
+import type { AgentTodoItemPayload, CoderCompanionPayload } from '../api/contracts';
 import { createPersistedStore } from '../shared/persistedStore';
+
+/**
+ * Shape-specific equality for the bounded (<=50 items, 3 short string fields)
+ * agent_todos payload — deliberately not a generic deep-equal: the structure is
+ * small and flat, so a purpose-built compare stays O(n) with no dependency and
+ * no canonicalization step a hash-based approach would need.
+ */
+function _todosEqual(a: AgentTodoItemPayload[], b: AgentTodoItemPayload[]): boolean {
+    if (a === b) { return true; }
+    if (a.length !== b.length) { return false; }
+    return a.every((item, i) =>
+        item.content === b[i].content && item.status === b[i].status && item.active_form === b[i].active_form);
+}
 
 /**
  * Analyst answer-model tier, chosen in the Natt HUD. Maps to a model in the
@@ -131,10 +144,25 @@ export interface WorkspaceState {
      * Last-write-wins by correlation_id (task_id + attempt_ordinal).
      */
     coderCompanions: Record<string, CoderCompanionPayload>;
+    /**
+     * The agentic cell's live TODO list, keyed by session id. Transient — excluded
+     * from `pick` (never persisted): a rehydrated list would describe work that
+     * already finished by the time the panel reloads. Replace semantics mirror
+     * the backend's `_merge_todos` reducer: an empty array is a real "clear the
+     * panel" write, never "no opinion" (the anti-immortal-TODO invariant).
+     */
+    agentTodos: Record<string, AgentTodoItemPayload[]>;
 
     // Setters (Zustand pattern — flat actions colocated with state).
     setDraft: (sessionId: string, text: string) => void;
     setCoderCompanion: (payload: CoderCompanionPayload) => void;
+    /**
+     * Bails on a deep-equal payload and keeps the SAME array reference in that
+     * case, so Zustand's shallow-compare selector stops the re-render at the
+     * store rather than the DOM — the client-side half of the emission-storm
+     * guard (the server side already suppresses the redundant WS send).
+     */
+    setAgentTodos: (sessionId: string, todos: AgentTodoItemPayload[]) => void;
     setActiveSkill: (sessionId: string, v: { id: string; name: string } | null) => void;
     setPaletteOpen: (v: boolean) => void;
     setContextOpen: (v: boolean) => void;
@@ -169,6 +197,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         inflightTurn: null,
         activeSkills: {},
         coderCompanions: {},
+        agentTodos: {},
 
         setDraft:        (sessionId, text) =>
             set((s) => ({ draftMessages: { ...s.draftMessages, [sessionId]: text } })),
@@ -176,6 +205,12 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
             set((s) => ({ activeSkills: { ...s.activeSkills, [sessionId]: v } })),
         setCoderCompanion: (payload) =>
             set((s) => ({ coderCompanions: { ...s.coderCompanions, [payload.task_id]: payload } })),
+        setAgentTodos: (sessionId, todos) =>
+            set((s) => {
+                const prior = s.agentTodos[sessionId];
+                if (prior && _todosEqual(prior, todos)) { return s; }
+                return { agentTodos: { ...s.agentTodos, [sessionId]: todos } };
+            }),
         setPaletteOpen:  (v) => set({ paletteOpen: v }),
         setContextOpen:  (v) => set({ contextOpen: v }),
         setNattOpen:     (v) => set({ nattOpen: v }),

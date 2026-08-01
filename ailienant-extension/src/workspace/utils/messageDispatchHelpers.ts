@@ -29,7 +29,7 @@ export const STREAM_ACTIVITY_EVENTS = new Set<string>([
     'server_tool_start', 'server_tool_stream_chunk', 'server_tool_result',
     'server_natt_token',
     'server_cell_tool_start', 'server_cell_pty_chunk', 'server_cell_ast_diff',
-    'server_cell_governor_tick', 'server_graph_mutation',
+    'server_cell_governor_tick', 'server_agent_todos', 'server_graph_mutation',
 ]);
 // Hard cap on retained PTY lines per cell iteration. On overflow the buffer stops
 // appending and writes a single truncation sentinel, so the virtualized list's base

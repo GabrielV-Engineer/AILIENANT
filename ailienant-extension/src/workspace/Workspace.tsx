@@ -20,6 +20,7 @@ import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ToolChip } from './components/ToolChip';
 import { AgentTimeline } from './components/AgentTimeline';
 import { CoderCompanionCard } from './components/CoderCompanionCard';
+import { AgentTodoPanel } from './components/AgentTodoPanel';
 import { MessageActions } from './components/MessageActions';
 import { CheckpointPicker } from './components/CheckpointPicker';
 import { IndexingStatus } from './components/IndexingStatus';
@@ -180,6 +181,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         chat.setActiveTaskPrompt(text === AGREEMENT_SIGNAL ? 'Applying approved plan' : text);
         chat.setActiveTaskStartedAt(Date.now());
         const storeState = useWorkspaceStore.getState();
+        // A cell that finishes without sending an explicit empty todo_write leaves
+        // its last list on screen; a new turn always starts a fresh task, so clear
+        // it here rather than waiting for a write that may never come.
+        storeState.setAgentTodos(initial.sessionId, []);
         vscode.postMessage({
             type: 'SUBMIT_TASK',
             value: text,
@@ -693,6 +698,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         </div>
 
                         {/* Attached context chips */}
+                        <AgentTodoPanel sessionId={initial.sessionId} />
+
                         {attachedItems.length > 0 && (
                             <div className="ws-attached-bar">
                                 {attachedItems.map(item => {

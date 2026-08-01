@@ -104,6 +104,19 @@ LLM_MAX_CONCURRENCY: int = max(1, _env_int("AILIENANT_LLM_MAX_CONCURRENCY", 8))
 MAX_OBSERVATION_CHARS: int = 4000
 
 # ---------------------------------------------------------------------------
+# Event-loop safety ceiling on a tool observation before it is parsed as JSON
+# for state-channel promotion (core/tool_dispatch.py::promote_tool_state). This
+# check runs on the *untruncated* text — deliberately ahead of the
+# MAX_OBSERVATION_CHARS clamp above, since a promoted payload (e.g. a TODO
+# list) must not be corrupted by mid-JSON truncation. That ordering means an
+# adversarial or malfunctioning model could otherwise hand json.loads an
+# unbounded string; this ceiling is checked with a plain len() before any
+# parse is attempted, so a huge payload is rejected in O(1) rather than paying
+# an O(L) synchronous parse on the FastAPI event loop.
+# ---------------------------------------------------------------------------
+MAX_JSON_PARSE_CHARS: int = 50_000
+
+# ---------------------------------------------------------------------------
 # Dynamic subagent dispatch — the maximum number of subagent workers that fan
 # out concurrently in a single wave. A plan wider than this is split into
 # sequential waves at dispatch time (bounded fan-out, not a runtime semaphore).

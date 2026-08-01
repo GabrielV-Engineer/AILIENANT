@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import brain.agentic_cell as ac
 from brain.agentic_cell import ToolCall, route_after_cell, run_agentic_cell_node
-from brain.cell_dispatcher import CellEventDispatcher, NullCellDispatcher
+from brain.cell_dispatcher import NullCellDispatcher
 from core.workspace_sync import SyncSurface, _raw_sha256
 from api.websocket_manager import ConnectionManager, LiveCellDispatcher
 
@@ -46,6 +46,9 @@ class CapturingCellDispatcher:
 
     async def emit_governor_tick(self, **kwargs: Any) -> None:
         self.events.append(("governor_tick", kwargs))
+
+    async def emit_agent_todos(self, **kwargs: Any) -> None:
+        self.events.append(("agent_todos", kwargs))
 
     def types(self) -> List[str]:
         return [e[0] for e in self.events]

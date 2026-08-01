@@ -6,7 +6,7 @@ stubs via config["configurable"]["cell_dispatcher"].
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -34,6 +34,10 @@ class CellEventDispatcher(Protocol):
         axis: Optional[str],
     ) -> None: ...
 
+    async def emit_agent_todos(
+        self, *, iteration: int, todos: List[Dict[str, Any]]
+    ) -> None: ...
+
 
 class NullCellDispatcher:
     """Silent no-op dispatcher — default when no WS session is attached."""
@@ -48,4 +52,7 @@ class NullCellDispatcher:
         pass
 
     async def emit_governor_tick(self, **_: object) -> None:
+        pass
+
+    async def emit_agent_todos(self, **_: object) -> None:
         pass

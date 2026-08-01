@@ -294,16 +294,17 @@ class SkillInvokeInput(BaseModel):
 class SkillInvokeTool(BaseTool):
     """Resolve and return skills relevant to a task description.
 
-    Passes embed_fn=None — semantic auto-matching is disabled; explicit skill_id
-    invocation still works via the DB exact-lookup path. See DEBT-049 for the
-    deferred semantic routing with a shared embedder.
+    Omits embed_fn so resolve_active_skills falls back to its own default embedder
+    (the shared LiteLLM proxy) — semantic auto-matching is live. An embedding-provider
+    outage degrades to explicit-only, per the resolver's own guaranteed behavior;
+    explicit skill_id invocation is unaffected either way (DB exact-lookup path).
     """
 
     name: str = "skill_invoke"
     description: str = (
         "Resolve skills relevant to the given task. Invoke a specific skill by "
-        "skill_id, or omit skill_id for auto-matching (semantic matching is "
-        "currently disabled — see DEBT-049). Returns a JSON list capped at 20."
+        "skill_id, or omit skill_id for semantic auto-matching against each "
+        "candidate skill's description. Returns a JSON list capped at 20."
     )
     args_schema: Type[BaseModel] = SkillInvokeInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
@@ -322,7 +323,6 @@ class SkillInvokeTool(BaseTool):
             user_input=user_input,
             workspace_root=workspace_root,
             invoked_skill_id=skill_id,
-            embed_fn=None,  # semantic auto-match deferred; see DEBT-049
         )
         skills_capped = skills[:20]
         return json.dumps({"count": len(skills), "skills": skills_capped})

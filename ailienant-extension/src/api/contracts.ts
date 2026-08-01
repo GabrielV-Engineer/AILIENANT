@@ -538,6 +538,21 @@ export interface ServerCellGovernorTickEvent {
     data: CellGovernorTickPayload;
 }
 
+export interface AgentTodoItemPayload {
+    content: string;
+    status: 'pending' | 'in_progress' | 'completed';
+    active_form: string;
+}
+export interface AgentTodosPayload {
+    session_id: string;
+    iteration: number;
+    todos: AgentTodoItemPayload[];
+}
+export interface ServerAgentTodosEvent {
+    event_type: 'server_agent_todos';
+    data: AgentTodosPayload;
+}
+
 export interface CodeProposalPayload {
     filepath: string;
     proposed_content: string;
@@ -801,7 +816,7 @@ export interface ClientBranchFromCheckpointEvent {
 // DISCRIMINATED UNIONS
 // ============================================================
 
-/** Every server→client event (36). Narrow on `event_type`. */
+/** Every server→client event (37). Narrow on `event_type`. */
 export type ServerWSMessage =
     | ServerTokenChunkEvent
     | ServerThinkingChunkEvent
@@ -839,6 +854,7 @@ export type ServerWSMessage =
     | ServerCellPtyChunkEvent
     | ServerCellAstDiffEvent
     | ServerCellGovernorTickEvent
+    | ServerAgentTodosEvent
     | ServerCodeProposalEvent
     | ServerStatusEvent
     | ServerStateCompactedEvent
@@ -918,6 +934,7 @@ const SERVER_EVENT_TYPES: ReadonlySet<string> = new Set<ServerEventType>([
     'server_cell_pty_chunk',
     'server_cell_ast_diff',
     'server_cell_governor_tick',
+    'server_agent_todos',
     'server_code_proposal',
     'server_status',
     'state_compacted',

@@ -46,7 +46,7 @@ from core.permissions import (
     ToolPrivilegeTier,
     evaluate_action,
 )
-from shared.config import MAX_OBSERVATION_CHARS
+from shared.config import MAX_JSON_PARSE_CHARS, MAX_OBSERVATION_CHARS
 from shared.rbac import PermissionMode
 
 logger = logging.getLogger("TOOL_DISPATCH")
@@ -56,6 +56,62 @@ logger = logging.getLogger("TOOL_DISPATCH")
 # Single-sourced in shared.config so the dispatch-result envelope schema and this
 # loop enforce an identical ceiling that can never drift.
 _MAX_OBSERVATION_CHARS: int = MAX_OBSERVATION_CHARS
+
+# Event-loop safety ceiling checked before promote_tool_state ever calls
+# json.loads — see shared.config.MAX_JSON_PARSE_CHARS for the full rationale.
+_MAX_JSON_PARSE_CHARS: int = MAX_JSON_PARSE_CHARS
+
+# =====================================================================
+# State-channel promotion — allowlisted, additive
+# =====================================================================
+#
+# A handful of tools return a JSON envelope whose payload is meant to land on
+# a specific AIlienantGraphState channel (e.g. todo_write's "agent_todos"),
+# not just ride along as prompt text. This is deliberately an allowlist, not
+# a generic "any JSON key becomes a channel write" rule — a tool that isn't
+# listed here can never mutate graph state through this path (zero-trust,
+# CLAUDE.md §6.2). Only the caller (currently brain/agentic_cell.py) decides
+# whether/how to fold the delta into its return value; this module never
+# touches state directly.
+_STATE_PROMOTERS: Dict[str, str] = {"todo_write": "agent_todos"}
+
+
+def promote_tool_state(tool_name: str, raw: str) -> Optional[Dict[str, Any]]:
+    """Decode an allowlisted tool's observation into a graph-state delta.
+
+    Returns ``None`` for a non-allowlisted tool name, oversized text, or any
+    decode/shape failure — this function never raises. The size check runs
+    first and on the *untruncated* text, before any ``json.loads`` call, so an
+    adversarial or malfunctioning model cannot force a synchronous O(L) parse
+    of an unbounded string onto the event loop (see MAX_JSON_PARSE_CHARS).
+    Items are re-validated through ``TodoItem`` rather than trusted as raw
+    dicts, so the promoter trusts the shape it declares, not the tool's text.
+    """
+    channel = _STATE_PROMOTERS.get(tool_name)
+    if channel is None:
+        return None
+    if len(raw) > _MAX_JSON_PARSE_CHARS:
+        logger.warning(
+            "promote_tool_state: '%s' observation (%d chars) exceeds the %d-char "
+            "parse ceiling — dropped without parsing.",
+            tool_name, len(raw), _MAX_JSON_PARSE_CHARS,
+        )
+        return None
+    try:
+        payload = json.loads(raw)
+        raw_items = payload[channel]
+        if not isinstance(raw_items, list):
+            raise TypeError(f"{channel!r} must be a list, got {type(raw_items).__name__}")
+        from tools.universal_tools import TodoItem  # deferred — avoids a module-load cycle
+
+        items = [TodoItem.model_validate(item).model_dump() for item in raw_items]
+        return {channel: items}
+    except Exception as exc:  # noqa: BLE001 — a malformed promotion must not crash the turn
+        logger.warning(
+            "promote_tool_state: '%s' payload could not be promoted to '%s': %s",
+            tool_name, channel, exc, exc_info=True,
+        )
+        return None
 
 
 @dataclass(frozen=True)
@@ -82,10 +138,16 @@ class RegisteredTool:
 
 @dataclass
 class DispatchResult:
-    """Outcome of one dispatch: the observation text and whether code ran."""
+    """Outcome of one dispatch: the observation text and whether code ran.
+
+    ``state_delta`` is additive (default ``None``) — populated only when
+    ``call.name`` is in the ``_STATE_PROMOTERS`` allowlist and the observation
+    decodes cleanly; every existing consumer of this dataclass is unaffected.
+    """
 
     observation: str
     executed: bool
+    state_delta: Optional[Dict[str, Any]] = None
 
 
 # A reasoner maps the running message history to the model's raw text reply; the
@@ -267,9 +329,14 @@ class ToolDispatcher:
         try:
             result = await reg.tool._arun(**call.args)
             text = str(result)
+            # Promote from the untruncated text — the observation clamp below can
+            # split a JSON payload mid-object, which would corrupt (not just crop)
+            # a state-channel write. promote_tool_state applies its own, larger
+            # size ceiling first, so this ordering never feeds an unbounded parse.
+            state_delta = promote_tool_state(call.name, text)
             if len(text) > _MAX_OBSERVATION_CHARS:
                 text = text[:_MAX_OBSERVATION_CHARS] + "\n…[truncated]"
-            return DispatchResult(observation=text, executed=True)
+            return DispatchResult(observation=text, executed=True, state_delta=state_delta)
         except (TypeError, ValueError) as exc:
             # Bad argument shape — recoverable: tell the model how it failed.
             logger.warning(

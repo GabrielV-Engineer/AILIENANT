@@ -17,7 +17,7 @@ import type {
 } from '../../shared/config';
 import type { AilienantConfig } from '../../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../../shared/types';
-import type { CoderCompanionPayload, ActivityEventPayload, ActivityDetailPayload } from '../../api/contracts';
+import type { CoderCompanionPayload, ActivityEventPayload, ActivityDetailPayload, AgentTodosPayload } from '../../api/contracts';
 import type { Message, NattMessage, ConversationMessage, SystemMessage, ToastLevel } from '../types';
 import type { HITLIntervention } from '../components/HITLInterventionCard';
 import type { CheckpointEntry } from '../components/CheckpointPicker';
@@ -663,6 +663,11 @@ export function useWSMessageHandler(): void {
                         return attachOrUpdateTimeline(withCell, ts =>
                             upsertCellBody(ts ?? [], `cell:${iter}`, merged), nattName);
                     });
+                    break;
+                }
+                case 'server_agent_todos': {
+                    const d = msg.payload as AgentTodosPayload;
+                    ws.setAgentTodos(d.session_id, d.todos);
                     break;
                 }
                 case 'server_telemetry': {

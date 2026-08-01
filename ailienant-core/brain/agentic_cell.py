@@ -497,6 +497,13 @@ async def run_agentic_cell_node(
         last_exit: Optional[int] = None
         mission_state = state.get("mission_spec")
         fallback_observations: List[Dict[str, str]] = []
+        # Allowlisted state-channel writes promoted from a fallback tool's
+        # observation (currently only todo_write -> "agent_todos"; see
+        # core/tool_dispatch.py::promote_tool_state). dict.update() gives
+        # last-write-wins if the model calls the same promoting tool more than
+        # once in one iteration, which is also why the WS emit below fires at
+        # most once per iteration rather than per call.
+        state_promotions: Dict[str, Any] = {}
         _fallback_dispatcher_box: List[Any] = []
 
         async def _verify(cmd: str) -> Tuple[int, str]:
@@ -572,6 +579,11 @@ async def run_agentic_cell_node(
                         defer_delta["permission_audit_log"] = audit_entries
                     if security_flags:
                         defer_delta["security_flags"] = security_flags
+                    if state_promotions:
+                        defer_delta.update(state_promotions)
+                        await _emit_agent_todos_if_changed(
+                            dispatcher, state, iteration, state_promotions
+                        )
                     return defer_delta
                 cell.last_snapshot = await push_vfs_to_surface(
                     cell.surface, vfs_files, blob_storage, version_ids
@@ -644,6 +656,8 @@ async def run_agentic_cell_node(
                 fallback_observations.append(
                     {"role": "system", "content": f"[{call.name}] {result.observation}"}
                 )
+                if result.state_delta:
+                    state_promotions.update(result.state_delta)
 
         # ── Branch governance: >=2 competing candidates for one file → MCTS ──────
         for path, replacements in candidate_edits.items():
@@ -714,6 +728,11 @@ async def run_agentic_cell_node(
             delta["permission_audit_log"] = audit_entries
         if security_flags:
             delta["security_flags"] = security_flags
+        if state_promotions:
+            delta.update(state_promotions)
+            await _emit_agent_todos_if_changed(
+                dispatcher, state, iteration, state_promotions
+            )
         return delta
 
     except Exception as exc:  # noqa: BLE001 — a node fault must still tear down the session
@@ -881,6 +900,29 @@ def _occ_diagnostic(path: str) -> Dict[str, str]:
             f"read_file_ast it again before patching."
         ),
     }
+
+
+async def _emit_agent_todos_if_changed(
+    dispatcher: CellEventDispatcher,
+    state: Dict[str, Any],
+    iteration: int,
+    state_promotions: Dict[str, Any],
+) -> None:
+    """Broadcast the promoted TODO list at most once, and only when it changed.
+
+    Two independent storm sources are collapsed here: intra-iteration (several
+    todo_write calls in one turn already collapse to one entry via
+    state_promotions.update()'s last-write-wins) and cross-iteration (a model
+    re-sending an unchanged list every turn). The cross-iteration case is
+    suppressed by comparing against the channel's previously committed value —
+    ``state["agent_todos"]``, which LangGraph hands the node on entry — with a
+    plain equality check: the list is bounded (<=50 items of short text), so a
+    hash/digest would add cost and a canonicalization step for no benefit here.
+    """
+    todos = state_promotions.get("agent_todos")
+    if todos is None or todos == (state.get("agent_todos") or []):
+        return
+    await dispatcher.emit_agent_todos(iteration=iteration, todos=todos)
 
 
 def _classify_execute(state: Dict[str, Any]) -> str:

@@ -520,7 +520,7 @@ agent_todos: Annotated[List[Dict[str, Any]], _merge_todos]
   - `right is not None` → return `right` (including `[]`, which explicitly clears the list).
   - `right is None` → return `left or []` (no-op for turns that do not call `todo_write`).
   - Tests `is not None`, never truthiness, so an empty list is a valid "clear" signal — the anti-immortal-TODO invariant.
-- **Dispatchable since Division 8.18, `agent_todos` write-through still not automatic:** `core/tool_registry.py` resolves `todo_write` to a live `TodoWriteTool`, so any dispatch loop (including the CoderAgent's registry fallback in `brain/agentic_cell.py`) can invoke it and receive its JSON string keyed `agent_todos`. `ToolDispatcher.dispatch()` surfaces that string as a text observation to the model, not as a parsed state delta — a graph node that `json.loads`-es the observation and writes it through this channel via `_merge_todos` is still unbuilt.
+- **Write-through wired (12.3):** `core/tool_dispatch.py::promote_tool_state` decodes an allowlisted tool's observation (`todo_write` → `agent_todos`) back into a typed delta, which `brain/agentic_cell.py` folds into its returned delta so the channel actually receives the write through `_merge_todos`. See `SCHEMA_EVOLUTION.MD §42` for the accompanying WS broadcast.
 
 ## 14. Skills, MCP Config, Hooks, Agent Role Override Tables
 
@@ -1803,7 +1803,7 @@ sandbox nonce (`agents/prompts.py::build_boundary_declaration`). Previously the 
 system prompt (`BASE_SYSTEM_PROMPT`'s `{boundary}`/`{ide_context}` fields, via `build_safe_prompt`),
 so the prefix changed on every single call — defeating both provider prompt caching and a local
 engine's own KV-prefix reuse. This is the prerequisite Manifest 12.1 ships; `cache_control`
-application itself is deferred (DEBT-13x in `docs/TECH_DEBT_BACKLOG.md`) until the prefix clears a
+application itself is deferred (DEBT-137 in `docs/TECH_DEBT_BACKLOG.md`) until the prefix clears a
 provider's minimum-cacheable-token floor (unblocked by Division 12.7's coder tool-calling).
 **Location:** `ailienant-core/agents/prompts.py` (new `_STATIC_SYSTEM_HEAD`,
 `build_static_identity_prompt`, `build_boundary_declaration` — additive; `BASE_SYSTEM_PROMPT` and
@@ -1852,3 +1852,95 @@ locks the property in as a regression guard.
 behavior-preserving at the agent level (skill directives, RBAC rules, and project instructions still
 appear in the system message with identical droppability semantics under budget pressure — only
 their trailing position within the joined block, and the identity block's nonce-freedom, changed).
+
+---
+
+## §42 — `server_agent_todos` WS Event (agent_todos Write-Through, Manifest 12.3)
+
+**Change:** the agentic cell's `todo_write` fallback-dispatch tool now writes through to the
+`agent_todos` `AIlienantGraphState` channel (§14) instead of only appearing as a trajectory
+observation string, and broadcasts the current list over a new additive WS event so the extension
+can render it live. Closes the second half of DEBT-054 (`docs/TECH_DEBT_BACKLOG.md`) — Division
+8.18 had already wired the tool into the dispatch loop; the channel write-through and the UI surface
+were the remaining gap.
+
+**Wire contract (additive, new event — no existing event changed shape):**
+
+```python
+class AgentTodoItemPayload(BaseModel):
+    content: str
+    status: Literal["pending", "in_progress", "completed"]
+    active_form: str
+
+class AgentTodosPayload(BaseModel):
+    session_id: str
+    iteration: int
+    todos: List[AgentTodoItemPayload]
+
+class ServerAgentTodosEvent(BaseModel):
+    event_type: Literal["server_agent_todos"] = "server_agent_todos"
+    data: AgentTodosPayload
+```
+
+**Location:** `ailienant-core/api/ws_contracts.py` (payload/event classes, added to the
+`WebSocketMessage` union); `ailienant-core/api/websocket_manager.py`
+(`ConnectionManager.broadcast_agent_todos`, `LiveCellDispatcher.emit_agent_todos`);
+`ailienant-core/brain/cell_dispatcher.py` (`CellEventDispatcher.emit_agent_todos` added to the
+Protocol + `NullCellDispatcher` no-op — a widening covered by updating the one existing capturing
+test stub, `tests/test_phase7_19_4_cell_dispatcher.py::CapturingCellDispatcher`).
+`ailienant-extension/src/api/contracts.ts` mirrors the three types and adds the tag to
+`SERVER_EVENT_TYPES`.
+
+**State-promotion seam (the mechanism that fills the payload):**
+`ailienant-core/core/tool_dispatch.py` adds `DispatchResult.state_delta: Optional[Dict[str, Any]]`
+(additive, default `None` — the three other `ToolDispatcher` consumers are unaffected) and a
+module-level allowlist, `_STATE_PROMOTERS = {"todo_write": "agent_todos"}`, consulted by
+`promote_tool_state(tool_name, raw) -> Optional[Dict[str, Any]]`. A tool name absent from the
+allowlist can never write a graph channel through this path — deliberately not a generic "any JSON
+key becomes a channel" rule. `brain/agentic_cell.py` folds `state_delta` into both of its return
+points that can carry it: the normal per-iteration delta, and the HITL-deferred `defer_delta`
+early-return (a `todo_write` call preceding a deferred `run_terminal` in the same iteration must not
+be lost).
+
+**Ordering hazard closed — parse before truncate:** `promote_tool_state` is called on the tool's
+*untruncated* observation text, before `ToolDispatcher.dispatch`'s existing `MAX_OBSERVATION_CHARS`
+(4000-char) clamp — truncating first could split the JSON mid-object and corrupt (not just crop) a
+state write. That ordering means the promoter reads a string whose length the model effectively
+controls, so it checks length **before** calling `json.loads`: a new `shared/config.py` constant,
+`MAX_JSON_PARSE_CHARS = 50_000`, is checked first and the function returns `None` without parsing if
+exceeded — an O(1) rejection rather than a synchronous O(L) parse of an unbounded string on the
+FastAPI event loop. `tools/universal_tools.py::TodoWriteTool` adds a complementary, cheaper
+structural bound: each item's `content`/`active_form` is truncated (never rejected) to 300 chars
+before the tool ever returns, so the parse ceiling is a backstop, not the only defense.
+
+**Emission idempotence:** the WS emit fires at most once per cell iteration — after the tool-call
+loop, not from inside it, so several `todo_write` calls in one turn collapse via
+`dict.update()`'s last-write-wins — and is suppressed entirely when the promoted list is
+value-equal to `state["agent_todos"]` (the channel's previously committed value). Plain equality,
+not a hash/digest: the structure is bounded (≤50 items, `TodoWriteTool`'s own cap) and flat, so a
+digest would add a hashing pass and a canonicalization step for no benefit at this size. The
+frontend independently guards the render side: `workspaceStore.ts::setAgentTodos` keeps the same
+array reference on a deep-equal write, so even a redundant event that does arrive causes no
+re-render (Zustand's shallow-compare selector sees an unchanged reference).
+
+**Incidental fix required for this to work with real content at all:** `ToolDispatcher.dispatch`
+calls `reg.tool._arun(**call.args)` directly — it does not route through LangChain's `args_schema`
+validation — so `todos` previously arrived as raw `dict`s, not `TodoItem` instances. Any non-empty
+real `todo_write` call through this path would `AttributeError` on `item.status` (every prior
+passing test exercised only an empty list, so this was latent and untriggered).
+`TodoWriteTool._arun` now coerces each item via `TodoItem.model_validate`, dropping — not failing —
+a single malformed item so one bad entry cannot fail the whole write.
+
+**Frontend:** `workspaceStore.ts` adds a transient `agentTodos: Record<string, AgentTodoItemPayload[]>`
+slice keyed by session id, excluded from the persisted `pick` whitelist (mirrors `coderCompanions`
+— a rehydrated TODO list would describe work that already finished). `useWSMessageHandler.ts`
+dispatches the new event into the store; `Workspace.tsx`'s `submitWithMode` clears the session's
+list on every new-turn submit (a cell that finishes without sending an explicit empty `todo_write`
+would otherwise leave the prior task's list on screen). New `AgentTodoPanel.tsx` renders the list,
+mounted above the composer; renders nothing when the list is empty or absent — no skeleton, since
+unlike the Coder Companion (§37) this is optional cell output with no guaranteed broadcast to time
+out on.
+
+**Backward-compat guarantee:** fully additive. No existing WS event, `AIlienantGraphState` channel,
+or `DispatchResult`/`ToolDispatcher` call signature changed shape; a client that does not recognize
+`server_agent_todos` ignores it exactly like any other unknown `event_type`.

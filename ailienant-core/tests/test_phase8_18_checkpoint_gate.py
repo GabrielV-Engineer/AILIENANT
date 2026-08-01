@@ -12,8 +12,11 @@ DoD rows:
        via core.tool_registry, or explicitly allowlisted with a reason.
   R2 — deferred-mode selection respects TOOL_RAG_TOP_K and meets
        TOOL_RAG_MIN_REDUCTION against the full live catalog.
-  R3 — gateway_tools.py's 6 classes are flagged as duplicate ownership
-       (gateway/handlers.py is canonical), not silently wired.
+  R3 — gateway_tools.py's 6 classes are each excluded with a reasoned,
+       accurate justification (2 genuine gateway/handlers.py duplicates; 4
+       excluded for role-scope disjointness from resolve_tools()'s only
+       consumer — see core/tool_registry.py's _INTENTIONALLY_UNREGISTERED
+       comment), never silently wired.
   R4 — 8.18.2: the agentic cell's fallback path is additive — the 3 CELL_TOOLS
        primitives are unaffected (re-certified via the existing suite import).
   R5 — 8.18.3: build_analyst_tools() still contains its original 10 plus the
@@ -132,15 +135,38 @@ async def test_r2_deferred_selection_respects_top_k_cap() -> None:
     assert decision.reduction_ratio >= 0.0
 
 
-def test_r3_gateway_tools_are_flagged_duplicate_not_silently_wired() -> None:
-    gateway_names = {
-        "run_benchmark", "get_benchmark_report", "list_capabilities",
-        "skill_invoke", "task_list", "task_stop",
-    }
-    assert gateway_names <= set(_INTENTIONALLY_UNREGISTERED)
+def test_r3_gateway_tools_are_flagged_not_silently_wired() -> None:
+    """Every gateway_tools.py class is excluded with a reasoned justification.
+
+    Two (run_benchmark, get_benchmark_report) genuinely duplicate
+    gateway/handlers.py's MCP-gateway logic. The other four (list_capabilities,
+    skill_invoke, task_list, task_stop) are excluded for a structural reason:
+    resolve_tools()'s only runtime consumer (the agentic cell) always runs
+    under a coder role, and these four are scoped to orchestrator/planner
+    only — disjoint role sets, not a gateway duplicate (gateway/catalog.py
+    carries no counterpart for any of the four; see DEBT-049's correction).
+    """
+    gateway_names = {"run_benchmark", "get_benchmark_report"}
+    role_scoped_names = {"list_capabilities", "skill_invoke", "task_list", "task_stop"}
+    all_names = gateway_names | role_scoped_names
+
+    assert all_names <= set(_INTENTIONALLY_UNREGISTERED)
     for name in gateway_names:
         assert "gateway/handlers.py" in _INTENTIONALLY_UNREGISTERED[name], (
-            f"{name}'s exclusion reason should name the canonical owner"
+            f"{name}'s exclusion reason should name the canonical gateway owner"
+        )
+    for name in role_scoped_names:
+        reason = _INTENTIONALLY_UNREGISTERED[name]
+        assert "gateway/handlers.py" not in reason, (
+            f"{name} has no gateway/handlers.py counterpart — the exclusion "
+            "reason must not claim otherwise"
+        )
+        assert "dispatch loop" in reason or "disjoint" in reason, (
+            f"{name}'s exclusion reason should state the real cause: role-scope "
+            "disjointness from resolve_tools()'s only consumer"
+        )
+        assert name not in all_registrable_names(), (
+            f"{name} must not be constructible — no reachable role may call it"
         )
 
 
