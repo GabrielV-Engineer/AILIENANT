@@ -1,17 +1,21 @@
-// AILIENANT — Devcontainer provisioner factory (host wiring).
+// AILIENANT — Devcontainer provisioner + session-handler factory (host wiring).
 //
-// Binds the vscode-free DevcontainerProvisioner core to real host capabilities
-// (child_process, vscode extension probe, fs, the AILIENANT logger) and exposes a
-// process-wide singleton. Kept separate from the core so the core stays free of a
-// `vscode` import and its contract test remains hermetic.
+// Binds the vscode-free DevcontainerProvisioner and DevcontainerSessionHandler
+// cores to real host capabilities (child_process, vscode extension probe, fs,
+// the AILIENANT logger) and exposes process-wide singletons. Kept separate
+// from the cores so they stay free of a `vscode` import and their contract
+// tests remain hermetic.
 
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import { logger } from '../shared/logger';
+import { WSClient } from '../api/ws_client';
 import { DevcontainerProvisioner, ProvisionerDeps } from './devcontainerProvisioner';
+import { DevcontainerSessionHandler, DevcontainerSessionHandlerDeps } from './devcontainerSessionHandler';
 
 let _instance: DevcontainerProvisioner | null = null;
+let _sessionInstance: DevcontainerSessionHandler | null = null;
 
 /**
  * Resolve the bundled `@devcontainers/cli` entry when present (dev/unpackaged).
@@ -49,4 +53,29 @@ export function getDevcontainerProvisioner(): DevcontainerProvisioner {
 export function disposeDevcontainerProvisioner(): void {
     _instance?.dispose();
     _instance = null;
+}
+
+function realSessionDeps(): DevcontainerSessionHandlerDeps {
+    return {
+        provisioner: getDevcontainerProvisioner(),
+        spawn: (command, args, options) => cp.spawn(command, args, options),
+        workspaceRoot: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+        send: (m) => WSClient.getInstance().send(m as never),
+        env: process.env,
+        log: (message) => logger.log(`[devcontainer-session] ${message}`),
+    };
+}
+
+/** Lazily construct (once) the process-wide devcontainer session-handler owner. */
+export function getDevcontainerSessionHandler(): DevcontainerSessionHandler {
+    if (!_sessionInstance) {
+        _sessionInstance = new DevcontainerSessionHandler(realSessionDeps());
+    }
+    return _sessionInstance;
+}
+
+/** Kill every tracked session and tear down the singleton. Idempotent. */
+export function disposeDevcontainerSessionHandler(): void {
+    _sessionInstance?.dispose();
+    _sessionInstance = null;
 }

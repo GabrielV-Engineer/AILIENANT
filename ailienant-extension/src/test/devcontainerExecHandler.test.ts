@@ -5,6 +5,7 @@
 // devcontainerProvisioner.test.ts) with a fake provisioner and a send recorder.
 
 import * as assert from 'assert';
+import * as path from 'path';
 import { handleDevcontainerServerEvent, ProvisionerLike } from '../providers/devcontainerExecHandler';
 import type { DevcontainerStatus, ExecResult } from '../providers/devcontainerProvisioner';
 
@@ -22,6 +23,7 @@ function fakeProvisioner(over: Partial<ProvisionerLike>): ProvisionerLike {
     return {
         up: async (): Promise<DevcontainerStatus> => ({ state: 'ready', cliSource: 'path' }),
         exec: async (): Promise<ExecResult> => ({ stdout: '', stderr: '', exitCode: 0 }),
+        resolveContainerWorkspaceFolder: async () => undefined,
         ...over,
     };
 }
@@ -68,7 +70,7 @@ suite('devcontainer host handler — provisioning', () => {
 });
 
 suite('devcontainer host handler — exec', () => {
-    test('resolves env_keys NAMES only and streams stdout/stderr + exit', async () => {
+    test('resolves env_keys NAMES only; streams stdout/stderr via onChunk, then exit', async () => {
         const rec = recorder();
         let passedEnv: NodeJS.ProcessEnv = {};
         await handleDevcontainerServerEvent(
@@ -78,8 +80,12 @@ suite('devcontainer host handler — exec', () => {
             },
             {
                 provisioner: fakeProvisioner({
-                    exec: async (_root, _cmd, env) => {
+                    // A real provisioner streams via onChunk as data arrives; this fake
+                    // mirrors that contract instead of returning the final result only.
+                    exec: async (_root, _cmd, env, _timeout, _cwd, onChunk) => {
                         passedEnv = env ?? {};
+                        onChunk?.('stdout', 'ok');
+                        onChunk?.('stderr', 'warn');
                         return { stdout: 'ok', stderr: 'warn', exitCode: 0 };
                     },
                 }),
@@ -95,6 +101,61 @@ suite('devcontainer host handler — exec', () => {
             'client_devcontainer_exec_exit',
         ]);
         assert.strictEqual(rec.sent[2].data.exit_code, 0);
+    });
+
+    test('a synchronous burst of chunks coalesces into one frame per stream, not one per data event', async () => {
+        const rec = recorder();
+        await handleDevcontainerServerEvent(
+            {
+                event_type: 'server_devcontainer_exec_request',
+                data: { session_id: 's', request_id: 'r', command: 'noisy', cwd: ROOT, env_keys: [] },
+            },
+            {
+                provisioner: fakeProvisioner({
+                    exec: async (_root, _cmd, _env, _timeout, _cwd, onChunk) => {
+                        for (let i = 0; i < 10; i++) {
+                            onChunk?.('stdout', `line ${i}\n`);
+                        }
+                        return { stdout: '', stderr: '', exitCode: 0 };
+                    },
+                }),
+                workspaceRoot: ROOT, send: rec.send, env: {},
+            },
+        );
+        const streamFrames = rec.sent.filter((s) => s.event_type === 'client_devcontainer_exec_stream');
+        assert.strictEqual(streamFrames.length, 1, 'a synchronous burst must coalesce, not emit per data event');
+        assert.strictEqual(
+            streamFrames[0].data.chunk,
+            Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join(''),
+        );
+        // Ordering: every stream frame precedes the terminal exit frame.
+        assert.strictEqual(rec.sent[rec.sent.length - 1].event_type, 'client_devcontainer_exec_exit');
+    });
+
+    test('a chunk at the byte cap flushes immediately rather than accumulating past it', async () => {
+        const rec = recorder();
+        const big = 'x'.repeat(8192); // == _STREAM_CHUNK_CAP_BYTES
+        await handleDevcontainerServerEvent(
+            {
+                event_type: 'server_devcontainer_exec_request',
+                data: { session_id: 's', request_id: 'r', command: 'big', cwd: ROOT, env_keys: [] },
+            },
+            {
+                provisioner: fakeProvisioner({
+                    exec: async (_root, _cmd, _env, _timeout, _cwd, onChunk) => {
+                        onChunk?.('stdout', big);
+                        onChunk?.('stdout', 'tail');
+                        return { stdout: '', stderr: '', exitCode: 0 };
+                    },
+                }),
+                workspaceRoot: ROOT, send: rec.send, env: {},
+            },
+        );
+        const streamFrames = rec.sent.filter((s) => s.event_type === 'client_devcontainer_exec_stream');
+        // The cap-triggered flush and the final flush() residue land as two frames.
+        assert.strictEqual(streamFrames.length, 2);
+        assert.strictEqual(streamFrames[0].data.chunk, big);
+        assert.strictEqual(streamFrames[1].data.chunk, 'tail');
     });
 
     test('exec throws → emits exit -1 (never hangs the bridge)', async () => {
@@ -121,5 +182,70 @@ suite('devcontainer host handler — exec', () => {
         );
         assert.strictEqual(handled, false);
         assert.strictEqual(rec.sent.length, 0);
+    });
+});
+
+suite('devcontainer host handler — cwd translation (DEBT-085)', () => {
+    const CONTAINER_ROOT = '/workspaces/project';
+
+    async function execCwd(over: {
+        cwd: string;
+        containerRoot: string | undefined;
+    }): Promise<string | undefined> {
+        let capturedCwd: string | undefined;
+        await handleDevcontainerServerEvent(
+            {
+                event_type: 'server_devcontainer_exec_request',
+                data: { session_id: 's', request_id: 'r', command: 'x', cwd: over.cwd, env_keys: [] },
+            },
+            {
+                provisioner: fakeProvisioner({
+                    resolveContainerWorkspaceFolder: async () => over.containerRoot,
+                    exec: async (_root, _cmd, _env, _timeout, containerCwd) => {
+                        capturedCwd = containerCwd;
+                        return { stdout: '', stderr: '', exitCode: 0 };
+                    },
+                }),
+                workspaceRoot: ROOT, send: () => { /* noop */ }, env: {},
+            },
+        );
+        return capturedCwd;
+    }
+
+    test('a sub-directory cwd maps onto the container root', async () => {
+        const hostCwd = path.join(ROOT, 'src', 'api');
+        const got = await execCwd({ cwd: hostCwd, containerRoot: CONTAINER_ROOT });
+        assert.strictEqual(got, path.posix.join(CONTAINER_ROOT, 'src', 'api'));
+    });
+
+    test('a Windows-style relative segment normalizes to POSIX before joining', async () => {
+        // path.join uses the host's own separator, so on win32 this reproduces the
+        // real `src\api` shape path.relative would hand back.
+        const hostCwd = ROOT + path.sep + ['src', 'api'].join(path.sep);
+        const got = await execCwd({ cwd: hostCwd, containerRoot: CONTAINER_ROOT });
+        assert.strictEqual(got, '/workspaces/project/src/api');
+        assert.ok(!got?.includes('\\'), 'container path must never carry a host separator');
+    });
+
+    test('cwd equal to the workspace root ⇒ no prefix (runs at container root)', async () => {
+        const got = await execCwd({ cwd: ROOT, containerRoot: CONTAINER_ROOT });
+        assert.strictEqual(got, undefined);
+    });
+
+    test('empty cwd ⇒ no prefix', async () => {
+        const got = await execCwd({ cwd: '', containerRoot: CONTAINER_ROOT });
+        assert.strictEqual(got, undefined);
+    });
+
+    test('a cwd outside the workspace root refuses to translate', async () => {
+        const outside = path.join(path.dirname(ROOT), 'other-project');
+        const got = await execCwd({ cwd: outside, containerRoot: CONTAINER_ROOT });
+        assert.strictEqual(got, undefined);
+    });
+
+    test('no resolvable container root ⇒ unprefixed, identical to pre-085 behavior', async () => {
+        const hostCwd = path.join(ROOT, 'src');
+        const got = await execCwd({ cwd: hostCwd, containerRoot: undefined });
+        assert.strictEqual(got, undefined);
     });
 });

@@ -1413,6 +1413,7 @@ def get_active_adapter() -> Optional[SandboxAdapter]:
 # ── Trusted-tier selection (devcontainer + HITL-native fallback) ─────────────
 
 _trusted_adapter: Optional["DevcontainerSandboxAdapter"] = None
+_trusted_adapter_silent: Optional["DevcontainerSandboxAdapter"] = None
 
 
 def get_trusted_adapter() -> SandboxAdapter:
@@ -1434,24 +1435,89 @@ def get_trusted_adapter() -> SandboxAdapter:
     return _trusted_adapter
 
 
+class _OracleFallbackAdapter(SandboxAdapter):
+    """Per-call indirection to the resolved oracle tier (:func:`get_active_adapter`).
+
+    ``DevcontainerSandboxAdapter``'s ``fallback`` is a concrete instance captured
+    once at construction. ``get_active_adapter()``'s target, however, is
+    reassigned during lifespan startup — capturing it eagerly at
+    :func:`get_trusted_adapter_silent`'s first call risks freezing in a ``None``
+    seen before startup finished. This shim re-resolves on every call instead,
+    mirroring how :meth:`DevcontainerSandboxAdapter._get_bridge` already
+    re-resolves its own dependency per call rather than capturing it once.
+    """
+
+    execution_source = "oracle_fallback"
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout_s: float,
+        cwd: str,
+        env_whitelist: Dict[str, str],
+        session_id: Optional[str] = None,
+    ) -> SandboxResult:
+        adapter = get_active_adapter()
+        if adapter is None:
+            return SandboxResult(
+                exit_code=-1, stdout="", stderr="[oracle_adapter_unresolved]",
+            )
+        return await adapter.execute(
+            command,
+            timeout_s=timeout_s,
+            cwd=cwd,
+            env_whitelist=env_whitelist,
+            session_id=session_id,
+        )
+
+
+def get_trusted_adapter_silent() -> SandboxAdapter:
+    """Lazily-built singleton for *trusted* execution with a NON-interactive fallback.
+
+    Identical to :func:`get_trusted_adapter` except an unavailable devcontainer
+    falls back to the locked oracle tier (:class:`_OracleFallbackAdapter`)
+    instead of :class:`NativeHITLSandboxAdapter`. For non-interactive validation
+    helpers (``check_type_integrity``, the coder's internal ``_exec``) that must
+    never raise an approval card of their own — a caller that already gated
+    consent (e.g. ``_gated_exec``'s HITL round-trip) routes through this so the
+    devcontainer upgrade can never re-prompt on top of that consent.
+    """
+    global _trusted_adapter_silent
+    if _trusted_adapter_silent is None:
+        _trusted_adapter_silent = DevcontainerSandboxAdapter(
+            bridge=None, fallback=_OracleFallbackAdapter(),
+        )
+    return _trusted_adapter_silent
+
+
 def reset_trusted_adapter() -> None:
-    """Drop the cached trusted adapter (test isolation)."""
-    global _trusted_adapter
+    """Drop the cached trusted adapters (test isolation)."""
+    global _trusted_adapter, _trusted_adapter_silent
     _trusted_adapter = None
+    _trusted_adapter_silent = None
 
 
 def resolve_execution_adapter(
-    *, session_id: Optional[str], trusted: bool = True
+    *,
+    session_id: Optional[str],
+    trusted: bool = True,
+    interactive_fallback: bool = True,
 ) -> Optional[SandboxAdapter]:
     """Pick the adapter for a command.
 
-    Trusted execution with a live session routes to the devcontainer tier
-    (:func:`get_trusted_adapter`); everything else keeps the locked oracle tier
-    (:func:`get_active_adapter`). The untrusted benchmark oracle never passes
-    ``trusted=True`` here, so its Docker cage is provably untouched.
+    Trusted execution with a live session routes to the devcontainer tier; a
+    provisioning failure then falls back to consent-gated host execution
+    (:func:`get_trusted_adapter`) by default. Passing ``interactive_fallback=False``
+    swaps that fallback for the locked oracle tier instead
+    (:func:`get_trusted_adapter_silent`) — for non-interactive validation helpers
+    that must never raise their own approval card. Everything else (no session,
+    untrusted) keeps the locked oracle tier directly. The untrusted benchmark
+    oracle never passes ``trusted=True`` here, so its Docker cage is provably
+    untouched either way.
     """
     if trusted and session_id:
-        return get_trusted_adapter()
+        return get_trusted_adapter() if interactive_fallback else get_trusted_adapter_silent()
     return get_active_adapter()
 
 

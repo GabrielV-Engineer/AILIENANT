@@ -1,6 +1,7 @@
 # alienant-core/api/websocket_manager.py
 
 import asyncio
+import base64
 import json
 import logging
 import secrets
@@ -49,6 +50,11 @@ from api.ws_contracts import (
     ServerStateCompactedEvent, StateCompactedPayload,
     ServerDevcontainerProvisionRequestEvent, DevcontainerProvisionRequestPayload,
     ServerDevcontainerExecRequestEvent, DevcontainerExecRequestPayload,
+    ServerDevcontainerSessionOpenEvent, DevcontainerSessionOpenPayload,
+    ServerDevcontainerSessionStdinEvent, DevcontainerSessionStdinPayload,
+    ServerDevcontainerSessionSignalEvent, DevcontainerSessionSignalPayload,
+    ServerDevcontainerSessionFlowEvent, DevcontainerSessionFlowPayload,
+    ServerDevcontainerSessionCloseEvent, DevcontainerSessionClosePayload,
 )
 
 from core.telemetry_log import log_ws_payload
@@ -87,6 +93,21 @@ def register_session_cleanup_hook(hook: Any) -> None:
 # flood is shed. Interactive events (chat/HITL/abort) are NEVER rate-limited.
 _INBOUND_BUCKET_CAPACITY: float = 100.0
 _INBOUND_REFILL_PER_S: float = 50.0
+
+# Devcontainer interactive session bridge (§43) — bounded per-session inbound
+# queue. Sized against the bandwidth-delay product the host's ~50ms stream
+# coalescing (see providers/devcontainerExecHandler.ts) produces: ~20
+# frames/s/stream, so a ~100ms worst-case local RTT never has more than 2-3
+# frames in flight when a `flow{paused:true}` signal is issued. The 64-slot
+# headroom between high-water and capacity is therefore ~20x that BDP, and the
+# full capacity absorbs ~12.8s of sustained output before a chunk is ever
+# dropped — dropping is a last resort this sizing is meant to make
+# unreachable, not a routine mode (see `push_devcontainer_session_chunk`).
+# Mirrors `core.pty_session._QUEUE_MAXSIZE`, the local-shell session's own
+# bound, so both session flavors reason about backpressure identically.
+_DEVC_SESSION_QUEUE_CAPACITY: int = 256
+_DEVC_SESSION_QUEUE_HIGH_WATER: int = _DEVC_SESSION_QUEUE_CAPACITY - 64
+_DEVC_SESSION_QUEUE_LOW_WATER: int = 64
 
 # =====================================================================
 # TYPED ADAPTER (Pydantic V2)
@@ -143,6 +164,29 @@ class ConnectionManager:
         # Reverse index (session_id -> in-flight request_ids) so a disconnect reaps
         # any suspended devcontainer waiter in O(k).
         self._client_pending_devc: Dict[str, Set[str]] = {}
+        # Devcontainer interactive session bridge (§43) — keyed by session_ref
+        # (UUID4, distinct from the one-shot request_id space above). A session
+        # spans an open→many-stdin/stream→exit lifetime rather than one round
+        # trip, so its bookkeeping is separate: an open-result waiter, a
+        # bounded inbound chunk queue per open session, and an exit-code slot
+        # resolved once. `_devc_session_open_events` doubles as the open-vs-open
+        # in-flight ledger; a session_ref only ever appears in
+        # `_devc_session_queues` once `client_devcontainer_session_opened(ok=True)`
+        # has been observed.
+        self._devc_session_open_events: Dict[str, asyncio.Event] = {}
+        self._devc_session_open_result: Dict[str, Dict[str, Any]] = {}
+        self._devc_session_queues: Dict[str, "asyncio.Queue[Optional[bytes]]"] = {}
+        self._devc_session_exit: Dict[str, int] = {}
+        self._devc_session_dropped_chunks: Dict[str, int] = {}
+        # session_refs currently in the `flow{paused:true}` state — tracked so a
+        # sustained high-water condition emits exactly one pause frame (not one
+        # per chunk) and drain emits exactly one resume frame.
+        self._devc_session_paused: Set[str] = set()
+        # Reverse index (session_id -> in-flight session_refs) so a disconnect reaps
+        # every open interactive session — the same discipline as
+        # `_client_pending_devc`, kept separate so a one-shot exec reap can never
+        # accidentally resolve a session's queue (and vice versa).
+        self._client_pending_devc_sessions: Dict[str, Set[str]] = {}
 
     def has_client(self, session_id: str) -> bool:
         """True if a live WS client is connected for this session (gates disk writes)."""
@@ -266,6 +310,21 @@ class ConnectionManager:
             exec_event = self._devc_exec_events.pop(request_id, None)
             if exec_event is not None:
                 exec_event.set()
+        # Devcontainer interactive session bridge (§43): wake any open-waiter
+        # still suspended (a disconnect mid-open resolves to ok=False rather
+        # than hanging) and force-EOF every live session's queue so a demux
+        # consumer blocked on queue.get() is never stranded (D1). This is the
+        # ONLY path that can reap an in-progress session — its own graceful
+        # close and a failed open both route through the same idempotent
+        # unregister, so calling it again here is always safe.
+        for session_ref in list(self._client_pending_devc_sessions.get(cid, set())):
+            open_event = self._devc_session_open_events.get(session_ref)
+            if open_event is not None:
+                self._devc_session_open_result[session_ref] = {
+                    "ok": False, "detail": "disconnected",
+                }
+                open_event.set()
+            self.unregister_devcontainer_session(cid, session_ref)
         # fire every registered session-cleanup hook (e.g.,
         # TaskService.cleanup_session purges the tool-call registry). Hooks
         # are registered from main.py during startup; we never let a hook
@@ -1317,6 +1376,271 @@ class ConnectionManager:
             return
         self._devc_exec_exit[request_id] = exit_code
         event.set()
+
+    # ------------------------------------------------------------------
+    # Devcontainer interactive session bridge (§43)
+    # ------------------------------------------------------------------
+    # A persistent, bidirectional analogue of the one-shot bridge above, keyed
+    # by session_ref (not request_id) since a session spans an open, many
+    # stdin writes, and many stream chunks over its lifetime. This is plumbing
+    # only — the only production consumer is the explicit `cell_adapter`
+    # injection seam (DEBT-138 tracks routing the agentic cell here, blocked
+    # on an OCC-safe sync surface); the WS contract and its cancellation
+    # safety are exercised end-to-end regardless.
+
+    def _register_devc_session_queue(
+        self, session_id: str, session_ref: str
+    ) -> "asyncio.Queue[Optional[bytes]]":
+        """Create and index the session's inbound queue. Idempotent: re-registering
+        an already-registered session_ref returns the existing queue rather than
+        replacing it, so a duplicate open request can never orphan a live queue."""
+        existing = self._devc_session_queues.get(session_ref)
+        if existing is not None:
+            return existing
+        queue: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue(maxsize=_DEVC_SESSION_QUEUE_CAPACITY)
+        self._devc_session_queues[session_ref] = queue
+        self._devc_session_dropped_chunks[session_ref] = 0
+        self._client_pending_devc_sessions.setdefault(session_id, set()).add(session_ref)
+        return queue
+
+    def unregister_devcontainer_session(self, session_id: str, session_ref: str) -> None:
+        """Idempotent, O(1) teardown of a session's bookkeeping (D1).
+
+        Called from three independent places that may interleave on the same
+        session_ref — the session's own graceful close, a failed/timed-out
+        open, and a client disconnect reap — so every step here uses
+        ``.pop(..., None)`` / ``.discard(...)`` and never faults on state a
+        prior caller already cleared. Pushes an EOF sentinel onto the queue
+        (evict-then-put on a full queue, mirroring
+        ``core.pty_session._force_out_eof``) so a consumer blocked on
+        ``queue.get()`` is always woken rather than left suspended forever.
+        """
+        queue = self._devc_session_queues.pop(session_ref, None)
+        if queue is not None:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                    queue.put_nowait(None)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
+        self._devc_session_dropped_chunks.pop(session_ref, None)
+        self._devc_session_paused.discard(session_ref)
+        self._devc_session_exit.pop(session_ref, None)
+        pending = self._client_pending_devc_sessions.get(session_id)
+        if pending is not None:
+            pending.discard(session_ref)
+            if not pending:
+                self._client_pending_devc_sessions.pop(session_id, None)
+
+    async def emit_devcontainer_session_open(
+        self, session_id: str, session_ref: str, cwd: str, env_keys: Optional[List[str]] = None,
+    ) -> None:
+        """Ask the host to open a persistent interactive session."""
+        await self.send_personal_message(
+            session_id,
+            ServerDevcontainerSessionOpenEvent(
+                data=DevcontainerSessionOpenPayload(
+                    session_id=session_id, session_ref=session_ref,
+                    cwd=cwd, env_keys=env_keys or [],
+                )
+            ),
+        )
+
+    async def wait_devcontainer_session_opened(
+        self, session_ref: str, session_id: str, timeout: float,
+    ) -> Optional[Dict[str, Any]]:
+        """Suspend until the host confirms open (``{"ok", "detail"}``) or timeout.
+
+        Registers the session's inbound queue up front (before the reply
+        arrives) so a stream chunk that races ahead of the open confirmation
+        is never lost. On any non-success outcome — timeout, an explicit
+        ``ok=False``, or a disconnect-reap resolving this waiter with ``None``
+        — the just-registered queue has no owner to consume it, so it is torn
+        down here rather than left to leak.
+        """
+        event = asyncio.Event()
+        self._devc_session_open_events[session_ref] = event
+        self._register_devc_session_queue(session_id, session_ref)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            result = self._devc_session_open_result.pop(session_ref, None)
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ devcontainer session open timeout (session_ref=%s)", session_ref)
+            result = None
+        finally:
+            self._devc_session_open_events.pop(session_ref, None)
+            self._devc_session_open_result.pop(session_ref, None)
+
+        if result is None or not result.get("ok"):
+            self.unregister_devcontainer_session(session_id, session_ref)
+        return result
+
+    async def emit_devcontainer_session_stdin(
+        self, session_id: str, session_ref: str, data: bytes,
+    ) -> None:
+        """Write bytes to the session's stdin (base64 on the wire, raw bytes here)."""
+        await self.send_personal_message(
+            session_id,
+            ServerDevcontainerSessionStdinEvent(
+                data=DevcontainerSessionStdinPayload(
+                    session_id=session_id, session_ref=session_ref,
+                    data_b64=base64.b64encode(data).decode("ascii"),
+                )
+            ),
+        )
+
+    async def emit_devcontainer_session_signal(
+        self, session_id: str, session_ref: str, signal: Literal["interrupt", "kill"],
+    ) -> None:
+        await self.send_personal_message(
+            session_id,
+            ServerDevcontainerSessionSignalEvent(
+                data=DevcontainerSessionSignalPayload(
+                    session_id=session_id, session_ref=session_ref, signal=signal,
+                )
+            ),
+        )
+
+    async def emit_devcontainer_session_flow(
+        self, session_id: str, session_ref: str, paused: bool,
+    ) -> None:
+        """Ask the host to pause/resume its read side (backpressure, D2)."""
+        await self.send_personal_message(
+            session_id,
+            ServerDevcontainerSessionFlowEvent(
+                data=DevcontainerSessionFlowPayload(
+                    session_id=session_id, session_ref=session_ref, paused=paused,
+                )
+            ),
+        )
+
+    async def emit_devcontainer_session_close(self, session_id: str, session_ref: str) -> None:
+        await self.send_personal_message(
+            session_id,
+            ServerDevcontainerSessionCloseEvent(
+                data=DevcontainerSessionClosePayload(session_id=session_id, session_ref=session_ref)
+            ),
+        )
+
+    def get_devcontainer_session_queue(
+        self, session_ref: str
+    ) -> Optional["asyncio.Queue[Optional[bytes]]"]:
+        """The live queue a session's demux consumer reads from, if registered."""
+        return self._devc_session_queues.get(session_ref)
+
+    def _update_devc_session_flow_state(self, session_ref: str) -> Optional[bool]:
+        """Check ``session_ref``'s current queue size against the high/low water
+        marks; if a threshold was just crossed, flip ``_devc_session_paused``
+        and return the new state. Returns ``None`` when there is nothing to
+        report. Shared by both the producer side (a push growing the queue)
+        and the consumer side (a drain shrinking it) — see
+        :meth:`check_devcontainer_session_drain` for why both call this.
+        """
+        queue = self._devc_session_queues.get(session_ref)
+        if queue is None:
+            return None
+        size = queue.qsize()
+        if size >= _DEVC_SESSION_QUEUE_HIGH_WATER and session_ref not in self._devc_session_paused:
+            self._devc_session_paused.add(session_ref)
+            return True
+        if size <= _DEVC_SESSION_QUEUE_LOW_WATER and session_ref in self._devc_session_paused:
+            self._devc_session_paused.discard(session_ref)
+            return False
+        return None
+
+    def push_devcontainer_session_chunk(
+        self, session_ref: str, chunk_b64: str
+    ) -> Optional[bool]:
+        """Enqueue one output chunk for ``session_ref``. NEVER awaits (D1/finding 2).
+
+        Returns ``True`` the instant the queue crosses the high-water mark
+        (caller MUST then emit ``flow(paused=True)``), ``False`` the instant it
+        drains back below the low-water mark after a pause (caller MUST emit
+        ``flow(paused=False)`` — though in practice a resume is more often
+        observed by the consumer, see :meth:`check_devcontainer_session_drain`),
+        or ``None`` when there is no flow-control transition to report.
+        Decoupling the transition signal from the emit itself keeps this
+        method — called from the shared WS receive loop — strictly
+        non-blocking; the caller performs the actual (bounded, fast) WS send.
+
+        On a full queue the chunk is dropped and counted rather than awaited
+        around: an ``await queue.put()`` here would head-of-line block the
+        ENTIRE shared receive loop for every connected client, not just this
+        session. The D2 sizing is designed to make this unreachable in
+        practice — a drop means ``flow(paused=True)`` did not reach the host
+        in time, not routine backpressure.
+        """
+        queue = self._devc_session_queues.get(session_ref)
+        if queue is None:
+            return None  # unknown or already-closed session — drop silently
+        try:
+            chunk = base64.b64decode(chunk_b64, validate=False)
+        except (ValueError, TypeError):
+            logger.warning("devcontainer session chunk failed base64 decode (session_ref=%s)", session_ref)
+            return None
+        try:
+            queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            self._devc_session_dropped_chunks[session_ref] = (
+                self._devc_session_dropped_chunks.get(session_ref, 0) + 1
+            )
+            logger.warning(
+                "devcontainer session queue full — chunk dropped (session_ref=%s, total_dropped=%d)",
+                session_ref, self._devc_session_dropped_chunks[session_ref],
+            )
+            return None
+        return self._update_devc_session_flow_state(session_ref)
+
+    def check_devcontainer_session_drain(self, session_ref: str) -> Optional[bool]:
+        """Called by the session's own demux consumer after every ``queue.get()``
+        to detect a pause→resume transition a producer-only check would miss.
+
+        If the child's output has stalled entirely once the queue is full
+        (nothing left to push), :meth:`push_devcontainer_session_chunk` never
+        fires again — and a producer-only resume check would then deadlock:
+        the child stays blocked writing to its own stdout pipe because the
+        host never resumes reading it, and nothing is left to trip the
+        producer-side check that would tell the host to resume. Checking on
+        every drain closes that gap.
+        """
+        return self._update_devc_session_flow_state(session_ref)
+
+    def resolve_devcontainer_session_opened(
+        self, session_ref: str, ok: bool, detail: Optional[str],
+    ) -> None:
+        """Called from the WS receive loop on client_devcontainer_session_opened."""
+        event = self._devc_session_open_events.get(session_ref)
+        if event is None:
+            logger.warning("⚠️ devcontainer session opened for unknown session_ref: %s", session_ref)
+            return
+        self._devc_session_open_result[session_ref] = {"ok": ok, "detail": detail}
+        event.set()
+
+    def pop_devcontainer_session_exit(self, session_ref: str) -> Optional[int]:
+        """Consume the terminal exit code left by ``resolve_devcontainer_session_exit``."""
+        return self._devc_session_exit.pop(session_ref, None)
+
+    def resolve_devcontainer_session_exit(self, session_ref: str, exit_code: int) -> None:
+        """Called from the WS receive loop on client_devcontainer_session_exit.
+
+        Stashes the exit code and pushes an EOF sentinel onto the session's
+        queue so its demux consumer observes end-of-stream — mirrors how the
+        local PTY reader thread's own EOF terminates
+        ``core.pty_session._PtySession._demux_loop``.
+        """
+        self._devc_session_exit[session_ref] = exit_code
+        queue = self._devc_session_queues.get(session_ref)
+        if queue is not None:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                    queue.put_nowait(None)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
 
     # ------------------------------------------------------------------
     # HITL — Human-in-the-Loop suspension

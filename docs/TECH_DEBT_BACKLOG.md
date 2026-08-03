@@ -105,10 +105,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW | Capability gap | long-term | Floating |
 | DEBT-035 | MultiPL-E TypeScript execution needs a locked Node-capable sandbox tier | MEDIUM | Feature gap | future — needs a distinct locked tier | Floating |
 | DEBT-082 | Bundled `@devcontainers/cli` not shipped in the `.vsix` (`.vscodeignore` excludes `node_modules`; CLI is esbuild-external) — packaged extension relies on PATH / Dev Containers ext | MEDIUM | Packaging | 8.13.4 | RESOLVED 2026-06-30 |
-| DEBT-083 | Devcontainer exec output is buffered into one chunk per stream, not truly incremental | LOW | Capability gap | future 8.13 slice | Floating |
-| DEBT-084 | Interactive devcontainer sessions (`open_host_session`) not wired over the host bridge | MEDIUM | Feature gap | future 8.13 slice | Floating |
-| DEBT-085 | Devcontainer exec runs at the workspace-folder root; the backend `cwd` (host path) is not mapped into the container | LOW | Correctness gap | future 8.13 slice | Floating |
-| DEBT-086 | Typecheck/validation helpers (`check_type_integrity`, `coder_tools._exec`) lack a `session_id` and stay on the oracle tier, not the devcontainer | LOW | Consistency gap | future 8.13 slice | Floating |
+| DEBT-083 | Devcontainer exec output is buffered into one chunk per stream, not truly incremental | LOW | Capability gap | 12.4 | RESOLVED 2026-08-03 |
+| DEBT-084 | Interactive devcontainer sessions (`open_host_session`) not wired over the host bridge | MEDIUM | Feature gap | 12.4 | RESOLVED 2026-08-03 |
+| DEBT-085 | Devcontainer exec runs at the workspace-folder root; the backend `cwd` (host path) is not mapped into the container | LOW | Correctness gap | 12.4 | RESOLVED 2026-08-03 |
+| DEBT-086 | Typecheck/validation helpers (`check_type_integrity`, `coder_tools._exec`) lack a `session_id` and stay on the oracle tier, not the devcontainer | LOW | Consistency gap | 12.4 | RESOLVED 2026-08-03 |
 | DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
 | DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
 | DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
@@ -127,6 +127,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-135 | The 11.9 Playwright dashboard fixture (`ailienant-core/tests/e2e/seed_dashboard_fixture.py`) writes directly into the catalog SQLite + LanceDB stores via existing low-level helpers (`upsert_indexed_file`/`upsert_dependencies`/`SemanticMemoryManager._write_record`), bypassing the real indexer — proves the dashboard's read side, never the indexer→dashboard pipeline end-to-end | LOW | Test fidelity | future e2e-fidelity slice | Floating |
 | DEBT-136 | The 11.9 Playwright suite (`ailienant-extension/playwright.config.ts`) runs Chromium only — no cross-browser (Firefox/WebKit) matrix, accepted as smoke-gate scope for a locally-served SPA | LOW | Test coverage | future cross-browser slice | Floating |
 | DEBT-137 | Provider-native `cache_control` + cache telemetry not implemented — 12.1 shipped only the prefix-stability prerequisite; the cacheable prefix is too small (~300-450 tokens) to clear any provider's minimum-cacheable-token floor today | LOW | Cost optimization | unblocked by 12.7 (coder tool-calling) | Floating |
+| DEBT-138 | `brain/agentic_cell.py` still resolves the locked oracle tier (`get_active_adapter()`), not the devcontainer tier §43 (12.4) added session support to — rerouting is blocked on an OCC-safe sync surface (`DevcontainerSandboxAdapter.get_sync_surface()` doesn't exist; a raw bind-mounted surface would bypass the VFS barrier's hash-based stale-guard) | MEDIUM | Architecture / Blocked | future OCC-safe sync-surface slice | Blocked |
+| DEBT-139 | The §43 devcontainer session host driver has no real TTY (no `node-pty`, by design — CLAUDE.md §9) — no job control, no `isatty()`, and `interrupt` sends a best-effort `SIGINT` to the child rather than a true Ctrl-C to a foreground process group | LOW | Capability gap | future terminal-fidelity slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
@@ -666,29 +668,29 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** packaging gap, not a runtime defect — `@devcontainers/cli` is excluded from esbuild (it is a child-process bin, not an import), so `.vscodeignore`'s `node_modules/**` rule excluded it from the `.vsix`. In a packaged extension the CLI must come from PATH or the Dev Containers extension.
 - **Resolution — host-prerequisite distribution model (option b):** the runnable `devcontainer` CLI is a documented **host prerequisite** (PATH or the Dev Containers extension `ms-vscode-remote.remote-containers`), not bundled. Chosen over bundling per CLAUDE.md §9 (lightest viable dependency; bundling the CLI's transitive runtime tree bloats the `.vsix` and widens the supply-chain surface), and because trusted execution already requires a local Docker daemon — requiring the CLI alongside it is reasonable. Concretely: `@devcontainers/cli` moved `optionalDependencies` → `devDependencies` (dev/test-only, never shipped); `DevcontainerProvisioner._doUp` now emits an actionable remediation (`CLI_MISSING_HINT`) on a `'path'`-source spawn and on an ENOENT failure, naming both supported ways to provide the CLI; `.vscodeignore` and `esbuild.js` are already the intended end state (unchanged). Documented in `PHASE_8.13_BLUEPRINT.md §3.5` + `DEVELOPERS.md`.
 
-### DEBT-083 [LOW · Floating] — Devcontainer exec output is buffered, not incremental
+### DEBT-083 [LOW · RESOLVED 2026-08-03, 12.4] — Devcontainer exec output is buffered, not incremental
 
-- **Date:** 2026-06-30
-- **Detail:** the host handler (`providers/devcontainerExecHandler.ts`) runs `provisioner.exec()` to completion and emits one `client_devcontainer_exec_stream` per stream plus the exit frame. The backend aggregator handles this identically to many chunks, so it is contract-equivalent — but long-running trusted commands do not stream live. True incremental streaming needs the provisioner to surface its child's `stdout`/`stderr` `data` events.
-- **Phase:** future 8.13 slice.
+- **Date:** 2026-06-30 · **Resolved:** 2026-08-03 (12.4)
+- **Detail (was):** the host handler (`providers/devcontainerExecHandler.ts`) ran `provisioner.exec()` to completion and emitted one `client_devcontainer_exec_stream` per stream plus the exit frame. Contract-equivalent, but long-running trusted commands did not stream live.
+- **Resolution:** `DevcontainerProvisioner._spawnWithTimeout` gained an optional `onChunk` callback fired from the existing child `stdout`/`stderr` `data` listeners (accumulation into the final `ExecResult` unchanged, so a caller that ignores it sees byte-identical behavior); `devcontainerExecHandler.ts` wires a per-stream coalescer (`makeStreamCoalescer`) that batches rapid `data` events into WS frames on a ~50ms timer or an 8KB cap, flushing any residue before the exit frame (ordering is load-bearing — a frame arriving after the exit frame is dropped by `append_devcontainer_stream`'s unknown-`request_id` branch). Backend `ws_contracts.py`/`append_devcontainer_stream` unchanged — it already aggregated any number of chunks.
 
-### DEBT-084 [MEDIUM · Floating] — Interactive devcontainer sessions not wired over the host bridge
+### DEBT-084 [MEDIUM · RESOLVED 2026-08-03, 12.4] — Interactive devcontainer sessions not wired over the host bridge
 
-- **Date:** 2026-06-30
-- **Detail:** `WebSocketHostBridge.open_host_session` raises `SandboxSessionError` — the 8.13.4 WS contract covers one-shot exec only. Trusted `run_command` uses `execute()`, so this is unreached today, but interactive PTY sessions inside the devcontainer need an additive session-stream contract (open/stdin/stream/close) plus a host-side PTY driver.
-- **Phase:** future 8.13 slice.
+- **Date:** 2026-06-30 · **Resolved:** 2026-08-03 (12.4, plumbing + teardown only)
+- **Detail (was):** `WebSocketHostBridge.open_host_session` raised `SandboxSessionError` unconditionally — the 8.13.4 WS contract covered one-shot exec only.
+- **Resolution:** new §43 WS contract (`SCHEMA_EVOLUTION.MD`) — an 8-event session lifecycle (open/stdin/signal/flow/close/opened/stream/exit) keyed by `session_ref`. Backend: `core/command_boundary.py::CommandBoundaryFramer` extracts the sentinel-marker command-boundary protocol shared with `core/pty_session.py`; `api/devcontainer_bridge.py::_BridgeSandboxSession` implements `SandboxSession` over a manager-owned bounded queue instead of a reader thread; `ConnectionManager` gains the session primitives, including bidirectional backpressure detection (both `push_devcontainer_session_chunk` and `check_devcontainer_session_drain` check the pause/resume threshold — a producer-only check would deadlock once the queue fills and the child's own output has stalled, since nothing would push again to trip a resume). Host: new `providers/devcontainerSessionHandler.ts`, stateful (a `Map<session_ref, ChildProcess>`), no `node-pty` (see DEBT-139), an idle ceiling that self-terminates an orphaned session, and `dispose()` wired into the extension's teardown lifecycle. **Not wired to a production consumer** — `brain/agentic_cell.py` still uses the oracle tier; see DEBT-138 for the OCC precondition blocking that reroute. Exercised end-to-end via `tests/test_devcontainer_session_manager.py`, `tests/test_devcontainer_bridge.py`, `src/test/devcontainerSessionHandler.test.ts`, and the pre-existing `configurable["cell_adapter"]` test seam.
 
-### DEBT-085 [LOW · Floating] — Devcontainer exec ignores the backend `cwd`
+### DEBT-085 [LOW · RESOLVED 2026-08-03, 12.4] — Devcontainer exec ignores the backend `cwd`
 
-- **Date:** 2026-06-30
-- **Detail:** the host runs `devcontainer exec --workspace-folder <root>` at the container's workspace root; the backend `cwd` (a host path) is carried on the wire but not mapped into the container filesystem. A sub-directory `working_dir` is therefore not honored. Needs a host↔container path translation (or a `cd <container-path> &&` prefix once the mapping is known).
-- **Phase:** future 8.13 slice.
+- **Date:** 2026-06-30 · **Resolved:** 2026-08-03 (12.4)
+- **Detail (was):** the host ran `devcontainer exec --workspace-folder <root>` at the container's workspace root; the backend `cwd` (a host path) was carried on the wire but never mapped into the container filesystem, so a sub-directory `working_dir` was silently ignored.
+- **Resolution:** `DevcontainerProvisioner` resolves the container-side workspace root two-tier — first a best-effort parse of `up`'s own JSON result line (`remoteWorkspaceFolder`), falling back to one cached `pwd` probe on first use; a devcontainer with neither signal degrades to the pre-fix behavior (unprefixed, at the container root) rather than erroring. `devcontainerExecHandler.ts` translates `data.cwd` via `path.relative` against the workspace root, normalizes host separators to POSIX, and refuses to translate (runs unprefixed) on an empty/root-equal/traversal/cross-drive result — a confinement floor, not best-effort convenience. `exec()` prefixes `cd <single-quoted path> && ` inside the existing `/bin/sh -c` invocation; no new host-side shell-injection surface.
 
-### DEBT-086 [LOW · Floating] — Typecheck/validation helpers stay on the oracle tier
+### DEBT-086 [LOW · RESOLVED 2026-08-03, 12.4] — Typecheck/validation helpers stay on the oracle tier
 
-- **Date:** 2026-06-30
-- **Detail:** `check_type_integrity` and `coder_tools._exec` run trusted checks but take no `session_id`, so `resolve_execution_adapter` keeps them on the oracle tier rather than the devcontainer. Threading a `session_id` into these helpers (and their callers) would route them through the same trusted tier as `run_command`.
-- **Phase:** future 8.13 slice.
+- **Date:** 2026-06-30 · **Resolved:** 2026-08-03 (12.4)
+- **Detail (was):** `check_type_integrity` and `coder_tools._exec` ran trusted checks but took no `session_id`, so `resolve_execution_adapter` always kept them on the oracle tier rather than the devcontainer.
+- **Resolution — non-interactive routing, not a naive session-id thread-through:** naively adding `trusted=True` would have regressed into a double HITL prompt, since the trusted resolver's default fallback (`NativeHITLSandboxAdapter`) raises an approval card unconditionally on every call — turning a silent validation check into a surprise prompt, and double-prompting `coder_tools._exec` on top of `_gated_exec`'s own consent round-trip. `core.sandbox.resolve_execution_adapter` gained an additive `interactive_fallback: bool = True` parameter; `False` resolves a second cached trusted adapter (`get_trusted_adapter_silent`) whose fallback is the oracle cage (`_OracleFallbackAdapter`, re-resolving `get_active_adapter()` per call rather than capturing it at construction) instead of the HITL-interactive adapter. Both helpers now call with `interactive_fallback=False`: `CheckTypeIntegrityTool` via a `PrivateAttr` session binding injected by a new state-reading `tool_registry.py` factory (mirroring `_read_file`'s pattern); `coder_tools._exec` via the `_SessionCtx` already carried by `_gated_exec`. Cage isolation was re-verified before adopting the silent fallback: `network_mode="none"`, read-only rootfs, `mode: "ro"` workspace bind-mount, non-root `USER sandbox` — `NativeHITLSandboxAdapter` was a redundant consent layer, not the isolation boundary, so suppressing it does not weaken the cage.
 
 ### DEBT-024 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — HITL inline-diff transport ships full file content (O(N)) instead of a unified diff (O(Δ))
 
@@ -834,6 +836,49 @@ Decision    Not a defect — see [DECISION] tier.
   are modest — provider caching saves $0 on a local model, and on a cloud model the volatile
   per-step payload (file content, RAG snippets, mission context) dwarfs the cacheable prefix by
   roughly an order of magnitude. This is a genuine but small optimization, not a launch blocker.
+
+### DEBT-138 [MEDIUM · Blocked] — Agentic cell does not route through the devcontainer session tier
+
+- **Date:** 2026-08-03
+- **Reproduce:** `brain/agentic_cell.py::run_agentic_cell_node` resolves `core.sandbox.get_active_adapter()`
+  (the locked oracle tier) unconditionally when opening its session — never
+  `core.sandbox.resolve_execution_adapter(session_id=..., trusted=True)`, so a `requires_iteration`
+  WBS step's ReAct loop never reaches the user's real devcontainer even after §43 (12.4) gave the
+  trusted tier a working interactive-session implementation.
+- **File(s):** `brain/agentic_cell.py:368-380` (the reroute); `core/sandbox.py::DevcontainerSandboxAdapter`
+  (needs a `get_sync_surface()` override — the base class raises `NotImplementedError`, so the cell's
+  `adapter.get_sync_surface(cwd)` call would fail the moment the reroute lands).
+- **Error:** architectural precondition, not an oversight — deliberately scoped out of 12.4 (see the
+  architect's review during that sub-phase's planning). Routing cell edits through a bind-mounted
+  `SyncSurface` (the naive `get_sync_surface()` implementation — `core.workspace_sync.LocalFsSyncSurface`
+  over the devcontainer's host workspace mount) would bypass the in-RAM VFS barrier and its
+  base-hash stale-guard (`core/vfs_middleware.py`) entirely: a concurrent agent edit and a live user
+  edit to the same file would silently corrupt the workspace, since neither side would ever see the
+  other's write through the OCC guard that protects every other write path in this codebase.
+- **Blocked by:** an OCC-safe sync surface — cell writes must reach the bind-mounted workspace only
+  *through* the VFS barrier's stale-guard, never via a raw filesystem surface. No design is chosen yet;
+  candidates include routing `SyncSurface.write_file` through the same `check_type_integrity`-adjacent
+  hashing path `task_service.py`'s HITL apply uses, or restricting the cell to VFS-mediated reads/writes
+  entirely and dropping direct `SyncSurface` access for this tier specifically.
+- **Phase:** future OCC-safe sync-surface slice. Until then the §43 tunnel is reachable only via the
+  `configurable["cell_adapter"]` test-injection seam the existing cell tests already use — test-reachable,
+  not dead code, but not a production call path either.
+
+### DEBT-139 [LOW · Floating] — Devcontainer session host driver has no real TTY
+
+- **Date:** 2026-08-03
+- **Detail:** `providers/devcontainerSessionHandler.ts` spawns `devcontainer exec ... -- /bin/sh` via
+  plain piped stdio (`child_process.spawn`), not a pseudo-terminal — a deliberate MVP tradeoff (CLAUDE.md
+  §11.2) made when §43 (12.4) rejected `node-pty`: a native module is a packaging/supply-chain cost the
+  interactive session tunnel does not justify (CLAUDE.md §9), and the sentinel-marker command-boundary
+  protocol (`core/command_boundary.py`, shared with the local `core.pty_session` PTY session) already
+  gives command framing without a real TTY line discipline. Consequences: no job control (`fg`/`bg`/`Ctrl+Z`
+  semantics), no `isatty()` — a program that branches on TTY presence (many REPLs, some build tools'
+  progress-bar rendering) behaves as if piped, not interactive — and `signal: "interrupt"` sends a
+  best-effort `SIGINT` to the child process directly rather than a true Ctrl-C to a foreground process
+  group, so a child that spawns its own subprocesses may not propagate the interrupt to them.
+- **Phase:** future terminal-fidelity slice, if usage shows this MVP tradeoff biting in practice
+  (e.g. an operator running an interactive REPL or a TTY-sensitive build tool through the tunnel).
 
 ### DEBT-132 [LOW · Floating] — Background-task executions get no Glass-Box Timeline I/O detail
 

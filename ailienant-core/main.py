@@ -1239,6 +1239,34 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     valid_event.data.request_id, valid_event.data.exit_code
                 )
 
+            elif valid_event.event_type == "client_devcontainer_session_opened":
+                # Host reports whether the interactive session (§43) opened.
+                vfs_manager.resolve_devcontainer_session_opened(
+                    valid_event.data.session_ref,
+                    valid_event.data.ok,
+                    valid_event.data.detail,
+                )
+
+            elif valid_event.event_type == "client_devcontainer_session_stream":
+                # Raw output chunk from a live interactive session. Enqueue is
+                # synchronous and never blocks the receive loop (§43 D1); only
+                # emit the pause/resume control frame this signals, if any.
+                _devc_flow = vfs_manager.push_devcontainer_session_chunk(
+                    valid_event.data.session_ref, valid_event.data.chunk_b64,
+                )
+                if _devc_flow is not None:
+                    await vfs_manager.emit_devcontainer_session_flow(
+                        session_id=valid_event.data.session_id,
+                        session_ref=valid_event.data.session_ref,
+                        paused=_devc_flow,
+                    )
+
+            elif valid_event.event_type == "client_devcontainer_session_exit":
+                # The session's underlying shell exited; wake its demux consumer.
+                vfs_manager.resolve_devcontainer_session_exit(
+                    valid_event.data.session_ref, valid_event.data.exit_code
+                )
+
             elif valid_event.event_type == "client_concurrency_conflict":
                 logger.warning(
                     "⚡ OCC Conflict [Session: %s]: %s (expected v%d, got v%d) — aborting write",

@@ -1284,6 +1284,141 @@ class ClientDevcontainerExecExitEvent(BaseModel):
 
 
 # =====================================================================
+# 17c-2. DEVCONTAINER INTERACTIVE SESSION BRIDGE (Trusted-Tier PTY Tunnel)
+# =====================================================================
+# Complements 17c's one-shot exec with a persistent interactive session inside
+# the same provisioned devcontainer — a bidirectional analogue of
+# core.pty_session.SandboxSession, tunneled over the host bridge instead of a
+# local reader thread.
+#
+# Keyed by ``session_ref`` (UUID4), distinct from 17c's ``request_id`` — a
+# session spans many stdin writes and stream chunks over its lifetime, where a
+# 17c ``request_id`` covers exactly one command. Both key spaces are UUID4 and
+# never collide in practice, but they are never compared across contracts.
+#
+# Payloads carry raw bytes, never text: a SandboxSession's contract is byte
+# deltas specifically so a multibyte character is never split into mojibake
+# mid-stream, and the sentinel marker _BridgeSandboxSession reuses from
+# core.pty_session is control bytes (\x01\x02) that cannot round-trip through
+# JSON text. ``data_b64`` / ``chunk_b64`` are therefore base64-encoded bytes.
+#
+# ``env_keys`` follows 17c's secret hygiene: allowlisted variable NAMES only.
+
+
+class DevcontainerSessionOpenPayload(BaseModel):
+    """Backend → host: open a persistent interactive session in the devcontainer."""
+
+    session_id: str
+    session_ref: str          # UUID4 — correlates every frame for this session's lifetime
+    cwd: str
+    env_keys: List[str] = Field(default_factory=list)
+
+
+class ServerDevcontainerSessionOpenEvent(BaseModel):
+    event_type: Literal["server_devcontainer_session_open"] = "server_devcontainer_session_open"
+    data: DevcontainerSessionOpenPayload
+
+
+class DevcontainerSessionOpenedPayload(BaseModel):
+    """Host → backend: the session either opened or failed to."""
+
+    session_id: str
+    session_ref: str
+    ok: bool
+    detail: Optional[str] = None
+
+
+class ClientDevcontainerSessionOpenedEvent(BaseModel):
+    event_type: Literal["client_devcontainer_session_opened"] = "client_devcontainer_session_opened"
+    data: DevcontainerSessionOpenedPayload
+
+
+class DevcontainerSessionStdinPayload(BaseModel):
+    """Backend → host: bytes to write to the session's stdin."""
+
+    session_id: str
+    session_ref: str
+    data_b64: str
+
+
+class ServerDevcontainerSessionStdinEvent(BaseModel):
+    event_type: Literal["server_devcontainer_session_stdin"] = "server_devcontainer_session_stdin"
+    data: DevcontainerSessionStdinPayload
+
+
+class DevcontainerSessionSignalPayload(BaseModel):
+    """Backend → host: a control signal for the session's foreground process."""
+
+    session_id: str
+    session_ref: str
+    signal: Literal["interrupt", "kill"]
+
+
+class ServerDevcontainerSessionSignalEvent(BaseModel):
+    event_type: Literal["server_devcontainer_session_signal"] = "server_devcontainer_session_signal"
+    data: DevcontainerSessionSignalPayload
+
+
+class DevcontainerSessionFlowPayload(BaseModel):
+    """Backend → host: pause/resume the host's read side (backpressure).
+
+    Emitted when the backend's inbound queue for this session crosses its
+    high-water mark (``paused=True``) or drains back below it
+    (``paused=False``); the host pauses/resumes the child's stdout/stderr
+    stream in response, propagating real OS-level backpressure into the
+    container process.
+    """
+
+    session_id: str
+    session_ref: str
+    paused: bool
+
+
+class ServerDevcontainerSessionFlowEvent(BaseModel):
+    event_type: Literal["server_devcontainer_session_flow"] = "server_devcontainer_session_flow"
+    data: DevcontainerSessionFlowPayload
+
+
+class DevcontainerSessionClosePayload(BaseModel):
+    """Backend → host: tear the session down. Idempotent — closing an already-
+    closed or unknown ``session_ref`` is a no-op on the host."""
+
+    session_id: str
+    session_ref: str
+
+
+class ServerDevcontainerSessionCloseEvent(BaseModel):
+    event_type: Literal["server_devcontainer_session_close"] = "server_devcontainer_session_close"
+    data: DevcontainerSessionClosePayload
+
+
+class DevcontainerSessionStreamPayload(BaseModel):
+    """Host → backend: a raw output chunk (base64) from the session's PTY."""
+
+    session_id: str
+    session_ref: str
+    chunk_b64: str
+
+
+class ClientDevcontainerSessionStreamEvent(BaseModel):
+    event_type: Literal["client_devcontainer_session_stream"] = "client_devcontainer_session_stream"
+    data: DevcontainerSessionStreamPayload
+
+
+class DevcontainerSessionExitPayload(BaseModel):
+    """Host → backend: the session's underlying shell exited."""
+
+    session_id: str
+    session_ref: str
+    exit_code: int
+
+
+class ClientDevcontainerSessionExitEvent(BaseModel):
+    event_type: Literal["client_devcontainer_session_exit"] = "client_devcontainer_session_exit"
+    data: DevcontainerSessionExitPayload
+
+
+# =====================================================================
 # 17d. CODER COMPANION
 # =====================================================================
 # Post-turn structured explanation emitted after CoderAgent completes a patch.
@@ -1393,6 +1528,14 @@ WebSocketMessage = Union[
     ServerDevcontainerExecRequestEvent,        # devcontainer bridge: exec request (→ host)
     ClientDevcontainerExecStreamEvent,         # devcontainer bridge: exec stdout/stderr chunk (← host)
     ClientDevcontainerExecExitEvent,           # devcontainer bridge: exec exit code (← host)
+    ServerDevcontainerSessionOpenEvent,        # devcontainer session bridge: open request (→ host)
+    ClientDevcontainerSessionOpenedEvent,      # devcontainer session bridge: open result (← host)
+    ServerDevcontainerSessionStdinEvent,       # devcontainer session bridge: stdin bytes (→ host)
+    ServerDevcontainerSessionSignalEvent,      # devcontainer session bridge: interrupt/kill (→ host)
+    ServerDevcontainerSessionFlowEvent,        # devcontainer session bridge: pause/resume (→ host)
+    ServerDevcontainerSessionCloseEvent,       # devcontainer session bridge: close (→ host)
+    ClientDevcontainerSessionStreamEvent,      # devcontainer session bridge: output chunk (← host)
+    ClientDevcontainerSessionExitEvent,        # devcontainer session bridge: shell exited (← host)
     ServerCoderCompanionEvent,                 # coder companion: structured post-turn explanation
     ServerAgentTodosEvent,                     # cell glass-box: agent's structured TODO list
 ]

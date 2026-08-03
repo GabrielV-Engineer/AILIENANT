@@ -45,7 +45,6 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.exceptions import PatchError
 from core.permissions import ToolPrivilegeTier
-from core.sandbox import get_active_adapter
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.execution_tools import (
     _SANDBOX_UNINITIALIZED_MSG,
@@ -137,14 +136,27 @@ def _safe_arg(tok: str) -> str:
     return shlex.quote(tok)
 
 
-async def _exec(command: str, timeout_s: float) -> Tuple[int, str]:
+async def _exec(
+    command: str, timeout_s: float, *, session_id: Optional[str] = None
+) -> Tuple[int, str]:
     """Dispatch ``command`` through the active sandbox tier; truncate the output.
 
     Mirrors execution_tools.CheckTypeIntegrityTool: the adapter owns the timeout
     and the env whitelist (host secrets never leak). An unresolved adapter raises
     the same RuntimeError the execution tools use, never a silent no-op.
+
+    ``session_id``, when present, routes trusted execution to the devcontainer
+    tier via ``interactive_fallback=False`` — an unavailable devcontainer then
+    degrades to the locked oracle cage rather than raising its own HITL card;
+    consent for this command, if any, was already gated upstream by
+    :func:`_gated_exec`. Without a ``session_id`` (unwired callers, the
+    benchmark oracle) this is byte-identical to the pre-DEBT-086 behavior.
     """
-    adapter = get_active_adapter()
+    from core.sandbox import resolve_execution_adapter
+
+    adapter = resolve_execution_adapter(
+        session_id=session_id, trusted=True, interactive_fallback=False
+    )
     if adapter is None:
         raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
     from core.exec_log import record_execution
@@ -155,6 +167,7 @@ async def _exec(command: str, timeout_s: float) -> Tuple[int, str]:
         timeout_s=timeout_s,
         cwd="",
         env_whitelist=_sandbox_env(),
+        session_id=session_id,
         source="coder_exec",
     )
     return result.exit_code, _truncate(result.stdout + result.stderr)
@@ -249,7 +262,10 @@ async def _gated_exec(
                     )
                 _grant_session_trust(sid, tool_name)
 
-    return await _exec(command, timeout_s)
+    return await _exec(
+        command, timeout_s,
+        session_id=session_ctx.session_id if session_ctx is not None else None,
+    )
 
 
 class _GatedExecTool(BaseTool):

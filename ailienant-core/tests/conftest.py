@@ -76,6 +76,11 @@ def _resolve_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     # Late binding (lambda calls at invocation time) so a test that patches
     # `get_active_adapter` after this fixture still has its fake resolved.
     monkeypatch.setattr(sb, "get_trusted_adapter", lambda: sb.get_active_adapter())
+    # Same reasoning for the non-interactive trusted selector (DEBT-086):
+    # check_type_integrity / coder_tools._exec resolve through this when bound
+    # to a session, and it must land on the same faked oracle adapter rather
+    # than building a real DevcontainerSandboxAdapter with no bridge.
+    monkeypatch.setattr(sb, "get_trusted_adapter_silent", lambda: sb.get_active_adapter())
 
 
 @pytest.fixture(autouse=True)

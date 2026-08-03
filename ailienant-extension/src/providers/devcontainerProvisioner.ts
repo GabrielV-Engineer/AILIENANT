@@ -42,6 +42,9 @@ export interface ExecResult {
     exitCode: number | null;
 }
 
+/** Fired once per raw `data` event on the child's stdout/stderr (DEBT-083). */
+export type ExecChunkListener = (stream: 'stdout' | 'stderr', text: string) => void;
+
 interface ResolvedCli {
     command: string;
     baseArgs: string[];
@@ -91,6 +94,13 @@ export class DevcontainerProvisioner {
     private _upInFlight: Promise<DevcontainerStatus> | null = null;
     private _activeChild: ChildProcess | null = null;
     private readonly _listeners = new Set<StatusListener>();
+    // Container-side workspace root (DEBT-085). Resolved lazily: `up`'s own result
+    // line is tried first (cheap, no extra spawn); a `pwd` probe is the fallback,
+    // attempted at most once so a devcontainer without either path degrades to the
+    // pre-085 behavior (no cwd translation) instead of retrying forever.
+    private _containerWorkspaceFolder: string | undefined;
+    private _containerRootProbeFailed = false;
+    private _containerRootProbe: Promise<string | undefined> | null = null;
 
     constructor(private readonly deps: ProvisionerDeps) {}
 
@@ -165,6 +175,7 @@ export class DevcontainerProvisioner {
             );
             if (result.exitCode === 0) {
                 this._setState('ready');
+                this._parseContainerWorkspaceFolder(result.stdout);
             } else {
                 this._setState('degraded', `devcontainer up exited ${result.exitCode}`);
             }
@@ -184,20 +195,98 @@ export class DevcontainerProvisioner {
      * executed by the container's shell (`/bin/sh -c`) — the host spawn itself is
      * argv-array with no host shell, so no host-side command injection is possible.
      * `env` is applied host-side when launching the CLI.
+     *
+     * `containerCwd`, when given, is prepended as `cd <quoted> && ` inside that same
+     * shell invocation (DEBT-085) — still one argv-array spawn, so quoting the path
+     * cannot open a second shell-injection surface beyond the one `/bin/sh -c`
+     * already accepts for `command` itself.
+     *
+     * `onChunk`, when given, fires once per raw stdout/stderr `data` event as the
+     * child produces it (DEBT-083 — true incremental streaming); the accumulated
+     * `stdout`/`stderr` on the returned :class:`ExecResult` is unchanged, so an
+     * existing caller that ignores `onChunk` sees byte-identical behavior.
      */
     async exec(
         workspaceRoot: string,
         command: string,
         env?: NodeJS.ProcessEnv,
         timeoutMs?: number,
+        containerCwd?: string,
+        onChunk?: ExecChunkListener,
     ): Promise<ExecResult> {
         const cli = this.resolveCli();
         const budget = timeoutMs ?? this.deps.provisionTimeoutMs ?? PROVISION_TIMEOUT_MS;
+        const effectiveCommand = containerCwd
+            ? `cd ${posixQuote(containerCwd)} && ${command}`
+            : command;
         return this._spawnWithTimeout(
             cli,
-            ['exec', '--workspace-folder', workspaceRoot, '--', '/bin/sh', '-c', command],
-            workspaceRoot, budget, env,
+            ['exec', '--workspace-folder', workspaceRoot, '--', '/bin/sh', '-c', effectiveCommand],
+            workspaceRoot, budget, env, onChunk,
         );
+    }
+
+    /**
+     * Resolve the container-side workspace root (DEBT-085), so a caller can map a
+     * host `cwd` into the container. Two-tier: `up`'s own JSON result line is tried
+     * first (`_parseContainerWorkspaceFolder`, no extra spawn); if that never
+     * populated it, run one `pwd` probe and cache the result. A failed probe is
+     * remembered so a devcontainer without either signal is asked at most once,
+     * not on every exec — callers that get `undefined` back run unprefixed, byte-
+     * identical to pre-085 behavior.
+     */
+    async resolveContainerWorkspaceFolder(workspaceRoot: string): Promise<string | undefined> {
+        if (this._containerWorkspaceFolder) {
+            return this._containerWorkspaceFolder;
+        }
+        if (this._containerRootProbeFailed) {
+            return undefined;
+        }
+        if (!this._containerRootProbe) {
+            this._containerRootProbe = this._probeContainerWorkspaceFolder(workspaceRoot).finally(() => {
+                this._containerRootProbe = null;
+            });
+        }
+        return this._containerRootProbe;
+    }
+
+    private async _probeContainerWorkspaceFolder(workspaceRoot: string): Promise<string | undefined> {
+        try {
+            const result = await this.exec(workspaceRoot, 'pwd');
+            const trimmed = result.stdout.trim().split('\n').pop()?.trim();
+            if (result.exitCode === 0 && trimmed) {
+                this._containerWorkspaceFolder = trimmed;
+                return trimmed;
+            }
+        } catch (err) {
+            this.deps.log(`container workspace-folder probe failed: ${errText(err)}`);
+        }
+        this._containerRootProbeFailed = true;
+        return undefined;
+    }
+
+    /**
+     * Best-effort extraction of `remoteWorkspaceFolder` from `up`'s stdout. The CLI
+     * emits a final JSON result line alongside human-readable progress text; scan
+     * backwards so the last well-formed match wins and any non-JSON progress line is
+     * silently skipped rather than treated as a parse failure.
+     */
+    private _parseContainerWorkspaceFolder(stdout: string): void {
+        const lines = stdout.split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (!line) { continue; }
+            try {
+                const parsed: unknown = JSON.parse(line);
+                const folder = (parsed as { remoteWorkspaceFolder?: unknown }).remoteWorkspaceFolder;
+                if (typeof folder === 'string' && folder) {
+                    this._containerWorkspaceFolder = folder;
+                    return;
+                }
+            } catch {
+                // Not a JSON line (progress text) — keep scanning backwards.
+            }
+        }
     }
 
     /** Kill any in-flight child. Idempotent. */
@@ -214,6 +303,7 @@ export class DevcontainerProvisioner {
         cwd: string,
         timeoutMs: number,
         env?: NodeJS.ProcessEnv,
+        onChunk?: ExecChunkListener,
     ): Promise<ExecResult> {
         return new Promise<ExecResult>((resolve, reject) => {
             const child = this.deps.spawn(cli.command, [...cli.baseArgs, ...args], { cwd, env });
@@ -238,8 +328,16 @@ export class DevcontainerProvisioner {
                 });
             }, timeoutMs);
 
-            child.stdout?.on('data', (c: Buffer) => { stdout += c.toString(); });
-            child.stderr?.on('data', (c: Buffer) => { stderr += c.toString(); });
+            child.stdout?.on('data', (c: Buffer) => {
+                const text = c.toString();
+                stdout += text;
+                onChunk?.('stdout', text);
+            });
+            child.stderr?.on('data', (c: Buffer) => {
+                const text = c.toString();
+                stderr += text;
+                onChunk?.('stderr', text);
+            });
             child.on('error', (err: Error) => finish(() => reject(err)));
             child.on('close', (code: number | null) => finish(() => resolve({ stdout, stderr, exitCode: code })));
         });
@@ -283,6 +381,11 @@ export class DevcontainerProvisioner {
 
 function errText(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
+}
+
+/** POSIX single-quote a path for the container shell (`'` → `'\''`). */
+function posixQuote(p: string): string {
+    return `'${p.replace(/'/g, "'\\''")}'`;
 }
 
 /** True when a spawn failure indicates the `devcontainer` binary was not found. */

@@ -684,6 +684,9 @@ The following event types were added to `api/ws_contracts.py` after Phase 6.9. T
 **Devcontainer host bridge:**
 `server_devcontainer_provision_request` · `client_devcontainer_provision_status` · `server_devcontainer_exec_request` · `client_devcontainer_exec_stream` · `client_devcontainer_exec_exit` (see §26)
 
+**Devcontainer interactive session bridge:**
+`server_devcontainer_session_open` · `client_devcontainer_session_opened` · `server_devcontainer_session_stdin` · `server_devcontainer_session_signal` · `server_devcontainer_session_flow` · `server_devcontainer_session_close` · `client_devcontainer_session_stream` · `client_devcontainer_session_exit` (see §43)
+
 ---
 
 ## §18 — WBSStep Dependency Graph Field
@@ -961,6 +964,11 @@ primitives are now **wired**; the extension host handler (`providers/devcontaine
 `DevcontainerProvisioner` and emits the client→backend events. Per the additive-only discipline (CLAUDE.md
 §10), existing consumers tolerate the unknown events; all five are purely additive `WebSocketMessage` union
 members.
+
+**Scope note:** this section covers one-shot command execution only (`sandbox_bash` dispatch). §43 adds a
+persistent interactive session over the same host bridge, complementing rather than replacing this contract —
+`HostExecutionBridge.open_host_session` (declared here, previously raising `SandboxSessionError`
+unconditionally) is what §43 implements.
 
 ---
 
@@ -1944,3 +1952,117 @@ out on.
 **Backward-compat guarantee:** fully additive. No existing WS event, `AIlienantGraphState` channel,
 or `DispatchResult`/`ToolDispatcher` call signature changed shape; a client that does not recognize
 `server_agent_todos` ignores it exactly like any other unknown `event_type`.
+
+---
+
+## §43 — Devcontainer Interactive Session Bridge (Trusted-Tier PTY Tunnel, Manifest 12.4)
+
+**Change:** eight additive WS events that complement §26's one-shot exec bridge with a persistent
+interactive session inside the same provisioned devcontainer — a bidirectional analogue of
+`core.pty_session.SandboxSession`, tunneled over the host bridge instead of a local reader thread.
+§26's contract is unchanged and still covers one-shot `sandbox_bash` dispatch; this section adds the
+session lifecycle `DevcontainerSandboxAdapter.open_session` already declared but
+`WebSocketHostBridge.open_host_session` previously refused (`SandboxSessionError`).
+
+**Correlation key:** `session_ref` (UUID4), distinct from §26's `request_id` — a session spans an
+open, many stdin writes, and many stream chunks over its lifetime, where a `request_id` covers
+exactly one command.
+
+**New events** (`api/ws_contracts.py`):
+
+| Direction | `event_type` | Payload |
+|---|---|---|
+| server → host | `server_devcontainer_session_open` | `session_id, session_ref, cwd, env_keys: List[str]` |
+| host → server | `client_devcontainer_session_opened` | `session_id, session_ref, ok: bool, detail: Optional[str]` |
+| server → host | `server_devcontainer_session_stdin` | `session_id, session_ref, data_b64: str` |
+| server → host | `server_devcontainer_session_signal` | `session_id, session_ref, signal: "interrupt" \| "kill"` |
+| server → host | `server_devcontainer_session_flow` | `session_id, session_ref, paused: bool` |
+| server → host | `server_devcontainer_session_close` | `session_id, session_ref` |
+| host → server | `client_devcontainer_session_stream` | `session_id, session_ref, chunk_b64: str` |
+| host → server | `client_devcontainer_session_exit` | `session_id, session_ref, exit_code: int` |
+
+**Bytes, not text:** `data_b64`/`chunk_b64` carry base64-encoded raw bytes, never decoded text.
+`SandboxSession`'s contract is byte deltas specifically so a multibyte character is never split into
+mojibake mid-stream, and the sentinel command-boundary marker (`core/command_boundary.py`, shared
+with the local PTY session — see below) is control bytes `\x01\x02` that cannot round-trip through
+JSON text. `env_keys` follows §26's secret hygiene: allowlisted variable **names** only, never
+values.
+
+**Stream is unified, not split by fd:** unlike §26's `DevcontainerExecStreamPayload` (which tags
+`stream: "stdout" | "stderr"`), `chunk_b64` carries no stream discriminant. This matches
+`SandboxSession.stream()`'s single `AsyncIterator[bytes]` contract — a real PTY interleaves
+stdout/stderr into one byte stream by construction, and the local `_PtySession` never distinguishes
+them either. The host driver (no real PTY — see below) merges its two Node pipes into this one
+stream itself.
+
+**Shared framing extraction:** `core.pty_session._PtySession`'s sentinel-marker command-boundary
+logic (marker generation, the boundary regex, `compose`/`drain_boundaries`/`_partial_suffix_len`)
+moved verbatim into a new `core/command_boundary.py::CommandBoundaryFramer`, used by both the local
+PTY session and the new backend-side `api/devcontainer_bridge.py::_BridgeSandboxSession`. The
+difference between the two sessions is transport only: `_PtySession` drains a reader thread over a
+real PTY; `_BridgeSandboxSession` drains a manager-owned `asyncio.Queue` fed by the WS receive loop
+— no reader thread, no PTY, same protocol.
+
+**Backend producer/transport:** `ConnectionManager` (`api/websocket_manager.py`) gains the emit
+methods (`emit_devcontainer_session_open/stdin/signal/flow/close`), the open waiter
+(`wait_devcontainer_session_opened`, which registers the session's inbound queue *before* the reply
+arrives so a racing chunk is never lost), and the resolvers the receive loop calls
+(`resolve_devcontainer_session_opened`, `push_devcontainer_session_chunk`,
+`check_devcontainer_session_drain`, `resolve_devcontainer_session_exit`). Consumed by
+`main.py`'s receive-loop `elif` chain and by `api/devcontainer_bridge.py::WebSocketHostBridge.open_host_session`
+(now returns a working session instead of raising) and `_BridgeSandboxSession` (the event-loop side
+of the tunnel).
+
+**Cancellation safety (binding invariant, not incidental):** `_BridgeSandboxSession`'s demux task
+runs its cleanup — force the `stream()` EOF sentinel, unregister the manager's per-session
+bookkeeping — inside an unconditional `finally`, so it fires on normal EOF, on an unexpected
+exception, **and** on `asyncio.CancelledError` alike. `ConnectionManager.unregister_devcontainer_session`
+is idempotent (`.pop(..., None)` / `.discard(...)` throughout) because it is reachable from three
+independent, potentially-interleaving callers: the session's own graceful close, a failed/timed-out
+open, and `_reap_client_state` on a client disconnect (which also wakes any open-waiter still
+suspended and force-EOFs every live session's queue, so a mid-session disconnect resolves rather
+than hangs).
+
+**Backpressure (bidirectional detection, not producer-only):** a bounded per-session queue
+(`_DEVC_SESSION_QUEUE_CAPACITY = 256`, mirroring `core.pty_session._QUEUE_MAXSIZE`) signals
+`flow(paused=true)` at a high-water mark and `flow(paused=false)` at a low-water mark. The
+transition check runs on **both** the producer side (`push_devcontainer_session_chunk`, after an
+enqueue) and the consumer side (`check_devcontainer_session_drain`, after every dequeue) — a
+producer-only check would deadlock once the queue is full and the child's output has genuinely
+stalled: the child stays blocked writing to its own stdout pipe because the host never resumed
+reading it, and nothing would ever push again to trip a producer-only resume check. Sizing rationale
+(the 64-slot headroom between high-water and capacity) is documented at the constant in
+`api/websocket_manager.py`, derived from the host's own ~50ms stream-coalescing window. A chunk
+dropped on a genuinely full queue is counted and logged — a last resort this sizing is designed to
+make unreachable, never a routine mode. `push_devcontainer_session_chunk` never awaits, by
+construction: it is called from the shared WS receive loop, and an `await queue.put()` there would
+head-of-line block inbound traffic (chat, HITL, abort) for every connected client, not just the one
+session whose queue happened to be full.
+
+**Host driver:** new `ailienant-extension/src/providers/devcontainerSessionHandler.ts` —
+stateful (unlike the one-shot `devcontainerExecHandler.ts`'s pure function), since a session's
+child process, coalescing buffer, and idle timer all survive across many separate inbound frames.
+Spawns `devcontainer exec --workspace-folder <root> -- /bin/sh` via the provisioner's resolved CLI +
+injected `spawn` — deliberately **no `node-pty`** (a native module is a packaging/supply-chain cost
+this tunnel does not justify per CLAUDE.md §9, and the sentinel-marker protocol gives command
+framing without a real TTY). Declared MVP tradeoff, logged as DEBT-139: no job control, no
+`isatty()`, and `interrupt` sends a best-effort `SIGINT` to the child rather than a true Ctrl-C to a
+foreground process group. An idle ceiling (default 10 minutes, keyed on inbound stdin/flow activity
+only, never on outbound data) self-terminates a session whose backend has evaporated without a clean
+close. `dispose()` — wired into the same `context.subscriptions` lifecycle as
+`disposeDevcontainerProvisioner` — kills every tracked child through a SIGTERM→SIGKILL escalation
+mirroring `DevcontainerProvisioner._killChild`, so a window reload or extension deactivation can
+never orphan a driver.
+
+**Not wired to a production consumer in this change:** `brain/agentic_cell.py` still resolves
+`get_active_adapter()` (the locked oracle tier) rather than the devcontainer tier this section adds
+session support to. Rerouting it is deliberately deferred — see `TECH_DEBT_BACKLOG.md` DEBT-138 for
+the OCC precondition that blocks it (cell writes through a bind-mounted `SyncSurface` would bypass
+the VFS barrier's hash-based stale-guard). The tunnel is exercised end-to-end today through the
+existing `configurable["cell_adapter"]` test seam and the checkpoint-gate-style unit suites
+(`tests/test_devcontainer_session_manager.py`, `tests/test_devcontainer_bridge.py`,
+`src/test/devcontainerSessionHandler.test.ts`), not through a live production call path.
+
+**Backward-compat guarantee:** fully additive. §26's five events, `HostExecutionBridge` Protocol
+methods, and `SandboxSession` ABC are all unchanged in shape; a client that does not recognize any of
+the eight new event types ignores it exactly like any other unknown `event_type`.

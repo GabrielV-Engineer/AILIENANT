@@ -163,4 +163,131 @@ suite('DevcontainerProvisioner — exec() & status', () => {
         assert.ok(seen.includes('provisioning'), 'never saw provisioning');
         assert.ok(seen.includes('ready'), 'never saw ready');
     });
+
+    test('exec() with a containerCwd prefixes cd into the shell command', async () => {
+        const h = makeHarness();
+        const prov = new DevcontainerProvisioner(h.deps);
+        await prov.exec(ROOT, 'pytest -q', undefined, undefined, "/remote/it's mine");
+        assert.deepStrictEqual(h.calls[0].args, [
+            'exec', '--workspace-folder', ROOT, '--', '/bin/sh', '-c',
+            "cd '/remote/it'\\''s mine' && pytest -q",
+        ]);
+    });
+
+    test('exec() without a containerCwd is unprefixed (byte-identical to pre-085)', async () => {
+        const h = makeHarness();
+        const prov = new DevcontainerProvisioner(h.deps);
+        await prov.exec(ROOT, 'pytest -q');
+        assert.deepStrictEqual(h.calls[0].args, [
+            'exec', '--workspace-folder', ROOT, '--', '/bin/sh', '-c', 'pytest -q',
+        ]);
+    });
+
+    test('exec() forwards each data event to onChunk while still accumulating the full result (DEBT-083)', async () => {
+        const h = makeHarness({}, /* autoClose */ false);
+        const prov = new DevcontainerProvisioner(h.deps);
+        const seen: Array<{ stream: string; text: string }> = [];
+        const pending = prov.exec(ROOT, 'noisy-command', undefined, undefined, undefined, (stream, text) => {
+            seen.push({ stream, text });
+        });
+        const child = h.children[0];
+        child.stdout.emit('data', Buffer.from('a'));
+        child.stdout.emit('data', Buffer.from('b'));
+        child.stderr.emit('data', Buffer.from('e1'));
+        child.emit('close', 0);
+        const result = await pending;
+        assert.deepStrictEqual(seen, [
+            { stream: 'stdout', text: 'a' },
+            { stream: 'stdout', text: 'b' },
+            { stream: 'stderr', text: 'e1' },
+        ]);
+        // The onChunk callback is additive — the aggregated result is unchanged.
+        assert.strictEqual(result.stdout, 'ab');
+        assert.strictEqual(result.stderr, 'e1');
+    });
+});
+
+suite('DevcontainerProvisioner — resolveContainerWorkspaceFolder() (DEBT-085)', () => {
+    /** Spawn stub: `up` emits no result line by default; a `pwd` exec answers PWD_ANSWER. */
+    function harnessWithPwdAnswer(upStdout: string, pwdAnswer: string | null): Harness {
+        const calls: SpawnCall[] = [];
+        const children: FakeChild[] = [];
+        const deps: ProvisionerDeps = {
+            spawn: (command, args) => {
+                const child = new FakeChild();
+                calls.push({ command, args });
+                children.push(child);
+                const isPwd = args[args.length - 1] === 'pwd';
+                if (upStdout && !isPwd) {
+                    setTimeout(() => child.stdout.emit('data', Buffer.from(upStdout)), 0);
+                }
+                if (isPwd && pwdAnswer !== null) {
+                    setTimeout(() => child.stdout.emit('data', Buffer.from(pwdAnswer)), 0);
+                }
+                const exitCode = isPwd && pwdAnswer === null ? 1 : 0;
+                setTimeout(() => child.emit('close', exitCode), 0);
+                return child as unknown as ChildProcess;
+            },
+            isExtensionInstalled: () => false,
+            fileExists: () => true,
+            log: () => { /* silent */ },
+            bundledCliEntry: null,
+        };
+        return { deps, calls, children };
+    }
+
+    test('parses remoteWorkspaceFolder from up()\'s trailing JSON result line — no extra spawn', async () => {
+        const jsonLine = `${JSON.stringify({ outcome: 'success', remoteWorkspaceFolder: '/workspaces/project' })}\n`;
+        const h = harnessWithPwdAnswer(jsonLine, null);
+        const prov = new DevcontainerProvisioner(h.deps);
+        await prov.up(ROOT);
+        const folder = await prov.resolveContainerWorkspaceFolder(ROOT);
+        assert.strictEqual(folder, '/workspaces/project');
+        assert.strictEqual(h.calls.length, 1, 'a pwd probe ran despite a usable JSON result line');
+    });
+
+    test('ignores intermixed non-JSON progress lines and takes the last valid JSON line', async () => {
+        const stdout = 'Starting container...\nPulling image\n' +
+            `${JSON.stringify({ remoteWorkspaceFolder: '/workspaces/project' })}\n`;
+        const h = harnessWithPwdAnswer(stdout, null);
+        const prov = new DevcontainerProvisioner(h.deps);
+        await prov.up(ROOT);
+        assert.strictEqual(await prov.resolveContainerWorkspaceFolder(ROOT), '/workspaces/project');
+    });
+
+    test('malformed/absent JSON falls back to a pwd probe, cached after first resolution', async () => {
+        const h = harnessWithPwdAnswer('plain text, no JSON here\n', '/remote/workspace\n');
+        const prov = new DevcontainerProvisioner(h.deps);
+        await prov.up(ROOT);
+        assert.strictEqual(h.calls.length, 1);
+
+        const first = await prov.resolveContainerWorkspaceFolder(ROOT);
+        assert.strictEqual(first, '/remote/workspace');
+        assert.strictEqual(h.calls.length, 2, 'expected exactly one pwd probe spawn');
+
+        const second = await prov.resolveContainerWorkspaceFolder(ROOT);
+        assert.strictEqual(second, '/remote/workspace');
+        assert.strictEqual(h.calls.length, 2, 'cached resolution must not spawn again');
+    });
+
+    test('a failed pwd probe is remembered — not retried on every call', async () => {
+        const h = harnessWithPwdAnswer('plain text, no JSON here\n', null);
+        const prov = new DevcontainerProvisioner(h.deps);
+        await prov.up(ROOT);
+
+        const first = await prov.resolveContainerWorkspaceFolder(ROOT);
+        assert.strictEqual(first, undefined);
+        assert.strictEqual(h.calls.length, 2);
+
+        const second = await prov.resolveContainerWorkspaceFolder(ROOT);
+        assert.strictEqual(second, undefined);
+        assert.strictEqual(h.calls.length, 2, 'a failed probe must not be retried');
+    });
+
+    test('neither JSON nor pwd resolves — undefined, no crash', async () => {
+        const h = harnessWithPwdAnswer('', null);
+        const prov = new DevcontainerProvisioner(h.deps);
+        await prov.up(ROOT);
+        assert.strictEqual(await prov.resolveContainerWorkspaceFolder(ROOT), undefined);
+    });
 });

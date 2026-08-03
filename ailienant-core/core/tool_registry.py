@@ -132,11 +132,21 @@ def _simple_factories() -> Dict[str, ToolFactory]:
         vfs_read = make_safe_reader(project_id, workspace_root, session_id)
         return make_state_aware_read_file_tool(state, vfs_read)
 
+    def _check_type_integrity(state: MutableMapping[str, Any]) -> BaseTool:
+        # State-bound so the devcontainer tier is reachable (DEBT-086) with a
+        # non-interactive fallback — this is a validation check, not an operator
+        # command, so it must never raise its own HITL card. No session in state
+        # (e.g. an unwired caller) preserves the pre-DEBT-086 oracle-only routing.
+        session_id_raw = state.get("session_id")
+        tool = CheckTypeIntegrityTool()
+        tool._session_id = str(session_id_raw) if session_id_raw else None  # type: ignore[attr-defined]
+        return tool
+
     return {
         "security_audit": lambda _state: SecurityAuditTool(),
         "validate_ast": lambda _state: ASTValidateTool(),
         "sandbox_bash": lambda _state: SandboxBashTool(),
-        "check_type_integrity": lambda _state: CheckTypeIntegrityTool(),
+        "check_type_integrity": _check_type_integrity,
         "todo_write": lambda _state: TodoWriteTool(),
         "tool_search": lambda _state: ToolSearchTool(),
         "validate_wbs_dependencies": lambda state: ValidateWBSDependenciesTool(state=state),

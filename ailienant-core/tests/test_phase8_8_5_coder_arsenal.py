@@ -273,7 +273,11 @@ def test_safe_arg_rejects_hostile(bad: str) -> None:
 @pytest.mark.anyio
 async def test_run_tests_dispatches_with_separator(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeAdapter()
-    monkeypatch.setattr("tools.coder_tools.get_active_adapter", lambda: fake)
+    # _exec resolves through core.sandbox.resolve_execution_adapter; with no
+    # session bound (these tools are unfactoried here) it falls straight to
+    # get_active_adapter(), so that's the name to patch, not coder_tools' own
+    # (removed) import of it.
+    monkeypatch.setattr("core.sandbox.get_active_adapter", lambda: fake)
     out = await RunTestsTool()._arun(target="tests/unit")
     assert "exit=0" in out
     assert fake.commands == ["pytest -q -- tests/unit"]
@@ -282,7 +286,11 @@ async def test_run_tests_dispatches_with_separator(monkeypatch: pytest.MonkeyPat
 @pytest.mark.anyio
 async def test_run_tests_rejects_flag_before_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeAdapter()
-    monkeypatch.setattr("tools.coder_tools.get_active_adapter", lambda: fake)
+    # _exec resolves through core.sandbox.resolve_execution_adapter; with no
+    # session bound (these tools are unfactoried here) it falls straight to
+    # get_active_adapter(), so that's the name to patch, not coder_tools' own
+    # (removed) import of it.
+    monkeypatch.setattr("core.sandbox.get_active_adapter", lambda: fake)
     out = await RunTestsTool()._arun(target="--collect-only")
     assert out.startswith("[run_tests] REJECTED")
     assert fake.commands == []  # never armed
@@ -291,7 +299,11 @@ async def test_run_tests_rejects_flag_before_spawn(monkeypatch: pytest.MonkeyPat
 @pytest.mark.anyio
 async def test_install_dependency_supply_chain_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeAdapter()
-    monkeypatch.setattr("tools.coder_tools.get_active_adapter", lambda: fake)
+    # _exec resolves through core.sandbox.resolve_execution_adapter; with no
+    # session bound (these tools are unfactoried here) it falls straight to
+    # get_active_adapter(), so that's the name to patch, not coder_tools' own
+    # (removed) import of it.
+    monkeypatch.setattr("core.sandbox.get_active_adapter", lambda: fake)
     tool = DependencyInstallTool()
     for bad in ("-e", "evil/pkg", "pkg@http://evil", "--index-url"):
         out = await tool._arun(name=bad)
@@ -305,7 +317,11 @@ async def test_install_dependency_supply_chain_lock(monkeypatch: pytest.MonkeyPa
 @pytest.mark.anyio
 async def test_git_commit_conditional_compose(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeAdapter()
-    monkeypatch.setattr("tools.coder_tools.get_active_adapter", lambda: fake)
+    # _exec resolves through core.sandbox.resolve_execution_adapter; with no
+    # session bound (these tools are unfactoried here) it falls straight to
+    # get_active_adapter(), so that's the name to patch, not coder_tools' own
+    # (removed) import of it.
+    monkeypatch.setattr("core.sandbox.get_active_adapter", lambda: fake)
     tool = GitCommitTool()
     await tool._arun(commit_type="feat", subject="add parity", scope="coder")
     await tool._arun(commit_type="fix", subject="no scope here")
@@ -321,7 +337,11 @@ async def test_git_commit_conditional_compose(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.anyio
 async def test_git_diff_rejects_traversal(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeAdapter()
-    monkeypatch.setattr("tools.coder_tools.get_active_adapter", lambda: fake)
+    # _exec resolves through core.sandbox.resolve_execution_adapter; with no
+    # session bound (these tools are unfactoried here) it falls straight to
+    # get_active_adapter(), so that's the name to patch, not coder_tools' own
+    # (removed) import of it.
+    monkeypatch.setattr("core.sandbox.get_active_adapter", lambda: fake)
     out = await GitDiffTool()._arun(paths=["../secrets"])
     assert out.startswith("[git_diff] REJECTED")
     assert fake.commands == []
@@ -419,7 +439,11 @@ def _wire_gate(
 ) -> AsyncMock:
     from tools import mcp_adapter
 
-    monkeypatch.setattr("tools.coder_tools.get_active_adapter", lambda: fake)
+    # _exec resolves through core.sandbox.resolve_execution_adapter (DEBT-086),
+    # which — with a session_id bound and interactive_fallback=False — routes to
+    # get_trusted_adapter_silent(); conftest's autouse fixture makes that
+    # delegate to get_active_adapter(), so patching it here is what fake lands on.
+    monkeypatch.setattr("core.sandbox.get_active_adapter", lambda: fake)
     approval_mock = AsyncMock(return_value=approval)
     monkeypatch.setattr(
         "api.websocket_manager.vfs_manager.request_human_approval", approval_mock
@@ -500,3 +524,50 @@ async def test_gated_auto_mode_runs_without_prompt(monkeypatch: pytest.MonkeyPat
     assert "exit=0" in out
     assert fake.commands == ["pytest -q -- tests/unit"]
     approval_mock.assert_not_awaited()  # AUTO admits EXECUTE without HITL
+
+
+# =====================================================================
+# G — DEBT-086: _exec upgrades to the devcontainer tier via the SILENT
+#     trusted resolver only — never the interactive one on top of _gated_exec's
+#     own HITL round-trip.
+# =====================================================================
+
+
+@pytest.mark.anyio
+async def test_gated_exec_upgrades_through_silent_resolver_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import core.sandbox as sb
+
+    fake = _FakeAdapter()
+    calls: List[str] = []
+
+    def _silent() -> _FakeAdapter:
+        calls.append("silent")
+        return fake
+
+    def _interactive() -> _FakeAdapter:
+        calls.append("interactive")
+        return fake
+
+    monkeypatch.setattr(sb, "get_trusted_adapter_silent", _silent)
+    monkeypatch.setattr(sb, "get_trusted_adapter", _interactive)
+    approval_mock = AsyncMock(return_value={"approved": True})
+    monkeypatch.setattr(
+        "api.websocket_manager.vfs_manager.request_human_approval", approval_mock
+    )
+    from tools import mcp_adapter
+
+    mcp_adapter.clear_session_trust("sg")
+
+    tool = _gated_run_tests({"session_id": "sg", "session_permission_mode": "DEFAULT"})
+    out = await tool._arun(target="tests/unit")
+
+    assert "exit=0" in out
+    assert fake.commands == ["pytest -q -- tests/unit"]
+    # _gated_exec's own HITL round-trip gates the command exactly once; _exec's
+    # devcontainer upgrade must route through the silent resolver only — a
+    # second (interactive) resolver call would mean a second, redundant HITL
+    # surface sitting behind the one already gated above.
+    approval_mock.assert_awaited_once()
+    assert calls == ["silent"]

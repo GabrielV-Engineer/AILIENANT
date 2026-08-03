@@ -39,14 +39,14 @@ import asyncio
 import concurrent.futures
 import logging
 import os
-import re
 import signal
 import subprocess
 import sys
 import threading
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Callable, Dict, List, Optional
-from uuid import uuid4
+
+from core.command_boundary import CommandBoundaryFramer
 
 logger = logging.getLogger("AILIENANT_PTY")
 
@@ -190,14 +190,10 @@ class _PtySession(SandboxSession):
         self._pre_spawn_guard = pre_spawn_guard
         self._backend_factory = backend_factory or _default_backend_factory
 
-        # A unique, control-char-prefixed marker. Control bytes 0x01/0x02 do not
-        # appear in normal program output, and the resolved boundary line
-        # (marker + digits) never collides with the echoed command that emits
-        # it (which carries the format spec, not the resolved code).
-        self._marker = b"\x01\x02" + uuid4().hex.encode("ascii")
-        self._boundary = re.compile(
-            re.escape(self._marker) + rb"(\d+)\r?\n"
-        )
+        # Sentinel-marker command-boundary framing (shared with the devcontainer
+        # bridge session — see core.command_boundary for the protocol this
+        # implements).
+        self._framer = CommandBoundaryFramer(shell_kind=self._shell_kind)
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._backend: Optional[_PtyBackend] = None
@@ -223,7 +219,7 @@ class _PtySession(SandboxSession):
         self._raw_q = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         self._out_q = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         self._backend = await asyncio.to_thread(
-            self._backend_factory, self._shell_argv, self._cwd, self._env, self._marker,
+            self._backend_factory, self._shell_argv, self._cwd, self._env, self._framer.marker,
         )
         self._reader = threading.Thread(
             target=self._read_loop, name="pty-reader", daemon=True,
@@ -292,7 +288,8 @@ class _PtySession(SandboxSession):
                 await self._out_q.put(bytes(emit))
 
     def _drain_boundaries(self, buf: bytearray) -> "tuple[bytearray, bytearray]":
-        """Split completed-command sentinels out of ``buf``.
+        """Split completed-command sentinels out of ``buf`` (framing delegated
+        to :class:`~core.command_boundary.CommandBoundaryFramer`).
 
         Returns ``(bytes_to_emit, remaining_buf)``. Each sentinel found resolves
         the pending :meth:`run` future with its exit code and is stripped from
@@ -300,18 +297,10 @@ class _PtySession(SandboxSession):
         everything else is emitted immediately so interactive prompts (which
         carry no newline) are never withheld.
         """
-        emit = bytearray()
-        while True:
-            match = self._boundary.search(buf)
-            if match is None:
-                keep = _partial_suffix_len(buf, self._marker)
-                cut = len(buf) - keep
-                emit.extend(buf[:cut])
-                return emit, buf[cut:]
-            emit.extend(buf[: match.start()])
-            code = int(match.group(1))
+        emit, remaining, codes = self._framer.drain_boundaries(buf)
+        for code in codes:
             self._resolve(code)
-            buf = bytearray(buf[match.end():])
+        return emit, remaining
 
     def _resolve(self, code: int) -> None:
         fut = self._pending
@@ -418,27 +407,8 @@ class _PtySession(SandboxSession):
         await asyncio.to_thread(backend.write, payload)
 
     def _compose(self, command: str) -> bytes:
-        """Build the bytes written to the shell: the command followed by a
-        sentinel line carrying its exit code, on its own line."""
-        marker_literal = self._marker.decode("latin-1")
-        if self._shell_kind == "cmd":
-            line = f"{command}\r\necho {marker_literal}%ERRORLEVEL%\r\n"
-        else:
-            line = f"{command}\nprintf '\\n{marker_literal}%d\\n' \"$?\"\n"
-        return line.encode("utf-8")
-
-
-def _partial_suffix_len(buf: bytearray, marker: bytes) -> int:
-    """Length of the longest suffix of ``buf`` that is a prefix of ``marker``.
-
-    Lets the demux retain a sentinel split across chunk boundaries without
-    withholding ordinary output (which is not a marker prefix).
-    """
-    max_k = min(len(buf), len(marker))
-    for k in range(max_k, 0, -1):
-        if buf[len(buf) - k:] == marker[:k]:
-            return k
-    return 0
+        """Build the bytes written to the shell (delegates to the shared framer)."""
+        return self._framer.compose(command)
 
 
 # ── Concrete backends ────────────────────────────────────────────────────────

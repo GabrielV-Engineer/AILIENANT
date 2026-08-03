@@ -1,4 +1,4 @@
-"""Phase 5.5 — Async Execution Tools (EXECUTE-tier bundle).
+"""Async Execution Tools (EXECUTE-tier bundle).
 
 Four LangChain BaseTool subclasses + a shared BackgroundTaskManager:
 
@@ -7,16 +7,18 @@ Four LangChain BaseTool subclasses + a shared BackgroundTaskManager:
     TaskCreateTool          — Spawns a long-lived asyncio subprocess; returns
                               a UUID task_id. Watcher updates the registry.
     TaskGetTool             — Reads back a registered task's status + truncated
-                              output. READ_ONLY tier (blueprint §4 line 272).
+                              output. READ_ONLY tier.
     CheckTypeIntegrityTool  — Wraps mypy/tsc with the same truncation rules.
 
-Phase 6.2 — HITL Bridge wiring: `sandbox_bash` and `check_type_integrity` no
-longer spawn on the host. Their `_arun` bodies route through the process-global
-`core.sandbox.ACTIVE_ADAPTER` (resolved at lifespan startup by Phase 6.1.4),
-read via `get_active_adapter()`. `task_create` / `BackgroundTaskManager` keep
-their native `create_subprocess_shell` path: the blocking `SandboxAdapter`
-contract has no fire-and-forget / PID semantics — that routing is deferred
-pending an ABC background-execution method.
+HITL Bridge wiring: `sandbox_bash` and `check_type_integrity` never spawn on
+the host directly. Their `_arun` bodies route through
+`core.sandbox.resolve_execution_adapter`, which selects the devcontainer tier
+when a session is bound and otherwise falls back to the locked oracle tier
+(`core.sandbox.ACTIVE_ADAPTER`, resolved at lifespan startup, read via
+`get_active_adapter()`). `task_create` / `BackgroundTaskManager` keep their
+native `create_subprocess_shell` path: the blocking `SandboxAdapter` contract
+has no fire-and-forget / PID semantics — that routing is deferred pending an
+ABC background-execution method.
 
 All remaining subprocess work uses asyncio (create_subprocess_shell + wait_for
 + kill-on-timeout). NEVER subprocess.run or os.system — the FastAPI event loop
@@ -58,7 +60,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.activity_context import current_activity_sink
 from core.permissions import ToolPrivilegeTier
-from core.sandbox import get_active_adapter, resolve_execution_adapter
+from core.sandbox import resolve_execution_adapter
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.control_tools import DANGEROUS_COMMANDS_REGEX
 
@@ -561,6 +563,14 @@ class CheckTypeIntegrityTool(BaseTool):
     )
     args_schema: Type[BaseModel] = CheckTypeIntegrityInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
+    # Per-session binding injected by the state-reading factory in
+    # core/tool_registry.py (DEBT-086) — travels explicitly on the tool instance,
+    # never through an ambient ContextVar, and is invisible to the LLM (kept off
+    # args_schema, same discipline as sandbox_bash's session_id). `None` (the
+    # default — unfactoried construction) preserves the pre-DEBT-086 oracle-only
+    # routing exactly.
+    _session_id: Optional[str] = PrivateAttr(default=None)
+
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(
             "CheckTypeIntegrityTool is async-only — use _arun()."
@@ -574,9 +584,16 @@ class CheckTypeIntegrityTool(BaseTool):
             argv = ("npx", "--no-install", "tsc", "--noEmit", "-p", target_dir)
 
         # Route through the sandbox tier. The adapter takes a shell string, so
-        # the argv tuple is joined; the adapter owns the timeout.
+        # the argv tuple is joined; the adapter owns the timeout. A bound
+        # session_id upgrades this to the devcontainer tier with a
+        # non-interactive fallback (DEBT-086) — this is a validation check, not
+        # an operator command, so it must never raise its own HITL card; an
+        # unavailable devcontainer degrades silently to the oracle cage exactly
+        # as an unbound instance always has.
         command = shlex.join(argv)
-        adapter = get_active_adapter()
+        adapter = resolve_execution_adapter(
+            session_id=self._session_id, trusted=True, interactive_fallback=False
+        )
         if adapter is None:
             raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
 
@@ -588,6 +605,7 @@ class CheckTypeIntegrityTool(BaseTool):
             timeout_s=_DEFAULT_TYPECHECK_TIMEOUT_SEC,
             cwd="",
             env_whitelist=_sandbox_env(),
+            session_id=self._session_id,
             source="type_check",
         )
         combined = result.stdout + result.stderr

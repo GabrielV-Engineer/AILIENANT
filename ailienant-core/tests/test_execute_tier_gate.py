@@ -30,8 +30,8 @@ import tools.execution_tools as exec_mod
 # ── Helpers + matrix-wiring ──────────────────────────────────────────────────
 
 
-def _no_adapter() -> Any:
-    raise AssertionError("get_active_adapter must not be called when the gate blocks")
+def _no_adapter(**_: Any) -> Any:
+    raise AssertionError("resolve_execution_adapter must not be called when the gate blocks")
 
 
 def test_session_mode_from_channel_uppercase_roundtrip() -> None:
@@ -60,7 +60,7 @@ def test_audit_classifies_command_execute() -> None:
 
 @pytest.mark.anyio
 async def test_sandbox_bash_plan_mode_denies_without_spawn(monkeypatch: Any) -> None:
-    monkeypatch.setattr(exec_mod, "get_active_adapter", _no_adapter)
+    monkeypatch.setattr(exec_mod, "resolve_execution_adapter", _no_adapter)
     out = await SandboxBashTool()._arun(
         command="ls", session_id="s1", session_permission_mode="PLAN"
     )
@@ -69,7 +69,7 @@ async def test_sandbox_bash_plan_mode_denies_without_spawn(monkeypatch: Any) -> 
 
 @pytest.mark.anyio
 async def test_sandbox_bash_default_rejected_blocks_without_spawn(monkeypatch: Any) -> None:
-    monkeypatch.setattr(exec_mod, "get_active_adapter", _no_adapter)
+    monkeypatch.setattr(exec_mod, "resolve_execution_adapter", _no_adapter)
     approve = AsyncMock(return_value={"approved": False})
     monkeypatch.setattr(
         "api.websocket_manager.vfs_manager.request_human_approval", approve
@@ -86,7 +86,7 @@ async def test_sandbox_bash_default_rejected_blocks_without_spawn(monkeypatch: A
 
 @pytest.mark.anyio
 async def test_sandbox_bash_default_timeout_uses_tight_bound(monkeypatch: Any) -> None:
-    monkeypatch.setattr(exec_mod, "get_active_adapter", _no_adapter)
+    monkeypatch.setattr(exec_mod, "resolve_execution_adapter", _no_adapter)
     approve = AsyncMock(return_value=None)  # None == HITL timeout
     monkeypatch.setattr(
         "api.websocket_manager.vfs_manager.request_human_approval", approve
@@ -101,7 +101,7 @@ async def test_sandbox_bash_default_timeout_uses_tight_bound(monkeypatch: Any) -
 
 @pytest.mark.anyio
 async def test_sandbox_bash_hitl_without_session_refuses(monkeypatch: Any) -> None:
-    monkeypatch.setattr(exec_mod, "get_active_adapter", _no_adapter)
+    monkeypatch.setattr(exec_mod, "resolve_execution_adapter", _no_adapter)
     out = await SandboxBashTool()._arun(
         command="ls", session_id=None, session_permission_mode="DEFAULT"
     )

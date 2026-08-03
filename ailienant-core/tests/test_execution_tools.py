@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+import core.sandbox as sandbox_module
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore
 from tools.agent_tools import make_task_create_tool, make_task_get_tool
@@ -33,6 +34,13 @@ from tools.execution_tools import (
     _TASK_GET_ROLES,
     register_execution_tools,
 )
+
+# Captured at collection time, before the conftest autouse fixture monkeypatches
+# core.sandbox.get_trusted_adapter_silent to delegate straight to the fake oracle
+# — the DEBT-086 no-bridge regression test below needs the REAL resolver so it
+# actually exercises DevcontainerSandboxAdapter's fallback path, not the test
+# shortcut every other test in this suite relies on.
+_REAL_GET_TRUSTED_ADAPTER_SILENT = sandbox_module.get_trusted_adapter_silent
 
 
 # =====================================================================
@@ -237,6 +245,88 @@ async def test_check_type_integrity_mypy_returns_exit_header(tmp_path: Path) -> 
 def test_check_type_integrity_invalid_checker_rejected_by_pydantic() -> None:
     with pytest.raises(ValidationError):
         CheckTypeIntegrityTool().args_schema(target_dir=".", checker="flake8")
+
+
+# ── DEBT-086: session-aware tier routing ─────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_check_type_integrity_with_session_routes_through_silent_resolver(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bound session_id must route through the non-interactive trusted
+    resolver only — never the interactive one, which would raise its own
+    HITL card on top of whatever gated this call upstream."""
+    import core.sandbox as sb
+
+    calls: List[str] = []
+
+    def _silent() -> Any:
+        calls.append("silent")
+        return sb.get_active_adapter()
+
+    def _interactive() -> Any:
+        calls.append("interactive")
+        return sb.get_active_adapter()
+
+    monkeypatch.setattr(sb, "get_trusted_adapter_silent", _silent)
+    monkeypatch.setattr(sb, "get_trusted_adapter", _interactive)
+
+    tool = CheckTypeIntegrityTool()
+    tool._session_id = "s1"  # type: ignore[attr-defined]
+    out = await tool._arun(target_dir=str(tmp_path), checker="mypy")
+
+    assert calls == ["silent"], "must route through the non-interactive resolver only"
+    assert out.startswith("[check_type_integrity:mypy] exit=")
+
+
+@pytest.mark.anyio
+async def test_check_type_integrity_without_session_never_touches_trusted_tier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unfactoried instance (no session bound) must be byte-identical to
+    pre-DEBT-086 behavior: the oracle tier directly, no trusted resolver
+    consulted at all."""
+    import core.sandbox as sb
+
+    def _fail() -> object:
+        raise AssertionError("trusted resolver must not be consulted without a session_id")
+
+    monkeypatch.setattr(sb, "get_trusted_adapter_silent", _fail)
+    monkeypatch.setattr(sb, "get_trusted_adapter", _fail)
+
+    out = await CheckTypeIntegrityTool()._arun(target_dir=str(tmp_path), checker="mypy")
+    assert out.startswith("[check_type_integrity:mypy] exit=")
+
+
+@pytest.mark.anyio
+async def test_check_type_integrity_session_no_bridge_degrades_silently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression guard: a session_id bound but no devcontainer bridge injected
+    must degrade straight to the oracle cage — it must NEVER raise its own HITL
+    approval card. This is the double-prompt bug DEBT-086 could have
+    reintroduced if it had reused get_trusted_adapter (the interactive
+    resolver) instead of the silent one."""
+    import core.sandbox as sb
+
+    monkeypatch.setattr(sb, "get_trusted_adapter_silent", _REAL_GET_TRUSTED_ADAPTER_SILENT)
+    sb.reset_trusted_adapter()  # drop any singleton cached under the conftest fake
+
+    async def _approval_must_not_be_called(*args: object, **kwargs: object) -> Dict[str, object]:
+        raise AssertionError(
+            "check_type_integrity must never request HITL approval of its own"
+        )
+
+    monkeypatch.setattr(
+        "api.websocket_manager.vfs_manager.request_human_approval",
+        _approval_must_not_be_called,
+    )
+
+    tool = CheckTypeIntegrityTool()
+    tool._session_id = "s1"  # type: ignore[attr-defined]
+    out = await tool._arun(target_dir=str(tmp_path), checker="mypy")
+    assert out.startswith("[check_type_integrity:mypy] exit=")
 
 
 # =====================================================================

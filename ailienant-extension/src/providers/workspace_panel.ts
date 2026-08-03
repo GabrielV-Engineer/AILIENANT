@@ -19,7 +19,7 @@ import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { ConfigLoader } from '../shared/config_loader';
 import { WorkspacePathIndex, extractMentions, FOLDER_EXPANSION_CAP, FOLDER_EXPANSION_GIVE_UP } from './workspacePathIndex';
 import { HitlNotifier, type HITLApprovalRequestPayload, type HitlMode } from './hitlNotifier';
-import { getDevcontainerProvisioner } from './devcontainerFactory';
+import { getDevcontainerProvisioner, getDevcontainerSessionHandler } from './devcontainerFactory';
 import { handleDevcontainerServerEvent } from './devcontainerExecHandler';
 import { resolveDocEntries } from './docsCatalog';
 
@@ -633,6 +633,22 @@ export class WorkspacePanelManager {
                     },
                     log: (m) => logger.log(`[devcontainer] ${m}`),
                 });
+                return;
+            }
+
+            // Devcontainer interactive session bridge (§43, DEBT-084): a
+            // persistent tunnel complementing the one-shot bridge above. The
+            // handler is stateful (owns live child processes across many
+            // frames), so it is a process-wide singleton, not constructed
+            // per-message like the exec handler.
+            if (
+                msg.event_type === 'server_devcontainer_session_open' ||
+                msg.event_type === 'server_devcontainer_session_stdin' ||
+                msg.event_type === 'server_devcontainer_session_signal' ||
+                msg.event_type === 'server_devcontainer_session_flow' ||
+                msg.event_type === 'server_devcontainer_session_close'
+            ) {
+                getDevcontainerSessionHandler().handleServerEvent(msg);
                 return;
             }
 

@@ -298,6 +298,7 @@ Proyect_Ailienant/
 │   ├── core/                    #   Infrastructure
 │   │   ├── sandbox.py           #     SandboxAdapter ABC + Docker/Wasm/NativeHITL + resolver
 │   │   ├── pty_session.py       #     persistent interactive shell sessions (PTY)
+│   │   ├── command_boundary.py  #     shared sentinel-marker command-boundary framer (PTY + devcontainer bridge sessions)
 │   │   ├── workspace_sync.py    #     bidirectional VFS ↔ sandbox sync
 │   │   ├── permissions.py       #     3-axis matrix + RBWE + classify_tool_privilege
 │   │   ├── skill_resolver.py    #     dual-mode skill resolver (cosine auto-match + explicit chip) + sandboxed directive block builder
@@ -413,6 +414,7 @@ Proyect_Ailienant/
 │   │   │                        #     devcontainerProvisioner.ts (vscode-free lifecycle driver — probe/up/exec/degrade),
 │   │   │                        #     devcontainerFactory.ts (vscode wiring + lazy singleton),
 │   │   │                        #     devcontainerExecHandler.ts (host-side bridge handler — provision/exec, streams back),
+│   │   │                        #     devcontainerSessionHandler.ts (§43 interactive-session bridge — stateful, owns live child processes),
 │   │   │                        #     devcontainerScaffold.ts (idempotent .devcontainer/devcontainer.json starter),
 │   │   │                        #     docsCatalog.ts (vscode-free Help-documents resolver over dist/docs/)
 │   │   └── test/                #     vscode-test mocha suite (webview components + dispatch logic)

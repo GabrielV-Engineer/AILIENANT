@@ -16,7 +16,7 @@ import { boundingBoxRegistry, installDecayListener } from './providers/telemetry
 import { InlineMutationManager } from './core/InlineMutationManager';
 import { IdeSync } from './ide_sync';
 import { provisionWorkspaceHome } from './workspace_provisioning';
-import { getDevcontainerProvisioner, disposeDevcontainerProvisioner } from './providers/devcontainerFactory';
+import { getDevcontainerProvisioner, disposeDevcontainerProvisioner, disposeDevcontainerSessionHandler } from './providers/devcontainerFactory';
 import { scaffoldDevcontainer } from './providers/devcontainerScaffold';
 import { logger } from './shared/logger';
 
@@ -274,6 +274,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         { dispose: () => InlineMutationManager.instance.dispose() },
         { dispose: () => workspaceManager.dispose() },
         { dispose: () => disposeDevcontainerProvisioner() },
+        { dispose: () => disposeDevcontainerSessionHandler() },
     );
 
     // Phase 3.4.7 — silent Bounding Box decay listener
