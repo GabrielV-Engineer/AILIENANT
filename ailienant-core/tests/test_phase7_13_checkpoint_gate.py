@@ -512,9 +512,6 @@ def test_dd1_single_vfs_reader_and_named_retries() -> None:
         assert "make_safe_reader" in src     # routes through the shared factory
         assert "read_safe(" not in src        # no bespoke firewalled reader remains
 
-    pb = (_PKG_ROOT / "brain" / "prompt_builder.py").read_text(encoding="utf-8")
-    assert "read_safe(" not in pb
-
     # The scattered litellm / WAL retry literals now live in one module.
     assert LLM_MAX_TRANSPORT_RETRIES == 2
     assert WAL_CHECKPOINT_MAX_RETRIES == 3

@@ -2,7 +2,7 @@
 
 ToolRAGStore owns a RAM-resident, schemas-only LanceDB instance backed by a
 tempfile.mkdtemp() directory that is purged at process exit. It is independent
-from the file-PPR LanceDB used by brain.prompt_builder.
+from the persisted, per-project GraphRAG LanceDB store (workspace_embeddings).
 
 select_tools() returns at most TOOL_RAG_TOP_K (= 5) schemas per call, honours
 the Phase 4 §3.2 RBAC matrix + the Phase 5 §2.2 session matrix, guarantees at

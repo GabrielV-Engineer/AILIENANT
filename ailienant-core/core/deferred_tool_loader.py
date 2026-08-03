@@ -49,7 +49,7 @@ budget into the char unit that prompt_size_metrics works in. Precision is
 unnecessary for a threshold gate; PrecisionTokenCounter is kept off this path."""
 
 _DEFAULT_CONTEXT_WINDOW: int = 8192
-"""Fallback context window — matches brain.prompt_builder's default."""
+"""Fallback context window when the active model's real window is unknown."""
 
 _TOOL_SEARCH_NAME: str = "tool_search"
 """The universal discovery tool that must survive into every deferred set."""

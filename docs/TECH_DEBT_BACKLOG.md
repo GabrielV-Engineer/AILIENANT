@@ -133,7 +133,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-141 | Embed-input truncation past the ceiling silently dropped content with no log line; ceiling was a fixed constant, not resolved per active embedding provider | MEDIUM | Observability / Accuracy | 12.11 | RESOLVED 2026-08-03 |
 | DEBT-142 | `search_snippets`'s `content_snippet` (documented "first 500 chars for audit/debug") was injected verbatim as RAG evidence — a file matching past its header contributed only imports | MEDIUM | Accuracy | 12.11 | RESOLVED 2026-08-03 |
 | DEBT-143 | `deep_parse` (the only live GraphRAG expansion) applied no cap on files read/parsed; the capped, PPR-ranked `extract()` had zero callers and its guardrail counted path tokens, not content tokens | MEDIUM | Reliability / §5.5 | 12.11 | RESOLVED 2026-08-03 |
-| DEBT-144 | `brain/prompt_builder.py` (~330 lines, token-budget-aware flesh/skeleton context assembler) has zero callers in production — its selection is global-PPR (query-blind), which would inject the same files every turn regardless of the question | MEDIUM | Dead code | 12.12 | Floating |
+| DEBT-144 | `brain/prompt_builder.py` (~330 lines, token-budget-aware flesh/skeleton context assembler) has zero callers in production — its selection is global-PPR (query-blind), which would inject the same files every turn regardless of the question | MEDIUM | Dead code | 12.12 | RESOLVED 2026-08-03 |
+| DEBT-146 | `AIlienantGraphState.is_indexing_complete` is a write-only state channel — declared, seeded hardcoded `True` at two call sites, read by nothing repo-wide; the other half of the same never-completed "workspace indexing gate" `brain/orchestrator.py` (deleted by 12.12) belonged to | LOW | Dead code | future state-cleanup slice | Floating |
 | DEBT-145 | Per-task reasoning-mode config (`enable_native_thinking`, `thinking_budget_tokens`) rides `AIlienantGraphState` — mutable runtime state — rather than a dedicated relational config table; accepted for DEBT-079's two scalars given `HybridCheckpointer`'s per-run (not per-step) promotion, but the pattern shouldn't silently repeat | LOW | Architecture / Decision | future config/runtime-separation slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 6 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
@@ -997,26 +998,65 @@ Decision    Not a defect — see [DECISION] tier.
   binding independently of file count; seed-only/no-neighbors and empty-seeds edge cases;
   `extract()`/`ExtractionResult`/`_apply_guardrails` confirmed removed via `hasattr`).
 
-### DEBT-144 [MEDIUM · Floating] — `brain/prompt_builder.py` is fully dead code
+### DEBT-144 [MEDIUM · RESOLVED 2026-08-03, 12.12] — `brain/prompt_builder.py` is fully dead code
+
+- **Date:** 2026-08-03 · **Resolved:** 2026-08-03 (12.12)
+- **Detail (was):** `PromptBuilder.build_context` and the module-level `build_system_prompt` — a
+  ~330-line, token-budget-aware context assembler with flesh/skeleton tiering and a real
+  `PrecisionTokenCounter`-driven budget — had zero references anywhere outside
+  `brain/prompt_builder.py` (verified: no callers of `PromptBuilder`, `ContextBundle`,
+  `build_context`, or `build_system_prompt`). Its file selection was global-PPR
+  (`core/db.py::get_top_ppr_files`) — "the project's most central files" — which is query-blind and
+  would have injected the same files into every turn regardless of the actual question.
+- **Resolution:** deleted `brain/prompt_builder.py` outright, not wired in — its two genuinely
+  valuable mechanics (real token-budget accounting, flesh/skeleton tiering) were already harvested
+  into the query-relevant retrieval path by DEBT-142 (12.11), the query-aware surface where that
+  discipline actually helps; `build_system_prompt` was separately superseded by 12.1's
+  `build_static_identity_prompt`/`build_boundary_declaration` split in `agents/prompts.py`. The
+  deletion cascaded two levels further than the entry originally described: `brain/orchestrator.py`
+  (37 lines) had exactly one caller repo-wide — `prompt_builder.py:193`'s
+  `get_partial_context_prefix()` call — so it was dead the moment its only caller was; and
+  `LazyIndexer.progress_percentage` (`core/indexer.py`) had exactly one consumer —
+  `orchestrator.py:29` — so it followed. Verified before deletion that the live IDE progress bar does
+  not depend on that property: `api/websocket_manager.py::broadcast_indexing_progress` computes its
+  own percentage locally from the `(current, total)` args `core/indexer.py` already passes it: the
+  property was a dead duplicate of that formula, not its source. `agents/orchestrator.py` — a
+  same-basename, unrelated, and very live module (`run_orchestrator_node`, consumed by
+  `brain/swarms.py` and tested by `tests/test_orchestrator.py`) — was deliberately not touched.
+  Retargeted the one hard-constraint test
+  (`tests/test_phase7_13_checkpoint_gate.py::test_dd1_single_vfs_reader_and_named_retries`, which read
+  `brain/prompt_builder.py` as raw text) by removing its two now-unresolvable assertion lines; the
+  rest of the DD1 invariant (three `agents/` files + two retry constants) is untouched. Scrubbed three
+  now-stale basename-collision comments that cited the deleted `brain.orchestrator` as their worked
+  example (`mypy.ini`, `agents/__init__.py`, `brain/__init__.py` — `brain/` now participates in no
+  basename collision at all) and two doc-comments naming the deleted module
+  (`core/deferred_tool_loader.py`, `core/tool_rag.py`). `DEVELOPERS.md` needed no change — its
+  Repository Layout never listed either deleted module. The orphaned `is_indexing_complete` state
+  channel this cascade also surfaced was deliberately left alone (removing a
+  `AIlienantGraphState` field is a checkpoint-contract change, out of scope for a cleanup pass) and
+  logged separately as DEBT-146.
+- **Tests:** the three explicitly re-run — `tests/test_phase7_13_checkpoint_gate.py` (the edited
+  gate), `tests/test_orchestrator.py` (the surviving, unrelated `agents/orchestrator.py`),
+  `tests/test_indexer_warmup.py` (the surviving `LazyIndexer.is_complete`) — plus the full suite, all
+  green. A zero-reference sweep for `prompt_builder|PromptBuilder|ContextBundle|build_system_prompt|
+  brain.orchestrator|orchestrator_context|progress_percentage` returns nothing outside history/docs.
+
+### DEBT-146 [LOW · Floating] — `is_indexing_complete` graph-state channel is write-only
 
 - **Date:** 2026-08-03
-- **Detail:** `PromptBuilder.build_context` and the module-level `build_system_prompt` — a
-  ~330-line, token-budget-aware context assembler with flesh/skeleton tiering and a real
-  `PrecisionTokenCounter`-driven budget — have zero references anywhere outside
-  `brain/prompt_builder.py` (verified: no callers of `PromptBuilder`, `ContextBundle`,
-  `build_context`, or `build_system_prompt`). Its file selection is global-PPR
-  (`core/db.py::get_top_ppr_files`) — "the project's most central files" — which is query-blind and
-  would inject the same files into every turn regardless of the actual question, so wiring it in as-is
-  is not the fix; `build_system_prompt` is additionally superseded by 12.1's
-  `build_static_identity_prompt`/`build_boundary_declaration` split in `agents/prompts.py`.
-- **Phase:** 12.12. The module's two genuinely valuable mechanics — real token-budget accounting and
-  flesh/skeleton tiering — were already harvested into the query-relevant retrieval path by DEBT-142
-  (12.11), which is the query-aware, already-live surface where that discipline actually helps. 12.12
-  is therefore pure deletion, not a rewrite: delete `brain/prompt_builder.py` and update
-  `DEVELOPERS.md`'s Repository Layout. **Hard constraint:**
-  `tests/test_phase7_13_checkpoint_gate.py::test_dd1_single_vfs_reader_and_named_retries` reads
-  `brain/prompt_builder.py` as raw text (`assert "read_safe(" not in pb`) — this assertion must be
-  retargeted or dropped in the same change, or the gate fails with `FileNotFoundError` on deletion.
+- **Detail:** `AIlienantGraphState.is_indexing_complete` (`brain/state.py`) is declared and seeded
+  hardcoded `True` at exactly two sites (`core/task_service.py`, `tests/test_micro_swarm_e2e.py`) —
+  a strict repo-wide search finds zero readers. Surfaced while tracing the DEBT-144/12.12 deletion
+  cascade: it is the other half of the same never-completed "workspace indexing gate" idea that
+  `brain/orchestrator.py`'s (now-deleted) `get_partial_context_prefix()` belonged to — that half
+  warned the model in-prompt when indexing was incomplete; this half was presumably meant to gate
+  something structurally, but nothing ever read it.
+- **Phase:** future state-cleanup slice. Deliberately not fixed in 12.12: removing a field from the
+  `AIlienantGraphState` `TypedDict` is a persisted-checkpoint-contract change (CLAUDE.md §10,
+  additive-only), not a same-pass cleanup item — a checkpoint written before removal would carry the
+  now-unknown key, and every reader must keep tolerating it either way. The live system already
+  surfaces "context is thin" through CSS / `is_red_alert` / `is_corpus_empty`, so this channel's
+  original purpose is not a coverage gap, just an unused wire.
 
 ### DEBT-145 [LOW · Floating] — Per-task reasoning-mode config rides mutable graph state, not a config table
 

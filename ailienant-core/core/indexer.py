@@ -191,12 +191,6 @@ class LazyIndexer:
     def is_complete(self) -> bool:
         return self._is_complete
 
-    @property
-    def progress_percentage(self) -> float:
-        if self._total == 0:
-            return 0.0
-        return round(self._current / self._total * 100.0, 1)
-
     async def _preflight_check(self) -> str | None:
         """
         Verify the embedding backend is reachable before touching any files.
