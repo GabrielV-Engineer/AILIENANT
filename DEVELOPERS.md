@@ -369,6 +369,9 @@ Proyect_Ailienant/
 │   ├── transport/               #   outbound WS stream (throttler, token batcher, narration gate)
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
 │   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
+│   ├── scripts/                 #   standalone, opt-in operator scripts — never pytest-collected
+│   │   └── hardware_stress_sim.py # env-gated (AILIENANT_ENABLE_HW_STRESS=1) REAL RAM/VRAM pressure;
+│   │                            #     complements tests/chaos/test_hardware_stress_sim.py's synthetic injection
 │   └── tests/                   #   pytest suite + per-phase checkpoint gates + chaos crucible
 │       ├── e2e/                 #     real HTTP/WS end-to-end (SSoT prompt→graph→WS→applied patch);
 │       │                        #       seed_dashboard_fixture.py hermetically seeds the Playwright dashboard suite

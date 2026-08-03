@@ -17,6 +17,7 @@ Tools registered here (all READ_ONLY, allowed_roles={"planner"}):
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import logging
@@ -302,9 +303,15 @@ class BudgetEstimatorTool(BaseTool):
     """Estimate the execution token cost of the draft plan vs remaining session budget.
 
     Provides a heuristic pre-commit cost check so the Planner can detect budget
-    overruns before execution (shift-left of the oom_fallback mechanism). Cost is
-    estimated using fixed tokens-per-action-type at the cloud rate; confidence is
-    therefore always 'low' — a calibrated model is DEBT-045.
+    overruns before execution (shift-left of the oom_fallback mechanism). Per action,
+    prefers the observed median from ``core.telemetry.action_token_stats`` (real
+    history, tagged at the gateway by `tools.llm_gateway._maybe_log_action_tokens`)
+    once at least `core.telemetry._ACTION_MIN_SAMPLES` real calls have been recorded
+    for that action; otherwise falls back to the fixed `_ACTION_BASE_TOKENS` heuristic.
+    `read_file`/`run_command` never produce a sample (the coder's node returns before
+    any LLM call for those actions) and permanently use the static constant.
+    `confidence` is graded by the calibrated fraction of the plan's steps, replacing
+    the previously-hardcoded 'low' now that a real signal exists (DEBT-045).
 
     Advisory only: a budget overage does not cause this tool to raise or to return
     valid=False. The caller decides whether to hard-reject or warn.
@@ -343,13 +350,28 @@ class BudgetEstimatorTool(BaseTool):
 
         total_tokens: int = 0
         breakdown: List[Dict[str, Any]] = []
+        calibrated_steps: int = 0
+
+        # One telemetry read per distinct action (not per step) — a plan with 40
+        # write_file steps costs one action_token_stats call, not 40. Off the loop
+        # via to_thread since the telemetry reader is sync sqlite (§5).
+        from core.telemetry import action_token_stats, _ACTION_MIN_SAMPLES
+
+        stats_by_action: Dict[str, Dict[str, Any]] = {}
 
         for step in tasks_to_check:
             action = getattr(step, "action", "read_file")
             description = getattr(step, "description", "") or ""
             num = getattr(step, "step_number", 0)
 
-            base = _ACTION_BASE_TOKENS.get(action, 200)
+            if action not in stats_by_action:
+                stats_by_action[action] = await asyncio.to_thread(action_token_stats, action)
+            stats = stats_by_action[action]
+            calibrated = stats["count"] >= _ACTION_MIN_SAMPLES
+            base = stats["median_tokens"] if calibrated else _ACTION_BASE_TOKENS.get(action, 200)
+            if calibrated:
+                calibrated_steps += 1
+
             desc_tokens = len(description) // 4
             step_tokens = base + desc_tokens
             total_tokens += step_tokens
@@ -362,17 +384,29 @@ class BudgetEstimatorTool(BaseTool):
                         "action": action,
                         "estimated_tokens": step_tokens,
                         "estimated_cost_usd": round(step_cost, 6),
+                        "calibrated": calibrated,
                     }
                 )
 
         estimated_cost = total_tokens / 1000 * _CLOUD_USD_PER_K
         margin = remaining - estimated_cost
 
+        # Confidence reflects how much of THIS plan rests on real observed history
+        # vs the static heuristic — replaces the previously-hardcoded "low" now that
+        # a calibration signal exists.
+        calibrated_ratio = (calibrated_steps / len(tasks_to_check)) if tasks_to_check else 0.0
+        if calibrated_ratio >= 0.8:
+            confidence = "high"
+        elif calibrated_ratio >= 0.3:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
         payload: Dict[str, Any] = {
             "estimated_cost_usd": round(estimated_cost, 6),
             "remaining_budget_usd": round(remaining, 6),
             "fits_within_budget": estimated_cost <= remaining,
-            "confidence": "low",
+            "confidence": confidence,
             "margin_usd": round(margin, 6),
             "step_count": len(tasks_to_check),
         }

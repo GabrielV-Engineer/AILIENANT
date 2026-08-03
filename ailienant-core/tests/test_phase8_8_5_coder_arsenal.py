@@ -356,7 +356,9 @@ async def test_generate_docstring_happy_path() -> None:
     )
     out = await tool._arun(file_path="m.py", symbol_name="foo")
     assert out.startswith("[generate_docstring] OK")
-    assert '"""TODO: document foo."""' in vfs["m.py"]
+    assert '"""TODO: document foo.' in vfs["m.py"]
+    import ast as _ast
+    _ast.parse(vfs["m.py"])  # the rendered docstring is itself valid Python
 
 
 @pytest.mark.anyio
@@ -372,14 +374,108 @@ async def test_generate_docstring_survives_syntax_error() -> None:
 
 
 @pytest.mark.anyio
-async def test_generate_docstring_single_line_skips() -> None:
+async def test_generate_docstring_single_line_renders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEBT-047: the single-line gap is closed — the header/body split off the
+    same physical line, rather than the previous unconditional SKIP."""
     vfs: Dict[str, str] = {"s.py": "def f(): return 1\n"}
     tool = DocstringGeneratorTool(
         vfs_read=vfs.get,
         vfs_write=lambda p, c: vfs.__setitem__(p, c),
     )
     out = await tool._arun(file_path="s.py", symbol_name="f")
-    assert "SKIP" in out
+    assert out.startswith("[generate_docstring] OK")
+    assert "SKIP" not in out
+    import ast as _ast
+    tree = _ast.parse(vfs["s.py"])
+    fn = tree.body[0]
+    assert isinstance(fn, _ast.FunctionDef)
+    assert _ast.get_docstring(fn) is not None
+    # The original body statement survives past the split, unindented back onto
+    # its own line.
+    assert "return 1" in vfs["s.py"]
+
+
+@pytest.mark.anyio
+async def test_generate_docstring_single_line_multi_statement() -> None:
+    """A semicolon-separated single-line body (several statements sharing the
+    header's physical line) is regenerated as one line per statement, not lost."""
+    vfs: Dict[str, str] = {"s.py": "def f(): a = 1; b = 2\n"}
+    tool = DocstringGeneratorTool(
+        vfs_read=vfs.get,
+        vfs_write=lambda p, c: vfs.__setitem__(p, c),
+    )
+    out = await tool._arun(file_path="s.py", symbol_name="f")
+    assert out.startswith("[generate_docstring] OK")
+    assert "a = 1" in vfs["s.py"]
+    assert "b = 2" in vfs["s.py"]
+
+
+@pytest.mark.anyio
+async def test_generate_docstring_google_signature_sections() -> None:
+    """Google-style Args/Returns/Raises synthesized from a real signature —
+    defaults, annotations, and a raised exception all surface as placeholders."""
+    src = (
+        "def compute(a: int, b: int = 2) -> str:\n"
+        "    if a < 0:\n"
+        "        raise ValueError('negative')\n"
+        "    return str(a + b)\n"
+    )
+    vfs: Dict[str, str] = {"m.py": src}
+    tool = DocstringGeneratorTool(vfs_read=vfs.get, vfs_write=lambda p, c: vfs.__setitem__(p, c))
+    out = await tool._arun(file_path="m.py", symbol_name="compute", style="google")
+    assert out.startswith("[generate_docstring] OK")
+    body = vfs["m.py"]
+    assert "Args:" in body
+    assert "a (int): TODO." in body
+    assert "b (int): TODO. Defaults to 2." in body
+    assert "Returns:" in body
+    assert "str: TODO." in body
+    assert "Raises:" in body
+    assert "ValueError: TODO." in body
+    import ast as _ast
+    _ast.parse(body)
+
+
+@pytest.mark.anyio
+async def test_generate_docstring_numpy_style() -> None:
+    src = "def compute(a: int) -> int:\n    return a\n"
+    vfs: Dict[str, str] = {"m.py": src}
+    tool = DocstringGeneratorTool(vfs_read=vfs.get, vfs_write=lambda p, c: vfs.__setitem__(p, c))
+    out = await tool._arun(file_path="m.py", symbol_name="compute", style="numpy")
+    assert out.startswith("[generate_docstring] OK")
+    body = vfs["m.py"]
+    assert "Parameters" in body
+    assert "----------" in body
+    assert "a : int" in body
+    assert "Returns" in body
+    assert "-------" in body
+
+
+@pytest.mark.anyio
+async def test_generate_docstring_method_drops_self() -> None:
+    src = "class C:\n    def method(self, x: int) -> None:\n        return None\n"
+    vfs: Dict[str, str] = {"m.py": src}
+    tool = DocstringGeneratorTool(vfs_read=vfs.get, vfs_write=lambda p, c: vfs.__setitem__(p, c))
+    out = await tool._arun(file_path="m.py", symbol_name="method")
+    assert out.startswith("[generate_docstring] OK")
+    body = vfs["m.py"]
+    assert "self (" not in body and "self:" not in body  # dropped, not documented as a param
+    assert "x (int): TODO." in body
+    # -> None gets no Returns section.
+    assert "Returns:" not in body
+
+
+@pytest.mark.anyio
+async def test_generate_docstring_class_attributes() -> None:
+    src = "class Point:\n    x: int\n    y: int\n"
+    vfs: Dict[str, str] = {"m.py": src}
+    tool = DocstringGeneratorTool(vfs_read=vfs.get, vfs_write=lambda p, c: vfs.__setitem__(p, c))
+    out = await tool._arun(file_path="m.py", symbol_name="Point")
+    assert out.startswith("[generate_docstring] OK")
+    body = vfs["m.py"]
+    assert "Attributes:" in body
+    assert "x (int): TODO." in body
+    assert "y (int): TODO." in body
 
 
 @pytest.mark.anyio

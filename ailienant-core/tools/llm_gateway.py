@@ -10,11 +10,26 @@ import uuid
 import weakref
 from enum import Enum
 from typing import (
-    TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Type, cast,
+    TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Type, TypedDict, cast,
 )
 
 if TYPE_CHECKING:
     from tools.stream_delta import StreamDelta
+
+
+class _ActionKwarg(TypedDict, total=False):
+    """Precisely-typed optional-kwarg carrier for the DEBT-045 `action` tag.
+
+    A plain ``Dict[str, str]`` unpacked via ``**`` is opaque to mypy — it cannot
+    verify which keyword slot it lands in, so it conservatively rejects the
+    splat against every other keyword parameter in the call. A ``total=False``
+    TypedDict is a documented mypy-understood exception: ``**extra`` unpacks
+    precisely onto the single named ``action`` parameter it declares, exactly
+    like passing the keyword directly, while `{}` (the untagged case) supplies
+    none of it — see the call sites in ``ainvoke``/``astream_byom``/
+    ``astream_byom_thinking``/``astream_reasoning``/``acomplete_with_thinking``.
+    """
+    action: str
 
 import httpx
 import litellm
@@ -267,6 +282,29 @@ def _classify_model_as_tier(model_name: str) -> TaskPriority:
     return TaskPriority.LOCAL
 
 
+def _maybe_log_action_tokens(
+    action: Optional[str],
+    prompt_tokens: int,
+    completion_tokens: int,
+    project_id: Optional[str] = None,
+) -> None:
+    """Feed the DEBT-045 calibration substrate — a no-op unless a caller tagged
+    the call with a WBS action (today, only the coder's write_file/edit_file
+    generation call does). Explicit opt-in, not ambient state: the caller passes
+    the tag it already has in hand, so a concurrent Send() fan-out or a
+    fire-and-forget side call (e.g. the coder-companion explanation pass) never
+    gets attributed to a step it didn't serve. Mirrors the ledger accounting
+    blocks this sits beside: best-effort, never raises, never blocks the call.
+    """
+    if not action:
+        return
+    try:
+        from core.telemetry import log_action_tokens
+        log_action_tokens(action, prompt_tokens + completion_tokens, project_id)
+    except Exception as exc:  # noqa: BLE001 — calibration telemetry is non-fatal
+        logger.debug("Action-token telemetry failed (non-fatal): %s", exc)
+
+
 # Native Thinking capability gate.
 # Substrings (lower-cased) that identify a model exposing native reasoning
 # tokens. Anthropic Extended Thinking surfaces them via LiteLLM's normalized
@@ -492,6 +530,7 @@ class LLMGateway:
         timeout: float = 60.0,
         session_id: Optional[str] = None,
         state: Optional[Dict[str, Any]] = None,
+        action: Optional[str] = None,
     ) -> ModelResponse:
         """Async LLM call — non-blocking on the FastAPI event loop.
 
@@ -502,6 +541,11 @@ class LLMGateway:
         — `state` is the optional LangGraph state dict. When supplied,
         an OOM-class failure mutates it (`oom_fallback_active`, `security_flags`)
         before re-emitting to the cloud fallback model; see `_oom_cascade`.
+
+        — `action` optionally tags the call with the WBS action it serves
+        (e.g. "write_file") so DEBT-045's calibration substrate can attribute
+        real token usage to that action. Omitted by default; a caller opts in
+        explicitly rather than this being inferred from ambient context.
         """
         trace_id = session_id or str(uuid.uuid4())
         effective_model: str = (
@@ -630,6 +674,10 @@ class LLMGateway:
                     token_ledger.record_cloud(prompt_tokens, completion_tokens)
                 else:
                     token_ledger.record_local(prompt_tokens, completion_tokens)
+                _maybe_log_action_tokens(
+                    action, prompt_tokens, completion_tokens,
+                    project_id=state.get("project_id") if state else None,
+                )
         except Exception as exc:
             logger.debug("Token accounting failed (non-fatal): %s", exc)
 
@@ -649,6 +697,7 @@ class LLMGateway:
         on_thinking: Optional[Callable[[str, str], Awaitable[None]]] = None,
         enable_thinking: bool = False,
         thinking_budget_tokens: int = 4096,
+        action: Optional[str] = None,
     ) -> str:
         """Structured completion that streams reasoning while it works.
 
@@ -683,6 +732,13 @@ class LLMGateway:
         _alias_tier = model.split("/", 1)[1] if model.startswith("ailienant/") else "medium"
         tier = _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
 
+        # Forwarded only when the caller actually tagged the call — omitted
+        # entirely (not even as action=None) so a test double mocking one of
+        # these methods with its own fixed, enumerated signature (no **kwargs
+        # catch-all) doesn't break on an untagged call, which is the common
+        # case. See _maybe_log_action_tokens for what this ultimately feeds.
+        _extra_action: _ActionKwarg = {"action": action} if action else {}
+
         sink_wired = on_thinking is not None and enable_thinking
         if not sink_wired:
             resp = await LLMGateway.ainvoke(
@@ -694,6 +750,7 @@ class LLMGateway:
                 timeout=timeout,
                 session_id=session_id,
                 state=state,
+                **_extra_action,
             )
             return resp.choices[0].message.content or ""
 
@@ -711,6 +768,7 @@ class LLMGateway:
             session_id=session_id,
             thinking_budget_tokens=thinking_budget_tokens,
             response_format=response_format,
+            **_extra_action,
         ):
             if delta.kind == "thinking":
                 # Best-effort: a dead sink must never abort generation.
@@ -745,6 +803,7 @@ class LLMGateway:
         thinking_budget_tokens: int = 4096,
         response_format: Optional[dict[str, Any]] = None,
         free_form_answer: bool = False,
+        action: Optional[str] = None,
     ) -> AsyncIterator["StreamDelta"]:
         """Reasoning-aware stream — one engine, native or simulated, chosen once.
 
@@ -796,6 +855,9 @@ class LLMGateway:
 
         target = get_chat_target(tier)
         native = target is not None and _supports_native_thinking(target.model)
+        # See acomplete_with_thinking's identical comment: omitted entirely when
+        # untagged so a fixed-signature test double never breaks on this kwarg.
+        _extra_action: _ActionKwarg = {"action": action} if action else {}
 
         if native:
             # Provider-enforced JSON mode on the stream only where supported;
@@ -815,6 +877,7 @@ class LLMGateway:
                 enable_thinking=True,
                 thinking_budget_tokens=thinking_budget_tokens,
                 response_format=stream_rf,
+                **_extra_action,
             ):
                 yield delta  # already tagged source="native" by construction
             return
@@ -833,6 +896,7 @@ class LLMGateway:
                 max_tokens=max_tokens,
                 timeout=timeout,
                 session_id=session_id,
+                **_extra_action,
             )
             yield StreamDelta("text", resp.choices[0].message.content or "", "simulated")
             return
@@ -848,6 +912,7 @@ class LLMGateway:
                 max_tokens=max_tokens,
                 timeout=timeout,
                 session_id=session_id,
+                **_extra_action,
             ):
                 yield StreamDelta("text", chunk, "simulated")
             return
@@ -864,6 +929,7 @@ class LLMGateway:
             max_tokens=sim_max_tokens,
             timeout=timeout,
             session_id=session_id,
+            **_extra_action,
         ):
             reasoning, answer = demux.feed(chunk)
             if reasoning:
@@ -1033,6 +1099,7 @@ class LLMGateway:
         max_tokens: int = 1024,
         timeout: float = 60.0,
         session_id: Optional[str] = None,
+        action: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """Streaming completion against the active BYOM chat model (direct).
 
@@ -1119,6 +1186,7 @@ class LLMGateway:
                         token_ledger.record_cloud(prompt_tokens, completion_tokens)
                     else:
                         token_ledger.record_local(prompt_tokens, completion_tokens)
+                    _maybe_log_action_tokens(action, prompt_tokens, completion_tokens)
                 except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
                     logger.debug("Stream token accounting failed (non-fatal): %s", exc)
 
@@ -1138,6 +1206,7 @@ class LLMGateway:
         enable_thinking: bool = True,
         thinking_budget_tokens: int = 4096,
         response_format: Optional[dict[str, Any]] = None,
+        action: Optional[str] = None,
     ) -> AsyncIterator["StreamDelta"]:
         """Thinking-aware streaming completion against the active BYOM chat model.
 
@@ -1241,6 +1310,7 @@ class LLMGateway:
                         token_ledger.record_cloud(prompt_tokens, completion_tokens)
                     else:
                         token_ledger.record_local(prompt_tokens, completion_tokens)
+                    _maybe_log_action_tokens(action, prompt_tokens, completion_tokens)
                 except Exception as exc:  # noqa: BLE001 — never block stream-end on accounting
                     logger.debug("Stream token accounting failed (non-fatal): %s", exc)
 

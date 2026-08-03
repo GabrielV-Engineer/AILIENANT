@@ -84,6 +84,33 @@ function truncate(oldValue: string, newValue: string): Truncated {
     };
 }
 
+// Escapes exactly the five entities react-diff-viewer-continued's internal
+// applyDiffToHighlightedHtml decodes when it overlays word-diff <ins>/<del>
+// markup onto our highlighted HTML by character offset (its `decodeEntities`
+// also recognizes &#x27; and &nbsp;, which we simply never emit). Emitting any
+// OTHER entity would desync that offset math and misplace the word-diff
+// highlights — see tokensToHtml's docstring. Order matters: '&' must escape
+// first, or the other replacements' own '&' would be double-escaped.
+function escapeForDiffHtml(text: string): string {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Renders one line's AST token runs as an HTML string, color-per-span. Exported
+// for the characterization test that pins this against the coupled library
+// version (DEBT-012). `scopeColor` resolves to a closed, curated set of
+// `var(--vscode-…, #hex)` strings (see workspace/utils/scopeColor.ts) — never
+// caller-controlled — so only token CONTENT is untrusted and needs escaping.
+export function tokensToHtml(tokens: ASTToken[]): string {
+    return tokens
+        .map(t => `<span style="color:${scopeColor(t.type)}">${escapeForDiffHtml(t.content)}</span>`)
+        .join('');
+}
+
 /** VS Code injects a theme class on <body>; everything but explicit light is dark. */
 function isDarkTheme(): boolean {
     if (typeof document === 'undefined') { return true; }
@@ -192,18 +219,22 @@ function DiffBlockInner({ block, hitlActive, onRespond, onRequestChanges }: Diff
     // them with VS Code CSS vars (theme-reactive); fall back to the raw line when a
     // file wasn't tokenized. Undefined when there are no tokens, so an untokenized
     // diff renders exactly as before.
+    //
+    // Returns an HTML-string span (not per-token React spans) because the library
+    // reconstructs the FULL line and calls this renderer once per line — never per
+    // word-diff fragment, despite what an earlier version of this comment claimed.
+    // When the returned element carries `dangerouslySetInnerHTML`, the library's
+    // `renderWordDiff` overlays its OWN <ins>/<del> word-diff markup on top of our
+    // highlighted HTML by character offset (`applyDiffToHighlightedHtml`); handing
+    // it plain React children instead would fall through to its per-chunk plain-text
+    // path and silently drop syntax color on every changed line. See tokensToHtml's
+    // escaping contract for the one real constraint this depends on.
     const renderContent = useMemo(() => {
         if (!tokenMap) { return undefined; }
         return (source: string): JSX.Element => {
             const tokens = tokenMap.get(source);
             if (!tokens || tokens.length === 0) { return <>{source}</>; }
-            return (
-                <>
-                    {tokens.map((t, i) => (
-                        <span key={i} style={{ color: scopeColor(t.type) }}>{t.content}</span>
-                    ))}
-                </>
-            );
+            return <span dangerouslySetInnerHTML={{ __html: tokensToHtml(tokens) }} />;
         };
     }, [tokenMap]);
 
@@ -230,13 +261,15 @@ function DiffBlockInner({ block, hitlActive, onRespond, onRequestChanges }: Diff
                         extraLinesSurroundingDiff={TRUNCATION_CONTEXT_LINES}
                         hideLineNumbers={false}
                         styles={DIFF_STYLES}
-                        // Paint host-tokenized syntax spans per line. Word-level diffing
-                        // is disabled because it would split a line into fragments and
-                        // call renderContent per fragment, breaking the per-line token
-                        // mapping; we trade intra-line word shading for full syntax color.
-                        // Line-level add/remove backgrounds are unaffected.
+                        // Paint host-tokenized syntax spans (renderContent, above) AND
+                        // keep word-level diffing on — react-diff-viewer-continued's
+                        // dangerouslySetInnerHTML path overlays word-diff markup onto our
+                        // highlighted HTML rather than discarding it, so both intra-line
+                        // word shading and full syntax color render simultaneously. A
+                        // line over 500 chars is the library's own plain-text fallback
+                        // (neither highlighting nor word diff) — not something we control.
                         renderContent={renderContent}
-                        disableWordDiff={true}
+                        disableWordDiff={false}
                         // The library defaults to a Web Worker for diff math, whose
                         // blob: worker URL is blocked by this webview's CSP. Force the
                         // synchronous fallback so the diff actually computes.

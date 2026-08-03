@@ -102,6 +102,23 @@ def _stub_blast_radius(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(br, "compute_blast_radius", _empty)
 
 
+@pytest.fixture(autouse=True)
+def _reset_skill_embed_cache() -> None:
+    """Clear the shared skill-description embedding cache before every test.
+
+    core/skill_resolver.py's module-level `_default_description_embed_cache`
+    (DEBT-052) is keyed by description content, so two tests that happen to
+    seed a skill with the same description string (e.g. both 12.3 regression
+    tests use "candidate skill") would otherwise let the second test's embed
+    spy see a cache hit from the first — an accidental pass rather than a
+    real one, since both tests' assertions only require the spy to fire at
+    least once.
+    """
+    from core.skill_resolver import _default_description_embed_cache
+
+    _default_description_embed_cache.clear()
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Write CHECKPOINT_REPORT.md with metrics collected during the test session."""
     # Module may be keyed as "test_parser_stress" or "tests.test_parser_stress"

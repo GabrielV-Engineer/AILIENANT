@@ -84,19 +84,42 @@ CREATE TABLE IF NOT EXISTS container_lifecycle (
     image        TEXT,
     tier         TEXT
 );
+
+-- Per-action real token usage, one row per LLM call the caller chose to tag
+-- with the WBSStep action it served (currently write_file/edit_file only —
+-- see tools/llm_gateway.py's tagged emit sites). Feeds BudgetEstimatorTool's
+-- calibration (DEBT-045) so its base-token constants are backed by observed
+-- history instead of a fixed heuristic. Percentiles computed over a bounded
+-- most-recent window at read time, same shape as request_latency.
+-- TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+CREATE TABLE IF NOT EXISTS action_token_usage (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    action       TEXT NOT NULL,
+    total_tokens INTEGER NOT NULL,
+    project_id   TEXT
+);
 """
 
 # Additive project_id migration + filter indexes. CREATE TABLE IF NOT EXISTS leaves
 # a pre-existing telemetry DB untouched, so the column is added via a PRAGMA-guarded
 # ALTER (SQLite has no ADD COLUMN IF NOT EXISTS); the index keeps the dashboard's
 # per-project ``WHERE project_id = ?`` read off an O(N) scan of the growing ledger.
-_PROJECT_MIGRATIONS: Tuple[str, ...] = ("routing_decisions", "oom_fallback_events", "request_latency")
+_PROJECT_MIGRATIONS: Tuple[str, ...] = (
+    "routing_decisions", "oom_fallback_events", "request_latency", "action_token_usage",
+)
 
 # Latency read window: percentiles are computed over at most this many most-recent
 # rows (fetched with an SQL-level LIMIT), keeping the O(N log N) sort trivial and
 # off the ledger's growth curve. ``recent`` is capped smaller still for the sparkline.
 _LATENCY_WINDOW: int = 500
 _LATENCY_RECENT_CAP: int = 60
+
+# Per-action token read window (mirrors _LATENCY_WINDOW's bounded-scan rationale).
+# Below _ACTION_MIN_SAMPLES, BudgetEstimatorTool trusts the static heuristic over
+# a noisy small-N median.
+_ACTION_TOKEN_WINDOW: int = 500
+_ACTION_MIN_SAMPLES: int = 5
 
 
 def init_telemetry_db(db_path: Union[str, Path] = _DEFAULT_DB_PATH) -> None:
@@ -383,6 +406,61 @@ def latency_percentiles(
         "avg_ms": round(sum(ordered) / len(ordered), 2),
         "recent": recent,
     }
+
+
+# --- Per-action token usage (DEBT-045 calibration substrate) -------------------
+
+
+def log_action_tokens(
+    action: str,
+    total_tokens: int,
+    project_id: Optional[str] = None,
+) -> None:
+    """Record one real token count for a tagged WBS action. No-ops if DB not
+    initialized. Best-effort: a write failure is logged, never raised, so this
+    is safe to call from the gateway's post-response bookkeeping.
+    """
+    if _conn is None:
+        return
+    with _lock:
+        try:
+            _conn.execute(
+                "INSERT INTO action_token_usage (action, total_tokens, project_id) "
+                "VALUES (?, ?, ?)",
+                (action, max(0, int(total_tokens)), project_id or None),
+            )
+            _conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("Action-token telemetry write failed: %s", exc)
+
+
+def action_token_stats(action: str, window: int = _ACTION_TOKEN_WINDOW) -> Dict[str, Any]:
+    """Summarize real token usage for one action over a bounded most-recent window.
+
+    The window is an SQL-level ``ORDER BY id DESC LIMIT ?`` so the read never scans
+    the whole ledger. ``count < _ACTION_MIN_SAMPLES`` signals the caller to prefer
+    its static fallback over a noisy median. Empty/uninitialised -> zeros, never
+    raises.
+    """
+    empty: Dict[str, Any] = {"count": 0, "median_tokens": 0.0}
+    if _conn is None:
+        return empty
+    safe_window = max(1, min(int(window), _ACTION_TOKEN_WINDOW))
+    with _lock:
+        try:
+            cursor = _conn.execute(
+                "SELECT total_tokens FROM action_token_usage WHERE action = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (action, safe_window),
+            )
+            rows = [float(r[0]) for r in cursor.fetchall() if r[0] is not None]
+        except sqlite3.Error as exc:
+            logger.warning("Action-token telemetry read failed: %s", exc)
+            return empty
+    if not rows:
+        return empty
+    ordered = sorted(rows)
+    return {"count": len(ordered), "median_tokens": round(_percentile(ordered, 50), 2)}
 
 
 # --- Docker container lifecycle (machine-global) -------------------------------

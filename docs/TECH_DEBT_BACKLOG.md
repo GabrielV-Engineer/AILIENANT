@@ -99,7 +99,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-124 | The compaction fold (`SessionSummaryCard`) is live-session only — the compaction marker is a transient `SystemMessage` stripped from `PERSIST_TRANSCRIPT`, while the underlying bubbles persist, so a panel reload unwinds the fold and re-renders every message (no data loss; the safe default). Persist the fold boundary + summary so a compacted transcript stays compacted across reload. | LOW | FE durability | future dashboard slice | Floating |
 | DEBT-123 | `core/task_service.py`'s `NarrationGate`/`gate` instance is now vestigial — `_narrate` stopped calling `gate.allow()`/`broadcast_pipeline_step` in 11.5.C.3 (retired; superseded by the un-throttled `server_activity_event` channel), but `gate.record_answer(...)` is still called from ~8 sites across `_run_coding_task` to feed a budget nothing reads anymore. Harmless (dead bookkeeping, no correctness impact) but should be swept: remove `gate`/`NarrationGate()` and all `record_answer` call sites in one pass. | LOW | Dead code | future cleanup slice | Floating |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
-| DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | future HITL slice | Floating |
+| DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | 12.5 | RESOLVED |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
 | DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM | Architecture | future graph slice | Blocked |
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW | Capability gap | long-term | Floating |
@@ -109,11 +109,11 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-084 | Interactive devcontainer sessions (`open_host_session`) not wired over the host bridge | MEDIUM | Feature gap | 12.4 | RESOLVED 2026-08-03 |
 | DEBT-085 | Devcontainer exec runs at the workspace-folder root; the backend `cwd` (host path) is not mapped into the container | LOW | Correctness gap | 12.4 | RESOLVED 2026-08-03 |
 | DEBT-086 | Typecheck/validation helpers (`check_type_integrity`, `coder_tools._exec`) lack a `session_id` and stay on the oracle tier, not the devcontainer | LOW | Consistency gap | 12.4 | RESOLVED 2026-08-03 |
-| DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | future chaos slice | Floating |
-| DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | post-8.8.4 | Floating |
-| DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | post-8.8.5 | Floating |
+| DEBT-067 | Hardware stress sim uses synthetic profile injection, not real RAM/VRAM allocation | LOW | Test fidelity | 12.5 | RESOLVED |
+| DEBT-045 | BudgetEstimatorTool uses fixed heuristic, not calibrated from session history | LOW | Accuracy gap | 12.5 | RESOLVED |
+| DEBT-047 | generate_docstring is line-anchored, not a signature-aware Google/Numpy renderer | LOW | Feature gap | 12.5 | RESOLVED |
 | ~~DEBT-049~~ | ~~SkillInvokeTool passes embed_fn=None — semantic skill auto-matching disabled~~ — **INVALID (12.3)**: the premise was false, `resolve_active_skills` has always fallen back to a default embedder; corrected the tool's docstring/description and the registry's exclusion rationale instead | LOW | Feature gap | 12.3 | RESOLVED |
-| DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | DB-layer async migration | Floating |
+| DEBT-052 | resolve_active_skills may execute synchronous LanceDB queries inside async def | LOW | Performance | 12.5 | INVALID |
 | ~~DEBT-054~~ | ~~todo_write / agent_todos channel unbound — no cognitive node wiring~~ — **RESOLVED (12.3)**: 8.18 already wired the tool; closed the remaining half (state-channel promotion + WS event + UI panel) | LOW | Integration gap | 12.3 | RESOLVED |
 | ~~DEBT-027~~ | ~~MCP servers not auto-connected at launch~~ — **RESOLVED (11.13)**: connected at host start, on save, and reconciled per task | LOW | Feature gap | 11.13 | RESOLVED |
 | DEBT-127 | Per-role prompt overrides are ignored by dispatched subagents (`subagent_worker_node` builds a user-role seed, not a system prompt) | LOW | Integration gap | after DEBT-106 | Blocked |
@@ -134,9 +134,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-142 | `search_snippets`'s `content_snippet` (documented "first 500 chars for audit/debug") was injected verbatim as RAG evidence — a file matching past its header contributed only imports | MEDIUM | Accuracy | 12.11 | RESOLVED 2026-08-03 |
 | DEBT-143 | `deep_parse` (the only live GraphRAG expansion) applied no cap on files read/parsed; the capped, PPR-ranked `extract()` had zero callers and its guardrail counted path tokens, not content tokens | MEDIUM | Reliability / §5.5 | 12.11 | RESOLVED 2026-08-03 |
 | DEBT-144 | `brain/prompt_builder.py` (~330 lines, token-budget-aware flesh/skeleton context assembler) has zero callers in production — its selection is global-PPR (query-blind), which would inject the same files every turn regardless of the question | MEDIUM | Dead code | 12.12 | Floating |
+| DEBT-145 | Per-task reasoning-mode config (`enable_native_thinking`, `thinking_budget_tokens`) rides `AIlienantGraphState` — mutable runtime state — rather than a dedicated relational config table; accepted for DEBT-079's two scalars given `HybridCheckpointer`'s per-run (not per-step) promotion, but the pattern shouldn't silently repeat | LOW | Architecture / Decision | future config/runtime-separation slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
-| DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
-| DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
+| DEBT-014 | brain/swarms.py NodeInputT 6 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
+| DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 12.5 | RESOLVED |
 | ~~DEBT-007~~ | ~~Auto-accept pays full HITL round-trip~~ **RESOLVED (11.8):** shift-left to the apply edge — the backend omits `server_hitl_approval_request` for low-risk edits (added diff lines trip no `_RISK_PATTERNS`) and applies server-side; the vacuous frontend short-circuit was removed. | LOW | Performance | 11.8 | RESOLVED |
 | DEBT-126 | Minor investigation backlog deferred from the live-test Phase 1 sweep (11.10): (a) turn-duration measurement still reads 0.0s in some spans (the shared batch timestamp fixed the multi-file jitter; verify the timer actually brackets the actuation phase); (b) the frontend `server_indexing_started` handler is dead code — no backend `broadcast_indexing_started` exists, so either wire it or delete it (§10 contract rot). Both low-risk, low-cost. | LOW | Observability / Hygiene | 11.10 | Floating |
 | DEBT-125 | The apply-edge "low-risk" gate reuses command-tuned `_RISK_PATTERNS` as a proxy over added diff lines — coarse, fails toward the card. Build a diff-aware/semantic edit-risk classifier returning a real low/medium/high verdict; also fix the `risk_metrics` (FE) ↔ `risk_patterns_matched` (BE) name mismatch so the approval card can display *why* an edit was flagged. | LOW | Risk classification | future safety slice | Floating |
@@ -341,14 +342,14 @@ Decision    Not a defect — see [DECISION] tier.
 - **File(s):** `brain/checkpoint.py`, `core/task_service.py`, `main.py`; gate `tests/test_phase8_10_16_checkpoint_gate.py` (5 rows).
 - **Notes:** carved at 8.10.14 ship per CLAUDE.md §11.3. Exact original `TaskPayload`/thinking-config fidelity across a restart is the declared MVP boundary → DEBT-079.
 
-### DEBT-079 [LOW · Floating] — Cross-restart HITL resume reconstructs a minimal TaskPayload
+### DEBT-079 [LOW · RESOLVED 2026-08-03, 12.5] — Cross-restart HITL resume reconstructs a minimal TaskPayload
 
-- **Date:** 2026-06-24
-- **Reproduce:** after a server restart, `rehydrate_paused_interrupt` re-arms the paused task with a minimal `TaskPayload(task_prompt="", dirty_buffers=[])`; the orchestration mode and security posture are recovered from the checkpoint, but the original prompt/attachments and thinking-config (`enable_native_thinking`, `thinking_budget_tokens`) fall back to defaults for any *new* reasoning turns produced after the resume.
-- **Error:** fidelity gap, not a correctness/security gap — the durable work-in-progress and the permission posture are faithful (both come from the checkpoint); only post-resume thinking-config defaults.
-- **Blocked by:** nothing; deliberately deferred to avoid persisting a serialized `TaskPayload` to L2 (schema growth + §6.3 secrets-hygiene risk).
-- **Phase:** future HITL slice.
-- **Notes:** declared MVP boundary of 8.10.16 per CLAUDE.md §11.3.
+- **Date:** 2026-06-24 · **Resolved:** 2026-08-03 (12.5)
+- **Reproduce (original):** after a server restart, `rehydrate_paused_interrupt` re-arms the paused task with a minimal `TaskPayload(task_prompt="", dirty_buffers=[])`; the orchestration mode and security posture are recovered from the checkpoint, but the original prompt/attachments and thinking-config (`enable_native_thinking`, `thinking_budget_tokens`) fall back to defaults for any *new* reasoning turns produced after the resume.
+- **Reclassified from fidelity to correctness during 12.5 investigation:** the original entry's premise — "not a correctness gap" — did not hold. `payload.task_prompt` is still read on the shared post-resume path (`_run_coding_task`'s `_append_history(session_id, "user", payload.task_prompt)` calls, unguarded by `resume_value`), so the pre-fix empty string wrote a **blank user message into the persisted transcript** on every restart-resume.
+- **Resolved:** two additive `AIlienantGraphState` channels (`enable_native_thinking`, `thinking_budget_tokens`) mirror the reasoning-mode config that previously lived only in `config["configurable"]` and was never checkpointed; seeded once at task start, they ride `HybridCheckpointer`'s existing promotion for free. `rehydrate_paused_interrupt` now also reads the original `user_input` (already a state channel, following the `execution_mode` precedent) straight from `snapshot.values`. `dirty_buffers`/`attachments` remain deliberately unpersisted — the §6.3 secrets-hygiene risk this entry originally declined stands.
+- **File(s):** `brain/state.py`, `core/task_service.py`; `SCHEMA_EVOLUTION.MD §44`.
+- **Notes:** an architecture review during 12.5 flagged mixing immutable task config with mutable runtime state on principle; accepted here because `HybridCheckpointer` promotes once per run (not per step, "zero IOPS" L1), and `execution_mode` already sets this precedent. See DEBT-145 for the logged separation, triggered only once a third piece of per-task config needs this.
 
 ### DEBT-080 [MEDIUM · RESOLVED 2026-07-01, 8.14.0] — Dependency-graph edge extraction is Python-only
 
@@ -544,13 +545,12 @@ Decision    Not a defect — see [DECISION] tier.
 
 ### DEBT-067 [LOW · Floating] — Hardware stress simulator uses synthetic injection, not real allocation
 
-- **Date:** 2026-06-19
-- **Reproduce:** `tests/chaos/test_hardware_stress_sim.py` applies memory pressure by injecting a starved `HardwareProfile` (monkeypatching `HardwareDetector.detect`) rather than actually allocating RAM/VRAM. The graceful-degradation reroute and its telemetry row are validated deterministically, but the detector's real probing path (pynvml / psutil under genuine pressure) is not exercised.
-- **File(s):** `ailienant-core/tests/chaos/test_hardware_stress_sim.py`; a future opt-in `scripts/hardware_stress_sim.py`.
-- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. Real allocation in CI is non-deterministic and can OOM the host; synthetic injection is the CI-safe equivalent for the routing/telemetry contract.
-- **Blocked by:** nothing structural; needs an env-gated standalone script (skipped in CI) that allocates real RAM (and VRAM where a GPU is present).
-- **Phase:** future chaos-engineering slice.
-- **Notes:** logged at 8.10.3 ship per CLAUDE.md §11.3; the user chose synthetic injection for this division.
+- **Date:** 2026-06-19 · **Resolved:** 2026-08-03 (12.5)
+- **Reproduce (original):** `tests/chaos/test_hardware_stress_sim.py` applies memory pressure by injecting a starved `HardwareProfile` (monkeypatching `HardwareDetector.detect`) rather than actually allocating RAM/VRAM. The graceful-degradation reroute and its telemetry row are validated deterministically, but the detector's real probing path (pynvml / psutil under genuine pressure) is not exercised.
+- **Resolved:** the synthetic contract test is untouched (still the correct CI-safe check); a new opt-in `scripts/hardware_stress_sim.py` (`AILIENANT_ENABLE_HW_STRESS=1`, never pytest-collected) allocates real RAM in bounded chunks toward a `--target-free-gb` floor (clamped at a hard `_MIN_SAFE_FREE_GB`, with a stall detector against a misreporting host) and calls the real `HardwareDetector.detect()` under that pressure. VRAM pressure (`--vram`) is honest rather than faked: probing a GPU (`pynvml`) is not the same as consuming its memory, which needs a compute framework (torch/cupy) this project deliberately does not depend on (Charter §9 precedent — `scipy` rejected likewise); when no such framework is importable, VRAM stress is explicitly skipped with a printed reason, never silently omitted.
+- **File(s):** `ailienant-core/scripts/hardware_stress_sim.py` (new); `tests/chaos/test_hardware_stress_sim.py` unchanged.
+- **Verified:** run manually on a Windows dev host with no discrete GPU — real RAM dropped from 2.9 GB to 2.54 GB available and was fully released afterward; `suggested_mode` correctly reported it could not degrade further via RAM pressure alone on that platform (`effective_vram_gb` gates on GPU VRAM, not system RAM, for every non-Apple-Silicon host) rather than printing a misleading "try a lower target".
+- **Notes:** logged at 8.10.3 ship per CLAUDE.md §11.3; the user chose synthetic injection for the CI-safe contract test at that time, which stands unchanged.
 
 ### DEBT-044 [MEDIUM · RESOLVED 2026-06-20, 8.10.10] — ValidateWBSDependenciesTool detects forward-reference ordering violations only, not true DAG cycles
 
@@ -558,15 +558,13 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolved:** `WBSStep.depends_on: Optional[List[int]] = None` added additively to `brain/state.py` (backward-compatible; existing checkpoints deserialize as `None`). `ValidateWBSDependenciesTool._arun()` gains Pass 5 — Kahn's BFS topological sort over `depends_on` links; a cycle or invalid reference becomes a blocking issue (`"dependency_cycle"` / `"invalid_depends_on"`, both setting `valid = False`). `SCHEMA_EVOLUTION.MD §18` documents the new field and its contract. Note: the original debt spec referenced §15 — corrected to §18 (§15 was already taken by External Gateway Catalog).
 - **Notes:** Pass 5 is a no-op when no step declares `depends_on`, preserving all existing test behavior.
 
-### DEBT-047 [LOW · Floating] — generate_docstring is line-anchored, not a signature-aware renderer
+### DEBT-047 [LOW · RESOLVED 2026-08-03, 12.5] — generate_docstring is line-anchored, not a signature-aware renderer
 
-- **Date:** 2026-06-14
-- **Reproduce:** Call `generate_docstring` on a multi-line `def`/`class`. It inserts a `"""TODO: document <name>."""` stub as the first body statement; it does not synthesize param/return sections from the signature, and it deliberately SKIPs single-line definitions (`def f(): return 1`).
-- **File(s):** `ailienant-core/tools/coder_tools.py` (`DocstringGeneratorTool._arun`).
-- **Error:** not a defect — a **declared trade-off (CLAUDE.md §11.2)**. AST-anchored insertion + `_validate_python_syntax` keeps it safe and deterministic; a richer Google/Numpy renderer is deferred.
-- **Blocked by:** nothing — a self-contained enhancement.
-- **Phase:** post-8.8.5.
-- **Notes:** logged at 8.8.5 ship per CLAUDE.md §11.3.
+- **Date:** 2026-06-14 · **Resolved:** 2026-08-03 (12.5)
+- **Reproduce (original):** Call `generate_docstring` on a multi-line `def`/`class`. It inserts a `"""TODO: document <name>."""` stub as the first body statement; it does not synthesize param/return sections from the signature, and it deliberately SKIPs single-line definitions (`def f(): return 1`).
+- **Resolved:** `DocstringGeneratorTool._arun` now synthesizes real Google- or Numpy-style sections (new `style` input field, default `"google"`) from the already-parsed AST — Args/Parameters (with type + default, `self`/`cls` dropped on non-static methods), Returns (omitted for no annotation or an explicit `-> None`), Raises (direct-scope `ast.Raise` nodes only, deduped and capped), and Attributes for a `ClassDef`'s class-level annotations. The single-line gap is closed: the header is split from its body via `ast.unparse`-regenerated statements (not a substring slice, which cannot safely relocate a semicolon-joined multi-statement body) rather than the previous unconditional SKIP. `_validate_python_syntax` remains the safety gate for both paths.
+- **File(s):** `ailienant-core/tools/coder_tools.py` (`GenerateDocstringInput`, `DocstringGeneratorTool`, new render helpers); `tests/test_phase8_8_5_coder_arsenal.py` (rewrote the now-inverted single-line SKIP assertion into a render assertion; added Google/Numpy/method/class-attribute rows).
+- **Notes:** logged at 8.8.5 ship per CLAUDE.md §11.3; the AST-anchored insertion + syntax-validation safety net from that ship is unchanged.
 
 ### DEBT-048 [MEDIUM · RESOLVED 2026-06-20, 8.10.6] — RunBenchmarkTool skips task_service.register_active_task
 
@@ -605,15 +603,13 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolved:** `BackgroundTaskManager.create()` now accepts `owner_role: Optional[str] = None` and stamps it into the task registry entry. `list_tasks(caller_role)` filters the snapshot so non-orchestrator callers see only their own tasks; `caller_role="orchestrator"` or `None` returns the full view (backward-compatible default). `TaskCreateInput` gains `owner_role` field; `TaskCreateTool._arun()` threads it to the manager. `TaskListInput` gains `caller_role` field; `TaskListTool._arun()` passes it to `list_tasks()`. Changes are additive — callers that don't supply the new fields get unchanged behavior.
 - **Notes:** accelerated from Phase 12.3 to close before 8.11 inherits the gap.
 
-### DEBT-052 [LOW · Floating] — resolve_active_skills may execute synchronous LanceDB queries
+### DEBT-052 [LOW · INVALID 2026-08-03, 12.5] — resolve_active_skills may execute synchronous LanceDB queries
 
+- **Invalid:** the premise was false, the same failure mode 12.3 found in DEBT-049. `core/db.py::get_skill` and `list_enabled_skills_for_scope` are **aiosqlite** — genuinely async, nothing blocks the event loop. There was never a LanceDB call on this path. Two real, unrelated defects sat next to the phantom one and are what 12.5 actually fixed: (1) `resolve_active_skills` re-embedded every enabled skill's description on **every task**, serially, for text that essentially never changes turn-to-turn — a fresh network round-trip per skill per turn; fixed with a bounded LRU (`core/skill_resolver.py::_DescriptionEmbedCache`, content-keyed so an edited description simply becomes a new key — no TTL needed for correctness) plus concurrent (not serial) misses. The query vector is deliberately never cached (unique per task; caching it would be an unbounded leak). (2) `_resolve_default_embed_fn` imported `core.tool_rag` (pulling in `lancedb`/`pyarrow`) lazily inside a sync call on the loop; moved off-loop via `asyncio.to_thread`. An in-flight review draft proposed an unbounded module-global cache — rejected: this is a pure function cache (description text → vector) where a multi-worker miss just recomputes the same value (never an inconsistency), so bounding for memory is what actually mattered, not a TTL or worker-affinity scheme.
 - **Date:** 2026-06-14
-- **Reproduce:** Call `skill_invoke` with a valid skill_id. `resolve_active_skills` is `async def` but internally calls `catalog_db.get_skill()` / `list_enabled_skills_for_scope()` which may be synchronous LanceDB queries. If synchronous, they block the FastAPI event loop during the `await`.
-- **File(s):** `ailienant-core/core/skill_resolver.py`, `ailienant-core/tools/gateway_tools.py`.
-- **Error:** pre-existing substrate concern, not introduced by this wave.
-- **Blocked by:** DB-layer async migration.
-- **Phase:** DB-layer async migration.
-- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3.
+- **Reproduce (original, no longer valid):** Call `skill_invoke` with a valid skill_id. ~~`resolve_active_skills` is `async def` but internally calls `catalog_db.get_skill()` / `list_enabled_skills_for_scope()` which may be synchronous LanceDB queries~~ — this claim does not hold; both are aiosqlite.
+- **File(s):** `ailienant-core/core/skill_resolver.py` (`_DescriptionEmbedCache`, `resolve_active_skills`); `ailienant-core/tests/conftest.py` (autouse cache reset — the two 12.3 regression tests both seed a skill described "candidate skill", which would otherwise leak a cache hit between them); new `tests/test_phase12_5_quality_sweep.py`.
+- **Notes:** logged at 8.8.6 ship per CLAUDE.md §11.3; corrected at 12.5.
 
 ### DEBT-053 [LOW · RESOLVED 2026-06-20, 8.10.6] — TaskStopTool uses SIGTERM only, no SIGKILL escalation
 
@@ -725,14 +721,14 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
-### DEBT-045 [LOW · Floating] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
+### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 
-- **Date:** 2026-06-14
-- **Reproduce:** `BudgetEstimatorTool._arun` computes `estimated_cost_usd` from static base-token constants (`write_file=1000`, `edit_file=800`, `read_file=200`, `run_command=100`) plus `len(description)//4`. These constants were chosen as conservative approximations of the cloud rate; no session-history calibration is performed.
-- **File(s):** `ailienant-core/tools/planner_tools.py` (`BudgetEstimatorTool._arun`, `_ACTION_BASE_TOKENS`).
-- **Error:** not a runtime defect — a **declared trade-off (CLAUDE.md §11.2)**. The advisory is shift-left (fires before `oom_fallback`) and produces `confidence="low"` to signal the approximation to consumers.
-- **Blocked by:** requires session-history telemetry (actual token counts per action type stored in `TokenLedger` or a side table).
-- **Phase:** post-8.8.4 — calibration pass after session telemetry is available.
+- **Date:** 2026-06-14 · **Resolved:** 2026-08-03 (12.5)
+- **Reproduce (original):** `BudgetEstimatorTool._arun` computes `estimated_cost_usd` from static base-token constants (`write_file=1000`, `edit_file=800`, `read_file=200`, `run_command=100`) plus `len(description)//4`. These constants were chosen as conservative approximations of the cloud rate; no session-history calibration is performed.
+- **Resolved:** the entry's own *Blocked by* line named the real prerequisite — `TokenLedger` (`core/token_ledger.py`) is four in-memory tier counters with no action dimension and no history, so it could never calibrate anything as-is. Built the missing side table instead: a new `action_token_usage` telemetry table (`core/telemetry.py`, mirroring `request_latency`'s bounded-window read pattern) fed by an **explicit** `action` tag threaded through the gateway's already-existing usage-recording call sites (`ainvoke`/`astream_byom`/`astream_byom_thinking`, `tools/llm_gateway.py`) — the coder's single generation call (`agents/coder.py`) tags it with `target_step.action`. `BudgetEstimatorTool` now prefers the calibrated median per action once `core.telemetry._ACTION_MIN_SAMPLES` real samples exist, else the static constant, and grades its own `confidence` (low/medium/high) by how much of the plan's step mix was calibrated — replacing the previously-hardcoded `"low"`.
+- **Key decision:** an in-flight draft bridged coder→gateway via an ambient `ContextVar` — rejected in review as asynchronous global state for what is really a call attribute, and it needed a workaround for `schedule_coder_companion`'s own concurrent LLM call being miscounted against the step. Replaced with the `action` kwarg forwarded explicitly through the call chain, gated behind a `total=False` TypedDict (`_ActionKwarg`) so an untagged call never even sends the keyword — the first version sent `action=None` unconditionally and broke two hand-rolled `test_planner.py` mocks whose fixed signatures had no `action` parameter.
+- **Coverage limit (declared, not a defect):** only `write_file`/`edit_file` can ever calibrate — `read_file`/`run_command` return before any LLM call, and a `response_cache` hit produces no sample either.
+- **File(s):** `core/telemetry.py`, `tools/llm_gateway.py`, `agents/coder.py`, `tools/planner_tools.py`; new `tests/test_phase12_5_quality_sweep.py`.
 - **Notes:** logged at 8.8.4 ship per CLAUDE.md §11.3.
 
 ### DEBT-037 [LOW · RESOLVED 2026-06-20, 8.10.9] — retrieval ablation uses mock.patch, not a production DI seam
@@ -1022,6 +1018,31 @@ Decision    Not a defect — see [DECISION] tier.
   `brain/prompt_builder.py` as raw text (`assert "read_safe(" not in pb`) — this assertion must be
   retargeted or dropped in the same change, or the gate fails with `FileNotFoundError` on deletion.
 
+### DEBT-145 [LOW · Floating] — Per-task reasoning-mode config rides mutable graph state, not a config table
+
+- **Date:** 2026-08-03
+- **Reproduce:** `AIlienantGraphState` (`brain/state.py`) carries `enable_native_thinking` and
+  `thinking_budget_tokens` — immutable-for-the-task-lifetime configuration — as scalar channels
+  alongside genuinely mutable runtime state (`current_step_id`, `errors`, `vfs_buffer`, …). This
+  follows an existing precedent (`execution_mode` does the same), but a 12.5 architecture review
+  flagged the general pattern: config and runtime state living on the same substrate makes their
+  different lifecycles (write-once-at-start vs. mutate-every-step) harder to reason about as more
+  fields accumulate this way.
+- **Error:** not a defect today. `HybridCheckpointer` promotes once per completed graph run (not per
+  step) — "zero IOPS" L1 (`MemorySaver`), one L2 write per run — so these two scalars add no
+  measurable I/O, and they ride alongside `vfs_buffer`, which already carries full file contents. The
+  cost the review was concerned about (checkpoint bloat, per-step I/O) is not load-bearing for this
+  specific pair.
+- **Blocked by:** nothing technical. Deliberately deferred rather than building a `task_config` table
+  for two fields: `session_state` (`core/db.py`) is a file-version tracker with no consumers that
+  could be repurposed, so closing this now would mean net-new schema + migration + a §6.3
+  secrets-hygiene pass to carry data that already has a safe, working home.
+- **Phase:** future config/runtime-separation slice, triggered explicitly — the moment a *third*
+  piece of per-task config needs to survive a restart, migrate all of it (this pair included) to a
+  dedicated table in one pass, rather than adding a fourth ad hoc state channel.
+- **Notes:** carved out of DEBT-079's closure (12.5) per CLAUDE.md §11.3 — the review's principle is
+  accepted, the closure of DEBT-079 was not blocked on building the separation first.
+
 ### DEBT-132 [LOW · Floating] — Background-task executions get no Glass-Box Timeline I/O detail
 
 - **Date:** 2026-07-30
@@ -1062,9 +1083,9 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** the Phase 7.19 Docker-session integration pass (or whichever sub-phase wires the dispatcher onto a live container), once a daemon-backed CI lane exists.
 - **Notes:** declared MVP during 7.19.0. The host PTY path (Native Direct) — the tier the 7.19.2 dispatcher will actually drive first — is fully covered (stub + real openpty). The Docker backend is implemented for parity but unverified end-to-end against a container; treat its first live use as integration-test-gated.
 
-### DEBT-014 [LOW · Blocked] — brain/swarms.py: NodeInputT add_node type-var — ⚠️ REDUCED (3 residual ignores) 2026-06-08
+### DEBT-014 [LOW · Blocked] — brain/swarms.py: NodeInputT add_node type-var — 6 residual ignores (measured 2026-08-03, 12.5)
 
-- **Date:** 2026-06-05
+- **Date:** 2026-06-05 · **Re-measured:** 2026-08-03 (12.5) — still blocked, re-logged
 - **Root cause:** LangGraph's `add_node` binds `NodeInputT` with `bound=StateLike`
   (`TypedDictLikeV1 | TypedDictLikeV2 | DataclassLike | BaseModel`, per
   `langgraph/typing.py:45`). A node function typed `(state: Dict[str, Any]) -> ...` infers
@@ -1075,47 +1096,66 @@ Decision    Not a defect — see [DECISION] tier.
   TypedDict → satisfies the bound → `swarms.py:155` no longer needs an ignore (removed). This
   closed the strict/non-strict discrepancy that was the last `mypy --strict main.py` residual.
   **`mypy --strict main.py` → 0 as of 8.0.4.**
-- **Residual (3 ignores still required):** `swarms.py:156` (`run_coder_node`), `:218`
-  (`run_planner_node`), `:227` (`run_analyst_node`), and `ideation.py:215` (`run_analyst_node`)
-  retain `# type: ignore[type-var]`. These are **USED** (suppress real errors) under both `mypy .`
-  and `mypy --strict` — they cause no `unused-ignore`, so all gates stay green.
-- **Why not fixed:** two approaches were tried and rejected in 8.0.4:
-  1. **Retype signatures to `AIlienantGraphState`** — cascades to **63 `arg-type` errors across 19
-     files**: every direct caller (production `agents/logic.py:27` + ~18 test files) passes a plain
-     `dict`, which is not assignable to a TypedDict param. Too invasive; churns the test suite.
+- **Residual — corrected count and site list (12.5):** this entry previously said "3 residual
+  ignores" while its own prose already named 4 sites (a stale count nobody had corrected). The
+  actual current count is **6**: `brain/swarms.py:157` (`run_coder_node`), `:218`
+  (`run_researcher_node`, added after this entry was written — not previously listed), `:219`
+  (`run_planner_node`), `:228` (`run_analyst_node`), and `brain/ideation.py:215`
+  (`run_analyst_node`), `:216` (`run_synthesis_node`, also not previously listed). All six are
+  **USED** (suppress real errors) under both `mypy .` and `mypy --strict` — no `unused-ignore`,
+  gates stay green.
+- **Why not fixed (2026-06-08) and re-verified still blocked (2026-08-03, 12.5):** two approaches
+  were tried and rejected in 8.0.4:
+  1. **Retype signatures to `AIlienantGraphState`** — originally cascaded to 63 `arg-type` errors
+     across 19 files. Re-measured at 12.5 by actually performing the retype in a throwaway working
+     copy (not assumed): **78 errors across 24 files today** — *worse*, not better, since more
+     production and test call sites have accumulated passing a plain `dict` in the interim
+     (`tests/test_analyst_agent.py`, `tests/test_action_log_narration.py`, `agents/logic.py`, and
+     21 others). Reverted; too invasive.
   2. **`input_schema=AIlienantGraphState` on the `add_node` call** — mypy reports `Cannot infer
      value of type parameter "NodeInputT"` because it cannot reconcile a `Dict[str, Any]`-typed
      action with `StateNode[AIlienantGraphState, ...]`. Does not work.
 - **Proposed enterprise refactor (deferred):** when the agent-node call sites are themselves
-  hardened (a dedicated phase), retype `run_coder_node` / `run_planner_node` / `run_analyst_node`
-  to `AIlienantGraphState` **and** migrate all ~19 direct callers (tests + `logic.py`) to construct
-  a typed state (or a small `cast` helper). Alternatively, adopt it when LangGraph ships a stub that
-  accepts `Mapping[str, Any]` for `NodeInputT`. Until then the 3 ignores are the correct, minimal,
+  hardened (a dedicated phase), retype `run_coder_node` / `run_planner_node` / `run_analyst_node` /
+  `run_researcher_node` to `AIlienantGraphState` **and** migrate all direct callers (tests +
+  `logic.py`) to construct a typed state (or a small `cast` helper). Alternatively, adopt it when
+  LangGraph ships a stub that accepts `Mapping[str, Any]` for `NodeInputT` — confirmed still absent
+  in the installed `langgraph==1.1.6` as of 12.5. Until then the 6 ignores are the correct, minimal,
   gate-green suppression.
 - **Notes:** The enforced gate (`mypy .`) and the campaign gate (`mypy --strict main.py`) are both
   **0** with these ignores in place. This is no longer a strict-gate blocker — only a code-cleanliness
-  residual.
+  residual. Manifest 12.5 explicitly permitted re-logging this rather than forcing a close.
 
-### DEBT-012 [LOW · Floating] — diff highlighting disables word-level diff (no intra-line token slicing)
+### DEBT-012 [LOW · RESOLVED 2026-08-03, 12.5] — diff highlighting disables word-level diff (no intra-line token slicing)
 
-- **Date:** 2026-06-05
-- **Reproduce:** Apply an edit that changes part of a line; the line shows full-line syntax color but
+- **Date:** 2026-06-05 · **Resolved:** 2026-08-03 (12.5)
+- **Reproduce (original):** Apply an edit that changes part of a line; the line shows full-line syntax color but
   no word-level add/remove shading (the per-word green/red highlight).
-- **File(s):** `src/workspace/components/DiffBlock.tsx` (`disableWordDiff={true}` + the per-line
-  `renderContent` content→tokens map).
-- **Error:** Not a defect — a **declared trade-off (CLAUDE.md §7.2)** taken to ship 7.16.2 syntax
-  highlighting. `react-diff-viewer-continued` calls `renderContent(source)` per *word fragment* when
-  word-diff is on, which would break the per-line token mapping (the host emits tokens row-aligned to
-  full lines, not fragments). Disabling word-diff yields clean full-line syntax color at the cost of
-  intra-line word shading. Line-level add/remove backgrounds (the `--vscode-diffEditor-*` palette) are
-  unaffected, so the diff still reads correctly.
-- **Blocked by:** None — needs a word-diff-aware token slicer: intersect the viewer's per-fragment
-  `DiffInformation` offsets with the line's `ASTToken` runs so each fragment carries only its slice of
-  scopes. Non-trivial offset math; out of scope for 7.16.2 (static highlight first).
-- **Phase:** A future 7.16.x / 7.17 polish slice (best folded into the 7.17 streaming-render work,
-  which already owns the token-reconciliation path).
-- **Notes:** Alternative: keep word-diff and run a second, fragment-level tokenization pass keyed by
-  `(line, fragmentRange)` — heavier; the offset-intersection approach reuses the existing host AST.
+- **Premise corrected during 12.5 investigation:** the original entry's mechanism was wrong.
+  `react-diff-viewer-continued`'s `renderWordDiff` **reconstructs the full line** and calls
+  `renderContent(fullLine)` once — it never calls it per word fragment. The library already has a
+  supported path for exactly this case: when the returned element carries
+  `dangerouslySetInnerHTML`, it overlays its own `<ins>`/`<del>` word-diff markup onto that HTML by
+  character offset (`applyDiffToHighlightedHtml`) instead of discarding the renderer. The prescribed
+  fix (intersecting per-fragment `DiffInformation` offsets against `ASTToken` runs) was solving a
+  problem the library doesn't actually have.
+- **Resolved:** `DiffBlock.tsx`'s `renderContent` now returns `tokensToHtml(tokens)` — an
+  HTML string of `<span style="color:...">` runs — via `dangerouslySetInnerHTML`, with
+  `disableWordDiff={false}`. `scopeColor` resolves to a closed, curated set of
+  `var(--vscode-…, #hex)` strings (never caller-controlled), so only token content needs escaping,
+  which is done with exactly the five entities the library's own `decodeEntities` recognizes (it
+  also accepts `&#x27;`/`&nbsp;`, simply never emitted here) — emitting any other entity would
+  desync its character-offset math and misplace the word-diff highlights.
+- **Dependency coupling contained, not ignored:** this does depend on an internal (undocumented)
+  behavior of a third-party library. `react-diff-viewer-continued` was pinned to its exact installed
+  version (`package.json`, dropped the `^4.2.2` caret) so the behavior cannot shift on a routine
+  `npm install`, and a characterization test (`WD3`) renders a real changed line through the actual
+  library and asserts the `<ins>` boundary lands on the correct character — engineered to fail loudly
+  the moment a version bump changes the internal contract, rather than let a mis-render pass silently.
+- **File(s):** `ailienant-extension/src/workspace/components/DiffBlock.tsx`; `package.json` (version
+  pin); new `src/test/diffBlock.test.ts` (`WD1`–`WD4`).
+- **Notes:** a line over the library's own `MAX_LINE_LENGTH` (500 chars) still falls back to plain
+  text with neither highlighting nor word diff — a pre-existing library limit, documented, not fixed.
 
 ### DEBT-011 [LOW · RESOLVED 2026-06-20, 8.10.9] — test_v3_tracemalloc heap-baseline ceiling is structurally broken
 

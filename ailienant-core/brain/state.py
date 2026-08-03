@@ -753,3 +753,16 @@ class AIlienantGraphState(TypedDict):
     # Admission verdict written by dispatch_origin, read by the admission router to
     # fan out or short-circuit to synthesis: "admit" | "denied" | "budget_exhausted".
     _dispatch_admission: Optional[str]
+
+    # --- Reasoning-mode task config (mirrors TaskPayload, survives a checkpoint) ---
+    # The per-turn Reasoning Mode toggle (native-thinking on/off + its token budget)
+    # is otherwise threaded only via config["configurable"] (never checkpointed), so
+    # a cross-restart HITL resume previously fell back to hardcoded defaults for any
+    # reasoning turn produced after the resume. Mirroring it onto graph state costs
+    # nothing extra to persist: HybridCheckpointer promotes once per run, not per
+    # step, and these two scalars ride alongside vfs_buffer, which already carries
+    # full file contents. Seeded once at task start; never mutated by a node.
+    # Additive and default-safe: an older checkpoint deserializes both as absent, so
+    # every reader falls back to the pre-existing literal defaults (True / 4096).
+    enable_native_thinking: Optional[bool]
+    thinking_budget_tokens: Optional[int]

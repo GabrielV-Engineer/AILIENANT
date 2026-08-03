@@ -27,12 +27,14 @@ import json
 import logging
 import re
 import shlex
+import textwrap
 from pathlib import PurePosixPath
 from typing import (
     Any,
     Callable,
     FrozenSet,
     List,
+    Literal,
     MutableMapping,
     NamedTuple,
     Optional,
@@ -440,22 +442,233 @@ class GitDiffTool(_GatedExecTool):
 class GenerateDocstringInput(BaseModel):
     file_path: str = Field(description="VFS path of the file to document.")
     symbol_name: str = Field(description="The function or class name to add a docstring to.")
+    style: Literal["google", "numpy"] = Field(
+        default="google",
+        description="Docstring convention to render: 'google' (Args/Returns/Raises) "
+        "or 'numpy' (Parameters/Returns/Raises, underlined section headers).",
+    )
+
+
+# --- Signature-aware rendering helpers (DEBT-045 replaces the line-anchored
+# "TODO: document X" stub with real Args/Returns/Raises/Attributes sections
+# synthesized from the already-parsed AST) --------------------------------
+
+
+def _unparse_or_none(node: Optional[ast.expr]) -> Optional[str]:
+    """``ast.unparse`` an annotation/default expr, tolerating anything unparseable."""
+    if node is None:
+        return None
+    try:
+        return ast.unparse(node)
+    except Exception:  # noqa: BLE001 — a malformed sub-expression degrades to "no type"
+        return None
+
+
+def _format_returns_annotation(returns: Optional[ast.expr]) -> Optional[str]:
+    """None when the function has no return annotation OR is explicitly ``-> None``
+    (nothing meaningful to document in a Returns section either way)."""
+    if returns is None:
+        return None
+    if isinstance(returns, ast.Constant) and returns.value is None:
+        return None
+    return _unparse_or_none(returns)
+
+
+def _has_decorator(node: ast.AST, name: str) -> bool:
+    for dec in getattr(node, "decorator_list", None) or []:
+        if _unparse_or_none(dec) == name:
+            return True
+    return False
+
+
+def _is_direct_class_method(tree: ast.AST, target: ast.AST) -> bool:
+    """True iff ``target`` is a function defined directly in some class's body
+    (a method) — as opposed to a module-level function or one nested inside
+    another function. Identity-based: matches the exact node object already
+    located by the caller's ``ast.walk`` scan, so it never re-derives a
+    different symbol on a name collision.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if child is target:
+                    return True
+    return False
+
+
+# One (name, type-or-None, default-or-None) triple per rendered parameter/attribute.
+_ParamSpec = Tuple[str, Optional[str], Optional[str]]
+
+
+def _iter_params(args: ast.arguments, *, drop_first: bool) -> List[_ParamSpec]:
+    """Flatten an ``ast.arguments`` into render-ready (name, type, default) triples,
+    in call order: posonly, positional-or-keyword, *args, keyword-only, **kwargs.
+    ``drop_first`` removes the leading ``self``/``cls`` on a non-static method.
+    """
+    params: List[_ParamSpec] = []
+
+    positional = list(args.posonlyargs) + list(args.args)
+    defaults = list(args.defaults)  # aligns to the TAIL of `positional`
+    pad = len(positional) - len(defaults)
+    for i, a in enumerate(positional):
+        default_node = defaults[i - pad] if i >= pad else None
+        params.append((a.arg, _unparse_or_none(a.annotation), _unparse_or_none(default_node)))
+
+    if drop_first and params:
+        params = params[1:]
+
+    if args.vararg is not None:
+        params.append((f"*{args.vararg.arg}", _unparse_or_none(args.vararg.annotation), None))
+
+    for i, a in enumerate(args.kwonlyargs):
+        default_node = args.kw_defaults[i] if i < len(args.kw_defaults) else None
+        params.append((a.arg, _unparse_or_none(a.annotation), _unparse_or_none(default_node)))
+
+    if args.kwarg is not None:
+        params.append((f"**{args.kwarg.arg}", _unparse_or_none(args.kwarg.annotation), None))
+
+    return params
+
+
+def _collect_class_attrs(body: List[ast.stmt]) -> List[_ParamSpec]:
+    """Class-level ``name: Type`` annotations only (not attributes assigned in
+    ``__init__``, which are not statically visible on the class body)."""
+    attrs: List[_ParamSpec] = []
+    for stmt in body:
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            attrs.append((stmt.target.id, _unparse_or_none(stmt.annotation), None))
+    return attrs
+
+
+_RAISES_CAP: int = 6  # defensive bound on a pathologically exception-heavy body
+
+
+def _raise_name(exc: ast.expr) -> Optional[str]:
+    if isinstance(exc, ast.Call):
+        return _raise_name(exc.func)
+    if isinstance(exc, ast.Name):
+        return exc.id
+    if isinstance(exc, ast.Attribute):
+        return exc.attr
+    return None
+
+
+def _collect_raises(stmts: List[ast.stmt]) -> List[str]:
+    """Exception names raised directly in this body — does NOT descend into a
+    nested function/class/lambda, whose raises belong to that inner scope, not
+    this one. Order-preserving, deduplicated, capped at ``_RAISES_CAP``.
+    """
+    found: List[str] = []
+
+    def _visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Raise):
+                if child.exc is not None:
+                    name = _raise_name(child.exc)
+                    if name and name not in found and len(found) < _RAISES_CAP:
+                        found.append(name)
+                continue
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue  # a nested scope's raises are not this scope's contract
+            _visit(child)
+
+    for stmt in stmts:
+        _visit(stmt)
+    return found
+
+
+def _render_google_docstring(
+    symbol_name: str,
+    params: List[_ParamSpec],
+    returns: Optional[str],
+    raises: List[str],
+    attrs: List[_ParamSpec],
+) -> List[str]:
+    lines = [f"TODO: document {symbol_name}."]
+    if params:
+        lines += ["", "Args:"]
+        for name, ann, default in params:
+            head = f"{name} ({ann})" if ann else name
+            tail = " TODO."
+            if default is not None:
+                tail += f" Defaults to {default}."
+            lines.append(f"    {head}:{tail}")
+    if attrs:
+        lines += ["", "Attributes:"]
+        for name, ann, _default in attrs:
+            head = f"{name} ({ann})" if ann else name
+            lines.append(f"    {head}: TODO.")
+    if returns:
+        lines += ["", "Returns:", f"    {returns}: TODO."]
+    if raises:
+        lines += ["", "Raises:"]
+        for exc in raises:
+            lines.append(f"    {exc}: TODO.")
+    return lines
+
+
+def _render_numpy_docstring(
+    symbol_name: str,
+    params: List[_ParamSpec],
+    returns: Optional[str],
+    raises: List[str],
+    attrs: List[_ParamSpec],
+) -> List[str]:
+    lines = [f"TODO: document {symbol_name}."]
+
+    def _section(title: str, items: List[_ParamSpec]) -> None:
+        lines.extend(["", title, "-" * len(title)])
+        for name, ann, default in items:
+            lines.append(f"{name} : {ann}" if ann else name)
+            tail = "TODO."
+            if default is not None:
+                tail += f" Defaults to {default}."
+            lines.append(f"    {tail}")
+
+    if params:
+        _section("Parameters", params)
+    if attrs:
+        _section("Attributes", attrs)
+    if returns:
+        lines += ["", "Returns", "-------", returns, "    TODO."]
+    if raises:
+        lines += ["", "Raises", "------"]
+        for exc in raises:
+            lines += [exc, "    TODO."]
+    return lines
+
+
+def _render_docstring_lines(
+    style: str,
+    symbol_name: str,
+    *,
+    params: List[_ParamSpec],
+    returns: Optional[str],
+    raises: List[str],
+    attrs: List[_ParamSpec],
+) -> List[str]:
+    renderer = _render_numpy_docstring if style == "numpy" else _render_google_docstring
+    return renderer(symbol_name, params, returns, raises, attrs)
 
 
 class DocstringGeneratorTool(BaseTool):
-    """Insert a placeholder docstring into a function/class via AST anchoring.
+    """Insert a signature-aware Google/Numpy-style docstring via AST anchoring.
 
     Reads the file from the VFS, locates the target symbol with ``ast.parse``, and
-    inserts an indented stub as the symbol's first body statement. A pre-existing
-    SyntaxError (or pathological nesting that trips RecursionError) returns a
-    structured error rather than crashing the node.
+    synthesizes Args/Returns/Raises (function) or Attributes (class) sections from
+    the already-parsed signature — a placeholder body per parameter/return/raised
+    exception, not a single flat "TODO: document X" line. A pre-existing SyntaxError
+    (or pathological nesting that trips RecursionError) returns a structured error
+    rather than crashing the node; a param/return whose real behavior isn't
+    statically inferable still gets a "TODO." placeholder rather than being
+    silently omitted.
     """
 
     name: str = "generate_docstring"
     description: str = (
-        "Add a placeholder docstring to a named function or class in a VFS file. "
-        "The new content is AST-validated before it is written. Exclusive to the "
-        "doc_manager role."
+        "Add a signature-aware Google- or Numpy-style docstring (Args/Returns/Raises "
+        "or Attributes) to a named function or class in a VFS file. The new content "
+        "is AST-validated before it is written. Exclusive to the doc_manager role."
     )
     args_schema: Type[BaseModel] = GenerateDocstringInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
@@ -476,7 +689,7 @@ class DocstringGeneratorTool(BaseTool):
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("DocstringGeneratorTool is async-only — use _arun().")
 
-    async def _arun(self, file_path: str, symbol_name: str) -> str:
+    async def _arun(self, file_path: str, symbol_name: str, style: str = "google") -> str:
         content = self._vfs_read(file_path)
         if content is None:
             return f"[generate_docstring] ERROR: file {file_path!r} not found in VFS"
@@ -504,17 +717,52 @@ class DocstringGeneratorTool(BaseTool):
         if not target.body:
             return f"[generate_docstring] ERROR: {symbol_name!r} has an empty body"
 
-        first_stmt = target.body[0]
-        # A single-line definition ("def f(): return 1") shares the header line; a
-        # line-anchored insert cannot safely split it.
-        if first_stmt.lineno == target.lineno:
-            return f"[generate_docstring] SKIP: {symbol_name!r} is single-line; cannot anchor a docstring"
+        if isinstance(target, ast.ClassDef):
+            body_lines = _render_docstring_lines(
+                style, symbol_name, params=[], returns=None, raises=[],
+                attrs=_collect_class_attrs(target.body),
+            )
+        else:
+            drop_first = _is_direct_class_method(tree, target) and not _has_decorator(
+                target, "staticmethod"
+            )
+            body_lines = _render_docstring_lines(
+                style, symbol_name,
+                params=_iter_params(target.args, drop_first=drop_first),
+                returns=_format_returns_annotation(target.returns),
+                raises=_collect_raises(target.body),
+                attrs=[],
+            )
+        doc_text = '"""' + "\n".join(body_lines) + '\n"""'
 
+        first_stmt = target.body[0]
         lines = content.splitlines()
-        indent = " " * first_stmt.col_offset
-        doc_line = f'{indent}"""TODO: document {symbol_name}."""'
-        insert_at = first_stmt.lineno - 1  # 0-based index of the first body statement
-        new_lines = lines[:insert_at] + [doc_line] + lines[insert_at:]
+
+        if first_stmt.lineno == target.lineno:
+            # Single-line def/class ("def f(): return 1", or a semicolon-separated
+            # body) shares its header's physical line. Split the header off and
+            # regenerate every body statement via ast.unparse — a substring slice
+            # cannot safely relocate several semicolon-joined statements, and
+            # _validate_python_syntax below is still the final correctness gate.
+            header_line = lines[target.lineno - 1][: first_stmt.col_offset].rstrip()
+            body_indent = " " * (target.col_offset + 4)
+            try:
+                regenerated: List[str] = []
+                for stmt in target.body:
+                    regenerated.extend(textwrap.indent(ast.unparse(stmt), body_indent).splitlines())
+            except Exception:
+                return f"[generate_docstring] ERROR: could not split single-line {symbol_name!r}"
+            doc_block = textwrap.indent(doc_text, body_indent).splitlines()
+            new_lines = (
+                lines[: target.lineno - 1] + [header_line] + doc_block
+                + regenerated + lines[target.lineno :]
+            )
+        else:
+            indent = " " * first_stmt.col_offset
+            doc_block = textwrap.indent(doc_text, indent).splitlines()
+            insert_at = first_stmt.lineno - 1  # 0-based index of the first body statement
+            new_lines = lines[:insert_at] + doc_block + lines[insert_at:]
+
         new_content = "\n".join(new_lines)
         if content.endswith("\n"):
             new_content += "\n"
