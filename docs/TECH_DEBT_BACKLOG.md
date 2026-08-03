@@ -129,13 +129,16 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-137 | Provider-native `cache_control` + cache telemetry not implemented — 12.1 shipped only the prefix-stability prerequisite; the cacheable prefix is too small (~300-450 tokens) to clear any provider's minimum-cacheable-token floor today | LOW | Cost optimization | unblocked by 12.7 (coder tool-calling) | Floating |
 | DEBT-138 | `brain/agentic_cell.py` still resolves the locked oracle tier (`get_active_adapter()`), not the devcontainer tier §43 (12.4) added session support to — rerouting is blocked on an OCC-safe sync surface (`DevcontainerSandboxAdapter.get_sync_surface()` doesn't exist; a raw bind-mounted surface would bypass the VFS barrier's hash-based stale-guard) | MEDIUM | Architecture / Blocked | future OCC-safe sync-surface slice | Blocked |
 | DEBT-139 | The §43 devcontainer session host driver has no real TTY (no `node-pty`, by design — CLAUDE.md §9) — no job control, no `isatty()`, and `interrupt` sends a best-effort `SIGINT` to the child rather than a true Ctrl-C to a foreground process group | LOW | Capability gap | future terminal-fidelity slice | Floating |
-| DEBT-140 | GraphRAG embeds one vector per whole file — no chunking; a large multi-function file collapses to a single centroid that resembles none of its functions | MEDIUM | Architecture / Accuracy | 12.13 | Floating |
+| DEBT-140 | GraphRAG embedded one vector per whole file — no chunking; a large multi-function file collapsed to a single centroid that resembled none of its functions | MEDIUM | Architecture / Accuracy | 12.13 | RESOLVED 2026-08-03 |
 | DEBT-141 | Embed-input truncation past the ceiling silently dropped content with no log line; ceiling was a fixed constant, not resolved per active embedding provider | MEDIUM | Observability / Accuracy | 12.11 | RESOLVED 2026-08-03 |
 | DEBT-142 | `search_snippets`'s `content_snippet` (documented "first 500 chars for audit/debug") was injected verbatim as RAG evidence — a file matching past its header contributed only imports | MEDIUM | Accuracy | 12.11 | RESOLVED 2026-08-03 |
 | DEBT-143 | `deep_parse` (the only live GraphRAG expansion) applied no cap on files read/parsed; the capped, PPR-ranked `extract()` had zero callers and its guardrail counted path tokens, not content tokens | MEDIUM | Reliability / §5.5 | 12.11 | RESOLVED 2026-08-03 |
 | DEBT-144 | `brain/prompt_builder.py` (~330 lines, token-budget-aware flesh/skeleton context assembler) has zero callers in production — its selection is global-PPR (query-blind), which would inject the same files every turn regardless of the question | MEDIUM | Dead code | 12.12 | RESOLVED 2026-08-03 |
 | DEBT-146 | `AIlienantGraphState.is_indexing_complete` is a write-only state channel — declared, seeded hardcoded `True` at two call sites, read by nothing repo-wide; the other half of the same never-completed "workspace indexing gate" `brain/orchestrator.py` (deleted by 12.12) belonged to | LOW | Dead code | future state-cleanup slice | Floating |
 | DEBT-145 | Per-task reasoning-mode config (`enable_native_thinking`, `thinking_budget_tokens`) rides `AIlienantGraphState` — mutable runtime state — rather than a dedicated relational config table; accepted for DEBT-079's two scalars given `HybridCheckpointer`'s per-run (not per-step) promotion, but the pattern shouldn't silently repeat | LOW | Architecture / Decision | future config/runtime-separation slice | Floating |
+| DEBT-147 | `symbol_definitions` catalog is populated only by the reactive (per-save) indexing path — `LazyIndexer`'s bulk crawl never calls `upsert_symbol_definitions`, so a freshly cold-indexed workspace has an empty catalog until files are individually re-saved | LOW | Coverage gap | future cold-path parity slice | Floating |
+| DEBT-148 | Dashboard vector scatter map (`/api/v1/memory/vectors`, `pca_project_2d`) surfaces only file-level embeddings — 12.13's per-symbol chunk vectors have no visualization; `VectorPoint` would need to become multi-valued per file | LOW | Feature gap | future dashboard chunk-visibility slice | Floating |
+| DEBT-149 | CSS's semantic-similarity term (`search`/`search_with_paths`) is deliberately calibrated against file-centroid distances only, never chunk distances — correct for now (chunk distances run systematically smaller and would silently inflate CSS/routing as a side effect), but a genuine precision opportunity is left on the table if routing is ever worth recalibrating against symbol-level evidence | LOW | Architecture / Decision | future routing-recalibration slice | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 6 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 12.5 | RESOLVED |
@@ -882,26 +885,70 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future terminal-fidelity slice, if usage shows this MVP tradeoff biting in practice
   (e.g. an operator running an interactive REPL or a TTY-sensitive build tool through the tunnel).
 
-### DEBT-140 [MEDIUM · Floating] — GraphRAG has no chunking; one vector per whole file
+### DEBT-140 [MEDIUM · RESOLVED 2026-08-03, 12.13] — GraphRAG had no chunking; one vector per whole file
 
-- **Date:** 2026-08-03
-- **Detail:** `core/memory/semantic_memory.py::semantic_upsert` embeds an entire file's content as a
-  single LanceDB vector, regardless of size. A large multi-function file collapses to one centroid
-  that resembles none of its individual functions — retrieval degrades to "which file is vaguely
-  near this topic" rather than "which function actually matches". This is independent of which
-  embedding model is configured; a larger/costlier model dilutes identically.
-- **Phase:** 12.13 — hybrid-by-size chunking. Files under a size threshold keep today's single
-  file-level vector unchanged; files over it additionally emit per-symbol chunk rows in a new,
-  additive LanceDB table, reusing the already-populated `symbol_definitions` catalog
-  (`core/ast_engine.py::collect_symbol_defs`, `SCHEMA_EVOLUTION.MD §27`) rather than re-parsing.
-- **Notes:** `_MIN_TOKENS = 100` (the anti-fragmentation gate) is written for whole files; most
-  individual functions fall under 100 tokens, so per-symbol chunks need their own, lower threshold
-  or the feature silently writes nothing. `core/janitor.py::_vector_gc_sync`, `semantic_delete`, the
-  dimension-mismatch drop/recreate path (`semantic_memory.py:298-307`), and the `SCHEMA_EVOLUTION.MD
-  §34` dashboard surface (`list_embeddings`, `pca_project_2d`, purge endpoint) all need updating in
-  the same change or the new table silently rots. Adoption requires a full reindex. Incremental cost
-  actually *improves* once chunks exist (editing one function re-embeds one function, not a
-  1000-line file) — only the initial index of over-threshold files costs more.
+- **Date:** 2026-08-03 · **Resolved:** 2026-08-03 (12.13)
+- **Detail (was):** `core/memory/semantic_memory.py::semantic_upsert` embedded an entire file's
+  content as a single LanceDB vector, regardless of size. A large multi-function file collapsed to
+  one centroid that resembled none of its individual functions — retrieval degraded to "which file
+  is vaguely near this topic" rather than "which function actually matches". Independent of which
+  embedding model was configured; a larger/costlier model diluted identically.
+- **Resolution:** hybrid-by-size chunking, additive throughout. Files under `_CHUNK_FILE_MIN_TOKENS`
+  (800) keep the unchanged single file-level vector; files over it additionally emit one vector per
+  `function`/`method` symbol (classes excluded — their range fully contains their methods') into a
+  new table, `symbol_chunk_embeddings`, sourced from `IndexingResult.symbols` — already produced by
+  the single existing tree-sitter parse at both indexing call sites, zero re-parses. `search_snippets`
+  merges both tables under one `asyncio.gather` (latency `max(file, chunk)`, never the sum) and packs
+  multi-hit evidence per file under a nearest-first greedy budget
+  (`_MAX_EVIDENCE_CHARS_PER_FILE = 2000`); the routing meters (`search`, `search_with_paths`, and
+  therefore CSS/`is_red_alert`) read only the file table, proven byte-identical with and without
+  chunk rows present. `semantic_delete`, the dimension-mismatch drop/recreate path, and
+  `core/janitor.py::_vector_gc_sync` all cover both tables. A new `POST
+  /api/v1/memory/chunks/backfill` endpoint (deny-if-busy per project, bounded, resumable, `confirm`
+  gated) adopts a corpus indexed before chunking existed — see `SCHEMA_EVOLUTION.MD §46`.
+- **Corrections to the original spec, found before implementation:**
+  1. The spec said to source symbols from the `symbol_definitions` catalog — that catalog is
+     populated only by the *reactive* (per-save) path, never by the cold/bulk indexer, so a
+     freshly-indexed workspace would chunk nothing. Fixed by sourcing from `IndexingResult.symbols`
+     instead, available at both call sites already.
+  2. The spec said landing chunks would let query-time skeleton distillation (DEBT-142) be deleted
+     outright. It cannot: hybrid-by-size means under-threshold files never get chunk rows, so
+     deletion would regress every small/medium file back to the raw 500-char slice. It stays as the
+     fallback tier for files with no stored chunk evidence, with both its containment layers intact.
+  3. `pca_project_2d` (cited as needing an update) is a pure function with no table coupling — no
+     change needed. Surfacing chunks in the dashboard scatter map is a separate frontend feature,
+     logged as DEBT-148.
+  4. "Adoption requires a full reindex" named a procedure that does not exist in this codebase (no
+     CLI, no endpoint, no UI command; `LazyIndexer` actively skips its crawl once a workspace is
+     already indexed) — replaced with the bounded backfill endpoint above.
+  5. Without content-addressed reuse, the write path would have *inverted* the recorded cost result:
+     a blanket per-save replace-write of a file's chunk rows means editing one function re-embeds
+     every symbol in the file, not just that one. Fixed with a `content_hash` (sha256 of the chunk's
+     own text) reuse key — a chunk whose text is unchanged reuses its stored vector regardless of
+     line-number movement above it. The key is deliberately the text hash, not
+     `(qualified_name, start_line)`: line numbers shift on any edit above a symbol, and a positional
+     key would falsely mark every chunk dirty on a one-line insert, re-embedding the whole file.
+  6. Reusing the file-level `create_index(replace=True)` pattern per file would make the backfill
+     endpoint rebuild the ANN index once per file — quadratic over a large corpus. `_write_chunks`
+     takes a `build_index` flag; backfill defers to a single build after its whole batch.
+  7. Batched embedding requests need internal partitioning by BOTH item count (32) and cumulative
+     token payload, not count alone — a handful of large functions can breach a provider's payload
+     ceiling well under the 32-item bound, surfacing as an HTTP 413 or a silently truncated response
+     array on OpenAI-compatible local providers (Ollama/vLLM/LM Studio).
+- **Corrected cost result:** the file-level vector is still re-embedded on every save, exactly as
+  before — content-addressed reuse does not change that. What it buys is that the *added* chunk cost
+  scales with the number of symbols actually edited (typically one), not with the file's symbol
+  count: steady-state incremental cost is `1 + M` (M = edited symbols) against the pre-chunking `1`.
+  The genuine one-time cost is the initial index or backfill pass of over-threshold files.
+- **Notes:** `_CHUNK_MIN_TOKENS = 20` is the chunk-scoped anti-fragmentation floor — `_MIN_TOKENS`
+  (100) is calibrated for whole files and would drop nearly every real function if reused directly.
+  A module-level assertion enforces `_CHUNK_FILE_MIN_TOKENS > _MIN_TOKENS` so a file can never
+  qualify for chunking without first qualifying for its own file-level embedding.
+- **Tests:** `tests/test_symbol_chunk_embeddings.py` (23 cases — hybrid gate, class/empty-slice
+  exclusion, failure isolation, batched-embedding partitioning and fallback, the three-case
+  content-addressed reuse guard, gather-based merge and degrade-on-exception, the evidence knapsack,
+  additive tolerance with no chunk table, routing-meter isolation, both-table delete/GC/dimension
+  coverage, and backfill idempotency/limits/single index build).
 
 ### DEBT-141 [MEDIUM · RESOLVED 2026-08-03, 12.11] — Silent embed-input truncation, fixed-constant ceiling
 
@@ -952,9 +999,12 @@ Decision    Not a defect — see [DECISION] tier.
   Residual, documented risk: `wait_for` frees the awaiting coroutine but cannot kill the underlying
   thread — a stalled parse keeps running in the shared default `ThreadPoolExecutor` (also used by
   LanceDB calls) until it finishes regardless. The size guard is what actually protects that shared
-  pool; the timeout only bounds latency. The migration to index-time distillation (DEBT-140/12.13,
-  where chunk rows would store this once instead of recomputing it per retrieval) removes the hot-path
-  cost and both containment layers at once — tracked explicitly in 12.13's WBS, not left implicit.
+  pool; the timeout only bounds latency. **Update (12.13):** index-time chunk embeddings
+  (DEBT-140) narrowed this path's exposure — files over `_CHUNK_FILE_MIN_TOKENS` carry stored
+  per-symbol evidence and never reach this distillation at all — but did not remove it or its
+  containment layers, as originally expected here. Hybrid-by-size chunking means under-threshold
+  files still have no stored evidence, so this stays the load-bearing fallback tier for them; see
+  DEBT-140's corrections for why the removal this note anticipated turned out to be wrong.
 - **Tests:** `tests/test_graphrag_retrieval_fidelity.py` (skeleton returned instead of a head-slice
   when the match is past line 500; graceful fallback with no `project_root`, oversized content, and
   a stalled parse; `agents/coder.py` and the MCP handler both forward `project_root` correctly).

@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 import time
-from typing import Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import psutil
 
@@ -30,7 +30,7 @@ from core.db import (
     upsert_symbol_definitions,
 )
 from brain.memory import index_file_sync
-from shared.contracts import IndexingRequest, IndexingResult, detect_language
+from shared.contracts import IndexingRequest, IndexingResult, SymbolDef, detect_language
 
 logger = logging.getLogger("LAZY_INDEXER")
 
@@ -385,6 +385,7 @@ class LazyIndexer:
                                     file_path=file_path,
                                     content=content,
                                     workspace_hash=project_id,
+                                    symbols=result.symbols,
                                 )
                             except Exception as _sem_err:
                                 logger.debug("Semantic upsert failed (non-fatal): %s", _sem_err)
@@ -542,7 +543,9 @@ class ReactiveIndexer:
                 logger.warning(
                     "ReactiveIndexer: symbol-catalog write failed for %s: %s", filepath, sym_exc
                 )
-            embedded = await self._semantic_upsert(filepath, resolved, project_id)
+            embedded = await self._semantic_upsert(
+                filepath, resolved, project_id, result.symbols
+            )
             if embedded:
                 self._breaker.record_success(key)
             else:
@@ -584,14 +587,23 @@ class ReactiveIndexer:
             return None
         return res.content
 
-    async def _semantic_upsert(self, filepath: str, content: str, project_id: str) -> bool:
+    async def _semantic_upsert(
+        self,
+        filepath: str,
+        content: str,
+        project_id: str,
+        symbols: Optional[Sequence[SymbolDef]] = None,
+    ) -> bool:
         from core.memory.semantic_memory import SemanticMemoryManager  # deferred import
         from core.storage_paths import graphrag_lancedb_path_for
         try:
             return await SemanticMemoryManager(
                 lancedb_path=graphrag_lancedb_path_for(project_id)
             ).semantic_upsert(
-                file_path=filepath, content=content, workspace_hash=project_id
+                file_path=filepath,
+                content=content,
+                workspace_hash=project_id,
+                symbols=symbols,
             )
         except Exception as exc:
             logger.debug("ReactiveIndexer: semantic upsert failed (non-fatal): %s", exc)

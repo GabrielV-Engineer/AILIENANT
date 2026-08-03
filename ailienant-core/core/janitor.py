@@ -25,6 +25,11 @@ from core.storage_paths import graphrag_lancedb_path, project_id_for
 logger = logging.getLogger("JANITOR")
 
 _WORKSPACE_EMBEDDINGS_TABLE: str = "workspace_embeddings"
+# Per-symbol chunk vectors live in a sibling table and orphan on the same event
+# (their source file disappearing), so GC must sweep both or deleted files keep
+# contributing chunk evidence to retrieval indefinitely.
+_SYMBOL_CHUNKS_TABLE: str = "symbol_chunk_embeddings"
+_VECTOR_TABLES: tuple[str, ...] = (_WORKSPACE_EMBEDDINGS_TABLE, _SYMBOL_CHUNKS_TABLE)
 _DEFAULT_RETENTION_DAYS: int = 30
 
 
@@ -50,21 +55,28 @@ def _vector_gc_sync(workspace_root: str, lancedb_path: str) -> VectorGCReport:
     """Sync implementation; always called via asyncio.to_thread()."""
     ws_hash: str = project_id_for(workspace_root)
     db = lancedb.connect(lancedb_path)
-    if _WORKSPACE_EMBEDDINGS_TABLE not in db.table_names():
-        logger.info("Janitor: table '%s' not found — skipping vector GC.", _WORKSPACE_EMBEDDINGS_TABLE)
+    present = db.table_names()
+    if _WORKSPACE_EMBEDDINGS_TABLE not in present and _SYMBOL_CHUNKS_TABLE not in present:
+        logger.info("Janitor: no vector tables found — skipping vector GC.")
         return VectorGCReport(orphaned_paths=[], deleted_count=0)
 
-    tbl = db.open_table(_WORKSPACE_EMBEDDINGS_TABLE)
-    arrow_table = tbl.to_lance().to_table(columns=["file_path", "workspace_hash"])
-    mask = pc.equal(arrow_table.column("workspace_hash"), ws_hash)  # pyright: ignore[reportAttributeAccessIssue] — pyarrow.compute stub omits equal
-    ws_table = arrow_table.filter(mask)
+    # A file's orphan status is a property of the filesystem, not of any one
+    # table, so paths are unioned across both stores before the existence check —
+    # a file may have chunk rows in one and a stale file-level row in the other.
+    tables = {name: db.open_table(name) for name in _VECTOR_TABLES if name in present}
+    unique_paths: set[str] = set()
+    for tbl in tables.values():
+        arrow_table = tbl.to_lance().to_table(columns=["file_path", "workspace_hash"])
+        mask = pc.equal(arrow_table.column("workspace_hash"), ws_hash)  # pyright: ignore[reportAttributeAccessIssue] — pyarrow.compute stub omits equal
+        unique_paths.update(arrow_table.filter(mask).column("file_path").to_pylist())
 
-    unique_paths: List[str] = list(set(ws_table.column("file_path").to_pylist()))
-    orphaned: List[str] = [p for p in unique_paths if not os.path.exists(p)]
+    orphaned: List[str] = [p for p in sorted(unique_paths) if not os.path.exists(p)]
 
     for file_path in orphaned:
         safe_path: str = file_path.replace("'", "''")
-        tbl.delete(f"workspace_hash = '{ws_hash}' AND file_path = '{safe_path}'")
+        predicate = f"workspace_hash = '{ws_hash}' AND file_path = '{safe_path}'"
+        for tbl in tables.values():
+            tbl.delete(predicate)
         logger.info("Janitor: deleted orphaned vector for %s", file_path)
 
     if orphaned:

@@ -2123,15 +2123,116 @@ what an MCP client might have observed before 2026-08-03. Consumers that cannot 
 root, or whose target file is unreadable/unsupported/oversized, continue to receive the pre-fix
 500-char slice — the refinement degrades, it never removes the field.
 
-**Target contract for the DEBT-140/12.13 chunk-embeddings table (not yet implemented — this section
-is the binding spec for that future sub-phase, per CLAUDE.md §1):** a new, additive LanceDB table
-(name TBD at implementation, distinct from `workspace_embeddings`) storing one row per symbol chunk
-for files over the size threshold — `qualified_name`, `kind`, `start_line`, `end_line` (mirroring
-`core/ast_engine.py::collect_symbol_defs`'s tuple shape), `file_path`, `workspace_hash`, `vector`,
-`indexed_at`. Version-tagged by construction (a new table, not a schema mutation of
-`workspace_embeddings`) and additive: a project indexed before 12.13 ships simply has no rows in this
-table, and every consumer must tolerate that — retrieval falls back to the existing file-level
-`workspace_embeddings` result, never errors on the chunk table's absence. `core/janitor.py`'s vector
-GC, `SemanticMemoryManager.semantic_delete`, the dimension-mismatch drop/recreate path, and the §34
-dashboard surface must all be extended to cover this table in the same change that creates it, per
-the WBS item in Manifest 12.13 — an untouched consumer here is a silent-rot bug, not a deferred nice-to-have.
+**Superseded by §46 (2026-08-03):** the forward-spec that originally stood here for the DEBT-140/12.13
+chunk-embeddings table has been implemented and is now documented as-built in §46. Two points from the
+original spec changed on implementation: the table gained a `chunk_text` + `content_hash` column pair
+that this forward-spec did not list — without stored text there is nothing for query-time distillation
+to migrate *to* — and the migration was narrowed rather than completed (§46 explains why). See §46 for
+the authoritative contract.
+
+## §46 — Symbol-Level Chunk Embeddings (`symbol_chunk_embeddings`, Manifest 12.13)
+
+Ships DEBT-140's fix: a second, additive LanceDB table supplementing (never mutating) the
+`workspace_embeddings` schema at §5. A project indexed before this table existed simply has no rows in
+it; every consumer tolerates that and falls back to file-level evidence — no reader errors on absence.
+
+```
+symbol_chunk_embeddings:
+    file_path       utf8
+    workspace_hash  utf8              -- project_id isolation key, identical semantics to workspace_embeddings
+    qualified_name  utf8              -- dotted FQN from core/ast_engine.py::collect_symbol_defs
+    kind            utf8              -- "function" | "method" (classes are never chunked — see below)
+    start_line      int32             -- 1-indexed, inclusive
+    end_line        int32             -- 1-indexed, inclusive
+    chunk_text      utf8              -- the symbol's source, capped at _CHUNK_TEXT_MAX_CHARS (4000);
+                                       -- this IS the stored retrieval evidence, and the exact embed input
+    content_hash    utf8              -- sha256(chunk_text) — the vector-reuse key, see below
+    token_count     int32
+    vector          list<float32>[dim]  -- same embedding model, metric, and dimension as workspace_embeddings
+    indexed_at      utf8              -- ISO-8601 UTC
+```
+
+**Population (`core/memory/semantic_memory.py`):** `semantic_upsert` gained an additive
+`symbols: Optional[Sequence[SymbolDef]] = None` keyword. When supplied and the file's token count
+clears `_CHUNK_FILE_MIN_TOKENS` (800, env-overridable via `AILIENANT_CHUNK_FILE_MIN_TOKENS`), one row
+is written per `function`/`method` symbol above `_CHUNK_MIN_TOKENS` (20 — a floor scoped to chunks,
+distinct from the file-level `_MIN_TOKENS` (100), which would drop nearly every real function if
+reused directly). `symbols` is sourced from `IndexingResult.symbols` — already produced by the single
+tree-sitter parse both indexing call sites perform (`core/indexer.py`'s bulk and reactive paths) — not
+from the `symbol_definitions` catalog, which the cold/bulk path never populates (DEBT-147). **Class
+rows are never written:** `collect_symbol_defs` emits a class and its methods, and the class range
+fully contains each method's, so embedding both would double-pay for the same bytes and double-count
+in retrieval; a class's header/docstring already rides in the file-level vector. A malformed/empty
+line-range slice is dropped, never sent to the embedder as an empty string.
+
+**Content-addressed reuse (the incremental-cost guard):** on each upsert, a file's existing
+`(content_hash → vector)` pairs are read back, and only chunks whose hash is unmatched are embedded —
+everything else reuses its stored vector, refreshed only in `qualified_name`/`start_line`/`end_line`
+metadata. The key is deliberately the chunk text's own digest, not `(qualified_name, start_line)`:
+line numbers shift on any edit above a symbol, so a positional key would mark every chunk dirty (and
+re-embed the whole file) on something as small as a one-line insert elsewhere in the file — exactly
+the regression this key avoids. Chunk writes are all-or-nothing per file: an embedding failure aborts
+before any row is written, so a partial symbol set can never masquerade as complete evidence, and the
+file-level row (written first, unconditionally) is never affected by a chunk-side failure.
+
+**Batched embedding (`_get_embeddings`, `_partition_for_embedding`, `_embed_batch`):** requests are
+partitioned by **both** item count (`_EMBED_BATCH_SIZE` = 32) and cumulative token payload
+(`get_embedding_target().max_input_tokens`), whichever binds first — a handful of large functions can
+breach a local OpenAI-compatible provider's (Ollama/vLLM/LM Studio) payload ceiling well under the
+32-item bound, surfacing as an HTTP 413 or a silently truncated response array. Batches dispatch
+concurrently under `asyncio.Semaphore(_EMBED_CONCURRENCY = 4)`; a provider returning fewer vectors
+than requested falls back to sequential single-text calls for that batch rather than silently
+misaligning vectors to symbols.
+
+**Read path (`search_snippets` only — routing meters are untouched, see below):** `_query_chunks`
+mirrors the existing `_query_snippets` injection-safe `.where()` pushdown. The file-table and
+chunk-table lookups run under one `asyncio.gather` so total latency stays
+`max(O(log N_file), O(log N_chunk))` rather than their sum; an exception on either side is logged with
+`exc_info=True` and degrades to the other side's results — the query path never fails outright because
+one store had a transient fault. Multiple chunk hits on the same file are packed into that file's
+evidence by a nearest-first greedy budget (`_MAX_EVIDENCE_CHARS_PER_FILE` = 2000 chars, sized against
+the pre-chunking ceiling of `_TOP_K`(5) × the AST-skeleton cap of 1500 bytes = 7500 chars total, so
+chunking cannot blow the same context budget it exists to shrink). A file with no chunk hits — because
+it is under the chunking threshold, or predates this table entirely — falls through to the pre-existing
+query-time AST-skeleton distillation (§45; **narrowed by this table's arrival, not removed**, since
+hybrid-by-size guarantees some files never get stored chunk evidence at all).
+
+**Routing meters are deliberately untouched:** `search`/`search_with_paths` — which feed
+`CSS = 0.5·semantic_similarity + 0.3·graph_coverage + 0.2·recency_score` and gate `is_red_alert` — read
+only `workspace_embeddings`. Chunk distances run systematically smaller than file-centroid distances
+(that is the entire point of chunking), so merging them into these two methods would silently inflate
+CSS and shift routing as a side effect of a retrieval-evidence change. Recalibrating routing against
+symbol-level evidence is a deliberate future decision, not a rot bug — tracked as DEBT-149.
+
+**Rot prevention — the three consumers that actually needed extending:**
+- `SemanticMemoryManager.semantic_delete` / `_delete_record` — deletes from both tables under the same
+  `(workspace_hash, file_path)` predicate; this transitively covers the §34 `/embeddings/purge`
+  endpoint, which delegates here.
+- `core/janitor.py::_vector_gc_sync` — unions orphan candidates across both tables before the
+  filesystem-existence check (a file may have a stale row in only one table), then issues the delete
+  predicate against every table regardless of which one actually held the row — a no-op delete on an
+  absent row is harmless, while skipping a table risks leaving a ghost.
+- The dimension-mismatch drop/recreate path in `_write_record` — a provider swap that changes embedding
+  dimension drops the chunk table alongside the file table (recreated lazily on the next chunk write);
+  leaving it behind would strand stale-dimension vectors that fail every subsequent chunk search.
+
+`pca_project_2d` and the §34 `dump_vectors`/`list_embeddings` dashboard reads needed **no** change — the
+former is a pure function with no table coupling, and the latter remain file-level browsers by design;
+surfacing chunk vectors in the dashboard scatter map is a separate frontend feature (DEBT-148), not rot.
+
+**Adoption — `POST /api/v1/memory/chunks/backfill` (`api/memory_dashboard.py`):** there is no
+full-reindex path anywhere in this codebase (no CLI, no endpoint, no UI command; `LazyIndexer` actively
+skips its crawl once a workspace is already indexed), so without this endpoint a project indexed before
+12.13 would only ever accumulate chunk rows for files edited afterward — excluding precisely the large
+legacy files DEBT-140 was about. `ChunkBackfillRequest{project_id, limit≤500, force, confirm:true}` →
+`ChunkBackfillResponse{ok, processed, chunked, skipped, remaining}`. `workspace_root` is resolved
+server-side from the persisted `projects` registry (§35.1) — **never accepted from the request body** —
+because that value confines every file read the pass performs and must come from a trusted source, not
+client input. Candidates are files already over `_CHUNK_FILE_MIN_TOKENS` per `list_embeddings`, minus
+files that already have chunk rows unless `force`. Parses via the identical `compute_pool.run(
+index_file_sync, ...)` call the indexer itself makes — no bespoke second parser, tree-sitter stays off
+the event loop. Deny-if-busy per `project_id` (a concurrent second call gets HTTP 409, not a silently
+coalesced/empty result — an HTTP caller needs either the real count or an explicit "try again", never a
+fabricated zero); bounded and resumable via `limit`/`remaining`; the ANN index is rebuilt once at the
+end of a batch, not per file, since the per-file `create_index(replace=True)` pattern the reactive path
+uses would make a large backfill pass quadratic.

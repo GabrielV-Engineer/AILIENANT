@@ -13,13 +13,14 @@ Embedding generation uses litellm.aembedding() (already async).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import lancedb
 import numpy as np
@@ -43,6 +44,48 @@ _TABLE_NAME: str = "workspace_embeddings"
 _TOP_K: int = 5
 _MIN_TOKENS: int = 100        # Anti-fragmentation gate
 _HNSW_MIN_ROWS: int = 256     # IVF training minimum with num_partitions=1
+
+# ── Symbol-level chunking ─────────────────────────────────────────────────
+# One vector per whole file makes a large multi-function module collapse into a
+# single centroid that resembles none of its functions, capping retrieval
+# precision independently of which embedding model is configured. The store is
+# therefore hybrid by size: every file keeps its file-level vector unchanged, and
+# files above _CHUNK_FILE_MIN_TOKENS ADDITIONALLY emit one vector per symbol into
+# a separate table. The file table's Arrow schema is never mutated, so a corpus
+# indexed before chunking existed simply has no chunk rows and every consumer
+# falls back to file-level behavior.
+_CHUNK_TABLE_NAME: str = "symbol_chunk_embeddings"
+_CHUNK_FILE_MIN_TOKENS: int = int(os.getenv("AILIENANT_CHUNK_FILE_MIN_TOKENS", "800"))
+# Per-chunk anti-fragmentation floor. Deliberately far below _MIN_TOKENS: that
+# gate is calibrated for whole files, and most individual functions fall under
+# 100 tokens, so reusing it here would silently write nothing at all. This floor
+# only drops one-line accessors, whose vectors are noise.
+_CHUNK_MIN_TOKENS: int = 20
+_CHUNK_MAX_PER_FILE: int = 200      # fan-out bound for a pathological file
+_CHUNK_TEXT_MAX_CHARS: int = 4000   # stored-evidence cap (~1000 tokens)
+# Read-side injection budget per file when several chunks of one file match.
+# Sized against the pre-chunking evidence ceiling (_TOP_K x the AST skeleton cap
+# of 1500 bytes = 7500 chars); a larger per-file budget multiplies by _TOP_K and
+# would blow the context window. To surface more evidence per file, lower _TOP_K
+# rather than raising this.
+_MAX_EVIDENCE_CHARS_PER_FILE: int = 2000
+
+# Batched embedding. A single request carrying every symbol of a large file risks
+# HTTP 413 or silent array truncation on OpenAI-compatible local providers, so
+# requests are partitioned by BOTH item count and cumulative token payload —
+# 32 large functions can breach a payload ceiling while still being only 32 items.
+_EMBED_BATCH_SIZE: int = 32
+_EMBED_CONCURRENCY: int = 4   # bounded so a local provider is not thrashed
+
+# Load-bearing ordering: semantic_upsert returns early below _MIN_TOKENS, before
+# any chunking is considered. Chunking is therefore only reachable while the file
+# gate sits above it — otherwise a file could qualify for chunks yet never be
+# embedded at all, and its chunk rows would violate the chunks-subset-of-files
+# invariant that search_snippets' corpus-presence short-circuit relies on.
+assert _CHUNK_FILE_MIN_TOKENS > _MIN_TOKENS, (
+    "_CHUNK_FILE_MIN_TOKENS must exceed _MIN_TOKENS; otherwise a file can emit "
+    "chunk rows without ever receiving a file-level embedding."
+)
 # The embed-input ceiling itself is provider-specific and resolved per call from
 # get_embedding_target().max_input_tokens (core/config/byom_config.py::EmbeddingTarget),
 # whose default (8191, the ada-002-family limit) is the fallback when no BYOM target
@@ -72,6 +115,28 @@ _WORKSPACE_SCHEMA: pa.Schema = pa.schema([
 ])
 
 
+def _chunk_schema_for_dim(dim: int) -> pa.Schema:
+    """Schema for the per-symbol chunk table at a concrete embedding dimension.
+
+    ``chunk_text`` is both the stored retrieval evidence and the exact embed
+    input, and ``content_hash`` digests it — so a hash match guarantees the
+    stored vector still describes that text and can be reused verbatim.
+    """
+    return pa.schema([
+        pa.field("file_path",      pa.utf8()),
+        pa.field("workspace_hash", pa.utf8()),
+        pa.field("qualified_name", pa.utf8()),   # dotted FQN (module -> class -> method)
+        pa.field("kind",           pa.utf8()),   # function | method
+        pa.field("start_line",     pa.int32()),  # 1-indexed, inclusive
+        pa.field("end_line",       pa.int32()),  # 1-indexed, inclusive
+        pa.field("chunk_text",     pa.utf8()),
+        pa.field("content_hash",   pa.utf8()),   # sha256(chunk_text) — vector reuse key
+        pa.field("token_count",    pa.int32()),
+        pa.field("vector",         pa.list_(pa.float32(), list_size=dim)),
+        pa.field("indexed_at",     pa.utf8()),
+    ])
+
+
 class SemanticMemoryManager:
     """Async LanceDB-backed per-file semantic store.
 
@@ -91,8 +156,16 @@ class SemanticMemoryManager:
         file_path: str,
         content: str,
         workspace_hash: str,
+        symbols: Optional[Sequence[Any]] = None,
     ) -> bool:
         """Embed a file and upsert into workspace_embeddings.
+
+        ``symbols`` is optional and additive: when supplied for a file above
+        _CHUNK_FILE_MIN_TOKENS, per-symbol chunk vectors are ALSO written to the
+        chunk table. Callers embedding non-source text (consolidation notes, for
+        instance) simply omit it and get the unchanged file-level behavior. The
+        chunk table is a pure accelerator, so a chunk failure never changes this
+        function's return value — see below.
 
         No-op if content has fewer than _MIN_TOKENS tokens (anti-fragmentation).
         Truncates to the active embedding target's max_input_tokens ceiling via a
@@ -161,10 +234,230 @@ class SemanticMemoryManager:
                 self._write_record, record, workspace_hash, file_path, hash_valid
             )
             logger.debug("SemanticMemory: upserted %s (workspace=%s)", file_path, workspace_hash)
-            return True
         except Exception as write_err:
             logger.warning("SemanticMemory: write failed (non-fatal): %s", write_err)
             return False
+
+        # Chunk rows are written only after the file-level row is committed, which
+        # keeps the chunks-subset-of-files invariant that the corpus-presence
+        # short-circuit in search_snippets depends on. A failure here is contained:
+        # retrieval degrades to file-level evidence, which is the older-but-correct
+        # path, so it must not flip the return value the reactive indexer's circuit
+        # breaker reads — an accelerator fault is not a backend outage.
+        if symbols and hash_valid and token_count >= _CHUNK_FILE_MIN_TOKENS:
+            try:
+                await self._write_chunks(file_path, content, workspace_hash, symbols)
+            except Exception as chunk_err:  # noqa: BLE001 — contained; file-level row already stands
+                logger.warning(
+                    "SemanticMemory: chunk write failed for %s (non-fatal, "
+                    "retrieval falls back to file-level evidence): %s",
+                    file_path, chunk_err, exc_info=True,
+                )
+        return True
+
+    # ── Symbol-level chunk writes ─────────────────────────────────────
+
+    @staticmethod
+    def _build_chunks(
+        content: str, symbols: Sequence[Any],
+    ) -> List[Dict[str, Any]]:
+        """Slice a file's function/method bodies into embeddable chunk records.
+
+        Classes are deliberately excluded: ``collect_symbol_defs`` emits a class
+        AND its methods, and the class range fully contains each method range, so
+        embedding both would pay twice for the same bytes and double-count the
+        same code in retrieval. A class header's semantics already ride in the
+        file-level vector.
+
+        Note that a symbol's range anchors on the definition node, so a decorator
+        sitting above it is not part of the chunk — the body carries the meaning.
+        """
+        lines = content.splitlines()
+        out: List[Dict[str, Any]] = []
+        for sym in symbols:
+            if len(out) >= _CHUNK_MAX_PER_FILE:
+                break
+            if sym.kind not in ("function", "method"):
+                continue
+            start, end = sym.start_line, sym.end_line
+            if start < 1 or end < start or start > len(lines):
+                continue
+            text = "\n".join(lines[start - 1:end]).strip()
+            if not text:
+                continue  # malformed range — never send an empty string to embed
+            text = text[:_CHUNK_TEXT_MAX_CHARS]
+            token_count = len(_ENC.encode(text))
+            if token_count < _CHUNK_MIN_TOKENS:
+                continue
+            out.append({
+                "qualified_name": sym.qualified_name,
+                "kind":           sym.kind,
+                "start_line":     start,
+                "end_line":       end,
+                "chunk_text":     text,
+                "content_hash":   hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "token_count":    token_count,
+            })
+        return out
+
+    async def _write_chunks(
+        self,
+        file_path: str,
+        content: str,
+        workspace_hash: str,
+        symbols: Sequence[Any],
+        build_index: bool = True,
+    ) -> int:
+        """Replace this file's chunk rows. Returns the number of rows written.
+
+        Only chunks whose text actually changed are embedded: the file's stored
+        (content_hash -> vector) pairs are reused for everything else. Keying
+        reuse on the text digest rather than on (qualified_name, start_line) is
+        load-bearing — line numbers shift whenever anything above a function is
+        edited, so a positional key would mark every chunk dirty after a one-line
+        insert and re-embed the whole file, which is exactly the cost this avoids.
+
+        All-or-nothing: an embedding failure aborts before any write, leaving the
+        previous rows intact rather than publishing a partial symbol set that
+        would masquerade as complete evidence.
+        """
+        chunks = self._build_chunks(content, symbols)
+        if not chunks:
+            # A file that no longer yields chunks must not keep stale ones.
+            await asyncio.to_thread(self._delete_chunk_rows, file_path, workspace_hash)
+            return 0
+
+        reusable: Dict[str, List[float]] = await asyncio.to_thread(
+            self._existing_chunk_vectors, file_path, workspace_hash
+        )
+        pending = [c for c in chunks if c["content_hash"] not in reusable]
+        if pending:
+            vectors = await _get_embeddings([c["chunk_text"] for c in pending])
+            for chunk, vector in zip(pending, vectors):
+                reusable[chunk["content_hash"]] = vector
+        logger.debug(
+            "SemanticMemory: %s — %d chunk(s), %d embedded, %d reused.",
+            file_path, len(chunks), len(pending), len(chunks) - len(pending),
+        )
+
+        now = datetime.now(timezone.utc).isoformat()
+        records: List[Dict[str, Any]] = [
+            {
+                **chunk,
+                "file_path":      file_path,
+                "workspace_hash": workspace_hash,
+                "vector":         reusable[chunk["content_hash"]],
+                "indexed_at":     now,
+            }
+            for chunk in chunks
+        ]
+        await asyncio.to_thread(
+            self._write_chunk_records, records, file_path, workspace_hash, build_index
+        )
+        return len(records)
+
+    def _scan_chunk_table(
+        self, columns: List[str], workspace_hash: str, file_path: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Bounded, injection-proof column scan of the chunk table.
+
+        Mirrors ``_dump_vectors_sync``'s pushdown-with-fallback shape: a PyArrow
+        Expression pushdown (never an interpolated SQL string) when the optional
+        ``pylance`` extra is importable, else a bounded full-table Arrow read
+        filtered in Python. ``pylance``'s absence must degrade this to a slower
+        scan, never raise — content-addressed reuse (finding 11) and the vector
+        GC both depend on this never crashing their caller.
+        """
+        db = lancedb.connect(self._lancedb_path)
+        if _CHUNK_TABLE_NAME not in db.table_names():
+            return []
+        tbl = db.open_table(_CHUNK_TABLE_NAME)
+        expr = pc.field("workspace_hash") == workspace_hash  # pyright: ignore[reportAttributeAccessIssue]
+        if file_path is not None:
+            expr = expr & (pc.field("file_path") == file_path)  # pyright: ignore[reportAttributeAccessIssue]
+        try:
+            ds = tbl.to_lance()
+            try:
+                arrow_tbl = ds.to_table(columns=columns, filter=expr)
+            except (TypeError, AttributeError):
+                arrow_tbl = ds.scanner(columns=columns, filter=expr).to_table()
+            return arrow_tbl.to_pylist()  # type: ignore[no-any-return]
+        except Exception as err:  # noqa: BLE001 — pushdown is an optimisation, not a correctness gate
+            logger.debug("chunk-table pushdown unavailable (%s) — bounded fallback.", err)
+            rows = tbl.to_arrow().to_pylist()
+            return [
+                r for r in rows
+                if str(r.get("workspace_hash", "")) == workspace_hash
+                and (file_path is None or str(r.get("file_path", "")) == file_path)
+            ]
+
+    def _existing_chunk_vectors(
+        self, file_path: str, workspace_hash: str,
+    ) -> Dict[str, List[float]]:
+        """Stored (content_hash -> vector) pairs for one file. {} when absent."""
+        rows = self._scan_chunk_table(["content_hash", "vector"], workspace_hash, file_path)
+        return {
+            str(r["content_hash"]): list(r["vector"])
+            for r in rows
+            if r.get("content_hash") and r.get("vector")
+        }
+
+    def _write_chunk_records(
+        self,
+        records: List[Dict[str, Any]],
+        file_path: str,
+        workspace_hash: str,
+        build_index: bool,
+    ) -> None:
+        db = lancedb.connect(self._lancedb_path)
+        vec_dim = len(records[0]["vector"])
+        schema = _chunk_schema_for_dim(vec_dim)
+        if _CHUNK_TABLE_NAME in db.table_names():
+            tbl = db.open_table(_CHUNK_TABLE_NAME)
+            existing_dim = self._table_vector_dim(tbl)
+            if existing_dim is not None and existing_dim != vec_dim:
+                logger.warning(
+                    "SemanticMemory: chunk embedding dim changed %d → %d — recreating table.",
+                    existing_dim, vec_dim,
+                )
+                db.drop_table(_CHUNK_TABLE_NAME)
+                tbl = db.create_table(_CHUNK_TABLE_NAME, schema=schema)
+        else:
+            tbl = db.create_table(_CHUNK_TABLE_NAME, schema=schema)
+
+        safe_path = file_path.replace("'", "''")  # standard SQL single-quote escape
+        tbl.delete(f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'")
+        tbl.add(records)
+        if build_index:
+            self._build_chunk_index(tbl)
+
+    @staticmethod
+    def _build_chunk_index(tbl: Any) -> None:
+        """(Re)build the chunk table's ANN index; a miss only costs a slower scan."""
+        try:
+            tbl.create_index(
+                vector_column_name="vector",
+                index_type="IVF_HNSW_SQ",
+                metric="cosine",
+                num_partitions=1,
+                m=20,
+                ef_construction=300,
+                replace=True,
+            )
+        except Exception as idx_err:
+            logger.debug(
+                "Chunk HNSW index deferred (table likely too small, need %d rows): %s",
+                _HNSW_MIN_ROWS,
+                idx_err,
+            )
+
+    def _delete_chunk_rows(self, file_path: str, workspace_hash: str) -> None:
+        db = lancedb.connect(self._lancedb_path)
+        if _CHUNK_TABLE_NAME not in db.table_names():
+            return
+        tbl = db.open_table(_CHUNK_TABLE_NAME)
+        safe_path = file_path.replace("'", "''")
+        tbl.delete(f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'")
 
     async def semantic_delete(self, file_path: str, workspace_hash: str) -> None:
         """Evict a single file's vector from workspace_embeddings (reactive purge).
@@ -189,11 +482,14 @@ class SemanticMemoryManager:
 
     def _delete_record(self, file_path: str, workspace_hash: str) -> None:
         db = lancedb.connect(self._lancedb_path)
-        if _TABLE_NAME not in db.table_names():
-            return
-        tbl = db.open_table(_TABLE_NAME)
         safe_path = file_path.replace("'", "''")  # standard SQL single-quote escape
-        tbl.delete(f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'")
+        predicate = f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'"
+        names = db.table_names()
+        # Both tables, always: evicting only the file-level row would strand the
+        # file's chunk rows as ghosts that keep surfacing in retrieval.
+        for table_name in (_TABLE_NAME, _CHUNK_TABLE_NAME):
+            if table_name in names:
+                db.open_table(table_name).delete(predicate)
         self._invalidate_corpus_presence(workspace_hash)
 
     # ── Corpus-presence probe ─────────────────────────────────────────
@@ -325,11 +621,16 @@ class SemanticMemoryManager:
             existing_dim = self._table_vector_dim(tbl)
             if existing_dim is not None and existing_dim != vec_dim:
                 logger.warning(
-                    "SemanticMemory: embedding dim changed %d → %d — recreating table.",
+                    "SemanticMemory: embedding dim changed %d → %d — recreating tables.",
                     existing_dim, vec_dim,
                 )
                 db.drop_table(_TABLE_NAME)
                 tbl = db.create_table(_TABLE_NAME, schema=schema)
+                # The chunk table shares the provider's dimension, so leaving it
+                # behind would keep stale-dim vectors that fail every subsequent
+                # search. Recreated lazily on the next chunk write.
+                if _CHUNK_TABLE_NAME in db.table_names():
+                    db.drop_table(_CHUNK_TABLE_NAME)
         else:
             tbl = db.create_table(_TABLE_NAME, schema=schema)
 
@@ -512,6 +813,44 @@ class SemanticMemoryManager:
             if r.get("file_path")
         ]
 
+    def _query_chunks(
+        self, vector: List[float], workspace_hash: str, k: int
+    ) -> List[Tuple[str, float, str]]:
+        """Return (file_path, distance, chunk_text) for the top-k nearest symbols.
+
+        Returns [] when the chunk table does not exist — the normal state for a
+        corpus indexed before symbol chunking, and the reason every caller must
+        treat chunk evidence as an optional upgrade rather than a requirement.
+        """
+        db = lancedb.connect(self._lancedb_path)
+        if _CHUNK_TABLE_NAME not in db.table_names():
+            return []
+
+        # `tbl: Any` — the lancedb stub omits LanceQueryBuilder.metric; the runtime
+        # method exists. Annotating the handle avoids a false reportAttributeAccessIssue
+        # without masking real typing on the surrounding code.
+        tbl: Any = db.open_table(_CHUNK_TABLE_NAME)
+        query = tbl.search(vector).metric("cosine").limit(k)
+
+        if workspace_hash and _SAFE_ID_RE.match(workspace_hash):
+            query = query.where(f"workspace_hash = '{workspace_hash}'")
+        elif workspace_hash:
+            logger.warning(
+                "SemanticMemory: workspace_hash %r failed sanitization — filter skipped.",
+                workspace_hash,
+            )
+
+        rows: List[Any] = query.to_list()
+        return [
+            (
+                str(r.get("file_path", "")),
+                float(r.get("_distance", 1.0)),
+                str(r.get("chunk_text", "")),
+            )
+            for r in rows
+            if r.get("file_path") and r.get("chunk_text")
+        ]
+
     async def search_snippets(
         self,
         user_input: str,
@@ -549,27 +888,125 @@ class SemanticMemoryManager:
             logger.warning("SemanticMemory.search_snippets: embed failed (non-fatal): %s", embed_err)
             return []
 
-        try:
-            raw_pairs = await asyncio.to_thread(
-                self._query_snippets, vector, workspace_hash, k
+        # Both lookups overlap rather than running back-to-back: this is the
+        # evidence hot path, so total latency stays max(file, chunk) instead of
+        # their sum. Exceptions are captured per-side so one store failing still
+        # yields the other's results.
+        file_res, chunk_res = await asyncio.gather(
+            asyncio.to_thread(self._query_snippets, vector, workspace_hash, k),
+            asyncio.to_thread(self._query_chunks, vector, workspace_hash, k),
+            return_exceptions=True,
+        )
+
+        if isinstance(file_res, BaseException):
+            logger.warning(
+                "SemanticMemory.search_snippets: file query failed (non-fatal): %s",
+                file_res, exc_info=file_res,
             )
-        except Exception as query_err:  # noqa: BLE001
-            logger.warning("SemanticMemory.search_snippets: query failed (non-fatal): %s", query_err)
+            raw_pairs: List[Tuple[str, str]] = []
+        else:
+            raw_pairs = file_res
+
+        if isinstance(chunk_res, BaseException):
+            logger.warning(
+                "SemanticMemory.search_snippets: chunk query failed (non-fatal, "
+                "degrading to file-level evidence): %s",
+                chunk_res, exc_info=chunk_res,
+            )
+            chunk_hits: List[Tuple[str, float, str]] = []
+        else:
+            chunk_hits = chunk_res
+
+        if not raw_pairs and not chunk_hits:
             return []
 
-        return await self._distill_snippets(raw_pairs, project_root)
+        return await self._merge_evidence(raw_pairs, chunk_hits, project_root, k)
 
-    # ── Query-time evidence distillation (DEBT-142) ─────────────────────
+    async def _merge_evidence(
+        self,
+        file_pairs: List[Tuple[str, str]],
+        chunk_hits: List[Tuple[str, float, str]],
+        project_root: Optional[str],
+        k: int,
+    ) -> List[Tuple[str, str]]:
+        """Fuse file-level and symbol-level hits into one evidence list per file.
+
+        Distances from the two tables are directly comparable — same model, same
+        cosine metric, same dimension — so nearest-first ordering across both is
+        meaningful. Results are deduped to file granularity because consumers
+        render one card per file; a file matching on several of its symbols keeps
+        all of them (bounded) rather than crowding other files out of the top-k.
+        """
+        by_file: Dict[str, List[Tuple[float, str]]] = {}
+        order: List[str] = []
+        for file_path, distance, text in sorted(chunk_hits, key=lambda h: h[1]):
+            if file_path not in by_file:
+                by_file[file_path] = []
+                order.append(file_path)
+            by_file[file_path].append((distance, text))
+
+        # File-level hits fill any remaining slots, preserving their own ranking.
+        for file_path, _ in file_pairs:
+            if file_path not in by_file:
+                by_file[file_path] = []
+                order.append(file_path)
+
+        fallbacks = dict(file_pairs)
+        out: List[Tuple[str, str]] = []
+        for file_path in order[:k]:
+            evidence = self._pack_chunk_evidence(by_file[file_path])
+            if evidence:
+                out.append((file_path, evidence))
+            else:
+                # No stored symbol evidence for this file (it is under the
+                # chunking threshold, or predates the chunk table) — fall back to
+                # distilling it at query time, exactly as before chunking existed.
+                out.append((file_path, fallbacks.get(file_path, "")))
+
+        undistilled = [(fp, ev) for fp, ev in out if not by_file[fp]]
+        if not undistilled:
+            return out
+        distilled = dict(await self._distill_snippets(undistilled, project_root))
+        return [(fp, distilled.get(fp, ev) if not by_file[fp] else ev) for fp, ev in out]
+
+    @staticmethod
+    def _pack_chunk_evidence(hits: List[Tuple[float, str]]) -> str:
+        """Greedily pack nearest-first chunk texts under the per-file char budget.
+
+        An unbounded join here would be a token leak: several hits on one file, each
+        up to _CHUNK_TEXT_MAX_CHARS, multiplied across _TOP_K files, would dwarf the
+        prompt's context budget. Nearest hits are admitted first so the strongest
+        evidence always survives and only the weak tail is discarded.
+        """
+        packed: List[str] = []
+        used = 0
+        for _, text in sorted(hits, key=lambda h: h[0]):
+            cost = len(text)
+            if packed and used + cost > _MAX_EVIDENCE_CHARS_PER_FILE:
+                break
+            packed.append(text[:_MAX_EVIDENCE_CHARS_PER_FILE])
+            used += cost
+            if used >= _MAX_EVIDENCE_CHARS_PER_FILE:
+                break
+        return "\n\n".join(packed)
+
+    # ── Query-time evidence distillation (fallback tier) ────────────────
     #
     # A structural note for the next reader: this upgrades evidence quality at
-    # *query* time — every retrieval re-parses the matched file. That cost (O(K)
-    # parses per call, K = len(pairs)) is accepted as a contained, temporary
-    # tradeoff, not the intended end state. The intended end state is symbol-level
-    # chunk embeddings computed once at *index* time (tracked as DEBT-140), which
-    # would make this whole distillation step read a stored value instead of
-    # recomputing it. Do not remove this comment when DEBT-140 lands — replace it
-    # with the migration note instead, since a future reader adding a 6th call site
-    # here should be redirected to the indexed-chunk path, not to this one.
+    # *query* time by re-parsing the matched file, costing O(K) parses per call.
+    # It is now the FALLBACK tier, not the primary one — files above
+    # _CHUNK_FILE_MIN_TOKENS carry stored per-symbol evidence computed once at
+    # index time, and _merge_evidence routes those straight through without
+    # touching this path. What remains here are files under the chunking
+    # threshold, whose ASTs are small by definition, so the residual cost is
+    # bounded by construction rather than by the guards below.
+    #
+    # This cannot be deleted in favour of stored chunks: the store is hybrid by
+    # size, so under-threshold files have no chunk rows at all, and removing this
+    # would drop them back to the raw content_snippet — a fixed head-of-file slice
+    # that is an audit value, not retrieval evidence. If a future change makes
+    # every file chunked, this tier can go; until then it is load-bearing.
+    # A new caller wanting file evidence should go through _merge_evidence, not here.
 
     _DISTILL_MAX_CHARS: int = 300_000   # defense-in-depth; see _distill_one
     _DISTILL_TIMEOUT_S: float = 2.0     # generous for tree-sitter; bounds the await only
@@ -630,6 +1067,128 @@ class SemanticMemoryManager:
             # timeout only bounds how long the *caller* waits.
             return fallback_snippet
         return skeleton or fallback_snippet
+
+    # ── Chunk backfill (adoption path for an already-indexed corpus) ───
+
+    async def backfill_chunks(
+        self,
+        workspace_hash: str,
+        project_root: str,
+        limit: int = 50,
+        force: bool = False,
+    ) -> Dict[str, int]:
+        """Emit chunk rows for already-embedded files that never got them.
+
+        The indexer only writes chunks as it embeds, and it skips its crawl once a
+        workspace is already indexed — so without this, chunking would only ever
+        reach files edited after it shipped, permanently excluding the large
+        legacy files it exists to fix. Purely additive: reads the file table to
+        pick candidates and writes only chunk rows, never touching file-level
+        vectors or the dependency graph.
+
+        Bounded and resumable — processes at most ``limit`` files per call and
+        reports ``remaining`` so a caller can drive it to completion without an
+        unbounded request. Idempotent: files that already have chunk rows are
+        skipped unless ``force``.
+        """
+        empty = {"processed": 0, "chunked": 0, "skipped": 0, "remaining": 0}
+        if not workspace_hash or not _SAFE_ID_RE.match(workspace_hash):
+            logger.warning(
+                "SemanticMemory.backfill_chunks: workspace_hash %r failed sanitization.",
+                workspace_hash,
+            )
+            return empty
+
+        rows = await self.list_embeddings(workspace_hash)
+        candidates = [
+            str(r.get("file_path", ""))
+            for r in rows
+            if int(r.get("token_count") or 0) >= _CHUNK_FILE_MIN_TOKENS and r.get("file_path")
+        ]
+        if not force:
+            done = await asyncio.to_thread(self._files_with_chunks, workspace_hash)
+            candidates = [p for p in candidates if p not in done]
+        if not candidates:
+            return empty
+
+        batch, remaining = candidates[:limit], max(0, len(candidates) - limit)
+        processed = chunked = skipped = 0
+        wrote_any = False
+
+        from core.vfs_middleware import make_safe_reader
+        from shared.contracts import IndexingRequest, detect_language
+        reader = make_safe_reader(None, project_root, None)
+
+        for file_path in batch:
+            processed += 1
+            lang = detect_language(file_path)
+            if not lang:
+                skipped += 1
+                continue
+            content = reader(file_path)
+            if not content:
+                skipped += 1
+                continue
+            try:
+                # The same parse the indexer performs, in the same process pool —
+                # no bespoke second parser, and tree-sitter stays off the loop.
+                from brain.memory import index_file_sync
+                from core.compute_pool import compute_pool
+                result = await compute_pool.run(
+                    index_file_sync,
+                    IndexingRequest(
+                        file_path=file_path,
+                        content=content,
+                        language_id=lang,
+                        workspace_root=project_root,
+                    ),
+                )
+                if not result.success or not result.symbols:
+                    skipped += 1
+                    continue
+                # Index build is deferred to one pass at the end: rebuilding after
+                # every file would repeatedly re-index a growing table.
+                written = await self._write_chunks(
+                    file_path, content, workspace_hash, result.symbols, build_index=False,
+                )
+            except Exception as err:  # noqa: BLE001 — one bad file must not abort the pass
+                logger.warning(
+                    "SemanticMemory.backfill_chunks: %s failed (skipped): %s",
+                    file_path, err, exc_info=True,
+                )
+                skipped += 1
+                continue
+            if written:
+                chunked += 1
+                wrote_any = True
+            else:
+                skipped += 1
+
+        if wrote_any:
+            await asyncio.to_thread(self._build_chunk_index_once)
+
+        logger.info(
+            "SemanticMemory: chunk backfill — %d processed, %d chunked, %d skipped, %d remaining.",
+            processed, chunked, skipped, remaining,
+        )
+        return {
+            "processed": processed,
+            "chunked": chunked,
+            "skipped": skipped,
+            "remaining": remaining,
+        }
+
+    def _files_with_chunks(self, workspace_hash: str) -> set[str]:
+        """Distinct file paths that already hold chunk rows for this workspace."""
+        rows = self._scan_chunk_table(["file_path"], workspace_hash)
+        return {str(r["file_path"]) for r in rows if r.get("file_path")}
+
+    def _build_chunk_index_once(self) -> None:
+        """Build the chunk ANN index a single time after a backfill pass."""
+        db = lancedb.connect(self._lancedb_path)
+        if _CHUNK_TABLE_NAME not in db.table_names():
+            return
+        self._build_chunk_index(db.open_table(_CHUNK_TABLE_NAME))
 
     # ── Vector-map dump (dashboard GraphRAG viewer) ─────
 
@@ -848,3 +1407,112 @@ async def _get_embedding(text: str) -> List[float]:
         data["embedding"] if isinstance(data, dict) else data.embedding
     )
     return embedding
+
+
+def _vector_of(datum: Any) -> List[float]:
+    """Pull the embedding list out of one response datum (dict or attr shaped)."""
+    vec: List[float] = (
+        datum["embedding"] if isinstance(datum, dict) else datum.embedding
+    )
+    return vec
+
+
+def _index_of(datum: Any, fallback: int) -> int:
+    """The datum's declared position in the batch, or ``fallback`` when absent.
+
+    OpenAI-compatible responses carry an ``index`` per datum. Providers are not
+    obliged to return them in request order, so the declared index — not list
+    position — is what maps a vector back to its input.
+    """
+    raw = datum.get("index") if isinstance(datum, dict) else getattr(datum, "index", None)
+    try:
+        return int(raw) if raw is not None else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _partition_for_embedding(texts: Sequence[str], token_budget: int) -> List[List[int]]:
+    """Group text indices into request batches.
+
+    A batch closes on whichever bound binds first: ``_EMBED_BATCH_SIZE`` items or
+    ``token_budget`` cumulative tokens. The count bound alone is insufficient —
+    a handful of large functions can breach a provider's payload ceiling while
+    still being well under the item count, which surfaces as HTTP 413 or, worse,
+    a silently truncated array. A single text that exceeds the budget on its own
+    still gets its own batch rather than being dropped.
+    """
+    batches: List[List[int]] = []
+    current: List[int] = []
+    current_tokens = 0
+    for i, text in enumerate(texts):
+        cost = len(_ENC.encode(text))
+        over_count = len(current) >= _EMBED_BATCH_SIZE
+        over_tokens = current and (current_tokens + cost) > token_budget
+        if over_count or over_tokens:
+            batches.append(current)
+            current, current_tokens = [], 0
+        current.append(i)
+        current_tokens += cost
+    if current:
+        batches.append(current)
+    return batches
+
+
+async def _embed_batch(texts: List[str]) -> List[List[float]]:
+    """Embed one batch in a single request, ordered to match ``texts``.
+
+    Falls back to sequential single-text calls when the provider returns a
+    different number of vectors than were requested: some OpenAI-compatible local
+    servers honor only the first element of a batch ``input``, and silently
+    accepting a short array would misalign every vector with its symbol.
+    """
+    t = get_embedding_target()
+    kwargs: Dict[str, Any] = {"model": t.model, "input": list(texts)}
+    if t.api_base:
+        kwargs["api_base"] = t.api_base
+    if t.api_key:
+        kwargs["api_key"] = t.api_key
+
+    resp = await litellm.aembedding(**kwargs)
+    data: List[Any] = list(resp.data)
+    if len(data) != len(texts):
+        logger.warning(
+            "SemanticMemory: provider returned %d vectors for a %d-text batch — "
+            "falling back to sequential embedding.",
+            len(data), len(texts),
+        )
+        return [await _get_embedding(text) for text in texts]
+
+    ordered: List[List[float]] = [[] for _ in texts]
+    for pos, datum in enumerate(data):
+        idx = _index_of(datum, pos)
+        if not 0 <= idx < len(texts):
+            idx = pos
+        ordered[idx] = _vector_of(datum)
+    return ordered
+
+
+async def _get_embeddings(texts: Sequence[str]) -> List[List[float]]:
+    """Embed many texts, returning vectors strictly in input order.
+
+    Partitioned by item count and token payload, then dispatched concurrently
+    under a bounded semaphore so a local single-process provider is not thrashed.
+    """
+    if not texts:
+        return []
+
+    token_budget = get_embedding_target().max_input_tokens
+    batches = _partition_for_embedding(texts, token_budget)
+    semaphore = asyncio.Semaphore(_EMBED_CONCURRENCY)
+
+    async def _run(indices: List[int]) -> List[List[float]]:
+        async with semaphore:
+            return await _embed_batch([texts[i] for i in indices])
+
+    results = await asyncio.gather(*(_run(b) for b in batches))
+
+    out: List[List[float]] = [[] for _ in texts]
+    for indices, vectors in zip(batches, results):
+        for idx, vector in zip(indices, vectors):
+            out[idx] = vector
+    return out

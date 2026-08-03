@@ -129,6 +129,21 @@ class PurgeResponse(BaseModel):
     file_path: str
 
 
+class ChunkBackfillRequest(BaseModel):
+    project_id: str
+    limit: int = 50
+    force: bool = False
+    confirm: bool = False
+
+
+class ChunkBackfillResponse(BaseModel):
+    ok: bool
+    processed: int
+    chunked: int
+    skipped: int
+    remaining: int
+
+
 # =====================================================================
 # Helpers
 # =====================================================================
@@ -428,3 +443,56 @@ async def purge_embedding(req: PurgeRequest) -> PurgeResponse:
     sem = SemanticMemoryManager(lancedb_path=graphrag_lancedb_path_for(req.project_id))
     await sem.semantic_delete(req.file_path, workspace_hash=req.project_id)
     return PurgeResponse(ok=True, file_path=req.file_path)
+
+
+# One in-flight backfill per project — a double-click (or a second dashboard tab)
+# must not run two passes concurrently against the same LanceDB table. Deny-if-busy
+# rather than core.indexer.SingleFlightCoordinator's coalesce-and-return-immediately
+# shape: that coordinator is built for a fire-and-forget trigger with nothing to
+# return, so a coalesced caller here would get an empty result back and silently
+# report false zeros. An HTTP caller needs either the real result or an explicit
+# "try again" — never a fabricated one.
+_backfill_in_flight: set[str] = set()
+
+
+@router.post("/chunks/backfill", response_model=ChunkBackfillResponse)
+async def backfill_chunk_embeddings(req: ChunkBackfillRequest) -> ChunkBackfillResponse:
+    """Emit symbol-level chunk vectors for already-indexed, over-threshold files.
+
+    Adoption path for GraphRAG chunking: the reactive/lazy indexer only writes
+    chunks as it embeds, and skips its crawl once a workspace is already indexed,
+    so without this endpoint existing large files never receive chunk evidence.
+    Purely additive (writes only to the chunk table) and resumable — call
+    repeatedly with the same project until ``remaining`` reaches 0.
+    """
+    if not _SAFE_ID_RE.match(req.project_id):
+        raise HTTPException(status_code=400, detail="invalid project_id")
+    if req.confirm is not True:
+        raise HTTPException(status_code=422, detail="backfill requires confirm=true")
+    if not 1 <= req.limit <= 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+
+    # workspace_root is resolved server-side from the persisted project registry,
+    # never accepted from the request — the value confines every file read this
+    # pass performs, so it must come from a trusted source, not client input.
+    projects = await catalog_db.get_all_projects()
+    workspace_root = next((root for pid, root, _ in projects if pid == req.project_id), None)
+    if not workspace_root:
+        raise HTTPException(status_code=404, detail="project_id not found in registry")
+
+    if req.project_id in _backfill_in_flight:
+        raise HTTPException(
+            status_code=409,
+            detail="a backfill pass is already running for this project — try again shortly",
+        )
+    _backfill_in_flight.add(req.project_id)
+    try:
+        sem = SemanticMemoryManager(lancedb_path=graphrag_lancedb_path_for(req.project_id))
+        result = await sem.backfill_chunks(
+            req.project_id, workspace_root, limit=req.limit, force=req.force
+        )
+    finally:
+        # Guaranteed cleanup path regardless of success/failure — an exception
+        # here must never leave the project permanently unable to backfill.
+        _backfill_in_flight.discard(req.project_id)
+    return ChunkBackfillResponse(ok=True, **result)
