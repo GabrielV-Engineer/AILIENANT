@@ -13,7 +13,6 @@ Security mitigations applied to POST /start-docker:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import pathlib
@@ -29,10 +28,14 @@ from fastapi import APIRouter, HTTPException, Request
 
 from core.sandbox import (
     DockerSandboxAdapter,
+    SandboxDaemonTimeout,
+    docker_call,
     get_active_adapter,
     get_active_tier,
+    is_daemon_breaker_open,
     pull_sandbox_image,
 )
+from shared.config import DOCKER_OP_TIMEOUT_S
 
 logger = logging.getLogger("AILIENANT_RUNTIME")
 
@@ -109,13 +112,22 @@ async def _probe_docker(force: bool = False) -> bool:
         if cached_ts and (now - cached_ts) < _CACHE_TTL_S:
             return bool(_docker_cache["reachable"])
     try:
-        client = await asyncio.to_thread(docker.from_env)
-        await asyncio.wait_for(asyncio.to_thread(client.info), timeout=_PROBE_TIMEOUT_S)
+        client = await docker_call(
+            docker.from_env, timeout=_PROBE_TIMEOUT_S,
+            timeout_s=DOCKER_OP_TIMEOUT_S, op="runtime_from_env",
+        )
+        await docker_call(client.info, timeout_s=_PROBE_TIMEOUT_S, op="runtime_info")
         _docker_cache = {"reachable": True, "ts": now}
         return True
+    except SandboxDaemonTimeout as exc:
+        # Daemon hung or unreachable — the breaker-guarded, bounded path this
+        # probe now shares with the rest of the sandbox module (DEBT-100):
+        # a stalled daemon degrades this status check instead of blocking it.
+        logger.warning("[runtime] Docker daemon unavailable: %s", exc)
+        _docker_cache = {"reachable": False, "ts": now}
+        return False
     except (docker.errors.APIError, requests.exceptions.ConnectionError, TimeoutError) as exc:
         # Engine degraded (broken WSL2, daemon mid-shutdown) — treat as DOWN.
-        # asyncio.wait_for raises asyncio.TimeoutError, which IS TimeoutError on 3.11+.
         logger.warning("[runtime] Docker engine degraded/unreachable: %s", type(exc).__name__)
         _docker_cache = {"reachable": False, "ts": now}
         return False
@@ -130,26 +142,31 @@ async def _check_image_exists(reachable: bool) -> bool:
     if not reachable:
         return False
     try:
-        client = await asyncio.to_thread(docker.from_env)
-        await asyncio.to_thread(client.images.get, _SANDBOX_IMAGE_TAG)
+        client = await docker_call(
+            docker.from_env, timeout=DOCKER_OP_TIMEOUT_S,
+            timeout_s=DOCKER_OP_TIMEOUT_S, op="runtime_from_env",
+        )
+        await docker_call(
+            client.images.get, _SANDBOX_IMAGE_TAG,
+            timeout_s=DOCKER_OP_TIMEOUT_S, op="runtime_images_get",
+        )
         return True
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — SandboxDaemonTimeout or a live-daemon 404, both mean "no"
         return False
 
 
-def _check_container_running() -> bool:
-    """Inspect the adapter's live container reference (no I/O if unstarted)."""
+def _check_container_running() -> int:
+    """Count of currently-leased pool containers (no Docker I/O).
+
+    A non-blocking in-process read of the pool's own bookkeeping rather than a
+    live ``reload()`` — the RuntimePanel polls this endpoint continuously, and
+    the pool self-heals a vanished container lazily on its next acquire, so a
+    per-poll daemon round-trip here would only add load without adding safety.
+    """
     adapter = get_active_adapter()
     if not isinstance(adapter, DockerSandboxAdapter):
-        return False
-    container = adapter._container  # noqa: SLF001 — private but same package
-    if container is None:
-        return False
-    try:
-        container.reload()
-        return str(getattr(container, "status", "")) == "running"
-    except Exception:  # noqa: BLE001
-        return False
+        return 0
+    return adapter.pooled_container_count()
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
@@ -164,13 +181,18 @@ async def get_runtime_status(force: bool = False) -> Dict[str, object]:
     tier = get_active_tier()
     reachable = await _probe_docker(force=force)
     image = await _check_image_exists(reachable)
-    running = _check_container_running()
+    count = _check_container_running()
     return {
         "tier": tier,
         "docker_reachable": reachable,
         "image_exists": image,
-        "container_running": running,
+        "container_running": count > 0,
         "mode_label": _MODE_LABELS.get(tier, "Unknown"),
+        # Additive (Phase 12.6, §10 contract): existing fields keep their prior
+        # meaning unchanged; a client that doesn't know these two yet still
+        # gets the same shape it always has.
+        "container_count": count,
+        "daemon_degraded": is_daemon_breaker_open(),
     }
 
 

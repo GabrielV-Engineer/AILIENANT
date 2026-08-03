@@ -146,10 +146,13 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-126 | Minor investigation backlog deferred from the live-test Phase 1 sweep (11.10): (a) turn-duration measurement still reads 0.0s in some spans (the shared batch timestamp fixed the multi-file jitter; verify the timer actually brackets the actuation phase); (b) the frontend `server_indexing_started` handler is dead code — no backend `broadcast_indexing_started` exists, so either wire it or delete it (§10 contract rot). Both low-risk, low-cost. | LOW | Observability / Hygiene | 11.10 | Floating |
 | DEBT-125 | The apply-edge "low-risk" gate reuses command-tuned `_RISK_PATTERNS` as a proxy over added diff lines — coarse, fails toward the card. Build a diff-aware/semantic edit-risk classifier returning a real low/medium/high verdict; also fix the `risk_metrics` (FE) ↔ `risk_patterns_matched` (BE) name mismatch so the approval card can display *why* an edit was flagged. | LOW | Risk classification | future safety slice | Floating |
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
-| DEBT-097 | Single shared Docker sandbox container across all concurrent sessions (noisy-neighbor + shared blast radius) | HIGH | Reliability / Scale | future sandbox-isolation slice | Floating |
+| DEBT-097 | Single shared Docker sandbox container across all concurrent sessions (noisy-neighbor + shared blast radius) | HIGH | Reliability / Scale | 12.6 | RESOLVED 2026-08-03 |
 | DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
 | DEBT-099 | No client-side concurrency throttle on LLM Gateway calls — only budget, not concurrency, is admission-controlled | HIGH | Reliability / Scale | 8.15.0.1 | RESOLVED |
-| DEBT-100 | Docker daemon hang blocks the sandbox worker thread indefinitely (SDK call not interruptible) | HIGH | Reliability | future sandbox-resilience slice | Floating |
+| DEBT-100 | Docker daemon hang blocks the sandbox worker thread indefinitely (SDK call not interruptible) | HIGH | Reliability | 12.6 | RESOLVED 2026-08-03 |
+| DEBT-150 | A hijacked interactive-PTY exec socket still leaks an `ail-docker` thread on a daemon hang — the one Docker call a socket timeout cannot bound | LOW | Reliability | future sandbox-resilience slice | Floating |
+| DEBT-151 | Sandbox pool exhaustion degrades to same-mount container sharing (CPU/RAM contention) rather than a true admission queue with backpressure | LOW | Reliability / Scale | future sandbox-resilience slice | Floating |
+| DEBT-152 | `brain/agentic_cell.py::sweep_orphaned_sessions` is unwired (pre-existing TODO) — an aborted run's PTY session lease now survives idle-TTL reaping (refcount never drops to 0) and can permanently occupy a bounded pool slot, where pre-12.6 it only wasted a socket in an unbounded container | MEDIUM | Reliability / Scale | future agentic-cell lifecycle slice | Floating |
 
 ---
 
@@ -192,14 +195,13 @@ Decision    Not a defect — see [DECISION] tier.
 - **Verified:** `tests/test_streaming_structured_output.py` (forward / drop+sanitize / degrade+memo / pre-strip);
   existing 7.17 streaming + response-format suites green; mypy 0.
 
-### DEBT-097 [HIGH · Floating] — Single shared Docker sandbox container across all concurrent sessions
+### DEBT-097 [HIGH · RESOLVED 2026-08-03, 12.6] — Single shared Docker sandbox container across all concurrent sessions
 
-- **Date:** 2026-07-02
-- **Reproduce:** `grep -n "ACTIVE_ADAPTER" ailienant-core/main.py ailienant-core/core/sandbox.py` — `resolve_default_adapter()` runs once at FastAPI lifespan startup (`main.py:174`) and binds a single module-level `ACTIVE_ADAPTER`; `DockerSandboxAdapter.__init__` holds one `self._container` reused for every `execute()`/`open_session()` call for the lifetime of the process, regardless of which session or project issued it.
-- **Error:** not a correctness defect — every EXECUTE call across every concurrent session shares one container's CPU/memory ceiling and one 512 MB `tmpfs` at `/work` (noisy-neighbor contention under concurrent sandboxed work), and a container crash/corruption drops sandbox capability for **every** active session simultaneously (shared blast radius), not just the session that caused it. `exec_run` calls are not individually locked (`asyncio.to_thread` only wraps the SDK call; `_lifecycle_lock` guards container *startup*, not per-call execution), so Docker's own exec multiplexing is the only isolation between concurrent callers.
-- **Blocked by:** nothing structural — a per-session or per-project container pool (bounded, LRU-evicted) is a viable fix, but changes the ADR-001 "session-global, immutable tier" invariant and needs its own design pass (container warm-up cost per session vs. shared-container contention is a real trade-off, not a free win).
-- **Phase:** future sandbox-isolation slice (pre-requisite for any multi-session-concurrent execution guarantee).
-- **Notes:** the container's per-call security profile (`--read-only`, `--network none`, env-whitelist) is solid — this entry is about cross-session **resource isolation**, not the existing per-call security posture, which is unaffected. Logged during a general bottleneck audit (2026-07-02), not tied to a specific shipping sub-phase.
+- **Date:** 2026-07-02 · **Resolved:** 2026-08-03 (12.6)
+- **Was:** `resolve_default_adapter()` bound one module-level `ACTIVE_ADAPTER`, and `DockerSandboxAdapter.__init__` held one `self._container` reused by every `execute()`/`open_session()` call for the lifetime of the process, regardless of which session or project issued it — one CPU/memory ceiling and one 512 MB `/work` tmpfs shared by every concurrent session, plus a fixed read-only mount bound to `os.getcwd()` at construction time (a session against a second project silently fell back to the first project's `/workspace`).
+- **Resolution:** `DockerSandboxAdapter` now leases containers from a bounded `_ContainerPool` keyed by `(abspath(mount_root), session_id or "__shared__")` — concurrent sessions, and concurrent projects, get distinct containers instead of contending for one. `mount_root` resolves per session through an additive DI seam (`set_session_workspace_resolver`, mirroring the `set_trusted_bridge` precedent) that `main.py` wires to the existing `_session_workspace_root` registry; a resolver miss falls back to the adapter's own `host_workspace`, so every caller with no session (the untrusted benchmark oracle, hook execution) is behavior-unchanged. At capacity: an idle (refcount-0) lease is LRU-evicted first; if none is idle, acquisition waits up to `AILIENANT_SANDBOX_LEASE_WAIT_S` (30s) for a release, then shares the LRU lease **only if it is mounted at the same root** — sharing across mount roots is refused outright (`SandboxResourceExhausted` → `[sandbox_pool_exhausted]`), since that would silently execute a command against the wrong project rather than merely lose CPU/RAM isolation. Per-container `mem_limit`/`pids_limit` ceilings bound the noisy-neighbor half directly (no CPU ceiling — would distort the benchmark oracle). Interactive PTY sessions release their lease exactly once via an idempotent `on_close` callback threaded through `_DockerPtyBackend`. Startup reclamation (`sweep_orphaned_containers`) removes containers left by a crashed prior run or the old singleton, gated on a TCP liveness probe of the owning port (mirroring `core/config/host_discovery.py`'s own discipline) so a **live sibling backend's** containers — the extension spawns one backend per VS Code window on a dynamic port — are never touched; lifespan shutdown drains the whole pool.
+- **Files:** `core/sandbox.py` (`_ContainerLease`/`_ContainerPool`/`sweep_orphaned_containers`), `main.py` (DI wiring + startup sweep + shutdown drain), `api/runtime.py` (`container_running` now pool-aware; additive `container_count`/`daemon_degraded`), `shared/config.py` (new knobs).
+- **Verified:** `tests/test_sandbox_pool_resilience.py` (POOL1-9, PTY1); full suite green; mypy 0; pyright 0.
 
 ### DEBT-099 [HIGH · RESOLVED 2026-07-03, 8.15.0.1] — No client-side concurrency throttle on LLM Gateway calls
 
@@ -211,18 +213,29 @@ Decision    Not a defect — see [DECISION] tier.
 - **File(s):** `tools/llm_gateway.py`, `shared/config.py`; gate `tests/test_phase8_15_0_1_checkpoint_gate.py` (THROTTLE1-5).
 - **Notes:** carved as a pre-requisite for Division 8.15 (landed before 8.15.1's first concurrent caller), similar in spirit to how DEBT-069 (Researcher node promotion) was carved as a prerequisite before dispatch-loop work began.
 
-### DEBT-100 [HIGH · Floating] — Docker daemon hang blocks the sandbox worker thread indefinitely
+### DEBT-100 [HIGH · RESOLVED 2026-08-03, 12.6] — Docker daemon hang blocks the sandbox worker thread indefinitely
 
-- **Date:** 2026-07-02
-- **Reproduce:** documented in-code at `core/sandbox.py:203-205` ("Known limit (R5 in the plan)") but never carried into this backlog. A hung Docker **daemon** (not a hung command inside the container) leaves the synchronous `docker` SDK call made inside `asyncio.to_thread` blocked with no timeout, because the SDK call itself is not interruptible from Python.
-- **Error:** reliability risk — partial mitigation exists (the kernel-side `timeout --foreground` wrapper inside the container bounds a hung **command**), but the root cause (an unbounded, non-interruptible synchronous SDK call when the **daemon** itself stalls) is unresolved. The Phase 6.1.4 resolver (`resolve_default_adapter`) only probes daemon health at startup — it does not detect or recover from a daemon hang occurring mid-session.
-- **Blocked by:** the Docker SDK's synchronous transport has no native async cancellation; a fix would need an explicit wrapper-level timeout on the `asyncio.to_thread` future itself (`asyncio.wait_for`), accepting that the worker thread stays leaked/orphaned until the SDK call eventually returns or the process restarts — a real trade-off, not a clean fix.
-- **Phase:** future sandbox-resilience slice.
-- **Notes:** the risk (R5) was named in the original Phase 6 blueprint and left as an accepted trade-off at the time; formalized as a backlog entry during a general bottleneck audit (2026-07-02) rather than left as an undiscoverable code comment.
+- **Date:** 2026-07-02 · **Resolved:** 2026-08-03 (12.6)
+- **Was:** every Docker SDK call ran synchronously inside a bare `asyncio.to_thread`, with no timeout at any layer. A hung **daemon** (as opposed to a hung in-container command, already bounded by the GNU `timeout` wrapper) parked the worker thread forever, and since `asyncio.to_thread` uses the interpreter's *shared default executor*, repeated hangs would eventually starve every other `to_thread` consumer in the process (janitor, PPR, indexer, blast-radius).
+- **Resolution:** two layers. (1) **Socket-level timeouts** — every Docker client is now constructed with an explicit `timeout=` (verified against docker-py 7.1.0's `APIClient(timeout=...)`), so an unresponsive daemon surfaces as `requests.exceptions.ReadTimeout`/`ConnectionError` on the worker thread, which then returns to the pool in O(1) — no orphaned thread for the vast majority of calls. Since `exec_create`/`exec_start` accept no per-call timeout and `exec_run` blocks until completion, one-shot `execute()` calls resolve a client scoped to that call's own budget (bucketed to the nearest 30s, LRU-cached at 8 entries) rather than sharing the short-lived lifecycle client. (2) **Dedicated `ail-docker` `ThreadPoolExecutor` + a 3-state circuit breaker** (`core/sandbox.py::_docker_call`/`_DaemonBreaker`) as defense-in-depth for the one call socket timeouts cannot bound — a hijacked interactive-PTY exec socket (`exec_start(socket=True)`), a deliberately blocking raw-socket read with no HTTP timeout underneath it (see DEBT-150). Two consecutive faults open the breaker for 60s, refusing further dispatch (not just failing it) so a sustained hang cannot exhaust the pool. `api/runtime.py`'s continuously-polled `_probe_docker`/`_check_image_exists` route through the same helper (`docker_call`) — previously their own separate, unbounded `asyncio.to_thread` calls. A daemon fault degrades to `[sandbox_daemon_unavailable]` and never re-runs `resolve_default_adapter` (ADR-001 held).
+- **Files:** `core/sandbox.py` (`_docker_call`, `_DaemonBreaker`, `_get_docker_executor`, `_get_exec_client`), `api/runtime.py`.
+- **Verified:** `tests/test_sandbox_pool_resilience.py` (HANG1-7); full suite green; mypy 0; pyright 0.
+- **Deferred:** DEBT-150 (the hijacked-PTY-socket case is contained, not eliminated).
 
 ---
 
 **MEDIUM**
+
+---
+
+### DEBT-152 [MEDIUM · Floating] — Orphaned agentic-cell PTY sessions can now permanently occupy a bounded pool slot
+
+- **Date:** 2026-08-03
+- **Reproduce:** `grep -n "TODO: tie this sweep" ailienant-core/brain/agentic_cell.py` — `sweep_orphaned_sessions(live_task_ids)` exists and closes any registered `_CellSession` whose task is no longer live, but has **zero callers** anywhere in the codebase; the normal-path teardown (`_close_cell` on `terminal` exit) is wired and unaffected.
+- **Error:** pre-existing gap (the TODO predates Phase 12.6), but 12.6's bounded per-session container pool raises its severity. Before 12.6, an orphaned cell session (a run aborted mid-loop, Stop button never reaching the node's `finally`) left its PTY session — and the one process-lifetime container it ran on — alive but harmless, since the container kept serving every other session too. After 12.6, that same orphaned session holds a lease with `refcount >= 1` forever (never released, since nothing closes it), which is **not** idle and therefore immune to idle-TTL reaping (`_ContainerPool._reap_expired_idle_locked` only reaps `refcount == 0` leases). With the default cap (`AILIENANT_SANDBOX_MAX_CONTAINERS=4`), a handful of aborted runs across a session can permanently consume the entire pool, surfacing as `[sandbox_pool_exhausted]` for unrelated later sessions.
+- **Blocked by:** nothing structural — wiring `sweep_orphaned_sessions` to the WS disconnect handler or the LangGraph run-lifecycle event (the sweep function's own docstring already names both) closes this. Deliberately not done as part of 12.6: it is a `brain/agentic_cell.py` lifecycle concern, a different subsystem than the sandbox pool itself, and determining the correct "live task ids" set requires understanding `task_service`'s active-task registry, not `core/sandbox.py`.
+- **Phase:** future agentic-cell lifecycle slice.
+- **Notes:** discovered while implementing Phase 12.6 (the per-session container pool); logged rather than folded into that phase's scope per the tech-debt protocol.
 
 ---
 
@@ -741,6 +754,24 @@ Decision    Not a defect — see [DECISION] tier.
 - **Premise correction:** the original note attributed the `search_with_paths` patch to the G2 arm. In fact G2 (`VectorOnlyRetrievalStrategy`) patched only the graph seam; it was G1 (`ZeroShotRetrievalStrategy`) that patched the vector seams (`search_with_paths` / `search_snippets`). The substance held: both arms degraded retrieval by `mock.patch`-ing internal class methods (in `core/benchmark/strategies.py`, not `tests/`).
 - **Resolved:** retrieval degradation now flows through a dependency-injection seam. The strategy objects expose `overrides()` returning callables keyed `graph_fn` / `planner_retrieval_fn` / `coder_retrieval_fn`; `arms.retrieval_overrides_for(arm)` maps each arm to its overrides; the runner folds them into `config["configurable"]`, and the planner/researcher/coder read those keys and fall back to their real bound methods when absent. Production behavior is unchanged (keys never present off-benchmark); the ablation tests assert on the override set with no `mock.patch` of retrieval internals.
 - **Notes:** the routing arms (G3 `_coder_target`, G4_FORCE_CLOUD `derive_routing_decision`) are not retrieval and intentionally remain on the scoped `apply_arm` patch.
+
+### DEBT-150 [LOW · Floating] — A hijacked interactive-PTY exec socket still leaks an `ail-docker` thread on a daemon hang
+
+- **Date:** 2026-08-03
+- **Reproduce:** `grep -n "exec_start(self._exec_id, socket=True" ailienant-core/core/sandbox.py` — `_DockerPtyBackend.__init__` hijacks the exec HTTP response into a raw socket for bidirectional streaming; that `exec_start(socket=True)` call, and the subsequent blocking `recv()` reads driven by the session's reader thread, have no HTTP-level timeout to attach a client-construction budget to (unlike every other Docker call in the module, which now runs through a client built with an explicit `timeout=`).
+- **Error:** narrow residual of DEBT-100. If the Docker daemon hangs while a PTY session is being opened or is mid-stream, the dedicated `ail-docker` `ThreadPoolExecutor` + circuit breaker (12.6) contain the blast radius — the thread is bounded to that dedicated pool (never the shared default executor) and the breaker stops dispatching further calls after two consecutive faults elsewhere — but the one thread already blocked on the hijacked socket's `recv()` stays leaked until the daemon eventually responds or the process restarts.
+- **Blocked by:** the Docker SDK's raw exec-socket transport has no async cancellation primitive; a fix would need a lower-level non-blocking socket read (`select`/`poll` with a deadline) reimplementing what `_DockerPtyBackend.read` currently delegates straight to a blocking `socket.recv`.
+- **Phase:** future sandbox-resilience slice.
+- **Notes:** declared as an accepted trade-off in the 12.6 plan rather than left as an undiscoverable comment; the surface is much narrower than the original DEBT-100 (every non-interactive call is now bounded).
+
+### DEBT-151 [LOW · Floating] — Sandbox pool exhaustion shares a container rather than queuing with real backpressure
+
+- **Date:** 2026-08-03
+- **Reproduce:** `grep -n "_share_or_raise_locked" ailienant-core/core/sandbox.py` — when the container pool is at capacity (`AILIENANT_SANDBOX_MAX_CONTAINERS`, default 4) and no lease is idle after the `AILIENANT_SANDBOX_LEASE_WAIT_S` (30s) wait, a new session sharing the SAME mount root as an existing lease reuses that container rather than being admitted to a queue.
+- **Error:** correctness is never at risk — cross-mount sharing is refused outright (see the resolved DEBT-097), so this can only ever happen for two sessions already working the same project. But CPU/RAM/tmpfs isolation is lost for the sessions sharing that container, and there is no fairness ordering beyond "whoever asks first when the wait times out gets to share the LRU lease" — a burst of same-project sessions could all pile onto one container.
+- **Blocked by:** nothing structural — a true admission queue (FIFO wait list with a configurable ceiling on queued admissions, rather than a single bounded wait-then-degrade) is a viable enhancement, but the current degrade already satisfies the reliability requirement (never crash, never corrupt cross-project execution) that motivated 12.6.
+- **Phase:** future sandbox-resilience slice.
+- **Notes:** declared as an accepted trade-off in the 12.6 plan; logged rather than built speculatively ahead of a real concurrency profile showing it matters.
 
 ### DEBT-033 [LOW · RESOLVED 2026-06-20, 8.10.9] — config.json ↔ MCP secret-store `key_ref` round-trip (fresh-machine import prompt)
 

@@ -142,6 +142,40 @@ MAX_TOTAL_DISPATCH_FANOUT: int = max(1, _env_int("AILIENANT_MAX_TOTAL_DISPATCH_F
 
 
 # ---------------------------------------------------------------------------
+# Sandbox container pool — the Docker tier leases one container per
+# (workspace mount root, session) pair rather than sharing a single global
+# container, so concurrent sessions cannot contend for one /work tmpfs or share
+# a blast radius. The cap bounds how many containers may exist at once; idle
+# leases past the TTL are reclaimed on the next acquire (no background timer).
+# LEASE_WAIT_S is how long an admission blocks for an idle slot before the pool
+# degrades — and it only ever degrades by sharing a container mounted at the
+# SAME root, since sharing across roots would execute against the wrong project.
+# Floored so a malformed override can never wedge the pool shut.
+# ---------------------------------------------------------------------------
+SANDBOX_MAX_CONTAINERS: int = max(1, _env_int("AILIENANT_SANDBOX_MAX_CONTAINERS", 4))
+SANDBOX_IDLE_TTL_S: int = max(1, _env_int("AILIENANT_SANDBOX_IDLE_TTL_S", 900))
+SANDBOX_LEASE_WAIT_S: float = max(0.0, _env_float("AILIENANT_SANDBOX_LEASE_WAIT_S", 30.0))
+
+# Per-container resource ceilings (not reservations — usage stays demand-driven).
+# Under cgroup v2 the container's tmpfs pages are charged to its own cgroup, so
+# the /work tmpfs size sits inside this memory ceiling rather than beside it. A
+# process killed for exceeding it surfaces as exit 137, which the Docker adapter
+# translates into a message naming this knob so the model can react to it. No CPU
+# ceiling is exposed: `nano_cpus` is absent from the SDK's create_host_config, and
+# throttling would distort the benchmark oracle's measurements.
+SANDBOX_MEM_LIMIT: str = os.getenv("AILIENANT_SANDBOX_MEM_LIMIT", "2g")
+SANDBOX_PIDS_LIMIT: int = max(1, _env_int("AILIENANT_SANDBOX_PIDS_LIMIT", 512))
+
+# Socket-level timeout for ordinary Docker SDK calls (ping, inspect, run, stop,
+# remove, image lookup). The SDK's transport is synchronous `requests`, so this
+# is what turns an unresponsive daemon into a prompt ReadTimeout on the worker
+# thread — releasing it in O(1) instead of parking it indefinitely. Image build
+# and pull use their own, much longer budget; a one-shot exec uses a client
+# scoped to that command's own timeout, since exec blocks until it completes.
+DOCKER_OP_TIMEOUT_S: float = max(1.0, _env_float("AILIENANT_DOCKER_OP_TIMEOUT_S", 30.0))
+
+
+# ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)
 # ---------------------------------------------------------------------------
 # Mirrors the cloud env keys declared in core/config/provider_registry.py

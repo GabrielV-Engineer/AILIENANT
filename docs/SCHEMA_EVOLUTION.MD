@@ -2236,3 +2236,59 @@ coalesced/empty result — an HTTP caller needs either the real count or an expl
 fabricated zero); bounded and resumable via `limit`/`remaining`; the ANN index is rebuilt once at the
 end of a batch, not per file, since the per-file `create_index(replace=True)` pattern the reactive path
 uses would make a large backfill pass quadratic.
+
+---
+
+## §47 — Sandbox Container Pool + Docker Daemon Circuit Breaker (Manifest 12.6)
+
+Closes DEBT-097 and DEBT-100. `core/sandbox.py::DockerSandboxAdapter` no longer owns one
+process-lifetime `self._container`; it leases from a bounded `_ContainerPool` keyed by
+`(abspath(mount_root), session_id or "__shared__")`. Every field this section touches is additive or a
+same-shape rename — no consumer of the pre-12.6 contract breaks.
+
+**Container identity and labels.** A lease's container is named `ailienant-sandbox-<sha1(key)[:12]>`
+(was the fixed singleton `ailienant-sandbox-daemon`) and carries two labels:
+`ailienant.sandbox=1` (the sweep/list filter) and `ailienant.owner_port=<AILIENANT_API_PORT or "">`
+(the sibling-backend liveness check below). A pre-12.6 singleton container is a one-time migration
+target, not a supported shape going forward.
+
+**Mount-root resolution — additive DI seam.** `core.sandbox.set_session_workspace_resolver(fn)` mirrors
+the existing `set_trusted_bridge` precedent (§26): `core` never imports the transport layer that owns
+the session registry. `main.py`'s lifespan injects
+`lambda sid: _session_workspace_root.get(sid, "")` — the same registry, keyed by the same
+`client_id == x_task_id == session_id` identity, that `client_workspace_init` already populates. A
+resolver miss (no session, or an uninjected resolver — every unit test) falls back to the adapter's own
+`host_workspace`, which is unchanged in meaning: the `__shared__` lease's mount root, still readable
+before any lease exists (the benchmark oracle's materialize-before-execute contract, `core/benchmark/
+executors.py`).
+
+**`container_lifecycle` event vocabulary — amends §36.2.** The table shape (`id, timestamp, event,
+container_id, image, tier`) is unchanged; the free-form `event TEXT` column now also carries three new
+values a reader should not treat as unknown: `evicted` (LRU eviction to free a pool slot),
+`idle_ttl_reaped` (idle past `AILIENANT_SANDBOX_IDLE_TTL_S`), `shared_degraded` (pool exhaustion —
+sharing an existing same-mount lease rather than creating a new one), and `drained` (lifespan shutdown —
+replaces the pre-12.6 `stopped`, which described tearing down the one singleton container).
+
+**`GET /api/v1/runtime/status` — additive fields, amends §11.3.B.** `container_running: boolean` keeps
+its exact pre-12.6 meaning (at least one pooled container currently exists) computed from the pool's own
+bookkeeping rather than a live `reload()` call, since the RuntimePanel polls this endpoint continuously
+and a per-poll daemon round-trip would only add load. Two new fields:
+
+| Field | Meaning |
+|---|---|
+| `container_count` | Number of currently-leased pool containers (0..`AILIENANT_SANDBOX_MAX_CONTAINERS`). |
+| `daemon_degraded` | `true` when the daemon circuit breaker (below) is open. |
+
+**Daemon circuit breaker (DEBT-100).** Every blocking Docker SDK call — including `api/runtime.py`'s
+`_probe_docker`/`_check_image_exists`, previously their own unbounded `asyncio.to_thread` calls — now
+routes through `core.sandbox.docker_call`, which dispatches to a dedicated `ail-docker`
+`ThreadPoolExecutor` (never the shared default executor every other subsystem depends on) and is guarded
+by a 3-state breaker (closed → 2 consecutive faults → open 60s → half-open probe). No new wire contract:
+the breaker's state surfaces only through the `daemon_degraded` status field above and through the
+existing `[sandbox_daemon_unavailable]` / `[sandbox_pool_exhausted]` bracketed-sentinel convention
+already established for `[sandbox_timeout]` / `[hitl_denied]` / `[devcontainer_*]` (§26).
+
+**Config — additive, `shared/config.py`.** `AILIENANT_SANDBOX_MAX_CONTAINERS` (4),
+`AILIENANT_SANDBOX_IDLE_TTL_S` (900), `AILIENANT_SANDBOX_LEASE_WAIT_S` (30),
+`AILIENANT_SANDBOX_MEM_LIMIT` ("2g"), `AILIENANT_SANDBOX_PIDS_LIMIT` (512),
+`AILIENANT_DOCKER_OP_TIMEOUT_S` (30). None are read by any pre-12.6 code path.

@@ -66,11 +66,15 @@ def test_lifecycle_table_created(tmp_path) -> None:
 class _FakeContainer:
     id = "deadbeefcafe0000"
 
+    def __init__(self) -> None:
+        self.stopped = False
+        self.removed = False
+
     def stop(self, timeout: int = 10) -> None:  # noqa: D401 - fake
-        pass
+        self.stopped = True
 
     def remove(self, force: bool = False) -> None:  # noqa: D401 - fake
-        pass
+        self.removed = True
 
 
 def test_emit_lifecycle_calls_writer(tmp_path, monkeypatch) -> None:
@@ -89,13 +93,25 @@ def test_emit_lifecycle_calls_writer(tmp_path, monkeypatch) -> None:
     assert tier == "DOCKER"
 
 
-def test_shutdown_emits_stopped(tmp_path, monkeypatch) -> None:
+def test_shutdown_emits_drained(tmp_path, monkeypatch) -> None:
+    """Phase 12.6: shutdown drains the pool's leases (was a single ``self._container``).
+
+    The reason string is now specific to the teardown path — "drained" for a
+    lifespan shutdown, distinct from "evicted" (LRU) and "idle_ttl_reaped" — so
+    the Runtime timeline can tell them apart.
+    """
     captured: list = []
     adapter = DockerSandboxAdapter(host_workspace=str(tmp_path))
-    adapter._container = _FakeContainer()
+    fake_container = _FakeContainer()
+    from core.sandbox import _ContainerLease
+
+    key = ("/proj", "s1")
+    adapter._pool._leases[key] = _ContainerLease(container=fake_container, mount_root="/proj", refcount=0)
     monkeypatch.setattr(adapter, "_emit_lifecycle", lambda event, container=None: captured.append(event))
 
     asyncio.run(adapter.shutdown())
 
-    assert "stopped" in captured
-    assert adapter._container is None  # teardown completed
+    assert "drained" in captured
+    assert fake_container.stopped is True
+    assert fake_container.removed is True
+    assert len(adapter._pool._leases) == 0  # teardown completed

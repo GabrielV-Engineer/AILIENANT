@@ -143,7 +143,7 @@ class _StubAdapter:
     ) -> _StubSession:
         return self._session
 
-    def get_sync_surface(self, cwd: str) -> _StubSyncSurface:
+    def get_sync_surface(self, cwd: str, session_id: Optional[str] = None) -> _StubSyncSurface:
         return self._surface
 
 

@@ -376,8 +376,10 @@ async def run_agentic_cell_node(
 
             from tools.execution_tools import _sandbox_env
 
-            session = await adapter.open_session(cwd=cwd, env_whitelist=_sandbox_env())
-            surface = adapter.get_sync_surface(cwd)
+            session = await adapter.open_session(
+                cwd=cwd, env_whitelist=_sandbox_env(), session_id=task_id,
+            )
+            surface = adapter.get_sync_surface(cwd, session_id=task_id)
             cell = _CellSession(session=session, surface=surface)
             cell.collector = asyncio.ensure_future(_collect_into(cell))
             _session_registry[task_id] = cell

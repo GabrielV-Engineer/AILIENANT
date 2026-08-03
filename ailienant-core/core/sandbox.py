@@ -36,19 +36,26 @@ payloads are bounded by a 5 M-instruction fuel cap rather than wall-clock.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import math
 import os
 import shlex
 import tempfile
+import threading
+import time
 from abc import ABC, abstractmethod
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Protocol, Tuple, Type
 
 if TYPE_CHECKING:
     from core.workspace_sync import SyncSurface
 
 import docker
 import docker.errors  # explicit submodule import so the type checker resolves docker.errors.*
+import requests
 import wasmtime
 from pydantic import BaseModel
 
@@ -58,6 +65,14 @@ from core.pty_session import (
     SandboxSessionError,
     _PtyBackend,
     _PtySession,
+)
+from shared.config import (
+    DOCKER_OP_TIMEOUT_S,
+    SANDBOX_IDLE_TTL_S,
+    SANDBOX_LEASE_WAIT_S,
+    SANDBOX_MAX_CONTAINERS,
+    SANDBOX_MEM_LIMIT,
+    SANDBOX_PIDS_LIMIT,
 )
 
 logger = logging.getLogger("AILIENANT_SANDBOX")
@@ -95,6 +110,452 @@ _WASM_ENTRYPOINT: str = "_start"           # WASI command-module entrypoint
 _WASM_ALLOWED_IMPORT_MODULES: frozenset[str] = frozenset(
     {"wasi_snapshot_preview1"}             # WASI-preview1 only — no custom host
 )
+
+
+# ── Daemon-hang containment (DEBT-100) ───────────────────────────────────────
+#
+# Every blocking Docker SDK call funnels through :func:`_docker_call`, which
+# (a) dispatches to a *dedicated, bounded* worker pool — never
+# ``asyncio.to_thread``'s shared default executor, so a stalled daemon can
+# never starve unrelated ``to_thread`` consumers elsewhere in the process
+# (janitor, PPR, indexer, blast-radius) — and (b) is guarded by a small
+# circuit breaker so a sustained hang stops dispatching new calls entirely
+# rather than burning one worker thread per retry.
+#
+# The primary defense is narrower than the executor alone suggests: every
+# Docker client used here is constructed with an explicit socket-level
+# ``timeout`` (verified against docker-py 7.1.0's ``APIClient(timeout=...)``),
+# so an unresponsive daemon surfaces as ``requests.exceptions.ReadTimeout`` on
+# the worker thread, which then returns to the pool in O(1) — no orphaned
+# thread. The one call this cannot bound is the *hijacked exec socket* behind
+# an interactive PTY session (``exec_start(socket=True)``): that is a
+# deliberately blocking raw-socket read with no HTTP timeout underneath it.
+# The dedicated pool + breaker exist to contain exactly that residual case
+# (see DEBT entry logged alongside this phase).
+
+
+class SandboxDaemonTimeout(Exception):
+    """The Docker daemon itself is unresponsive — not a hung in-container
+    command (already bounded by the GNU ``timeout`` wrapper), but the daemon
+    failing to answer an SDK call within its budget. Callers translate this
+    into a bracketed degrade sentinel; it must never propagate past
+    :meth:`SandboxAdapter.execute` / :meth:`SandboxAdapter.open_session`.
+    """
+
+
+class SandboxResourceExhausted(Exception):
+    """The container pool is at capacity, no lease is idle, and sharing would
+    require crossing mount roots. Refused outright rather than degraded: a
+    shared container mounted at a *different* project's root would silently
+    execute the caller's command against the wrong files (context corruption),
+    which is a correctness defect, not merely a lost isolation guarantee.
+    """
+
+
+_DOCKER_EXECUTOR_LOCK = threading.Lock()
+_docker_executor: Optional[ThreadPoolExecutor] = None
+
+
+def _get_docker_executor() -> ThreadPoolExecutor:
+    """Lazily build the module-wide bounded Docker worker pool.
+
+    Sized off the container pool cap so a fully-leased pool's worth of
+    concurrent operations never queues behind too few threads. Distinct from
+    (and never shared with) the interpreter's default ``asyncio.to_thread``
+    executor, which every other subsystem in the process still depends on.
+    """
+    global _docker_executor
+    if _docker_executor is None:
+        with _DOCKER_EXECUTOR_LOCK:
+            if _docker_executor is None:
+                _docker_executor = ThreadPoolExecutor(
+                    max_workers=max(4, 2 * SANDBOX_MAX_CONTAINERS),
+                    thread_name_prefix="ail-docker",
+                )
+    return _docker_executor
+
+
+# Pure transport/connectivity faults only — NOT `docker.errors.APIError` or its
+# `NotFound`/`ImageNotFound` subclasses, which are ordinary application-level
+# responses from a *live* daemon that existing call sites already handle as
+# control flow (e.g. `_image_exists`). Conflating those with a daemon hang
+# would misfire the breaker on every expected 404 and break that control flow.
+#
+# `docker.errors.DockerException` is handled separately in `_docker_call`
+# rather than added here: it is the ANCESTOR of `APIError` (isinstance would
+# swallow `NotFound`/`ImageNotFound` too), yet `docker.from_env()` itself
+# raises a bare `DockerException` — never an `APIError` — when there is no
+# daemon to connect to at all (verified: "Error while fetching server API
+# version" on a machine with no Docker installed). That construction-time
+# failure IS a daemon fault and must degrade, not crash the caller.
+_DAEMON_FAULT_EXCEPTIONS: Tuple[Type[BaseException], ...] = (
+    requests.exceptions.Timeout,
+    requests.exceptions.ConnectionError,
+)
+
+
+class _DaemonBreaker:
+    """Minimal three-state circuit breaker scoped to Docker daemon reachability.
+
+    Not a reuse of ``brain/nodes/circuit_breaker.py`` — that module is agent
+    retry semantics over LLM turns, not I/O health. Opening this breaker is
+    what actually prevents thread exhaustion under a sustained hang: a socket
+    timeout alone still burns one ``ail-docker`` thread per attempt, so once
+    the daemon is known-bad the breaker stops dispatching entirely until a
+    cheap probe says otherwise.
+    """
+
+    def __init__(self, *, fail_threshold: int = 2, cooldown_s: float = 60.0) -> None:
+        self._fail_threshold = fail_threshold
+        self._cooldown_s = cooldown_s
+        self._consecutive_failures = 0
+        self._opened_at: Optional[float] = None
+
+    @property
+    def is_open(self) -> bool:
+        """Closed/half-open → False (a call may proceed); Open → True."""
+        if self._opened_at is None:
+            return False
+        if time.monotonic() - self._opened_at >= self._cooldown_s:
+            return False  # cooldown elapsed: let the next call through as a probe
+        return True
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._fail_threshold:
+            self._opened_at = time.monotonic()
+
+    def reset(self) -> None:
+        """Test-isolation / explicit re-arm hook."""
+        self._consecutive_failures = 0
+        self._opened_at = None
+
+
+_daemon_breaker = _DaemonBreaker()
+
+
+def reset_daemon_breaker() -> None:
+    """Drop the module-level breaker state (test isolation)."""
+    _daemon_breaker.reset()
+
+
+async def _docker_call(fn: Any, *args: Any, timeout_s: float, op: str, **kwargs: Any) -> Any:
+    """Run a blocking Docker SDK call on the bounded ``ail-docker`` pool.
+
+    Breaker-guarded up front so a known-bad daemon fails instantly without
+    dispatching (and thus without risking) a new thread. Raises
+    :class:`SandboxDaemonTimeout` on a timeout, a transport/connectivity fault,
+    or a daemon that could not be reached at all (a bare
+    ``docker.errors.DockerException`` — e.g. ``docker.from_env()`` itself
+    failing when no daemon/socket exists on the host). Every other exception —
+    including ``docker.errors.APIError``/``NotFound``/``ImageNotFound``, which
+    are legitimate application-level responses from a *live* daemon — is a
+    ``DockerException`` subclass too but propagates unchanged, so existing
+    control-flow call sites (e.g. ``_image_exists``) are unaffected.
+    """
+    if _daemon_breaker.is_open:
+        raise SandboxDaemonTimeout(f"circuit open — refusing Docker op {op!r}")
+
+    loop = asyncio.get_running_loop()
+    executor = _get_docker_executor()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(executor, lambda: fn(*args, **kwargs)),
+            timeout=timeout_s,
+        )
+    except asyncio.TimeoutError as exc:
+        _daemon_breaker.record_failure()
+        raise SandboxDaemonTimeout(f"Docker op {op!r} exceeded {timeout_s}s") from exc
+    except _DAEMON_FAULT_EXCEPTIONS as exc:
+        _daemon_breaker.record_failure()
+        raise SandboxDaemonTimeout(f"Docker op {op!r} failed: {exc}") from exc
+    except docker.errors.DockerException as exc:
+        if isinstance(exc, docker.errors.APIError):
+            raise  # a live daemon's application-level response — control flow, not a fault
+        # A bare DockerException (not an APIError) means the daemon could not
+        # be reached at all — e.g. docker.from_env() itself fails when no
+        # daemon/socket exists on the host.
+        _daemon_breaker.record_failure()
+        raise SandboxDaemonTimeout(f"Docker op {op!r} failed: {exc}") from exc
+    _daemon_breaker.record_success()
+    return result
+
+
+async def docker_call(fn: Any, *args: Any, timeout_s: float, op: str, **kwargs: Any) -> Any:
+    """Public alias of :func:`_docker_call`.
+
+    Cross-module callers (``api/runtime.py``'s daemon-reachability probes,
+    which the RuntimePanel polls continuously) route their own blocking Docker
+    SDK calls through this so the whole process shares one bounded pool and one
+    breaker, rather than each caller risking the shared default executor.
+    """
+    return await _docker_call(fn, *args, timeout_s=timeout_s, op=op, **kwargs)
+
+
+def is_daemon_breaker_open() -> bool:
+    """Whether the daemon circuit breaker is currently open (degraded state)."""
+    return _daemon_breaker.is_open
+
+
+# ── Exec-only timeout-bucketed clients ───────────────────────────────────────
+#
+# Verified against docker-py 7.1.0: neither ``exec_create`` nor ``exec_start``
+# accept a per-call timeout, and ``exec_run`` blocks until the command
+# completes — so a single shared short-timeout client would sever a
+# legitimate long-running command. Each one-shot ``execute()`` call instead
+# resolves a client scoped to its own budget, rounded up to a coarse bucket and
+# LRU-cached so a highly variable ``timeout_s`` cannot create unbounded clients
+# (each carries its own connection pool).
+
+_EXEC_CLIENT_BUCKET_S: float = 30.0
+_EXEC_CLIENT_CACHE_CAP: int = 8
+_EXEC_TIMEOUT_OUTER_GRACE_S: float = 5.0  # outer net above the in-container `timeout`
+
+_exec_client_cache: "OrderedDict[float, Any]" = OrderedDict()
+_exec_client_cache_lock = threading.Lock()
+
+
+def _exec_timeout_bucket(timeout_s: float) -> float:
+    return _EXEC_CLIENT_BUCKET_S * math.ceil(max(timeout_s, 1.0) / _EXEC_CLIENT_BUCKET_S)
+
+
+async def _get_exec_client(timeout_s: float) -> Any:
+    """LRU-cached, timeout-scoped client for one-shot exec calls.
+
+    Construction itself is a blocking daemon round-trip (docker-py resolves
+    the server API version at client build time), so a cache miss is
+    dispatched through :func:`_docker_call` at the *short* op budget — building
+    a client should never itself hang for as long as the exec it will run.
+    """
+    bucket = _exec_timeout_bucket(timeout_s)
+    with _exec_client_cache_lock:
+        cached = _exec_client_cache.get(bucket)
+        if cached is not None:
+            _exec_client_cache.move_to_end(bucket)
+            return cached
+    client = await _docker_call(
+        docker.from_env, timeout=bucket, timeout_s=DOCKER_OP_TIMEOUT_S, op="from_env_exec_bucket",
+    )
+    with _exec_client_cache_lock:
+        _exec_client_cache[bucket] = client
+        _exec_client_cache.move_to_end(bucket)
+        while len(_exec_client_cache) > _EXEC_CLIENT_CACHE_CAP:
+            _exec_client_cache.popitem(last=False)
+    return client
+
+
+def _run_exec_sync(
+    client: Any,
+    container_id: str,
+    wrapped_command: str,
+    container_cwd: str,
+    env_whitelist: Dict[str, str],
+) -> Tuple[int, Any]:
+    """Mirror ``Container.exec_run(demux=True)`` against a timeout-scoped client.
+
+    Reimplemented at the low-level ``APIClient`` layer (``exec_create`` /
+    ``exec_start`` / ``exec_inspect``) because the high-level ``exec_run``
+    convenience method is bound to the container's *own* client instance,
+    which carries the process-wide lifecycle timeout rather than this call's
+    exec-specific budget.
+    """
+    api = client.api
+    created = api.exec_create(
+        container_id,
+        wrapped_command,
+        workdir=container_cwd,
+        environment=dict(env_whitelist),
+        stdout=True,
+        stderr=True,
+        tty=False,
+    )
+    output = api.exec_start(created["Id"], demux=True)
+    info = api.exec_inspect(created["Id"])
+    return int(info.get("ExitCode") or 0), output
+
+
+# ── Session→workspace-root DI seam (keys the per-session container pool) ────
+
+_session_workspace_resolver: Optional[Callable[[str], str]] = None
+
+
+def set_session_workspace_resolver(fn: Optional[Callable[[str], str]]) -> None:
+    """Inject (or clear) the session-id → workspace-root lookup.
+
+    Mirrors the :func:`set_trusted_bridge` precedent: ``core`` never imports
+    the transport layer that owns the session registry (``main.py``'s
+    ``_session_workspace_root``, keyed by the same ``client_id == x_task_id ==
+    session_id`` identity the rest of this file already assumes) — the lookup
+    is pushed down from the composition root instead. Left uninjected (the
+    default, and what every unit test gets), every lease falls back to the
+    adapter's own ``host_workspace`` — today's single-mount behavior — so the
+    seam is safe to leave unwired.
+    """
+    global _session_workspace_resolver
+    _session_workspace_resolver = fn
+
+
+def _lease_key(mount_root: str, session_id: Optional[str]) -> Tuple[str, str]:
+    return (os.path.abspath(mount_root), session_id or "__shared__")
+
+
+def _lease_container_name(key: Tuple[str, str]) -> str:
+    digest = hashlib.sha1("::".join(key).encode("utf-8")).hexdigest()[:12]
+    return f"ailienant-sandbox-{digest}"
+
+
+class _ContainerLease:
+    """One pooled container, its mount root, and its live-borrower count."""
+
+    __slots__ = ("container", "mount_root", "refcount", "last_used")
+
+    def __init__(self, container: Any, mount_root: str, refcount: int = 1) -> None:
+        self.container = container
+        self.mount_root = mount_root
+        self.refcount = refcount
+        self.last_used: float = time.monotonic()
+
+
+class _ContainerPool:
+    """Bounded per-``(mount root, session)`` Docker container leases.
+
+    Replaces the pre-12.6 adapter's single shared ``self._container``:
+    concurrent sessions against different projects — or the same one — get
+    their own container instead of contending for one CPU/memory envelope and
+    one ``/work`` tmpfs. Because a lease's mount root travels with it, a
+    session against a different project can never silently fall back onto
+    another project's ``/workspace`` (the wrong-mount defect this pool also
+    removes).
+
+    All structural mutation (create/evict/share) happens under one
+    ``asyncio.Lock``, matching the single-lock discipline the pre-existing
+    ``_lifecycle_lock`` already used in this file — pool operations are
+    already meant to serialize, and every blocking step under the lock is
+    itself breaker-guarded and timeout-bounded via :func:`_docker_call`.
+    """
+
+    def __init__(self, adapter: "DockerSandboxAdapter") -> None:
+        self._adapter = adapter
+        self._leases: "OrderedDict[Tuple[str, str], _ContainerLease]" = OrderedDict()
+        self._lock = asyncio.Lock()
+        self._condition = asyncio.Condition(self._lock)
+
+    def peek(self, mount_root: str, session_id: Optional[str]) -> Optional[_ContainerLease]:
+        """Non-blocking read of an already-established lease (no acquire)."""
+        return self._leases.get(_lease_key(mount_root, session_id))
+
+    async def acquire(self, *, mount_root: str, session_id: Optional[str]) -> _ContainerLease:
+        key = _lease_key(mount_root, session_id)
+        abs_root = key[0]
+        async with self._lock:
+            lease = self._leases.get(key)
+            if lease is not None:
+                if await self._adapter._revalidate(lease.container):
+                    lease.refcount += 1
+                    lease.last_used = time.monotonic()
+                    self._leases.move_to_end(key)
+                    return lease
+                del self._leases[key]  # vanished underneath us — recreate below
+
+            await self._reap_expired_idle_locked()
+
+            if len(self._leases) < SANDBOX_MAX_CONTAINERS:
+                return await self._create_locked(key, abs_root)
+            if await self._evict_one_idle_locked():
+                return await self._create_locked(key, abs_root)
+
+            try:
+                await asyncio.wait_for(
+                    self._condition.wait_for(self._has_capacity_or_idle_locked),
+                    timeout=SANDBOX_LEASE_WAIT_S,
+                )
+            except asyncio.TimeoutError:
+                return self._share_or_raise_locked(abs_root)
+
+            if len(self._leases) < SANDBOX_MAX_CONTAINERS:
+                return await self._create_locked(key, abs_root)
+            if await self._evict_one_idle_locked():
+                return await self._create_locked(key, abs_root)
+            return self._share_or_raise_locked(abs_root)  # woke without real capacity
+
+    async def release(self, lease: _ContainerLease) -> None:
+        async with self._lock:
+            lease.refcount = max(0, lease.refcount - 1)
+            lease.last_used = time.monotonic()
+            self._condition.notify_all()
+
+    async def drain(self) -> None:
+        """Tear down every lease — called from the FastAPI lifespan shutdown."""
+        async with self._lock:
+            leases = list(self._leases.values())
+            self._leases.clear()
+        for lease in leases:
+            await self._adapter._teardown_container(lease.container, reason="drained")
+
+    # ── lock-held helpers ────────────────────────────────────────────────────
+
+    def _has_capacity_or_idle_locked(self) -> bool:
+        if len(self._leases) < SANDBOX_MAX_CONTAINERS:
+            return True
+        return any(lease.refcount == 0 for lease in self._leases.values())
+
+    async def _create_locked(self, key: Tuple[str, str], abs_root: str) -> _ContainerLease:
+        container = await self._adapter._create_lease_container(key, abs_root)
+        lease = _ContainerLease(container=container, mount_root=abs_root)
+        self._leases[key] = lease
+        return lease
+
+    async def _evict_one_idle_locked(self) -> bool:
+        idle = [(k, l) for k, l in self._leases.items() if l.refcount == 0]
+        if not idle:
+            return False
+        idle.sort(key=lambda kv: kv[1].last_used)
+        key, lease = idle[0]
+        del self._leases[key]
+        await self._adapter._teardown_container(lease.container, reason="evicted")
+        return True
+
+    async def _reap_expired_idle_locked(self) -> None:
+        now = time.monotonic()
+        expired = [
+            (k, l) for k, l in self._leases.items()
+            if l.refcount == 0 and (now - l.last_used) >= SANDBOX_IDLE_TTL_S
+        ]
+        for key, lease in expired:
+            del self._leases[key]
+            await self._adapter._teardown_container(lease.container, reason="idle_ttl_reaped")
+
+    def _share_or_raise_locked(self, mount_root: str) -> _ContainerLease:
+        """Pool exhausted: share only a lease mounted at the SAME root.
+
+        Sharing across mount roots is refused unconditionally — the borrowed
+        container's ``cwd`` translation would silently resolve against the
+        wrong project's ``/workspace``, corrupting the caller's execution
+        context rather than merely losing CPU/RAM isolation.
+        """
+        candidates = [lease for lease in self._leases.values() if lease.mount_root == mount_root]
+        if not candidates:
+            raise SandboxResourceExhausted(
+                f"container pool exhausted (cap={SANDBOX_MAX_CONTAINERS}) and no "
+                f"lease mounted at {mount_root!r} to share — refusing to cross "
+                f"mount roots, which would execute against the wrong project."
+            )
+        candidates.sort(key=lambda lease: lease.last_used)
+        lease = candidates[0]
+        lease.refcount += 1
+        lease.last_used = time.monotonic()
+        logger.warning(
+            "Sandbox pool exhausted (cap=%d) — sharing container mounted at %s "
+            "(refcount now %d). CPU/RAM isolation degraded; disk/mount safety "
+            "is preserved because the share is same-root only.",
+            SANDBOX_MAX_CONTAINERS, mount_root, lease.refcount,
+        )
+        self._adapter._emit_lifecycle("shared_degraded", lease.container)
+        return lease
 
 
 # ── Pydantic result model ────────────────────────────────────────────────────
@@ -184,12 +645,18 @@ class SandboxAdapter(ABC):
             f"{type(self).__name__} does not support interactive sessions."
         )
 
-    def get_sync_surface(self, cwd: str) -> "SyncSurface":
+    def get_sync_surface(self, cwd: str, session_id: Optional[str] = None) -> "SyncSurface":
         """Return the writable SyncSurface for this adapter.
 
         Session-capable tiers (Docker, NativeDirect) override this. Tiers
         without an interactive work surface (Wasm, HITL) inherit the default
         which raises, consistent with the open_session pattern.
+
+        ``session_id`` is additive (Phase 12.6): the Docker tier's pool keys a
+        container by session, so the surface must be resolved against the
+        *same* lease :meth:`open_session` established for this session, not
+        an adapter-wide container. Tiers with no per-session lease concept
+        accept and ignore it.
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not expose a sync surface."
@@ -199,20 +666,36 @@ class SandboxAdapter(ABC):
 # ── Docker concrete adapter ──────────────────────────────────────────────────
 
 
-class DockerSandboxAdapter(SandboxAdapter):
-    """Long-lived ``ailienant-sandbox-daemon`` container; ``docker exec`` per call.
+def _owner_port() -> str:
+    """The port this process's host-discovery file advertises, if any.
 
-    Security profile (locked to ``PHASE_6_BLUEPRINT.md §2.2``):
+    Read directly from the environment (mirroring ``main.py``'s own
+    ``_publish_host_discovery`` resolution) so the container-label contract
+    needs no import of the transport layer. Empty when unset — a manual,
+    non-extension-spawned backend — in which case the sweep in
+    :func:`sweep_orphaned_containers` treats the container as unattributed
+    rather than guessing a port.
+    """
+    return os.environ.get("AILIENANT_API_PORT", "").strip()
+
+
+class DockerSandboxAdapter(SandboxAdapter):
+    """Bounded pool of ``ailienant-sandbox-*`` containers, one per live session.
+
+    Security profile per container (locked to ``PHASE_6_BLUEPRINT.md §2.2``):
 
     * ``--read-only`` rootfs
     * ``--network none``
-    * host CWD bind-mounted at ``/workspace`` read-only
+    * this lease's mount root bind-mounted at ``/workspace`` read-only
     * ``tmpfs`` at ``/work`` (512 MB, ``nosuid``, ``nodev``)
+    * ``mem_limit`` / ``pids_limit`` ceilings (Phase 12.6 — noisy-neighbor bound)
     * Environment filtered to the per-call ``env_whitelist``
 
-    Known limit (R5 in the plan): a hung Docker daemon will still block the
-    worker thread because the synchronous SDK call cannot be interrupted from
-    Python. The Phase 6.1.4 resolver will surface this via a startup probe.
+    Containers are leased per ``(mount root, session)`` via :class:`_ContainerPool`
+    rather than shared as a single process-lifetime container — see that
+    class's docstring for the isolation and wrong-mount rationale. Every
+    blocking Docker SDK call routes through :func:`_docker_call`, which is
+    both timeout-bounded and breaker-guarded (Phase 12.6 — DEBT-100).
     """
 
     execution_source = "docker"
@@ -221,23 +704,34 @@ class DockerSandboxAdapter(SandboxAdapter):
 
     def __init__(self, *, host_workspace: Optional[str] = None) -> None:
         self._client: Optional[Any] = None
-        self._container: Optional[Any] = None
-        self._image_id: Optional[str] = None
+        self._build_client: Optional[Any] = None
+        self._image_ready: bool = False
         self._lifecycle_lock: asyncio.Lock = asyncio.Lock()
+        self._image_lock: asyncio.Lock = asyncio.Lock()
         self._host_workspace: str = host_workspace or os.getcwd()
+        self._pool: _ContainerPool = _ContainerPool(self)
 
     @property
     def host_workspace(self) -> str:
-        """The host directory bind-mounted read-only at ``/workspace``.
+        """The adapter-default mount root — the ``__shared__`` lease's root.
 
-        The single authority for the mount root: any host path written under
-        this directory is visible inside the container and is translated into
-        ``/workspace/…`` by :meth:`_translate_cwd`. Consumers that must place a
-        file where the container can read it (e.g. the multi-file benchmark
-        oracle) materialize under this root rather than re-deriving the working
-        directory, which could drift from what was actually mounted.
+        The single authority for callers with no live session (the untrusted
+        benchmark oracle, hook execution) that must know the mount point
+        *before* any lease exists, e.g. to materialize a file the container
+        will later read. A session-scoped lease may mount a *different* root
+        (see :func:`set_session_workspace_resolver`); this property never
+        reflects that — it names only the shared/default mount.
         """
         return self._host_workspace
+
+    def pooled_container_count(self) -> int:
+        """Non-blocking snapshot of currently-leased containers.
+
+        A plain in-process dict read — no Docker I/O — so ``api/runtime.py``'s
+        continuously-polled status endpoint can report it without adding load
+        to (or risking a hang against) the daemon on every poll.
+        """
+        return len(self._pool._leases)  # noqa: SLF001 — same-module collaborator
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -250,45 +744,69 @@ class DockerSandboxAdapter(SandboxAdapter):
         env_whitelist: Dict[str, str],
         session_id: Optional[str] = None,
     ) -> SandboxResult:
-        """Dispatch ``command`` to the sandbox container.
+        """Dispatch ``command`` inside this session's leased container.
 
         Timeout is enforced **inside** the container by the GNU ``timeout``
         coreutils; the kernel SIGTERMs (then SIGKILLs after 1 s grace) the
-        process group when the deadline expires and ``exec_run`` returns
-        naturally with exit code 124, freeing the Python worker thread
-        instantly.
-
-        ``session_id`` is accepted for ABC parity and intentionally ignored —
-        the Docker tier owns its isolation envelope.
+        process group when the deadline expires and exec returns naturally
+        with exit code 124. A daemon that is itself unresponsive — as opposed
+        to a hung in-container command — degrades to a bracketed sentinel
+        rather than raising; the pool's own exhaustion degrades the same way.
         """
-        del session_id  # ABC parity; the Docker tier does not need it.
-        await self._ensure_container_running()
-        assert self._container is not None  # narrowed by lock-guarded init
+        mount_root = self._resolve_mount_root(session_id)
+        try:
+            lease = await self._pool.acquire(mount_root=mount_root, session_id=session_id)
+        except SandboxDaemonTimeout as exc:
+            logger.error("Sandbox daemon unavailable acquiring a lease: %s", exc, exc_info=True)
+            return SandboxResult(exit_code=-1, stdout="", stderr="[sandbox_daemon_unavailable]")
+        except SandboxResourceExhausted as exc:
+            logger.warning("Sandbox pool exhausted: %s", exc)
+            return SandboxResult(exit_code=-1, stdout="", stderr="[sandbox_pool_exhausted]")
 
-        container_cwd = self._translate_cwd(cwd)
-        wrapped = (
-            f"timeout --foreground -k 1 {int(timeout_s)}s "
-            f"sh -c {shlex.quote(command)}"
-        )
-
-        exit_code, output = await asyncio.to_thread(
-            self._exec_command_sync, wrapped, container_cwd, env_whitelist,
-        )
-
-        stdout_bytes, stderr_bytes = self._split_output(output)
-        stdout = self._decode(stdout_bytes)
-        stderr = self._decode(stderr_bytes)
-
-        if exit_code == 124:
-            # GNU timeout convention. A user command legitimately exiting 124
-            # is indistinguishable here — a known coreutils limitation,
-            # accepted for 6.1.1; consumers can read stderr for confirmation.
-            timeout_note = (
-                f"[sandbox_timeout] command exceeded {int(timeout_s)}s wall clock"
+        try:
+            container_cwd = self._translate_cwd(cwd, lease.mount_root)
+            wrapped = (
+                f"timeout --foreground -k 1 {int(timeout_s)}s "
+                f"sh -c {shlex.quote(command)}"
             )
-            stderr = f"{timeout_note}\n{stderr}" if stderr else timeout_note
+            exec_budget = timeout_s + _EXEC_TIMEOUT_OUTER_GRACE_S
+            try:
+                exec_client = await _get_exec_client(exec_budget)
+                exit_code, output = await _docker_call(
+                    _run_exec_sync, exec_client, lease.container.id, wrapped, container_cwd,
+                    env_whitelist, timeout_s=exec_budget, op="exec_run",
+                )
+            except SandboxDaemonTimeout as exc:
+                logger.error("Sandbox daemon unavailable during exec: %s", exc, exc_info=True)
+                return SandboxResult(exit_code=-1, stdout="", stderr="[sandbox_daemon_unavailable]")
 
-        return SandboxResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+            stdout_bytes, stderr_bytes = self._split_output(output)
+            stdout = self._decode(stdout_bytes)
+            stderr = self._decode(stderr_bytes)
+
+            if exit_code == 124:
+                # GNU timeout convention. A user command legitimately exiting 124
+                # is indistinguishable here — a known coreutils limitation,
+                # accepted for 6.1.1; consumers can read stderr for confirmation.
+                timeout_note = (
+                    f"[sandbox_timeout] command exceeded {int(timeout_s)}s wall clock"
+                )
+                stderr = f"{timeout_note}\n{stderr}" if stderr else timeout_note
+            elif exit_code == 137:
+                # `timeout` returns 124 whenever IT kills the child, even after
+                # escalating to SIGKILL — so 137 here means something else ended
+                # it, dominantly the cgroup OOM killer given `mem_limit` is in
+                # force. Name the knob so the model can react instead of seeing
+                # a bare non-zero exit.
+                oom_note = (
+                    f"[sandbox_oom] process was killed (exit 137) — likely exceeded "
+                    f"the {SANDBOX_MEM_LIMIT} memory ceiling (AILIENANT_SANDBOX_MEM_LIMIT)"
+                )
+                stderr = f"{oom_note}\n{stderr}" if stderr else oom_note
+
+            return SandboxResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        finally:
+            await self._pool.release(lease)
 
     async def open_session(
         self,
@@ -298,22 +816,43 @@ class DockerSandboxAdapter(SandboxAdapter):
         session_id: Optional[str] = None,
         pre_spawn_guard: Optional[PreSpawnGuard] = None,
     ) -> SandboxSession:
-        """Open a persistent ``sh`` inside the daemon container over an exec socket.
+        """Open a persistent ``sh`` inside this session's leased container.
 
         The exec is created with a TTY so the stream is raw (no 8-byte demux
-        header) and line discipline is real, matching the host PTY model.
+        header) and line discipline is real, matching the host PTY model. The
+        lease is held for the session's whole life and released exactly once
+        when the backend closes (:class:`_DockerPtyBackend`'s ``on_close``) —
+        without that release the container could never become idle-evictable.
         """
-        del session_id  # session identity is the dispatcher's concern
-        await self._ensure_container_running()
-        assert self._container is not None and self._client is not None
-        client = self._client
-        container_id = self._container.id
-        container_cwd = self._translate_cwd(cwd)
+        mount_root = self._resolve_mount_root(session_id)
+        try:
+            lease = await self._pool.acquire(mount_root=mount_root, session_id=session_id)
+        except SandboxDaemonTimeout as exc:
+            raise SandboxSessionError(
+                "Sandbox daemon unavailable — cannot open a session."
+            ) from exc
+        except SandboxResourceExhausted as exc:
+            raise SandboxSessionError(str(exc)) from exc
+
+        client = await self._get_client()
+        container_id = lease.container.id
+        container_cwd = self._translate_cwd(cwd, lease.mount_root)
+        loop = asyncio.get_running_loop()
+        released = False
+
+        def _release_once() -> None:
+            nonlocal released
+            if released:
+                return
+            released = True
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._pool.release(lease)))
 
         def _factory(
             argv: List[str], _cwd: str, env: Dict[str, str], _marker: bytes,
         ) -> _PtyBackend:
-            return _DockerPtyBackend(client, container_id, container_cwd, env, argv)
+            return _DockerPtyBackend(
+                client, container_id, container_cwd, env, argv, on_close=_release_once,
+            )
 
         session = _PtySession(
             cwd=container_cwd,
@@ -325,78 +864,165 @@ class DockerSandboxAdapter(SandboxAdapter):
         await session.start()
         return session
 
-    def get_sync_surface(self, cwd: str) -> "SyncSurface":
-        """Return a DockerSyncSurface targeting /work (the container's tmpfs)."""
-        if self._container is None:
+    def get_sync_surface(self, cwd: str, session_id: Optional[str] = None) -> "SyncSurface":
+        """Return a DockerSyncSurface targeting /work of THIS session's lease."""
+        mount_root = self._resolve_mount_root(session_id)
+        lease = self._pool.peek(mount_root, session_id)
+        if lease is None:
             raise RuntimeError(
-                "DockerSandboxAdapter: container is not running; "
-                "call _ensure_container_running() first."
+                "DockerSandboxAdapter: no active container lease for this session; "
+                "call open_session() first."
             )
         from core.workspace_sync import DockerSyncSurface
-        return DockerSyncSurface(self._container, _CONTAINER_TMPFS_PATH)
+        return DockerSyncSurface(lease.container, _CONTAINER_TMPFS_PATH)
 
     async def shutdown(self) -> None:
-        """Stop + remove the named container and close the Docker client.
+        """Drain every pooled container and close the Docker clients.
 
-        Idempotent — safe to call from the Phase 4.4 workspace teardown hook
-        whether the container was ever started or not.
+        Idempotent — safe to call from the FastAPI lifespan shutdown whether
+        any container was ever started or not.
         """
-        async with self._lifecycle_lock:
-            container = self._container
-            if container is not None:
-                try:
-                    await asyncio.to_thread(container.stop, timeout=10)
-                except Exception as exc:  # noqa: BLE001 — defensive cleanup
-                    logger.warning("Sandbox container stop failed: %s", exc)
-                try:
-                    await asyncio.to_thread(container.remove, force=True)
-                except Exception as exc:  # noqa: BLE001 — defensive cleanup
-                    logger.warning("Sandbox container remove failed: %s", exc)
-                self._emit_lifecycle("stopped", container)
-                self._container = None
-            client = self._client
+        await self._pool.drain()
+        for attr in ("_client", "_build_client"):
+            client = getattr(self, attr)
             if client is not None:
                 try:
-                    await asyncio.to_thread(client.close)
-                except Exception as exc:  # noqa: BLE001 — defensive cleanup
-                    logger.warning("Docker client close failed: %s", exc)
-                self._client = None
+                    await _docker_call(client.close, timeout_s=DOCKER_OP_TIMEOUT_S, op=f"close_{attr}")
+                except Exception as exc:  # noqa: BLE001 — defensive cleanup, never blocks shutdown
+                    logger.warning("Docker client close failed (%s): %s", attr, exc)
+                setattr(self, attr, None)
 
-    # ── lifecycle (lock-guarded) ────────────────────────────────────────────
+    # ── lifecycle ────────────────────────────────────────────────────────────
 
-    async def _ensure_container_running(self) -> None:
-        """Lazy + idempotent: connect the SDK, build the image, start the container."""
+    async def _get_client(self) -> Any:
+        """Lazily build the shared short-timeout client used for lifecycle ops."""
+        if self._client is not None:
+            return self._client
         async with self._lifecycle_lock:
             if self._client is None:
-                self._client = await asyncio.to_thread(docker.from_env)
-            client = self._client
-            assert client is not None
+                self._client = await _docker_call(
+                    docker.from_env, timeout=DOCKER_OP_TIMEOUT_S,
+                    timeout_s=DOCKER_OP_TIMEOUT_S, op="from_env",
+                )
+        return self._client
 
-            if not await asyncio.to_thread(self._image_exists, client):
-                logger.info(
-                    "Building %s — first-run cost, ~30-60s",
-                    _SANDBOX_IMAGE_TAG,
+    async def _get_build_client(self) -> Any:
+        """Lazily build the long-timeout client used only for image build."""
+        if self._build_client is not None:
+            return self._build_client
+        async with self._lifecycle_lock:
+            if self._build_client is None:
+                self._build_client = await _docker_call(
+                    docker.from_env, timeout=float(_DEFAULT_BUILD_TIMEOUT_S),
+                    timeout_s=float(_DEFAULT_BUILD_TIMEOUT_S), op="from_env_build",
                 )
-                image = await asyncio.to_thread(self._build_image_sync, client)
-                self._image_id = image.id
+        return self._build_client
 
-            existing = await asyncio.to_thread(self._get_existing_container, client)
-            started = False
-            if existing is None:
-                self._container = await asyncio.to_thread(
-                    self._start_container_sync, client,
+    async def _ensure_image(self) -> None:
+        """Build the sandbox image once per process — never per lease.
+
+        Guarded by its own lock (distinct from the pool's), so a first-run
+        build cannot serialize behind — or be serialized by — unrelated lease
+        acquisitions once the image is ready.
+        """
+        if self._image_ready:
+            return
+        async with self._image_lock:
+            if self._image_ready:
+                return
+            client = await self._get_client()
+            exists = await _docker_call(
+                self._image_exists, client, timeout_s=DOCKER_OP_TIMEOUT_S, op="images.get",
+            )
+            if not exists:
+                logger.info("Building %s — first-run cost, ~30-60s", _SANDBOX_IMAGE_TAG)
+                build_client = await self._get_build_client()
+                await _docker_call(
+                    self._build_image_sync, build_client,
+                    timeout_s=float(_DEFAULT_BUILD_TIMEOUT_S), op="images.build",
                 )
-                started = True
-            elif getattr(existing, "status", None) != "running":
-                await asyncio.to_thread(existing.remove, force=True)
-                self._container = await asyncio.to_thread(
-                    self._start_container_sync, client,
+            self._image_ready = True
+
+    async def _create_lease_container(self, key: Tuple[str, str], mount_root: str) -> Any:
+        """Build (or recreate) the named container for a fresh pool lease."""
+        await self._ensure_image()
+        client = await self._get_client()
+        name = _lease_container_name(key)
+        labels = {"ailienant.sandbox": "1", "ailienant.owner_port": _owner_port()}
+
+        existing = await _docker_call(
+            self._get_named_container_sync, client, name,
+            timeout_s=DOCKER_OP_TIMEOUT_S, op="containers.get",
+        )
+        if existing is not None:
+            # A same-named container surviving from a prior crash (missed by the
+            # startup sweep, e.g. a manual restart) would otherwise 409-conflict
+            # with `containers.run(name=...)` below.
+            try:
+                await _docker_call(
+                    existing.remove, force=True, timeout_s=DOCKER_OP_TIMEOUT_S, op="remove_stale",
                 )
-                started = True
-            else:
-                self._container = existing
-            if started:
-                self._emit_lifecycle("started")
+            except docker.errors.NotFound:
+                pass
+
+        container = await _docker_call(
+            self._run_container_sync, client, name, mount_root, labels,
+            timeout_s=DOCKER_OP_TIMEOUT_S, op="containers.run",
+        )
+        self._emit_lifecycle("started", container)
+        return container
+
+    async def _revalidate(self, container: Any) -> bool:
+        """True if a pooled lease's container object still exists and is running.
+
+        A user ``docker rm``, a daemon restart, or a stale sweep can remove a
+        container out from under a live lease; this makes that self-healing
+        (transparent recreation on the next acquire) rather than a surfaced
+        error. A daemon-unresponsive fault propagates as-is — the caller's own
+        breaker-guarded creation attempt will fail identically and surface the
+        adapter's degrade sentinel.
+        """
+        try:
+            await _docker_call(container.reload, timeout_s=DOCKER_OP_TIMEOUT_S, op="reload")
+        except docker.errors.NotFound:
+            return False
+        return str(getattr(container, "status", "")) == "running"
+
+    async def _teardown_container(self, container: Any, *, reason: str) -> None:
+        """Stop + remove one pooled container. Never raises — reap is best-effort."""
+        try:
+            await _docker_call(container.stop, timeout=10, timeout_s=DOCKER_OP_TIMEOUT_S, op="stop")
+        except (SandboxDaemonTimeout, docker.errors.NotFound) as exc:
+            logger.warning("Sandbox container stop failed (%s): %s", reason, exc)
+        except Exception as exc:  # noqa: BLE001 — defensive cleanup, must never crash the pool
+            logger.warning("Sandbox container stop failed (%s): %s", reason, exc, exc_info=True)
+        try:
+            await _docker_call(
+                container.remove, force=True, timeout_s=DOCKER_OP_TIMEOUT_S, op="remove",
+            )
+        except docker.errors.NotFound:
+            pass  # already gone — a concurrent removal race, not a fault
+        except SandboxDaemonTimeout as exc:
+            logger.warning("Sandbox container remove failed (%s): %s", reason, exc)
+        except Exception as exc:  # noqa: BLE001 — defensive cleanup, must never crash the pool
+            logger.warning("Sandbox container remove failed (%s): %s", reason, exc, exc_info=True)
+        self._emit_lifecycle(reason, container)
+
+    def _resolve_mount_root(self, session_id: Optional[str]) -> str:
+        """The mount root a session's lease should bind — resolver, else shared default."""
+        if session_id:
+            resolver = _session_workspace_resolver
+            if resolver is not None:
+                try:
+                    root = resolver(session_id)
+                except Exception:  # noqa: BLE001 — a bad resolver must never break execution
+                    logger.warning(
+                        "session workspace resolver failed for %s", session_id, exc_info=True,
+                    )
+                    root = ""
+                if root:
+                    return root
+        return self._host_workspace
 
     def _emit_lifecycle(self, event: str, container: Any = None) -> None:
         """Best-effort container-lifecycle telemetry, emitted on the event loop.
@@ -407,13 +1033,12 @@ class DockerSandboxAdapter(SandboxAdapter):
         """
         try:
             from core.telemetry import log_container_event
-            target = container if container is not None else self._container
-            cid = str(getattr(target, "id", "") or "")[:12]
+            cid = str(getattr(container, "id", "") or "")[:12]
             log_container_event(event, cid, _SANDBOX_IMAGE_TAG, "DOCKER")
         except Exception:  # noqa: BLE001 — telemetry must never affect the sandbox
             logger.debug("container lifecycle emit skipped (%s)", event, exc_info=True)
 
-    # ── sync helpers (always called via asyncio.to_thread) ──────────────────
+    # ── sync helpers (always called via _docker_call, off the event loop) ───
 
     def _image_exists(self, client: Any) -> bool:
         try:
@@ -433,22 +1058,27 @@ class DockerSandboxAdapter(SandboxAdapter):
         )
         return image
 
-    def _get_existing_container(self, client: Any) -> Optional[Any]:
+    def _get_named_container_sync(self, client: Any, name: str) -> Optional[Any]:
         try:
-            return client.containers.get(_SANDBOX_CONTAINER_NAME)
+            return client.containers.get(name)
         except docker.errors.NotFound:
             return None
 
-    def _start_container_sync(self, client: Any) -> Any:
+    def _run_container_sync(
+        self, client: Any, name: str, mount_root: str, labels: Dict[str, str],
+    ) -> Any:
         return client.containers.run(
             _SANDBOX_IMAGE_TAG,
             command=["tail", "-f", "/dev/null"],
-            name=_SANDBOX_CONTAINER_NAME,
+            name=name,
             detach=True,
             read_only=True,
             network_mode="none",
+            labels=labels,
+            mem_limit=SANDBOX_MEM_LIMIT,
+            pids_limit=SANDBOX_PIDS_LIMIT,
             volumes={
-                self._host_workspace: {
+                mount_root: {
                     "bind": _CONTAINER_WORKDIR,
                     "mode": "ro",
                 },
@@ -457,45 +1087,29 @@ class DockerSandboxAdapter(SandboxAdapter):
             working_dir=_CONTAINER_WORKDIR,
         )
 
-    def _exec_command_sync(
-        self,
-        wrapped_command: str,
-        container_cwd: str,
-        env_whitelist: Dict[str, str],
-    ) -> Tuple[int, Any]:
-        container = self._container
-        assert container is not None
-        result = container.exec_run(
-            wrapped_command,
-            workdir=container_cwd,
-            environment=dict(env_whitelist),
-            demux=True,
-            tty=False,
-            stdout=True,
-            stderr=True,
-        )
-        return int(result.exit_code), result.output
-
     # ── pure helpers (no I/O) ───────────────────────────────────────────────
 
-    def _translate_cwd(self, host_cwd: str) -> str:
-        """Map a host absolute path under ``self._host_workspace`` into ``/workspace``.
+    def _translate_cwd(self, host_cwd: str, mount_root: str) -> str:
+        """Map a host absolute path under ``mount_root`` into ``/workspace``.
 
-        Falls back to the container workdir if the path escapes the mount —
-        defence in depth against a stale ``cwd`` from a different workspace.
+        ``mount_root`` is the *lease's* mount root — not necessarily
+        ``self._host_workspace`` — so a session's ``cwd`` is always translated
+        against the project it was actually leased against. Falls back to the
+        container workdir if the path escapes the mount — defence in depth
+        against a stale ``cwd`` from a different workspace.
         """
         if not host_cwd:
             return _CONTAINER_WORKDIR
         host_abs = os.path.abspath(host_cwd)
-        root_abs = os.path.abspath(self._host_workspace)
+        root_abs = os.path.abspath(mount_root)
         if host_abs == root_abs:
             return _CONTAINER_WORKDIR
         if host_abs.startswith(root_abs + os.sep):
             relative = host_abs[len(root_abs):].replace(os.sep, "/")
             return f"{_CONTAINER_WORKDIR}{relative}"
         logger.warning(
-            "Sandbox cwd %r escapes host workspace %r — falling back to %s",
-            host_cwd, self._host_workspace, _CONTAINER_WORKDIR,
+            "Sandbox cwd %r escapes lease mount root %r — falling back to %s",
+            host_cwd, mount_root, _CONTAINER_WORKDIR,
         )
         return _CONTAINER_WORKDIR
 
@@ -518,6 +1132,74 @@ class DockerSandboxAdapter(SandboxAdapter):
     @staticmethod
     def _decode(raw: bytes) -> str:
         return raw.decode("utf-8", errors="replace") if raw else ""
+
+
+async def sweep_orphaned_containers() -> None:
+    """Startup reclamation: remove ``ailienant.sandbox`` containers this process
+    does not own and whose recorded owner is no longer live.
+
+    Concurrent backends are a real deployment shape (the extension spawns one
+    per VS Code window on a dynamic port), so a blanket label sweep would
+    force-remove a live sibling's containers. Liveness is decided the same way
+    ``core.config.host_discovery.probe_host_alive`` already does for the
+    external-gateway handshake — a TCP connect to the recorded loopback port —
+    rather than a PID check, which that module documents as unreliable. A
+    container is swept when its ``ailienant.owner_port`` label is absent (an
+    old pre-12.6 singleton, or an unattributed manual start) or that port
+    refuses a connection. Best-effort: a dead daemon or a mid-sweep removal
+    race (``NotFound``) never raises past this function.
+    """
+    try:
+        client = await _docker_call(
+            docker.from_env, timeout=DOCKER_OP_TIMEOUT_S,
+            timeout_s=DOCKER_OP_TIMEOUT_S, op="from_env_sweep",
+        )
+    except SandboxDaemonTimeout as exc:
+        logger.warning("Sandbox startup sweep skipped — daemon unavailable: %s", exc)
+        return
+
+    try:
+        containers = await _docker_call(
+            _list_labeled_containers_sync, client,
+            timeout_s=DOCKER_OP_TIMEOUT_S, op="containers.list",
+        )
+    except SandboxDaemonTimeout as exc:
+        logger.warning("Sandbox startup sweep skipped — list failed: %s", exc)
+        return
+
+    from core.config.host_discovery import HostCoords, probe_host_alive
+
+    my_port = _owner_port()
+    for container in containers:
+        labels = getattr(container, "labels", None) or {}
+        owner_port = str(labels.get("ailienant.owner_port", "")).strip()
+        name = str(getattr(container, "name", "") or "")
+        is_legacy_singleton = name == _SANDBOX_CONTAINER_NAME
+        if owner_port and owner_port == my_port:
+            continue  # this process's own prior-run container
+        alive = False
+        if owner_port and not is_legacy_singleton:
+            try:
+                alive = await probe_host_alive(
+                    HostCoords(port=int(owner_port), token=None, pid=0), timeout_sec=2.0,
+                )
+            except (ValueError, OSError):
+                alive = False
+        if alive:
+            continue  # a live sibling backend owns this container — leave it
+        try:
+            await _docker_call(
+                container.remove, force=True, timeout_s=DOCKER_OP_TIMEOUT_S, op="sweep_remove",
+            )
+            logger.info("Sandbox startup sweep removed orphaned container %s", name)
+        except docker.errors.NotFound:
+            pass
+        except SandboxDaemonTimeout as exc:
+            logger.warning("Sandbox startup sweep could not remove %s: %s", name, exc)
+
+
+def _list_labeled_containers_sync(client: Any) -> List[Any]:
+    return list(client.containers.list(all=True, filters={"label": "ailienant.sandbox=1"}))
 
 
 # ── Native HITL fallback adapter ─────────────────────────────────────────────
@@ -1194,6 +1876,11 @@ class _DockerPtyBackend(_PtyBackend):
     stream (no Docker 8-byte stream-multiplexing header) and the container shell
     has real line discipline. Blocking ``recv`` runs in the session's reader
     thread, exactly like the host PTY master read.
+
+    This is also the one Docker call in the module a socket-level timeout
+    cannot bound: a hijacked exec socket is a deliberately blocking raw read
+    with no HTTP timeout underneath it (Phase 12.6's declared residual leak —
+    contained, not eliminated, by the dedicated ``ail-docker`` pool + breaker).
     """
 
     def __init__(
@@ -1203,7 +1890,11 @@ class _DockerPtyBackend(_PtyBackend):
         cwd: str,
         env: Dict[str, str],
         argv: List[str],
+        *,
+        on_close: Optional[Callable[[], None]] = None,
     ) -> None:
+        self._on_close = on_close
+        self._close_fired = False
         self._api = client.api
         created = self._api.exec_create(
             container_id,
@@ -1243,7 +1934,8 @@ class _DockerPtyBackend(_PtyBackend):
 
     def terminate_tree(self) -> None:
         # Closing the exec socket ends the in-container shell; the container
-        # itself is reaped by DockerSandboxAdapter.shutdown.
+        # itself is released back to the pool (see `close`) and eventually
+        # reaped by DockerSandboxAdapter.shutdown / idle-TTL eviction.
         self.close()
 
     def close(self) -> None:
@@ -1251,6 +1943,25 @@ class _DockerPtyBackend(_PtyBackend):
             self._sock.close()
         except OSError:
             pass
+        finally:
+            self._fire_on_close()
+
+    def _fire_on_close(self) -> None:
+        """Release this session's container lease exactly once.
+
+        `close()` is reachable twice in the normal teardown sequence —
+        `terminate_tree()` calls it directly, and `_PtySession._teardown` calls
+        it again afterward unconditionally — so without this guard the pool's
+        refcount would be decremented twice for one session.
+        """
+        if self._close_fired:
+            return
+        self._close_fired = True
+        if self._on_close is not None:
+            try:
+                self._on_close()
+            except Exception:  # noqa: BLE001 — a lease-release fault must never break teardown
+                logger.warning("sandbox lease release callback failed", exc_info=True)
 
     def wait(self, timeout: Optional[float] = None) -> Optional[int]:
         try:
@@ -1298,8 +2009,9 @@ class NativeDirectSandboxAdapter(SandboxAdapter):
         await session.start()
         return session
 
-    def get_sync_surface(self, cwd: str) -> "SyncSurface":
+    def get_sync_surface(self, cwd: str, session_id: Optional[str] = None) -> "SyncSurface":
         """Return a LocalFsSyncSurface rooted at the session's cwd."""
+        del session_id  # host-native tier has no per-session container to key
         from core.workspace_sync import LocalFsSyncSurface
         return LocalFsSyncSurface(cwd)
 
@@ -1496,6 +2208,20 @@ def reset_trusted_adapter() -> None:
     global _trusted_adapter, _trusted_adapter_silent
     _trusted_adapter = None
     _trusted_adapter_silent = None
+
+
+def reset_sandbox_pool_state() -> None:
+    """Drop module-level pool/breaker/DI state a unit test must not leak across.
+
+    Resets the daemon breaker, the exec-client LRU cache, and the session
+    workspace resolver seam. Does not touch ``ACTIVE_ADAPTER`` itself (a fresh
+    :class:`DockerSandboxAdapter` instance owns its own ``_ContainerPool`` with
+    no cross-test state to begin with).
+    """
+    reset_daemon_breaker()
+    set_session_workspace_resolver(None)
+    with _exec_client_cache_lock:
+        _exec_client_cache.clear()
 
 
 def resolve_execution_adapter(

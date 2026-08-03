@@ -7,7 +7,7 @@ import asyncio
 import datetime
 import os
 import sys
-from typing import Dict, Optional
+from typing import Dict, Iterator, Optional
 
 import pytest
 
@@ -55,7 +55,7 @@ class _DirectAdapter:
 
 
 @pytest.fixture(autouse=True)
-def _resolve_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+def _resolve_adapter(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Bind a direct-subprocess adapter so execution tests run without FastAPI lifespan."""
     import core.sandbox as sb
 
@@ -81,6 +81,15 @@ def _resolve_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     # to a session, and it must land on the same faked oracle adapter rather
     # than building a real DevcontainerSandboxAdapter with no bridge.
     monkeypatch.setattr(sb, "get_trusted_adapter_silent", lambda: sb.get_active_adapter())
+    # Phase 12.6 — the daemon circuit breaker, the exec-client timeout-bucket
+    # cache, and the session→workspace-root resolver are process-global state
+    # a real `docker.from_env()` failure (no daemon on this host) can trip via
+    # any test that exercises the full lifespan. Reset before AND after so one
+    # test tripping the breaker can never spuriously fail an unrelated later
+    # test that happens to touch the sandbox module.
+    sb.reset_sandbox_pool_state()
+    yield
+    sb.reset_sandbox_pool_state()
 
 
 @pytest.fixture(autouse=True)

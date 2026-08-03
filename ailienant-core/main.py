@@ -11,7 +11,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, cast
 
-# Phase 7.12.9 (Fix 4) — force UTF-8 on stdout/stderr BEFORE anything logs or prints.
+# — force UTF-8 on stdout/stderr BEFORE anything logs or prints.
 # On Windows the default cp1252 console raises 'charmap' codec errors on emoji (📋,
 # ⚠️, 🔀, …) used across agent traces, which crashes the node mid-run and mimics a
 # Pydantic timeout/retry. Reconfiguring both streams fixes print() and the logging
@@ -23,7 +23,7 @@ if isinstance(sys.stderr, io.TextIOWrapper):
 
 import httpx
 
-# --- IMPORTACIONES FASE 0 (Transporte y WebSockets) ---
+# --- IMPORTS (Transportation and WebSockets) ---
 from api.api_contracts import ModelInfo, ModelsAvailableResponse
 from api.websocket_manager import (
     vfs_manager,
@@ -31,7 +31,7 @@ from api.websocket_manager import (
 )
 from core.lifecycle_manager import lifecycle_manager
 
-# --- IMPORTACIONES FASE 1.2 (Servicio Cognitivo y VFS) ---
+# --- IMPORTS (Cognitive Service and VFS) ---
 from core import db as catalog_db
 from core import benchmark_service
 from core import storage_paths
@@ -49,10 +49,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
 
-# --- IMPORTACIONES FASE 2 (Persistencia y Mantenimiento) ---
+# --- IMPORTS (Persistence and Maintenance) ---
 from brain.checkpoint import checkpoint_manager
 
-# --- IMPORTACIONES FASE 6.4 (Dead Letter Queue & Resume API) ---
+# --- imports (Dead Letter Queue & Resume API) ---
 from brain.engine import alienant_app
 from brain.state import AIlienantGraphState
 from core.dead_letter import get_pending_dlqs, init_dlq_table, mark_dlq_resolved
@@ -63,55 +63,55 @@ from tools.mcp_adapter import autoconnect_enabled_mcp_servers, shutdown_mcp_sess
 from shared.logging_filters import SecretsScrubberFilter  # Phase 6.7 — DLP scrubber
 from langchain_core.runnables import RunnableConfig
 
-# --- IMPORTACIONES FASE 3.4.5 (MCTS Mirror) ---
+# --- imports (MCTS Mirror) ---
 from api.mcts_mirror import MergeReport, apply_merge, get_virtual_file
 
-# --- IMPORTACIONES FASE 3.4.7 (Silent Telemetry + Rule Distillation) ---
+# --- imports (Silent Telemetry + Rule Distillation) ---
 from agents.analyst import distill_rejection_to_rule
 from core.rules import rule_manager
 
-# --- IMPORTACIONES FASE 3.4.8 (Hybrid Cognitive Architecture) ---
+# --- imports (Hybrid Cognitive Architecture) ---
 from core.token_ledger import token_ledger
 from core.telemetry import latency_percentiles, recent_oom_events, recent_routing_decisions
 from core.telemetry_log import configure_telemetry_log, shutdown_telemetry_log
 from core.observability import configure_langsmith
 
-# --- IMPORTACIONES FASE 3.5 (Memory Janitor) ---
+# --- imports (Memory Janitor) ---
 from core.janitor import JanitorReport, run_janitor
 
-# --- IMPORTACIONES FASE 2.3 (Process Pool e Indexing) ---
+# --- Iimports (Process Pool e Indexing) ---
 from core.compute_pool import compute_pool
 from brain.memory import _worker_init, calculate_graph_analytics_sync
 
-# --- IMPORTACIONES FASE 2.5 (Lazy Indexer) ---
+# --- imports (Lazy Indexer) ---
 from core.indexer import lazy_indexer, reactive_indexer, SingleFlightCoordinator
 from core.memory_snapshot import export_memory_snapshot, import_memory_snapshot
 from brain.daemon import overnight_daemon
 
-# --- IMPORTACIONES FASE 7.9.B.1 (Memory Dashboard REST surface) ---
+# --- imports (Memory Dashboard REST surface) ---
 from api.memory_dashboard import router as memory_router
 
-# --- IMPORTACIONES FASE 7.9.B.2 (BYOM Models REST surface) ---
+# --- imports (BYOM Models REST surface) ---
 from api.byom import router as byom_router
 
-# --- IMPORTACIONES FASE 7.9.B.3 (Hardware Monitor REST surface) ---
+# --- imports (Hardware Monitor REST surface) ---
 from api.hardware import router as hardware_router, _get_profile as _get_hw_profile
 from core.execution_mode import get_mode as get_execution_mode_pref
 
-# --- IMPORTACIONES FASE 7.9.B.7 (Runtime/Environment REST surface) ---
+# --- imports (Runtime/Environment REST surface) ---
 from api.runtime import router as runtime_router
 
-# --- IMPORTACIONES FASE 7.9.B.4 + 7.9.B.5 (System Settings + Audit REST surface) ---
+# --- imports (System Settings + Audit REST surface) ---
 from api.system_settings import router as system_settings_router
 from api.audit import router as audit_router
 from api.projects import router as projects_router
 
-# --- IMPORTACIONES FASE 7.9.A.7 (Command-menu backends: agents/mcp/skills) ---
+# --- imports (Command-menu backends: agents/mcp/skills) ---
 from api.agent_roles import router as agents_router
 from api.mcp_servers import router as mcp_router
 from api.skills import router as skills_router
 
-# Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging REST surface
+# (ADR-706 §4.5g) — Time-Travel Debugging REST surface
 from api.sessions import router as sessions_router
 
 # --- IMPORTACIONES FASE 2.6 (I/O Coalescer) ---
@@ -123,7 +123,7 @@ from api.api_contracts import DirtyBuffer
 from core.vfs_middleware import DirtyBuffer as VfsDirtyBuffer
 from api.ws_contracts import IdeTelemetryPayload
 
-# Phase 7.9.A.5.1 — ephemeral auth token + dynamic port injected by the extension.
+# — ephemeral auth token + dynamic port injected by the extension.
 # When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
 # Defined after the import block so module-level imports stay at the top (ruff E402).
 _AUTH_TOKEN: Optional[str] = os.environ.get("AILIENANT_AUTH_TOKEN") or None
@@ -165,7 +165,7 @@ def _publish_host_discovery() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
-    # Phase 6.7 — install the DLP secrets scrubber. The filter is attached to
+    # — install the DLP secrets scrubber. The filter is attached to
     # the root logger AND to every root handler: handler-level filtering is what
     # redacts records propagated from named child loggers (AUDIT, SUPERVISOR…).
     _scrubber = SecretsScrubberFilter()
@@ -174,19 +174,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     for _handler in _root_logger.handlers:
         _handler.addFilter(_scrubber)
 
-    await resolve_default_adapter()          # Phase 6.1.4 — bind sandbox tier
+    await resolve_default_adapter()          #— bind sandbox tier
     # Inject the concrete WS host bridge for the trusted devcontainer tier from
     # the composition root, so core depends only on the HostExecutionBridge
     # abstraction it owns and never imports the transport layer.
     from api.devcontainer_bridge import WebSocketHostBridge
-    from core.sandbox import set_trusted_bridge
+    from core.sandbox import set_session_workspace_resolver, set_trusted_bridge, sweep_orphaned_containers
     set_trusted_bridge(WebSocketHostBridge())
+    # — the per-session container pool keys a lease by the same
+    # `client_id == x_task_id == session_id` identity `_session_workspace_root`
+    # is already keyed by; a miss (no session, or a session that never sent
+    # client_workspace_init) falls back to the adapter's own host_workspace —
+    # today's single-mount behavior — so injecting this seam changes nothing
+    # for callers that never pass a session_id.
+    set_session_workspace_resolver(lambda sid: _session_workspace_root.get(sid, ""))
+    # Best-effort reclamation of containers orphaned by a crashed prior run of
+    # THIS backend, or left by the pre-12.6 single-container singleton. Never
+    # touches a live sibling backend's containers (liveness-gated by TCP probe
+    # of the owning port — see sweep_orphaned_containers's docstring).
+    await sweep_orphaned_containers()
     await catalog_db.init_db()
-    await init_dlq_table()                   # Phase 6.4 — dead_letter_tasks table
-    await init_audit_table()                 # Phase 6.6 — hitl_audit_log ledger
+    await init_dlq_table()                   # — dead_letter_tasks table
+    await init_audit_table()                 # — hitl_audit_log ledger
     init_registry()                          # curated regulated-server tier overrides
     await autoconnect_enabled_mcp_servers()  # connect enabled MCP servers once per host lifecycle
-    await populate_tool_catalog(tool_rag_store)  # Division 8.18.1 — populate the tool RAG catalog
+    await populate_tool_catalog(tool_rag_store)  #— populate the tool RAG catalog
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)
@@ -218,7 +230,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _dream.cancel()
     await overnight_daemon.stop()
 
-    # 3. Flush all in-memory L1 sessions to L2 before WAL truncate (Phase 2.2.B)
+    # 3. Flush all in-memory L1 sessions to L2 before WAL truncate 
     checkpoint_manager.flush_all_sessions()
     await catalog_db.wal_checkpoint()
 
@@ -230,6 +242,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     compute_pool.shutdown(wait=True, cancel_futures=True)
     logger.info("🧹 Compute pool shut down — no orphan processes.")
     await shutdown_mcp_sessions()  # close MCP stdio sessions so children never outlive the host
+
+    # — drain every leased sandbox container. Breaker-guarded inside
+    # the adapter itself, so a dead daemon degrades this step instead of
+    # hanging shutdown.
+    from core.sandbox import DockerSandboxAdapter, get_active_adapter
+    _active_adapter = get_active_adapter()
+    if isinstance(_active_adapter, DockerSandboxAdapter):
+        await _active_adapter.shutdown()
+        logger.info("🧹 Sandbox container pool drained.")
+
     clear_run_state()  # remove the host-discovery file so a crash leaves a detectable stale one
     shutdown_telemetry_log()  # drain the queue, join the listener thread, close the file
 
@@ -246,7 +268,7 @@ app = FastAPI(
 )
 
 # SecOps: CORS es crítico para el Webview (vscode-webview://).
-# Phase 7.9.A.5.1: replaced wildcard with explicit allowlist.
+# replaced wildcard with explicit allowlist.
 # vscode-webview:// sub-origins change per panel — regex required.
 app.add_middleware(
     CORSMiddleware,
@@ -262,7 +284,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Phase 7.9.A.5.1 — HTTP auth middleware.
+# — HTTP auth middleware.
 # Validates X-AILIENANT-TOKEN (or Authorization: Bearer) on every non-health request
 # when AILIENANT_AUTH_TOKEN env var is set. Dev-mode bypass: if the var is absent,
 # all requests pass. Dashboard SPA (same-origin) is exempt: S7-D CSRF already guards it.
@@ -321,40 +343,40 @@ _DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "ailienant-extens
 if os.path.isdir(_DASHBOARD_DIR):
     app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")
 
-# Phase 7.9.B.1 — Memory dashboard REST endpoints (sections/graph/vectors)
+# — Memory dashboard REST endpoints (sections/graph/vectors)
 app.include_router(memory_router)
 
-# Phase 7.9.B.2 — BYOM Models REST endpoints (test/config)
+# — BYOM Models REST endpoints (test/config)
 app.include_router(byom_router)
 
-# Phase 7.9.B.3 — Hardware Monitor REST endpoints (profile/mode)
+# — Hardware Monitor REST endpoints (profile/mode)
 app.include_router(hardware_router)
 
-# Phase 7.9.B.7 — Runtime/Environment REST endpoints (status/start-docker)
+# — Runtime/Environment REST endpoints (status/start-docker)
 app.include_router(runtime_router)
 
-# Phase 7.9.B.4 — System Settings (SOUL.md + analyst name)
+# — System Settings (SOUL.md + analyst name)
 app.include_router(system_settings_router)
 
-# Phase 7.9.B.5 — Audit Ledger REST endpoints (log/stats/verify)
+# — Audit Ledger REST endpoints (log/stats/verify)
 app.include_router(audit_router)
 
 # Active-project registry — GET /api/v1/projects for the dashboard selector
 app.include_router(projects_router)
 
-# Phase 7.9.A.7 — Command-menu backends (agent role overrides, MCP registry, skills)
+# — Command-menu backends (agent role overrides, MCP registry, skills)
 app.include_router(agents_router)
 app.include_router(mcp_router)
 app.include_router(skills_router)
 
-# Phase 7.11.8 — Time-travel: GET /api/v1/sessions/{thread_id}/checkpoints
+# — Time-travel: GET /api/v1/sessions/{thread_id}/checkpoints
 app.include_router(sessions_router)
 
 # Service layer instance (dependency injection). Sourced from the shared
 # singleton accessor so in-process tools resolve the same instance the host wires.
 task_service = get_task_service()
 
-# Phase 7.11.6 — wire TaskService.cleanup_session into the WS disconnect path
+# — wire TaskService.cleanup_session into the WS disconnect path
 # so the Rich Tool Chips registry is purged when a client drops. The hook bus
 # lives in api.websocket_manager to avoid the circular import that bites if
 # the manager imports core.task_service eagerly.
@@ -379,14 +401,14 @@ _PPR_DEBOUNCE_S: float = 2.0
 # re-index when a compute-pool run outlives the next debounce window.
 _reindex_singleflight = SingleFlightCoordinator()
 
-# Fire-and-forget task runners (Phase 7.9.B.17). Strong refs prevent the event
+# Fire-and-forget task runners. Strong refs prevent the event
 # loop from GC-ing an in-flight submit before the agent pipeline finishes.
 _task_submit_tasks: set[asyncio.Task[Any]] = set()
 
 # Workspace registry — populated on client_workspace_init; used by mass change handler
 _workspace_registry: Dict[str, str] = {}  # project_id → workspace_root
-_session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root (Phase 3.4.1)
-_session_workspace_pid: Dict[str, int] = {}  # client_id → workspace_pid (Phase 4.4)
+_session_workspace_root: Dict[str, str] = {}  # client_id → workspace_root
+_session_workspace_pid: Dict[str, int] = {}  # client_id → workspace_pid
 _session_project_id: Dict[str, str] = {}  # client_id → project_id (reactive-index routing)
 
 # Per-submit idempotency cache — a bounded TTL map of recently-seen request_ids
@@ -552,7 +574,7 @@ async def submit_task(
     are surfaced over the WS (actionable token + stream_end) so the UI never hangs.
     """
 
-    # Phase 7.12.9 (Fix 3) — the frontend now sends workspace_root, but if an
+    # (Fix 3) — the frontend now sends workspace_root, but if an
     # older client omits it, fall back to the live root captured at
     # client_workspace_init (keyed by client_id == x_task_id). This guarantees
     # the Planner/GraphRAG use the dynamic root, never an empty/stale value.
@@ -601,7 +623,7 @@ async def submit_task(
 
     async def _runner() -> None:
         try:
-            # Resolve execution mode — Zero-Trust hardware gate (Phase 7.9.B.3)
+            # Resolve execution mode — Zero-Trust hardware gate
             hw = await _get_hw_profile()
             pref = get_execution_mode_pref()
             if pref == "AUTO":
@@ -715,13 +737,13 @@ async def benchmark_report(task_id: str) -> Dict[str, Any]:
 
 
 # =====================================================================
-# PHASE 6.4 — Resume API (Dead Letter Queue rehydration)
+# — Resume API (Dead Letter Queue rehydration)
 # =====================================================================
 
 
 @app.post("/api/v1/task/resume/{task_id}")
 async def resume_task(task_id: str) -> Dict[str, object]:
-    """Phase 6.4 — re-hydrate the latest L2 checkpoint of a crashed task and resume.
+    """ re-hydrate the latest L2 checkpoint of a crashed task and resume.
 
     Idempotent: a task with no unresolved DLQ episode (never crashed, or already
     resumed to completion) returns ``resumed: false`` without mutating state.
@@ -778,7 +800,7 @@ async def list_pending_dlqs(
 
 
 # =====================================================================
-# PHASE 3.4.5 — MCTS Mirror endpoints
+#  MCTS Mirror endpoints
 # =====================================================================
 
 
@@ -802,7 +824,7 @@ async def http_apply_merge(node_id: str, body: ApplyMergeRequest) -> MergeReport
 
 
 # =====================================================================
-# PHASE 3.4.7 — Silent Rejection Telemetry
+#  Silent Rejection Telemetry
 # =====================================================================
 
 
@@ -831,13 +853,13 @@ async def http_telemetry_reject(payload: RejectTelemetryPayload) -> Dict[str, ob
 
 
 # =====================================================================
-# PHASE 3.4.8 — Hybrid Cognitive Architecture token telemetry
+#  Hybrid Cognitive Architecture token telemetry
 # =====================================================================
 
 
 @app.get("/api/v1/telemetry/tokens")
 async def http_telemetry_tokens() -> Dict[str, float]:
-    """Phase 3.4.8 — return the TokenLedger snapshot (local vs cloud + savings)."""
+    """return the TokenLedger snapshot (local vs cloud + savings)."""
     return token_ledger.snapshot()
 
 
@@ -873,7 +895,7 @@ async def http_telemetry_latency(project_id: Optional[str] = None) -> Dict[str, 
 
 
 # =====================================================================
-# PHASE 7.1 — Session title auto-generation
+# Session title auto-generation
 # =====================================================================
 
 class TitleGenerateRequest(BaseModel):
@@ -923,7 +945,7 @@ async def http_generate_title(req: TitleGenerateRequest) -> TitleGenerateRespons
 
 
 # =====================================================================
-# PHASE 3.5 — Memory Janitor
+#  Memory Janitor
 # =====================================================================
 
 class JanitorRequest(BaseModel):
@@ -1054,25 +1076,25 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
     La Puerta Principal de Streaming (WebSockets).
     Ruta estandarizada para coincidir con ws_client.ts.
     """
-    # 1. El Manager acepta y registra la conexión.
-    # Phase 7.9.A.5.1: pass ephemeral token; connect() validates first message.
+    # 1. The Manager accepts and registers the connection.
+    # pass ephemeral token; connect() validates first message.
     connected = await vfs_manager.connect(client_id, websocket, auth_token=_AUTH_TOKEN)
     if not connected:
         return
 
     try:
-        # 2. El Bucle Infinito de Escucha
+        # 2. The Infinite Listening Loop
         while True:
-            # Esperamos a que VS Code envíe un mensaje
+            # We're waiting for VS Code to send a message
             raw_data = await websocket.receive_text()
 
-            # 3. Pasamos el mensaje por nuestro Escudo de Pydantic
+            # 3. We pass the message through our Pydantic Shield
             valid_event = await vfs_manager.validate_incoming(raw_data)
 
             if valid_event is None:
                 continue
 
-            # --- ZONA DE ENRUTAMIENTO SEGURO ---
+            # ---SAFE ROUTING ZONE---
             logger.info(
                 "📥 Evento válido de %s: %s", client_id, valid_event.event_type
             )
@@ -1208,7 +1230,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 )
 
             elif valid_event.event_type == "client_patch_applied":
-                # Phase 7.9.B.18 — host ack for an applyEdit dispatch; unblocks
+                # host ack for an applyEdit dispatch; unblocks
                 # write_pipeline.apply_patch_set's waiter.
                 vfs_manager.resolve_patch_ack(
                     valid_event.data.patch_id, valid_event.data.model_dump()
@@ -1329,12 +1351,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 )
 
             elif valid_event.event_type == "client_clear_conversation":
-                # Phase 7.9.B.15 — drop short-term chat memory for this session.
+                # drop short-term chat memory for this session.
                 task_service.clear_conversation(client_id)
                 logger.info("[Session: %s] Conversation memory cleared.", client_id)
 
             elif valid_event.event_type == "client_restore_history":
-                # Phase 7.9.B.20 — rehydrate a reopened session's memory for continuity.
+                # rehydrate a reopened session's memory for continuity.
                 task_service.restore_conversation(
                     client_id, [m.model_dump() for m in valid_event.data.messages]
                 )
@@ -1344,10 +1366,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 await task_service.rehydrate_paused_interrupt(client_id)
 
             elif valid_event.event_type == "client_analyst_query":
-                # Phase 7.9.B.13 — Natt analyst pane bridge (live BYOM completion).
-                # Phase 7.9.B.17 — run it off the WS receive loop so a slow model
+                # Natt analyst pane bridge (live BYOM completion).
+                # run it off the WS receive loop so a slow model
                 # never stalls inbound message processing for this session.
-                # Phase 7.10.3 (ADR-703) — forward context_paths + cursor + project so the
+                # (ADR-703) — forward context_paths + cursor + project so the
                 # analyst answers with active-file + Codex + RAG context, streamed in batches.
                 _q = valid_event.data
                 _aq_root = _session_workspace_root.get(client_id, "")
@@ -1367,7 +1389,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     model_tier: Optional[str] = _q.model_tier,
                     enable_native_thinking: bool = _q.enable_native_thinking,
                 ) -> None:
-                    # Phase 7.11.3 — register THIS runner with the abort mesh
+                    # register THIS runner with the abort mesh
                     # (plan W1 invariant: current_task() is the spawned runner,
                     # NEVER the WS receive loop). A Stop click for the same
                     # session_id will Task.cancel() us; stream_analyst_reply
@@ -1389,7 +1411,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _at.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_inline_edit_request":
-                # Phase 7.11.1 (ADR-706 §4.5a) — Cmd+K inline edit stream.
+                # Cmd+K inline edit stream.
                 # Backend reads its baseline content from the live RAM-VFS (the
                 # extension's last client_file_update); the frontend stays the
                 # source of truth for selection ranges, which are LF-space
@@ -1426,7 +1448,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _iet.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_inline_edit_cancel":
-                # Phase 7.11.1 — cooperative cancel. Sets cancel_event + Task.cancel().
+                # cooperative cancel. Sets cancel_event + Task.cancel().
                 _did_cancel = task_service.cancel_inline_edit(valid_event.data.edit_id)
                 logger.info(
                     "[Session: %s] Inline edit cancel: edit_id=%s found=%s",
@@ -1434,7 +1456,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 )
 
             elif valid_event.event_type == "client_abort_mesh":
-                # Phase 7.11.3 (ADR-706 §4.5b) — priority abort. We resolve
+                # (ADR-706 §4.5b) — priority abort. We resolve
                 # session_id → the registered runner asyncio.Task via the
                 # TaskService registry and call task.cancel() — NEVER the WS
                 # receive task itself (that would terminate the connection;
@@ -1454,7 +1476,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 )
 
             elif valid_event.event_type == "client_pty_write":
-                # Phase 7.19.6 — interactive terminal: feed a line of stdin to the
+                # interactive terminal: feed a line of stdin to the
                 # session's live persistent terminal so the user can answer a
                 # blocking prompt. Fire-and-forget; a missing session is a no-op.
                 _pw = valid_event.data
@@ -1466,7 +1488,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 )
 
             elif valid_event.event_type == "client_retry_tool":
-                # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: exact-replay
+                # — Rich Tool Chips: exact-replay
                 # retry. The runner is a CHILD task (asyncio.create_task) so
                 # that this branch returns immediately and the WS receive loop
                 # stays responsive. We deliberately do NOT register the runner
@@ -1489,7 +1511,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _retry_task.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_invoke_tracked_bash":
-                # Phase 7.11.6 — dev smoke command (palette `/dev/run-bash`).
+                # dev smoke command (palette `/dev/run-bash`).
                 # Routes through execute_tracked_tool so the chip pipeline is
                 # provably alive end-to-end without needing an agent refactor.
                 _ib = valid_event.data
@@ -1518,7 +1540,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _bash_task.add_done_callback(_task_submit_tasks.discard)
 
             elif valid_event.event_type == "client_branch_from_checkpoint":
-                # Phase 7.11.8 (ADR-706 §4.5g) — Time-Travel Debugging.
+                # Time-Travel Debugging.
                 # Fork a session from a historical checkpoint. The runner is a
                 # child task (same shape as retry_tool / tracked_bash above):
                 # NOT registered into _active_tasks (the abort mesh) because a
@@ -1584,7 +1606,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     logger.warning("profile_change ignored: %s", exc)
 
     except WebSocketDisconnect:
-        # 4. Limpieza O(1) para evitar Fugas de Memoria
+        # 4. Cleaning O(1) to prevent Memory Leaks
         logger.warning(f"⚠️ Conexión perdida abruptamente con {client_id}")
         vfs_manager.disconnect(client_id, websocket)
         # Evict per-session maps so a reconnect storm cannot grow them unboundedly
@@ -1603,7 +1625,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
             asyncio.create_task(lifecycle_manager.shutdown_workspace(_pid))
 
 
-# Phase 7.9.A.5.1 — explicit entry point so the extension can spawn with dynamic port.
+# explicit entry point so the extension can spawn with dynamic port.
 # The extension always passes --host 127.0.0.1 --port {port} as spawn args; _API_PORT
 # is the fallback for manual `python main.py` runs during development.
 if __name__ == "__main__":

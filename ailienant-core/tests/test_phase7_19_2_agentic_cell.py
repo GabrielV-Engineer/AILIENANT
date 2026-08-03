@@ -112,7 +112,7 @@ class StubAdapter:
     async def open_session(self, *, cwd: str, env_whitelist: Dict[str, str], **_: Any) -> StubSession:
         return self._session
 
-    def get_sync_surface(self, cwd: str) -> StubSyncSurface:
+    def get_sync_surface(self, cwd: str, session_id: Optional[str] = None) -> StubSyncSurface:
         return self._surface
 
 
