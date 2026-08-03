@@ -511,6 +511,7 @@ class TaskService:
                 thinking_budget_tokens=payload.thinking_budget_tokens,
                 active_file_path=payload.active_file_path or "",
                 explicit_mentions=payload.explicit_mentions,
+                workspace_root=payload.workspace_root or "",
             )
 
         return {"status": "success", "message": "Task completed.", "session_id": session_id}
@@ -571,6 +572,10 @@ class TaskService:
             "max_budget_usd": float(os.getenv("AILIENANT_MAX_BUDGET_USD", "inf")),
             # Phase 7.11.3 — populated by the abort handler on CancelledError.
             "termination_reason": None,
+            # Mirrors config["configurable"]'s reasoning-mode toggle onto graph state
+            # so it survives a checkpoint (DEBT-079) — see AIlienantGraphState.
+            "enable_native_thinking": payload.enable_native_thinking,
+            "thinking_budget_tokens": payload.thinking_budget_tokens,
         }
         # The per-task execution-mode selector takes precedence over the global
         # settings-file preference: the selector reflects the user's intent for
@@ -1487,13 +1492,28 @@ class TaskService:
         if snapshot is None or not snapshot.interrupts:
             return False
 
-        # Re-arm with the orchestration mode recovered from the checkpoint (not a hardcoded
-        # literal). The reconstructed payload is intentionally minimal: the resume drives the
-        # graph via Command(resume=…), so the original prompt/buffers are never re-injected —
-        # the durable work-in-progress already lives in the recovered checkpoint.
+        # Re-arm with the orchestration mode and original prompt recovered from the
+        # checkpoint (not hardcoded literals). The resume itself drives the graph via
+        # Command(resume=…), so the reconstructed payload never re-seeds state — but
+        # `payload.task_prompt` IS still read on the shared post-resume path (e.g. the
+        # transcript-append calls after the graph settles), so leaving it "" wrote an
+        # empty user bubble into the persisted history (DEBT-079). `user_input` and the
+        # two reasoning-mode channels are graph state (see AIlienantGraphState), so they
+        # ride the checkpoint for free; dirty_buffers/attachments stay unpersisted — the
+        # durable work-in-progress already lives in the recovered vfs_buffer, and
+        # serializing them to L2 would be a §6.3 secrets-hygiene risk for no benefit.
         recovered_exec = str(snapshot.values.get("execution_mode") or "SEQUENTIAL")
+        recovered_prompt = str(snapshot.values.get("user_input") or "")
+        _recovered_thinking_on = snapshot.values.get("enable_native_thinking")
+        recovered_thinking_on = True if _recovered_thinking_on is None else bool(_recovered_thinking_on)
+        recovered_thinking_budget = int(snapshot.values.get("thinking_budget_tokens") or 4096)
         self._paused_tasks[session_id] = (
-            TaskPayload(task_prompt="", dirty_buffers=[]),
+            TaskPayload(
+                task_prompt=recovered_prompt,
+                dirty_buffers=[],
+                enable_native_thinking=recovered_thinking_on,
+                thinking_budget_tokens=recovered_thinking_budget,
+            ),
             recovered_exec,
         )
         interrupt_value = snapshot.interrupts[0].value
@@ -1709,6 +1729,7 @@ class TaskService:
         *,
         anchor_file: str = "",
         explicit_mentions: Optional[List[str]] = None,
+        workspace_root: str = "",
     ) -> str:
         """Fetch top-k LanceDB snippets for the prompt and format them for the system prompt.
 
@@ -1726,7 +1747,8 @@ class TaskService:
             from core.memory.semantic_memory import SemanticMemoryManager
             from core.utils import filter_relevant_snippets
             snippets = await SemanticMemoryManager().search_snippets(
-                task_prompt, workspace_hash=project_id, k=_RAG_TOP_K
+                task_prompt, workspace_hash=project_id, k=_RAG_TOP_K,
+                project_root=workspace_root or None,
             )
             if anchor_file:
                 snippets = filter_relevant_snippets(snippets, anchor_file, explicit_mentions)
@@ -1847,6 +1869,7 @@ class TaskService:
         thinking_budget_tokens: int = 4096,
         active_file_path: str = "",
         explicit_mentions: Optional[List[str]] = None,
+        workspace_root: str = "",
     ) -> None:
         """Stream a live completion from the active BYOM chat model to the IDE.
 
@@ -1864,6 +1887,7 @@ class TaskService:
         system_content = _resolve_chat_system_prompt(task_prompt) + await self._build_rag_context(
             task_prompt, project_id,
             anchor_file=active_file_path, explicit_mentions=explicit_mentions,
+            workspace_root=workspace_root,
         )
         history = _conversations.get(session_id, [])
         messages: List[Dict[str, str]] = [
@@ -1931,7 +1955,7 @@ class TaskService:
                 return
 
     async def _rag_snippets(
-        self, text: str, project_id: Optional[str]
+        self, text: str, project_id: Optional[str], project_root: str = "",
     ) -> List[Tuple[str, str]]:
         """Raw (path, snippet) GraphRAG hits — best-effort, never raises.
 
@@ -1943,7 +1967,8 @@ class TaskService:
         try:
             from core.memory.semantic_memory import SemanticMemoryManager
             return await SemanticMemoryManager().search_snippets(
-                text, workspace_hash=project_id, k=_RAG_TOP_K
+                text, workspace_hash=project_id, k=_RAG_TOP_K,
+                project_root=project_root or None,
             )
         except Exception as exc:  # noqa: BLE001 — RAG fetch is non-fatal
             logger.debug("Analyst RAG snippets fetch failed (non-fatal): %s", exc)
@@ -1994,7 +2019,7 @@ class TaskService:
         from core.memory.docs_index import search_ailienant_docs
 
         tier = model_tier or "medium"
-        rag_snippets = await self._rag_snippets(text, project_id)
+        rag_snippets = await self._rag_snippets(text, project_id, project_root)
         try:
             docs_snippets = await search_ailienant_docs(text)
         except Exception as exc:  # noqa: BLE001 — docs brain degrades to empty

@@ -129,6 +129,11 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-137 | Provider-native `cache_control` + cache telemetry not implemented — 12.1 shipped only the prefix-stability prerequisite; the cacheable prefix is too small (~300-450 tokens) to clear any provider's minimum-cacheable-token floor today | LOW | Cost optimization | unblocked by 12.7 (coder tool-calling) | Floating |
 | DEBT-138 | `brain/agentic_cell.py` still resolves the locked oracle tier (`get_active_adapter()`), not the devcontainer tier §43 (12.4) added session support to — rerouting is blocked on an OCC-safe sync surface (`DevcontainerSandboxAdapter.get_sync_surface()` doesn't exist; a raw bind-mounted surface would bypass the VFS barrier's hash-based stale-guard) | MEDIUM | Architecture / Blocked | future OCC-safe sync-surface slice | Blocked |
 | DEBT-139 | The §43 devcontainer session host driver has no real TTY (no `node-pty`, by design — CLAUDE.md §9) — no job control, no `isatty()`, and `interrupt` sends a best-effort `SIGINT` to the child rather than a true Ctrl-C to a foreground process group | LOW | Capability gap | future terminal-fidelity slice | Floating |
+| DEBT-140 | GraphRAG embeds one vector per whole file — no chunking; a large multi-function file collapses to a single centroid that resembles none of its functions | MEDIUM | Architecture / Accuracy | 12.13 | Floating |
+| DEBT-141 | Embed-input truncation past the ceiling silently dropped content with no log line; ceiling was a fixed constant, not resolved per active embedding provider | MEDIUM | Observability / Accuracy | 12.11 | RESOLVED 2026-08-03 |
+| DEBT-142 | `search_snippets`'s `content_snippet` (documented "first 500 chars for audit/debug") was injected verbatim as RAG evidence — a file matching past its header contributed only imports | MEDIUM | Accuracy | 12.11 | RESOLVED 2026-08-03 |
+| DEBT-143 | `deep_parse` (the only live GraphRAG expansion) applied no cap on files read/parsed; the capped, PPR-ranked `extract()` had zero callers and its guardrail counted path tokens, not content tokens | MEDIUM | Reliability / §5.5 | 12.11 | RESOLVED 2026-08-03 |
+| DEBT-144 | `brain/prompt_builder.py` (~330 lines, token-budget-aware flesh/skeleton context assembler) has zero callers in production — its selection is global-PPR (query-blind), which would inject the same files every turn regardless of the question | MEDIUM | Dead code | 12.12 | Floating |
 | DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | 7.19 Docker pass | Blocked |
 | DEBT-014 | brain/swarms.py NodeInputT 3 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 7.16.x/7.17 | Floating |
@@ -879,6 +884,143 @@ Decision    Not a defect — see [DECISION] tier.
   group, so a child that spawns its own subprocesses may not propagate the interrupt to them.
 - **Phase:** future terminal-fidelity slice, if usage shows this MVP tradeoff biting in practice
   (e.g. an operator running an interactive REPL or a TTY-sensitive build tool through the tunnel).
+
+### DEBT-140 [MEDIUM · Floating] — GraphRAG has no chunking; one vector per whole file
+
+- **Date:** 2026-08-03
+- **Detail:** `core/memory/semantic_memory.py::semantic_upsert` embeds an entire file's content as a
+  single LanceDB vector, regardless of size. A large multi-function file collapses to one centroid
+  that resembles none of its individual functions — retrieval degrades to "which file is vaguely
+  near this topic" rather than "which function actually matches". This is independent of which
+  embedding model is configured; a larger/costlier model dilutes identically.
+- **Phase:** 12.13 — hybrid-by-size chunking. Files under a size threshold keep today's single
+  file-level vector unchanged; files over it additionally emit per-symbol chunk rows in a new,
+  additive LanceDB table, reusing the already-populated `symbol_definitions` catalog
+  (`core/ast_engine.py::collect_symbol_defs`, `SCHEMA_EVOLUTION.MD §27`) rather than re-parsing.
+- **Notes:** `_MIN_TOKENS = 100` (the anti-fragmentation gate) is written for whole files; most
+  individual functions fall under 100 tokens, so per-symbol chunks need their own, lower threshold
+  or the feature silently writes nothing. `core/janitor.py::_vector_gc_sync`, `semantic_delete`, the
+  dimension-mismatch drop/recreate path (`semantic_memory.py:298-307`), and the `SCHEMA_EVOLUTION.MD
+  §34` dashboard surface (`list_embeddings`, `pca_project_2d`, purge endpoint) all need updating in
+  the same change or the new table silently rots. Adoption requires a full reindex. Incremental cost
+  actually *improves* once chunks exist (editing one function re-embeds one function, not a
+  1000-line file) — only the initial index of over-threshold files costs more.
+
+### DEBT-141 [MEDIUM · RESOLVED 2026-08-03, 12.11] — Silent embed-input truncation, fixed-constant ceiling
+
+- **Date:** 2026-08-03 · **Resolved:** 2026-08-03 (12.11)
+- **Detail (was):** `semantic_upsert` truncated content exceeding `_MAX_EMBED_TOKENS` (a fixed 8191
+  module constant) via a tiktoken round-trip with no log line — the dropped tail became permanently
+  invisible to vector search with zero trace, and the stored `token_count` recorded the *pre-truncation*
+  value, so an already-indexed file could not even be audited for it after the fact. The ceiling also
+  ignored the active embedding provider entirely.
+- **Resolution:** `core/config/byom_config.py::EmbeddingTarget` gained an additive
+  `max_input_tokens: int = 8191` field (every existing keyword-based construction site and persisted
+  `byom_config.json` keeps working unchanged). `semantic_upsert` now resolves its ceiling from
+  `get_embedding_target().max_input_tokens` and emits `logger.warning` on truncation carrying the
+  path, real token count, applied ceiling, and tokens dropped. `cl100k_base` remains the measurement
+  tokenizer (a deliberate conservative proxy — a per-provider tokenizer would add a dependency per
+  provider for a narrow accuracy gain, CLAUDE.md §9), now documented as such rather than assumed
+  silently. No `truncated` column was added to the LanceDB row (would force a table recreate/full
+  reindex for an observability-only win) — the warning makes truncation auditable going forward;
+  retroactive auditing of rows indexed before this fix stays impossible.
+- **Tests:** `tests/test_graphrag_retrieval_fidelity.py` (3 cases: warning fires with real counts,
+  ceiling resolves from the active target not the fixed default, no warning when under budget).
+
+### DEBT-142 [MEDIUM · RESOLVED 2026-08-03, 12.11] — RAG evidence was a 500-char head-of-file slice
+
+- **Date:** 2026-08-03 · **Resolved:** 2026-08-03 (12.11)
+- **Detail (was):** `workspace_embeddings.content_snippet` is documented "first 500 chars for
+  audit/debug" but `search_snippets` returned it verbatim as retrieval *evidence* to four production
+  consumers — `agents/coder.py::_fetch_rag_snippets`, `core/task_service.py`'s `_build_rag_context`
+  and `_rag_snippets` (chat + analyst), and the MCP `query_memory` tool (`gateway/handlers.py`, an
+  external wire contract). A file that matched the query on line 400 contributed only its import
+  header — the evidence shown was disconnected from the reason the file matched.
+- **Resolution:** `search_snippets` gained an additive `project_root: Optional[str] = None` param;
+  when supplied, each stored hit is distilled at query time into a whole-file AST skeleton via the
+  existing `core/vfs_middleware.py::make_safe_reader` + `core/ast_engine.py::extract_skeleton` (both
+  pre-existing, the latter already used by `agents/coder.py::_build_style_block`). All four
+  production call sites now thread their `workspace_root`/`project_root` through
+  (`agents/coder.py::_fetch_rag_snippets` gained a `workspace_root` param; `task_service.py`'s
+  `_build_rag_context`/`_stream_chat_answer`/`_rag_snippets` do the same; `gateway/handlers.py`
+  passes `args["workspace_root"]` — an MCP-visible evidence-quality change, noted in
+  `SCHEMA_EVOLUTION.MD §45`). Return type is unchanged (`List[Tuple[str, str]]`), so
+  `filter_relevant_snippets`, `_build_rag_block`, and `_build_style_block` needed no change.
+  Omitting `project_root` degrades gracefully to the pre-fix `content_snippet` for every result.
+- **Containment (accepted as a temporary query-time tradeoff, not the end state):** this re-parses
+  the matched file on every retrieval (O(K·N) in top-K and AST size) on the hot path. Layered
+  defense against a pathological input hanging the shared thread pool: (1) a `_DISTILL_MAX_CHARS`
+  size guard skips distillation before the parser ever sees an oversized file — the primary
+  protection; (2) `asyncio.wait_for(..., timeout=_DISTILL_TIMEOUT_S)` bounds the caller's wait.
+  Residual, documented risk: `wait_for` frees the awaiting coroutine but cannot kill the underlying
+  thread — a stalled parse keeps running in the shared default `ThreadPoolExecutor` (also used by
+  LanceDB calls) until it finishes regardless. The size guard is what actually protects that shared
+  pool; the timeout only bounds latency. The migration to index-time distillation (DEBT-140/12.13,
+  where chunk rows would store this once instead of recomputing it per retrieval) removes the hot-path
+  cost and both containment layers at once — tracked explicitly in 12.13's WBS, not left implicit.
+- **Tests:** `tests/test_graphrag_retrieval_fidelity.py` (skeleton returned instead of a head-slice
+  when the match is past line 500; graceful fallback with no `project_root`, oversized content, and
+  a stalled parse; `agents/coder.py` and the MCP handler both forward `project_root` correctly).
+
+### DEBT-143 [MEDIUM · RESOLVED 2026-08-03, 12.11] — `deep_parse` uncapped; capped sibling `extract()` was dead code
+
+- **Date:** 2026-08-03 · **Resolved:** 2026-08-03 (12.11)
+- **Detail (was):** `core/memory/graphrag_extractor.py::deep_parse` — the only retrieval-expansion
+  path with a live caller (`agents/researcher.py`) — VFS-read and Tree-sitter-parsed *every* 1-degree
+  neighbor of its seed files with no cap, violating the CLAUDE.md §5.5 defensive-pagination
+  invariant. Meanwhile `GraphRAGDynamicExtractor.extract()` — a PPR-ranked, tier-budgeted sibling
+  method with file-count and token-ceiling guardrails — had zero callers in production *and* in
+  tests, and its guardrail (`_apply_guardrails`) counted tokens of the file *path*, not its content,
+  even where it was reachable.
+- **Resolution:** merged the guardrail logic into `deep_parse` (the live path) rather than wiring the
+  dead `extract()`. Expanded neighbors are ranked by PPR (`_fetch_ppr_scores`, reused as-is) before
+  the cap; seeds always come first and keep the caller's own order, since they carry actual
+  vector-relevance to the query — PPR is query-blind centrality and must never override that signal,
+  only break ties among neighbors that have none. `_deep_parse_sync` now stops once
+  `_MAX_FILES[_DEFAULT_ROUTING]` (10) files are parsed or the next file's block would push the
+  running `context_block` past `_TOKEN_CEILING[_DEFAULT_ROUTING]` (4096) — both measured against
+  real, incrementally-tiktoken-encoded content, never a path-length proxy. `deep_parse` has no
+  routing-tier signal from its caller, so it always budgets against `LOCAL_SMALL`, the same
+  conservative default the rest of the codebase falls back to when no tier is known
+  (`agents/planner.py`, `agents/researcher.py`). `extract()`, `ExtractionResult`, and
+  `_apply_guardrails` were deleted (confirmed zero callers before removal); `_bfs_k_hop` and the
+  public `bfs_k_hop_forward`/`bfs_k_hop_backward` wrappers were kept — those are live via
+  `tools/perception_tools.py`'s blast-radius tools and are a structurally separate, caller-owned-depth
+  surface from `deep_parse`'s fixed 1-degree expansion.
+- **Correctness note (caught in review before landing):** the cap is applied to the *read/parse
+  loop*, never to the `target_files` list itself — `DeepParseResult.target_files` stays the full,
+  pre-cap neighbor set, and the new `truncated: bool` field plus `coverage_ratio` (still
+  `len(parsed_files) / len(target_files)`) are computed against that same pre-cap denominator. An
+  earlier draft of this fix would have shrunk `target_files` before capping, which inflates
+  `coverage_ratio` — that metric flows into `graph_coverage` at 0.3 weight of CSS and gates
+  `is_red_alert` (`agents/researcher.py`), so the bug would have made the system report *better*
+  context health exactly when it truncated context. Caught and fixed before implementation, not
+  after.
+- **Tests:** `tests/test_graphrag_retrieval_fidelity.py` (seeds-first/PPR-ranked-neighbors ordering;
+  file-count cap with the coverage-inflation regression explicitly asserted; token-ceiling cap
+  binding independently of file count; seed-only/no-neighbors and empty-seeds edge cases;
+  `extract()`/`ExtractionResult`/`_apply_guardrails` confirmed removed via `hasattr`).
+
+### DEBT-144 [MEDIUM · Floating] — `brain/prompt_builder.py` is fully dead code
+
+- **Date:** 2026-08-03
+- **Detail:** `PromptBuilder.build_context` and the module-level `build_system_prompt` — a
+  ~330-line, token-budget-aware context assembler with flesh/skeleton tiering and a real
+  `PrecisionTokenCounter`-driven budget — have zero references anywhere outside
+  `brain/prompt_builder.py` (verified: no callers of `PromptBuilder`, `ContextBundle`,
+  `build_context`, or `build_system_prompt`). Its file selection is global-PPR
+  (`core/db.py::get_top_ppr_files`) — "the project's most central files" — which is query-blind and
+  would inject the same files into every turn regardless of the actual question, so wiring it in as-is
+  is not the fix; `build_system_prompt` is additionally superseded by 12.1's
+  `build_static_identity_prompt`/`build_boundary_declaration` split in `agents/prompts.py`.
+- **Phase:** 12.12. The module's two genuinely valuable mechanics — real token-budget accounting and
+  flesh/skeleton tiering — were already harvested into the query-relevant retrieval path by DEBT-142
+  (12.11), which is the query-aware, already-live surface where that discipline actually helps. 12.12
+  is therefore pure deletion, not a rewrite: delete `brain/prompt_builder.py` and update
+  `DEVELOPERS.md`'s Repository Layout. **Hard constraint:**
+  `tests/test_phase7_13_checkpoint_gate.py::test_dd1_single_vfs_reader_and_named_retries` reads
+  `brain/prompt_builder.py` as raw text (`assert "read_safe(" not in pb`) — this assertion must be
+  retargeted or dropped in the same change, or the gate fails with `FileNotFoundError` on deletion.
 
 ### DEBT-132 [LOW · Floating] — Background-task executions get no Glass-Box Timeline I/O detail
 

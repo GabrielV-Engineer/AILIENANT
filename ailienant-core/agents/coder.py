@@ -181,6 +181,7 @@ async def _fetch_rag_snippets(
     project_id: str,
     retrieval_fn: Any = None,
     explicit_mentions: Optional[list[str]] = None,
+    workspace_root: str = "",
 ) -> list[tuple[str, str]]:
     """Single GraphRAG retrieval shared by the topology and style blocks.
 
@@ -200,7 +201,8 @@ async def _fetch_rag_snippets(
         from core.utils import filter_relevant_snippets
         _search_snippets = retrieval_fn or SemanticMemoryManager().search_snippets
         raw = await _search_snippets(
-            f"{target_file} {description}", workspace_hash=project_id, k=3
+            f"{target_file} {description}", workspace_hash=project_id, k=3,
+            project_root=workspace_root or None,
         )
         return filter_relevant_snippets(raw, target_file, explicit_mentions)
     except Exception as exc:  # noqa: BLE001
@@ -526,6 +528,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     rag_snippets = await _fetch_rag_snippets(
         target_file, target_step.description, project_id, _coder_retrieval_fn,
         explicit_mentions=state.get("explicit_mentions"),
+        workspace_root=workspace_root,
     )
     rag_block = _build_rag_block(rag_snippets)
     style_block = _build_style_block(target_file, rag_snippets)
@@ -693,6 +696,10 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
                 on_thinking=_on_thinking,
                 enable_thinking=_thinking_on,
                 thinking_budget_tokens=_thinking_budget,
+                # Tags real token usage with the WBS action it serves (DEBT-045's
+                # calibration substrate). Only write_file/edit_file ever reach this
+                # call — read_file/run_command return earlier in this node.
+                action=target_step.action,
             )
             response_cache.store(cache_key, content, cache_paths)
         raw_edits = _parse_search_replace_blocks(content)

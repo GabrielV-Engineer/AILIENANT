@@ -81,7 +81,8 @@ def test_read_only_verb_responds(
     iso_ledger: Any, registered: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def _fake_snippets(
-        self: Any, user_input: str, workspace_hash: str = "", k: int = 5
+        self: Any, user_input: str, workspace_hash: str = "", k: int = 5,
+        project_root: Any = None,
     ) -> Any:
         return [("a.py", "snippet-a")]
 

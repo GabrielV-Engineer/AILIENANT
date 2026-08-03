@@ -70,6 +70,9 @@ class EmbeddingTarget(BaseModel):
     api_key: str = ""               # cloud key (byom_config.json is already 0600)
     dim: int = 768                  # expected vector dimension (verified dynamically at write)
     is_local: bool = True
+    # Provider-agnostic input ceiling (ada-002-family default). Additive field: existing
+    # persisted configs and every keyword-based construction site keep working unchanged.
+    max_input_tokens: int = 8191
 
 
 class ModelTarget(BaseModel):

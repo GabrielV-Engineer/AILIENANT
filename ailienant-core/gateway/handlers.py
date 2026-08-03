@@ -81,7 +81,9 @@ async def handle_query_memory(args: Dict[str, Any]) -> Any:
     # The gateway runs out of process and never binds a project, so resolve the
     # GraphRAG store explicitly from the caller's project id.
     sem = SemanticMemoryManager(lancedb_path=graphrag_lancedb_path_for(project_id))
-    pairs = await sem.search_snippets(args["query"], workspace_hash=project_id)
+    pairs = await sem.search_snippets(
+        args["query"], workspace_hash=project_id, project_root=args["workspace_root"],
+    )
     return [{"file_path": file_path, "snippet": snippet} for file_path, snippet in pairs]
 
 

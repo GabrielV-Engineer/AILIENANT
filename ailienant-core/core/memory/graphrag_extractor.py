@@ -1,12 +1,13 @@
 # core/memory/graphrag_extractor.py
-"""Phase 3.0 — GraphRAG Dynamic Context Extractor.
+"""GraphRAG Dynamic Context Extractor.
 
-Performs async k-hop BFS over dependency_graph (SQLite/aiosqlite) and ranks
-discovered neighbours by PPR score. Applies token-ceiling and file-count
-guardrails (path tokens only — no blocking file I/O) before returning.
-
-Phase 3.1 will add LanceDB semantic scoring; this module provides the
-graph-centrality component only.
+Performs async BFS over dependency_graph (SQLite/aiosqlite): bounded k-hop
+walks for blast-radius/dead-code callers (``bfs_k_hop_forward`` /
+``bfs_k_hop_backward``), and a 1-degree "seed + neighbors" expansion for
+``deep_parse``, which VFS-reads and Tree-sitter-parses the expanded set into a
+symbol-level context block. Neighbors are ranked by PPR centrality before any
+budget cap is applied, so the most structurally important dependencies survive
+truncation by construction.
 """
 from __future__ import annotations
 
@@ -22,16 +23,15 @@ from shared.config import DB_CATALOG_PATH
 
 logger = logging.getLogger("GRAPHRAG_EXTRACTOR")
 
-# ── Routing-tier constants ─────────────────────────────────────────────────
-
-_K_HOP: Dict[str, int] = {
-    "CLOUD":       3,
-    "LOCAL_BIG":   1,
-    "LOCAL_SMALL": 1,
-}
-
-# Token ceilings count path tokens (proxy for prompt overhead).
-# Phase 3.1 will replace with actual file-content token counts via VFS.
+# ── Budget constants ────────────────────────────────────────────────────────
+#
+# deep_parse receives no routing-tier signal from its caller (agents/researcher.py
+# calls it with only seed_files + workspace_root), so it always budgets against
+# the LOCAL_SMALL tier — the same conservative default the rest of the codebase
+# falls back to when no tier is known (agents/planner.py, agents/researcher.py
+# both default routing_decision="LOCAL_SMALL"). Ceilings are enforced against
+# REAL content tokens of the assembled context block (measured incrementally as
+# each file's block is built), not a path-length proxy.
 _TOKEN_CEILING: Dict[str, int] = {
     "LOCAL_SMALL": 4_096,
     "LOCAL_BIG":   16_384,
@@ -58,27 +58,17 @@ _ENC: tiktoken.Encoding = tiktoken.get_encoding("cl100k_base")
 
 
 @dataclass
-class ExtractionResult:
-    """Immutable output of GraphRAGDynamicExtractor.extract()."""
-
-    seed_file: str
-    k_hops: int
-    neighbors: List[str]           # ranked by PPR descending, post-guardrail
-    ppr_scores: Dict[str, float]   # PPR score per kept neighbour
-    truncated: bool                # True when guardrail cut the list short
-    token_count: int               # sum of path tokens across kept neighbours
-    coverage_ratio: float          # len(neighbors) / max_files for this tier (0.0–1.0)
-
-
-@dataclass
 class DeepParseResult:
-    """Output of GraphRAGDynamicExtractor.deep_parse() (Phase 3.2)."""
+    """Output of GraphRAGDynamicExtractor.deep_parse()."""
 
-    target_files: List[str]   # seed + 1-degree neighbors attempted
-    parsed_files: List[str]   # files successfully VFS-read + Tree-sitter parsed
+    target_files: List[str]   # seed + 1-degree neighbors discovered (PRE-cap; the
+                               # coverage_ratio denominator — never shrunk by the cap)
+    parsed_files: List[str]   # files actually VFS-read + Tree-sitter parsed (POST-cap)
     context_block: str        # formatted context string ready for LLM injection
     coverage_ratio: float     # len(parsed_files) / len(target_files); 0.0 if empty
-    token_count: int          # tiktoken token count of context_block
+    token_count: int          # real token count of context_block (incremental tiktoken sum)
+    truncated: bool = False   # True when the file-count or token ceiling cut the run short
+                               # (never True merely because a file was unreadable/unsupported)
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────
@@ -123,87 +113,24 @@ def _extract_top_level_symbols(tree: Any) -> List[str]:
 
 
 class GraphRAGDynamicExtractor:
-    """Async GraphRAG context extractor backed by the Phase 2.4 SQLite graph.
+    """Async GraphRAG context extractor backed by the SQLite dependency graph.
 
     Instances are stateless — safe to share across concurrent LangGraph
     fan-out invocations for the same project.
 
-    k-hop depth is driven by routing_decision:
-        CLOUD        → k=3  (deep context, 200k-token windows)
-        LOCAL_BIG    → k=1  (direct deps only, protect VRAM)
-        LOCAL_SMALL  → k=1  (direct deps only, protect VRAM)
-
-    Token guardrail counts path tokens (non-blocking) and enforces a per-tier
-    ceiling plus a file-count cap. Phase 3.1 will upgrade to content tokens.
+    Two independent surfaces share this class's BFS/PPR primitives:
+      - ``bfs_k_hop_forward`` / ``bfs_k_hop_backward``: caller-supplied k-hop
+        walks (blast-radius / dead-code analysis), unbounded in scope by design
+        — the caller owns the depth and interprets the result.
+      - ``deep_parse``: always a 1-degree "seed + neighbors" expansion, ranked
+        by PPR and budget-capped (file count + real content tokens) before any
+        VFS read or Tree-sitter parse happens, since that I/O+CPU work is what
+        actually needs bounding — see deep_parse's own docstring.
     """
 
     def __init__(self, project_id: str = "") -> None:
         self._project_id: str = project_id
         # No tiktoken init here — _ENC is the module-level singleton.
-
-    # ── Public entry point ─────────────────────────────────────────────
-
-    async def extract(
-        self,
-        seed_file: str,
-        routing_decision: str,
-    ) -> ExtractionResult:
-        """Run k-hop BFS from seed_file, rank by PPR, apply guardrails.
-
-        Args:
-            seed_file:        File path used as the BFS origin.
-            routing_decision: One of "LOCAL_SMALL", "LOCAL_BIG", "CLOUD".
-        """
-        tier: str = routing_decision if routing_decision in _K_HOP else _DEFAULT_ROUTING
-        k: int = _K_HOP[tier]
-        ceiling: int = _TOKEN_CEILING[tier]
-        max_files: int = _MAX_FILES[tier]
-
-        logger.debug(
-            "GraphRAG extract: seed=%s tier=%s k=%d ceiling=%d max_files=%d",
-            seed_file, tier, k, ceiling, max_files,
-        )
-
-        raw_neighbours: List[str] = await self._bfs_k_hop(seed_file, k)
-
-        if not raw_neighbours:
-            logger.debug("GraphRAG: no neighbours found for seed=%s", seed_file)
-            return ExtractionResult(
-                seed_file=seed_file,
-                k_hops=k,
-                neighbors=[],
-                ppr_scores={},
-                truncated=False,
-                token_count=0,
-                coverage_ratio=0.0,
-            )
-
-        ppr_map: Dict[str, float] = await self._fetch_ppr_scores(raw_neighbours)
-
-        ranked: List[str] = sorted(
-            raw_neighbours, key=lambda f: ppr_map.get(f, 0.0), reverse=True
-        )
-
-        kept, total_tokens, truncated = self._apply_guardrails(ranked, ceiling, max_files)
-
-        # coverage_ratio is tier-relative: kept/max_files so LOCAL_SMALL (10 files)
-        # and CLOUD (50 files) both score 1.0 at their respective ceilings.
-        coverage_ratio: float = min(1.0, len(kept) / max_files) if max_files > 0 else 0.0
-
-        logger.info(
-            "GraphRAG: seed=%s k=%d raw=%d kept=%d tokens=%d truncated=%s coverage=%.3f",
-            seed_file, k, len(raw_neighbours), len(kept), total_tokens, truncated, coverage_ratio,
-        )
-
-        return ExtractionResult(
-            seed_file=seed_file,
-            k_hops=k,
-            neighbors=kept,
-            ppr_scores={f: ppr_map.get(f, 0.0) for f in kept},
-            truncated=truncated,
-            token_count=total_tokens,
-            coverage_ratio=coverage_ratio,
-        )
 
     # ── Private helpers ────────────────────────────────────────────────
 
@@ -252,7 +179,7 @@ class GraphRAGDynamicExtractor:
 
         return result
 
-    # ── Phase 5.3 — Public BFS wrappers (forward + backward) ──────────────
+    # ── Public BFS wrappers (forward + backward) ───────────────────────────
 
     async def bfs_k_hop_forward(self, seed: str, k: int) -> List[str]:
         """Public wrapper: files transitively imported by `seed` up to k hops."""
@@ -332,37 +259,7 @@ class GraphRAGDynamicExtractor:
 
         return scores
 
-    def _apply_guardrails(
-        self,
-        ranked: List[str],
-        ceiling: int,
-        max_files: int,
-    ) -> Tuple[List[str], int, bool]:
-        """Apply file-count cap then token ceiling.
-
-        Tokens are counted from file PATH strings (pure CPU via tiktoken,
-        zero I/O, non-blocking). This is a proxy for prompt overhead; Phase 3.1
-        will replace with actual file-content token counts via VFSMiddleware.
-
-        Returns:
-            (kept, total_tokens, truncated)
-        """
-        kept: List[str] = []
-        total: int = 0
-
-        for path in ranked:
-            if len(kept) >= max_files:
-                return kept, total, True
-            path_tokens: int = len(_ENC.encode(path))
-            if total + path_tokens > ceiling:
-                return kept, total, True
-            kept.append(path)
-            total += path_tokens
-
-        truncated: bool = len(ranked) > len(kept)
-        return kept, total, truncated
-
-    # ── Phase 3.2: Semantic-guided deep parse ─────────────────────────
+    # ── Semantic-guided deep parse ──────────────────────────────────────
 
     async def _expand_neighbors(self, seed_files: List[str]) -> List[str]:
         """Return 1-degree SQLite neighbors for all seed_files in a single batch.
@@ -400,6 +297,14 @@ class GraphRAGDynamicExtractor:
 
         Neighbor expansion is async (SQLite). VFS reads and Tree-sitter CPU work
         are wrapped in asyncio.to_thread to avoid blocking the LangGraph event loop.
+
+        Neighbors are ranked by PPR centrality before target_files is assembled;
+        seeds always come first and keep the caller's own order, since they carry
+        actual vector-relevance to the query — PPR is query-blind centrality and
+        must never override that signal, only break ties among neighbors that
+        have none. The ranked order is what makes the budget cap in
+        _deep_parse_sync principled: when it bites, the least-central neighbors
+        are what get dropped, not an arbitrary SQL-return-order tail.
         """
         if not seed_files:
             return DeepParseResult(
@@ -408,21 +313,48 @@ class GraphRAGDynamicExtractor:
                 context_block="",
                 coverage_ratio=0.0,
                 token_count=0,
+                truncated=False,
             )
         neighbors = await self._expand_neighbors(seed_files)
-        # Preserve seed order, append neighbors, deduplicate.
-        target_files: List[str] = list(dict.fromkeys([*seed_files, *neighbors]))
-        return await asyncio.to_thread(self._deep_parse_sync, target_files, workspace_root)
+        ppr_map = await self._fetch_ppr_scores(neighbors)
+        ranked_neighbors = sorted(neighbors, key=lambda f: ppr_map.get(f, 0.0), reverse=True)
+        # Preserve seed order first, then PPR-ranked neighbors, deduplicate.
+        target_files: List[str] = list(dict.fromkeys([*seed_files, *ranked_neighbors]))
+        return await asyncio.to_thread(
+            self._deep_parse_sync,
+            target_files,
+            workspace_root,
+            _MAX_FILES[_DEFAULT_ROUTING],
+            _TOKEN_CEILING[_DEFAULT_ROUTING],
+        )
 
     def _deep_parse_sync(
         self,
         target_files: List[str],
         workspace_root: str,
+        max_files: int,
+        token_ceiling: int,
     ) -> DeepParseResult:
-        """Blocking: VFS read + Tree-sitter parse for each target file.
+        """Blocking: VFS read + Tree-sitter parse for each target file, budget-bounded.
 
         Runs inside asyncio.to_thread. Deferred imports isolate VFS/AST from
         module-level loading (consistent with project SPOF guard pattern).
+
+        Stops once max_files files have been parsed, or once the next file's
+        block would push the running context_block past token_ceiling — both
+        measured against REAL parsed content (each file's rendered block is
+        tiktoken-encoded before being committed), never a path-length proxy.
+        Token accounting sums each block's own encoding rather than encoding the
+        final joined string once; this is a deliberately conservative choice
+        forced by the early-stop logic (a block's cost must be known before
+        deciding whether it fits) and may differ marginally from encoding the
+        whole string at once, since BPE can merge slightly differently across a
+        boundary — never materially, and never in the direction of undercounting.
+
+        coverage_ratio is computed against len(target_files) — the full, PRE-cap
+        neighbor set — so a truncated run is visible as reduced coverage (and
+        surfaces into the caller's CSS/graph_coverage metric) rather than being
+        silently reported as complete.
         """
         from core.vfs_middleware import VFSMiddleware
         from core.ast_engine import ASTEngine
@@ -430,36 +362,48 @@ class GraphRAGDynamicExtractor:
 
         vfs = VFSMiddleware()
         ast_engine = ASTEngine()
-        lines: List[str] = ["## Code Context — Semantic Deep Parse:"]
+        header = "## Code Context — Semantic Deep Parse:"
+        lines: List[str] = [header]
         parsed: List[str] = []
+        total_tokens: int = len(_ENC.encode(header))
+        truncated: bool = False
 
         for file_path in target_files:
+            if len(parsed) >= max_files:
+                truncated = True
+                break
             vfs_result = vfs.read_safe(
                 file_path,
                 project_id=self._project_id,
                 project_root=workspace_root,
             )
             if not vfs_result.ok or vfs_result.content is None:
-                continue
+                continue  # unreadable/excluded — not a budget truncation
             lang: Any = detect_language(file_path)
             if not lang:
-                continue
+                continue  # unsupported language — not a budget truncation
             tree: Any = ast_engine.parse(file_path, vfs_result.content, lang)
             symbols = _extract_top_level_symbols(tree)
-            parsed.append(file_path)
             sym_str = (
                 ", ".join(f"`{s}`" for s in symbols[:20])
                 if symbols else "(no top-level symbols)"
             )
-            lines.append(f"\n### {file_path}  [{lang}]\nSymbols: {sym_str}")
+            block = f"\n### {file_path}  [{lang}]\nSymbols: {sym_str}"
+            block_tokens = len(_ENC.encode(block))
+            if total_tokens + block_tokens > token_ceiling:
+                truncated = True
+                break
+            lines.append(block)
+            total_tokens += block_tokens
+            parsed.append(file_path)
 
         context_block = "\n".join(lines) if parsed else ""
-        token_count = len(_ENC.encode(context_block)) if context_block else 0
         coverage = len(parsed) / len(target_files) if target_files else 0.0
         return DeepParseResult(
             target_files=target_files,
             parsed_files=parsed,
             context_block=context_block,
             coverage_ratio=min(1.0, coverage),
-            token_count=token_count,
+            token_count=total_tokens if parsed else 0,
+            truncated=truncated,
         )

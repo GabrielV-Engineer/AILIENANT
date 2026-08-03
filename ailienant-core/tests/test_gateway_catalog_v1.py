@@ -92,7 +92,10 @@ def test_query_memory_responds_and_keys_on_project_id(
 ) -> None:
     seen: Dict[str, Any] = {}
 
-    async def _fake_snippets(self: Any, user_input: str, workspace_hash: str = "", k: int = 5) -> Any:
+    async def _fake_snippets(
+        self: Any, user_input: str, workspace_hash: str = "", k: int = 5,
+        project_root: Any = None,
+    ) -> Any:
         seen["workspace_hash"] = workspace_hash
         seen["query"] = user_input
         return [("a.py", "snippet-a"), ("b.py", "snippet-b")]

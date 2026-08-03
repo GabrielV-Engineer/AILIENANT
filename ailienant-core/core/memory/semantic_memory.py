@@ -19,7 +19,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import lancedb
 import numpy as np
@@ -43,7 +43,10 @@ _TABLE_NAME: str = "workspace_embeddings"
 _TOP_K: int = 5
 _MIN_TOKENS: int = 100        # Anti-fragmentation gate
 _HNSW_MIN_ROWS: int = 256     # IVF training minimum with num_partitions=1
-_MAX_EMBED_TOKENS: int = 8191  # ada-002 context limit
+# The embed-input ceiling itself is provider-specific and resolved per call from
+# get_embedding_target().max_input_tokens (core/config/byom_config.py::EmbeddingTarget),
+# whose default (8191, the ada-002-family limit) is the fallback when no BYOM target
+# is configured — see semantic_upsert.
 
 # Strict allowlist — prevents SQL injection in the native .where() predicate.
 _SAFE_ID_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
@@ -92,8 +95,11 @@ class SemanticMemoryManager:
         """Embed a file and upsert into workspace_embeddings.
 
         No-op if content has fewer than _MIN_TOKENS tokens (anti-fragmentation).
-        Truncates to _MAX_EMBED_TOKENS tokens via a tiktoken round-trip to avoid
-        splitting multibyte characters (never slices raw UTF-8 bytes).
+        Truncates to the active embedding target's max_input_tokens ceiling via a
+        tiktoken round-trip to avoid splitting multibyte characters (never slices
+        raw UTF-8 bytes). A truncation is logged (path, real count, ceiling, tokens
+        dropped) — the dropped tail is otherwise invisible to vector search with no
+        trace of the loss.
 
         Returns True on a successful write or an intentional skip (too few tokens),
         and False when embedding or the LanceDB write fails. The reactive indexer
@@ -116,8 +122,23 @@ class SemanticMemoryManager:
                 workspace_hash,
             )
 
+        # Ceiling is provider-specific (resolved from the active BYOM embedding target);
+        # _MAX_EMBED_TOKENS is only the fallback default when no target is configured.
+        # cl100k_base is a deliberate conservative proxy here — it is OpenAI's own BPE
+        # vocabulary, not the active provider's tokenizer (e.g. Ollama's WordPiece), so
+        # this measurement can under- or over-count by a small margin. A per-provider
+        # tokenizer would pull in a new dependency per provider for a marginal accuracy
+        # gain (charter §9); the conservative proxy is preferred until that trade flips.
+        ceiling = get_embedding_target().max_input_tokens
+        if token_count > ceiling:
+            logger.warning(
+                "SemanticMemory: truncating %s for embedding — %d tokens exceeds the "
+                "%d-token ceiling (%d tokens dropped, content past the cut is invisible "
+                "to vector search).",
+                file_path, token_count, ceiling, token_count - ceiling,
+            )
         safe_content: str = (
-            _ENC.decode(tokens_enc[:_MAX_EMBED_TOKENS]) if token_count > _MAX_EMBED_TOKENS else content
+            _ENC.decode(tokens_enc[:ceiling]) if token_count > ceiling else content
         )
 
         try:
@@ -496,12 +517,23 @@ class SemanticMemoryManager:
         user_input: str,
         workspace_hash: str = "",
         k: int = _TOP_K,
+        project_root: Optional[str] = None,
     ) -> List[Tuple[str, str]]:
-        """Return (file_path, content_snippet) pairs most relevant to user_input.
+        """Return (file_path, evidence_snippet) pairs most relevant to user_input.
 
         Powers invisible GraphRAG context injection into the live chat system
-        prompt. Returns [] on empty input, an empty corpus (nothing to retrieve),
-        or any failure (non-fatal).
+        prompt (and the MCP ``query_memory`` tool). Returns [] on empty input, an
+        empty corpus (nothing to retrieve), or any failure (non-fatal).
+
+        The second element of each pair is, where possible, an AST skeleton of the
+        WHOLE matched file (signatures + docstrings, bodies elided) rather than the
+        stored ``content_snippet`` — see ``_distill_snippets`` for why: the stored
+        value is a fixed 500-char head-of-file slice meant for dashboard audit/debug,
+        not retrieval evidence, and a file that matched on line 400 would otherwise
+        contribute only its import header. ``project_root`` is optional and additive
+        — omitting it degrades gracefully to the raw ``content_snippet`` for every
+        result (unchanged pre-fix behavior), since the VFS firewall needs a root to
+        resolve relative paths and apply ignore rules.
         """
         if not user_input.strip():
             return []
@@ -518,12 +550,86 @@ class SemanticMemoryManager:
             return []
 
         try:
-            return await asyncio.to_thread(
+            raw_pairs = await asyncio.to_thread(
                 self._query_snippets, vector, workspace_hash, k
             )
         except Exception as query_err:  # noqa: BLE001
             logger.warning("SemanticMemory.search_snippets: query failed (non-fatal): %s", query_err)
             return []
+
+        return await self._distill_snippets(raw_pairs, project_root)
+
+    # ── Query-time evidence distillation (DEBT-142) ─────────────────────
+    #
+    # A structural note for the next reader: this upgrades evidence quality at
+    # *query* time — every retrieval re-parses the matched file. That cost (O(K)
+    # parses per call, K = len(pairs)) is accepted as a contained, temporary
+    # tradeoff, not the intended end state. The intended end state is symbol-level
+    # chunk embeddings computed once at *index* time (tracked as DEBT-140), which
+    # would make this whole distillation step read a stored value instead of
+    # recomputing it. Do not remove this comment when DEBT-140 lands — replace it
+    # with the migration note instead, since a future reader adding a 6th call site
+    # here should be redirected to the indexed-chunk path, not to this one.
+
+    _DISTILL_MAX_CHARS: int = 300_000   # defense-in-depth; see _distill_one
+    _DISTILL_TIMEOUT_S: float = 2.0     # generous for tree-sitter; bounds the await only
+
+    async def _distill_snippets(
+        self, pairs: List[Tuple[str, str]], project_root: Optional[str],
+    ) -> List[Tuple[str, str]]:
+        """Best-effort upgrade of each stored content_snippet to a file skeleton.
+
+        Never raises and never returns fewer/reordered pairs than it received —
+        a per-file failure falls back to that file's original content_snippet, so
+        this can only make evidence better, never break retrieval.
+        """
+        if not pairs:
+            return pairs
+        from core.vfs_middleware import make_safe_reader
+        reader = make_safe_reader(None, project_root, None)
+        out: List[Tuple[str, str]] = []
+        for file_path, snippet in pairs:
+            out.append((file_path, await self._distill_one(file_path, snippet, reader)))
+        return out
+
+    async def _distill_one(
+        self,
+        file_path: str,
+        fallback_snippet: str,
+        reader: Callable[[str], Optional[str]],
+    ) -> str:
+        from shared.contracts import detect_language
+        lang = detect_language(file_path)
+        if not lang:
+            return fallback_snippet
+        content = reader(file_path)
+        if not content:
+            return fallback_snippet
+        # Defense-in-depth only, not the primary guard: core/vfs_middleware.py's
+        # read_safe() firewall already rejects anything > 500 KB (Layer 3a) and any
+        # file containing a line > 1000 chars (Layer 3b, the minification signal)
+        # before content ever reaches here — a pathological minified bundle cannot
+        # arrive at this point. This second, independent gate exists because that
+        # firewall is tuned for "is this worth showing an LLM", not "is this safe
+        # to hand a parser"; charter zero-trust-input stance says never rely
+        # solely on an upstream filter built for a different purpose.
+        if len(content) > self._DISTILL_MAX_CHARS:
+            return fallback_snippet
+        try:
+            from core.ast_engine import extract_skeleton
+            skeleton = await asyncio.wait_for(
+                asyncio.to_thread(extract_skeleton, content, lang),
+                timeout=self._DISTILL_TIMEOUT_S,
+            )
+        except Exception:  # noqa: BLE001 — timeout, parse failure, or thread error:
+            # never worse than the pre-fix fallback. NOTE: wait_for's timeout frees
+            # this coroutine but cannot kill the underlying thread — the shared
+            # asyncio default ThreadPoolExecutor keeps running the parse to
+            # completion regardless. The _DISTILL_MAX_CHARS guard above is what
+            # actually protects that shared pool from a pathological input; this
+            # timeout only bounds how long the *caller* waits.
+            return fallback_snippet
+        return skeleton or fallback_snippet
 
     # ── Vector-map dump (dashboard GraphRAG viewer) ─────
 

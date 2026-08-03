@@ -2066,3 +2066,72 @@ existing `configurable["cell_adapter"]` test seam and the checkpoint-gate-style 
 **Backward-compat guarantee:** fully additive. §26's five events, `HostExecutionBridge` Protocol
 methods, and `SandboxSession` ABC are all unchanged in shape; a client that does not recognize any of
 the eight new event types ignores it exactly like any other unknown `event_type`.
+
+## §44 — Reasoning-Mode Task Config on Graph State (Cross-Restart HITL Fidelity, Manifest 12.5)
+
+**Change:** two additive `AIlienantGraphState` channels — `enable_native_thinking: Optional[bool]`
+and `thinking_budget_tokens: Optional[int]` — mirroring the per-turn Reasoning Mode toggle that was
+previously threaded only via `config["configurable"]` (`agents/coder.py`, `agents/planner.py`) and
+therefore never survived a checkpoint. Seeded once by `_build_initial_state` from
+`TaskPayload.enable_native_thinking`/`thinking_budget_tokens`; never mutated by a node.
+
+**Why graph state, not a new table:** `execution_mode` (this file's Phase 4.3 entry) already
+establishes the precedent of per-task config living on a state channel and being recovered from
+`snapshot.values` at rehydrate. `HybridCheckpointer` promotes once per completed run (not per step),
+so the two scalars add no new I/O; they ride alongside `vfs_buffer`, which already carries full file
+contents. A dedicated relational config table was considered and rejected for *this* closure as
+premature — logged instead as a forward-looking backlog entry with an explicit trigger (see
+`docs/TECH_DEBT_BACKLOG.md`, the config/runtime-separation entry filed at 12.5): the moment a third
+piece of per-task config needs to survive a restart, migrate all of it to a table at once rather than
+adding a third ad hoc channel.
+
+**Fixes a real defect, not just a fidelity gap:** `core/task_service.py::rehydrate_paused_interrupt`
+previously reconstructed `TaskPayload(task_prompt="", …)` after a server restart. That prompt is not
+merely cosmetic — the shared post-resume path (`_run_coding_task`'s `_append_history(session_id,
+"user", payload.task_prompt)` calls) still executes for a resumed turn, so the empty string was
+written into the **persisted transcript** as a blank user message. `user_input` is already a graph
+state channel, so the prompt is recovered from `snapshot.values` the same way `execution_mode` is;
+the two new channels close the remaining thinking-config gap the same way.
+
+**Backward-compat guarantee:** both channels are `Optional` and absent-until-written. A checkpoint
+written before this change deserializes them as missing; every reader treats `None` as "use the
+literal default" (`True` / `4096`), identical to today's pre-checkpoint behavior. No existing channel
+changes shape.
+
+## §45 — GraphRAG Retrieval-Fidelity Additive Fields (Manifest 12.11)
+
+**`EmbeddingTarget.max_input_tokens` (`core/config/byom_config.py`):** new field,
+`int = 8191` (the ada-002-family default). Additive and defaulted — every existing keyword-based
+construction site (`api/byom.py`'s `_build_embedding_target`/`_derive_embedding_target`) and every
+`byom_config.json` persisted before this change keeps working unchanged; the field is simply absent
+until a preset is re-applied, at which point the default value is written through like any other new
+`EmbeddingTarget` field. Read by `core/memory/semantic_memory.py::semantic_upsert` to resolve the
+embed-input truncation ceiling per active provider instead of a fixed module constant.
+
+**MCP `query_memory` — `snippet` evidence-shape refinement (`gateway/handlers.py::handle_query_memory`,
+catalog entry in `gateway/catalog.py`):** the tool's declared contract (`{file_path: string, snippet:
+string}` per result, `query`/`workspace_root` input) is unchanged — same field names, same types, same
+cardinality. What changed is what `snippet` *contains*: previously the stored `content_snippet`
+(literally the first 500 characters of the matched file — an audit/debug value never intended as
+retrieval evidence); now, when the caller's `workspace_root` resolves the file for reading, an AST
+skeleton of the whole matched file (signatures + docstrings, bodies elided). A consumer reading
+`snippet` as opaque text — the documented and only sane way to consume it, since its exact contents
+were never part of the contract — sees no breaking change. This is recorded here per CLAUDE.md §10
+because the *value semantics* of an existing field changed even though its *shape* did not; future
+schema audits should treat this as the authoritative note for why `snippet` content differs from
+what an MCP client might have observed before 2026-08-03. Consumers that cannot resolve a workspace
+root, or whose target file is unreadable/unsupported/oversized, continue to receive the pre-fix
+500-char slice — the refinement degrades, it never removes the field.
+
+**Target contract for the DEBT-140/12.13 chunk-embeddings table (not yet implemented — this section
+is the binding spec for that future sub-phase, per CLAUDE.md §1):** a new, additive LanceDB table
+(name TBD at implementation, distinct from `workspace_embeddings`) storing one row per symbol chunk
+for files over the size threshold — `qualified_name`, `kind`, `start_line`, `end_line` (mirroring
+`core/ast_engine.py::collect_symbol_defs`'s tuple shape), `file_path`, `workspace_hash`, `vector`,
+`indexed_at`. Version-tagged by construction (a new table, not a schema mutation of
+`workspace_embeddings`) and additive: a project indexed before 12.13 ships simply has no rows in this
+table, and every consumer must tolerate that — retrieval falls back to the existing file-level
+`workspace_embeddings` result, never errors on the chunk table's absence. `core/janitor.py`'s vector
+GC, `SemanticMemoryManager.semantic_delete`, the dimension-mismatch drop/recreate path, and the §34
+dashboard surface must all be extended to cover this table in the same change that creates it, per
+the WBS item in Manifest 12.13 — an untouched consumer here is a silent-rot bug, not a deferred nice-to-have.
