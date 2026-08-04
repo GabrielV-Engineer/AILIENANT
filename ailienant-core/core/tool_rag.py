@@ -35,7 +35,11 @@ from typing import (
 import lancedb
 import pyarrow as pa
 
-from core.permissions import SessionPermissionMode, ToolPrivilegeTier
+from core.permissions import (
+    SessionPermissionMode,
+    ToolPrivilegeTier,
+    normalize_session_mode,
+)
 
 logger = logging.getLogger("TOOL_RAG")
 
@@ -223,8 +227,12 @@ class ToolRAGStore:
         rbac_rows = [
             r for r in all_rows if active_role in _roles_from_csv(r["allowed_roles_csv"])
         ]
-        # 3. Session-mode pre-filter (PLAN allows only READ_ONLY).
-        if session_mode is SessionPermissionMode.PLAN:
+        # 3. Session-mode pre-filter (PLAN_ONLY allows only READ_ONLY). Normalized
+        # first — the deprecated PLAN alias and the canonical PLAN_ONLY value
+        # must gate identically, or a session whose channel already holds the
+        # canonical value would silently skip this defense-in-depth narrowing
+        # (evaluate_action still denies WRITE/EXECUTE at dispatch time either way).
+        if normalize_session_mode(session_mode) is SessionPermissionMode.PLAN_ONLY:
             rbac_rows = [
                 r
                 for r in rbac_rows

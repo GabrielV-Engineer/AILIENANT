@@ -141,10 +141,12 @@ def test_r3_gateway_tools_are_flagged_not_silently_wired() -> None:
     Two (run_benchmark, get_benchmark_report) genuinely duplicate
     gateway/handlers.py's MCP-gateway logic. The other four (list_capabilities,
     skill_invoke, task_list, task_stop) are excluded for a structural reason:
-    resolve_tools()'s only runtime consumer (the agentic cell) always runs
-    under a coder role, and these four are scoped to orchestrator/planner
-    only — disjoint role sets, not a gateway duplicate (gateway/catalog.py
-    carries no counterpart for any of the four; see DEBT-049's correction).
+    every runtime consumer of resolve_tools() (the agentic cell, the coder's
+    grounding pre-pass, and the dispatched-subagent worker) always runs under a
+    coder or dispatch-subagent role, and these four are scoped to
+    orchestrator/planner only — disjoint role sets, not a gateway duplicate
+    (gateway/catalog.py carries no counterpart for any of the four; see
+    DEBT-049's correction).
     """
     gateway_names = {"run_benchmark", "get_benchmark_report"}
     role_scoped_names = {"list_capabilities", "skill_invoke", "task_list", "task_stop"}
@@ -163,7 +165,7 @@ def test_r3_gateway_tools_are_flagged_not_silently_wired() -> None:
         )
         assert "dispatch loop" in reason or "disjoint" in reason, (
             f"{name}'s exclusion reason should state the real cause: role-scope "
-            "disjointness from resolve_tools()'s only consumer"
+            "disjointness from resolve_tools()'s runtime consumers"
         )
         assert name not in all_registrable_names(), (
             f"{name} must not be constructible — no reachable role may call it"

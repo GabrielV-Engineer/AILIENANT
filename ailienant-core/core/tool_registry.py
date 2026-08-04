@@ -25,7 +25,7 @@ cannot silently recur.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, MutableMapping, Sequence
+from typing import Any, Callable, Dict, MutableMapping, Optional, Sequence
 
 from langchain_core.tools import BaseTool
 
@@ -75,15 +75,19 @@ _INTENTIONALLY_UNREGISTERED: Dict[str, str] = {
         "in-process registry"
     ),
     # The following four are scoped to orchestrator and/or planner only (see
-    # each tool's allowed_roles), which is disjoint from resolve_tools()'s only
-    # runtime consumer: brain/agentic_cell.py resolves the active role from the
-    # WBS step's target_role, always one of the 8 canonical coder roles.
-    # Neither orchestrator nor planner runs a ToolDispatcher loop (a permanent
-    # architectural decision — the orchestrator is a deterministic node with no
-    # reasoner to drive a loop, and the planner is PLAN-only; see the DEBT-068
-    # scope correction), so a factory here would build a tool no reachable role
-    # is ever permitted to call. NOT a gateway duplicate — gateway/catalog.py's
-    # CATALOG carries no skill/task-list/task-stop/capability-listing entry.
+    # each tool's allowed_roles), which is disjoint from every runtime consumer
+    # of resolve_tools(): brain/agentic_cell.py resolves the active role from
+    # the WBS step's target_role (one of the 8 canonical coder roles);
+    # agents/coder.py's grounding pre-pass resolves the same target_role; and
+    # brain/nodes/subagent_worker_node.py resolves the dispatched subagent's own
+    # role (one of the 8 dev roles, or analyst_readonly) — all three are
+    # disjoint from {orchestrator, planner}. Neither orchestrator nor planner
+    # runs a ToolDispatcher loop (a permanent architectural decision — the
+    # orchestrator is a deterministic node with no reasoner to drive a loop,
+    # and the planner is PLAN-only; see the DEBT-068 scope correction), so a
+    # factory here would build a tool no reachable role is ever permitted to
+    # call. NOT a gateway duplicate — gateway/catalog.py's CATALOG carries no
+    # skill/task-list/task-stop/capability-listing entry.
     "list_capabilities": (
         "scoped to {orchestrator, planner}; disjoint from the coder roles "
         "resolve_tools() serves, and neither role runs a dispatch loop"
@@ -104,6 +108,21 @@ _INTENTIONALLY_UNREGISTERED: Dict[str, str] = {
 
 
 ToolFactory = Callable[[MutableMapping[str, Any]], BaseTool]
+
+
+def _resolve_session_id(state: MutableMapping[str, Any]) -> Optional[str]:
+    """Session identifier for state-bound tool factories.
+
+    ``AIlienantGraphState`` carries the running session under ``task_id`` — it
+    declares no separate ``session_id`` channel (verified against brain/state.py).
+    A factory that only read ``state["session_id"]`` therefore always saw ``None``
+    from every graph-state caller, silently disabling the devcontainer-tier
+    routing DEBT-086 added and weakening the VFS reader's session scoping.
+    ``session_id`` is checked first only so an explicit non-graph caller (e.g. a
+    unit test seeding that key directly) can still override it.
+    """
+    raw = state.get("session_id") or state.get("task_id")
+    return str(raw) if raw else None
 
 
 def _simple_factories() -> Dict[str, ToolFactory]:
@@ -127,8 +146,7 @@ def _simple_factories() -> Dict[str, ToolFactory]:
     def _read_file(state: MutableMapping[str, Any]) -> BaseTool:
         project_id = str(state.get("project_id") or "") or None
         workspace_root = str(state.get("workspace_root") or "") or None
-        session_id_raw = state.get("session_id")
-        session_id = str(session_id_raw) if session_id_raw else None
+        session_id = _resolve_session_id(state)
         vfs_read = make_safe_reader(project_id, workspace_root, session_id)
         return make_state_aware_read_file_tool(state, vfs_read)
 
@@ -137,9 +155,8 @@ def _simple_factories() -> Dict[str, ToolFactory]:
         # non-interactive fallback — this is a validation check, not an operator
         # command, so it must never raise its own HITL card. No session in state
         # (e.g. an unwired caller) preserves the pre-DEBT-086 oracle-only routing.
-        session_id_raw = state.get("session_id")
         tool = CheckTypeIntegrityTool()
-        tool._session_id = str(session_id_raw) if session_id_raw else None  # type: ignore[attr-defined]
+        tool._session_id = _resolve_session_id(state)  # type: ignore[attr-defined]
         return tool
 
     return {

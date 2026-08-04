@@ -348,7 +348,7 @@ async def run_agentic_cell_node(
 ) -> Dict[str, Any]:
     """One ReAct iteration. See module docstring for the loop contract."""
     from core.blob_storage import blob_storage
-    from core.permissions import session_mode_from_channel
+    from core.permissions import PermissionDecision, session_mode_from_channel
     from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
     from core.workspace_sync import push_vfs_to_surface, pull_surface_to_vfs
 
@@ -445,6 +445,98 @@ async def run_agentic_cell_node(
                 ef_delta["vfs_buffer"] = {p: vf for p, vf in new_files.items()}
             return ef_delta
 
+        # ── Tool-call-approval phase (DEBT-129) ──────────────────────────────────
+        # A prior iteration deferred a HITL-gated registry-fallback tool call.
+        # interrupt() is the FIRST action here (only the idempotent session-reuse
+        # precedes it), so a replay before resume is side-effect-free and the tool
+        # executes exactly once after the operator approves. Mutually exclusive
+        # with the exec-approval phase above — each defer branch returns
+        # immediately, so at most one of the two pending_* channels is ever set
+        # entering a given iteration.
+        pending_tool: Optional[Dict[str, Any]] = state.get("pending_tool_call")
+        if pending_tool:
+            tool_name = str(pending_tool.get("name", ""))
+            tool_args: Dict[str, Any] = dict(pending_tool.get("args") or {})
+            approved = await _approve_tool_call(state, tool_name, tool_args, configurable)
+            tc_rec: Dict[str, Any] = {
+                "iteration": iteration, "edits": [], "occ_conflicts": [],
+                "exit_code": None, "diagnostics": "", "status": "continue",
+            }
+            if not approved:
+                return {
+                    "agentic_iteration": iteration + 1,
+                    "agentic_trajectory": [
+                        tc_rec,
+                        {"role": "system", "content": (
+                            f"Tool denied: the '{tool_name}' call was not approved by "
+                            "the operator. Choose a different approach.")},
+                    ],
+                    "pending_tool_call": None,
+                    "security_flags": ["TOOL_CALL_HITL_DENIED"],
+                }
+            # Approved → resolve the SAME name by exact lookup (never by re-running
+            # select_tools's intent-ranked search: ranking is not guaranteed stable
+            # across a suspend/resume boundary, and an approved call must execute
+            # the tool the operator actually saw, not whatever ranks highest now).
+            schema = next(
+                (s for s in tool_rag_store.all_schemas() if s.name == tool_name), None
+            )
+            if schema is None:
+                tc_observation = (
+                    f"[{tool_name}] tool no longer resolves (catalog changed since "
+                    "the request was made) — choose a different approach."
+                )
+                tc_delta: Dict[str, Any] = {
+                    "agentic_iteration": iteration + 1,
+                    "agentic_trajectory": [
+                        tc_rec, {"role": "system", "content": tc_observation}
+                    ],
+                    "pending_tool_call": None,
+                }
+                return tc_delta
+
+            from core.permissions import PermissionMode
+            from core.tool_dispatch import ToolDispatcher
+            from core.tool_dispatch import ToolCall as _RegistryToolCall
+            from core.tool_registry import resolve_tools
+
+            async def _pre_approved(_call: Any, _reg: Any) -> bool:
+                # The operator already approved this exact call above; a fresh
+                # ToolDispatcher still runs classify() internally (cheap, pure) and
+                # may re-resolve to HITL under the current policy — admit it without
+                # a second prompt rather than asking the operator twice for one
+                # decision. Trust-once (session-wide) is deliberately NOT applied
+                # here, matching the exec-approval phase: each gated call resumes
+                # through its own interrupt.
+                return True
+
+            approved_tools = resolve_tools([schema], state)
+            approved_dispatcher = ToolDispatcher(
+                approved_tools,
+                active_role=_resolve_active_role(state),
+                session_mode=session_mode_from_channel(state.get("session_permission_mode")),
+                state=state,
+                agent_permission=PermissionMode.EDIT_EXECUTE_RBW,
+                approval_fn=_pre_approved,
+            )
+            result = await approved_dispatcher.dispatch(
+                _RegistryToolCall(name=tool_name, args=tool_args)
+            )
+            tc_delta = {
+                "agentic_iteration": iteration + 1,
+                "agentic_trajectory": [
+                    tc_rec,
+                    {"role": "system", "content": f"[{tool_name}] {result.observation}"},
+                ],
+                "pending_tool_call": None,
+            }
+            if result.state_delta:
+                tc_delta.update(result.state_delta)
+                await _emit_agent_todos_if_changed(
+                    dispatcher, state, iteration, result.state_delta
+                )
+            return tc_delta
+
         # ── Working VFS for this turn (clean base for transactional MCTS) ────────
         vfs_files: Dict[str, VFSFile] = dict(state.get("vfs_buffer") or {})
         version_ids: Dict[str, str] = {
@@ -462,7 +554,7 @@ async def run_agentic_cell_node(
         )
 
         # ── Reason (cache bypassed — never probe; each iteration is fresh) ───────
-        # Division 8.18.2: select (not construct) the role/session-scoped catalog
+        # select (not construct) the role/session-scoped catalog
         # before reasoning, so the model can actually name one of these tools in
         # its response — a tool it's never told about can never be requested.
         # Advertised as an extra system message rather than a CellReasoner
@@ -648,13 +740,45 @@ async def run_agentic_cell_node(
                 pending_contents[path] = new_content
 
             else:
-                # Division 8.18.2 — additive fallback: any name outside the 3
+                # — additive fallback: any name outside the 3
                 # primitives resolves through the tool registry. Construction is
                 # lazy — deferred until a fallback name is actually proposed —
                 # and memoized for the rest of this iteration; schema *selection*
                 # already happened before reasoning (see above) so the model
                 # could name this tool in the first place.
-                result = await _get_fallback_dispatcher().dispatch(call)
+                fb_dispatcher = _get_fallback_dispatcher()
+                _fb_reg, _fb_decision, _fb_reason = fb_dispatcher.classify(call)
+                if _fb_decision is PermissionDecision.HITL:
+                    # DEBT-129: defer to the tool-call-approval phase (next
+                    # super-step) rather than the ToolDispatcher's own
+                    # no-channel-wired deny-with-report — do NOT execute, and stop
+                    # processing further calls so no side effect precedes
+                    # approval. Mirrors the run_terminal HITL defer above.
+                    tool_defer_rec: Dict[str, Any] = {
+                        "iteration": iteration, "edits": list(record["edits"]),
+                        "occ_conflicts": [], "exit_code": None, "diagnostics": "",
+                        "status": "continue",
+                    }
+                    tool_defer_delta: Dict[str, Any] = {
+                        "agentic_iteration": iteration + 1,
+                        "agentic_trajectory": [tool_defer_rec],
+                        "pending_tool_call": {"name": call.name, "args": dict(call.args)},
+                    }
+                    if edited_paths:
+                        tool_defer_delta["vfs_buffer"] = {p: vfs_files[p] for p in edited_paths}
+                    if pending_contents:
+                        tool_defer_delta["pending_contents"] = pending_contents
+                    if audit_entries:
+                        tool_defer_delta["permission_audit_log"] = audit_entries
+                    if security_flags:
+                        tool_defer_delta["security_flags"] = security_flags
+                    if state_promotions:
+                        tool_defer_delta.update(state_promotions)
+                        await _emit_agent_todos_if_changed(
+                            dispatcher, state, iteration, state_promotions
+                        )
+                    return tool_defer_delta
+                result = await fb_dispatcher.dispatch(call)
                 fallback_observations.append(
                     {"role": "system", "content": f"[{call.name}] {result.observation}"}
                 )
@@ -759,7 +883,7 @@ def route_after_cell(state: Dict[str, Any]) -> str:
 
 
 # =====================================================================
-# Registry fallback (Division 8.18.2) — tool names outside the 3 hardcoded
+# Registry fallback — tool names outside the 3 hardcoded
 # primitives (CELL_TOOLS) resolve through core/tool_registry.py's bridge and
 # execute via core/tool_dispatch.py::ToolDispatcher, which already implements
 # tier gating. Built lazily — only if the model actually proposes a name
@@ -767,16 +891,15 @@ def route_after_cell(state: Dict[str, Any]) -> str:
 # an iteration that only uses the 3 primitives pays zero extra cost (no
 # embedding-backed select_tools() call).
 #
-# Deliberately built with approval_fn=None (ToolDispatcher's own documented
-# "no approval channel -> deny-with-report" degradation) rather than wiring
-# core/tool_dispatch.py::make_websocket_approval_fn: that helper's own
-# docstring warns a mid-loop interrupt() must adopt this cell's
-# defer-then-interrupt-first replay-safety pattern (the same one the
-# run_terminal HITL branch above already uses via pending_exec_command) —
-# generalizing that safely is follow-up work, not a one-line wire-up. A
-# HITL-tier retrieved tool is therefore safely denied with a clear message
-# rather than risking a replay-unsafe interrupt; READ_ONLY and ALLOW-tier
-# retrieved tools are unaffected and execute normally.
+# Built with approval_fn=None: a HITL-tier verdict from this memoized
+# dispatcher is never reached, because the dispatch loop above peeks the
+# verdict via ToolDispatcher.classify() BEFORE calling .dispatch() and defers
+# on HITL (DEBT-129) — setting pending_tool_call and returning immediately, the
+# same defer-then-interrupt-first pattern the run_terminal HITL branch uses via
+# pending_exec_command. The actual approved execution happens on the NEXT
+# iteration's tool-call-approval phase, against a freshly resolved single-tool
+# dispatcher with a pre-approved approval_fn — never this memoized one. READ_ONLY
+# and ALLOW-tier retrieved tools are unaffected and execute normally here.
 # =====================================================================
 
 
@@ -987,6 +1110,41 @@ async def _approve_exec(
         proposed_content=command[:2000],
         request_kind="RISK_INTERCEPT" if _risk_labels else "COMMAND_EXEC",
         risk_patterns_matched=_risk_labels or None,
+    )
+    return bool(resp.get("approved"))
+
+
+async def _approve_tool_call(
+    state: Dict[str, Any],
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    configurable: Dict[str, Any],
+) -> bool:
+    """Approve a deferred registry-fallback tool call (DEBT-129) — the FIRST
+    action of the tool-call-approval phase.
+
+    Mirrors ``_approve_exec``'s contract: an injected ``cell_tool_approval_fn``
+    seam in tests, else native ``request_graph_approval`` (LangGraph
+    ``interrupt()``) so the graph suspends and the runtime is freed until the
+    operator replies. Trust-once is intentionally not applied — each gated call
+    resumes through its own interrupt, exactly like the exec-approval phase.
+    The proposed-content preview is capped for display only (matching
+    ``_approve_exec``'s ``command[:2000]``); the full ``tool_args`` survive
+    unclamped in ``pending_tool_call`` so the resumed call replays faithfully.
+    """
+    approval_fn = configurable.get("cell_tool_approval_fn")
+    if approval_fn is not None:
+        return bool(await approval_fn(tool_name, tool_args))
+    import json
+
+    from core.hitl import request_graph_approval
+
+    preview = json.dumps(tool_args, default=str)[:2000]
+    resp = request_graph_approval(
+        session_id=str(state.get("task_id") or ""),
+        action_description=f"TOOL_CALL: {tool_name}",
+        proposed_content=preview,
+        request_kind="COMMAND_EXEC",
     )
     return bool(resp.get("approved"))
 

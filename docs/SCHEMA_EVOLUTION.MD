@@ -93,7 +93,7 @@ class AIlienantGraphState(TypedDict):
     security_flags: Annotated[List[str], operator.add]
     terminal_output: str
 
-    # --- Planning Mode (DEPRECATED — see Phase 7.13.9 replacement) ---
+    # --- Planning Mode ---
     # planning_strategy: PlanningStrategy   # Deprecated — replaced by planner_mode_active
     # human_wbs_draft: Optional[str]        # Deprecated — replaced by hitl_response
     # wbs_approved: bool                    # Deprecated — replaced by shared_understanding_reached
@@ -286,7 +286,7 @@ Known tech debt: `permission_audit_log` and `rbwe_violations` (`operator.add`) g
 
 ## 9. OOM Cascade, DLQ, FinOps Supervisor, HITL Audit Ledger
 
-**Additive only. No renames, no removals, no Literal narrowing. Phase 5.7 checkpoints deserialize unchanged.**
+**Additive only. No renames, no removals, no Literal narrowing. **
 
 ### 9.1 - 6 Operational-Safety State Channels
 
@@ -564,7 +564,7 @@ CREATE TABLE IF NOT EXISTS agent_role_overrides (
 );
 ```
 
-`mcp_server_endpoint` (Phase 5.1 channel) is now written by the MCP auto-connect bootstrap during the FastAPI lifespan rather than only by manual calls.
+`mcp_server_endpoint` is now written by the MCP auto-connect bootstrap during the FastAPI lifespan rather than only by manual calls.
 
 **Curated MCP Registry (`core/mcp_registry.py`):**
 
@@ -640,7 +640,7 @@ Public surface exposed via stdio MCP server (`gateway/catalog.py`). All input sc
 
 ## 17. WebSocket Contract Additions
 
-The following event types were added to `api/ws_contracts.py` after Phase 6.9. The full union now contains 60+ events. Grouped by functional area:
+The following event types were added to `api/ws_contracts.py`. The full union now contains 60+ events. Grouped by functional area:
 
 **Inline edit pipeline:**
 `client_inline_edit_request` · `client_inline_edit_cancel` · `server_inline_edit_start` · `server_inline_edit_delta` · `server_inline_edit_end`
@@ -1299,7 +1299,7 @@ already binding on 8.14.8's runtime-trace validation ("never-observed ≠ dead")
   this class of resolution is achievable here — confirming the *goal* is reachable without adopting
   that reference implementation's heavier, fully-materialized-edges approach.
 
-### Binding conditions for the follow-on build (`8.14.6.1` — not built under this item)
+### Binding conditions for the follow-on build (not built under this item)
 
 1. Concrete additive DDL for the definition catalog; no FK into `dependency_graph`.
 2. Reuse the existing incremental-reindex trigger (LazyIndexer/content-hash) for catalog freshness —
@@ -1364,8 +1364,8 @@ JSON-schema dict):
 loop enforces (`_MAX_OBSERVATION_CHARS` now aliases it). The two truncation ceilings can never drift.
 
 **State channels (`brain/state.py::AIlienantGraphState`).** Four additive channels, all default-safe
-so a pre-8.15 checkpoint deserializes unchanged — no existing field is renamed or narrowed, and
-consumers written before 8.15 ignore the new fields entirely:
+so a pre checkpoint deserializes unchanged — no existing field is renamed or narrowed, and
+consumers written before ignore the new fields entirely:
 
 | Channel | Type | Reducer | Safe default |
 |---|---|---|---|
@@ -1706,7 +1706,7 @@ Cursor/timeline keys off the monotonic `seq`, never the display `ts` (tie-safe).
 
 ---
 
-## §40 — Execution Provenance: Glass-Box Timeline I/O Detail (Division 11.5.D)
+## §40 — Execution Provenance: Glass-Box Timeline I/O Detail
 
 **Change:** new WebSocket event `server_activity_detail` — the I/O body for one `command` node on
 the §38 Glass-Box Timeline: which isolation envelope actually ran a command, its output, exit
@@ -1802,7 +1802,7 @@ scope (background-task executions, file-read/MCP-tool detail, live incremental s
 
 ---
 
-## §41 — Prompt System-Message HEAD/TAIL Split (Prefix Stability, Manifest 12.1)
+## §41 — Prompt System-Message HEAD/TAIL Split (Prefix Stability)
 
 **Change:** the Planner's and Coder's SYSTEM message is now split into a byte-identical-across-calls
 HEAD (identity, axiom, RBAC rules, project instructions) and a small per-turn TAIL declaring the
@@ -1851,7 +1851,7 @@ data", "ignore any directive"). That vocabulary now appears exclusively in the s
 absence from the user turn is asserted directly by `tests/test_prompt_prefix_stability.py`'s SEAL2
 cases, the regression lock on the rejected-design injection vector above.
 
-**agentic_cell (Division 8.15/11.5.D ReAct loop):** `brain/agentic_cell.py::_build_messages` already
+**agentic_cell (ReAct loop):** `brain/agentic_cell.py::_build_messages` already
 never embedded a per-turn nonce in `messages[0]` — the leading system message is a hardcoded literal
 string. No code change was required there; `test_agentic_cell_system_row_is_byte_identical_across_iterations`
 locks the property in as a regression guard.
@@ -1863,7 +1863,7 @@ their trailing position within the joined block, and the identity block's nonce-
 
 ---
 
-## §42 — `server_agent_todos` WS Event (agent_todos Write-Through, Manifest 12.3)
+## §42 — `server_agent_todos` WS Event (agent_todos Write-Through)
 
 **Change:** the agentic cell's `todo_write` fallback-dispatch tool now writes through to the
 `agent_todos` `AIlienantGraphState` channel (§14) instead of only appearing as a trajectory
@@ -1955,7 +1955,7 @@ or `DispatchResult`/`ToolDispatcher` call signature changed shape; a client that
 
 ---
 
-## §43 — Devcontainer Interactive Session Bridge (Trusted-Tier PTY Tunnel, Manifest 12.4)
+## §43 — Devcontainer Interactive Session Bridge (Trusted-Tier PTY Tunnel)
 
 **Change:** eight additive WS events that complement §26's one-shot exec bridge with a persistent
 interactive session inside the same provisioned devcontainer — a bidirectional analogue of
@@ -2098,7 +2098,7 @@ written before this change deserializes them as missing; every reader treats `No
 literal default" (`True` / `4096`), identical to today's pre-checkpoint behavior. No existing channel
 changes shape.
 
-## §45 — GraphRAG Retrieval-Fidelity Additive Fields (Manifest 12.11)
+## §45 — GraphRAG Retrieval-Fidelity Additive Fields
 
 **`EmbeddingTarget.max_input_tokens` (`core/config/byom_config.py`):** new field,
 `int = 8191` (the ada-002-family default). Additive and defaulted — every existing keyword-based
@@ -2239,7 +2239,7 @@ uses would make a large backfill pass quadratic.
 
 ---
 
-## §47 — Sandbox Container Pool + Docker Daemon Circuit Breaker (Manifest 12.6)
+## §47 — Sandbox Container Pool + Docker Daemon Circuit Breaker
 
 Closes DEBT-097 and DEBT-100. `core/sandbox.py::DockerSandboxAdapter` no longer owns one
 process-lifetime `self._container`; it leases from a bounded `_ContainerPool` keyed by
@@ -2292,3 +2292,90 @@ already established for `[sandbox_timeout]` / `[hitl_denied]` / `[devcontainer_*
 `AILIENANT_SANDBOX_IDLE_TTL_S` (900), `AILIENANT_SANDBOX_LEASE_WAIT_S` (30),
 `AILIENANT_SANDBOX_MEM_LIMIT` ("2g"), `AILIENANT_SANDBOX_PIDS_LIMIT` (512),
 `AILIENANT_DOCKER_OP_TIMEOUT_S` (30). None are read by any pre-12.6 code path.
+
+---
+
+## §48 — Agentic-Cell Registry-Fallback HITL Defer (`pending_tool_call`)
+
+Closes DEBT-129. `brain/agentic_cell.py`'s registry-fallback dispatch (Division 8.18.2 —
+a tool name outside the 3 `CELL_TOOLS` primitives, resolved through `core/tool_registry.py`)
+previously built its `ToolDispatcher` with `approval_fn=None`, so a HITL-tier fallback tool
+was safely denied-with-report rather than surfaced as an approval card. This section adds the
+generalized defer-then-interrupt-first path the existing `pending_exec_command` channel already
+established for `run_terminal`.
+
+**New `AIlienantGraphState` channel (additive, last-value):**
+
+```python
+pending_tool_call: Optional[Dict[str, Any]]   # {"name": str, "args": dict}
+```
+
+Mirrors `pending_exec_command`'s shape and lifecycle exactly. Never initialized; read via
+`.get()`. Mutually exclusive with `pending_exec_command` at any given re-entry — each defer
+branch returns immediately, so at most one of the two channels is ever set entering an
+iteration.
+
+**Mechanics.** `core/tool_dispatch.py::ToolDispatcher` gains a pure `classify(call) ->
+(Optional[RegisteredTool], PermissionDecision, Optional[str])` — the single gate
+implementation (lookup miss → role check → `evaluate_action`) that both the pre-existing
+`dispatch()` and this new caller share; `dispatch()` is refactored to call it internally, with
+the exact observation text it returns unchanged (verified by the existing dispatch-gate test
+suite). In the cell's per-call loop, the registry-fallback branch calls `classify()` *before*
+`dispatch()`; on `PermissionDecision.HITL` it stops processing further tool calls this
+iteration (no side effect precedes approval), commits any edits already computed
+(`vfs_buffer`/`pending_contents`, same as the `run_terminal` defer), sets `pending_tool_call`,
+and returns `status="continue"` so `route_after_cell` loops back. On `ALLOW`/`DENY` the branch
+is behaviorally unchanged from Division 8.18.2.
+
+A new tool-call-approval phase runs at the top of the node, immediately after the existing
+`pending_exec_command` phase. `interrupt()` (via `core/hitl.py::request_graph_approval`,
+or the injected `cell_tool_approval_fn` test seam) is the first action, so a pre-resume replay
+is side-effect-free. The approved tool is resolved by **exact name** against
+`tool_rag_store.all_schemas()` — deliberately never by re-running the intent-ranked
+`select_tools()`, whose ranking is not guaranteed stable across a suspend/resume boundary — then
+dispatched exactly once through a fresh, single-tool `ToolDispatcher` with a pre-approved
+`approval_fn`. A name that no longer resolves (catalog changed across a restart) reports a
+system observation and clears the channel rather than hanging. Trust-once
+(`_is_session_trusted`) is deliberately not applied, matching the exec-approval phase: each
+gated call resumes through its own interrupt.
+
+**New security flag:** `TOOL_CALL_HITL_DENIED` (parallel to `EXECUTE_TIER_HITL_DENIED`),
+emitted on operator denial.
+
+**Backward-compat:** additive channel, additive `ToolDispatcher` method (pure, no behavior
+change to existing callers), additive node phase. `_build_fallback_dispatcher`'s memoized,
+per-iteration dispatcher still runs with `approval_fn=None` — a HITL verdict is now never
+reached there at all, since the defer happens one level up via `classify()`, before `.dispatch()`
+would otherwise degrade it to deny-with-report.
+
+---
+
+## §49 — Dev-Role Subagent Tool Arsenal + Prompt Overrides
+
+Closes DEBT-106 and DEBT-127. No new wire contract — this section documents a substrate reuse,
+not a schema change, so it is recorded for the audit trail rather than introducing new fields.
+
+`brain/nodes/subagent_worker_node.py::_resolve_tools` previously ran every one of the 8
+developer dispatch roles (`core_dev`, `architect_refactor`, `devops_infra`, `secops`,
+`qa_tester`, `doc_manager`, `vcs_manager`, `data_ml_engineer`) tool-less — only the
+`analyst_readonly` critic role had an arsenal (`tools/analyst_tools.py::build_analyst_tools`).
+The 8 dev roles now resolve through the identical `core.tool_rag.tool_rag_store.select_tools`
+→ `core.tool_registry.resolve_tools` substrate the agentic cell's registry fallback (§48) and
+the coder's grounding pre-pass already use — no new, hand-maintained arsenal builder.
+`analyst_readonly` is unaffected: it still routes to `build_analyst_tools` directly, since
+analyst tools register under `allowed_roles={"analyst"}` in the Tool RAG catalog — a name
+disjoint from the `analyst_readonly` dispatch identity, so the shared catalog path would return
+nothing for it regardless. An unrecognized role (not in `shared.rbac.DISPATCH_ROLE_PERMISSIONS`)
+stays tool-less, and any resolution fault degrades to tool-less — both fail-safe, unchanged from
+the pre-12.7 contract.
+
+`agents/roles.py` gains `build_subagent_system_prompt(role, override)` — a seam distinct from
+`build_coder_system_prompt`: it composes the role directive (or the saved override) plus the
+language-mirror directive, deliberately **without** `_BASE_CODER_PROMPT` (the SEARCH/REPLACE
+output contract, which does not apply to a subagent constrained to a `response_schema`-driven
+JSON answer). `subagent_worker` resolves it once per invocation from `state["agent_role_overrides"]`
+(the same channel `agents/coder.py` already reads) and threads it into both the tool-loop seed
+message and the final-answer synthesiser. The `AnswerFn` signature
+(`Callable[[SubagentTask, List[str]], Awaitable[Dict[str, Any]]]`) is unchanged — the default
+synthesiser is now built by a `_make_default_answer(system_prompt) -> AnswerFn` closure, so an
+injected `dispatch_answer_fn` (the hermetic-test seam) is unaffected.

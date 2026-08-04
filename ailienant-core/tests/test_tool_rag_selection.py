@@ -148,6 +148,27 @@ async def test_plan_session_excludes_non_read_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_plan_only_session_excludes_non_read_only(tmp_path: Path) -> None:
+    """The canonical PLAN_ONLY member must gate identically to the deprecated
+    PLAN alias above — select_tools normalizes through the same
+    normalize_session_mode() evaluate_action() itself uses, so a session whose
+    channel already holds the canonical value cannot silently skip this
+    defense-in-depth narrowing."""
+    store = _make_store(tmp_path)
+    await _seed_basic_catalog(store)
+    selected = await store.select_tools(
+        "anything goes",
+        k=TOOL_RAG_TOP_K,
+        active_role="core_dev",
+        session_mode=SessionPermissionMode.PLAN_ONLY,
+    )
+    assert selected, "PLAN_ONLY session must still surface READ_ONLY tools"
+    assert all(
+        s.privilege_tier is ToolPrivilegeTier.READ_ONLY for s in selected
+    ), f"PLAN_ONLY must filter to READ_ONLY only, got: {[(s.name, s.privilege_tier.value) for s in selected]}"
+
+
+@pytest.mark.anyio
 async def test_rbac_filters_by_role(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     await _seed_basic_catalog(store)

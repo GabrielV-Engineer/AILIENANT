@@ -248,6 +248,138 @@ def _build_style_block(target_file: str, snippets: list[tuple[str, str]]) -> str
     return STYLE_EXEMPLAR_HEADER + "\n\n".join(skeletons)
 
 
+# ── READ_ONLY tool-grounding pre-pass (DEBT-130) ────────────────────────────────
+# The one-shot SEARCH/REPLACE path handles the majority of WBS steps by volume and
+# had zero tool-calling — it reasoned only from the current file + GraphRAG
+# snippets, guessing when both came back thin. This bounded pre-pass reuses the
+# same select_tools -> resolve_tools -> ToolDispatcher substrate the agentic cell
+# and dispatched subagents use, filtered to a READ_ONLY tier ceiling: mutation
+# stays the cell's surface (DEBT-068's standing ruling), and this path is
+# re-entered by the error_correction retry loop, so only an idempotent READ_ONLY
+# pass is safe here without a HITL approval channel.
+
+_GROUNDING_MAX_ITERS: int = 2
+
+
+def _needs_grounding(
+    target_step: WBSStep,
+    current_content: Optional[str],
+    rag_snippets: list[tuple[str, str]],
+    state: Dict[str, Any],
+) -> bool:
+    """Skip the extra reasoning round-trip when the step is already grounded.
+
+    Fires for the cases DEBT-130 actually names — a new file, GraphRAG returning
+    nothing usable, or a retry after failed validation — not the trivial majority
+    of already-grounded steps, so cost/latency stays flat where help isn't needed.
+    """
+    if current_content is None:
+        return True
+    if not any(snippet for _path, snippet in rag_snippets):
+        return True
+    if state.get("validation_feedback"):
+        return True
+    return False
+
+
+def _grounding_admitted(session_mode: Any) -> bool:
+    """True only when a READ_ONLY tool actually resolves to ALLOW under the
+    current session policy.
+
+    Every canonical mode except ASK_ALL allows READ_ONLY unconditionally, but
+    ASK_ALL resolves it to HITL — and this pre-pass never wires an approval
+    channel (see the module note above), so under ASK_ALL every candidate call
+    would come back deny-with-report. Skipping here avoids paying a full
+    reasoning round-trip to gather nothing.
+    """
+    from core.permissions import PermissionDecision, ToolPrivilegeTier, evaluate_action
+    from shared.rbac import PermissionMode
+
+    decision = evaluate_action(
+        session_mode, ToolPrivilegeTier.READ_ONLY, PermissionMode.EDIT_EXECUTE_RBW
+    )
+    return decision is PermissionDecision.ALLOW
+
+
+async def _run_grounding_loop(
+    target_step: WBSStep, state: Dict[str, Any], session_id: str
+) -> str:
+    """Bounded READ_ONLY tool-calling pass feeding observations back as context.
+
+    A separate, small reasoning call — distinct from the strict single-shot
+    SEARCH/REPLACE generation, which is never scaffolded with tool-calling of its
+    own. Tier-filtered to READ_ONLY before the loop ever sees a schema, so a
+    WRITE/EXECUTE/DANGEROUS tool can never be proposed here regardless of what
+    the role's RBAC would otherwise permit. Never fatal: any selection,
+    resolution, or dispatch failure degrades to an empty grounding block,
+    identical to the pre-existing (no tool-calling) behavior.
+    """
+    try:
+        from core.permissions import ToolPrivilegeTier, session_mode_from_channel
+        from core.tool_dispatch import ToolDispatcher, make_gateway_reasoner
+        from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
+        from core.tool_registry import resolve_tools
+        from shared.rbac import PermissionMode
+
+        session_mode = session_mode_from_channel(state.get("session_permission_mode"))
+        if not _grounding_admitted(session_mode):
+            return ""
+
+        active_role = target_step.target_role or "core_dev"
+        intent = f"{target_step.action} {target_step.target_file} {target_step.description}"
+        schemas = await tool_rag_store.select_tools(
+            intent, k=TOOL_RAG_TOP_K, active_role=active_role, session_mode=session_mode,
+        )
+        read_only_schemas = [
+            s for s in schemas if s.privilege_tier is ToolPrivilegeTier.READ_ONLY
+        ]
+        if not read_only_schemas:
+            return ""
+
+        tools = resolve_tools(read_only_schemas, state)
+        if not tools:
+            return ""
+
+        dispatcher = ToolDispatcher(
+            tools,
+            active_role=active_role,
+            session_mode=session_mode,
+            state=state,
+            agent_permission=PermissionMode.EDIT_EXECUTE_RBW,
+            approval_fn=None,
+        )
+        reasoner = make_gateway_reasoner(tools, session_id=session_id)
+        messages: list[Dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": (
+                    f"Task: {target_step.description}\n"
+                    f"Target file: {target_step.target_file}\n"
+                    "Gather any READ_ONLY context you need before the edit is "
+                    "generated; emit {} once you have enough."
+                ),
+            }
+        ]
+        trace: list[Any] = []
+        await dispatcher.run_loop(
+            messages, reasoner, max_iters=_GROUNDING_MAX_ITERS, trace=trace
+        )
+        observations = [
+            str(m.get("content", ""))
+            for m in messages
+            if m.get("role") == "system"
+            and str(m.get("content", "")).startswith("[tool observations]")
+        ]
+        if not observations:
+            return ""
+        return "\n\n# Tool-grounding observations\n" + "\n\n".join(observations)
+    except Exception as exc:  # noqa: BLE001 — a grounding-loop fault must not block generation
+        logger.debug(
+            "CoderAgent grounding pre-pass failed (non-fatal): %s", exc, exc_info=True
+        )
+        return ""
+
+
 async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
     """
     LangGraph node: El Ejecutor (CoderAgent)
@@ -533,6 +665,17 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     rag_block = _build_rag_block(rag_snippets)
     style_block = _build_style_block(target_file, rag_snippets)
 
+    # Bounded READ_ONLY tool-grounding pre-pass (DEBT-130): only when the file+RAG
+    # context above is thin (new file, empty RAG, or a retry after failed
+    # validation) does the coder pay a second reasoning round-trip to gather more
+    # context before generating the edit. Never mutating and never gated behind
+    # HITL by construction (see _needs_grounding/_grounding_admitted docstrings),
+    # so this path stays idempotent under the error_correction retry re-entry —
+    # mutation itself stays on the agentic cell's surface, unchanged.
+    grounding_block = ""
+    if _needs_grounding(target_step, current_content, rag_snippets, state):
+        grounding_block = await _run_grounding_loop(target_step, state, session_id)
+
     boundary = uuid.uuid4().hex
     # Declared once, appended unconditionally to the system message below (both
     # the success and ContextBudgetError-degrade paths) — see
@@ -618,7 +761,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         _agent_ctx = await build_agent_context(
             total_token_budget=_budget,
             foundation=[system_prompt],
-            execution=[_mission_block, file_block, rag_block, style_block],
+            execution=[_mission_block, file_block, rag_block, style_block, grounding_block],
             session_id=session_id,
             session_start_time=state.get("session_start_time"),
         )
@@ -642,7 +785,8 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         _tail = _boundary_decl + (f"\n\n{_skill_block}" if _skill_block else "")
         _system_content = f"{system_prompt}\n\n{_tail}"
         _context_block = (
-            f"{_mission_block}\n\n{file_block}\n\n{rag_block}\n\n{style_block}\n\n{AMNESIA_ALERT}"
+            f"{_mission_block}\n\n{file_block}\n\n{rag_block}\n\n{style_block}\n\n"
+            f"{grounding_block}\n\n{AMNESIA_ALERT}"
         )
 
     instruction = _task_preamble + _context_block + "\n\n" + _format_postamble
@@ -668,6 +812,12 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # different budget-trimmed prompt under a different context window (local↔cloud
     # reroute), so a budget-blind key could serve a stale trim.
     cache_context.append(("<budget>", str(_budget)))
+    # Fold the grounding pre-pass output in too — a step with identical file/RAG
+    # inputs but different tool observations (e.g. a symbol lookup that changed
+    # between runs) must not serve a stale generation from before the observation
+    # existed.
+    if grounding_block:
+        cache_context.append(("<grounding>", grounding_block))
     cache_key = response_cache.build_key(
         intent=f"{target_step.action}|{target_file}|{target_step.description}",
         context=cache_context,

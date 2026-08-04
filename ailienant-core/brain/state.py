@@ -451,6 +451,12 @@ class AIlienantGraphState(TypedDict):
     # the cell defers a HITL-gated run_terminal so the interrupt happens in a clean,
     # side-effect-free re-entry rather than mid-iteration.
     pending_exec_command: Optional[str]
+    # Agentic-cell registry-fallback deferral (DEBT-129): a HITL-tier tool name outside
+    # the 3 CELL_TOOLS primitives, awaiting human approval before it executes. Mirrors
+    # pending_exec_command's defer-then-interrupt-first pattern for an arbitrary
+    # registry-resolved tool call rather than the single hardcoded run_terminal command.
+    # Shape: {"name": str, "args": dict} — args pre-clamped by the writer, never raw.
+    pending_tool_call: Optional[Dict[str, Any]]
 
     # --- Planificación Inmutable (SDD) ---
     # Reemplaza 'immutable_wbs' y 'completed_steps'.

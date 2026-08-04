@@ -199,3 +199,32 @@ def build_coder_system_prompt(role: Optional[str], override: Optional[str] = Non
     cfg = get_role_config(role)
     directive = (override or "").strip() or cfg["system_prompt"]
     return f"{_BASE_CODER_PROMPT}\n\n{directive}"
+
+
+def build_subagent_system_prompt(role: Optional[str], override: Optional[str] = None) -> str:
+    """Compose the system-message prompt for a dispatched subagent.
+
+    A dedicated seam rather than reusing ``build_coder_system_prompt`` verbatim:
+    a dispatched subagent's final answer is constrained to a
+    ``response_schema``-driven JSON object
+    (``brain/nodes/subagent_worker_node.py::_validate_against_schema``), not the
+    SEARCH/REPLACE edit contract ``_BASE_CODER_PROMPT`` declares — folding that
+    contract in here would put the wrong output format in front of the model.
+
+    Only the 8 canonical dev roles carry a ``ROLE_REGISTRY`` entry (and
+    therefore a savable override — see ``api/agent_roles.py``, which only
+    lists ``ROLE_REGISTRY`` roles as editable). A role with no entry — e.g. the
+    ``analyst_readonly`` critic, which has no directive/override concept of
+    its own — falls back to just the language-mirror directive rather than
+    ``get_role_config``'s core_dev default, which would otherwise hand a
+    read-only critic subagent a "implement business logic" directive that
+    doesn't apply to it.
+
+    Returns a fresh string — never cached, never persisted to state.messages.
+    """
+    directive = (override or "").strip()
+    if not directive and role in ROLE_REGISTRY:
+        directive = ROLE_REGISTRY[role]["system_prompt"]
+    if not directive:
+        return LANGUAGE_MIRROR_DIRECTIVE
+    return f"{directive}\n\n{LANGUAGE_MIRROR_DIRECTIVE}"

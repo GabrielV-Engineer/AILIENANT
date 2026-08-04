@@ -127,8 +127,9 @@ Takes one WBS step and emits a patch as git-conflict-style SEARCH/REPLACE blocks
 - **LSP lint** (subprocess to ruff/eslint/mypy/…) → catches undefined refs and lints.
 - Bounded local retries; on the configured strike count it escalates to a cloud "surgeon."
 - `run_command` steps dispatch into the resolved sandbox tier and read a **structured** verdict — see [the closed-loop executor](#closed-loop-execution).
+- When the current file + GraphRAG context is thin (new file, empty RAG hit, or a retry after failed validation), a bounded READ_ONLY tool-grounding pre-pass runs first — the same `core/tool_registry.py` → `core/tool_dispatch.py` substrate the agentic cell and dispatched subagents use, tier-filtered to READ_ONLY so mutation stays on the cell's surface. The SEARCH/REPLACE generation call itself never gains tool-calling of its own; grounding observations are folded into its context as ordinary (trimmable) prompt content.
 
-For steps the planner flags as needing iteration, control routes into the **agentic cell** ([brain/agentic_cell.py](ailienant-core/brain/agentic_cell.py)): a bounded ReAct loop over a live, persistent terminal ([core/pty_session.py](ailienant-core/core/pty_session.py) — one long-lived shell owns `cwd`/`env`, async byte-stream with backpressure, Ctrl-C, teardown) exposing exactly three strict-schema tools — `run_terminal` (structured diagnostics, never raw stdout), `read_file_ast` (skeleton, not full file), and `apply_granular_edit` (transactional SEARCH/REPLACE with an optimistic-concurrency guard).
+For steps the planner flags as needing iteration, control routes into the **agentic cell** ([brain/agentic_cell.py](ailienant-core/brain/agentic_cell.py)): a bounded ReAct loop over a live, persistent terminal ([core/pty_session.py](ailienant-core/core/pty_session.py) — one long-lived shell owns `cwd`/`env`, async byte-stream with backpressure, Ctrl-C, teardown) exposing exactly three strict-schema tools — `run_terminal` (structured diagnostics, never raw stdout), `read_file_ast` (skeleton, not full file), and `apply_granular_edit` (transactional SEARCH/REPLACE with an optimistic-concurrency guard). A registry-fallback tool outside those three resolves through the same substrate; a HITL-tier fallback call defers (mirroring `run_terminal`'s own HITL defer) rather than being silently denied, and executes on the next super-step once the operator approves.
 
 ### Orchestrator
 
@@ -319,7 +320,7 @@ Proyect_Ailienant/
 │   │   ├── exec_log.py          #     bounded in-memory per-exec command-output ring (non-persistent, source-tagged, seq-cursor); sole emitter of the Glass-Box Timeline execution-detail channel
 │   │   ├── activity_context.py  #     turn-scoped ActivitySink Protocol + ContextVar (Glass-Box Timeline execution-detail correlation, no tool-signature changes)
 │   │   ├── deferred_tool_loader.py # eager-vs-deferred tool injection over ToolRAGStore (~10%-budget gate)
-│   │   ├── tool_dispatch.py     #     runtime tool-dispatch loop (gated, self-correcting; live on Analyst/Researcher + Coder's registry fallback)
+│   │   ├── tool_dispatch.py     #     runtime tool-dispatch loop (gated, self-correcting; live on Analyst/Researcher, the agentic cell's registry fallback + HITL defer, the coder's grounding pre-pass, and dispatched dev-role subagents)
 │   │   ├── tool_registry.py     #     ToolSchema name -> constructed RegisteredTool bridge (resolve_tools)
 │   │   ├── memory/              #     semantic, trajectory, graphrag_extractor, context_auditor,
 │   │   │                        #     docs_index (product-docs RAG — reserved LanceDB namespace)

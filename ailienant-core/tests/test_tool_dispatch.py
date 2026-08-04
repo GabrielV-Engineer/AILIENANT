@@ -21,6 +21,7 @@ import pytest
 from langchain_core.tools import BaseTool
 
 from core.permissions import (
+    PermissionDecision,
     SessionPermissionMode,
     ToolPrivilegeTier,
 )
@@ -197,6 +198,69 @@ async def test_dispatch_bad_args_is_caught() -> None:
     result = await d.dispatch(ToolCall(name="echo", args={"wrong": "x"}))
     assert result.executed is False
     assert "argument error" in result.observation
+
+
+# ── 2b. classify() seam (DEBT-129) — the pure verdict dispatch() acts on ────────
+
+
+async def test_classify_lookup_miss_matches_dispatch() -> None:
+    d = _dispatcher({"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"analyst"})})
+    reg, decision, reason = d.classify(ToolCall(name="ghost", args={}))
+    assert reg is None
+    assert decision is PermissionDecision.DENY
+    assert reason is not None and "not found" in reason
+    # classify() alone must not execute anything.
+    dispatch_result = await d.dispatch(ToolCall(name="ghost", args={}))
+    assert dispatch_result.observation == f"[dispatch] {reason}"
+
+
+async def test_classify_role_mismatch_matches_dispatch() -> None:
+    d = _dispatcher(
+        {"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"coder"})},
+        active_role="analyst",
+    )
+    reg, decision, reason = d.classify(ToolCall(name="echo", args={"value": "hi"}))
+    assert reg is not None
+    assert decision is PermissionDecision.DENY
+    assert reason is not None and "DENIED" in reason
+
+
+async def test_classify_deny_matches_dispatch() -> None:
+    d = _dispatcher(
+        {"echo": _reg(_EchoTool(), ToolPrivilegeTier.WRITE, {"analyst"})},
+        agent_permission=PermissionMode.READ_ONLY,
+    )
+    reg, decision, reason = d.classify(ToolCall(name="echo", args={"value": "hi"}))
+    assert reg is not None
+    assert decision is PermissionDecision.DENY
+    assert reason is not None and "not permitted" in reason
+
+
+async def test_classify_hitl_matches_dispatch_no_channel() -> None:
+    d = _dispatcher(
+        {"echo": _reg(_EchoTool(), ToolPrivilegeTier.WRITE, {"analyst"})},
+        session_mode=SessionPermissionMode.CAUTIOUS,
+        agent_permission=PermissionMode.EDIT_EXECUTE_RBW,
+    )
+    reg, decision, reason = d.classify(ToolCall(name="echo", args={"value": "hi"}))
+    assert reg is not None
+    assert decision is PermissionDecision.HITL
+    assert reason is not None and "requires human approval" in reason
+    # No approval_fn wired on this dispatcher → dispatch() degrades to deny-with-report,
+    # never hangs, and never executes the tool.
+    result = await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+    assert result.executed is False
+    assert "no approval channel is available" in result.observation
+
+
+async def test_classify_allow_permits_dispatch_to_execute() -> None:
+    d = _dispatcher({"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"analyst"})})
+    reg, decision, reason = d.classify(ToolCall(name="echo", args={"value": "hi"}))
+    assert reg is not None
+    assert decision is PermissionDecision.ALLOW
+    assert reason is None
+    result = await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+    assert result.executed is True
 
 
 # ── 3. Self-correcting loop ──────────────────────────────────────────────────

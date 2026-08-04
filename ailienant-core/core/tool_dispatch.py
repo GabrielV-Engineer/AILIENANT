@@ -260,6 +260,45 @@ class ToolDispatcher:
         # this branch, so omitting it is the friction-free path.
         self._approval_fn = approval_fn
 
+    def classify(
+        self, call: ToolCall
+    ) -> Tuple[Optional[RegisteredTool], PermissionDecision, Optional[str]]:
+        """Pure verdict for one call: (registered tool or None, decision, reason).
+
+        No I/O, no execution, no approval-channel consultation — this is the
+        single gate implementation (lookup miss → role check → ``evaluate_action``)
+        that both ``dispatch()`` and a caller needing to know the verdict *before*
+        committing to an approval flow (e.g. the agentic cell's HITL defer) share.
+        ``reason`` is only populated for a non-ALLOW outcome and is the exact text
+        ``dispatch()`` used to embed inline, kept here so both callers report
+        identically.
+        """
+        reg = self._tools.get(call.name)
+        if reg is None:
+            available = ", ".join(sorted(self._tools)) or "(none)"
+            return None, PermissionDecision.DENY, (
+                f"tool '{call.name}' not found. Available tools: {available}."
+            )
+
+        if self._active_role not in reg.allowed_roles:
+            return reg, PermissionDecision.DENY, (
+                f"DENIED — role '{self._active_role}' may not call '{call.name}'."
+            )
+
+        decision = evaluate_action(
+            self._session_mode, reg.tier, self._agent_permission
+        )
+        if decision is PermissionDecision.DENY:
+            return reg, decision, (
+                f"DENIED — '{call.name}' ({reg.tier.value}) is not permitted under "
+                f"the current session policy."
+            )
+        if decision is PermissionDecision.HITL:
+            return reg, decision, (
+                f"'{call.name}' ({reg.tier.value}) requires human approval."
+            )
+        return reg, decision, None
+
     async def dispatch(self, call: ToolCall) -> DispatchResult:
         """Resolve, gate, and execute one tool call.
 
@@ -267,46 +306,20 @@ class ToolDispatcher:
         all return a structured observation with ``executed=False`` so the loop
         can surface it to the model without aborting.
         """
-        reg = self._tools.get(call.name)
+        reg, decision, reason = self.classify(call)
         if reg is None:
-            available = ", ".join(sorted(self._tools)) or "(none)"
-            return DispatchResult(
-                observation=(
-                    f"[dispatch] tool '{call.name}' not found. "
-                    f"Available tools: {available}."
-                ),
-                executed=False,
-            )
+            return DispatchResult(observation=f"[dispatch] {reason}", executed=False)
 
-        if self._active_role not in reg.allowed_roles:
-            return DispatchResult(
-                observation=(
-                    f"[dispatch] DENIED — role '{self._active_role}' may not call "
-                    f"'{call.name}'."
-                ),
-                executed=False,
-            )
-
-        decision = evaluate_action(
-            self._session_mode, reg.tier, self._agent_permission
-        )
         if decision is PermissionDecision.DENY:
-            return DispatchResult(
-                observation=(
-                    f"[dispatch] DENIED — '{call.name}' ({reg.tier.value}) is not "
-                    f"permitted under the current session policy."
-                ),
-                executed=False,
-            )
+            return DispatchResult(observation=f"[dispatch] {reason}", executed=False)
+
         if decision is PermissionDecision.HITL:
             if self._approval_fn is None:
                 # No interactive approval channel wired — degrade to deny-with-report
                 # rather than hang. The model sees the denial and moves on.
                 return DispatchResult(
-                    observation=(
-                        f"[dispatch] '{call.name}' ({reg.tier.value}) requires human "
-                        f"approval, but no approval channel is available — denied."
-                    ),
+                    observation=f"[dispatch] {reason}, but no approval channel is "
+                    "available — denied.",
                     executed=False,
                 )
             try:

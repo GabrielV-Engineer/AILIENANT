@@ -9,17 +9,23 @@ constrained to the task's ``response_schema``, and returns exactly one
 channel. It never raises — a fault becomes a ``status="error"`` envelope so a single
 faulty subagent can never crash the host graph.
 
-Tool arsenals: the READ_ONLY critic role maps to the analyst tool set; every other
-role currently runs tool-less (a pure-reasoning subagent), since per-role executable
-tool maps for the developer roles do not yet exist. Both the tool reasoner and the
-final-answer synthesiser are injectable through ``config.configurable`` so the node
-is exercisable without a live gateway.
+Tool arsenals: the READ_ONLY critic role maps to the analyst tool set (analyst
+tools register under ``allowed_roles={"analyst"}`` in the Tool RAG catalog — a
+name disjoint from the ``analyst_readonly`` dispatch-role identity, so it stays on
+its own dedicated builder rather than the shared catalog path below). The 8
+developer roles resolve through the same ``select_tools -> resolve_tools ->
+ToolDispatcher`` substrate the agentic cell and the one-shot coder's grounding
+pre-pass use, filtered to schemas whose ``allowed_roles`` include the dispatched
+role — no separate, hand-maintained dev-role arsenal. An unknown role stays
+tool-less (fail-safe). Both the tool reasoner and the final-answer synthesiser are
+injectable through ``config.configurable`` so the node is exercisable without a
+live gateway.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
+from typing import Any, Awaitable, Callable, Dict, List, MutableMapping, Optional
 
 from langchain_core.runnables import RunnableConfig
 
@@ -56,52 +62,97 @@ def _validate_against_schema(result: Any, task: SubagentTask) -> Optional[str]:
     return None
 
 
-def _resolve_tools(role: str, state: Mapping[str, Any]) -> Dict[str, Any]:
+async def _resolve_tools(
+    role: str,
+    state: MutableMapping[str, Any],
+    *,
+    intent: str,
+    session_mode: Any,
+) -> Dict[str, Any]:
     """Role → executable ``RegisteredTool`` map for the ToolDispatcher.
 
-    The READ_ONLY critic role maps to the analyst arsenal. The developer roles resolve
-    their RBAC permission floor (see ``resolve_dispatch_permission``) but have no static
-    ``RegisteredTool`` arsenal yet — their executable tooling arrives at runtime through
-    MCP registration (``tools.mcp_adapter.tool_registry``), so they run tool-less
-    (pure-reasoning) here until a dedicated dev-role arsenal builder lands (DEBT-106).
-    Never raises — a resolution failure degrades to a tool-less subagent.
+    The READ_ONLY critic role maps to the analyst arsenal directly (see the
+    module docstring for why it cannot share the catalog path below). Every
+    other known dispatch role (the 8 developer roles) resolves through
+    ``core.tool_rag.tool_rag_store.select_tools`` + ``core.tool_registry.
+    resolve_tools`` — the identical substrate the agentic cell's registry
+    fallback and the coder's grounding pre-pass already use, so this closes
+    DEBT-106 with no new arsenal builder. An unrecognized role (not in
+    ``DISPATCH_ROLE_PERMISSIONS``) stays tool-less — fail-safe, unchanged.
+    Never raises — a resolution failure of any kind degrades to a tool-less
+    subagent.
     """
-    builders: Dict[str, Any] = {}
     if role == "analyst_readonly":
         try:
             from tools.analyst_tools import build_analyst_tools
-            builders = build_analyst_tools(state)
+            return build_analyst_tools(state)
         except Exception as exc:  # noqa: BLE001 — degrade to tool-less, never crash the node
             logger.warning("analyst tool resolution failed; running tool-less: %s", exc)
-    return builders
+            return {}
 
+    from shared.rbac import DISPATCH_ROLE_PERMISSIONS
 
-async def _default_answer(task: SubagentTask, observations: List[str]) -> Dict[str, Any]:
-    """Gateway-backed final-answer synthesiser (used when none is injected)."""
-    import json
-
-    from tools.llm_gateway import LLMGateway
-
-    field_lines = "\n".join(
-        f"- {f.name} ({f.type}): {f.description}" for f in task.response_schema.fields
-    )
-    context = "\n\n".join(observations) if observations else "(no tool observations)"
-    prompt = (
-        f"Task: {task.description}\n\n"
-        f"Diagnostics gathered:\n{context}\n\n"
-        "Return ONLY a JSON object with exactly these fields:\n"
-        f"{field_lines}"
-    )
-    raw = await LLMGateway.acomplete_with_thinking(
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        session_id=task.task_id,
-    )
-    try:
-        parsed = json.loads(LLMGateway._sanitize_json_response(raw))
-        return parsed if isinstance(parsed, dict) else {}
-    except (ValueError, TypeError):
+    if role not in DISPATCH_ROLE_PERMISSIONS:
         return {}
+
+    try:
+        from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
+        from core.tool_registry import resolve_tools
+
+        schemas = await tool_rag_store.select_tools(
+            intent, k=TOOL_RAG_TOP_K, active_role=role, session_mode=session_mode,
+        )
+        return resolve_tools(schemas, state)
+    except Exception as exc:  # noqa: BLE001 — degrade to tool-less, never crash the node
+        logger.warning(
+            "dev-role tool resolution failed for '%s'; running tool-less: %s", role, exc,
+            exc_info=True,
+        )
+        return {}
+
+
+def _make_default_answer(system_prompt: str) -> AnswerFn:
+    """Build the gateway-backed final-answer synthesiser (used when none is injected).
+
+    A closure over ``system_prompt`` — the resolved role directive (DEBT-127) —
+    rather than a signature change to ``AnswerFn``: an injected
+    ``dispatch_answer_fn`` (the hermetic-test seam) must keep working
+    unmodified. The structured-output instruction stays in the user message,
+    untouched, so the response-schema contract is not put at risk by the
+    addition.
+    """
+
+    async def _answer(task: SubagentTask, observations: List[str]) -> Dict[str, Any]:
+        import json
+
+        from tools.llm_gateway import LLMGateway
+
+        field_lines = "\n".join(
+            f"- {f.name} ({f.type}): {f.description}" for f in task.response_schema.fields
+        )
+        context = "\n\n".join(observations) if observations else "(no tool observations)"
+        prompt = (
+            f"Task: {task.description}\n\n"
+            f"Diagnostics gathered:\n{context}\n\n"
+            "Return ONLY a JSON object with exactly these fields:\n"
+            f"{field_lines}"
+        )
+        messages: List[Dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        raw = await LLMGateway.acomplete_with_thinking(
+            messages=messages,
+            response_format={"type": "json_object"},
+            session_id=task.task_id,
+        )
+        try:
+            parsed = json.loads(LLMGateway._sanitize_json_response(raw))
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    return _answer
 
 
 async def subagent_worker(
@@ -139,28 +190,42 @@ async def subagent_worker(
     trace: List[Any] = []
 
     try:
+        from agents.roles import build_subagent_system_prompt
         from core.permissions import session_mode_from_channel
         from core.tool_dispatch import ToolCall, ToolDispatcher, make_gateway_reasoner
         from shared.rbac import resolve_dispatch_permission
 
-        tools = _resolve_tools(task.subagent_role, state)
+        session_mode = session_mode_from_channel(state.get("session_permission_mode"))
+        tools = await _resolve_tools(
+            task.subagent_role, state, intent=task.description, session_mode=session_mode,
+        )
         # Per-role RBAC identity: dev roles resolve to the write/execute-capable floor,
         # the analyst_readonly critic stays READ_ONLY, an unknown role gets the READ_ONLY
         # floor. The (mode, tier, identity) matrix in evaluate_action() then denies any
         # tool the identity is not entitled to — so analyst_readonly can never reach a
-        # WRITE/EXECUTE tool under any session mode.
+        # WRITE/EXECUTE tool under any session mode, and a dev role's WRITE/EXECUTE tool
+        # is still gated per the current session policy like any other dispatch path.
         dispatcher = ToolDispatcher(
             tools,
             active_role=task.subagent_role,
-            session_mode=session_mode_from_channel(state.get("session_permission_mode")),
+            session_mode=session_mode,
             state=state,
             agent_permission=resolve_dispatch_permission(task.subagent_role),
         )
+        # Per-role prompt override, same channel agents/coder.py reads — resolved
+        # once here and threaded to both the tool-loop reasoning and the final
+        # answer synthesis below, so a saved directive actually reaches a
+        # dispatched subagent's own role.
+        _role_overrides = state.get("agent_role_overrides") or {}
+        system_prompt = build_subagent_system_prompt(
+            task.subagent_role, override=_role_overrides.get(task.subagent_role or "")
+        )
         seed = (
             f"You are the '{task.subagent_role}' subagent. Task:\n{task.description}\n\n"
-            "You MAY call the available READ_ONLY tools to ground your answer; emit {} to skip."
+            "You MAY call the available tools to ground your answer; emit {} to skip."
         )
-        loop_messages = [{"role": "user", "content": seed}]
+        loop_messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+        loop_messages.append({"role": "user", "content": seed})
         trace = []
         reasoner = configurable.get("dispatch_tool_reasoner") or make_gateway_reasoner(
             tools, session_id=task.task_id
@@ -178,7 +243,9 @@ async def subagent_worker(
         ]
 
         # Final structured answer, constrained to response_schema.
-        answer_fn: AnswerFn = configurable.get("dispatch_answer_fn") or _default_answer
+        answer_fn: AnswerFn = configurable.get("dispatch_answer_fn") or _make_default_answer(
+            system_prompt
+        )
         structured_result = await answer_fn(task, observations)
         reason = _validate_against_schema(structured_result, task)
         if reason is not None:

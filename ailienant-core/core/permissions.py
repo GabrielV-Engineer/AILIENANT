@@ -283,6 +283,19 @@ _DECISION_MATRIX: Dict[
 }
 
 
+def normalize_session_mode(session_mode: SessionPermissionMode) -> SessionPermissionMode:
+    """Resolve a deprecated legacy mode onto its behavior-faithful canonical member.
+
+    The single normalization point every consumer of ``SessionPermissionMode``
+    must call before comparing against a canonical member (e.g. ``PLAN_ONLY``) —
+    ``evaluate_action`` uses it internally, and any other pre-filter gating on
+    the mode's identity (rather than routing it straight into ``evaluate_action``)
+    must use it too, or a session whose channel already holds the canonical
+    value silently bypasses a check written against the deprecated alias.
+    """
+    return _LEGACY_MODE_MIGRATION.get(session_mode, session_mode)
+
+
 @lru_cache(maxsize=None)
 def evaluate_action(
     session_mode: SessionPermissionMode,
@@ -300,7 +313,7 @@ def evaluate_action(
       3. (mode, tier) lookup against the authoritative _DECISION_MATRIX.
     """
 
-    mode = _LEGACY_MODE_MIGRATION.get(session_mode, session_mode)
+    mode = normalize_session_mode(session_mode)
 
     if (
         tool_tier is not ToolPrivilegeTier.READ_ONLY
