@@ -15,7 +15,7 @@ from litellm.exceptions import APIConnectionError
 
 from core.config.byom_config import ModelTarget
 from core.config.model_resolver import get_failover_target
-from tools.llm_gateway import LLMGateway, _LOCAL_LLM_TIMEOUT_S
+from tools.llm_gateway import LLMGateway
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

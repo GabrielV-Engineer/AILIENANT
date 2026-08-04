@@ -5,7 +5,6 @@ Covers:
   - VFSMiddleware.read_safe(): Layer 0 blocks before Layer 1 on excluded files.
 """
 import json
-import os
 from pathlib import Path
 from typing import Generator
 

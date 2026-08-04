@@ -1,0 +1,33 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (ailienant-core)
+        # scripts/pre_commit_backend_gate.py resolves the project's own venv
+        # (Windows/POSIX both) instead of hardcoding a platform-specific path,
+        # and filters to changed files under ailienant-core/ only.
+        entry: python scripts/pre_commit_backend_gate.py ruff
+        language: system
+        files: ^ailienant-core/.*\.py$
+        pass_filenames: true
+
+      - id: mypy-changed
+        name: mypy (ailienant-core, changed files only)
+        # mypy.ini's explicit_package_bases/mypy_path only resolve correctly with
+        # cwd = ailienant-core/ — flat sibling packages (api.audit vs core.audit)
+        # collide on basename otherwise, per the ini's own header comment. The
+        # helper script strips the ailienant-core/ prefix and runs from that
+        # directory so partial invocation gets the same import-resolution context
+        # the full-tree `mypy .` gate uses. Fast local approximation only — CI's
+        # full-tree run remains authoritative.
+        entry: python scripts/pre_commit_backend_gate.py mypy
+        language: system
+        files: ^ailienant-core/.*\.py$
+        pass_filenames: true
+
+      - id: eslint
+        name: eslint (ailienant-extension)
+        entry: npm --prefix ailienant-extension run lint
+        language: system
+        files: ^ailienant-extension/src/.*\.tsx?$
+        pass_filenames: false

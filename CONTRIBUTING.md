@@ -12,7 +12,7 @@ AILIENANT is **dual-licensed**: the open-core community edition under [AGPL-3.0]
 
 - **You keep the copyright to your work.** The CLA is a license, not a transfer.
 - **It's a one-time step.** Signing once covers all your future contributions.
-- **No PR is merged until your CLA is on file.** When you open your first pull request, the automated CLA check posts a link; accept it there. If the automation is unavailable, use the manual sign-off in [CLA.md](CLA.md).
+- **No PR is merged until your CLA is on file.** When you open your first pull request, complete the manual sign-off described in [CLA.md](CLA.md) — there is no automated CLA-bot check yet, so this is the only path today.
 
 Without this, a single un-relicensable contribution would block the commercial edition for the whole project — which is why we can't waive it.
 

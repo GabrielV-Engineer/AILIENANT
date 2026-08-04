@@ -23,13 +23,13 @@ from typing import Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-# Whitelisted sort keys for the embedding browser — any other value is rejected
-# so a caller can never steer the sort onto an unexpected column.
-_EMBEDDING_SORT_KEYS: frozenset[str] = frozenset({"indexed_at", "token_count", "file_path"})
-
 from core import db as catalog_db
 from core.memory.semantic_memory import SemanticMemoryManager, pca_project_2d
 from core.storage_paths import graphrag_lancedb_path_for
+
+# Whitelisted sort keys for the embedding browser — any other value is rejected
+# so a caller can never steer the sort onto an unexpected column.
+_EMBEDDING_SORT_KEYS: frozenset[str] = frozenset({"indexed_at", "token_count", "file_path"})
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory-dashboard"])
 

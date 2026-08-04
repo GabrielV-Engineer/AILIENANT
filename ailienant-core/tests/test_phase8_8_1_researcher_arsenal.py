@@ -13,20 +13,18 @@ DoD:
 
 from __future__ import annotations
 
-import fnmatch
 import functools
 import hashlib
 import json
-import os
 import struct
 from pathlib import Path
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from core.permissions import SessionPermissionMode, ToolPrivilegeTier
-from core.tool_rag import ToolRAGStore, ToolSchema
+from core.tool_rag import ToolRAGStore
 from tools.perception_tools import register_perception_tools
 from tools.researcher_tools import (
     GetDependentsTool,
@@ -218,8 +216,8 @@ async def test_glob_tool_executes() -> None:
     # Result is bounded
     result2 = await tool._arun("*.py", limit=1)
     # At most 1 match returned (plus possible cap notice)
-    lines = [l for l in result2.split("\n") if not l.startswith("<") and not l.startswith("[")]
-    assert len([l for l in lines if l.strip()]) <= 1
+    lines = [ln for ln in result2.split("\n") if not ln.startswith("<") and not ln.startswith("[")]
+    assert len([ln for ln in lines if ln.strip()]) <= 1
 
 
 @pytest.mark.anyio
@@ -262,7 +260,7 @@ async def test_grep_tool_short_circuit(tmp_path: Path) -> None:
     result = await tool._arun("match_me", max_matches=3)
 
     # Exactly 3 rows (plus boundary tags and cap notice)
-    match_rows = [l for l in result.split("\n") if "match_me" in l]
+    match_rows = [ln for ln in result.split("\n") if "match_me" in ln]
     assert len(match_rows) == 3, f"Expected 3 match rows, got {len(match_rows)}"
     # The reader was called far fewer than 20 times (short-circuit proof)
     assert call_count["n"] < 20, (

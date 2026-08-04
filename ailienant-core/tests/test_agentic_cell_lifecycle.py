@@ -27,8 +27,7 @@ keep the fix from destroying a still-legitimately-open cell:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Iterator
 
 import pytest
 

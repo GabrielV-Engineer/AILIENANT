@@ -219,11 +219,15 @@ async def test_planner_dirty_buffer_bypass_and_clean_cache_hit() -> None:
     response_cache.clear()
 
     def _broker_decision() -> MM:  # type: ignore[return]
-        d = MM(); d.cancelled = False; d.effective_model = "ailienant/big"; d.holds_lock = False
+        d = MM()
+        d.cancelled = False
+        d.effective_model = "ailienant/big"
+        d.holds_lock = False
         return d
 
     def _make_response(content: str) -> MM:  # type: ignore[return]
-        r = MM(); r.choices = [MM(message=MM(content=content))]
+        r = MM()
+        r.choices = [MM(message=MM(content=content))]
         return r
 
     mission_json = MissionSpecification(

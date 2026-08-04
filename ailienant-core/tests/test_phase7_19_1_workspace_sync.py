@@ -8,12 +8,10 @@ Docker-specific tests use a lightweight MockDockerContainer.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
 import tarfile
 import tempfile
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest

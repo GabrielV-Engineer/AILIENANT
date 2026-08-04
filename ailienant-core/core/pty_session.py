@@ -43,6 +43,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Callable, Dict, List, Optional
 
@@ -517,8 +518,11 @@ class _WindowsPtyBackend(_PtyBackend):
         self.write(b"\x03")
 
     def terminate_tree(self) -> None:
+        # os.kill() on Windows maps SIGTERM to TerminateProcess — already an
+        # immediate hard kill, unlike POSIX SIGTERM. No SIGKILL exists to
+        # escalate to, so a single call is the correct terminal action here.
         try:
-            self._pty.kill()
+            self._pty.kill(signal.SIGTERM)
         except Exception:  # noqa: BLE001 — best-effort teardown
             pass
 
@@ -529,8 +533,17 @@ class _WindowsPtyBackend(_PtyBackend):
             pass
 
     def wait(self, timeout: Optional[float] = None) -> Optional[int]:
+        # PtyProcess.wait() takes no timeout and polls until exit unconditionally
+        # — reimplemented here as a bounded poll so a wedged child can't hang the
+        # calling thread forever, mirroring _UnixPtyBackend's timeout contract.
+        deadline = None if timeout is None else time.monotonic() + timeout
         try:
-            return int(self._pty.wait(timeout))
+            while self._pty.isalive():
+                if deadline is not None and time.monotonic() >= deadline:
+                    return None
+                time.sleep(_CLOSE_POLL_S)
+            status = self._pty.exitstatus
+            return None if status is None else int(status)
         except Exception:  # noqa: BLE001 — pywinpty wait variants differ
             return None
 

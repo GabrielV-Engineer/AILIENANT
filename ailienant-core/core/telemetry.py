@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from core.redaction import _MASK_INPUT_CAP, mask_secrets as _mask_sensitive
+from core.redaction import mask_secrets as _mask_sensitive
 
 logger = logging.getLogger("TELEMETRY")
 

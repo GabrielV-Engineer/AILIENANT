@@ -10,7 +10,7 @@ Async cases use asyncio.run so the stub session lives on one event loop across i
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import brain.agentic_cell as ac
 from brain.agentic_cell import ToolCall, route_after_cell, run_agentic_cell_node

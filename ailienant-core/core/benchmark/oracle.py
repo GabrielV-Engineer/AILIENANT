@@ -15,7 +15,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
-import re
 import time
 import uuid
 from dataclasses import dataclass, field

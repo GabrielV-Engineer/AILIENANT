@@ -8,7 +8,7 @@ empty cache.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from core.config.byom_config import BYOMConfig, EndpointConfig, ModelTarget
 from api.byom import (

@@ -33,9 +33,8 @@ in the editor.
 from __future__ import annotations
 
 import ast
-import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import main
 from agents.roles import LANGUAGE_MIRROR_DIRECTIVE, build_coder_system_prompt

@@ -16,7 +16,7 @@ Sibling-gate convention (test-only). Asserts the division's contract:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

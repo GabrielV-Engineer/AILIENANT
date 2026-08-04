@@ -565,7 +565,7 @@ class _ContainerPool:
         return lease
 
     async def _evict_one_idle_locked(self) -> bool:
-        idle = [(k, l) for k, l in self._leases.items() if l.refcount == 0]
+        idle = [(k, lease) for k, lease in self._leases.items() if lease.refcount == 0]
         if not idle:
             return False
         idle.sort(key=lambda kv: kv[1].last_used)
@@ -577,8 +577,8 @@ class _ContainerPool:
     async def _reap_expired_idle_locked(self) -> None:
         now = time.monotonic()
         expired = [
-            (k, l) for k, l in self._leases.items()
-            if l.refcount == 0 and (now - l.last_used) >= SANDBOX_IDLE_TTL_S
+            (k, lease) for k, lease in self._leases.items()
+            if lease.refcount == 0 and (now - lease.last_used) >= SANDBOX_IDLE_TTL_S
         ]
         for key, lease in expired:
             del self._leases[key]

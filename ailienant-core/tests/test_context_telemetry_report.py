@@ -8,10 +8,9 @@ GO/NO-GO/INSUFFICIENT_DATA thresholds, and rotated-file reading.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from core.benchmark.context_telemetry_report import (
-    ContextRecord,
     build_gate_report,
     parse_context_records,
     read_telemetry_logs,

@@ -16,21 +16,6 @@ from typing import (
 if TYPE_CHECKING:
     from tools.stream_delta import StreamDelta
 
-
-class _ActionKwarg(TypedDict, total=False):
-    """Precisely-typed optional-kwarg carrier for the DEBT-045 `action` tag.
-
-    A plain ``Dict[str, str]`` unpacked via ``**`` is opaque to mypy — it cannot
-    verify which keyword slot it lands in, so it conservatively rejects the
-    splat against every other keyword parameter in the call. A ``total=False``
-    TypedDict is a documented mypy-understood exception: ``**extra`` unpacks
-    precisely onto the single named ``action`` parameter it declares, exactly
-    like passing the keyword directly, while `{}` (the untagged case) supplies
-    none of it — see the call sites in ``ainvoke``/``astream_byom``/
-    ``astream_byom_thinking``/``astream_reasoning``/``acomplete_with_thinking``.
-    """
-    action: str
-
 import httpx
 import litellm
 from litellm import CustomStreamWrapper, ModelResponse
@@ -47,6 +32,22 @@ from shared.config import (
     get_litellm_config,
     check_cloud_availability,
 )
+
+
+class _ActionKwarg(TypedDict, total=False):
+    """Precisely-typed optional-kwarg carrier for the `action` tag.
+
+    A plain ``Dict[str, str]`` unpacked via ``**`` is opaque to mypy — it cannot
+    verify which keyword slot it lands in, so it conservatively rejects the
+    splat against every other keyword parameter in the call. A ``total=False``
+    TypedDict is a documented mypy-understood exception: ``**extra`` unpacks
+    precisely onto the single named ``action`` parameter it declares, exactly
+    like passing the keyword directly, while `{}` (the untagged case) supplies
+    none of it — see the call sites in ``ainvoke``/``astream_byom``/
+    ``astream_byom_thinking``/``astream_reasoning``/``acomplete_with_thinking``.
+    """
+    action: str
+
 
 logger = logging.getLogger("LLM_GATEWAY")
 

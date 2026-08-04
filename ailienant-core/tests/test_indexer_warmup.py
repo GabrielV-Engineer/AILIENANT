@@ -4,7 +4,6 @@
 # DoD: sub-threshold count defers the full crawl; at-threshold count runs it.
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

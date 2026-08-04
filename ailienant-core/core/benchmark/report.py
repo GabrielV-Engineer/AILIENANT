@@ -41,7 +41,6 @@ from jsonschema import Draft7Validator  # type: ignore[import-untyped]
 from core.benchmark.arms import AblationArm
 from core.benchmark.metrics import ProblemMetrics
 from core.benchmark.routing_study import (
-    TCI_BUCKETS,
     RoutingStudyTable,
     build_routing_study,
 )

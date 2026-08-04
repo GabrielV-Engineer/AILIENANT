@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import litellm
 from litellm import ModelResponse
 from litellm.exceptions import ContextWindowExceededError
 

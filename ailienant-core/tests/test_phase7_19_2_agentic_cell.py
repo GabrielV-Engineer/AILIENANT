@@ -13,7 +13,7 @@ background collector live on one event loop across loop-back iterations.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
 import brain.agentic_cell as ac

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any, Dict, Iterator, List, Sequence
+from typing import Any, Dict, Iterator, Sequence
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from langchain_core.tools import BaseTool

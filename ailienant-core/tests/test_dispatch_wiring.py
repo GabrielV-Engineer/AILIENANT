@@ -30,7 +30,7 @@ from brain.dispatch import (
 from brain.nodes.dispatch_synthesize_node import dispatch_synthesize
 from brain.nodes.subagent_worker_node import subagent_worker
 from brain.state import AIlienantGraphState
-from brain.subagent_contracts import DispatchPlan, SubagentResponseSchema, SubagentTask
+from brain.subagent_contracts import SubagentTask
 from shared.config import MAX_DISPATCH_ROUNDS, MAX_DISPATCH_WIDTH
 
 

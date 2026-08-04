@@ -27,7 +27,6 @@ from core.benchmark.oracle import (
     BenchmarkOracle,
     CorpusProblem,
     ResolveKReport,
-    Verdict,
     _check_patch_safety,
     evaluate_resolve_k,
     extract_patch,

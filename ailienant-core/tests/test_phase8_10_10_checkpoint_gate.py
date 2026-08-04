@@ -12,7 +12,6 @@ import json
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from brain.state import MissionSpecification, WBSStep
 from tools.execution_tools import BackgroundTaskManager

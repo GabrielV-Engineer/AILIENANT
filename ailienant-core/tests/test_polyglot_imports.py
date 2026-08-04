@@ -20,7 +20,6 @@ from unittest.mock import Mock
 
 import pytest
 
-import brain.memory as memory
 from brain.memory import (
     IMPORT_EXTRACTORS,
     _extract_ecmascript_imports,

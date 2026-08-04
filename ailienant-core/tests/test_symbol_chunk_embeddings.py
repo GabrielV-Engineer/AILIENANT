@@ -166,8 +166,8 @@ async def test_chunk_min_tokens_drops_trivial_keeps_real(tmp_path, monkeypatch) 
         f"def real_fn():\n{_big_body()}\n    return 2\n"
     )
     lines = content.splitlines()
-    getter_end = next(i for i, l in enumerate(lines, 1) if "return 1" in l)
-    real_start = next(i for i, l in enumerate(lines, 1) if "def real_fn" in l)
+    getter_end = next(i for i, ln in enumerate(lines, 1) if "return 1" in ln)
+    real_start = next(i for i, ln in enumerate(lines, 1) if "def real_fn" in ln)
     getter_tokens = len(semantic_memory._ENC.encode("\n".join(lines[0:getter_end])))
     # A floor strictly between the two chunks' token counts is what actually
     # exercises the gate — too low (the fixture default) admits both.
@@ -242,7 +242,7 @@ async def test_partial_batch_failure_writes_zero_chunk_rows(tmp_path, monkeypatc
         f"def fn_b():\n{_big_body(15)}\n    return 2\n"
     )
     lines = content.splitlines()
-    mid = next(i for i, l in enumerate(lines, 1) if "def fn_b" in l)
+    mid = next(i for i, ln in enumerate(lines, 1) if "def fn_b" in ln)
     symbols = [_sym("fn_a", "function", 1, mid - 1), _sym("fn_b", "function", mid, len(lines))]
 
     ok = await mgr.semantic_upsert("two_fns.py", content, _WS, symbols=symbols)
@@ -341,7 +341,7 @@ async def test_reuse_one_edited_function_embeds_exactly_one(tmp_path, monkeypatc
     body_a, body_b = _big_body(20), _big_body(21)
     content_v1 = f"def fn_a():\n{body_a}\n    return 1\n\ndef fn_b():\n{body_b}\n    return 2\n"
     lines = content_v1.splitlines()
-    mid = next(i for i, l in enumerate(lines, 1) if "def fn_b" in l)
+    mid = next(i for i, ln in enumerate(lines, 1) if "def fn_b" in ln)
     symbols = [_sym("fn_a", "function", 1, mid - 1), _sym("fn_b", "function", mid, len(lines))]
     await mgr.semantic_upsert("two.py", content_v1, _WS, symbols=symbols)
     calls.clear()

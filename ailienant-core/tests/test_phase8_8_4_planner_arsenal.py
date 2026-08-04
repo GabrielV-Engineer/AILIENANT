@@ -32,9 +32,7 @@ import pytest
 from brain.state import MissionSpecification, WBSStep
 from core.permissions import SessionPermissionMode, ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore
-from tools.perception_tools import register_perception_tools
 from tools.planner_tools import (
-    _WBS_MAX_STEPS,
     BudgetEstimatorTool,
     ValidateWBSDependenciesTool,
     register_planner_tools,

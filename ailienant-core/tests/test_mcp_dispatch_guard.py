@@ -11,8 +11,7 @@
 
 from __future__ import annotations
 
-import contextvars
-from typing import Any, Dict, Optional
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,7 +22,6 @@ from tools.mcp_adapter import (
     _task_session_id,
     _task_session_mode,
     _grant_session_trust,
-    _session_trust,
     clear_session_trust,
 )
 
@@ -338,7 +336,7 @@ async def test_trust_once_skips_second_hitl_within_same_session() -> None:
 async def test_trust_is_tool_scoped_not_server_scoped() -> None:
     """Trusting one tool does not grant trust for a different tool on the same server."""
     mcp_adapter._reset_mcp_session_for_tests()
-    session = _seed_session("srv")
+    _seed_session("srv")
 
     _grant_session_trust("s-scope", "update_record")
 
@@ -359,7 +357,7 @@ async def test_trust_is_tool_scoped_not_server_scoped() -> None:
 async def test_clear_session_trust_resets_valve() -> None:
     """clear_session_trust() wipes all grants so HITL fires again after a task ends."""
     mcp_adapter._reset_mcp_session_for_tests()
-    session = _seed_session("srv")
+    _seed_session("srv")
 
     _grant_session_trust("s-clear", "update_record")
     clear_session_trust("s-clear")

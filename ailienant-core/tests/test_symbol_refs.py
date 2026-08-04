@@ -413,7 +413,7 @@ def test_static_caller_without_observation_is_never_demoted_or_removed(
 
     async def _run() -> Any:
         await catalog_db.init_db()
-        target = await _seed(
+        await _seed(
             tmp_path, "target_mod.py", "def handle_tool():\n    return 1\n",
             defs=[SymbolDef("handle_tool", "function", 1, 2)],
         )

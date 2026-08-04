@@ -196,7 +196,6 @@ async def test_live_cell_dispatcher_without_push_activity_is_a_noop() -> None:
 
 
 async def test_plan_and_diff_activity_markers_fire_in_order() -> None:
-    from types import SimpleNamespace
     from typing import AsyncIterator, Dict
 
     from core.task_service import TaskService, TaskPayload

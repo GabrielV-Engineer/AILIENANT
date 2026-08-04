@@ -25,13 +25,15 @@ from typing import Any
 
 import pytest
 
-pytestmark = pytest.mark.anyio
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Section A — Resilience (Division 8.2)
-# ══════════════════════════════════════════════════════════════════════════════
-
+from core.benchmark.hygiene import SEED, TEMPERATURE
+from core.benchmark.metrics import ProblemMetrics
+from core.benchmark.report import (
+    BenchmarkReport,
+    HypothesisVerdict,
+    build_report,
+    validate_report,
+    wilson_interval,
+)
 from core.graph_weight import estimate_graph_weight
 from core.memory.context_auditor import (
     derive_routing_decision,
@@ -39,8 +41,30 @@ from core.memory.context_auditor import (
     is_fast_track_eligible,
 )
 from core.observability import configure_langsmith
+from core.permissions import (
+    PermissionDecision,
+    SessionPermissionMode,
+    ToolPrivilegeTier,
+    classify_tool_privilege,
+    evaluate_action,
+    register_privilege_overrides,
+)
+from gateway import catalog, ledger, server
+from gateway.governance import resolve_internal_task_mode
 from shared.hardware import HardwareProfile
+from shared.rbac import PermissionMode
+from tools.mcp_adapter import (
+    _grant_session_trust,
+    _is_session_trusted,
+    clear_session_trust,
+)
 
+pytestmark = pytest.mark.anyio
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Section A — Resilience (Division 8.2)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _profile(vram_gb: float) -> HardwareProfile:
     return HardwareProfile(os_type="windows", is_apple_silicon=False, vram_gb=vram_gb, vram_used_gb=0.0)
@@ -81,17 +105,6 @@ def test_A_langsmith_off_by_default_no_sink(monkeypatch: pytest.MonkeyPatch) -> 
 # Section B — Precision: H₁/H₂ reporting engine (Division 8.3)
 # Pure-function only — the runner / executor / corpus I/O lives in tests/benchmark/.
 # ══════════════════════════════════════════════════════════════════════════════
-
-from core.benchmark.hygiene import SEED, TEMPERATURE
-from core.benchmark.metrics import ProblemMetrics
-from core.benchmark.report import (
-    BenchmarkReport,
-    HypothesisVerdict,
-    build_report,
-    validate_report,
-    wilson_interval,
-)
-
 
 def test_B_wilson_interval_bounds() -> None:
     lo, hi = wilson_interval(8, 10)
@@ -135,21 +148,6 @@ def test_B_determinism_pinned() -> None:
 # Section C — MCP privilege fail-closed (Division 8.4)
 # ══════════════════════════════════════════════════════════════════════════════
 
-from core.permissions import (
-    PermissionDecision,
-    SessionPermissionMode,
-    ToolPrivilegeTier,
-    classify_tool_privilege,
-    evaluate_action,
-)
-from shared.rbac import PermissionMode
-from tools.mcp_adapter import (
-    _grant_session_trust,
-    _is_session_trusted,
-    clear_session_trust,
-)
-
-
 def test_C_unknown_verb_classifies_dangerous_fail_closed() -> None:
     assert classify_tool_privilege("totally_unknown_verb_xyz", "no idea", "some_server") is (
         ToolPrivilegeTier.DANGEROUS
@@ -182,11 +180,6 @@ def test_C_trust_once_is_tool_scoped_and_isolated() -> None:
 # Section D — External HITL-degrade (Division 8.5)
 # Sync tests using asyncio.run (mirrors tests/test_gateway_hitl_degrade.py).
 # ══════════════════════════════════════════════════════════════════════════════
-
-from core.permissions import register_privilege_overrides
-from gateway import catalog, ledger, server
-from gateway.governance import resolve_internal_task_mode
-
 
 @pytest.fixture()
 def iso_ledger(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:

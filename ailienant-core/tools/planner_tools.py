@@ -23,7 +23,7 @@ import json
 import logging
 import posixpath
 from pathlib import PurePosixPath
-from typing import Any, Dict, FrozenSet, List, MutableMapping, Optional, Type
+from typing import Any, Dict, FrozenSet, List, MutableMapping, Type
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr

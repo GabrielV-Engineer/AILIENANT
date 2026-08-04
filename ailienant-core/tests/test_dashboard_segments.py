@@ -13,6 +13,7 @@ import pytest
 from api import mcp_servers as mcp_api
 from api.mcp_servers import _POLICY_ERROR
 from core import telemetry
+from core.redaction import _MASK_INPUT_CAP
 
 
 # --------------------------------------------------------------------------
@@ -67,7 +68,7 @@ def test_mask_is_redos_safe_on_huge_input() -> None:
     masked = telemetry._mask_sensitive(huge)
     elapsed = time.perf_counter() - start
     assert elapsed < 1.0
-    assert masked is not None and len(masked) <= telemetry._MASK_INPUT_CAP + 1  # +1 for the "…"
+    assert masked is not None and len(masked) <= _MASK_INPUT_CAP + 1  # +1 for the "…"
 
 
 def test_pagination_is_clamped() -> None:

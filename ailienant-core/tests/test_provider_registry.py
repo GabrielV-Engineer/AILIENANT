@@ -8,7 +8,6 @@ registry without leaking secrets.
 """
 from __future__ import annotations
 
-import os
 from typing import List
 
 from core.config.byom_config import EndpointConfig

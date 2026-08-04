@@ -409,3 +409,48 @@ def test_real_unix_kill_reaps_tree() -> None:
     assert pid is not None
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)  # the shell process group is gone
+
+
+# ── Windows-only real-backend variants ───────────────────────────────────────
+#
+# _WindowsPtyBackend previously called pywinpty's PtyProcess.kill()/wait() with
+# the wrong signatures — invisible until now because mypy.ini ignores the
+# winpty import and pywinpty was never actually installed in dev/CI (missing
+# platform marker on the pywin32 line masked it), so _default_backend_factory
+# silently degraded to _PipeBackend on every run. These exercise the real
+# ConPTY backend end-to-end now that it's actually reachable.
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="ConPTY is Windows-only")
+def test_real_windows_echo() -> None:
+    async def body() -> bytes:
+        session = _PtySession(cwd="", env={}, shell_kind="cmd")
+        await session.start()
+        consumer = asyncio.ensure_future(_drain(session))
+        await session.run("echo hi", timeout_s=10)
+        await session.close()
+        return await consumer
+
+    out = asyncio.run(body())
+    assert b"hi" in out
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="ConPTY is Windows-only")
+def test_real_windows_kill_reaps_process() -> None:
+    async def body() -> None:
+        session = _PtySession(cwd="", env={}, shell_kind="cmd")
+        await session.start()
+        consumer = asyncio.ensure_future(_drain(session))
+        hang = asyncio.ensure_future(session.run("ping -t 127.0.0.1", timeout_s=999))
+        await asyncio.sleep(0.5)
+        backend = session._backend
+        assert backend is not None
+        await session.kill()
+        hang.cancel()
+        await asyncio.gather(consumer, hang, return_exceptions=True)
+        # terminate_tree() must not raise (the bug this regresses: kill() called
+        # with a missing required `sig` argument would TypeError here) and the
+        # process must actually be dead afterward.
+        assert backend.wait(timeout=5.0) is not None or not backend._pty.isalive()
+
+    asyncio.run(body())

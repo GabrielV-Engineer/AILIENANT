@@ -1,0 +1,8 @@
+# Default owner for everything not matched below.
+* @GabrielV-Engineer
+
+# Zone-scoped for when a second contributor joins — cheap to declare now,
+# load-bearing the moment review routing actually matters (Phase 13+).
+/ailienant-core/ @GabrielV-Engineer
+/ailienant-extension/ @GabrielV-Engineer
+/docs/ @GabrielV-Engineer

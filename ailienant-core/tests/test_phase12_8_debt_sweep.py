@@ -675,9 +675,6 @@ class TestDevcontainerLiveChunks:
         from core.activity_context import (
             bind_activity_sink, bind_exec_ref, reset_activity_sink, reset_exec_ref,
         )
-        from core.sandbox import SandboxResult
-
-        mgr = self._mgr()
 
         class _StubMgr:
             registered: List[Any] = []

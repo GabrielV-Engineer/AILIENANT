@@ -22,7 +22,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from core.blast_radius import (
-    DEFAULT_DEPTH,
     MAX_BLAST_EDGES,
     compute_blast_radius,
     compute_blast_radius_sync,

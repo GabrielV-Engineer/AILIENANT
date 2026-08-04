@@ -173,13 +173,6 @@ async def test_planner_narrates_critic_cycle_on_handoff_brief() -> None:
     bad_response = _make_response("{ not json ")
     good_response = _make_response(_valid_mission_json())
     mock_ainvoke = AsyncMock(side_effect=[bad_response, good_response])
-    mock_search = AsyncMock(return_value=(0.8, ["test/scope.py"], [""]))
-    mock_deep_parse = AsyncMock(
-        return_value=MagicMock(
-            coverage_ratio=0.6, context_block="",
-            parsed_files=["test/scope.py"], target_files=["test/scope.py"],
-        )
-    )
     mock_acquire = AsyncMock(return_value=_broker_decision())
     mock_release = AsyncMock(return_value=None)
 

@@ -192,7 +192,7 @@ async def subagent_worker(
     try:
         from agents.roles import build_subagent_system_prompt
         from core.permissions import session_mode_from_channel
-        from core.tool_dispatch import ToolCall, ToolDispatcher, make_gateway_reasoner
+        from core.tool_dispatch import ToolDispatcher, make_gateway_reasoner
         from shared.rbac import resolve_dispatch_permission
 
         session_mode = session_mode_from_channel(state.get("session_permission_mode"))

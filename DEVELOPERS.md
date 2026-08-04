@@ -21,6 +21,7 @@
 - [Design principles](#design-principles)
 - [Honest list of what is NOT implemented](#honest-list-of-what-is-not-implemented)
 - [Further reading](#further-reading)
+- [Debugging runbook](docs/DEBUGGING_RUNBOOK.md)
 
 ---
 
@@ -270,7 +271,17 @@ SessionPermissionMode  (PLAN blocks non-READ · DEFAULT asks on WRITE/EXEC/DANGE
 ```
 Proyect_Ailienant/
 ├── assets/                      # Public brand assets (logo, icon) used by the READMEs
-├── .github/workflows/           # CI: builds + pushes the sandbox image to GHCR
+├── .github/
+│   ├── workflows/               #   docker-publish.yml (sandbox image → GHCR), backend-gate.yml
+│   │                            #     (ruff/mypy/pyright/pytest+cov), frontend-gate.yml (compile/lint/test
+│   │                            #     + nightly Playwright e2e)
+│   ├── ISSUE_TEMPLATE/          #   bug_report.md · feature_request.md
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── dependabot.yml           #   pip (ailienant-core) · npm (ailienant-extension) · github-actions
+├── scripts/
+│   └── pre_commit_backend_gate.py # venv-resolving entry point for the ruff/mypy pre-commit hooks
+├── .pre-commit-config.yaml      # ruff + mypy-on-changed-files (ailienant-core) + eslint (ailienant-extension)
+├── SECURITY.md · CODEOWNERS     # Vulnerability disclosure path + review routing
 ├── ailienant-core/              # Python orchestration engine
 │   ├── main.py                  #   FastAPI app + WebSocket gateway + lifespan (sandbox resolve)
 │   ├── agents/                  #   Graph nodes: planner, coder, analyst, logic, researcher,
@@ -516,9 +527,17 @@ npm run compile                    # tsc + esbuild, 0 errors
 npm run lint                       # ESLint, 0 errors
 ```
 
-The suite is large (latest gate: **2,839 passing / 2 skipped**, `mypy .` clean — see the most recent [DEV_JOURNAL.md](docs/DEV_JOURNAL.md) entry for the current numbers). Each phase ships a sibling **checkpoint-gate** test file (`test_phase*_checkpoint_gate.py`) that re-certifies that phase's contract.
+The suite is large (latest gate: **2,858 passing / 2 skipped**, 91% line coverage, `mypy .` clean — see the most recent [DEV_JOURNAL.md](docs/DEV_JOURNAL.md) entry for the current numbers). Coverage is observability only, no hard minimum-% gate — and it measures lines executed, not integration depth: the suite mocks the LLM/vector-store boundary uniformly, so it does not mean the agent/LLM interaction surface is tested against a real model. Each phase ships a sibling **checkpoint-gate** test file (`test_phase*_checkpoint_gate.py`) that re-certifies that phase's contract.
 
 **Zero-degradation rule:** your change must not introduce a single new type error or lint warning. **Boy-Scout rule:** if a file you touch already has errors, fix them while you're there.
+
+**Zero-flake policy:** a test that needs a "pre-existing unrelated flake" footnote at phase-closure is a same-sub-phase fix from now on, never a footnote. This formalizes the precedent set by DEBT-108 (`tests/benchmark/test_retention.py`, a genuine cross-thread `FileLock` defect that was waved through as a footnoted flake across at least 6 phase-closure gates before being fixed for real in 12.14) and DEBT-153 (`response_cache` cross-test contamination, closed the same sub-phase). If a test is flaking, stop and fix the root cause or the assertion's contract before moving on — do not re-verify it green in isolation and footnote it as unrelated.
+
+### CI
+
+`.github/workflows/backend-gate.yml` and `.github/workflows/frontend-gate.yml` run the same gates above automatically on every push/PR touching their respective directories — see [DEV_JOURNAL.md](docs/DEV_JOURNAL.md)'s 12.15 entry for what each covers. A backend-coverage artifact publishes on every backend-gate run (observability only, no hard threshold yet). The Playwright e2e suite (`ailienant-extension/e2e/`) runs on a nightly schedule, not on every push, since it boots a real backend subprocess and is comparatively slow.
+
+**One manual step CI cannot self-configure:** branch protection is a GitHub repo setting, not a committable file. To actually block merges on a red gate, go to **Settings → Branches → Add branch protection rule** for `main`, and under "Require status checks to pass before merging," select both `Backend Gate / gate` and `Frontend Gate / gate`. This only needs doing once, and only takes effect after each workflow has run at least once on the repo (GitHub only lists status checks it has seen before).
 
 ---
 
@@ -562,6 +581,7 @@ If you want one of these, it's a great place to start — see [CONTRIBUTING.md](
 | [docs/SCHEMA_EVOLUTION.MD](docs/SCHEMA_EVOLUTION.MD) | State and agent contracts |
 | [docs/SYSTEM_PROMPTS.md](docs/SYSTEM_PROMPTS.md) | Agent system prompts |
 | [docs/TECH_DEBT_BACKLOG.md](docs/TECH_DEBT_BACKLOG.md) | Tracked technical debt |
+| [docs/DEBUGGING_RUNBOOK.md](docs/DEBUGGING_RUNBOOK.md) | Where to look when a real install misbehaves — exec log, timeline, audit chain, telemetry |
 | [docs/GATEWAY_INTEGRATION.md](docs/GATEWAY_INTEGRATION.md) | External-agent integration guide for the MCP capability gateway (launch, auth, ceilings, catalog, versioning) |
 | `docs/PHASE_*_BLUEPRINT.md` | Per-phase architectural contracts (ADRs) |
 | [CLAUDE.md](CLAUDE.md) | Coding standards, architectural guardrails, and build protocols |

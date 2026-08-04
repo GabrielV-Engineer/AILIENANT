@@ -48,9 +48,7 @@ from pydantic import ValidationError
 import brain.agentic_cell as ac
 import brain.dispatch_ledger as ledger
 import brain.subagent_tournament as st
-from brain import dispatch as dispatch_mod
 from brain.dispatch import (
-    DISPATCH_FANOUT_NODE,
     DISPATCH_SYNTHESIZE_NODE,
     build_dispatch_sends,
     dispatch_origin,

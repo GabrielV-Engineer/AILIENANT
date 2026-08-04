@@ -10,6 +10,8 @@
 #     4. Failure: search block matches multiple times → PatchError (ambiguous)
 
 import pytest
+from hypothesis import assume, given
+from hypothesis import strategies as st
 
 from core.exceptions import PatchError
 from core.patcher import apply_search_replace
@@ -46,3 +48,34 @@ def test_raises_patch_error_when_search_matches_multiple_times() -> None:
     content = "x = 1\nx = 1\n"
     with pytest.raises(PatchError, match="Ambiguous"):
         apply_search_replace(content, "x = 1", "x = 99")
+
+
+# --- Property-based tests -----------------------------------------------------
+#
+# Disjoint alphabets for the surrounding text ("abc") vs. the anchor text
+# ("xyz") guarantee the anchor can never appear inside or straddle the
+# surrounding text, so occurrence counts are deterministic by construction
+# rather than relying on Hypothesis to stumble onto a clean example.
+
+_SURROUNDING = st.text(alphabet="abc", max_size=5)
+_ANCHOR = st.text(alphabet="xyz", min_size=1, max_size=5)
+
+
+@given(prefix=_SURROUNDING, suffix=_SURROUNDING, search=_ANCHOR, replace=_ANCHOR)
+def test_apply_then_revert_round_trips(
+    prefix: str, suffix: str, search: str, replace: str
+) -> None:
+    """Applying a patch and then applying its inverse returns the original content."""
+    assume(search != replace)
+    content = prefix + search + suffix
+    patched = apply_search_replace(content, search, replace)
+    reverted = apply_search_replace(patched, replace, search)
+    assert reverted == content
+
+
+@given(search=_ANCHOR, filler=_SURROUNDING, replace=st.text(alphabet="xyz", max_size=5))
+def test_ambiguous_search_always_raises(search: str, filler: str, replace: str) -> None:
+    """A search block occurring 2+ times is always rejected, never silently resolved."""
+    content = search + filler + search
+    with pytest.raises(PatchError, match="Ambiguous"):
+        apply_search_replace(content, search, replace)

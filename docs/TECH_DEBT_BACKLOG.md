@@ -102,6 +102,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
 | DEBT-154 | Apply-edge "low-risk" gate is still a command-pattern proxy over added diff lines, not a real edit-risk classifier — carried forward from DEBT-125 (display-wiring half closed 12.8) | LOW | Risk classification | future safety slice | Floating |
 | DEBT-155 | File-read content preview not on the Glass-Box Timeline — a `read` marker shows a size metric (12.8) but never masked file content; needs its own truncation/redaction design distinct from command-output masking | LOW | Feature gap | future timeline-depth slice | Floating |
+| DEBT-156 | No automated CLA-assistant workflow exists — `CONTRIBUTING.md` now describes only the manual `CLA.md` sign-off path (12.15); a real CLA bot needs a GitHub App / external service with no operational justification for a solo pre-launch project | LOW | Tooling gap | revisit once external contributors are onboarding (Phase 13+) | Floating |
+| DEBT-157 | No unit/integration/e2e taxonomy across ~2,858 backend tests — no markers existed before 12.16's `pytest.ini`, which registers `unit`/`integration`/`e2e` for new tests only; the existing 237 test files are not retroactively classified | MEDIUM | Test infrastructure | future test-taxonomy retrofit slice | Floating |
+| DEBT-158 | The only Playwright e2e spec (`e2e/dashboard.spec.ts`, 4 tests) covers the Dashboard SPA only — no chat/agent-turn flow, no VS Code extension-host e2e; real (not mocked) within its narrow scope | MEDIUM | Test coverage | future e2e-breadth slice | Floating |
+| DEBT-159 | Pre-commit's mypy-on-changed-files hook (12.17) is a fast local approximation, not a full-tree guarantee — an error surfaced only via a transitive relationship to an unchanged sibling file could theoretically be missed locally; CI's full-tree `mypy .` (`backend-gate.yml`, 12.15) remains authoritative | LOW | Tooling / precision gap | revisit if a partial-invocation blind spot is ever observed in practice | Floating |
 
 ---
 
@@ -1195,6 +1199,93 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future timeline-depth slice.
 - **Notes:** carved out of DEBT-133 at its 12.8 resolution — the tool-call half of that entry is
   closed; this is the narrower remainder.
+
+### DEBT-156 [LOW · Floating] — No automated CLA-assistant workflow
+
+- **Date:** 2026-08-04
+- **Reproduce:** N/A (a process gap, not an error). `CONTRIBUTING.md` §1 previously claimed an
+  "automated CLA check posts a link" on a contributor's first PR — no such workflow exists in
+  `.github/workflows/`. Corrected in 12.15 to describe only the manual `CLA.md` sign-off, which
+  already works today.
+- **File(s):** `CONTRIBUTING.md`.
+- **Blocked by:** nothing technical — a real CLA Assistant needs a GitHub App / external service
+  install, which has no operational justification for a solo pre-launch project.
+- **Phase:** revisit once external contributors are actually onboarding (Phase 13+).
+- **Notes:** deliberate MVP/patch decision per CLAUDE.md §11 — the manual path is the lower-friction,
+  more honest fix today, and reversible the moment a second contributor shows up.
+
+### DEBT-157 [MEDIUM · Floating] — No unit/integration/e2e taxonomy across the backend test suite
+
+- **Date:** 2026-08-04
+- **Reproduce:** `pytest --collect-only -q` in `ailienant-core` collects ~2,858 tests with no way to
+  filter to a fast subset — no `pytest.ini`/`pyproject.toml` marker registration existed before
+  12.16, and the only marks in active use are `anyio` (async plumbing, not a category),
+  `parametrize`, and `skipif`.
+- **File(s):** `ailienant-core/pytest.ini` (12.16, new — registers `unit`/`integration`/`e2e` markers
+  for tests going forward only), `ailienant-core/tests/**` (237 existing test files, unclassified).
+- **Blocked by:** nothing technical — retrofitting markers onto 237 existing files is a real,
+  sizeable classification task (risk of silent mis-tagging if done in bulk without per-file review),
+  deliberately out of scope for 12.16's registration-scaffold step.
+- **Phase:** future test-taxonomy retrofit slice.
+- **Notes:** even the strongest integration-style tests in the suite (the 50 `test_phase*_checkpoint_gate.py`
+  files) mock the LLM/vector-store boundary per the project's own stated convention — "integration"
+  in this codebase has never meant "against a live model."
+
+### DEBT-158 [MEDIUM · Floating] — Playwright e2e coverage is a single 4-case Dashboard-only spec
+
+- **Date:** 2026-08-04
+- **Reproduce:** `ailienant-extension/e2e/` contains exactly one spec, `dashboard.spec.ts` (4 tests),
+  scoped entirely to the Dashboard SPA. No chat/agent-turn flow, no VS Code extension-host e2e.
+- **File(s):** `ailienant-extension/e2e/dashboard.spec.ts`, `ailienant-extension/playwright.config.ts`.
+- **Blocked by:** nothing technical — the spec is genuinely real (spawns an actual backend subprocess
+  via `e2e/run-backend.mjs`, drives real Chromium), just narrow in scope. Fixing it is a dedicated
+  feature-sized effort, not a 12.x-sized patch.
+- **Phase:** future e2e-breadth slice.
+- **Notes:** 12.15 schedules this spec to run nightly in CI (`frontend-gate.yml`) — previously it ran
+  in zero CI, nothing executed it automatically. Running-more-often does not close this entry;
+  scope-breadth does.
+
+### DEBT-159 [LOW · Floating] — Pre-commit's mypy-on-changed-files is a local approximation only
+
+- **Date:** 2026-08-04
+- **Reproduce:** N/A (a design-tradeoff, not an error). `.pre-commit-config.yaml` (12.17) invokes
+  `mypy` on staged files only, with `cwd` pinned to `ailienant-core/` so `mypy.ini`'s
+  `explicit_package_bases`/`mypy_path` resolve correctly and the basename-collision risk the ini's
+  own header warns about (`api.audit` vs `core.audit`) doesn't reappear. A partial-file invocation,
+  even with correct cwd/config, is still not a full-tree guarantee.
+- **File(s):** `.pre-commit-config.yaml`, `ailienant-core/mypy.ini`.
+- **Blocked by:** nothing — CI's full-tree `mypy .` (`backend-gate.yml`, 12.15) is the authoritative
+  gate; this hook is a speed layer only.
+- **Phase:** revisit if a partial-invocation blind spot (an error only visible via a transitive
+  relationship to an unchanged sibling file) is ever actually observed in practice.
+- **Notes:** deliberate MVP/patch decision per CLAUDE.md §11, declared rather than left implicit.
+
+### DEBT-160 [HIGH · RESOLVED 2026-08-04, 12.15] — `_WindowsPtyBackend.terminate_tree()`/`.wait()` called pywinpty with the wrong signatures
+
+- **Date:** 2026-08-04 · **Resolved:** 2026-08-04 (12.15)
+- **Was:** `core/pty_session.py::_WindowsPtyBackend.terminate_tree()` called `self._pty.kill()` with no
+  arguments, and `.wait()` called `self._pty.wait(timeout)` with a positional timeout — but
+  `winpty.PtyProcess.kill(self, sig)` requires a signal, and `.wait(self)` takes no timeout argument
+  at all (it busy-polls `isalive()` unconditionally). Both calls would raise `TypeError` at runtime.
+  Invisible for two independent reasons: `mypy.ini` explicitly ignores the `winpty` import
+  (`ignore_missing_imports`), and `pywin32` — a sibling dependency — had no `sys_platform` marker in
+  `requirements.txt`, so a clean install on a non-Windows CI runner would fail outright; the practical
+  effect on Windows dev machines was that `pywinpty` itself was never actually verified installed, and
+  `_default_backend_factory` silently degrades to `_PipeBackend` on any exception constructing
+  `_WindowsPtyBackend` — so a broken/absent pywinpty never surfaced as a crash, only a silent
+  downgrade to a non-TTY transport. Surfaced by 12.15 fixing the sibling `pywin32` marker, which
+  caused `pip install -r requirements.txt` to actually install `pywinpty` for the first time in this
+  dev environment — pyright then resolved its real stubs and flagged both call sites.
+- **Resolved:** `terminate_tree()` now calls `self._pty.kill(signal.SIGTERM)` — Windows' `os.kill()`
+  maps `SIGTERM` to `TerminateProcess`, already an immediate hard kill with no POSIX-style
+  graceful/forceful staging needed. `wait()` reimplements a bounded poll over `isalive()` (`PtyProcess`
+  provides no timeout parameter itself), mirroring `_UnixPtyBackend.wait()`'s timeout contract.
+- **File(s):** `core/pty_session.py`.
+- **Verified:** two new real-backend tests in `tests/test_phase7_19_0_pty_session.py`
+  (`test_real_windows_echo`, `test_real_windows_kill_reaps_process`) exercise the actual ConPTY
+  backend end-to-end — previously `_WindowsPtyBackend` had **zero** test coverage on any platform
+  (the existing "real backend" tests are Unix-only, `skipif`'d on Windows). `pyright`/`mypy`/`ruff`/
+  full suite green.
 
 ### DEBT-025 [LOW · Blocked] — Docker persistent-PTY backend has no daemon integration test
 

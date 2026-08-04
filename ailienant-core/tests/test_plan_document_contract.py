@@ -14,7 +14,7 @@ pin three properties:
 """
 from __future__ import annotations
 
-from api.ws_contracts import PlanDocumentPayload, ServerPlanDocumentEvent
+from api.ws_contracts import ServerPlanDocumentEvent
 from api.websocket_manager import ws_adapter
 from brain.state import MissionSpecification, WBSStep
 from core.task_service import TaskService

@@ -6,10 +6,8 @@
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, Mock, patch, MagicMock
+from unittest.mock import AsyncMock, Mock, patch
 from typing import Dict, Any
-
-pytestmark = pytest.mark.anyio
 
 from brain.coder_companion import (
     schedule_coder_companion,
@@ -23,8 +21,9 @@ from brain.coder_companion import (
     _run_coder_companion,
     CompanionAnalysis,
     CompanionAnalysisRequest,
-    _companion_semaphore,
 )
+
+pytestmark = pytest.mark.anyio
 
 
 # ─── FIXTURES ────────────────────────────────────────────────────────────────
@@ -395,7 +394,7 @@ def test_token_hygiene_truncation_large_diff(mock_state):
 
 async def test_broadcast_coder_companion_contract(mock_state):
     """Payload serializes and validates against CoderCompanionPayload."""
-    from api.ws_contracts import ServerCoderCompanionEvent, CoderCompanionPayload
+    from api.ws_contracts import ServerCoderCompanionEvent
 
     mock_analysis = CompanionAnalysis(
         objective="Fixed bug X",
@@ -404,10 +403,9 @@ async def test_broadcast_coder_companion_contract(mock_state):
         degraded=False,
     )
 
-    with patch("api.websocket_manager.vfs_manager.send_personal_message", new_callable=AsyncMock) as mock_send:
+    with patch("api.websocket_manager.vfs_manager.send_personal_message", new_callable=AsyncMock):
         # Simulate broadcast_coder_companion building and sending the event.
         from api.websocket_manager import ConnectionManager
-        from unittest.mock import MagicMock
 
         # Create a mock ConnectionManager instance and call the broadcast method.
         cm = ConnectionManager()
