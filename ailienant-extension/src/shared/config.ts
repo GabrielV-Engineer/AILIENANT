@@ -171,12 +171,17 @@ export interface DiffBlockShape {
 
 // The I/O body for one 'command' timeline entry, attached once
 // server_activity_detail arrives (correlated to the entry's `ref`). Mirrors
-// the backend ActivityDetailPayload (SCHEMA_EVOLUTION §39). stdout/stderr
-// arrive already masked and capped by the backend's single masking site
-// (core/exec_log.py::record_exec) — the frontend renders them verbatim and
-// never re-derives what is safe to show. `exit_code` stays undefined while
-// the node is still 'active' (detail not yet arrived); `error` is set only
-// on the fault path, when the adapter raised before a verdict existed.
+// the backend ActivityDetailPayload (SCHEMA_EVOLUTION §39). stdout/stderr are
+// masked server-side, capped on BOTH sides (DEBT-134): the terminal detail is
+// capped once by the backend's single masking site (core/exec_log.py::
+// record_exec), while a tier that streams live (currently the devcontainer
+// bridge) may fill these fields incrementally beforehand via
+// server_activity_detail_chunk / upsertExecutionChunk, which additionally
+// clamps client-side (timelineBuilder.ts) as defense-in-depth against a
+// runaway command — the frontend still renders both fields verbatim, never
+// re-deriving what is safe to show. `exit_code` stays undefined while the
+// node is still 'active' (terminal detail not yet arrived); `error` is set
+// only on the fault path, when the adapter raised before a verdict existed.
 export interface ExecutionDetailShape {
     source: 'devcontainer' | 'docker' | 'wasm' | 'native_host' | 'unknown';
     cwd?: string;
@@ -224,7 +229,6 @@ export interface TimelineEntry {
     // independent of the marker. Reused renderers consume these directly.
     thinking?: string;         // kind: 'reasoning' — accumulated delta text
     diff?: DiffBlockShape;     // kind: 'diff'
-    tool?: ToolCallShape;      // kind: 'command', when ref === tool_call_id
     cell?: CellIterationShape; // kind: 'cell', when ref === cell:{iteration}
     execution?: ExecutionDetailShape; // kind: 'command', when ref is an execution id
 }
@@ -280,6 +284,14 @@ export type WebviewToHostMessage =
 // duplicate the whole payload) — it renders as plain monospace instead. The host
 // keeps its own larger lexer bounds as defense-in-depth.
 export const MAX_IPC_CODE_CHARS = 50_000;
+
+// Client-side retention clamp for a live-streaming 'command' node's
+// stdout/stderr (DEBT-134) — defense-in-depth alongside the backend's own
+// _LIVE_STREAM_CAP (api/websocket_manager.py): even if that cap regressed or
+// a producer misbehaved, the store can never grow past this bound per field.
+// The terminal detail always replaces (never appends to) whatever accumulated
+// here, so this only bounds the WHILE-RUNNING view, never the settled record.
+export const MAX_LIVE_EXEC_FIELD_CHARS = 4_000;
 
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",

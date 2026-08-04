@@ -13,6 +13,12 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 12.8: Fresh Debt Triage Sweep — 2026-08-04
+**Status:** COMPLETE | **Gates:** mypy 0/459 · pyright 0 · pytest 2839 passed/2 skipped · npm compile 0 · npm test 191 passed
+- Shipped: closed DEBT-121/123/124/128/132/134 outright, plus the display-wiring half of DEBT-125 and the tool-call half of DEBT-133 (file-content preview re-logged as DEBT-155, classifier as DEBT-154); DEBT-126's two halves resolved (real whole-turn duration) and corrected-as-stale (the dead handler it named no longer existed). `ToolDispatcher.dispatch` now instruments the Glass-Box Timeline directly — real detail bodies for every registry/MCP tool call across all three consumers 12.7 wired — and the devcontainer tier live-streams execution chunks via a new correlated `ContextVar` + WS event, bounded on both backend and frontend against a runaway command.
+- Key decision: DEBT-122 (Rich Tool Chips) closed as superseded (§4 Pivot), not migrated — 12.7 gave `ToolDispatcher` three live consumers, so instrumenting `dispatch()` itself delivers the original goal without ever rerouting the main tool-call loop through `execute_tracked_tool`; dead `upsertToolBody` deleted with its test. A HITL-deferred tool call now mints its Glass-Box ref at defer time (a non-replayed super-step) and carries it through `pending_tool_call` so a LangGraph replay of the resume phase never opens a duplicate row.
+- Deferred: DEBT-154 (semantic edit-risk classifier, regex proxy unchanged) and DEBT-155 (masked file-content preview, needs its own redaction design).
+
 ## 12.6: Sandbox Reliability Hardening — 2026-08-03
 **Status:** COMPLETE | **Gates:** mypy 0/456 · pyright 0 · pytest 2778 passed/2 skipped · npm compile 0 · npm lint 0
 - Shipped: closed DEBT-097 and DEBT-100, the last two HIGH-tier backlog items. `DockerSandboxAdapter` leases containers from a bounded `_ContainerPool` keyed by `(mount root, session)` instead of one shared process-lifetime container — fixes the cross-session noisy-neighbor/blast-radius risk and a latent wrong-mount bug (a second project's session silently fell back to the first project's `/workspace`). Every Docker SDK call now routes through a timeout-bounded, breaker-guarded dispatcher on a dedicated `ail-docker` thread pool, so a hung daemon degrades to `[sandbox_daemon_unavailable]` instead of parking a thread from the shared executor every other subsystem depends on.

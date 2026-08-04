@@ -16,9 +16,20 @@
  */
 import type { ActivityEventPayload } from '../../api/contracts';
 import type {
-    CellIterationShape, DiffBlockShape, ExecutionDetailShape, ToolCallShape,
+    CellIterationShape, DiffBlockShape, ExecutionDetailShape,
     TimelineEntry, TimelineEntryStatus,
 } from '../../shared/config';
+import { MAX_LIVE_EXEC_FIELD_CHARS } from '../../shared/config';
+
+/** Head+tail clamp for a live-accumulating exec field (DEBT-134) — mirrors the
+ *  backend's own middle-truncation shape (core/redaction.py::truncate_middle)
+ *  so both ends stay readable under the client-side retention ring. Pure. */
+function clampLiveField(text: string, cap: number): string {
+    if (text.length <= cap) { return text; }
+    const half = Math.floor(cap / 2);
+    const dropped = text.length - half * 2;
+    return `${text.slice(0, half)}\n…[${dropped} chars truncated]…\n${text.slice(text.length - half)}`;
+}
 
 /** Insert `entry` keeping the array sorted ascending by `seq` (an unresolved
  *  placeholder's `Number.POSITIVE_INFINITY` sorts last until a marker resolves it). */
@@ -145,42 +156,10 @@ export function upsertDiffBody(
 }
 
 /**
- * Attach a tool-chip artifact to its timeline entry, keyed by `tool_call_id` (a
- * real wire id, symmetric with `upsertDiffBody`). Exported and unit-tested for
- * forward use; not yet wired into a live handler — no activity marker emits a
- * `ref: tool_call_id` this slice, so there is nothing for it to correlate against
- * yet (paired with a future tool/cell activity-marker emission).
- */
-export function upsertToolBody(
-    entries: TimelineEntry[],
-    toolCallId: string,
-    tool: ToolCallShape,
-    ts: number = Date.now() / 1000,
-): TimelineEntry[] {
-    const idx = entries.findIndex(e => e.id === toolCallId);
-    if (idx === -1) {
-        const entry: TimelineEntry = {
-            id: toolCallId,
-            seq: Number.POSITIVE_INFINITY,
-            ts,
-            kind: 'command',
-            target: tool.tool_name,
-            ref: toolCallId,
-            status: tool.status === 'pending' ? 'active' : 'done',
-            tool,
-        };
-        return insertSorted(entries, entry);
-    }
-    const next = [...entries];
-    next[idx] = { ...next[idx], tool, status: tool.status === 'pending' ? 'active' : 'done' };
-    return next;
-}
-
-/**
  * Attach an agentic-cell iteration to its timeline entry, keyed by `cell:{iteration}`
- * (the same value the backend's `cell` activity marker uses as `ref`). Symmetric with
- * `upsertToolBody`: an iteration's tool calls / PTY output / AST diffs / governor tick
- * all update in place as they stream in, rather than creating a new entry per delta.
+ * (the same value the backend's `cell` activity marker uses as `ref`). An
+ * iteration's tool calls / PTY output / AST diffs / governor tick all update in
+ * place as they stream in, rather than creating a new entry per delta.
  */
 export function upsertCellBody(
     entries: TimelineEntry[],
@@ -246,6 +225,55 @@ export function upsertExecutionBody(
     }
     const next = [...entries];
     next[idx] = { ...next[idx], execution, status };
+    return next;
+}
+
+/**
+ * Append one incremental stdout/stderr fragment to a 'command' timeline
+ * entry's execution body (DEBT-134), arriving BEFORE the terminal
+ * `server_activity_detail` that `upsertExecutionBody` resolves. Keyed by the
+ * same `ref` both channels share. If no entry exists yet (a chunk racing
+ * ahead of its own marker — WS delivery is ordered per-channel but not
+ * across), creates an 'active' placeholder exactly like every other upsert
+ * here.
+ *
+ * Once the terminal detail lands (status flips to 'done'/'failed'), any
+ * further stray chunk for the same ref is a no-op: `upsertExecutionBody`
+ * REPLACES the execution body wholesale, so a late chunk appending after that
+ * point would corrupt the now-authoritative settled record — "the terminal
+ * detail always replaces, never appends to, accumulated chunk text."
+ *
+ * Clamped client-side (`clampLiveField` / `MAX_LIVE_EXEC_FIELD_CHARS`) as
+ * defense-in-depth alongside the backend's own cumulative budget
+ * (`api/websocket_manager.py::_LIVE_STREAM_CAP`) — the store can never grow
+ * past this bound per field even if a producer misbehaves.
+ */
+export function upsertExecutionChunk(
+    entries: TimelineEntry[],
+    ref: string,
+    stream: 'stdout' | 'stderr',
+    chunk: string,
+    ts: number = Date.now() / 1000,
+): TimelineEntry[] {
+    const idx = entries.findIndex(e => e.id === ref);
+    if (idx === -1) {
+        const entry: TimelineEntry = {
+            id: ref,
+            seq: Number.POSITIVE_INFINITY,
+            ts,
+            kind: 'command',
+            ref,
+            status: 'active',
+            execution: { source: 'unknown', [stream]: chunk },
+        };
+        return insertSorted(entries, entry);
+    }
+    const prev = entries[idx];
+    if (prev.status !== 'active') { return entries; }  // already settled — a stale chunk
+    const prevExecution: ExecutionDetailShape = prev.execution ?? { source: 'unknown' };
+    const accumulated = clampLiveField((prevExecution[stream] ?? '') + chunk, MAX_LIVE_EXEC_FIELD_CHARS);
+    const next = [...entries];
+    next[idx] = { ...prev, execution: { ...prevExecution, [stream]: accumulated } };
     return next;
 }
 

@@ -42,7 +42,7 @@ export function useSessionPersistence(): void {
                     .map(({
                         id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                         checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
-                        timeline,
+                        timeline, turnStartedAt, turnElapsedMs,
                     }) => ({
                         id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                         checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
@@ -52,6 +52,10 @@ export function useSessionPersistence(): void {
                         // checklist/diffBlocks were before AgentTimeline took over
                         // rendering them, so a rehydrated turn still shows its trace.
                         timeline: timeline ? stripReasoningForPersist(timeline) : timeline,
+                        // Whole-turn duration (DEBT-126a) — unlike thinking*, this is
+                        // durable audit evidence (not display-only reasoning), so it
+                        // persists like checklist/diffBlocks.
+                        turnStartedAt, turnElapsedMs,
                     })),
                 nattMessages: nattMessages.map(({ id, role, content }) => ({ id, role, content })),
             });

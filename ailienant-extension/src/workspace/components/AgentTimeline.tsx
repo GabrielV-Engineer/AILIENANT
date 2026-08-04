@@ -62,14 +62,25 @@ export interface AgentTimelineProps {
     onRequestChangesDiff?: (feedback: string) => void;
     // Cell body — reuses CellAuditWidget fed a synthetic single-iteration run.
     onCellStdin?: (iteration: number, line: string) => void;
+    // Whole-turn wall-clock duration (DEBT-126a), frozen at server_stream_end
+    // from the submit-time marker — spans generation + actuation, unlike the
+    // entries[]-derived span below. Preferred whenever present; undefined only
+    // for a transcript rehydrated from before this field existed, where the
+    // marker-span fallback keeps a pre-12.8 turn from showing no duration at all.
+    turnElapsedMs?: number;
 }
 
 const STICK_TOLERANCE_PX = 24;
 
-function summarize(entries: TimelineEntry[]): string {
-    const first = entries[0];
-    const last = entries[entries.length - 1];
-    const secs = first && last ? Math.max(0, last.ts - first.ts) : 0;
+function summarize(entries: TimelineEntry[], turnElapsedMs?: number): string {
+    let secs: number;
+    if (turnElapsedMs !== undefined) {
+        secs = Math.max(0, turnElapsedMs / 1000);
+    } else {
+        const first = entries[0];
+        const last = entries[entries.length - 1];
+        secs = first && last ? Math.max(0, last.ts - first.ts) : 0;
+    }
     const actions = entries.length;
     const files = new Set(
         entries.filter(e => e.kind === 'diff' && e.target).map(e => e.target),
@@ -81,7 +92,7 @@ function summarize(entries: TimelineEntry[]): string {
 function AgentTimelineImpl({
     entries, streaming,
     thinking, thinkingTokens, thinkingStartedAt, thinkingElapsedMs, thinkingOpen, onReasoningToggle,
-    checklist, hitlApprovalId, onRespondDiff, onRequestChangesDiff, onCellStdin,
+    checklist, hitlApprovalId, onRespondDiff, onRequestChangesDiff, onCellStdin, turnElapsedMs,
 }: AgentTimelineProps): JSX.Element | null {
     const done = !streaming;
     const [containerOpen, setContainerOpen] = useState(true);
@@ -118,7 +129,7 @@ function AgentTimelineImpl({
 
     if (entries.length === 0) { return null; }
 
-    const label = done ? summarize(entries) : 'Working…';
+    const label = done ? summarize(entries, turnElapsedMs) : 'Working…';
     const anyActive = entries.some(e => e.status === 'active');
     // Only the FIRST reasoning entry gets the rich ReasoningStream body (the
     // scoped one-ref-per-turn simplification means a second span is rare this

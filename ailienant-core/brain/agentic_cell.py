@@ -27,12 +27,15 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
 from brain.cell_dispatcher import CellEventDispatcher, NullCellDispatcher
+from core.activity_context import current_activity_sink
+from core.redaction import mask_secrets
 from brain.iteration_governor import AxisExhausted, check_governor, estimate_iteration_cost
 from brain.retry_policy import (
     AGENTIC_CELL_MAX_COST_USD,
@@ -457,12 +460,22 @@ async def run_agentic_cell_node(
         if pending_tool:
             tool_name = str(pending_tool.get("name", ""))
             tool_args: Dict[str, Any] = dict(pending_tool.get("args") or {})
+            # Minted once by the defer branch below (a plain, non-replayed
+            # super-step) and carried unchanged through every replay of this
+            # phase — never re-minted here. Absent on a pending_tool_call
+            # written before this field existed; every consumer below treats
+            # that as "nothing to resolve" rather than failing.
+            activity_ref: Optional[str] = pending_tool.get("activity_ref")
             approved = await _approve_tool_call(state, tool_name, tool_args, configurable)
             tc_rec: Dict[str, Any] = {
                 "iteration": iteration, "edits": [], "occ_conflicts": [],
                 "exit_code": None, "diagnostics": "", "status": "continue",
             }
             if not approved:
+                await _emit_pending_tool_resolution(
+                    activity_ref, state,
+                    observation=f"[{tool_name}] not approved by the operator.",
+                )
                 return {
                     "agentic_iteration": iteration + 1,
                     "agentic_trajectory": [
@@ -485,6 +498,9 @@ async def run_agentic_cell_node(
                 tc_observation = (
                     f"[{tool_name}] tool no longer resolves (catalog changed since "
                     "the request was made) — choose a different approach."
+                )
+                await _emit_pending_tool_resolution(
+                    activity_ref, state, observation=tc_observation,
                 )
                 tc_delta: Dict[str, Any] = {
                     "agentic_iteration": iteration + 1,
@@ -520,7 +536,8 @@ async def run_agentic_cell_node(
                 approval_fn=_pre_approved,
             )
             result = await approved_dispatcher.dispatch(
-                _RegistryToolCall(name=tool_name, args=tool_args)
+                _RegistryToolCall(name=tool_name, args=tool_args),
+                activity_ref=activity_ref,
             )
             tc_delta = {
                 "agentic_iteration": iteration + 1,
@@ -759,10 +776,30 @@ async def run_agentic_cell_node(
                         "occ_conflicts": [], "exit_code": None, "diagnostics": "",
                         "status": "continue",
                     }
+                    # DEBT-133: open the Glass-Box Timeline row NOW, not after
+                    # approval — otherwise the call is invisible on the timeline
+                    # for the entire approval round-trip. This point is a plain,
+                    # non-replayed super-step (the interrupt() lives in the
+                    # tool-call-approval phase above, on the NEXT invocation), so
+                    # minting the ref here — once — and carrying it through
+                    # pending_tool_call is what keeps every later replay of that
+                    # phase idempotent on the same key.
+                    _activity_ref = uuid.uuid4().hex
+                    _sink = current_activity_sink()
+                    if _sink is not None:
+                        try:
+                            await _sink.emit_marker(ref=_activity_ref, target=call.name)
+                        except Exception:  # noqa: BLE001 — observability must never break the node
+                            logger.debug(
+                                "agentic_cell: pending-tool marker emit skipped", exc_info=True,
+                            )
                     tool_defer_delta: Dict[str, Any] = {
                         "agentic_iteration": iteration + 1,
                         "agentic_trajectory": [tool_defer_rec],
-                        "pending_tool_call": {"name": call.name, "args": dict(call.args)},
+                        "pending_tool_call": {
+                            "name": call.name, "args": dict(call.args),
+                            "activity_ref": _activity_ref,
+                        },
                     }
                     if edited_paths:
                         tool_defer_delta["vfs_buffer"] = {p: vfs_files[p] for p in edited_paths}
@@ -1147,6 +1184,33 @@ async def _approve_tool_call(
         request_kind="COMMAND_EXEC",
     )
     return bool(resp.get("approved"))
+
+
+async def _emit_pending_tool_resolution(
+    activity_ref: Optional[str], state: Dict[str, Any], *, observation: str,
+) -> None:
+    """Resolve a ``pending_tool_call``'s opened Glass-Box Timeline span (DEBT-133)
+    when the tool-call-approval phase exits WITHOUT ever reaching
+    ``ToolDispatcher.dispatch()`` — an operator denial or a catalog-resolution
+    miss (the tool no longer exists by the time it was approved). Both are
+    real, non-executed outcomes, but ``dispatch()`` is the only other place
+    that ever resolves this ref; without this call the row would hang on
+    "running…" for the rest of the turn.
+    """
+    if not activity_ref:
+        return
+    sink = current_activity_sink()
+    if sink is None:
+        return
+    try:
+        await sink.emit_detail(
+            ref=activity_ref, source="unknown", cwd=None,
+            initiator=_resolve_active_role(state),
+            stdout=mask_secrets(observation), stderr=None,
+            exit_code=1, duration_ms=None, truncated=False, error=None,
+        )
+    except Exception:  # noqa: BLE001 — observability must never break the node
+        logger.debug("agentic_cell: pending-tool detail emit skipped", exc_info=True)
 
 
 def _read_file_ast(content: str, path: str) -> str:

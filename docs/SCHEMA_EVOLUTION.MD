@@ -2379,3 +2379,96 @@ message and the final-answer synthesiser. The `AnswerFn` signature
 (`Callable[[SubagentTask, List[str]], Awaitable[Dict[str, Any]]]`) is unchanged — the default
 synthesiser is now built by a `_make_default_answer(system_prompt) -> AnswerFn` closure, so an
 injected `dispatch_answer_fn` (the hermetic-test seam) is unaffected.
+
+---
+
+## §50 — Glass-Box Timeline: Tool-Call Detail, Live Exec Chunks, Replay-Safe Defer Ref
+
+Phase 12.8 (Fresh Debt Triage Sweep) — closes DEBT-133 (tool-call + file-read visibility) and
+DEBT-134 (incremental execution detail). Three additive changes, all following §40's existing
+marker/detail pattern rather than introducing a new one.
+
+**1. `ToolDispatcher.dispatch` now instruments the §40 `ActivitySink`.** `core/tool_dispatch.py`
+gains an optional `activity_ref: Optional[str] = None` parameter. With no ref supplied (every
+call site except #2 below), `dispatch` owns the row's full lifecycle exactly like
+`record_execution` does for commands: a DENY/unresolved/HITL-not-admitted call that never
+reaches `tool._arun` emits a single ref-less `emit_blocked`; a call that does execute mints its
+own ref, emits an opening `emit_marker`, then a closing `emit_detail` (masked/capped via the
+same discipline, factored into shared `core/redaction.py::truncate_middle` — extracted from
+`core/exec_log.py`, which now imports it rather than defining its own copy). `initiator` is the
+dispatcher's own `active_role`, so a row is attributable to whichever role (analyst,
+core_dev/etc. dispatched subagent, or the coder's grounding pre-pass) actually made the call.
+Backward-compatible: a caller passing no `activity_ref` sees byte-identical `DispatchResult`
+behavior to pre-12.8; the instrumentation is purely additive I/O to the sink.
+
+**2. `pending_tool_call` gains an additive `activity_ref: str` field** (§48's channel, shape now
+`{"name": str, "args": dict, "activity_ref": str}`). The agentic-cell HITL-defer branch
+(`brain/agentic_cell.py`) mints this ref and emits the OPENING marker at defer time — a plain,
+non-replayed super-step, so the mint happens exactly once — then carries it through the
+checkpointed channel to the tool-call-approval phase on resume. That phase, which DOES replay
+before an `interrupt()` resolves, reads the ref from state rather than re-minting it, so every
+replay resolves the SAME row instead of opening a new one (`upsertActivityMarker`/
+`upsertExecutionBody` merge by identity — replay-safe by construction, no new frontend logic
+needed). `dispatch()` is called with `activity_ref=<the deferred ref>` on approval, so the
+post-approval detail lands on the row the operator has been watching throughout the round-trip.
+An operator denial, or the approved tool no longer resolving in the catalog, resolves the SAME
+ref with a terminal `emit_detail` via a new `_emit_pending_tool_resolution` helper — the model
+denied by DEBT-129 previously had no timeline representation at all, so this is also the first
+time a HITL-tier registry-fallback call becomes visible before its outcome is known.
+
+**3. New WebSocket event `server_activity_detail_chunk`** — an incremental stdout/stderr
+fragment for a `command` node, arriving BEFORE its terminal `server_activity_detail` (§40).
+Additive/optional: only a tier whose transport genuinely streams emits it (currently the
+devcontainer bridge, which received the underlying incremental host-to-backend transport in
+12.4/DEBT-083); every other tier is unaffected and still fills its detail body once, on
+completion.
+
+```python
+class ActivityDetailChunkPayload(BaseModel):
+    session_id: str
+    ref: str                     # the same execution id the terminal detail resolves
+    stream: Literal["stdout", "stderr"]
+    chunk: str                   # masked at the emission site
+```
+
+**Correlation plumbing:** `core/activity_context.py` gains a second `ContextVar`
+(`bind_exec_ref`/`current_exec_ref`), bound by `core/exec_log.py::record_execution` only around
+its `adapter.execute(...)` await. `api/devcontainer_bridge.py::WebSocketHostBridge.exec_command`
+reads it (paired with `current_activity_sink()`) right after minting its own transport-level
+`request_id`, and — only when both resolve — calls a new
+`ConnectionManager.register_devcontainer_exec_activity(request_id, exec_ref, sink)`. The existing
+`append_devcontainer_stream` (now `async`, called with `await` from `main.py`'s WS receive loop)
+forwards each buffered chunk to that registration's sink, masked via `core/redaction.py`.
+
+**Runaway-output guard (§5.5), two layers:**
+- **Backend** — `api/websocket_manager.py::_LIVE_STREAM_CAP` (16,000 chars) bounds cumulative
+  live-forwarded characters per execution; past it, forwarding stops and one suppression notice
+  fires. The underlying buffer (and therefore the terminal detail, independently capped at
+  `core/exec_log.py`'s `_OUTPUT_CAP`) is never affected — only the WHILE-RUNNING wire volume is
+  bounded.
+- **Frontend** — `timelineBuilder.ts::upsertExecutionChunk` accumulates chunks onto
+  `TimelineEntry.execution.stdout/stderr`, clamped by `shared/config.ts::MAX_LIVE_EXEC_FIELD_CHARS`
+  (4,000 chars, head+tail preserved) as defense-in-depth. The terminal `upsertExecutionBody`
+  REPLACES (never appends to) whatever accumulated, and a chunk arriving after an entry has
+  already settled (`status !== 'active'`) is a no-op — the settled record can never be corrupted
+  by a straggling live frame.
+
+**ActivitySink Protocol:** gains an optional `emit_detail_chunk(*, ref, stream, chunk)` method.
+A sink built against the pre-12.8 narrower surface (a hermetic test double, for instance) is
+detected via `getattr(sink, "emit_detail_chunk", None)` and simply never called — no crash, no
+required update to existing sink implementations outside `core/task_service.py`'s own
+`_TurnActivitySink`, which implements it by forwarding to a new
+`ConnectionManager.broadcast_activity_detail_chunk`.
+
+**Backward-compat:** every change here is additive — a new optional dispatch parameter, a new
+optional state-channel field, a new optional Protocol method, and a new WS event type. An old
+client ignoring `server_activity_detail_chunk` sees only the terminal detail, exactly as before
+12.8; a `pending_tool_call` written before this field existed is read with `.get("activity_ref")`
+defaulting to `None`, degrading that one row to the pre-12.8 "no live visibility during approval"
+behavior rather than raising.
+
+**Deferred (logged, not closed here):** DEBT-133's file-content preview (masked head/tail of
+file bytes read — deliberately out of scope, a PII/token-budget question distinct from the
+metadata-only `read` marker enrichment this phase shipped) and DEBT-125's semantic edit-risk
+classifier (the binary regex proxy stays; only the display wiring closed) — both re-logged in
+`docs/TECH_DEBT_BACKLOG.md` with their scope-narrowing rationale.

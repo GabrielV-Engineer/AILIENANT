@@ -48,7 +48,10 @@ import type { ASTToken, DiffBlockShape } from '../shared/config';
 const EXTENSION_ROOT = path.resolve(__dirname, '..', '..');
 const WEBVIEW_BUNDLE = path.join(EXTENSION_ROOT, 'dist', 'workspace.js');
 const HOST_BUNDLE = path.join(EXTENSION_ROOT, 'dist', 'extension.js');
-const CEILING_BYTES = 550 * 1024;
+// Mirrors esbuild.js::WEBVIEW_BUNDLE_CEILING_BYTES — duplicated here (not
+// imported) since esbuild.js is a CommonJS build script outside this test's
+// TS module graph. Keep the two literals in sync on any future ceiling change.
+const CEILING_BYTES = 555 * 1024;
 const GRAMMAR_LEAK_MARKERS = ['@shikijs', 'createHighlighterCore', 'engine-javascript'];
 
 suite('Phase 7.16 — Checkpoint Gate (host-delegated tokenization)', function () {

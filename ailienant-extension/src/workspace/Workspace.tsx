@@ -139,8 +139,32 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     for (let k = messages.length - 1; k >= 0; k--) {
         if ((messages[k] as SystemMessage).compaction) { lastCompactionIdx = k; break; }
     }
-    const compactionMarkerId = lastCompactionIdx >= 0 ? messages[lastCompactionIdx].id : undefined;
-    const foldActive = lastCompactionIdx >= 0 && messages.length > MESSAGE_COMPACTION_THRESHOLD;
+    // DEBT-124: the compaction chip is a transient SystemMessage, deliberately
+    // excluded from PERSIST_TRANSCRIPT — so a panel hide/reveal leaves NO live
+    // marker in `messages` even though the persisted `compactionFold` slice
+    // (workspaceStore) survives. Fall back to it, resolving `afterMessageId`
+    // against the rehydrated `messages` array by id (stable across reload;
+    // an index would not be). `boundaryIsChipRow` distinguishes the two
+    // shapes: a live chip occupies its OWN placeholder row (hidden count =
+    // its index), while the persisted anchor IS a real bubble that must be
+    // folded away too (hidden count = its index + 1).
+    const persistedFold = useWorkspaceStore((s) => s.compactionFold);
+    let foldBoundaryIdx = lastCompactionIdx;
+    let boundaryIsChipRow = lastCompactionIdx >= 0;
+    let fallbackSummaryText: string | undefined;
+    if (lastCompactionIdx === -1 && persistedFold?.afterMessageId) {
+        const anchorIdx = messages.findIndex((m) => m.id === persistedFold.afterMessageId);
+        if (anchorIdx >= 0) {
+            foldBoundaryIdx = anchorIdx;
+            boundaryIsChipRow = false;
+            fallbackSummaryText = persistedFold.summaryText;
+        }
+    }
+    const compactionMarkerId = lastCompactionIdx >= 0
+        ? messages[lastCompactionIdx].id
+        : (foldBoundaryIdx >= 0 ? persistedFold?.markerId : undefined);
+    const foldActive = foldBoundaryIdx >= 0 && messages.length > MESSAGE_COMPACTION_THRESHOLD;
+    const foldHiddenCount = boundaryIsChipRow ? foldBoundaryIdx : foldBoundaryIdx + 1;
     const [summaryExpanded, setSummaryExpanded] = useState(false);
     const [originalRevealed, setOriginalRevealed] = useState(false);
     // A fresh compaction re-folds the transcript and closes the prose body.
@@ -523,7 +547,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             {foldActive && originalRevealed && (
                                 <SessionSummaryCard
                                     mode="revealed"
-                                    hiddenCount={lastCompactionIdx}
+                                    hiddenCount={foldHiddenCount}
                                     summaryText=""
                                     expanded={false}
                                     onToggle={() => { /* n/a in revealed mode */ }}
@@ -538,15 +562,20 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     // (we return null rather than slicing) so message_index and
                                     // reasoning toggles below keep pointing at the right turn.
                                     if (foldActive && !originalRevealed) {
-                                        if (i < lastCompactionIdx) { return null; }
-                                        if (i === lastCompactionIdx) {
-                                            const meta = (m as SystemMessage).compaction;
+                                        if (i < foldBoundaryIdx) { return null; }
+                                        if (i === foldBoundaryIdx) {
+                                            // A live chip carries its own summaryText; the persisted-fold
+                                            // fallback (boundaryIsChipRow=false, no chip row survived
+                                            // reload) reads it from workspaceStore instead — and in that
+                                            // case `m` is a real bubble that must NOT also render below.
+                                            const meta = boundaryIsChipRow ? (m as SystemMessage).compaction : undefined;
+                                            const summaryText = boundaryIsChipRow ? (meta?.summaryText ?? '') : (fallbackSummaryText ?? '');
                                             return (
                                                 <SessionSummaryCard
                                                     key={m.id ?? 'compaction-fold'}
                                                     mode="folded"
-                                                    hiddenCount={lastCompactionIdx}
-                                                    summaryText={meta?.summaryText ?? ''}
+                                                    hiddenCount={foldHiddenCount}
+                                                    summaryText={summaryText}
                                                     expanded={summaryExpanded}
                                                     onToggle={() => setSummaryExpanded(v => !v)}
                                                     onRevealOriginal={() => setOriginalRevealed(true)}
@@ -593,6 +622,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             onRespondDiff={respondInlineHitl}
                                             onRequestChangesDiff={handleRequestChanges}
                                             onCellStdin={handleCellStdin}
+                                            turnElapsedMs={m.turnElapsedMs}
                                         />
                                     )}
                                     {/* Ghost Telemetry (ADR-723) — live action-log: the

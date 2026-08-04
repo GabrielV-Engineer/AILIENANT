@@ -63,9 +63,29 @@ class ActivitySink(Protocol):
         """Push the post-execution I/O body correlated to the same ref."""
         ...
 
+    # `emit_detail_chunk(self, *, ref: str, stream: str, chunk: str) -> None` is
+    # a DEBT-134 duck-typed EXTENSION, deliberately NOT declared here: adding it
+    # as a required Protocol member would force every existing sink (including
+    # every hermetic test double built before 12.8) to grow a method it has no
+    # use for. Only a tier whose transport genuinely streams (currently the
+    # devcontainer bridge, via `api/websocket_manager.py::_forward_devc_chunk_live`)
+    # calls it, always through `getattr(sink, "emit_detail_chunk", None)` — a
+    # sink that never implements it is simply never called, never an error.
+
 
 _current_sink: "contextvars.ContextVar[Optional[ActivitySink]]" = contextvars.ContextVar(
     "ailienant_activity_sink", default=None
+)
+
+# The exec-id `core/exec_log.py::record_execution` is currently fulfilling,
+# bound only around its `adapter.execute(...)` await (DEBT-134). A tier whose
+# transport genuinely streams — currently the devcontainer bridge, several
+# call-stack layers below — reads this (paired with `current_activity_sink()`)
+# to correlate its own transport-level request id with the Glass-Box Timeline
+# row `record_execution` already opened for this command, so live chunks can
+# be forwarded against the SAME ref the terminal detail will later resolve.
+_current_exec_ref: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "ailienant_activity_exec_ref", default=None
 )
 
 
@@ -91,3 +111,23 @@ def current_activity_sink() -> Optional[ActivitySink]:
     MUST treat ``None`` as "emit nothing", never as an error.
     """
     return _current_sink.get()
+
+
+def bind_exec_ref(ref: str) -> contextvars.Token:
+    """Bind the exec id ``record_execution`` is fulfilling. Reset in a
+    ``finally`` (charter §5.1), mirroring :func:`bind_activity_sink`.
+    """
+    return _current_exec_ref.set(ref)
+
+
+def reset_exec_ref(token: contextvars.Token) -> None:
+    """Undo `bind_exec_ref`. Idempotent-safe only with the matching token."""
+    _current_exec_ref.reset(token)
+
+
+def current_exec_ref() -> Optional[str]:
+    """The exec id bound for this async context, or ``None`` outside
+    ``record_execution``'s ``adapter.execute(...)`` scope. Callers MUST treat
+    ``None`` as "nothing to correlate against", never as an error.
+    """
+    return _current_exec_ref.get()

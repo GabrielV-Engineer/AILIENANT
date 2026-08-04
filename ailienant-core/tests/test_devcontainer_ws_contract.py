@@ -54,9 +54,9 @@ def test_exec_round_trip_aggregates_streams_and_exit() -> None:
             await mgr.emit_devcontainer_exec_request(
                 "sessE", "req1", command="pytest -q", cwd="/work", env_keys=["CI"]
             )
-            mgr.append_devcontainer_stream("req1", "stdout", "2 passed")
-            mgr.append_devcontainer_stream("req1", "stdout", " in 0.1s")
-            mgr.append_devcontainer_stream("req1", "stderr", "warning: x")
+            await mgr.append_devcontainer_stream("req1", "stdout", "2 passed")
+            await mgr.append_devcontainer_stream("req1", "stdout", " in 0.1s")
+            await mgr.append_devcontainer_stream("req1", "stderr", "warning: x")
             mgr.resolve_devcontainer_exit("req1", exit_code=0)
 
         waiter = asyncio.ensure_future(

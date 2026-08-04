@@ -343,6 +343,20 @@ class BackgroundTaskManager:
             "truncated_stdout": "",
             "truncated_stderr": "",
         }
+        # Glass-Box Timeline (DEBT-132): this manager bypasses record_execution
+        # entirely (its own asyncio.create_subprocess_shell path, per the module
+        # docstring's ABC-background-exec deferral), so unlike every other
+        # project-work exec call site it must open its own span here. task_id
+        # doubles as the correlation ref — already a uuid4 hex and already the
+        # registry key, so no second id is needed. _watch runs as a task spawned
+        # from this coroutine and inherits the ambient contextvar, so the sink
+        # resolves there with no extra threading.
+        _sink = current_activity_sink()
+        if _sink is not None:
+            try:
+                await _sink.emit_marker(ref=task_id, target=command)
+            except Exception:  # noqa: BLE001 — observability must never break task creation
+                logger.debug("task_create: activity marker emit skipped", exc_info=True)
         watcher = asyncio.create_task(self._watch(task_id, proc))
         self._tasks.add(watcher)
         watcher.add_done_callback(self._tasks.discard)
@@ -361,6 +375,13 @@ class BackgroundTaskManager:
         # Race guard: stop() commits "cancelled" before calling terminate(); if we see it
         # here, the cancellation wins — do not overwrite with "completed"/"failed".
         if entry.get("status") == "cancelled":
+            # Still resolve the timeline span opened in create() — a task that
+            # never emits a detail here would hang on "running…" for the rest
+            # of the turn even though the process has, in fact, exited (we're
+            # past proc.communicate() and have its real output in hand).
+            await self._emit_detail(
+                task_id, stdout_bytes, stderr_bytes, error="cancelled by operator",
+            )
             return
         entry["status"] = "completed" if proc.returncode == 0 else "failed"
         entry["completed_at"] = _now_iso()
@@ -371,6 +392,43 @@ class BackgroundTaskManager:
         entry["truncated_stderr"] = _truncate(
             stderr_bytes.decode("utf-8", errors="replace")
         )
+        await self._emit_detail(task_id, stdout_bytes, stderr_bytes, exit_code=proc.returncode)
+
+    async def _emit_detail(
+        self, task_id: str, stdout_bytes: bytes, stderr_bytes: bytes,
+        *, exit_code: Optional[int] = None, error: Optional[str] = None,
+    ) -> None:
+        """Resolve the Glass-Box Timeline span create() opened for ``task_id``.
+
+        Declared tradeoff: a background task can outlive the turn that spawned
+        it, so this detail may land after the timeline has already collapsed to
+        its summary — honest for a background task (that's what "background"
+        means), not a bug. Best-effort: a masking/emit fault here must never
+        affect the registry state already committed above.
+        """
+        sink = current_activity_sink()
+        if sink is None:
+            return
+        try:
+            from core.redaction import mask_secrets
+            raw_stdout = stdout_bytes.decode("utf-8", errors="replace")
+            raw_stderr = stderr_bytes.decode("utf-8", errors="replace")
+            safe_stdout = mask_secrets(_truncate(raw_stdout))
+            safe_stderr = mask_secrets(_truncate(raw_stderr))
+            await sink.emit_detail(
+                ref=task_id,
+                source="native_host",
+                cwd=None,
+                initiator="background_task",
+                stdout=safe_stdout,
+                stderr=safe_stderr,
+                exit_code=exit_code,
+                duration_ms=None,
+                truncated=(len(raw_stdout) > TASK_OUTPUT_TRUNC or len(raw_stderr) > TASK_OUTPUT_TRUNC),
+                error=error,
+            )
+        except Exception:  # noqa: BLE001 — observability must never break the watcher
+            logger.debug("task_watch: activity detail emit skipped (%s)", task_id, exc_info=True)
 
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
         return self._registry.get(task_id)

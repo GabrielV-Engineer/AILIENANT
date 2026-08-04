@@ -48,6 +48,20 @@ def _write_settings(data: Dict[str, Any]) -> None:
     _SETTINGS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def resolve_analyst_name() -> str:
+    """Return the configured analyst display name, defaulting to ``"Natt"``.
+
+    Unlike ``_read_settings()`` (whose IOError/PermissionError is meant to
+    surface as a 500 to the settings endpoint), this is consumed by prompt
+    builders that must never fail a turn over a preference read — any fault
+    degrades to the default name.
+    """
+    try:
+        return str(_read_settings().get("analyst_name", "Natt")).strip() or "Natt"
+    except Exception:  # noqa: BLE001 — a preference read must never block a task
+        return "Natt"
+
+
 @router.get("/soul")
 async def get_soul() -> Dict[str, Any]:
     path = _soul_path()

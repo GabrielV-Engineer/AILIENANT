@@ -22,6 +22,7 @@ import uuid
 from typing import AsyncIterator, Dict, Optional
 
 from api.websocket_manager import ConnectionManager, vfs_manager
+from core.activity_context import current_activity_sink, current_exec_ref
 from core.command_boundary import CommandBoundaryFramer
 from core.sandbox import (
     _PROVISION_TIMEOUT_S,
@@ -81,6 +82,16 @@ class WebSocketHostBridge(HostExecutionBridge):
         and returns a value rather than letting the outer wait race.
         """
         request_id = uuid.uuid4().hex
+        # DEBT-134: correlate this request_id with the Glass-Box Timeline row
+        # core/exec_log.py::record_execution already opened for this command,
+        # so append_devcontainer_stream can live-forward chunks against it.
+        # Both must resolve — an exec_ref with no sink (or vice versa) means
+        # there is no turn context to forward into, so this is skipped exactly
+        # like every other DEBT-133/134 call site degrades on a missing sink.
+        _exec_ref = current_exec_ref()
+        _sink = current_activity_sink()
+        if _exec_ref is not None and _sink is not None:
+            self._mgr.register_devcontainer_exec_activity(request_id, _exec_ref, _sink)
         await self._mgr.emit_devcontainer_exec_request(
             session_id=session_id,
             request_id=request_id,

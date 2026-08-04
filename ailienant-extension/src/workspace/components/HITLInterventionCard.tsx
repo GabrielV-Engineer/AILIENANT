@@ -6,15 +6,16 @@ import { useHitlResponder } from '../utils/useHitlResponder';
 export interface HITLIntervention {
     approval_id: string;
     action_description: string;
-    risk_metrics?: Array<{ label: string; level: 'low' | 'medium' | 'high' }>;
     proposed_content?: string;
     /** Classifier string forwarded from the backend payload.  Known values:
      *  FILE_WRITE, BUDGET_OVERFLOW, SANDBOX_DEGRADED_EXEC, MCP_TOOL_CALL,
      *  RISK_INTERCEPT (YOLO Guard — risky command in a permissive session).
      *  Unknown / absent values degrade gracefully to the generic card layout. */
     request_kind?: string | null;
-    /** YOLO Guard: pattern category labels matched against the command content.
-     *  Present only when request_kind === 'RISK_INTERCEPT'. */
+    /** Pattern category labels matched against the proposed content — a risky
+     *  shell command (RISK_INTERCEPT) or an edit's added diff lines (FILE_WRITE).
+     *  Rendered whenever present, regardless of request_kind, so an auto-accept
+     *  edit that got routed to manual review can say why. */
     risk_patterns_matched?: string[] | null;
 }
 
@@ -23,12 +24,6 @@ interface Props {
     nattName: string;
     onResolved: (approvalId: string) => void;
 }
-
-const RISK_LABEL: Record<'low' | 'medium' | 'high', string> = {
-    low:    'low risk',
-    medium: 'medium risk',
-    high:   'high risk',
-};
 
 export function HITLInterventionCard({ intervention, nattName, onResolved }: Props): JSX.Element {
     const [editMode, setEditMode] = useState(false);
@@ -76,9 +71,10 @@ export function HITLInterventionCard({ intervention, nattName, onResolved }: Pro
                     Approving once trusts this tool for the remainder of the current task session.
                 </div>
             )}
-            {isRiskIntercept && intervention.risk_patterns_matched && intervention.risk_patterns_matched.length > 0 && (
+            {intervention.risk_patterns_matched && intervention.risk_patterns_matched.length > 0 && (
                 <div className="ws-hitl-section" style={{ fontSize: 11, color: 'var(--accent-error)' }}>
-                    Detected: {intervention.risk_patterns_matched.join(', ')}
+                    {isRiskIntercept ? 'Detected: ' : 'Flagged for: '}
+                    {intervention.risk_patterns_matched.join(', ')}
                 </div>
             )}
 
@@ -86,19 +82,6 @@ export function HITLInterventionCard({ intervention, nattName, onResolved }: Pro
                 <div className="ws-hitl-label">Action proposed</div>
                 <div className="ws-hitl-action">{intervention.action_description}</div>
             </div>
-
-            {intervention.risk_metrics && intervention.risk_metrics.length > 0 && (
-                <div className="ws-hitl-section">
-                    <div className="ws-hitl-label">Risk assessment</div>
-                    <div className="ws-hitl-risks">
-                        {intervention.risk_metrics.map((r, i) => (
-                            <span key={i} className="ws-risk-pill" data-level={r.level}>
-                                {r.label} — {RISK_LABEL[r.level]}
-                            </span>
-                        ))}
-                    </div>
-                </div>
-            )}
 
             {intervention.proposed_content && (
                 <div className="ws-hitl-section">

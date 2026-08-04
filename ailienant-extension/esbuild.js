@@ -161,7 +161,13 @@ function assertGrammarEngineOffWebview() {
 // production builds so a regression that pulls a heavy dep back into the webview
 // breaks the build instead of silently regressing Time-to-Interactive. Dev builds
 // are unminified and expected to be larger, so the check is production-only.
-const WEBVIEW_BUNDLE_CEILING_BYTES = 550 * 1024;
+// The specific shiki/grammar-engine leak this guard exists to catch has its own
+// dedicated signature check (assertGrammarEngineOffWebview, above) — this ceiling
+// is the coarser backstop. Raised 550→555 KB in Phase 12.8 (Glass-Box Timeline
+// live-chunk streaming + persisted compaction fold added ~200 bytes of organic,
+// reviewed feature code, not a dependency regression); bump again only with the
+// same justification, never to silently absorb an unreviewed size increase.
+const WEBVIEW_BUNDLE_CEILING_BYTES = 555 * 1024;
 function assertWebviewBundleUnderCeiling() {
 	if (!production) { return; }
 	const bundle = 'dist/workspace.js';

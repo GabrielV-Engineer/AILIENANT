@@ -94,10 +94,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-118 | **CLOSED — won't-do.** A manual adapter set-tier control was rejected: forcing the execution tier can silently downgrade isolation (NATIVE_HITL host-exec < Docker cage). The 11.3 tier ladder stays a read-only diagnostic; no set-tier endpoint will be added | LOW | Security posture | — | CLOSED |
 | ~~DEBT-119~~ | ~~No useful container log surface.~~ **RESOLVED (11.3.B.3):** bounded in-memory `core/exec_log.py` ring fed by a `record_execution(...)` wrapper at the 6 project-work `execute()` callers, cursor-paged via `GET /api/v1/runtime/exec-log?since=&tail=N`; command+output masked and truncated; `RuntimePanel` "Sandbox command log" card. Ring is non-persistent → adds nothing to DEBT-120. | LOW | Feature gap | 11.3.B.3 | RESOLVED |
 | DEBT-120 | Append-only growth of the two **persisted** telemetry tables — `request_latency` (one row per task) and `container_lifecycle` grow unbounded; reads are windowed/clamped but the tables are not pruned. `core/janitor.py` exists; wire retention/GC of old rows into it (both tables carry `# TODO(retention): DEBT-120` markers). Note: the 11.3.B.3 exec-log ring is in-memory/self-evicting and is **not** in scope here. | LOW | Data retention | future janitor slice | Floating |
-| DEBT-121 | `brain/coder_companion.py::_companion_gpu_slot_available` unconditionally admits (MVP) — a local-tier judge model should probe `GPUResourceManager` non-blockingly and yield (skip) rather than contend for the VRAM lock the user's real coding turn holds. Cloud-tier is already contention-free. | LOW | Resource contention | future resource slice | Floating |
-| DEBT-122 | ~~The agentic-cell audit (`CellAuditWidget`) rendered as an unmigrated sibling below `AgentTimeline`.~~ **RESOLVED for cell scope (11.5.C.4)** — `LiveCellDispatcher.emit_tool_call_start` now fires a `"cell"` activity marker (`ref = cell:{iteration}`) per iteration, correlated via `upsertCellBody`; `AgentTimeline` renders a `cell` row reusing `CellAuditWidget`. **Remaining, narrower than originally scoped:** Rich Tool Chips (`ToolChip`/`ActionLog`) stay standalone — architecturally blocked, not merely deferred. Their only live data source, `execute_tracked_tool`, is a standalone dev-palette smoke command (`/dev/run-bash`), deliberately excluded from the abort mesh and never called by the main agent tool-call loop (which narrates via the separate `_classify_activity` path instead) — there is no turn-scoped `_push_activity` closure for a tool-chip marker to belong to. `upsertToolBody` (frontend) stays implemented and unit-tested, ready only if a future phase reroutes the main tool-call loop through `execute_tracked_tool` (a much larger, separately-scoped change) — or this may simply never be worth doing. | LOW | Feature gap | future — needs a main-loop reroute decision first | Floating |
-| DEBT-124 | The compaction fold (`SessionSummaryCard`) is live-session only — the compaction marker is a transient `SystemMessage` stripped from `PERSIST_TRANSCRIPT`, while the underlying bubbles persist, so a panel reload unwinds the fold and re-renders every message (no data loss; the safe default). Persist the fold boundary + summary so a compacted transcript stays compacted across reload. | LOW | FE durability | future dashboard slice | Floating |
-| DEBT-123 | `core/task_service.py`'s `NarrationGate`/`gate` instance is now vestigial — `_narrate` stopped calling `gate.allow()`/`broadcast_pipeline_step` in 11.5.C.3 (retired; superseded by the un-throttled `server_activity_event` channel), but `gate.record_answer(...)` is still called from ~8 sites across `_run_coding_task` to feed a budget nothing reads anymore. Harmless (dead bookkeeping, no correctness impact) but should be swept: remove `gate`/`NarrationGate()` and all `record_answer` call sites in one pass. | LOW | Dead code | future cleanup slice | Floating |
+| DEBT-121 | ~~`_companion_gpu_slot_available` unconditionally admits.~~ **RESOLVED (12.8)** — probes `GPUResourceManager.snapshot()` (non-blocking, never acquires) for a local-tier judge; a cloud-tier judge is unaffected; a probe fault fails open with a WARNING (not silent debug), since a silently-broken probe means undetected VRAM contention. | LOW | Resource contention | 12.8 | RESOLVED |
+| DEBT-122 | ~~Rich Tool Chips (`ToolChip`/`ActionLog`) stay standalone, architecturally blocked on a main-loop reroute.~~ **CLOSED — superseded (12.8)** — Option A (Pivot), CLAUDE.md §4: 12.7 gave `ToolDispatcher` three live consumers (the cell fallback, the coder's grounding pre-pass, dispatched subagents), so instrumenting `dispatch()` itself (12.8, closes DEBT-133) gives the timeline real tool-call rows without ever rerouting `execute_tracked_tool`. `ToolChip`/`ActionLog` stay mounted, re-scoped as the `/dev` palette's own inspector — what they always actually were. Dead `upsertToolBody` (built for the now-abandoned migration, never wired) deleted with its test. | LOW | Feature gap | 12.8 | CLOSED |
+| DEBT-124 | ~~The compaction fold does not survive a panel reload.~~ **RESOLVED (12.8)** — the fold boundary (marker id, anchor message id, summary, count) persists in the panel-survivable `workspaceStore` (same durability class as `inflightTurn`), re-applied on rehydrate by resolving the anchor message id against the current transcript (ids are stable across reload; array indices are not). | LOW | FE durability | 12.8 | RESOLVED |
+| DEBT-123 | ~~`NarrationGate`/`gate` instance in `task_service.py` is vestigial.~~ **RESOLVED (12.8)** — the instance and all ~8 `record_answer` call sites removed; `transport/token_batcher.py::NarrationGate` and `server_pipeline_step` (the wire contract) are untouched — only the dead bookkeeping instance was swept. | LOW | Dead code | 12.8 | RESOLVED |
 | DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
 | DEBT-079 | Cross-restart HITL resume reconstructs a minimal `TaskPayload` (thinking-config defaults; original prompt/attachments not persisted) | LOW | Durability | 12.5 | RESOLVED |
 | DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
@@ -117,13 +117,13 @@ Decision    Not a defect — see [DECISION] tier.
 | ~~DEBT-054~~ | ~~todo_write / agent_todos channel unbound — no cognitive node wiring~~ — **RESOLVED (12.3)**: 8.18 already wired the tool; closed the remaining half (state-channel promotion + WS event + UI panel) | LOW | Integration gap | 12.3 | RESOLVED |
 | ~~DEBT-027~~ | ~~MCP servers not auto-connected at launch~~ — **RESOLVED (11.13)**: connected at host start, on save, and reconciled per task | LOW | Feature gap | 11.13 | RESOLVED |
 | DEBT-127 | ~~Per-role prompt overrides are ignored by dispatched subagents~~ **RESOLVED (12.7)** — new `build_subagent_system_prompt` threads the saved override into both the tool-loop seed and the final-answer synthesiser | LOW | Integration gap | 12.7 | RESOLVED |
-| DEBT-128 | `analyst_name` setting is persisted but never read — the persona path reads SOUL.md only | LOW | Integration gap | dashboard Rules slice | Floating |
+| DEBT-128 | ~~`analyst_name` setting is persisted but never read.~~ **RESOLVED (12.8)** — a shared `resolve_analyst_name()` (`api/system_settings.py`) feeds both `SoulManager.get_prompt()` (appended AFTER the ADR-701 identity clause — a form of address, never an identity override) and the chat system prompt; default `"Natt"` contributes nothing (byte-identical prompt). | LOW | Integration gap | 12.8 | RESOLVED |
 | DEBT-129 | ~~Coder's registry-fallback tools (Division 8.18) have no interactive HITL approval channel~~ **RESOLVED (12.7)** — a HITL-tier fallback tool now defers via new `pending_tool_call` state channel and executes exactly once on operator approval | MEDIUM | Capability gap | 12.7 | RESOLVED |
 | DEBT-130 | ~~`run_coder_node`'s one-shot SEARCH/REPLACE path still has zero tool-calling~~ **RESOLVED (12.7)** — a bounded READ_ONLY tool-grounding pre-pass runs ahead of generation when the step is thin on context; the SEARCH/REPLACE call itself stays tool-free | MEDIUM | Capability gap | 12.7 | RESOLVED |
 | DEBT-131 | `core/tool_registry.py::_INTENTIONALLY_UNREGISTERED` — 11 tools deliberately left unwired: decision record | DECISION | Architecture | N/A | Decision |
-| DEBT-132 | `BackgroundTaskManager.create` bypasses `record_execution` (own `create_subprocess_shell` path) — background tasks get no Glass-Box Timeline I/O detail box | LOW | Feature gap | future EXECUTE-tier ABC background-exec method | Floating |
-| DEBT-133 | File-read and MCP-tool-call I/O detail not on the Glass-Box Timeline (11.5.D scoped to `command` only) — different chokepoints (`make_safe_reader`, `tool_dispatch.py`), separate PII/token-budget call for file content | LOW | Feature gap | future timeline-depth slice | Floating |
-| DEBT-134 | Execution-detail I/O fills on completion, not incrementally — `SandboxSession.stream()` (persistent-PTY path) is unused by the one-shot `execute()` path 11.5.D instruments | LOW | UX polish | future streaming-output slice | Floating |
+| DEBT-132 | ~~`BackgroundTaskManager.create` bypasses `record_execution`.~~ **RESOLVED (12.8)** — emits directly to the turn's `ActivitySink` (marker in `create`, terminal detail in `_watch`, including the `cancelled` race branch) rather than waiting for the deferred ABC method; `task_id` doubles as the correlation ref. | LOW | Feature gap | 12.8 | RESOLVED |
+| DEBT-133 | ~~File-read and MCP-tool-call I/O detail not on the Glass-Box Timeline.~~ **RESOLVED for tool calls (12.8)** — `ToolDispatcher.dispatch` instruments the sink directly (masked/capped args+observation), covering every registry/MCP tool call across all three live consumers (cell fallback, grounding pre-pass, dispatched subagents). File-read metadata (size) enriches the coder's existing `read` marker. **File-content preview stays deferred** — re-logged below with its own PII rationale. | LOW | Feature gap | 12.8 (partial) | RESOLVED (partial) |
+| DEBT-134 | ~~Execution-detail I/O fills on completion, not incrementally.~~ **RESOLVED (12.8)** — the devcontainer tier (the one transport that already streams host→backend, since 12.4/DEBT-083) now live-forwards each chunk via a new `server_activity_detail_chunk` event, correlated by a `core.activity_context` exec-ref `ContextVar`; bounded by a backend cumulative-char cap (`_LIVE_STREAM_CAP`) plus a frontend retention clamp. Every other tier is unaffected — still fills on completion. | LOW | UX polish | 12.8 | RESOLVED |
 | DEBT-135 | The 11.9 Playwright dashboard fixture (`ailienant-core/tests/e2e/seed_dashboard_fixture.py`) writes directly into the catalog SQLite + LanceDB stores via existing low-level helpers (`upsert_indexed_file`/`upsert_dependencies`/`SemanticMemoryManager._write_record`), bypassing the real indexer — proves the dashboard's read side, never the indexer→dashboard pipeline end-to-end | LOW | Test fidelity | future e2e-fidelity slice | Floating |
 | DEBT-136 | The 11.9 Playwright suite (`ailienant-extension/playwright.config.ts`) runs Chromium only — no cross-browser (Firefox/WebKit) matrix, accepted as smoke-gate scope for a locally-served SPA | LOW | Test coverage | future cross-browser slice | Floating |
 | DEBT-137 | Provider-native `cache_control` + cache telemetry not implemented — 12.1 shipped only the prefix-stability prerequisite; the cacheable prefix is too small (~300-450 tokens) to clear any provider's minimum-cacheable-token floor today. 12.7 landed but did not unblock this: the grounding pre-pass's tool schemas live in a separate reasoning call, not the coder's stable system-message HEAD | LOW | Cost optimization | re-evaluate when the HEAD prefix grows | Floating |
@@ -144,8 +144,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-014 | brain/swarms.py NodeInputT 6 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
 | DEBT-012 | Diff highlighting disables word-level diff | LOW | UX polish | 12.5 | RESOLVED |
 | ~~DEBT-007~~ | ~~Auto-accept pays full HITL round-trip~~ **RESOLVED (11.8):** shift-left to the apply edge — the backend omits `server_hitl_approval_request` for low-risk edits (added diff lines trip no `_RISK_PATTERNS`) and applies server-side; the vacuous frontend short-circuit was removed. | LOW | Performance | 11.8 | RESOLVED |
-| DEBT-126 | Minor investigation backlog deferred from the live-test Phase 1 sweep (11.10): (a) turn-duration measurement still reads 0.0s in some spans (the shared batch timestamp fixed the multi-file jitter; verify the timer actually brackets the actuation phase); (b) the frontend `server_indexing_started` handler is dead code — no backend `broadcast_indexing_started` exists, so either wire it or delete it (§10 contract rot). Both low-risk, low-cost. | LOW | Observability / Hygiene | 11.10 | Floating |
-| DEBT-125 | The apply-edge "low-risk" gate reuses command-tuned `_RISK_PATTERNS` as a proxy over added diff lines — coarse, fails toward the card. Build a diff-aware/semantic edit-risk classifier returning a real low/medium/high verdict; also fix the `risk_metrics` (FE) ↔ `risk_patterns_matched` (BE) name mismatch so the approval card can display *why* an edit was flagged. | LOW | Risk classification | future safety slice | Floating |
+| DEBT-126 | ~~(a) turn-duration reads 0.0s in some spans; (b) dead `server_indexing_started` frontend handler.~~ **RESOLVED (12.8)** — (a) `ConversationMessage` gained `turnStartedAt`/`turnElapsedMs`, sourced from the wall-clock submit-time marker (`chatStore.activeTaskStartedAt`) and frozen at `server_stream_end`, spanning the WHOLE turn rather than the activity-marker window; `AgentTimeline`'s summary prefers it, falling back to the marker span for a pre-12.8 rehydrated transcript. (b) verified stale by a repo-wide sweep — `server_indexing_started` had **zero** occurrences anywhere; the handler this entry asked to wire-or-delete no longer existed at investigation time. No code change for (b); recorded here as a ledger correction, matching the DEBT-027 precedent (11.13). | LOW | Observability / Hygiene | 12.8 | RESOLVED |
+| DEBT-125 | ~~Apply-edge "low-risk" gate proxy; `risk_metrics`↔`risk_patterns_matched` name mismatch.~~ **RESOLVED for display wiring (12.8)** — the FILE_WRITE approval now forwards per-file `risk_patterns_matched` (computed but previously never sent); the card renders "Flagged for: …" for any request kind, not just `RISK_INTERCEPT`; the dead FE-only `risk_metrics` field (no backend producer, ever) deleted. **The semantic classifier itself stays deferred** — re-logged below; the binary regex proxy is unchanged, by design (out of scope for a triage sweep, not an oversight). | LOW | Risk classification | 12.8 (partial) | RESOLVED (partial) |
 | DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
 | DEBT-097 | Single shared Docker sandbox container across all concurrent sessions (noisy-neighbor + shared blast radius) | HIGH | Reliability / Scale | 12.6 | RESOLVED 2026-08-03 |
 | DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
@@ -154,6 +154,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-150 | A hijacked interactive-PTY exec socket still leaks an `ail-docker` thread on a daemon hang — the one Docker call a socket timeout cannot bound | LOW | Reliability | future sandbox-resilience slice | Floating |
 | DEBT-151 | Sandbox pool exhaustion degrades to same-mount container sharing (CPU/RAM contention) rather than a true admission queue with backpressure | LOW | Reliability / Scale | future sandbox-resilience slice | Floating |
 | DEBT-152 | `brain/agentic_cell.py::sweep_orphaned_sessions` is unwired (pre-existing TODO) — an aborted run's PTY session lease now survives idle-TTL reaping (refcount never drops to 0) and can permanently occupy a bounded pool slot, where pre-12.6 it only wasted a socket in an unbounded container | MEDIUM | Reliability / Scale | future agentic-cell lifecycle slice | Floating |
+| DEBT-154 | Apply-edge "low-risk" gate is still a command-pattern proxy over added diff lines, not a real edit-risk classifier — carried forward from DEBT-125 (display-wiring half closed 12.8) | LOW | Risk classification | future safety slice | Floating |
+| DEBT-155 | File-read content preview not on the Glass-Box Timeline — a `read` marker shows a size metric (12.8) but never masked file content; needs its own truncation/redaction design distinct from command-output masking | LOW | Feature gap | future timeline-depth slice | Floating |
 
 ---
 
@@ -273,9 +275,11 @@ Decision    Not a defect — see [DECISION] tier.
 - **Notes:** analogous to Claude Code's `/compact` auto-compact. Addresses both DOM memory pressure AND context-window viability for local model sessions. Confirmed need 2026-06-14.
 - **Resolution (2026-07-27, Phase 11.7):** shipped as chat compaction for long sessions, closing this entry together with DEBT-078. Residual scope (fold durability across a panel reload) re-logged separately as DEBT-124.
 
-### DEBT-124 [LOW · Floating] — Compaction fold does not survive a panel reload
+### DEBT-124 [LOW · RESOLVED 2026-08-04, 12.8] — Compaction fold does not survive a panel reload
 
-- **Date:** 2026-07-27
+- **Date:** 2026-07-27 · **Resolved:** 2026-08-04 (12.8)
+- **Resolution:** a `CompactionFold` slice (`markerId`, `afterMessageId`, `summaryText`, `turnsCompressed`) persists in `workspaceStore` — the same panel-survivable (hide/reveal, not cross-VS-Code-restart) durability class `inflightTurn` already used for its own display-only resilience. Written when the `state_compacted` chip is created; on render, `Workspace.tsx` falls back to it only when no live chip survives in `messages` (`lastCompactionIdx === -1`), resolving `afterMessageId` against the rehydrated transcript by id — stable across reload, unlike an array index. The fallback boundary row is a real bubble (the anchor message), not a placeholder chip, so its hidden-count arithmetic is `+1` relative to the live-marker case; both paths converge on the same render logic (`i < boundary` hidden, `i === boundary` renders the card only, `i > boundary` normal). "Show original messages" unaffected — no bubble is ever deleted.
+- **File(s):** `ailienant-extension/src/workspace/workspaceStore.ts`, `hooks/useWSMessageHandler.ts`, `Workspace.tsx`.
 - **Reproduce:** Drive a session past the compaction threshold so the transcript folds behind a `SessionSummaryCard`. Close and reopen the webview panel. The fold is gone — every original message re-renders fully.
 - **File(s):** `ailienant-extension/src/workspace/hooks/useSessionPersistence.ts` (system chips stripped from `PERSIST_TRANSCRIPT`); `ailienant-extension/src/workspace/types.ts` (`SystemMessage.compaction`, transient).
 - **Error:** FE durability gap (intentional MVP scope). The compaction marker rides on a transient `SystemMessage`, deliberately excluded from the persisted transcript, so the fold boundary + prose are lost on reload while the underlying `ConversationMessage`s persist. This is the safe default (no data loss), but the declutter does not stick. Fix: persist the fold boundary index + `summaryText` (e.g. a dedicated persisted slice keyed by marker id) and re-apply the fold on rehydrate.
@@ -283,25 +287,25 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** Phase 11 (deferred from 11.7).
 - **Notes:** Non-destructive by design; recoverability via "Show original messages" is unaffected. Deferred to keep 11.7 blast radius contained.
 
-### DEBT-125 [LOW · Floating] — Apply-edge "low-risk" gate is a command-pattern proxy, not an edit-risk classifier
+### DEBT-125 [LOW · RESOLVED (display wiring) 2026-08-04, 12.8] — Apply-edge "low-risk" gate is a command-pattern proxy, not an edit-risk classifier
 
-- **Date:** 2026-07-27
-- **Reproduce:** N/A (design coarseness, not an error). The 11.8 shift-left gate decides "low-risk"
-  by scanning an edit's **added diff lines** against `permissions.py::_RISK_PATTERNS` — a pattern
-  set originally tuned for shell-command content (privilege escalation, mass deletion, network
-  egress, secret access, package install). It fails toward the card (a false positive costs one
-  manual approval, never an unsafe silent write), but it is a proxy: it neither understands code
-  semantics nor grades severity (everything is binary low vs. not-low).
-- **File(s):** `ailienant-core/core/task_service.py` (the HITL-branch gate); `ailienant-core/core/permissions.py` (`scan_risk_patterns` / `_RISK_PATTERNS`); `ailienant-extension/src/shared/types.ts` + `ailienant-extension/src/workspace/components/HITLInterventionCard.tsx` (`risk_metrics`, dead field).
-- **Error:** (1) No real low/medium/high edit-risk verdict — the manifest's "risk metric" vocabulary
-  has no backend producer. (2) Name mismatch: the backend attaches labels as `risk_patterns_matched`
-  (`List[str]`) while the frontend reads `risk_metrics` (`{label, level}[]`), which is never sent —
-  so the approval card cannot show *why* an edit was flagged.
-- **Blocked by:** nothing — self-contained. A classifier (heuristic size/scope + secret/dep-graph
-  signals, or a small model) can replace the regex proxy; forwarding `risk_patterns_matched` onto
-  the FILE_WRITE card + renaming the FE field closes the display gap.
-- **Phase:** future safety slice (deferred from 11.8).
-- **Notes:** Deferred to keep 11.8's blast radius contained; the conservative gate is already safe.
+- **Date:** 2026-07-27 · **Resolved (partial):** 2026-08-04 (12.8)
+- **Was:** the 11.8 shift-left gate decided "low-risk" by scanning an edit's **added diff lines**
+  against `permissions.py::_RISK_PATTERNS` — correct as a fail-toward-the-card heuristic, but the
+  FILE_WRITE approval card never received the computed labels (a real display gap, not a classifier
+  gap): the backend attached them as `risk_patterns_matched` while the frontend read a dead,
+  never-sent `risk_metrics` field.
+- **Resolved:** `task_service.py`'s HITL branch now computes a per-file label set (from that file's
+  own diff, not the whole batch's auto-accept gate input) and forwards it as
+  `risk_patterns_matched` on every FILE_WRITE approval. `HITLInterventionCard.tsx` renders "Flagged
+  for: …" whenever the field is present, regardless of `request_kind` (previously gated to
+  `RISK_INTERCEPT` only). The dead `risk_metrics` field (`shared/types.ts`, the card's own dead
+  render branch) is deleted, not just unused.
+- **Deliberately NOT done:** the semantic edit-risk classifier itself — the binary regex proxy is
+  unchanged. Re-logged as **DEBT-154** with its own scope, since a real low/medium/high verdict
+  changes which edits apply silently and belongs in a dedicated safety slice, not folded into a
+  triage sweep.
+- **File(s):** `ailienant-core/core/task_service.py`, `ailienant-extension/src/workspace/components/HITLInterventionCard.tsx`, `ailienant-extension/src/shared/types.ts`.
 
 ### DEBT-066 [HIGH · RESOLVED 2026-06-20, 8.10.8] — No runtime LLM tool-dispatch loop activates the registered tools
 
@@ -818,15 +822,12 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolved:** `agents/roles.py` gained a dedicated `build_subagent_system_prompt(role, override)` seam — the "dedicated seam rather than reusing the coder builder verbatim" this entry's own note anticipated. It composes the role directive (or the saved override) plus `LANGUAGE_MIRROR_DIRECTIVE`, deliberately *without* `_BASE_CODER_PROMPT` (whose SEARCH/REPLACE contract does not apply to a subagent constrained to a `response_schema`-driven JSON answer). `subagent_worker` resolves it once from `state["agent_role_overrides"]` (the same channel `agents/coder.py` reads) and threads it into both the tool-loop seed message and the final-answer synthesiser — the latter via a `_make_default_answer(system_prompt) -> AnswerFn` closure that keeps the `AnswerFn` signature, and therefore the `dispatch_answer_fn` test seam, unchanged. A role absent from `ROLE_REGISTRY` (e.g. `analyst_readonly`, which has no directive/override concept of its own) falls back to the language-mirror directive alone rather than inheriting `get_role_config`'s `core_dev` default.
 - **Notes:** unblocked by DEBT-106 landing in the same slice, as this entry anticipated.
 
-### DEBT-128 [LOW · Floating] — `analyst_name` setting is persisted but never read
+### DEBT-128 [LOW · RESOLVED 2026-08-04, 12.8] — `analyst_name` setting is persisted but never read
 
-- **Date:** 2026-07-30
-- **Reproduce:** set the Analyst name via `POST /api/v1/system/settings`; the value round-trips through `~/.ailienant/settings.json` and the dashboard, but the persona the agent actually adopts is unchanged.
-- **File(s):** `ailienant-core/api/system_settings.py:19` (default `"Natt"`, written and read back), `ailienant-core/brain/personality.py` / `shared/persona.py` (read SOUL.md, never the configured name).
-- **Error:** integration gap — the same class as the output-style and role-override stubs 11.13 closed, but this control lives in the dashboard Rules panel, not the command menu, so it was out of that phase's scope.
-- **Blocked by:** none.
-- **Phase:** Floating — fold into a dashboard Rules-panel slice.
-- **Notes:** found while auditing the command menu; the menu only links out to the Rules panel, it does not own this control.
+- **Date:** 2026-07-30 · **Resolved:** 2026-08-04 (12.8)
+- **Was:** the Analyst name round-tripped through `~/.ailienant/settings.json` and the dashboard, but the persona the agent actually adopts was unchanged — `brain/personality.py`/`shared/persona.py` read SOUL.md only.
+- **Resolved:** new `api/system_settings.py::resolve_analyst_name()` (fault-tolerant, defaults `"Natt"`) feeds two call sites: `SoulManager.get_prompt()` appends a name clause AFTER `compose()`'s ADR-701 identity clause (never before it — a form of address, not an identity override) at every one of its four return points; `core/task_service.py::_resolve_chat_system_prompt` gained a parallel `_resolve_analyst_name_directive()` alongside the existing `_resolve_output_style_directive()`. Default name contributes nothing (byte-identical prompt), preserving `test_prompt_prefix_stability.py`.
+- **File(s):** `ailienant-core/api/system_settings.py`, `ailienant-core/brain/personality.py`, `ailienant-core/core/task_service.py`.
 
 ### DEBT-129 [MEDIUM · RESOLVED 2026-08-03, 12.7] — Coder registry-fallback tools have no interactive HITL approval channel
 
@@ -1171,35 +1172,56 @@ Decision    Not a defect — see [DECISION] tier.
 - **Notes:** carved out of DEBT-079's closure (12.5) per CLAUDE.md §11.3 — the review's principle is
   accepted, the closure of DEBT-079 was not blocked on building the separation first.
 
-### DEBT-132 [LOW · Floating] — Background-task executions get no Glass-Box Timeline I/O detail
+### DEBT-132 [LOW · RESOLVED 2026-08-04, 12.8] — Background-task executions get no Glass-Box Timeline I/O detail
 
-- **Date:** 2026-07-30
-- **Reproduce:** drive a task through `tools.execution_tools.BackgroundTaskManager.create` (the `task_create` tool) rather than `sandbox_bash`/`check_type_integrity`. The spawned command never appears with an expandable execution box on the timeline — no marker, no detail.
-- **File(s):** `ailienant-core/tools/execution_tools.py::BackgroundTaskManager.create` (own `asyncio.create_subprocess_shell` path, bypasses `core/exec_log.py::record_execution` entirely).
-- **Error:** capability gap, deliberately scoped out of 11.5.D. `record_execution`'s marker/detail pair models one bounded call with a single completion moment; a fire-and-forget background task has no such moment within the turn that spawned it — its own polling reads (`task_get`) would need a different Glass-Box representation, not the same one.
-- **Blocked by:** none technically; needs a background-execution method added to the `SandboxAdapter` ABC first (the `execution_tools.py` module docstring already flags this as deferred, independent of this division), then a timeline shape for "spawned, still running, polled N times."
-- **Phase:** future EXECUTE-tier ABC background-exec method slice.
-- **Notes:** the blocking, bounded call sites (`sandbox_bash`, `check_type_integrity`, `coder_verify`, `_gated_exec`) are exactly the ones 11.5.D covers — this is the one execution path deliberately left out.
+- **Date:** 2026-07-30 · **Resolved:** 2026-08-04 (12.8)
+- **Was:** `BackgroundTaskManager.create`'s own `asyncio.create_subprocess_shell` path bypassed `core/exec_log.py::record_execution` entirely — a spawned task never appeared with an expandable execution box.
+- **Resolved:** rather than the speculated new `SandboxAdapter` ABC background-execution method (a bigger change for one caller), `create`/`_watch` emit directly to the turn's `ActivitySink`: `create` opens the span with `task_id` doubling as the correlation ref (already a uuid4 hex, already the registry key); `_watch` resolves it with a masked/capped terminal detail on every exit path, including the `cancelled` race-guard branch (which previously returned silently, leaving nothing to close the row). `_watch` is a task spawned from `create`, so it inherits the ambient sink contextvar for free.
+- **Declared tradeoff:** a background task can outlive the turn that spawned it, so its detail may land after the timeline has already collapsed to its summary — honest for a background task (that's what "background" means), not a defect.
+- **File(s):** `ailienant-core/tools/execution_tools.py`.
 
-### DEBT-133 [LOW · Floating] — File-read and MCP-tool-call I/O not on the Glass-Box Timeline
+### DEBT-133 [LOW · RESOLVED for tool calls 2026-08-04, 12.8] — File-read and MCP-tool-call I/O not on the Glass-Box Timeline
 
-- **Date:** 2026-07-30
-- **Reproduce:** any `read`-kind timeline node (a file read) or an MCP tool call renders as a plain one-line marker — no expandable body, unlike a `command` node after 11.5.D.
-- **File(s):** would touch `core/vfs_middleware.py::make_safe_reader` (file reads) and `tools/mcp_adapter.py`/`core/tool_dispatch.py` (MCP tool calls) — two different chokepoints, neither the one 11.5.D instrumented.
-- **Error:** capability gap, explicitly out of scope for 11.5.D (see its Scope section: "Commands only"). Extending the same `ActivityDetailPayload`/`ActivitySink` pattern to file content raises a distinct question 11.5.D's command output didn't: file content is unbounded and potentially sensitive in a different way than command stdout (source code vs. arbitrary shell output), so the truncation/redaction policy needs its own design pass, not a copy-paste of `record_exec`'s masking.
-- **Blocked by:** a token-hygiene decision for how much of a read file's content is safe/useful to surface in a detail box (charter §5.5 — never inject unbounded raw I/O).
-- **Phase:** future timeline-depth slice, after real usage of the 11.5.D command box shows whether the same treatment is wanted for reads/tool calls.
-- **Notes:** MCP tool-call detail is a smaller lift than file-read detail (tool results are already structured, not raw file bytes) — a natural first target if this is picked up.
+- **Date:** 2026-07-30 · **Resolved (tool calls):** 2026-08-04 (12.8)
+- **Was:** a `read`-kind marker (a file read) or an MCP/registry tool call rendered as a plain one-line marker — no expandable body.
+- **Resolved (tool calls):** `core/tool_dispatch.py::ToolDispatcher.dispatch` now instruments the `ActivitySink` directly — the single chokepoint all three live consumers (the agentic-cell fallback, the coder's READ_ONLY grounding pre-pass, dispatched subagents) share since 12.7. A denied/unresolved/undispatched call emits a ref-less `emit_blocked`; an executed call gets marker + masked/capped detail (args + observation, via a new shared `core/redaction.py::truncate_middle`). A HITL-tier fallback call (DEBT-129's `pending_tool_call` defer) opens its span BEFORE the approval round-trip and carries a stable `activity_ref` through the checkpointed channel so a LangGraph replay of the resume phase never opens a duplicate row — see `docs/SCHEMA_EVOLUTION.MD` §50.
+- **Resolved (file-read, narrower than the original ask):** rather than instrumenting `make_safe_reader` (sync, no natural await point, and used by many non-agent-driven callers), the coder's own single `reading {file}` marker gained a size metric, computed after the read completes. A tool-initiated read (the `read_file` registry tool) is already covered by the tool-call detail above — no double instrumentation.
+- **Deliberately NOT done:** a masked content preview of the file itself. Re-logged as **DEBT-155** — file content is unbounded and sensitive in a way command stdout is not (source code vs. arbitrary shell output), and needs its own truncation/redaction design pass, not a copy of `record_exec`'s masking.
+- **File(s):** `ailienant-core/core/tool_dispatch.py`, `ailienant-core/core/redaction.py`, `ailienant-core/agents/coder.py`, `ailienant-core/brain/agentic_cell.py`.
 
-### DEBT-134 [LOW · Floating] — Execution-detail output fills on completion, not incrementally
+### DEBT-134 [LOW · RESOLVED 2026-08-04, 12.8] — Execution-detail output fills on completion, not incrementally
 
-- **Date:** 2026-07-30
-- **Reproduce:** run a long-lived command through `sandbox_bash` (e.g. a slow test suite) — the timeline node's I/O box stays empty (just an "active" spinner state) until the command finishes, then fills all at once. No line-by-line streaming like a live terminal.
-- **File(s):** `ailienant-core/core/pty_session.py::SandboxSession.stream()` (the `AsyncIterator[bytes]` primitive that WOULD enable this) is real and used by the persistent-PTY agentic-cell path, but `core/exec_log.py::record_execution` wraps the one-shot `adapter.execute()` call, which returns a single `SandboxResult` only on completion — there is no incremental hook for it to forward.
-- **Error:** UX limitation, explicitly scoped out of 11.5.D (see its Scope section: "Filled on completion"). Wiring true streaming would need a new throttled delta channel (mirroring `server_thinking_chunk`'s chunking discipline) and only serves the subset of commands that go through a PTY session, not the plain `execute()` path `sandbox_bash`/`check_type_integrity` use today.
-- **Blocked by:** a decision on whether one-shot EXECUTE-tier tools should be rebuilt on top of `SandboxSession` (a bigger change than adding a streaming channel) or whether streaming stays PTY-session-exclusive.
-- **Phase:** future streaming-output slice.
-- **Notes:** the marker-fires-before-execution design (this division) already gives a live "active" state for free without streaming — this debt is specifically about the *body* appearing incrementally, not the node's status.
+- **Date:** 2026-07-30 · **Resolved:** 2026-08-04 (12.8)
+- **Was:** the timeline node's I/O box stayed empty until a command finished, then filled all at once — no line-by-line streaming.
+- **Resolved:** rather than rebuilding one-shot EXECUTE-tier tools onto `SandboxSession` (the originally-speculated, much larger fix), the devcontainer tier — the one transport that already streams host→backend incrementally, since 12.4/DEBT-083 — now forwards those already-arriving chunks live. `core/activity_context.py` gained a second `ContextVar` (`bind_exec_ref`/`current_exec_ref`), bound by `record_execution` only around its `adapter.execute()` await; `api/devcontainer_bridge.py::WebSocketHostBridge.exec_command` reads it (paired with the sink) to register its own transport-level `request_id` against the timeline's `exec_id`. A new `server_activity_detail_chunk` WS event carries each masked fragment. Bounded on both sides (charter §5.5): a backend cumulative-character cap (`_LIVE_STREAM_CAP`, 16,000 chars) stops forwarding and sends one suppression notice past the ceiling; a frontend retention clamp (`MAX_LIVE_EXEC_FIELD_CHARS`, 4,000 chars, head+tail preserved) bounds the store regardless. The terminal detail always REPLACES accumulated chunk text, never appends to it — a stray late chunk after settle is a no-op. Docker/Wasm/native-host tiers are unaffected, still filling on completion.
+- **File(s):** `ailienant-core/core/activity_context.py`, `ailienant-core/core/exec_log.py`, `ailienant-core/api/devcontainer_bridge.py`, `ailienant-core/api/websocket_manager.py`, `ailienant-core/api/ws_contracts.py`, `ailienant-core/core/task_service.py`; `ailienant-extension/src/api/contracts.ts`, `ailienant-extension/src/workspace/utils/timelineBuilder.ts`, `ailienant-extension/src/workspace/hooks/useWSMessageHandler.ts`, `ailienant-extension/src/shared/config.ts`.
+
+### DEBT-154 [LOW · Floating] — Apply-edge risk gate is still a command-pattern proxy, not a real edit-risk classifier
+
+- **Date:** 2026-08-04
+- **Reproduce:** N/A (design coarseness, not an error). The gate still decides "low-risk" by scanning
+  an edit's added diff lines against `permissions.py::_RISK_PATTERNS` — a pattern set tuned for
+  shell-command content, applied as a binary low/not-low proxy over code. Carried forward unchanged
+  from DEBT-125, whose display-wiring half closed in 12.8.
+- **File(s):** `ailienant-core/core/task_service.py`, `ailienant-core/core/permissions.py`.
+- **Blocked by:** nothing — self-contained. A classifier (heuristic size/scope + secret/dep-graph
+  signals, or a small model) returning a real low/medium/high verdict can replace the regex proxy.
+- **Phase:** future safety slice.
+- **Notes:** the conservative gate is already safe (fails toward the manual card); this is a
+  precision gap, not a security gap.
+
+### DEBT-155 [LOW · Floating] — File-read content preview not on the Glass-Box Timeline
+
+- **Date:** 2026-08-04
+- **Reproduce:** a `read`-kind marker shows a size metric (12.8) but never the file content itself —
+  unlike a `command` node's stdout/stderr.
+- **File(s):** would touch `core/vfs_middleware.py::make_safe_reader` or the coder's read call site.
+- **Blocked by:** a token-hygiene/PII decision for how much of a read file's content is safe to
+  surface in a detail box (charter §5.5) — file content is source code, not arbitrary shell output,
+  and needs its own truncation/redaction design pass distinct from `record_exec`'s masking.
+- **Phase:** future timeline-depth slice.
+- **Notes:** carved out of DEBT-133 at its 12.8 resolution — the tool-call half of that entry is
+  closed; this is the narrower remainder.
 
 ### DEBT-025 [LOW · Blocked] — Docker persistent-PTY backend has no daemon integration test
 

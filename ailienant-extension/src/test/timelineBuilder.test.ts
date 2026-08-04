@@ -9,8 +9,8 @@ import * as assert from 'assert';
 import type { ActivityEventPayload } from '../api/contracts';
 import type { CellIterationShape, DiffBlockShape, ExecutionDetailShape, TimelineEntry } from '../shared/config';
 import {
-    upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertToolBody, upsertCellBody,
-    upsertExecutionBody, stripReasoningForPersist,
+    upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody,
+    upsertExecutionBody, upsertExecutionChunk, stripReasoningForPersist,
 } from '../workspace/utils/timelineBuilder';
 
 function marker(over: Partial<ActivityEventPayload> & { seq: number; kind: ActivityEventPayload['kind'] }): ActivityEventPayload {
@@ -125,24 +125,6 @@ suite('11.5.C.1 — timelineBuilder', () => {
         entries = upsertDiffBody(entries, 'b.py', diffBlock('b.py'), 100);
         assert.strictEqual(entries.length, 2);
         assert.deepStrictEqual(entries.map(e => e.id).sort(), ['a.py', 'b.py']);
-    });
-
-    // ── Tool — same identity-keyed mechanism (forward-use, unwired this slice) ──
-
-    test('tool body upserts and updates status by wire status', () => {
-        let entries: TimelineEntry[] = [];
-        entries = upsertToolBody(entries, 'call-1', {
-            tool_call_id: 'call-1', tool_name: 'pytest', args: {}, status: 'pending', output_lines: [],
-        }, 100);
-        assert.strictEqual(entries[0].status, 'active');
-
-        entries = upsertToolBody(entries, 'call-1', {
-            tool_call_id: 'call-1', tool_name: 'pytest', args: {}, status: 'success',
-            output_lines: ['2 passed'], exit_code: 0,
-        }, 100);
-        assert.strictEqual(entries.length, 1);
-        assert.strictEqual(entries[0].status, 'done');
-        assert.strictEqual(entries[0].tool?.exit_code, 0);
     });
 
     // ── Cell — order-agnostic correlation by cell:{iteration} ref ───────────
@@ -278,6 +260,66 @@ suite('11.5.C.1 — timelineBuilder', () => {
         entries = upsertExecutionBody(entries, 'exec-2', execDetail({ exit_code: 0 }), 100);
         assert.strictEqual(entries.length, 2);
         assert.deepStrictEqual(entries.map(e => e.id).sort(), ['exec-1', 'exec-2']);
+    });
+
+    // ── Live execution chunks (DEBT-134) — accumulate, clamp, then get replaced ──
+
+    test('CHUNK1: a chunk with no prior entry creates an active placeholder', () => {
+        const entries = upsertExecutionChunk([], 'exec-5', 'stdout', 'building…', 100);
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].id, 'exec-5');
+        assert.strictEqual(entries[0].status, 'active');
+        assert.strictEqual(entries[0].execution?.stdout, 'building…');
+    });
+
+    test('CHUNK1: successive chunks accumulate onto the same field in order', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertExecutionChunk(entries, 'exec-5', 'stdout', 'foo', 100);
+        entries = upsertExecutionChunk(entries, 'exec-5', 'stdout', 'bar', 100);
+        entries = upsertExecutionChunk(entries, 'exec-5', 'stderr', 'warn', 100);
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].execution?.stdout, 'foobar');
+        assert.strictEqual(entries[0].execution?.stderr, 'warn');
+        assert.strictEqual(entries[0].status, 'active');
+    });
+
+    test('CHUNK3: the terminal detail REPLACES accumulated chunk text, never appends to it', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertExecutionChunk(entries, 'exec-5', 'stdout', 'partial-output-that-should-vanish', 100);
+        entries = upsertExecutionBody(entries, 'exec-5', execDetail({ exit_code: 0, stdout: 'final authoritative output' }), 100);
+        assert.strictEqual(entries.length, 1);
+        assert.strictEqual(entries[0].execution?.stdout, 'final authoritative output');
+        assert.ok(!entries[0].execution?.stdout?.includes('partial-output-that-should-vanish'));
+        assert.strictEqual(entries[0].status, 'done');
+    });
+
+    test('a chunk arriving AFTER the entry has already settled is a stale no-op', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertExecutionBody(entries, 'exec-6', execDetail({ exit_code: 0, stdout: 'settled' }), 100);
+        entries = upsertExecutionChunk(entries, 'exec-6', 'stdout', 'late-straggler', 100);
+        assert.strictEqual(entries[0].execution?.stdout, 'settled');
+        assert.strictEqual(entries[0].status, 'done');
+    });
+
+    test('CHUNK5: the client-side retention ring clamps accumulated text and preserves both ends', () => {
+        let entries: TimelineEntry[] = [];
+        // MAX_LIVE_EXEC_FIELD_CHARS is 4_000 — push well past it across many chunks.
+        for (let i = 0; i < 200; i++) {
+            entries = upsertExecutionChunk(entries, 'exec-7', 'stdout', `chunk-${i}-`.padEnd(50, 'x'), 100);
+        }
+        const stdout = entries[0].execution?.stdout ?? '';
+        assert.ok(stdout.length <= 4_100, `expected a clamped length, got ${stdout.length}`);
+        assert.ok(stdout.startsWith('chunk-0-'), 'head must survive the clamp');
+        assert.ok(stdout.includes('chunk-199-'), 'tail must survive the clamp');
+        assert.ok(stdout.includes('chars truncated'), 'the clamp must be visibly marked, not silent');
+    });
+
+    test('two different live executions never collide (distinct refs)', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertExecutionChunk(entries, 'exec-8', 'stdout', 'a', 100);
+        entries = upsertExecutionChunk(entries, 'exec-9', 'stdout', 'b', 100);
+        assert.strictEqual(entries.length, 2);
+        assert.deepStrictEqual(entries.map(e => e.id).sort(), ['exec-8', 'exec-9']);
     });
 
     // ── Pure-on-inputs guarantee ──────────────────────────────────────────────

@@ -1249,7 +1249,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
 
             elif valid_event.event_type == "client_devcontainer_exec_stream":
                 # Incremental stdout/stderr chunk for a running devcontainer command.
-                vfs_manager.append_devcontainer_stream(
+                await vfs_manager.append_devcontainer_stream(
                     valid_event.data.request_id,
                     valid_event.data.stream,
                     valid_event.data.chunk,

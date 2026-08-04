@@ -25,7 +25,7 @@ export const MAX_TOOL_OUTPUT_LINES = 500;
 // Server events that count as live stream activity (reset the stall watchdog).
 export const STREAM_ACTIVITY_EVENTS = new Set<string>([
     'server_token_chunk', 'server_thinking_chunk', 'server_pipeline_step',
-    'server_activity_event',
+    'server_activity_event', 'server_activity_detail_chunk',
     'server_tool_start', 'server_tool_stream_chunk', 'server_tool_result',
     'server_natt_token',
     'server_cell_tool_start', 'server_cell_pty_chunk', 'server_cell_ast_diff',

@@ -104,6 +104,13 @@ def _make_vfs_reader(project_id: str, workspace_root: str, session_id: str) -> C
     return make_safe_reader(project_id, workspace_root, session_id)
 
 
+def _format_read_size(byte_count: int) -> str:
+    """Compact human size for a Glass-Box Timeline 'read' row's metric field."""
+    if byte_count < 1024:
+        return f"{byte_count} B"
+    return f"{byte_count / 1024:.1f} KB"
+
+
 # ── SEARCH/REPLACE edit parsing ────────────────────────────────────────────────
 # The model emits edits as git-conflict-style blocks instead of JSON. Code lives
 # verbatim between the markers, so it is never escaped — eliminating the class of
@@ -460,9 +467,9 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # production omits this key and the real bound method runs unchanged.
     _coder_retrieval_fn = (config or {}).get("configurable", {}).get("coder_retrieval_fn")
 
-    async def _emit(node_name: str) -> None:
+    async def _emit(node_name: str, metric: Optional[str] = None) -> None:
         if _narrate is not None:
-            await _narrate(node_name)
+            await _narrate(node_name, metric=metric)
 
     # read_file produces nothing to patch — the context it gathers is already
     # folded into the running state, so the step genuinely completed.
@@ -644,11 +651,6 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             **({"security_flags": new_security_flags} if new_security_flags else {}),
         }
 
-    # Surface the file the coder is about to inspect so the IDE action-log shows
-    # live read activity; basename keeps the workspace path private and the
-    # narration-gate charge small.
-    await _emit(f"reading {os.path.basename(target_file)}")
-
     # 1. Context assembly: current file + GraphRAG snippets. One retrieval feeds
     # both the topology block (relevant context) and the style block (house
     # convention exemplars) so the vector store is hit only once.
@@ -657,6 +659,18 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # model refactors the ALREADY-edited version, not the stale committed one.
     _prior_this_file = (state.get("pending_contents") or {}).get(target_file)
     current_content = _prior_this_file if _prior_this_file is not None else _read_vfs(target_file)
+
+    # Surface the file the coder inspected so the Glass-Box Timeline shows live
+    # read activity; basename keeps the workspace path private. Emitted AFTER
+    # the read (not before) so the row's metric carries the real byte size —
+    # only available once the content is in hand. A tool-initiated read (the
+    # `read_file` registry tool) is covered separately by the tool-dispatch
+    # detail body, not this marker — this one is the coder's own direct,
+    # pre-generation read of its `target_file`, which passes through no
+    # dispatcher.
+    _read_metric = _format_read_size(len(current_content.encode("utf-8"))) if current_content is not None else None
+    await _emit(f"reading {os.path.basename(target_file)}", metric=_read_metric)
+
     rag_snippets = await _fetch_rag_snippets(
         target_file, target_step.description, project_id, _coder_retrieval_fn,
         explicit_mentions=state.get("explicit_mentions"),

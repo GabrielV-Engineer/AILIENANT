@@ -17,7 +17,7 @@ import type {
 } from '../../shared/config';
 import type { AilienantConfig } from '../../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../../shared/types';
-import type { CoderCompanionPayload, ActivityEventPayload, ActivityDetailPayload, AgentTodosPayload } from '../../api/contracts';
+import type { CoderCompanionPayload, ActivityEventPayload, ActivityDetailPayload, ActivityDetailChunkPayload, AgentTodosPayload } from '../../api/contracts';
 import type { Message, NattMessage, ConversationMessage, SystemMessage, ToastLevel } from '../types';
 import type { HITLIntervention } from '../components/HITLInterventionCard';
 import type { CheckpointEntry } from '../components/CheckpointPicker';
@@ -33,7 +33,7 @@ import {
     STREAM_ACTIVITY_EVENTS,
 } from '../utils/messageDispatchHelpers';
 import { accumulateThinking, newThinkingTurn, freezeThinkingOnText, bumpLiveTokens } from '../utils/thinkingReducer';
-import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody, upsertExecutionBody } from '../utils/timelineBuilder';
+import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody, upsertExecutionBody, upsertExecutionChunk } from '../utils/timelineBuilder';
 import { INITIAL_STATE as MD_INITIAL_STATE, pushToken as mdPushToken } from '../utils/StreamingMarkdownParser';
 import { mergeStreamEmits, type StreamLineEmit } from '../utils/streamTokenBuffer';
 import { sanitizePtyChunk } from '../utils/sanitizePty';
@@ -326,6 +326,17 @@ export function useWSMessageHandler(): void {
                     ));
                     break;
                 }
+                case 'server_activity_detail_chunk': {
+                    // DEBT-134: one incremental stdout/stderr fragment for a
+                    // 'command' node, arriving BEFORE its terminal
+                    // server_activity_detail. Order-agnostic like every other
+                    // upsert here — see upsertExecutionChunk.
+                    const d = msg.payload as ActivityDetailChunkPayload;
+                    cs.setMessages(prev => attachOrUpdateTimeline(
+                        prev, prior => upsertExecutionChunk(prior ?? [], d.ref, d.stream, d.chunk), nattName,
+                    ));
+                    break;
+                }
                 case 'server_plan_document': {
                     // The structured plan and its one-line chat pointer arrive in ONE
                     // message, so the docked panel and the conversation bubble update
@@ -415,6 +426,14 @@ export function useWSMessageHandler(): void {
                     // (older servers don't emit it); absent → no button renders.
                     const _se = (msg.payload ?? {}) as { checkpoint_id?: string };
                     const _cid = typeof _se.checkpoint_id === 'string' ? _se.checkpoint_id : undefined;
+                    // DEBT-126a: freeze the whole-turn duration from the wall-clock
+                    // submit-time marker (chatStore's activeTaskStartedAt, set the
+                    // instant the user hit send — before any server event exists),
+                    // not from the activity-marker span. A marker span undercounts
+                    // pre-first-marker generation and post-last-marker actuation, and
+                    // reads 0.0s outright on a turn with a single marker.
+                    const _turnStartedAt = useChatStore.getState().activeTaskStartedAt;
+                    const _turnElapsedMs = _turnStartedAt !== undefined ? Date.now() - _turnStartedAt : undefined;
                     cs.setMessages(prev => prev.map((m, i) => {
                         // System chips carry no streaming state; skip them.
                         if (i !== prev.length - 1 || m.role === 'system') { return m; }
@@ -425,6 +444,8 @@ export function useWSMessageHandler(): void {
                             stepsDone: true,
                             parserState: undefined,
                             checkpoint_id: _cid ?? cm.checkpoint_id,
+                            turnStartedAt: cm.turnStartedAt ?? _turnStartedAt,
+                            turnElapsedMs: _turnElapsedMs,
                         };
                     }));
                     // Round-trip the just-finalized turn's code blocks to the host
@@ -821,12 +842,13 @@ export function useWSMessageHandler(): void {
                     const d = msg.payload as { turns_compressed: number; compaction_message?: string; summary_text?: string };
                     // Use || (not ??) so an empty-string payload also triggers the fallback.
                     const label = d.compaction_message || `Context window compacted — ${d.turns_compressed} turn(s) summarized.`;
+                    const chipId = mkId();
                     cs.setMessages(prev => {
                         // The `compaction` meta upgrades this chip into a fold boundary: the
                         // SessionSummaryCard renders here and collapses prior messages once the
                         // transcript is long enough. `content` stays the below-threshold fallback.
                         const chip: SystemMessage = {
-                            id: mkId(),
+                            id: chipId,
                             role: 'system',
                             content: label,
                             compaction: { summaryText: d.summary_text ?? '', turnsCompressed: d.turns_compressed },
@@ -834,7 +856,18 @@ export function useWSMessageHandler(): void {
                         const last = prev[prev.length - 1];
                         // Insert BEFORE any streaming tail so server_token_chunk (which
                         // targets prev.last by role==='assistant'&&streaming) is not orphaned.
-                        if ((last as ConversationMessage | undefined)?.streaming) {
+                        // The anchor (afterMessageId) is the last message BEFORE the chip
+                        // lands — the still-streaming turn in that branch, or simply the
+                        // prior last message otherwise.
+                        const streamingTail = (last as ConversationMessage | undefined)?.streaming;
+                        const afterMessageId = (streamingTail ? prev[prev.length - 2] : last)?.id;
+                        // DEBT-124: persist the fold boundary so it survives a panel
+                        // hide/reveal — the chip itself is excluded from PERSIST_TRANSCRIPT.
+                        useWorkspaceStore.getState().setCompactionFold({
+                            markerId: chipId, afterMessageId,
+                            summaryText: d.summary_text ?? '', turnsCompressed: d.turns_compressed,
+                        });
+                        if (streamingTail) {
                             return [...prev.slice(0, -1), chip, last];
                         }
                         return [...prev, chip];

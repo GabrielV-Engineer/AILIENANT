@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import uuid
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -40,12 +42,14 @@ from typing import (
 
 from langchain_core.tools import BaseTool
 
+from core.activity_context import current_activity_sink
 from core.permissions import (
     PermissionDecision,
     SessionPermissionMode,
     ToolPrivilegeTier,
     evaluate_action,
 )
+from core.redaction import mask_secrets, truncate_middle
 from shared.config import MAX_JSON_PARSE_CHARS, MAX_OBSERVATION_CHARS
 from shared.rbac import PermissionMode
 
@@ -60,6 +64,13 @@ _MAX_OBSERVATION_CHARS: int = MAX_OBSERVATION_CHARS
 # Event-loop safety ceiling checked before promote_tool_state ever calls
 # json.loads — see shared.config.MAX_JSON_PARSE_CHARS for the full rationale.
 _MAX_JSON_PARSE_CHARS: int = MAX_JSON_PARSE_CHARS
+
+# Glass-Box Timeline detail-body budgets — independent of _MAX_OBSERVATION_CHARS
+# (which bounds what re-enters the model's own prompt). Mirrors
+# core/exec_log.py's _OUTPUT_CAP/_COMMAND_CAP so a tool-call row and a
+# command row read with the same generosity on the wire.
+_ACTIVITY_ARGS_CAP: int = 500
+_ACTIVITY_OBSERVATION_CAP: int = 2_000
 
 # =====================================================================
 # State-channel promotion — allowlisted, additive
@@ -229,6 +240,35 @@ def build_schema_hint(tools: Mapping[str, RegisteredTool]) -> str:
     return "\n".join(lines)
 
 
+def _format_call_args(args: Dict[str, Any]) -> str:
+    """Best-effort one-line rendering of a tool call's arguments for display.
+
+    Never raises — an unserializable value (e.g. a bound method smuggled into
+    args by a malformed call) falls back to ``str(args)`` rather than crashing
+    the Glass-Box Timeline detail emission.
+    """
+    try:
+        return json.dumps(args, default=str)
+    except Exception:  # noqa: BLE001 — display-only rendering must never fault
+        return str(args)
+
+
+def _build_activity_stdout(name: str, args: Dict[str, Any], observation: str) -> Tuple[str, bool]:
+    """Mask and cap a tool call's args + observation into one detail-body string.
+
+    Args and observation are capped independently (mirrors
+    ``core/exec_log.py::record_exec``'s separate stdout/stderr budgets) so a
+    huge observation can never crowd out the args preview. Cap BEFORE mask —
+    ``mask_secrets`` truncates head-only past its own internal ceiling, so
+    pre-truncating here with ``truncate_middle`` is what preserves the tail.
+    """
+    raw_args = _format_call_args(args)
+    safe_args = mask_secrets(truncate_middle(raw_args, _ACTIVITY_ARGS_CAP)) or ""
+    safe_observation = mask_secrets(truncate_middle(observation, _ACTIVITY_OBSERVATION_CAP)) or ""
+    truncated = len(raw_args) > _ACTIVITY_ARGS_CAP or len(observation) > _ACTIVITY_OBSERVATION_CAP
+    return f"args: {safe_args}\n\n{safe_observation}", truncated
+
+
 class ToolDispatcher:
     """Gate-and-execute a model's tool calls; drive a bounded ReAct loop.
 
@@ -299,46 +339,130 @@ class ToolDispatcher:
             )
         return reg, decision, None
 
-    async def dispatch(self, call: ToolCall) -> DispatchResult:
+    async def dispatch(
+        self, call: ToolCall, *, activity_ref: Optional[str] = None,
+    ) -> DispatchResult:
         """Resolve, gate, and execute one tool call.
 
         Lookup miss, role mismatch, permission DENY/HITL, and execution failure
         all return a structured observation with ``executed=False`` so the loop
         can surface it to the model without aborting.
+
+        Glass-Box Timeline instrumentation (DEBT-133), mirroring the discipline
+        ``core/exec_log.py::record_execution`` already applies to commands:
+        best-effort on every branch, never affects the returned
+        ``DispatchResult``. Two modes, selected by ``activity_ref``:
+
+        - ``None`` (the default — every call site except the one below): this
+          method owns the row's full lifecycle. A call that never reaches
+          ``tool._arun`` (denied, unresolved, HITL with no/failed/declined
+          approval) emits a single ref-less ``emit_blocked`` marker — mirroring
+          ``record_execution``'s own "attempted but never reached an adapter"
+          case — and no detail follows. A call that does execute mints its own
+          ref, emits an opening marker, then a closing detail.
+        - a caller-supplied ref: the caller (``brain/agentic_cell.py``'s
+          ``pending_tool_call`` HITL-defer/resume path) already emitted the
+          OPENING marker under this exact ref before an ``interrupt()`` —
+          replayed on every resume attempt, so the ref must stay stable rather
+          than being re-minted here. Every branch below then resolves that
+          same ref with a terminal ``emit_detail`` (never `emit_blocked`,
+          which would open an orphan second row) — including a denial, so the
+          row can never hang on "running…" through an approval round-trip.
         """
+        sink = current_activity_sink()
+
+        async def _emit_blocked() -> None:
+            if sink is None:
+                return
+            try:
+                await sink.emit_blocked(target=call.name)
+            except Exception:  # noqa: BLE001 — observability must never break dispatch
+                logger.debug("tool-dispatch blocked marker skipped (%s)", call.name, exc_info=True)
+
+        async def _emit_detail(
+            ref: str, *, executed: bool, observation: Optional[str], error: Optional[str],
+            duration_ms: Optional[float],
+        ) -> None:
+            if sink is None:
+                return
+            try:
+                stdout: Optional[str] = None
+                truncated = False
+                if observation is not None:
+                    stdout, truncated = _build_activity_stdout(call.name, call.args, observation)
+                await sink.emit_detail(
+                    ref=ref,
+                    source="unknown",
+                    cwd=None,
+                    initiator=self._active_role,
+                    stdout=stdout,
+                    stderr=None,
+                    exit_code=(None if error is not None else (0 if executed else 1)),
+                    duration_ms=duration_ms,
+                    truncated=truncated,
+                    error=error,
+                )
+            except Exception:  # noqa: BLE001 — observability must never break dispatch
+                logger.debug("tool-dispatch detail emit skipped (%s)", call.name, exc_info=True)
+
+        async def _not_executed(observation: Optional[str], error: Optional[str] = None) -> None:
+            # A caller-supplied ref already has an open span (emitted before an
+            # interrupt()) that MUST be resolved — a fresh emit_blocked would
+            # orphan it as a second, never-resolving row. No ref means nothing
+            # ever opened a span for this attempt, so emit_blocked is correct.
+            if activity_ref is not None:
+                await _emit_detail(
+                    activity_ref, executed=False, observation=observation,
+                    error=error, duration_ms=None,
+                )
+            else:
+                await _emit_blocked()
+
         reg, decision, reason = self.classify(call)
         if reg is None:
+            await _not_executed(reason)
             return DispatchResult(observation=f"[dispatch] {reason}", executed=False)
 
         if decision is PermissionDecision.DENY:
+            await _not_executed(reason)
             return DispatchResult(observation=f"[dispatch] {reason}", executed=False)
 
         if decision is PermissionDecision.HITL:
             if self._approval_fn is None:
                 # No interactive approval channel wired — degrade to deny-with-report
                 # rather than hang. The model sees the denial and moves on.
-                return DispatchResult(
-                    observation=f"[dispatch] {reason}, but no approval channel is "
-                    "available — denied.",
-                    executed=False,
-                )
+                observation = f"[dispatch] {reason}, but no approval channel is available — denied."
+                await _not_executed(observation)
+                return DispatchResult(observation=observation, executed=False)
             try:
                 approved = await self._approval_fn(call, reg)
             except Exception as exc:  # noqa: BLE001 — an approval-channel fault must not crash the turn
                 logger.warning(
                     "Approval channel failed for '%s': %s", call.name, exc, exc_info=True
                 )
+                await _not_executed(None, error=str(exc))
                 return DispatchResult(
                     observation=f"[dispatch] '{call.name}' approval channel failed: {exc}",
                     executed=False,
                 )
             if not approved:
-                return DispatchResult(
-                    observation=f"[dispatch] '{call.name}' was not approved — skipped.",
-                    executed=False,
-                )
+                observation = f"[dispatch] '{call.name}' was not approved — skipped."
+                await _not_executed(observation)
+                return DispatchResult(observation=observation, executed=False)
             # Approved — fall through to execute below.
 
+        # About to actually invoke the tool. Only the ref=None path mints a
+        # fresh id and opens the span here — the ref-supplied path's span was
+        # already opened by the caller before its interrupt().
+        exec_ref = activity_ref
+        if exec_ref is None and sink is not None:
+            exec_ref = uuid.uuid4().hex
+            try:
+                await sink.emit_marker(ref=exec_ref, target=call.name)
+            except Exception:  # noqa: BLE001 — observability must never break dispatch
+                logger.debug("tool-dispatch marker emit skipped (%s)", call.name, exc_info=True)
+
+        t0 = time.perf_counter()
         try:
             result = await reg.tool._arun(**call.args)
             text = str(result)
@@ -347,6 +471,11 @@ class ToolDispatcher:
             # a state-channel write. promote_tool_state applies its own, larger
             # size ceiling first, so this ordering never feeds an unbounded parse.
             state_delta = promote_tool_state(call.name, text)
+            if exec_ref is not None:
+                await _emit_detail(
+                    exec_ref, executed=True, observation=text, error=None,
+                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                )
             if len(text) > _MAX_OBSERVATION_CHARS:
                 text = text[:_MAX_OBSERVATION_CHARS] + "\n…[truncated]"
             return DispatchResult(observation=text, executed=True, state_delta=state_delta)
@@ -355,6 +484,11 @@ class ToolDispatcher:
             logger.warning(
                 "Tool '%s' rejected args: %s", call.name, exc, exc_info=True
             )
+            if exec_ref is not None:
+                await _emit_detail(
+                    exec_ref, executed=False, observation=None, error=str(exc),
+                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                )
             return DispatchResult(
                 observation=f"[dispatch] '{call.name}' argument error: {exc}",
                 executed=False,
@@ -363,6 +497,11 @@ class ToolDispatcher:
             logger.warning(
                 "Tool '%s' raised during dispatch: %s", call.name, exc, exc_info=True
             )
+            if exec_ref is not None:
+                await _emit_detail(
+                    exec_ref, executed=False, observation=None, error=str(exc),
+                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                )
             return DispatchResult(
                 observation=f"[dispatch] '{call.name}' failed: {exc}",
                 executed=False,

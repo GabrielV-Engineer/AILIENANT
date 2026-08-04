@@ -61,6 +61,17 @@ export interface ConversationMessage {
     // strips 'reasoning' entries (display-only, matching `thinking`'s own
     // exclusion); every other kind persists as the durable audit record.
     timeline?: TimelineEntry[];
+    // Wall-clock turn duration (DEBT-126a) — mirrors thinkingStartedAt/
+    // thinkingElapsedMs's set-at-creation/freeze-at-settle shape, but spans the
+    // WHOLE turn (generation + actuation), not just the reasoning span. A
+    // marker-derived duration undercounts both the pre-first-marker generation
+    // and the post-last-marker actuation, and reads 0.0s outright on a
+    // single-marker turn. turnStartedAt is set when the assistant message is
+    // created; turnElapsedMs is frozen at server_stream_end. Persisted so a
+    // rehydrated transcript still shows the real number, not the marker-span
+    // fallback.
+    turnStartedAt?: number;
+    turnElapsedMs?: number;
 }
 
 /** Transient system notification chip — rendered in-transcript but never persisted.

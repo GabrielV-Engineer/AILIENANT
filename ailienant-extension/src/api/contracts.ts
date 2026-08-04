@@ -332,6 +332,23 @@ export interface ServerActivityDetailEvent {
     data: ActivityDetailPayload;
 }
 
+// One incremental stdout/stderr fragment for a "command" node, arriving BEFORE
+// its terminal ActivityDetailPayload (DEBT-134). Additive/optional — only a
+// tier whose transport genuinely streams (currently the devcontainer bridge)
+// ever emits this; every other tier still fills its detail body once, on
+// completion. `chunk` is masked server-side, capped on both sides (backend
+// cumulative budget + a client-side retention ring — see upsertExecutionChunk).
+export interface ActivityDetailChunkPayload {
+    session_id: string;
+    ref: string;
+    stream: 'stdout' | 'stderr';
+    chunk: string;
+}
+export interface ServerActivityDetailChunkEvent {
+    event_type: 'server_activity_detail_chunk';
+    data: ActivityDetailChunkPayload;
+}
+
 export interface PlanDocumentPayload {
     summary: string;
     outcome: string;
@@ -816,7 +833,7 @@ export interface ClientBranchFromCheckpointEvent {
 // DISCRIMINATED UNIONS
 // ============================================================
 
-/** Every server→client event (37). Narrow on `event_type`. */
+/** Every server→client event (38). Narrow on `event_type`. */
 export type ServerWSMessage =
     | ServerTokenChunkEvent
     | ServerThinkingChunkEvent
@@ -837,6 +854,7 @@ export type ServerWSMessage =
     | ServerPipelineStepEvent
     | ServerActivityEvent
     | ServerActivityDetailEvent
+    | ServerActivityDetailChunkEvent
     | ServerPlanDocumentEvent
     | ServerStreamEndEvent
     | ServerInlineEditStartEvent

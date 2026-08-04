@@ -102,16 +102,41 @@ def _companion_budget_available(state: Dict[str, Any]) -> bool:
     return current < ceiling
 
 
-async def _companion_gpu_slot_available() -> bool:
+async def _companion_gpu_slot_available(session_id: str) -> bool:
     """Non-blocking VRAM-lock probe. Never queue the Companion behind the user's real work.
 
     A cloud-tier judge model never contends for local VRAM, so it is always admitted.
     A local-tier model must yield instantly rather than wait on the GPU lock the user's
     coding turn holds — an explanation nobody may read must never delay the real task.
+
+    Reads GPUResourceManager.snapshot() (an atomic, non-blocking read under the
+    manager's own mutex) rather than try_acquire_now/acquire_lock — the companion
+    must observe the lock, never take it; taking it would be the exact contention
+    this probe exists to prevent.
     """
-    # MVP: unconditionally admit. A local-tier non-blocking GPUResourceManager probe
-    # (yield rather than queue when the lock is held) is tracked as DEBT-121.
-    return True
+    try:
+        from core.config.model_resolver import get_chat_target
+        from core.resource_manager import GPUResourceManager
+
+        target = get_chat_target(_resolve_judge_tier())
+        if target is None or not target.is_local:
+            return True  # cloud-tier judge never contends for local VRAM
+
+        mgr = await GPUResourceManager.get()
+        snapshot = await mgr.snapshot()
+        holder = snapshot.get("locked_by_session_id")
+        return holder is None or holder == session_id
+    except Exception as exc:  # noqa: BLE001 — fail-open: a probe fault must never
+        # suppress the card, but a local-tier VRAM probe failing silently could mean
+        # this task has been contending for VRAM with the user's real coding turn for
+        # some time without anyone noticing — unlike the sibling timeout-resolution
+        # helper (whose fault is benign, a shorter deadline), this warrants WARNING,
+        # not debug. Bounded to once per coding turn, so this cannot become log spam.
+        logger.warning(
+            "coder_companion: GPU-slot probe failed — admitting unconditionally: %s",
+            exc, exc_info=True,
+        )
+        return True
 
 
 def _build_companion_request(state: Dict[str, Any], attempt_ordinal: int) -> CompanionAnalysisRequest:
@@ -428,7 +453,7 @@ async def _run_coder_companion(
             analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
         else:
             async with _companion_semaphore:  # bounds SWARM fan-out bursts
-                if not await _companion_gpu_slot_available():
+                if not await _companion_gpu_slot_available(session_id):
                     logger.debug("coder_companion: skipped — local tier VRAM lock busy")
                     analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
                 else:

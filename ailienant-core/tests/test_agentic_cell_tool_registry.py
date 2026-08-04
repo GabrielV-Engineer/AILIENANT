@@ -179,7 +179,14 @@ def test_fallback_hitl_tool_defers_and_does_not_execute(monkeypatch: pytest.Monk
 
     delta = asyncio.run(run_agentic_cell_node(state, _config(adapter, reasoner)))
 
-    assert delta.get("pending_tool_call") == {"name": "todo_write", "args": todo_args}
+    pending = delta.get("pending_tool_call")
+    assert pending is not None
+    # DEBT-133: activity_ref is minted for the Glass-Box Timeline row opened
+    # before the interrupt — additive, asserted for presence/shape only (the
+    # value itself is a fresh uuid4 hex each run).
+    assert pending["name"] == "todo_write"
+    assert pending["args"] == todo_args
+    assert isinstance(pending.get("activity_ref"), str) and pending["activity_ref"]
     trajectory = delta["agentic_trajectory"]
     assert trajectory[0]["status"] == "continue"
     # The tool never actually ran: no state promotion (todo_write's own

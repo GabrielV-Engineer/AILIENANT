@@ -72,6 +72,24 @@ export interface InflightSnapshot {
     stepsDone?: boolean;
 }
 
+/**
+ * DEBT-124 — the fold boundary a `state_compacted` event establishes,
+ * persisted so it survives a panel hide/reveal (the compaction MARKER rides a
+ * transient `SystemMessage`, deliberately excluded from `PERSIST_TRANSCRIPT`,
+ * while the underlying `ConversationMessage`s it folds away survive fine).
+ * Anchored on `afterMessageId` — the stable id of the last message BEFORE the
+ * marker — rather than an array index, since indices shift on rehydrate but a
+ * message id does not. `markerId` lets a fresh compaction correctly supersede
+ * a stale persisted one (the same "newer compaction re-folds" rule the live
+ * marker path already follows in Workspace.tsx).
+ */
+export interface CompactionFold {
+    markerId: string;
+    afterMessageId: string | undefined;
+    summaryText: string;
+    turnsCompressed: number;
+}
+
 export interface WorkspaceState {
     /**
      * Phase 7.12.9 (Fix 5) — prompt drafts keyed by sessionId. Previously a single
@@ -130,6 +148,14 @@ export interface WorkspaceState {
      */
     inflightTurn: InflightSnapshot | null;
     /**
+     * DEBT-124 — the current fold boundary (see `CompactionFold`), if any.
+     * Persisted like `inflightTurn` for the same reason: display-only durable
+     * evidence that needs to survive a panel teardown/reveal even though the
+     * live marker it mirrors is transient. `null` when no compaction has
+     * fired this session.
+     */
+    compactionFold: CompactionFold | null;
+    /**
      * Pending explicit skill chip per session — set when the user selects a skill
      * from the SkillsMenu; cleared on submit or manual removal. Transient:
      * excluded from `pick` (a stale chip after reload would silently inject a skill
@@ -177,6 +203,7 @@ export interface WorkspaceState {
     setAutoAcceptLowRisk: (v: boolean) => void;
     setAnalystTier: (v: AnalystTier) => void;
     setInflightTurn: (v: InflightSnapshot | null) => void;
+    setCompactionFold: (v: CompactionFold | null) => void;
 }
 
 export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
@@ -195,6 +222,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         autoAcceptLowRisk: false,
         analystTier: 'medium',
         inflightTurn: null,
+        compactionFold: null,
         activeSkills: {},
         coderCompanions: {},
         agentTodos: {},
@@ -224,6 +252,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         setAutoAcceptLowRisk: (v) => set({ autoAcceptLowRisk: v }),
         setAnalystTier:  (v) => set({ analystTier: v }),
         setInflightTurn: (v) => set({ inflightTurn: v }),
+        setCompactionFold: (v) => set({ compactionFold: v }),
     }),
     {
         key: 'workspace.v1',
@@ -246,6 +275,7 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
             autoAcceptLowRisk: s.autoAcceptLowRisk,
             analystTier: s.analystTier,
             inflightTurn: s.inflightTurn,
+            compactionFold: s.compactionFold,
         }),
     },
 );

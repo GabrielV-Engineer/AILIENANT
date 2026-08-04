@@ -7,11 +7,13 @@ import logging
 import secrets
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Set, cast
 
 from fastapi import WebSocket
 from pydantic import ValidationError, TypeAdapter
 
+from core.activity_context import ActivitySink
 from api.ws_contracts import (
     WebSocketMessage,
     ServerTokenChunkEvent, TokenChunkPayload,
@@ -33,6 +35,7 @@ from api.ws_contracts import (
     ServerPipelineStepEvent, PipelineStepPayload,
     ServerActivityEvent, ActivityEventPayload,
     ServerActivityDetailEvent, ActivityDetailPayload,
+    ServerActivityDetailChunkEvent, ActivityDetailChunkPayload,
     ServerPlanDocumentEvent, PlanDocumentPayload,
     ServerStreamEndEvent,
     ServerInlineEditStartEvent, InlineEditStartPayload,
@@ -109,6 +112,30 @@ _DEVC_SESSION_QUEUE_CAPACITY: int = 256
 _DEVC_SESSION_QUEUE_HIGH_WATER: int = _DEVC_SESSION_QUEUE_CAPACITY - 64
 _DEVC_SESSION_QUEUE_LOW_WATER: int = 64
 
+# DEBT-134 — cumulative per-execution character budget for LIVE-forwarded
+# devcontainer exec chunks to the Glass-Box Timeline. Independent of
+# core.exec_log's _OUTPUT_CAP (the TERMINAL detail's own cap, applied once the
+# command settles): this bounds what crosses the wire WHILE a command is still
+# running, so a runaway command cannot stream megabytes before it settles
+# (charter §5.5 — never inject unbounded raw I/O into a transport). Past this
+# ceiling, chunk forwarding stops and a single suppression notice fires; the
+# terminal detail is unaffected either way.
+_LIVE_STREAM_CAP: int = 16_000
+
+
+@dataclass
+class _DevcExecActivity:
+    """Per-request_id correlation the devcontainer bridge registers so
+    ``append_devcontainer_stream`` can fan a chunk out to the Glass-Box
+    Timeline row ``core/exec_log.py::record_execution`` already opened under
+    ``exec_ref`` — see ``ConnectionManager.register_devcontainer_exec_activity``.
+    """
+
+    exec_ref: str
+    sink: ActivitySink
+    chars_sent: int = 0
+    suppressed: bool = False
+
 # =====================================================================
 # TYPED ADAPTER (Pydantic V2)
 # =====================================================================
@@ -161,6 +188,10 @@ class ConnectionManager:
         self._devc_exec_events: Dict[str, asyncio.Event] = {}
         self._devc_exec_buffers: Dict[str, Dict[str, List[str]]] = {}
         self._devc_exec_exit: Dict[str, int] = {}
+        # DEBT-134 — live-forward correlation: which Glass-Box Timeline exec_ref
+        # (and sink) a devcontainer request_id should stream its chunks against,
+        # registered by the bridge (api/devcontainer_bridge.py) once per exec.
+        self._devc_exec_activity: Dict[str, _DevcExecActivity] = {}
         # Reverse index (session_id -> in-flight request_ids) so a disconnect reaps
         # any suspended devcontainer waiter in O(k).
         self._client_pending_devc: Dict[str, Set[str]] = {}
@@ -676,6 +707,28 @@ class ConnectionManager:
                     duration_ms=duration_ms,
                     truncated=truncated,
                     error=error,
+                )
+            ),
+        )
+
+    async def broadcast_activity_detail_chunk(
+        self, session_id: str, *, ref: str, stream: str, chunk: str,
+    ) -> None:
+        """Emit one incremental stdout/stderr fragment for a "command" node
+        (DEBT-134), arriving BEFORE its terminal ``broadcast_activity_detail``.
+
+        Additive/optional — only a tier whose transport genuinely streams
+        (currently the devcontainer bridge, via ``_forward_devc_chunk_live``)
+        ever calls this.
+        """
+        await self.send_personal_message(
+            session_id,
+            ServerActivityDetailChunkEvent(
+                data=ActivityDetailChunkPayload(
+                    session_id=session_id,
+                    ref=ref,
+                    stream=stream,  # type: ignore[arg-type]  # validated against Literal["stdout","stderr"] at the edge
+                    chunk=chunk,
                 )
             ),
         )
@@ -1332,7 +1385,24 @@ class ConnectionManager:
             self._devc_exec_events.pop(request_id, None)
             self._devc_exec_buffers.pop(request_id, None)
             self._devc_exec_exit.pop(request_id, None)
+            self._devc_exec_activity.pop(request_id, None)
             self._discard_pending_devc(session_id, request_id)
+
+    def register_devcontainer_exec_activity(
+        self, request_id: str, exec_ref: str, sink: ActivitySink,
+    ) -> None:
+        """Correlate a devcontainer bridge ``request_id`` with the Glass-Box
+        Timeline ``exec_ref`` (and turn-scoped sink) that ``record_execution``
+        already opened for this command (DEBT-134).
+
+        Called by ``api/devcontainer_bridge.py::WebSocketHostBridge.exec_command``
+        right after it mints ``request_id`` — best-effort by construction: the
+        caller only registers when both ``core.activity_context.current_exec_ref()``
+        and ``current_activity_sink()`` resolve, so an unregistered request_id
+        (no turn context, e.g. the untrusted benchmark oracle) simply never
+        live-forwards, exactly like every other tier today.
+        """
+        self._devc_exec_activity[request_id] = _DevcExecActivity(exec_ref=exec_ref, sink=sink)
 
     def _discard_pending_devc(self, session_id: str, request_id: str) -> None:
         """Drop a finished request from the session's reverse index."""
@@ -1359,14 +1429,57 @@ class ConnectionManager:
         self._devc_provision_state[request_id] = state
         event.set()
 
-    def append_devcontainer_stream(self, request_id: str, stream: str, chunk: str) -> None:
-        """Called from the WS receive loop on client_devcontainer_exec_stream."""
+    async def append_devcontainer_stream(self, request_id: str, stream: str, chunk: str) -> None:
+        """Called from the WS receive loop on client_devcontainer_exec_stream.
+
+        Buffering (the authority for the final ``SandboxResult``) is unconditional
+        and unaffected by anything below. Live-forwarding to the Glass-Box Timeline
+        (DEBT-134) is a separate, best-effort, budget-capped concern layered on
+        top — see ``_forward_devc_chunk_live``.
+        """
         buf = self._devc_exec_buffers.get(request_id)
         if buf is None:
             # Late or unknown request — the waiter already resolved/timed out.
             logger.info("devcontainer stream chunk for unknown request_id: %s", request_id)
             return
         buf.setdefault(stream, []).append(chunk)
+        await self._forward_devc_chunk_live(request_id, stream, chunk)
+
+    async def _forward_devc_chunk_live(self, request_id: str, stream: str, chunk: str) -> None:
+        """Best-effort live fan-out of one devcontainer chunk to its Glass-Box
+        Timeline row (DEBT-134), bounded by ``_LIVE_STREAM_CAP``.
+
+        No-op when nothing registered this request_id (no turn context) or once
+        the cumulative budget trips — a single suppression notice fires exactly
+        once per execution, then every further chunk is silently dropped from
+        the LIVE channel only; the buffer above (and therefore the eventual
+        terminal detail, capped independently at ``core/exec_log.py``'s
+        ``_OUTPUT_CAP``) is never affected.
+        """
+        activity = self._devc_exec_activity.get(request_id)
+        if activity is None or activity.suppressed:
+            return
+        emit_chunk = getattr(activity.sink, "emit_detail_chunk", None)
+        if emit_chunk is None:
+            return  # sink predates DEBT-134 (e.g. a hermetic test double) — no-op
+        try:
+            if activity.chars_sent >= _LIVE_STREAM_CAP:
+                activity.suppressed = True
+                await emit_chunk(
+                    ref=activity.exec_ref, stream="stderr",
+                    chunk="\n…live output suppressed — full result on completion…\n",
+                )
+                return
+            activity.chars_sent += len(chunk)
+            # Masked here, at the source — mirrors core/exec_log.py::record_exec
+            # being the single masking site for the terminal detail; live chunks
+            # get the same treatment before they ever reach the WS frame.
+            from core.redaction import mask_secrets
+            await emit_chunk(ref=activity.exec_ref, stream=stream, chunk=mask_secrets(chunk) or "")
+        except Exception:  # noqa: BLE001 — observability must never break the WS receive loop
+            logger.debug(
+                "devcontainer live-chunk forward skipped (request_id=%s)", request_id, exc_info=True,
+            )
 
     def resolve_devcontainer_exit(self, request_id: str, exit_code: int) -> None:
         """Called from the WS receive loop on client_devcontainer_exec_exit."""

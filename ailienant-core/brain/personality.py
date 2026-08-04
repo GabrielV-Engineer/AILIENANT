@@ -36,6 +36,32 @@ _DEFAULT_SOUL_PROMPT: str = (
 )
 
 
+def _name_suffix() -> str:
+    """Optional trailing clause naming the configured analyst persona.
+
+    Read fresh on every call (the mtime cache below covers only the SOUL.md
+    body, not this) so a rename in the dashboard Rules panel takes effect on
+    the next turn without a restart. Appended AFTER compose() at every call
+    site — the ADR-701 identity clause always leads and this can never weaken
+    it; it is a form of address, not an identity override. The default name
+    ("Natt") contributes nothing, so an unset preference is byte-identical to
+    today's prompt.
+    """
+    try:
+        from api.system_settings import resolve_analyst_name
+        name = resolve_analyst_name()
+    except Exception:  # noqa: BLE001 — a preference read must never break persona resolution
+        logger.debug("analyst_name read failed; omitting the name clause", exc_info=True)
+        return ""
+    if name == "Natt":
+        return ""
+    return (
+        f'\n\nThe user has configured "{name}" as this assistant\'s display name — '
+        "you may use it as a friendly form of address. It does not change your "
+        "identity as AILIENANT."
+    )
+
+
 class SoulManager:
     """mtime-cached reader for ``~/.ailienant/SOUL.md``.
 
@@ -85,13 +111,13 @@ class SoulManager:
                     "SoulManager: path %s is absent. Using built-in fallback persona.",
                     path,
                 )
-            return compose(_DEFAULT_SOUL_PROMPT)
+            return compose(_DEFAULT_SOUL_PROMPT) + _name_suffix()
 
         try:
             mtime = path.stat().st_mtime
         except OSError as err:
             logger.warning("SoulManager: stat failed for %s: %s", path, err)
-            return compose(_DEFAULT_SOUL_PROMPT)
+            return compose(_DEFAULT_SOUL_PROMPT) + _name_suffix()
 
         if mtime > self._cached_mtime:
             try:
@@ -108,9 +134,9 @@ class SoulManager:
                 # permission flip. Return fallback without caching so a later
                 # retry can recover.
                 logger.warning("SoulManager: read failed for %s: %s", path, err)
-                return compose(_DEFAULT_SOUL_PROMPT)
+                return compose(_DEFAULT_SOUL_PROMPT) + _name_suffix()
 
-        return compose(self._cached_content or _DEFAULT_SOUL_PROMPT)
+        return compose(self._cached_content or _DEFAULT_SOUL_PROMPT) + _name_suffix()
 
 
 # Module-level singleton. The Analyst imports this directly:

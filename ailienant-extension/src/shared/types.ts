@@ -142,7 +142,6 @@ export interface NattState {
     hitl_request?: {
         approval_id: string;
         action_proposed: string;
-        risk_metrics: Array<{ label: string; level: 'low' | 'medium' | 'high' }>;
         proposed_content?: string;
     };
 }

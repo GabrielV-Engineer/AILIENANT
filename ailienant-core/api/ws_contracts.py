@@ -689,6 +689,32 @@ class ServerActivityDetailEvent(BaseModel):
     data: ActivityDetailPayload
 
 
+class ActivityDetailChunkPayload(BaseModel):
+    """Server → client: one incremental stdout/stderr fragment for a "command"
+    Glass-Box Timeline node, arriving BEFORE its terminal `ActivityDetailPayload`
+    (DEBT-134). Additive and optional by design — only a tier whose transport
+    genuinely streams (currently the devcontainer bridge) ever emits this; every
+    other tier fills its detail body once, on completion, exactly as before.
+
+    Correlated by `ref` (the same execution id `ActivityDetailPayload` resolves).
+    `chunk` is masked at the emission site the same way `ActivityDetailPayload`'s
+    fields are — never raw. Bounded server-side by a cumulative per-execution
+    character budget (`api/websocket_manager.py::_LIVE_STREAM_CAP`); past it, no
+    further chunks are sent for that `ref` and the client sees only the
+    (still-capped) terminal detail — a client MUST treat a `ref` with no chunk
+    frames as ordinary, not an error.
+    """
+    session_id: str
+    ref: str
+    stream: Literal["stdout", "stderr"]
+    chunk: str
+
+
+class ServerActivityDetailChunkEvent(BaseModel):
+    event_type: Literal["server_activity_detail_chunk"] = "server_activity_detail_chunk"
+    data: ActivityDetailChunkPayload
+
+
 class PlanDocumentPayload(BaseModel):
     """Server → client: the finalized plan as structured data for the rich Plan
     surface (NOT chat prose). Mirrors MissionSpecification's public shape.
@@ -1497,6 +1523,7 @@ WebSocketMessage = Union[
     ServerPipelineStepEvent,         # pipeline node progress
     ServerActivityEvent,             # Glass-Box Timeline: ordered, un-throttled activity event
     ServerActivityDetailEvent,       # Glass-Box Timeline: I/O body for a "command" node
+    ServerActivityDetailChunkEvent,  # Glass-Box Timeline: incremental I/O fragment (pre-detail)
     ServerPlanDocumentEvent,         # finalized plan → rich Plan surface
     ServerStreamEndEvent,            # assistant stream finalized
     ClientClearConversationEvent,    # clear short-term chat memory

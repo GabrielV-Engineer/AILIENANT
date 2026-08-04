@@ -23,8 +23,8 @@ import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Deque, Dict, List, Optional, Protocol, cast
 
-from core.activity_context import current_activity_sink
-from core.redaction import mask_secrets
+from core.activity_context import bind_exec_ref, current_activity_sink, reset_exec_ref
+from core.redaction import mask_secrets, truncate_middle
 
 if TYPE_CHECKING:  # avoid importing core.sandbox at runtime (keeps this leaf-light)
     from core.sandbox import SandboxResult
@@ -63,20 +63,6 @@ _seq: int = 0
 _lock: threading.Lock = threading.Lock()
 
 
-def _truncate_middle(text: str, cap: int) -> str:
-    """Keep the head and tail of an over-long string, eliding the middle.
-
-    Middle-truncation preserves both the command/prefix and the trailing error,
-    which is where the useful signal usually sits. Cheap: the slices copy at
-    most ``cap`` characters regardless of the source length.
-    """
-    if len(text) <= cap:
-        return text
-    half = cap // 2
-    dropped = len(text) - (half * 2)
-    return f"{text[:half]}\n…[{dropped} chars truncated]…\n{text[-half:]}"
-
-
 def record_exec(
     source: str,
     session_id: str,
@@ -106,10 +92,10 @@ def record_exec(
         raw_stdout = result.stdout or ""
         raw_stderr = result.stderr or ""
         combined = raw_stdout + raw_stderr
-        safe_command = mask_secrets(_truncate_middle(command, _COMMAND_CAP)) or ""
-        safe_output = mask_secrets(_truncate_middle(combined, _OUTPUT_CAP)) or ""
-        safe_stdout = mask_secrets(_truncate_middle(raw_stdout, _OUTPUT_CAP)) or ""
-        safe_stderr = mask_secrets(_truncate_middle(raw_stderr, _OUTPUT_CAP)) or ""
+        safe_command = mask_secrets(truncate_middle(command, _COMMAND_CAP)) or ""
+        safe_output = mask_secrets(truncate_middle(combined, _OUTPUT_CAP)) or ""
+        safe_stdout = mask_secrets(truncate_middle(raw_stdout, _OUTPUT_CAP)) or ""
+        safe_stderr = mask_secrets(truncate_middle(raw_stderr, _OUTPUT_CAP)) or ""
         truncated = (
             len(raw_stdout) > _OUTPUT_CAP
             or len(raw_stderr) > _OUTPUT_CAP
@@ -179,32 +165,41 @@ async def record_execution(
             logger.debug("activity marker emit skipped (%s)", source, exc_info=True)
 
     t0 = time.perf_counter()
+    # Bound ONLY around this await (DEBT-134) — a tier whose transport genuinely
+    # streams (the devcontainer bridge, several call-stack layers below) reads
+    # this to correlate its own request id with `exec_id`, so live chunks land
+    # against the same ref the detail below resolves. Reset in a finally so the
+    # ref can never leak into an unrelated later call on this task.
+    _exec_ref_tok = bind_exec_ref(exec_id)
     try:
-        result = await adapter.execute(
-            command,
-            timeout_s=timeout_s,
-            cwd=cwd,
-            env_whitelist=env_whitelist,
-            session_id=session_id,
-        )
-    except Exception as exc:
-        if sink is not None:
-            try:
-                await sink.emit_detail(
-                    ref=exec_id,
-                    source=getattr(adapter, "execution_source", "unknown"),
-                    cwd=cwd,
-                    initiator=source,
-                    stdout=None,
-                    stderr=None,
-                    exit_code=None,
-                    duration_ms=(time.perf_counter() - t0) * 1000.0,
-                    truncated=False,
-                    error=str(exc),
-                )
-            except Exception:  # noqa: BLE001 — must never mask the real fault below
-                logger.debug("activity detail emit skipped (fault, %s)", source, exc_info=True)
-        raise
+        try:
+            result = await adapter.execute(
+                command,
+                timeout_s=timeout_s,
+                cwd=cwd,
+                env_whitelist=env_whitelist,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            if sink is not None:
+                try:
+                    await sink.emit_detail(
+                        ref=exec_id,
+                        source=getattr(adapter, "execution_source", "unknown"),
+                        cwd=cwd,
+                        initiator=source,
+                        stdout=None,
+                        stderr=None,
+                        exit_code=None,
+                        duration_ms=(time.perf_counter() - t0) * 1000.0,
+                        truncated=False,
+                        error=str(exc),
+                    )
+                except Exception:  # noqa: BLE001 — must never mask the real fault below
+                    logger.debug("activity detail emit skipped (fault, %s)", source, exc_info=True)
+            raise
+    finally:
+        reset_exec_ref(_exec_ref_tok)
 
     duration_ms = (time.perf_counter() - t0) * 1000.0
     record: Dict[str, object] = {}

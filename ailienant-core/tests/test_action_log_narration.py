@@ -36,7 +36,9 @@ def _capture() -> tuple[List[str], Any]:
     """Return ``(captured, narrate)`` — a list and an async stub appending to it."""
     captured: List[str] = []
 
-    async def _narrate(node_name: str, step_id: Optional[int] = None) -> None:
+    async def _narrate(
+        node_name: str, step_id: Optional[int] = None, metric: Optional[str] = None,
+    ) -> None:
         captured.append(node_name)
 
     return captured, _narrate

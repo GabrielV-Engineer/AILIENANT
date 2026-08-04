@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 from core.activity_context import bind_activity_sink, reset_activity_sink
 from core.storage_paths import is_ailienant_internal_path
 from shared.persona import compose
-from transport.token_batcher import batch_tokens, NarrationGate
+from transport.token_batcher import batch_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +72,11 @@ def _diff_line_delta(unified_diff: str) -> str:
     return f"+{added} -{removed}"
 
 
-# Glass-Box Timeline (11.5.C) activity channel — un-throttled by design (it
-# bypasses NarrationGate entirely), but bounded: past this many events in one
-# turn, a single sentinel replaces the rest so a pathological loop can never
-# flood the webview. Module-level (not a closure-local) so it's patchable in
-# tests without driving hundreds of real narrate calls.
+# Glass-Box Timeline activity channel — un-throttled by design, but bounded: past
+# this many events in one turn, a single sentinel replaces the rest so a
+# pathological loop can never flood the webview. Module-level (not a
+# closure-local) so it's patchable in tests without driving hundreds of real
+# narrate calls.
 ACTIVITY_CAP: int = 500
 
 
@@ -288,6 +288,30 @@ def _resolve_output_style_directive() -> str:
     return _OUTPUT_STYLE_DIRECTIVES.get(style, "")
 
 
+def _resolve_analyst_name_directive() -> str:
+    """Return a "you may be addressed as X" directive, or "" for the default name.
+
+    Mirrors ``_resolve_output_style_directive``'s degrade-to-empty contract. The
+    conversational chat surface is where the frontend's configured display name
+    ([DEFAULT_ANALYST_NAME] fallback, per-message ``authorLabel``) should agree
+    with what the model itself knows to call itself; the default ("Natt")
+    contributes nothing, so an unset preference is byte-identical to today's
+    prompt (keeps ``test_prompt_prefix_stability.py`` valid).
+    """
+    try:
+        from api.system_settings import resolve_analyst_name
+        name = resolve_analyst_name()
+    except Exception:  # noqa: BLE001 — a preference read must never block a task
+        logger.debug("analyst_name read failed; omitting the name directive", exc_info=True)
+        return ""
+    if name == "Natt":
+        return ""
+    return (
+        f'The user has configured "{name}" as this assistant\'s display name — you '
+        "may use it as a friendly form of address."
+    )
+
+
 def _resolve_chat_system_prompt(task_prompt: str) -> str:
     """Pick the concise or expansive chat system prompt from the request's intent.
 
@@ -303,8 +327,14 @@ def _resolve_chat_system_prompt(task_prompt: str) -> str:
         if any(sig in text for sig in _EXPLAIN_SIGNALS)
         else _CHAT_SYSTEM_PROMPT
     )
-    directive = _resolve_output_style_directive()
-    return f"{base}\n\n{directive}" if directive else base
+    parts = [base]
+    style_directive = _resolve_output_style_directive()
+    if style_directive:
+        parts.append(style_directive)
+    name_directive = _resolve_analyst_name_directive()
+    if name_directive:
+        parts.append(name_directive)
+    return "\n\n".join(parts)
 
 
 # Mirrors the frontend contract (api_client.ts).
@@ -848,13 +878,6 @@ class TaskService:
                 if _exec:
                     state["execution_mode"] = _exec
 
-        # `gate` is now vestigial bookkeeping: `_narrate` no longer gates output
-        # through it (server_pipeline_step, the channel it throttled, is retired —
-        # see `_narrate` below), but its `record_answer()` accounting is still fed
-        # from several downstream call sites. Left in place rather than threading a
-        # removal through every one of those sites; DEBT-tracked for a follow-up
-        # sweep, not left silently — see `docs/TECH_DEBT_BACKLOG.md`.
-        #
         # The `_narrate` emitter itself rides on the run config
         # (RunnableConfig.configurable), NOT graph state: a callable is not
         # msgpack-serializable, and the checkpointer freezes the whole state after
@@ -862,12 +885,11 @@ class TaskService:
         # Send({**state}) fan-out payload, so the closure can never reach the
         # serializer while the planner still narrates without importing the
         # transport layer (cognitive-isolation fence stays intact).
-        gate = NarrationGate()
 
         # Glass-Box Timeline activity stream (un-throttled). A per-turn monotonic `seq`
-        # orders events deterministically; the channel bypasses the NarrationGate so the
-        # full read/edit/command/plan/diff trace survives even on a coding turn where free
-        # narration is throttled. Bounded by module-level ACTIVITY_CAP (see its docstring).
+        # orders events deterministically; the channel is exempt from token-batching
+        # narration limits so the full read/edit/command/plan/diff trace always
+        # survives. Bounded by module-level ACTIVITY_CAP (see its docstring).
         _activity_seq = itertools.count()
 
         async def _push_activity(
@@ -888,25 +910,31 @@ class TaskService:
                     kind="command", metric=f"activity trace capped at {ACTIVITY_CAP}",
                 )
 
-        async def _narrate(node_name: str, step_id: Optional[int] = None) -> None:
+        async def _narrate(
+            node_name: str, step_id: Optional[int] = None, metric: Optional[str] = None,
+        ) -> None:
             # Classifies the raw node label into a typed activity kind and pushes it
             # to the un-throttled Glass-Box Timeline channel. Nodes stay unchanged —
             # they emit raw labels; classification lives here. The frontend composes
             # the human label from `kind`, so no raw internal token ever reaches the
-            # screen. server_pipeline_step (the legacy NarrationGate-throttled
-            # channel this superseded) is retired: PipelineProgress, its only
-            # consumer, was replaced by AgentTimeline. `step_id` is accepted for
-            # call-site compatibility but no longer forwarded anywhere.
+            # screen. server_pipeline_step (the legacy throttled channel this
+            # superseded) is retired: PipelineProgress, its only consumer, was
+            # replaced by AgentTimeline. `step_id` is accepted for call-site
+            # compatibility but no longer forwarded anywhere. `metric` lets a
+            # caller (currently only the coder's "reading X" marker) supply a
+            # value _classify_activity has no way to derive from the raw label
+            # alone (e.g. a byte size known only after the read completes);
+            # omitted, it falls back to whatever classification derives.
             _kind, _target, _metric = _classify_activity(node_name)
             if _kind is not None:
-                await _push_activity(_kind, _target, _metric)
+                await _push_activity(_kind, _target, metric if metric is not None else _metric)
 
         # Stream the planner/coder native reasoning to the Thought Box while they
         # generate, so the long structured-output call no longer reads as a freeze.
         # Rides the same `configurable` seam as `narrate` (off graph state); the
         # nodes hand `feed` to the gateway as a best-effort reasoning sink. Thinking
-        # uses its own `server_thinking_chunk` channel, so it never touches the
-        # NarrationGate budget (which governs `server_pipeline_step` only).
+        # uses its own `server_thinking_chunk` channel, independent of
+        # `server_pipeline_step`'s narration budget.
         # on_span_start emits the matching Glass-Box Timeline "reasoning" marker,
         # ref-correlated to every delta of this span (see _ThinkingStreamer).
         thinking_streamer = _ThinkingStreamer(
@@ -943,6 +971,13 @@ class TaskService:
                     ref=ref, source=source, cwd=cwd, initiator=initiator,
                     stdout=stdout, stderr=stderr, exit_code=exit_code,
                     duration_ms=duration_ms, truncated=truncated, error=error,
+                )
+
+            async def emit_detail_chunk(
+                self, *, ref: str, stream: str, chunk: str,
+            ) -> None:
+                await vfs_manager.broadcast_activity_detail_chunk(
+                    session_id, ref=ref, stream=stream, chunk=chunk,
                 )
 
         _activity_sink_tok = bind_activity_sink(_TurnActivitySink())
@@ -1143,7 +1178,6 @@ class TaskService:
                 plan_surface=(raw_mode == "plan"),
                 auto_apply=(verdict is PermissionDecision.ALLOW),
             )
-            gate.record_answer(len(summary.encode()))  # flips the gate into 15% enforcement
             await vfs_manager.broadcast_plan_document(
                 session_id, self._build_plan_payload(mission, summary)
             )
@@ -1164,7 +1198,6 @@ class TaskService:
                     "Plan mode is read-only — no files were changed. "
                     "Switch to Ask or Auto to apply edits."
                 )
-                gate.record_answer(len(blocked.encode()))
                 await vfs_manager.broadcast_token(session_id, blocked)
                 await self._finalize_stream(session_id)
                 return
@@ -1230,7 +1263,6 @@ class TaskService:
                         len(ordered_paths),
                     )
                     notice = "⚡ Auto-accepting low-risk changes directly to disk…"
-                    gate.record_answer(len(notice.encode()))
                     await vfs_manager.broadcast_token(session_id, notice)
                     # patches_to_apply already mirrors `contents`; fall through to
                     # the blast-radius gate and the single apply commit — no
@@ -1257,6 +1289,11 @@ class TaskService:
                     revise_comment: Optional[str] = None
                     for idx, path in enumerate(ordered_paths, start=1):
                         unified_diff = diffs[path]
+                        # Per-file labels (not the whole-set `risk_labels` above, which
+                        # only drives the auto-accept gate) so the card names exactly
+                        # why THIS file was flagged, not every file in the batch —
+                        # closes DEBT-125's display gap.
+                        file_risk_labels = scan_risk_patterns(_added_lines(unified_diff))
                         approval = await vfs_manager.request_human_approval(
                             session_id=session_id,
                             action_description=f"Apply change to {path} ({idx} of {total})",
@@ -1269,6 +1306,7 @@ class TaskService:
                                     base_hash=base_hashes.get(path),
                                 )
                             ],
+                            risk_patterns_matched=file_risk_labels or None,
                             timeout_s=None,
                         )
                         if approval and approval.get("approved"):
@@ -1286,13 +1324,11 @@ class TaskService:
 
                     if revise_comment is not None:
                         msg = "Revising based on your feedback…"
-                        gate.record_answer(len(msg.encode()))
                         await vfs_manager.broadcast_token(session_id, msg)
                         await self._finalize_stream(session_id)
                         return
                     if not accepted:
                         discarded = "Changes discarded — no files were modified."
-                        gate.record_answer(len(discarded.encode()))
                         await vfs_manager.broadcast_token(session_id, discarded)
                         await self._finalize_stream(session_id)
                         return
@@ -1302,7 +1338,6 @@ class TaskService:
                 # action log never shows a silent mutation — apply_patch_set's I/O
                 # may take noticeable time behind VFS locks.
                 notice = "⚡ Auto-applying approved changes directly to disk…"
-                gate.record_answer(len(notice.encode()))
                 await vfs_manager.broadcast_token(session_id, notice)
 
             # Blast-radius gate: how many files transitively import what we're about to
@@ -1335,7 +1370,6 @@ class TaskService:
                 )
                 if not (approval and approval.get("approved")):
                     blocked = "Changes not applied — blast-radius review was declined."
-                    gate.record_answer(len(blocked.encode()))
                     await vfs_manager.broadcast_token(session_id, blocked)
                     await self._finalize_stream(session_id)
                     return
@@ -1347,7 +1381,6 @@ class TaskService:
                 blocked = "Changes not applied — a pre_patch hook vetoed the write."
                 if pre_msgs:
                     blocked += " " + "; ".join(pre_msgs[:3])
-                gate.record_answer(len(blocked.encode()))
                 await vfs_manager.broadcast_token(session_id, blocked)
                 await self._finalize_stream(session_id)
                 return
@@ -1386,7 +1419,6 @@ class TaskService:
                 result_msg = "⚠️ Could not apply the changes: " + str(
                     res.get("error") or "unknown error"
                 )
-            gate.record_answer(len(result_msg.encode()))
             await vfs_manager.broadcast_token(session_id, result_msg)
             await self._finalize_stream(session_id)
             self._append_history(session_id, "assistant", result_msg)

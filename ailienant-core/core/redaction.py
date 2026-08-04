@@ -28,6 +28,28 @@ _SECRET_PATTERNS: List[re.Pattern[str]] = [
 ]
 
 
+def truncate_middle(text: str, cap: int) -> str:
+    """Keep the head and tail of an over-long string, eliding the middle.
+
+    Middle-truncation preserves both the leading context (a command, a tool's
+    args) and the trailing signal (the last lines of output, an error), which
+    is where the useful content usually sits — a head-only or tail-only cap
+    would silently drop one or the other. Cheap: the slices copy at most
+    ``cap`` characters regardless of the source length.
+
+    Shared by every masking site (`core/exec_log.py`'s command/output ring,
+    the tool-dispatch activity detail) so truncation shape stays consistent
+    wherever free text is capped before it leaves the server; call this
+    BEFORE ``mask_secrets`` — that function's own internal cap is head-only,
+    so pre-truncating here is what preserves the tail on an over-long input.
+    """
+    if len(text) <= cap:
+        return text
+    half = cap // 2
+    dropped = len(text) - (half * 2)
+    return f"{text[:half]}\n…[{dropped} chars truncated]…\n{text[-half:]}"
+
+
 def mask_secrets(text: Optional[str]) -> Optional[str]:
     """Redact secrets from a free-text field before it leaves the server.
 
