@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 from typing import (
-    Awaitable, Callable, List, Dict, Any, Literal, Optional, Tuple, cast, TYPE_CHECKING,
+    Awaitable, Callable, List, Dict, Any, Literal, Optional, Set, Tuple, cast, TYPE_CHECKING,
 )
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
@@ -485,6 +485,13 @@ class TaskService:
         # MUST register its OWN current_task() (NEVER the WS receive loop's
         # task — that would kill the socket on cancel; see plan W1).
         self._active_tasks: Dict[str, "asyncio.Task[Any]"] = {}
+        # Strong-ref set for fire-and-forget orphaned-agentic-cell teardown tasks
+        # scheduled from register_active_task's done-callback (DEBT-152) — without
+        # this, asyncio could GC a scheduled-but-not-yet-run teardown mid-flight.
+        # Each entry discards itself via its own done-callback (see
+        # _schedule_cell_teardown), so this set is empty whenever no teardown is
+        # in flight.
+        self._cell_teardown_tasks: Set["asyncio.Task[None]"] = set()
         # Native HITL Suspend & Resume — sessions whose graph paused on an interrupt(),
         # keyed by session_id → (payload, execution_mode). resume_graph re-enters the
         # same thread with Command(resume=…). One pending interrupt per session at a time.
@@ -1486,6 +1493,18 @@ class TaskService:
         """True if ``session_id`` has a graph paused on a native HITL interrupt."""
         return session_id in self._paused_tasks
 
+    def live_task_ids(self) -> Set[str]:
+        """Every session id with an in-flight OR HITL-paused graph run.
+
+        Union of ``_active_tasks`` (a live runner task) and ``_paused_tasks`` (a
+        runner task that legitimately completed while the turn awaits a native
+        HITL approval). The single source of truth for "is this session still in
+        use" from outside the service — consumed by the orphaned-agentic-cell WS
+        disconnect sweep (DEBT-152) so a paused session is never mistaken for an
+        orphan and torn down.
+        """
+        return set(self._active_tasks) | set(self._paused_tasks)
+
     async def rehydrate_paused_interrupt(self, session_id: str) -> bool:
         """Re-surface a HITL interrupt that was suspended before a server restart.
 
@@ -2255,10 +2274,74 @@ class TaskService:
 
         Idempotent: a second call for the same session_id replaces the
         previous entry (only one in-flight generation per UI session). On
-        task completion, the done-callback auto-removes the entry.
+        task completion, the done-callback auto-removes the entry, then a
+        second done-callback (registered after, so it observes the
+        already-cleared registry) schedules a best-effort agentic-cell
+        teardown for the session (DEBT-152) — the run-lifecycle half of
+        reaping an orphaned cell session; a WS-disconnect sweep is the
+        second, independent safety net (see ``main.py``).
         """
         self._active_tasks[session_id] = task
-        task.add_done_callback(lambda _t: self._active_tasks.pop(session_id, None))
+        task.add_done_callback(lambda t: self._pop_active_task_if_current(session_id, t))
+        task.add_done_callback(lambda _t: self._schedule_cell_teardown(session_id))
+
+    def _pop_active_task_if_current(
+        self, session_id: str, task: "asyncio.Task[Any]"
+    ) -> None:
+        """Remove ``session_id``'s registry entry only if it still points at
+        THIS exact task.
+
+        Identity-checked rather than a bare ``pop`` — ``register_active_task``
+        can be called again for the same ``session_id`` before a predecessor
+        task's own done-callback runs (e.g. an analyst-query runner starting
+        for a session a coder turn already used). Without this check, the
+        predecessor's completion would evict the SUCCESSOR's live entry from
+        ``_active_tasks``, corrupting both the abort mesh (the wrong task
+        would then appear un-abortable) and the DEBT-152 cell-teardown guard
+        (a live successor's cell would read as orphaned and be closed).
+        """
+        if self._active_tasks.get(session_id) is task:
+            self._active_tasks.pop(session_id, None)
+
+    def _schedule_cell_teardown(self, session_id: str) -> None:
+        """Fire-and-forget orphaned agentic-cell cleanup for a completed runner task.
+
+        Two guards prevent tearing down a cell that is still legitimately in use —
+        both are load-bearing, not defensive filler:
+
+          * ``has_paused_graph`` — a native HITL interrupt completes the runner
+            task while the turn merely awaits approval; ``resume_graph`` re-enters
+            the SAME cell session later, so closing it here would destroy a live,
+            resumable run.
+          * a successor task already registered for this ``session_id`` — the
+            registry holds one task per session (e.g. an analyst query can start a
+            new runner for a session a coder turn previously used), so this
+            callback firing for the PRIOR task must not close a cell the NEW task
+            now owns. Safe to check here because this callback is registered
+            after the pop-callback above, so a same-session entry read here can
+            only be a genuine successor's, never this task's own stale entry.
+
+        Scheduled via the module's fire-and-forget idiom (strong-ref set + a
+        matching discard done-callback, mirroring ``brain/coder_companion.py``)
+        rather than awaited inline — a task's own done-callback must never block.
+        """
+        if self.has_paused_graph(session_id):
+            return
+        if self._active_tasks.get(session_id) is not None:
+            return
+        t = asyncio.create_task(self._teardown_orphaned_cell(session_id))
+        self._cell_teardown_tasks.add(t)
+        t.add_done_callback(self._cell_teardown_tasks.discard)
+
+    async def _teardown_orphaned_cell(self, session_id: str) -> None:
+        """Fire-and-forget body for :meth:`_schedule_cell_teardown`. Never raises."""
+        from brain.agentic_cell import close_cell_session
+
+        try:
+            await close_cell_session(session_id)
+        except Exception as exc:  # noqa: BLE001 — a background teardown fault must
+            # never surface as an "exception was never retrieved" event-loop warning.
+            logger.debug("orphaned cell teardown failed for %s: %s", session_id, exc)
 
     def abort_session(self, session_id: str) -> bool:
         """Cancel the in-flight task for ``session_id`` cooperatively.

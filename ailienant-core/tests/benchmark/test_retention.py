@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, List
@@ -38,6 +39,10 @@ def iso_bench(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(benchmark_service, "_runs", {})
     monkeypatch.setattr(benchmark_service, "_inflight", 0)
     monkeypatch.delenv("AILIENANT_GATEWAY_BENCH_CONCURRENCY", raising=False)
+    # Shrunk from the 30s production default so a regression of DEBT-108 (the
+    # cross-thread FileLock release that silently leaked the lock fd) fails this
+    # suite in ~1s instead of stalling it for minutes across 5 driven runs.
+    monkeypatch.setattr(benchmark_service, "_RETENTION_LOCK_TIMEOUT_S", 1.0)
     return bench_dir
 
 
@@ -215,3 +220,46 @@ def test_run_benchmark_bounds_artifacts(
 
     # Count-only assertion: exactly the cap remains, regardless of mtime resolution.
     assert len(list(iso_bench.glob("*.json"))) == 3
+
+
+def test_persist_with_retention_releases_lock_on_same_thread(
+    iso_bench: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEBT-108 regression: the retention lock must be free the instant a single
+    ``_persist_with_retention`` call returns.
+
+    Reproduces the cross-thread FileLock defect reliably rather than depending on
+    the original bug's ~1-in-3-under-load luck: 16 concurrent no-op ``to_thread``
+    dispatches are fired immediately before the benchmark run to saturate
+    ``asyncio``'s shared default executor, biasing (empirically, 15/15 locally)
+    whichever worker thread services each of the retention path's own ``to_thread``
+    calls to differ from run to run — exactly the executor contention a busy host
+    produces under real concurrency. Before the fix, ``_write_then_prune`` split
+    the critical section across separate ``to_thread`` dispatches for acquire and
+    release; ``filelock``'s default ``thread_local=True`` context then made a
+    foreign-thread ``release()`` a silent no-op, leaking the fd so this probe would
+    time out. The fix collapses acquire-through-release into one ``to_thread``
+    call, which by construction can never split across threads — this test passes
+    deterministically post-fix regardless of executor contention.
+    """
+    from filelock import FileLock, Timeout
+
+    monkeypatch.setattr(benchmark_service, "_runner_factory", lambda _root: _StubRunner())
+
+    async def _drive() -> None:
+        noise = [
+            asyncio.create_task(asyncio.to_thread(time.sleep, 0.01)) for _ in range(16)
+        ]
+        await benchmark_service.run_benchmark(uuid.uuid4().hex, suite="v1")
+        await asyncio.gather(*noise)
+
+    asyncio.run(_drive())
+
+    lock_path = benchmark_service._retention_lock_path()
+    probe = FileLock(str(lock_path), timeout=0.2)
+    try:
+        probe.acquire()
+    except Timeout:
+        pytest.fail("retention lock still held after _persist_with_retention returned — leaked fd")
+    else:
+        probe.release()

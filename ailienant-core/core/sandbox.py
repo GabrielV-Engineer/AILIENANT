@@ -45,10 +45,12 @@ import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Protocol, Tuple, Type
+from typing import (
+    TYPE_CHECKING, Any, Callable, Deque, Dict, List, Literal, Optional, Protocol, Tuple, Type,
+)
 
 if TYPE_CHECKING:
     from core.workspace_sync import SyncSurface
@@ -71,6 +73,7 @@ from shared.config import (
     SANDBOX_IDLE_TTL_S,
     SANDBOX_LEASE_WAIT_S,
     SANDBOX_MAX_CONTAINERS,
+    SANDBOX_MAX_QUEUED,
     SANDBOX_MEM_LIMIT,
     SANDBOX_PIDS_LIMIT,
 )
@@ -443,6 +446,13 @@ class _ContainerPool:
         self._leases: "OrderedDict[Tuple[str, str], _ContainerLease]" = OrderedDict()
         self._lock = asyncio.Lock()
         self._condition = asyncio.Condition(self._lock)
+        # FIFO admission queue (DEBT-151): ticket numbers in arrival order. A
+        # waiter's wake predicate additionally requires being at the HEAD of
+        # this queue, so a release hands off to the longest-waiting caller
+        # rather than whichever waiter's task the event loop happens to
+        # schedule first — the fairness ordering the pre-queue design lacked.
+        self._queue: "Deque[int]" = deque()
+        self._next_ticket: int = 0
 
     def peek(self, mount_root: str, session_id: Optional[str]) -> Optional[_ContainerLease]:
         """Non-blocking read of an already-established lease (no acquire)."""
@@ -452,6 +462,11 @@ class _ContainerPool:
         key = _lease_key(mount_root, session_id)
         abs_root = key[0]
         async with self._lock:
+            # Existing-lease fast path — evaluated BEFORE any queue admission
+            # check. A session that already holds a lease (a second command on
+            # an in-flight session) must re-acquire it directly; queueing it
+            # behind unrelated NEW admissions would let a burst of other
+            # sessions' first commands stall an already-open session's next one.
             lease = self._leases.get(key)
             if lease is not None:
                 if await self._adapter._revalidate(lease.container):
@@ -468,13 +483,53 @@ class _ContainerPool:
             if await self._evict_one_idle_locked():
                 return await self._create_locked(key, abs_root)
 
-            try:
-                await asyncio.wait_for(
-                    self._condition.wait_for(self._has_capacity_or_idle_locked),
-                    timeout=SANDBOX_LEASE_WAIT_S,
+            # No capacity and nothing idle: join the FIFO admission queue rather
+            # than every waiter racing the next release. A queue already at its
+            # depth ceiling refuses ADMISSION OUTRIGHT — no wait at all — so a
+            # burst of callers fails fast instead of silently piling an
+            # unbounded backlog that would each still degrade to sharing after
+            # burning the full SANDBOX_LEASE_WAIT_S.
+            if len(self._queue) >= SANDBOX_MAX_QUEUED:
+                raise SandboxResourceExhausted(
+                    f"container pool admission queue is full "
+                    f"(cap={SANDBOX_MAX_QUEUED}) — refusing to queue a new waiter "
+                    f"for {abs_root!r}."
                 )
-            except asyncio.TimeoutError:
-                return self._share_or_raise_locked(abs_root)
+            ticket = self._next_ticket
+            self._next_ticket += 1
+            self._queue.append(ticket)
+            try:
+                try:
+                    await asyncio.wait_for(
+                        self._condition.wait_for(
+                            lambda: self._queue[0] == ticket
+                            and self._has_capacity_or_idle_locked()
+                        ),
+                        timeout=SANDBOX_LEASE_WAIT_S,
+                    )
+                except asyncio.TimeoutError:
+                    return self._share_or_raise_locked(abs_root)
+            finally:
+                # Runs on every exit — served, timed out, or cancelled — because
+                # asyncio.Condition.wait() always re-acquires the lock before
+                # propagating a cancellation, so this stays lock-held. Removing
+                # OUR ticket unconditionally (whether or not it's still at the
+                # head) is what lets a cancelled or degraded waiter hand off to
+                # its successor instead of stranding the queue behind it.
+                try:
+                    self._queue.remove(ticket)
+                except ValueError:
+                    pass
+                # O(N) wake-ups per release (N = queued waiters, bounded by
+                # SANDBOX_MAX_QUEUED): every waiter is scheduled, evaluates its
+                # predicate, and all but the new head go back to sleep.
+                # Accepted because N is small and config-bounded — the O(1)
+                # alternative (chained per-waiter futures) means reimplementing
+                # Condition's own cancellation-safe lock re-acquisition by hand.
+                # If SANDBOX_MAX_QUEUED is ever raised substantially above its
+                # default, THAT is the signal to migrate to targeted hand-off
+                # instead of broadcasting to the whole queue on every release.
+                self._condition.notify_all()
 
             if len(self._leases) < SANDBOX_MAX_CONTAINERS:
                 return await self._create_locked(key, abs_root)
@@ -823,6 +878,11 @@ class DockerSandboxAdapter(SandboxAdapter):
         lease is held for the session's whole life and released exactly once
         when the backend closes (:class:`_DockerPtyBackend`'s ``on_close``) —
         without that release the container could never become idle-evictable.
+        The same release path also fires if EITHER the exec-socket creation or
+        the session's own ``start()`` fails (DEBT-150): otherwise a failed open
+        would strand the lease at refcount>=1 forever — the same permanent-
+        occupancy failure DEBT-152 closes on the run-lifecycle side, reached
+        here by a different route.
         """
         mount_root = self._resolve_mount_root(session_id)
         try:
@@ -847,21 +907,48 @@ class DockerSandboxAdapter(SandboxAdapter):
             released = True
             loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._pool.release(lease)))
 
-        def _factory(
-            argv: List[str], _cwd: str, env: Dict[str, str], _marker: bytes,
-        ) -> _PtyBackend:
-            return _DockerPtyBackend(
-                client, container_id, container_cwd, env, argv, on_close=_release_once,
+        # Exec creation is a genuine blocking Docker daemon round-trip, dispatched
+        # on the bounded ail-docker pool (DEBT-150) rather than the shared default
+        # executor the old in-constructor call implicitly used via
+        # _PtySession.start()'s own asyncio.to_thread.
+        try:
+            api, exec_id, sock = await _create_pty_exec(
+                client, container_id, container_cwd, dict(env_whitelist), ["/bin/sh"],
             )
+        except SandboxDaemonTimeout as exc:
+            _release_once()
+            raise SandboxSessionError(
+                "Sandbox daemon unavailable — cannot open a PTY exec."
+            ) from exc
+        except BaseException:
+            _release_once()
+            raise
+
+        def _factory(
+            _argv: List[str], _cwd: str, _env: Dict[str, str], _marker: bytes,
+        ) -> _PtyBackend:
+            # The exec socket is already open (built above, off the event loop's
+            # default executor) — this factory only wraps it, so it does no I/O
+            # of its own despite running inside _PtySession.start()'s to_thread.
+            return _DockerPtyBackend(sock, api, exec_id, on_close=_release_once)
 
         session = _PtySession(
             cwd=container_cwd,
             env=dict(env_whitelist),
             shell_kind="posix",
+            shell_argv=["/bin/sh"],  # must match the argv _create_pty_exec already used
             pre_spawn_guard=pre_spawn_guard,
             backend_factory=_factory,
         )
-        await session.start()
+        try:
+            await session.start()
+        except BaseException:
+            try:
+                (getattr(sock, "_sock", sock)).close()
+            except OSError:
+                pass
+            _release_once()
+            raise
         return session
 
     def get_sync_surface(self, cwd: str, session_id: Optional[str] = None) -> "SyncSurface":
@@ -1868,35 +1955,31 @@ class WasmSandboxAdapter(SandboxAdapter):
 
 # ── Native Direct interactive tier (persistent PTY) ──────────────────────────
 
+# Poll interval for the PTY exec socket's deadline-read loop (DEBT-150). Must
+# stay far below _PtySession's own reader-thread join budget (_JOIN_TIMEOUT_S =
+# 2.0s, core/pty_session.py) so `close()` reliably unblocks a pending `recv_into`
+# well inside that teardown window instead of leaking the reader thread until the
+# daemon eventually answers. 8x headroom costs ~4 wake-ups/sec on an idle
+# session — negligible against a leaked thread on every daemon hang.
+_PTY_SOCK_POLL_S: float = 0.25
 
-class _DockerPtyBackend(_PtyBackend):
-    """Persistent ``sh`` inside the sandbox daemon container over an exec socket.
 
-    The exec is created with ``tty=True`` so the attached socket carries a raw
-    stream (no Docker 8-byte stream-multiplexing header) and the container shell
-    has real line discipline. Blocking ``recv`` runs in the session's reader
-    thread, exactly like the host PTY master read.
+async def _create_pty_exec(
+    client: Any, container_id: str, cwd: str, env: Dict[str, str], argv: List[str],
+) -> Tuple[Any, str, Any]:
+    """Create an exec and hijack its socket for an interactive PTY session.
 
-    This is also the one Docker call in the module a socket-level timeout
-    cannot bound: a hijacked exec socket is a deliberately blocking raw read
-    with no HTTP timeout underneath it (Phase 12.6's declared residual leak —
-    contained, not eliminated, by the dedicated ``ail-docker`` pool + breaker).
+    Dispatched through :func:`_docker_call` onto the bounded ``ail-docker`` pool
+    (DEBT-150) rather than the shared default executor that ``_PtySession.start``'s
+    own ``asyncio.to_thread`` call would otherwise land this on — the same
+    starvation vector DEBT-100 removed from every other blocking Docker call in
+    this module. Returns ``(api, exec_id, raw_socket)`` for the caller to wrap in
+    a :class:`_DockerPtyBackend` once the container lease is confirmed still held.
     """
+    api = client.api
 
-    def __init__(
-        self,
-        client: Any,
-        container_id: str,
-        cwd: str,
-        env: Dict[str, str],
-        argv: List[str],
-        *,
-        on_close: Optional[Callable[[], None]] = None,
-    ) -> None:
-        self._on_close = on_close
-        self._close_fired = False
-        self._api = client.api
-        created = self._api.exec_create(
+    def _sync_create() -> Tuple[Any, str, Any]:
+        created = api.exec_create(
             container_id,
             argv,
             workdir=cwd or _CONTAINER_WORKDIR,
@@ -1904,12 +1987,49 @@ class _DockerPtyBackend(_PtyBackend):
             stdin=True,
             tty=True,
         )
-        self._exec_id = created["Id"]
-        sock = self._api.exec_start(self._exec_id, socket=True, tty=True)
+        exec_id = created["Id"]
+        sock = api.exec_start(exec_id, socket=True, tty=True)
+        return api, exec_id, sock
+
+    return await _docker_call(
+        _sync_create, timeout_s=DOCKER_OP_TIMEOUT_S, op="exec_create_pty"
+    )
+
+
+class _DockerPtyBackend(_PtyBackend):
+    """Persistent ``sh`` inside the sandbox daemon container over an exec socket.
+
+    The exec is created with ``tty=True`` so the attached socket carries a raw
+    stream (no Docker 8-byte stream-multiplexing header) and the container shell
+    has real line discipline. The exec itself is created by :func:`_create_pty_exec`
+    on the bounded ``ail-docker`` pool BEFORE this backend is constructed — the
+    constructor here only wraps an already-open socket, so it does no blocking I/O.
+
+    ``read`` runs a bounded-timeout ``recv_into`` deadline loop rather than a
+    blocking ``recv`` (DEBT-150): a hijacked exec socket has no HTTP-level timeout
+    underneath it, so a truly blocking read would leak the session's reader thread
+    for the life of a daemon hang, undetected by every other timeout in this
+    module. Polling on a short deadline lets ``close()`` (which flips ``_closed``
+    before tearing down the socket) unblock the read promptly instead.
+    """
+
+    def __init__(
+        self,
+        sock: Any,
+        api: Any,
+        exec_id: str,
+        *,
+        on_close: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._on_close = on_close
+        self._close_fired = False
+        self._closed = False
+        self._api = api
+        self._exec_id = exec_id
         # docker-py wraps the raw socket; the OS socket is exposed at ``_sock``.
         self._sock = getattr(sock, "_sock", sock)
         try:
-            self._sock.setblocking(True)
+            self._sock.settimeout(_PTY_SOCK_POLL_S)
         except OSError:
             pass
 
@@ -1918,10 +2038,23 @@ class _DockerPtyBackend(_PtyBackend):
         return None
 
     def read(self, size: int) -> bytes:
-        try:
-            return bytes(self._sock.recv(size))
-        except OSError:
-            return b""
+        buf = bytearray(size)
+        while True:
+            try:
+                n = self._sock.recv_into(buf)
+            except TimeoutError:
+                # No data within this poll window — NOT end-of-stream. Caught
+                # ahead of OSError (TimeoutError is an OSError subclass): treating
+                # a poll timeout as EOF would silently kill a live, merely-idle
+                # session. Keep polling unless close() has already fired.
+                if self._closed:
+                    return b""
+                continue
+            except OSError:
+                return b""
+            if n == 0:
+                return b""  # real EOF — the peer closed its end.
+            return bytes(buf[:n])
 
     def write(self, data: bytes) -> None:
         self._sock.sendall(data)
@@ -1939,6 +2072,10 @@ class _DockerPtyBackend(_PtyBackend):
         self.close()
 
     def close(self) -> None:
+        # Flip BEFORE tearing down the socket so a reader thread's in-flight
+        # recv_into wakes on its next poll timeout and observes closure rather
+        # than racing a socket-error interpretation of the close itself.
+        self._closed = True
         try:
             self._sock.close()
         except OSError:

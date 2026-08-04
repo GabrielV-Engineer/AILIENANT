@@ -186,18 +186,37 @@ async def run_benchmark(task_id: str, suite: str = "v1") -> None:
         _runs[task_id] = f"failed:{exc}"
 
 
-def _write_then_prune(
-    report: "BenchmarkReport", path: Path, max_runs: int
+def _locked_write_then_prune(
+    report: "BenchmarkReport", path: Path, max_runs: int, lock_path: Path, timeout_s: float
 ) -> None:
     """Write the report, then evict the oldest artifacts beyond the cap.
 
-    Synchronous: runs in a worker thread under the held retention lock so the
-    event loop is never blocked on the atomic write or the unlink sweep.
+    Synchronous and run as a SINGLE ``asyncio.to_thread`` dispatch (never split
+    across two separate ``to_thread`` calls): ``filelock`` 3.x defaults to
+    ``thread_local=True``, so a ``FileLock`` acquired on one worker thread and
+    released on a different one silently no-ops its release (the lock's context
+    lives in ``threading.local`` storage the releasing thread never populated) —
+    a leaked fd that stalls every subsequent run for the full lock timeout and
+    forces the durability-first no-prune degrade below. Constructing and
+    acquiring/releasing the ``FileLock`` entirely within this one function call
+    guarantees both ends run on the same thread.
     """
     from core.benchmark.report import prune_artifacts, write_report
 
-    write_report(report, path)
-    prune_artifacts(BENCHMARK_DIR, max_runs)
+    lock = FileLock(str(lock_path), timeout=timeout_s)
+    try:
+        lock.acquire()
+    except Timeout:
+        logger.warning(
+            "benchmark retention lock busy — writing report without prune."
+        )
+        write_report(report, path)
+        return
+    try:
+        write_report(report, path)
+        prune_artifacts(BENCHMARK_DIR, max_runs)
+    finally:
+        lock.release()
 
 
 async def _persist_with_retention(report: "BenchmarkReport", path: Path) -> None:
@@ -206,34 +225,28 @@ async def _persist_with_retention(report: "BenchmarkReport", path: Path) -> None
     The write and prune run together under an in-process ``asyncio.Lock`` plus a
     cross-process ``FileLock``, so concurrent runs (in this host or another) cannot
     race the eviction and exceed the cap. All blocking I/O — the lock acquire, the
-    atomic write, and the unlink sweep — runs off the event loop via
-    ``asyncio.to_thread``.
+    atomic write, and the unlink sweep — runs off the event loop via a SINGLE
+    ``asyncio.to_thread`` dispatch (see ``_locked_write_then_prune``'s docstring for
+    why the lock's acquire and release must never be split across threads).
 
     Durability-first: if the cross-process lock is held elsewhere past the timeout,
     the report is written WITHOUT pruning. A completed run's report is the durable
     answer and must never be lost to contention on a best-effort cleanup lock.
     """
-    from core.benchmark.report import write_report
-
     max_runs = _resolve_max_stored_runs()
     # The lock file cannot be created in a missing directory, and write_report's own
     # parent mkdir happens only after the lock would already be needed.
     BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Resolved here (never as a default-argument value) so a test's monkeypatch of
+    # either knob is honoured on every call, not frozen at import/definition time.
+    lock_path = _retention_lock_path()
+    timeout_s = _RETENTION_LOCK_TIMEOUT_S
+
     async with _retention_async_lock:
-        lock = FileLock(str(_retention_lock_path()), timeout=_RETENTION_LOCK_TIMEOUT_S)
-        try:
-            await asyncio.to_thread(lock.acquire)
-        except Timeout:
-            logger.warning(
-                "benchmark retention lock busy — writing report without prune."
-            )
-            await asyncio.to_thread(write_report, report, path)
-            return
-        try:
-            await asyncio.to_thread(_write_then_prune, report, path, max_runs)
-        finally:
-            await asyncio.to_thread(lock.release)
+        await asyncio.to_thread(
+            _locked_write_then_prune, report, path, max_runs, lock_path, timeout_s
+        )
 
 
 def read_report(task_id: str) -> Dict[str, Any]:

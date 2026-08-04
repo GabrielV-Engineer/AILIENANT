@@ -389,6 +389,57 @@ _register_session_cleanup_hook(task_service.cleanup_session)
 # is idempotent and a no-op once the turn has completed and auto-deregistered.
 _register_session_cleanup_hook(task_service.abort_session)
 
+# Fire-and-forget strong-ref bag for the orphaned-agentic-cell sweep below —
+# declared ahead of the module's main _task_submit_tasks bag (defined further
+# down) so the hook registered immediately after has something to bind to.
+_cell_sweep_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _sweep_orphaned_cells_on_disconnect(_cid: str) -> None:
+    """Opportunistic safety-net reap of any agentic-cell session left behind by a
+    dead owning task (DEBT-152).
+
+    ``TaskService.register_active_task``'s own done-callback is the primary path
+    (fires the instant a session's runner task completes); this hook is the
+    second, independent net — it fires on EVERY WS disconnect regardless of which
+    client dropped, and sweeps the WHOLE cell registry rather than just the
+    disconnecting client's own session, so it also catches an orphan whose
+    primary-path teardown never ran (e.g. the process lost the task reference
+    before the runner completed). ``TaskService.live_task_ids()`` folds in
+    HITL-paused sessions — a paused runner task has already completed by design,
+    so it must never be swept as an orphan.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # disconnect() is a plain sync method and can be driven directly with no
+        # active event loop (e.g. a unit test exercising the manager in
+        # isolation) — there is nothing to schedule fire-and-forget work onto in
+        # that case, and in production this hook only ever fires from inside the
+        # live server's own event loop. Skipping here (rather than letting
+        # asyncio.create_task raise) also avoids leaking an "coroutine was never
+        # awaited" warning from the coroutine object it would otherwise orphan.
+        return
+
+    from brain.agentic_cell import sweep_orphaned_sessions
+
+    live = task_service.live_task_ids()
+
+    async def _run() -> None:
+        try:
+            await sweep_orphaned_sessions(live)
+        except Exception as exc:  # noqa: BLE001 — a background sweep fault must never
+            # propagate into the WS disconnect path or surface as an unretrieved
+            # event-loop exception.
+            logger.debug("orphaned-cell sweep failed: %s", exc)
+
+    _t = loop.create_task(_run())
+    _cell_sweep_tasks.add(_t)
+    _t.add_done_callback(_cell_sweep_tasks.discard)
+
+
+_register_session_cleanup_hook(_sweep_orphaned_cells_on_disconnect)
+
 # Session-scoped planner mode registry — read by TaskService when LangGraph is wired (Phase 2)
 planner_mode_registry: Dict[str, bool] = {}
 

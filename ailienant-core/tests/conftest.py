@@ -128,6 +128,23 @@ def _reset_skill_embed_cache() -> None:
     _default_description_embed_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_response_cache() -> None:
+    """Clear the shared LLM response cache before every test.
+
+    core/response_cache.py's module-level ``response_cache`` singleton (DEBT-153)
+    is keyed by a hash of intent + per-file content, so two tests in different
+    files that happen to build the identical ``(target_file, current_content,
+    rag_snippets, budget)`` tuple would otherwise let the second test's generation
+    mock see a cache hit from the first — a silently skipped generation call whose
+    capture-based assertions then see nothing, an order-dependent cross-file
+    contamination rather than a real per-test failure.
+    """
+    from core.response_cache import response_cache
+
+    response_cache.clear()
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Write CHECKPOINT_REPORT.md with metrics collected during the test session."""
     # Module may be keyed as "test_parser_stress" or "tests.test_parser_stress"

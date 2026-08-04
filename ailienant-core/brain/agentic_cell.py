@@ -29,7 +29,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -252,20 +252,32 @@ async def _close_cell(task_id: str) -> None:
         logger.debug("AgenticCell session close failed for %s: %s", task_id, exc)
 
 
-async def sweep_orphaned_sessions(live_task_ids: Sequence[str]) -> int:
+async def sweep_orphaned_sessions(live_task_ids: Iterable[str]) -> int:
     """Close any registered session whose task is no longer live; return the count.
 
-    The cleanup of last resort for runs aborted mid-loop (the Stop button never reaches the
-    node's ``finally``). The turn-level ``try/finally`` already covers normal terminal exits;
-    this sweep is the safety net for cancellation.
+    The safety-net cleanup for a run's owning task dying without either the normal
+    terminal ``finally`` or ``close_cell_session`` ever firing (a crashed process
+    reaping on the next call, or an aborted run whose done-callback itself faulted).
+    Callers MUST include every session with a pending HITL interrupt in
+    ``live_task_ids`` (its runner task legitimately completed while the session
+    waits for approval) — omitting them would sweep a live, resumable session.
     """
-    # TODO: tie this sweep to the LangGraph Run lifecycle / WS disconnect collector
-    # so an aborted run is reaped immediately rather than on the next sweep tick.
     live = set(live_task_ids)
     orphans = [tid for tid in list(_session_registry) if tid not in live]
     for tid in orphans:
         await _close_cell(tid)
     return len(orphans)
+
+
+async def close_cell_session(session_id: str) -> None:
+    """Tear down ``session_id``'s cell if one is registered. Idempotent.
+
+    The public name for run-lifecycle callers (the task done-callback wired in
+    ``TaskService.register_active_task``) — a thin, more discoverable wrapper over
+    the module-private ``_close_cell`` used internally by the node's own
+    ``finally`` and by :func:`sweep_orphaned_sessions`.
+    """
+    await _close_cell(session_id)
 
 
 async def write_session_stdin(session_id: str, data: bytes) -> bool:

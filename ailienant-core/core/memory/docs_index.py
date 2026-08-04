@@ -202,7 +202,16 @@ async def ensure_docs_index(*, force: bool = False) -> None:
         if not force and _index_is_fresh():
             return
         os.makedirs(LANCEDB_PATH, exist_ok=True)
-        lock = FileLock(_LOCK_PATH, timeout=_LOCK_TIMEOUT_S)
+        # thread_local=False: the acquire below runs on whichever `to_thread` worker
+        # happens to be free, and the release runs after `await _build_index()` — a
+        # real async call that yields to the event loop, so a DIFFERENT worker thread
+        # can easily service the later `to_thread` dispatch. filelock 3.x's default
+        # thread-local context would then make `release()` a silent no-op (the
+        # releasing thread never populated its own copy of the lock state), leaking
+        # the fd and wedging the docs index out of ever rebuilding again for the
+        # life of the process. A shared (non-thread-local) context makes acquire and
+        # release agree regardless of which worker thread services each call.
+        lock = FileLock(_LOCK_PATH, timeout=_LOCK_TIMEOUT_S, thread_local=False)
         try:
             await asyncio.to_thread(lock.acquire)  # sync OS I/O off the event loop
         except Timeout:

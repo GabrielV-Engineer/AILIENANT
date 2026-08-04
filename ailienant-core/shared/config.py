@@ -156,6 +156,17 @@ SANDBOX_MAX_CONTAINERS: int = max(1, _env_int("AILIENANT_SANDBOX_MAX_CONTAINERS"
 SANDBOX_IDLE_TTL_S: int = max(1, _env_int("AILIENANT_SANDBOX_IDLE_TTL_S", 900))
 SANDBOX_LEASE_WAIT_S: float = max(0.0, _env_float("AILIENANT_SANDBOX_LEASE_WAIT_S", 30.0))
 
+# Bounded FIFO admission queue depth (DEBT-151). Once the pool is at capacity
+# with no idle lease, a new acquirer queues rather than racing every other
+# waiter for the next release — see _ContainerPool's head-of-queue predicate.
+# A queue already at this depth refuses ADMISSION immediately (raises
+# SandboxResourceExhausted rather than joining the queue) instead of piling an
+# unbounded backlog behind SANDBOX_LEASE_WAIT_S; the default is generous
+# relative to SANDBOX_MAX_CONTAINERS so the refusal is unreachable at any
+# realistic concurrency. Floored so a malformed override can never wedge
+# admission shut entirely.
+SANDBOX_MAX_QUEUED: int = max(1, _env_int("AILIENANT_SANDBOX_MAX_QUEUED", 2 * SANDBOX_MAX_CONTAINERS))
+
 # Per-container resource ceilings (not reservations — usage stays demand-driven).
 # Under cgroup v2 the container's tmpfs pages are charged to its own cgroup, so
 # the /work tmpfs size sits inside this memory ceiling rather than beside it. A
