@@ -23,7 +23,7 @@ lance-namespace==0.6.1
 lance-namespace-urllib3-client==0.6.1
 lancedb==0.30.2
 langchain-core==1.2.26
-langgraph==1.1.6
+langgraph==1.2.10
 langgraph-checkpoint==4.0.1
 langgraph-prebuilt==1.0.9
 langgraph-sdk==0.3.12
