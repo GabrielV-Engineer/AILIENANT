@@ -102,7 +102,11 @@ async function main() {
 		plugins: [esbuildProblemMatcherPlugin],
 	});
 
-	// Copy dashboard index.html into dist on every build
+	// Copy dashboard index.html into dist on every build. esbuild.context()
+	// only prepares the build, it doesn't create outdir yet (that happens on
+	// the later rebuild()/watch() call), so the destination directory isn't
+	// guaranteed to exist here.
+	fs.mkdirSync('dist/dashboard', { recursive: true });
 	fs.copyFileSync('src/dashboard/index.html', 'dist/dashboard/index.html');
 
 	copyUserGuides();

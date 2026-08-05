@@ -1,6 +1,7 @@
 # ailienant-core/shared/hardware.py
 
 import platform
+import sys
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -122,7 +123,7 @@ class HardwareDetector:
                         if line.startswith("model name"):
                             name = line.split(":", 1)[1].strip()
                             break
-            elif os_type == "Windows":
+            elif sys.platform == "win32":
                 import winreg
                 with winreg.OpenKey(
                     winreg.HKEY_LOCAL_MACHINE,

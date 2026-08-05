@@ -449,8 +449,8 @@ def test_real_windows_kill_reaps_process() -> None:
         hang.cancel()
         await asyncio.gather(consumer, hang, return_exceptions=True)
         # terminate_tree() must not raise (the bug this regresses: kill() called
-        # with a missing required `sig` argument would TypeError here) and the
-        # process must actually be dead afterward.
-        assert backend.wait(timeout=5.0) is not None or not backend._pty.isalive()
+        # with a missing required `sig` argument would TypeError here) and
+        # wait() must report the process actually died.
+        assert backend.wait(timeout=5.0) is not None
 
     asyncio.run(body())
