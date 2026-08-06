@@ -537,7 +537,7 @@ The suite is large (latest gate: **2,858 passing / 2 skipped**, 91% line coverag
 
 `.github/workflows/backend-gate.yml` and `.github/workflows/frontend-gate.yml` run the same gates above automatically on every push/PR touching their respective directories — see [DEV_JOURNAL.md](docs/DEV_JOURNAL.md)'s 12.15 entry for what each covers. A backend-coverage artifact publishes on every backend-gate run (observability only, no hard threshold yet). The Playwright e2e suite (`ailienant-extension/e2e/`) runs on a nightly schedule, not on every push, since it boots a real backend subprocess and is comparatively slow.
 
-**One manual step CI cannot self-configure:** branch protection is a GitHub repo setting, not a committable file. To actually block merges on a red gate, go to **Settings → Branches → Add branch protection rule** for `main`, and under "Require status checks to pass before merging," select both `Backend Gate / gate` and `Frontend Gate / gate`. This only needs doing once, and only takes effect after each workflow has run at least once on the repo (GitHub only lists status checks it has seen before).
+**One manual step CI cannot self-configure:** branch protection is a GitHub repo setting, not a committable file. To actually block merges on a red gate, go to **Settings → Rules → Rulesets**, create (or edit) a ruleset targeting `main`, enable "Require status checks to pass," and add both `backend-gate` and `frontend-gate` (the job names). This only takes effect after each workflow has run at least once on the repo (GitHub only lists status checks it has seen before) — and note both jobs must have distinct names for the checks picker to disambiguate them; a shared generic job name like `gate` shows up ambiguously.
 
 ---
 
