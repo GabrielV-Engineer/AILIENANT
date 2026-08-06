@@ -18,7 +18,10 @@ export default defineConfig({
     webServer: {
         command: 'node e2e/run-backend.mjs',
         url: `http://127.0.0.1:${PORT}/dashboard`,
-        timeout: 60_000,
+        // 60s wasn't enough on a cold CI runner's first-ever run (pip install +
+        // uvicorn cold start) — bumped after the actual server reported ready
+        // just past the old timeout.
+        timeout: 120_000,
         reuseExistingServer: false,
     },
     projects: [
