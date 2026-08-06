@@ -17,6 +17,7 @@ import functools
 import hashlib
 import json
 import struct
+import sys
 from pathlib import Path
 from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -342,6 +343,11 @@ async def test_read_file_schema_executes() -> None:
 # =====================================================================
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="_canon's case/sep unification is an NTFS-specific guarantee — POSIX "
+    "filesystems are case-sensitive, so there's no equivalent ambiguity to resolve.",
+)
 def test_path_canon_deduplication() -> None:
     """C:\\A\\B.py and c:/a/b.py must canonicalize to the same key."""
     p1 = "C:\\Project\\src\\main.py"
@@ -351,6 +357,11 @@ def test_path_canon_deduplication() -> None:
     )
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="_canon's case/sep unification is an NTFS-specific guarantee — POSIX "
+    "filesystems are case-sensitive, so there's no equivalent ambiguity to resolve.",
+)
 @pytest.mark.anyio
 async def test_make_vfs_path_provider_deduplicates(tmp_path: Path) -> None:
     """Provider union must de-duplicate paths that differ only in casing/sep."""

@@ -8,6 +8,7 @@ healing_required; and the cognitive-isolation fence (no brain.personality import
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,6 +26,17 @@ from brain.retry_policy import CORRECTION_MAX_ATTEMPTS, FAILURE_SIGNATURE_THRESH
 _OFFENDER = "C:\\ws\\pkg\\mod.py"
 _ORIGINAL = "def f():\n    return undefined_name\n"
 _FIXED = "def f():\n    return 1\n"
+
+# candidate_files_from_traceback() filters frames by os.path.relpath() against
+# workspace_root, which is only meaningful for paths in the *host's own*
+# format (relpath can't parse a foreign OS's drive-letter/separator convention).
+# _OFFENDER above is a Windows-style literal used elsewhere purely as an opaque
+# string/dict key, but the two tests that actually exercise the relpath-based
+# workspace filter need a real, host-appropriate path pair to test the real
+# behavior on every platform, not just Windows.
+_WS_ROOT = os.path.join(os.path.abspath(os.sep), "ws")
+_WS_OFFENDER = os.path.join(_WS_ROOT, "pkg", "mod.py")
+_WS_STDLIB_FRAME = os.path.join(os.path.abspath(os.sep), "stdlib", "json.py")
 
 
 @pytest.fixture(autouse=True)
@@ -163,18 +175,18 @@ async def test_run_node_always_clears_healing_required(monkeypatch: Any) -> None
     _patch_read(monkeypatch, _ORIGINAL)
     monkeypatch.setattr(
         "agents.error_correction._default_agent",
-        ErrorCorrectionAgent(llm_invoker=_stub_invoker(_OFFENDER, _FIXED)),
+        ErrorCorrectionAgent(llm_invoker=_stub_invoker(_WS_OFFENDER, _FIXED)),
     )
     state: Dict[str, Any] = {
         "healing_required": True,
-        "last_error_trace": f'File "{_OFFENDER}", line 2, in f\nNameError',
+        "last_error_trace": f'File "{_WS_OFFENDER}", line 2, in f\nNameError',
         "failed_node": "coder_agent",
         "failure_signature": normalize_signature("coder_agent", "NameError", "x"),
-        "workspace_root": "C:\\ws",
+        "workspace_root": _WS_ROOT,
     }
     out = await run_error_correction_node(state)
     assert out["healing_required"] is False
-    assert out["pending_contents"][_OFFENDER] == _FIXED
+    assert out["pending_contents"][os.path.normpath(_WS_OFFENDER)] == _FIXED
 
 
 @pytest.mark.anyio
@@ -187,11 +199,11 @@ async def test_run_node_noop_without_signal() -> None:
 
 def test_candidate_files_filters_to_workspace() -> None:
     tb = (
-        'File "C:\\\\python\\\\lib\\\\json.py", line 10, in loads\n'
-        'File "C:\\\\ws\\\\pkg\\\\mod.py", line 2, in f\n'
+        f'File "{_WS_STDLIB_FRAME}", line 10, in loads\n'
+        f'File "{_WS_OFFENDER}", line 2, in f\n'
     )
-    out: List[str] = candidate_files_from_traceback(tb, "C:\\ws")
-    assert out == ["C:\\ws\\pkg\\mod.py"]  # stdlib frame dropped
+    out: List[str] = candidate_files_from_traceback(tb, _WS_ROOT)
+    assert out == [os.path.normpath(_WS_OFFENDER)]  # stdlib frame dropped
 
 
 # ── cognitive-isolation fence ────────────────────────────────────────────────
