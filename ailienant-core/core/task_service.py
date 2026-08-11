@@ -466,8 +466,8 @@ class _ThinkingStreamer:
 
 class TaskService:
     """
-    Capa de orquestación intermedia.
-    Aísla la lógica de LangGraph y VFS de la capa de transporte HTTP.
+    Intermediate orchestration layer.
+    Isolates the LangGraph and VFS logic from the HTTP transport layer.
     """
 
     def __init__(self) -> None:
@@ -528,7 +528,7 @@ class TaskService:
                 session_id, payload.from_checkpoint_id,
             )
 
-        # 1. Asimilación de Entropía O(1)
+        # 1. O(1) entropy assimilation
         self.vfs.ingest_dirty_buffers(payload.dirty_buffers)
 
         # 2. Intent routing. Planner-mode toggle forces the coding path.

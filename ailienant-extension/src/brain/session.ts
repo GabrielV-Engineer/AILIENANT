@@ -74,8 +74,8 @@ export class SessionManager {
     }
 
     /**
-     * Inicia una misión cognitiva.
-     * Orquesta la recolección de entropía, abre el túnel cuántico y despacha el WBS.
+     * Starts a cognitive mission.
+     * Orchestrates collecting the IDE's unsaved state, opening the tunnel, and dispatching the WBS.
      *
      * @param taskPrompt The user prompt text.
      * @param opts Optional UI-layer injections.
@@ -89,12 +89,12 @@ export class SessionManager {
         opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string; invoked_skill_id?: string; auto_accept_low_risk?: boolean },
     ): Promise<number | undefined> {
         try {
-            // 1. Asegurar el canal de Oídos (WebSockets) ANTES de hablar.
-            // Si lo hacemos al revés, podríamos perder los primeros tokens de LangGraph.
+            // 1. Ensure the listening channel (WebSockets) is open BEFORE speaking.
+            // Doing it in the opposite order risks losing LangGraph's first tokens.
             // ensureConnected also (re)announces the workspace to keep the indexer alive.
             this.ensureConnected();
 
-            // 2. Extraer la Entropía Visual (Ojos) del VFS
+            // 2. Capture the IDE's unsaved state from the VFS
             const dirtyBuffers = VFSReader.captureEntropy();
 
             // 3. OCC: snapshot active document version before sending.

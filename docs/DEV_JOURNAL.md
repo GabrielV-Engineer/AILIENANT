@@ -13,6 +13,14 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 12.10: Pre-Launch Innovation Gate — 2026-08-06
+**Status:** COMPLETE | **Gates:** mypy 0/461 · pyright 0 · pytest 2877 passed/2 skipped, zero footnoted flakes · npm compile 0 · npm lint 0 · npm test 191 passed
+- Shipped: Phase 12 closure. Amended the gate's own "prompt caching tokens-saved metric > 0" criterion (CLAUDE.md §4 Option B) — 12.1's own measurement had already disproven the premise; DEBT-137 stays open with cause and a re-evaluation trigger, not silently closed. New `tests/test_phase12_checkpoint_gate.py` (17 tests) re-certifies 12.1–12.14's cross-cutting invariants. Translated 47 Spanish lines across 10 production files (§13.3), including the public FastAPI app description and `DirtyBuffer`/`IDEContext` OpenAPI field descriptions. Fixed six stale post-12.7 claims in `DEVELOPERS.md` and two stale manifest "Next action" pointers.
+- Key decision: two genuine pre-existing defects surfaced by the full-suite run were fixed at the root rather than footnoted, per the zero-flake policy — `BackgroundTaskManager.stop()` only force-killed the Windows process tree when the shell's own `returncode` was still `None`, but `create_subprocess_shell` spawns cmd.exe as the direct child and the real command as a grandchild, so a cleanly-exited shell left an orphaned grandchild running for its full duration; `stop()` now tree-kills unconditionally on Windows. Separately, the new OS1 gate row assumed an empty `brain.agentic_cell._session_registry`, but several other test files write into that same process-wide global with no reset — made the row snapshot/clear/restore instead.
+- Deferred: DEBT-161 (471 phase/ADR references across 130 production files, §13.1/§13.2 — measured, not swept, to avoid a pre-launch blast-radius spike) and DEBT-162 (three dead REST contract models in `api/api_contracts.py`, same shape as DEBT-144).
+
+---
+
 ## 12.16: Testing & Debugging Rigor Hardening — 2026-08-04
 **Status:** COMPLETE | **Gates:** mypy 0/460 · pyright 0 · pytest 2858 passed/2 skipped (91% line coverage) · npm compile 0 · npm lint 0
 - Shipped: zero-flake policy in `DEVELOPERS.md` formalizing the DEBT-108/153 precedent (12.14) — re-verified both stay closed via their exact repro commands, in isolation and in the full suite. New `ailienant-core/pytest.ini` registers `unit`/`integration`/`e2e` markers for tests going forward (DEBT-157 logs that the existing ~2,858 tests are not retroactively classified — too large a task to do blind in this pass). Two Hypothesis property tests added to `tests/test_patcher.py` (round-trip apply/revert, always-reject-on-ambiguous-match) as the exemplar for future property coverage of the patch-safety surface. `docs/DEBUGGING_RUNBOOK.md` documents the exec-log ring, Glass-Box Timeline, audit chain, and telemetry tables as an install-triage map, plus a pointer to 12.14's new sandbox-reliability regression suites.

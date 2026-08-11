@@ -31,7 +31,7 @@ export class WSClient {
     // a panel (the backend re-aliases each on the re-announce).
     private _registeredSessions: Set<string> = new Set();
 
-    // Estado de reconexión (Exponential Backoff)
+    // Reconnection state (exponential backoff)
     private reconnectAttempts: number = 0;
     private maxReconnectAttempts: number = 10;
     private isConnecting: boolean = false;
@@ -98,8 +98,8 @@ export class WSClient {
     }
 
     /**
-     * Inicia el túnel de red.
-     * Protegido contra llamadas concurrentes.
+     * Opens the network tunnel.
+     * Guarded against concurrent calls.
      */
     public connect(): void {
         if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) {
@@ -218,12 +218,12 @@ export class WSClient {
     }
 
     /**
-     * Cierra el túnel de forma elegante. Evita fugas de memoria.
+     * Closes the tunnel gracefully. Avoids memory leaks.
      */
     public disconnect(): void {
         if (this.ws) {
-            // Código 1000 = Cierre Normal
-            this.ws.close(1000, "Desconexión iniciada por el IDE");
+            // Code 1000 = Normal Closure
+            this.ws.close(1000, "Disconnection initiated by the IDE");
             this.ws = null;
         }
     }

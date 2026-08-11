@@ -106,6 +106,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-157 | No unit/integration/e2e taxonomy across ~2,858 backend tests — no markers existed before 12.16's `pytest.ini`, which registers `unit`/`integration`/`e2e` for new tests only; the existing 237 test files are not retroactively classified | MEDIUM | Test infrastructure | future test-taxonomy retrofit slice | Floating |
 | DEBT-158 | The only Playwright e2e spec (`e2e/dashboard.spec.ts`, 4 tests) covers the Dashboard SPA only — no chat/agent-turn flow, no VS Code extension-host e2e; real (not mocked) within its narrow scope | MEDIUM | Test coverage | future e2e-breadth slice | Floating |
 | DEBT-159 | Pre-commit's mypy-on-changed-files hook (12.17) is a fast local approximation, not a full-tree guarantee — an error surfaced only via a transitive relationship to an unchanged sibling file could theoretically be missed locally; CI's full-tree `mypy .` (`backend-gate.yml`, 12.15) remains authoritative | LOW | Tooling / precision gap | revisit if a partial-invocation blind spot is ever observed in practice | Floating |
+| DEBT-161 | 471 phase/ADR references remain in 130 production files (CLAUDE.md §13.1/§13.2), never scrubbed by any Phase 8-12 pass | LOW | Documentation hygiene | future phase-reference scrub slice | Floating |
+| DEBT-162 | `TaskSubmitRequest`/`TaskSubmitResponse`/`IDEContext` (`api/api_contracts.py`) have zero references outside their own module — the live task-submit path is WebSocket-based, not this REST contract | LOW | Dead code | future dead-contract reclamation slice | Floating |
 
 ---
 
@@ -852,6 +854,12 @@ Decision    Not a defect — see [DECISION] tier.
   are modest — provider caching saves $0 on a local model, and on a cloud model the volatile
   per-step payload (file content, RAG snippets, mission context) dwarfs the cacheable prefix by
   roughly an order of magnitude. This is a genuine but small optimization, not a launch blocker.
+- **12.10 decision (CLAUDE.md §4 Option B):** the Phase 12 closure gate originally required a
+  "prompt caching tokens-saved metric > 0." Re-measuring at gate time reconfirmed this entry's own
+  finding — the premise is still false — so the gate criterion was amended rather than this entry
+  force-closed to satisfy it: 12.10 now certifies the cacheable-prefix *prerequisite*
+  (`tests/test_prompt_prefix_stability.py`) instead, and this entry stays open with its existing
+  trigger, unchanged.
 
 ### DEBT-138 [MEDIUM · Blocked] — Agentic cell does not route through the devcontainer session tier
 
@@ -1259,6 +1267,50 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** revisit if a partial-invocation blind spot (an error only visible via a transitive
   relationship to an unchanged sibling file) is ever actually observed in practice.
 - **Notes:** deliberate MVP/patch decision per CLAUDE.md §11, declared rather than left implicit.
+
+### DEBT-161 [LOW · Floating] — 471 phase/ADR references survive in production code (§13.1/§13.2)
+
+- **Date:** 2026-08-06
+- **Reproduce:** `grep -rEn '(Phase|Division)\s+\d+(\.\d+)*|ADR-\d+' ailienant-core --include=*.py` plus
+  the equivalent sweep over `ailienant-extension/src/**/*.{ts,tsx}`, excluding `tests/`/`test/`/`e2e/`.
+  Found while auditing the 12.10 gate — no prior Phase 8-12 sub-phase closure ever measured this.
+- **File(s):** 130 production files, 471 lines total. Top offenders: `brain/state.py` (39),
+  `ailienant-extension/src/providers/workspace_panel.ts` (35), `core/sandbox.py` (30),
+  `core/task_service.py` (29), `src/api/api_client.ts` (14), `tools/mutation_tools.py` (13),
+  `src/shared/config.ts` (12), `core/db.py` (11), `agents/mcts_coder.py` (10),
+  `src/workspace/workspaceStore.ts` (9), `src/workspace/components/PromptBar.tsx` (9), `main.py` (8).
+- **Error:** CLAUDE.md §13.1 requires active scrubbing of phase/sub-phase/ADR/blueprint references on
+  touch; §13.2 forbids new ones. Neither is retroactive — the violation is historical accumulation
+  across every phase before this charter version existed, not a regression from any single change.
+- **Blocked by:** nothing technical. Explicitly deferred rather than swept in the 12.10 gate itself:
+  §13.1 is a Boy-Scout ("when you encounter") rule, a checkpoint gate is test-only by the project's own
+  sibling convention, and 471 edits across 130 files immediately before a Phase 13 launch is exactly
+  the uncontrolled blast radius a gate exists to avoid introducing.
+- **Phase:** future phase-reference scrub slice — file-by-file, verified against `git blame` context so
+  a reference that also documents a still-relevant migration window (e.g. a legacy-alias sunset note)
+  is rewritten to be timeless rather than deleted outright.
+- **Notes:** the 12.10 gate's `LANG1` regression row is scoped to Spanish only (DEBT-not-needed, closed
+  outright in the same pass); this entry is the phase-reference class only, deliberately not conflated.
+
+### DEBT-162 [LOW · Floating] — Three REST contract models in `api/api_contracts.py` are dead code
+
+- **Date:** 2026-08-06
+- **Reproduce:** `grep -rn 'TaskSubmitRequest\|TaskSubmitResponse\|IDEContext' ailienant-core --include=*.py`
+  outside `api/api_contracts.py` itself returns nothing — the live task-submission path is
+  WebSocket-based (`core/task_service.py`), not a `POST /task/submit` REST endpoint these models imply.
+- **File(s):** `ailienant-core/api/api_contracts.py`.
+- **Error:** same shape as DEBT-144 (closed by 12.12's `brain/prompt_builder.py` reclamation) — fully
+  dead capability, never called at runtime, that documentation and future readers could mistake for
+  the live contract.
+- **Blocked by:** nothing. Not resolved in the same pass this entry was logged: deleting a model
+  used by `DirtyBuffer`'s sibling classes needs a one-name-at-a-time check that no other in-flight
+  branch or external MCP client references the REST shape, which is beyond a documentation-accuracy
+  pass's blast radius.
+- **Phase:** future dead-contract reclamation slice, same pattern as 12.12 — verify zero references,
+  delete, scrub the two doc-comments this cascade would surface if any exist.
+- **Notes:** the file's own header comment (`# alienant-core/core/api_contracts.py`) was also wrong
+  (wrong directory, misspelled project name) — fixed in the same pass that discovered this entry
+  (12.10), since it was a one-line Boy-Scout fix, not a scope-widening deletion.
 
 ### DEBT-160 [HIGH · RESOLVED 2026-08-04, 12.15] — `_WindowsPtyBackend.terminate_tree()`/`.wait()` called pywinpty with the wrong signatures
 

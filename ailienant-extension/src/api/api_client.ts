@@ -133,21 +133,21 @@ export class APIClient {
     }
 
     /**
-     * Envía la entropía del IDE y la tarea al motor LangGraph.
-     * Implementa un timeout de seguridad usando AbortController nativo.
+     * Sends the IDE's unsaved state and the task to the LangGraph engine.
+     * Enforces a safety timeout via the native AbortController.
      */
     public async submitTask(taskId: string, payload: TaskPayload, timeoutMs: number = 10000): Promise<any> {
-        // 1. Prevención de fugas de memoria: Limpiar peticiones previas con el mismo ID
+        // 1. Memory-leak prevention: clear any prior request with the same id
         if (this.activeRequests.has(taskId)) {
             this.cancelTask(taskId);
         }
 
-        // 2. Control de Cancelación y Timeout
+        // 2. Cancellation & timeout control
         const controller = new AbortController();
         this.activeRequests.set(taskId, controller);
 
         const timeoutId = setTimeout(() => {
-            controller.abort(`Timeout de ${timeoutMs}ms excedido.`);
+            controller.abort(`Timeout of ${timeoutMs}ms exceeded.`);
         }, timeoutMs);
 
         try {
@@ -189,13 +189,13 @@ export class APIClient {
     }
 
     /**
-     * Cancela una petición HTTP en vuelo.
-     * Crucial para el botón "Stop Generation" en la UI.
+     * Cancels an in-flight HTTP request.
+     * Crucial for the "Stop Generation" button in the UI.
      */
     public cancelTask(taskId: string): void {
         const controller = this.activeRequests.get(taskId);
         if (controller) {
-            controller.abort("Operación cancelada por el usuario.");
+            controller.abort("Operation cancelled by the user.");
             this.activeRequests.delete(taskId);
         }
     }

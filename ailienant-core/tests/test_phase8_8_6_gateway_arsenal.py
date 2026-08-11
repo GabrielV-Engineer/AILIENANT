@@ -525,6 +525,12 @@ async def test_background_task_manager_stop_sets_cancelled_before_terminate(
 
     class _OrderedProc:
         returncode: Optional[int] = None
+        # On Windows, stop() force-kills the tree unconditionally (the shell's
+        # own clean exit doesn't prove a grandchild didn't survive it — see
+        # BackgroundTaskManager._force_kill's docstring), so this fake needs a
+        # real-shaped .pid for that taskkill call to construct, exactly like
+        # _TrappingProc below.
+        pid = 4321
 
         def terminate(self) -> None:
             order.append("terminate")
@@ -532,7 +538,7 @@ async def test_background_task_manager_stop_sets_cancelled_before_terminate(
             assert manager._registry[task_id]["status"] == "cancelled", (
                 "status must be committed to 'cancelled' before terminate() is called"
             )
-            self.returncode = 0  # exits cleanly within the grace window — no escalation
+            self.returncode = 0  # exits cleanly within the grace window
 
     manager._procs[task_id] = _OrderedProc()  # type: ignore[assignment]
     result = await manager.stop(task_id)

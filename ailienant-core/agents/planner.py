@@ -142,7 +142,7 @@ _WBS_SEED_DIRECTIVE: str = (
     "user's structure; do NOT discard their list to invent an unrelated one.\n\n"
 )
 
-# Configuración del logger para este nodo específico
+# Logger scoped to this node
 logger = logging.getLogger("PLANNER_NODE")
 
 # promoted to module-level so tests can patch it.
@@ -187,7 +187,7 @@ async def run_planner_node(
         dict: A dictionary with a partial update of the status.
               Specifically, it updates the 'mission_spec' key and optionally 'errors'.
     """
-    logger.info("🧠 PlannerAgent iniciando análisis arquitectónico de la misión...")
+    logger.info("🧠 PlannerAgent starting architectural analysis of the mission...")
     # Prefer task_id (AIlienantGraphState) then session_id (loose dict); fall back to uuid4.
     session_id: str = (
         state.get("task_id") or state.get("session_id") or str(uuid.uuid4())
@@ -233,7 +233,7 @@ async def run_planner_node(
 
     if DEBUG_MODE:
         logger.warning(
-            "⚠️ MODO DEBUG ACTIVO: Generando contrato SDD sintético (Bypass de LLM). TCI=%.1f CSS=%.1f",
+            "⚠️ DEBUG MODE ACTIVE: generating a synthetic SDD contract (LLM bypassed). TCI=%.1f CSS=%.1f",
             tci,
             css,
         )
@@ -569,7 +569,7 @@ async def run_planner_node(
     # =====================================================================
     # 4. INVOCATION OF THE LLM ENGINE (With Forced Pydantic Validation)
     # =====================================================================
-    logger.info("⏳ Esperando Especificación Técnica (SDD) del LLM...")
+    logger.info("⏳ Awaiting the technical specification (SDD) from the LLM...")
     await _emit("drafting_spec")  # about to draft the MissionSpecification.
 
     retry_count: int = 0
@@ -790,7 +790,7 @@ async def run_planner_node(
     # =====================================================================
     # 5. AUDIT AND UPDATE OF THE GLOBAL STATUS
     # =====================================================================
-    logger.info("✅ Especificación Técnica generada y validada estrictamente.")
+    logger.info("✅ Technical specification generated and strictly validated.")
 
     # structured logging instead of raw print() to stdout.
     # The previous emoji print() block crashed the node on Windows cp1252 consoles

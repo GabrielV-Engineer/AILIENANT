@@ -1,4 +1,4 @@
-# alienant-core/core/api_contracts.py
+# ailienant-core/api/api_contracts.py
 
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -6,25 +6,26 @@ from typing import List, Optional
 from brain.state import ManualAttachment  # canonical model defined in brain/state.py
 
 # =====================================================================
-# MODELOS DE CONTEXTO IDE (VFS Ready)
+# IDE CONTEXT MODELS (VFS Ready)
 # =====================================================================
 
 
 class DirtyBuffer(BaseModel):
-    """Representa un archivo modificado en el IDE pero no guardado en disco."""
+    """A file modified in the IDE but not yet saved to disk."""
 
-    path: str = Field(..., description="Ruta absoluta del archivo")
-    content: str = Field(..., description="Contenido actual en la RAM de VS Code")
+    path: str = Field(..., description="Absolute path to the file")
+    content: str = Field(..., description="Current in-memory content held by VS Code")
 
 
 class IDEContext(BaseModel):
-    """Cápsula de estado del IDE en el momento exacto de la petición."""
+    """Snapshot of the IDE's state at the exact moment of the request."""
 
-    active_file: str = Field(..., description="Archivo que el usuario tiene abierto")
-    # Nota: Mantenemos document_version_id como str para compatibilidad con hashes
-    document_version_id: str = Field(..., description="ID de versión para OCC")
+    active_file: str = Field(..., description="File the user currently has open")
+    # Kept as str so it stays compatible with content hashes as well as
+    # monotonic LSP version numbers.
+    document_version_id: str = Field(..., description="Document version used for OCC")
     dirty_buffers: List[DirtyBuffer] = Field(default_factory=list)
-    # Phase 1.1.0 / 1.1.0.4 — optional for backward compatibility during rollout
+    # Optional for backward compatibility during rollout.
     project_id: Optional[str] = None
     explicit_mentions: List[str] = Field(default_factory=list)
     attachments: List[ManualAttachment] = Field(default_factory=list)
@@ -36,14 +37,14 @@ class IDEContext(BaseModel):
 
 
 class TaskSubmitRequest(BaseModel):
-    """Contrato estricto para el endpoint POST /task/submit (Capa 8)."""
+    """Strict contract for the POST /task/submit endpoint."""
 
-    user_input: str = Field(..., min_length=1, description="El prompt del usuario")
+    user_input: str = Field(..., min_length=1, description="The user's prompt")
     ide_context: IDEContext
 
 
 class TaskSubmitResponse(BaseModel):
-    """Respuesta de acuse de recibo y enrutamiento."""
+    """Acknowledgement and routing response."""
 
     task_id: str
     status: str = Field(pattern="^(accepted|rejected|queued)$")
@@ -51,7 +52,7 @@ class TaskSubmitResponse(BaseModel):
 
 
 # =====================================================================
-# MODEL DISCOVERY (Phase 1.6.3)
+# MODEL DISCOVERY
 # =====================================================================
 
 

@@ -7,11 +7,11 @@ from pydantic import BaseModel, Field, model_validator
 from shared.hardware import HardwareProfile  # noqa: E402 — imported for type annotation
 
 # =====================================================================
-# 1. MODELOS DE DATOS (Contratos de Validación Estricta en Tiempo de Ejecución)
+# 1. DATA MODELS (strict runtime validation contracts)
 # =====================================================================
-# Utilizamos Pydantic para aplicar el Fail-Fast Principle. Si el LLM (Planner)
-# alucina la estructura del JSON, el sistema fallará y reintentará inmediatamente,
-# evitando propagar datos corruptos al Orchestrator o al CoderAgent.
+# Pydantic enforces the fail-fast principle here. If the LLM (Planner)
+# hallucinates the JSON structure, the system fails and retries immediately
+# rather than propagating corrupt data to the Orchestrator or the CoderAgent.
 
 
 # Phase 4.1.4 — Legacy → new role-name migration (blueprint §3.1).
@@ -231,35 +231,35 @@ class MissionSpecification(BaseModel):
 
 
 class ContextMeter(BaseModel):
-    """Telemetría para el motor de enrutamiento 3D (Local vs Cloud)."""
+    """Telemetry for the 3D routing engine (Local vs Cloud)."""
 
     semantic_similarity: float = Field(
-        ge=0.0, le=1.0, description="Score de similitud semántica (LanceDB)."
+        ge=0.0, le=1.0, description="Semantic similarity score (LanceDB)."
     )
     graph_coverage: float = Field(
-        ge=0.0, le=1.0, description="Cobertura del grafo de dependencias (NetworkX)."
+        ge=0.0, le=1.0, description="Dependency-graph coverage (NetworkX)."
     )
     recency_score: float = Field(
-        ge=0.0, le=1.0, description="Peso basado en archivos modificados recientemente."
+        ge=0.0, le=1.0, description="Weight derived from recently modified files."
     )
     css_total: float = Field(
         ge=0.0,
         le=100.0,
-        description="Context Sufficiency Score (Métrica global de contexto).",
+        description="Context Sufficiency Score (global context metric).",
     )
     task_complexity_index: float = Field(
-        ge=0.0, le=100.0, description="Índice de complejidad calculado de la tarea."
+        ge=0.0, le=100.0, description="Computed complexity index of the task."
     )
     routing_decision: str = Field(
-        pattern="^(LOCAL_SMALL|LOCAL_BIG|CLOUD)$", description="Decisión del enrutador."
+        pattern="^(LOCAL_SMALL|LOCAL_BIG|CLOUD)$", description="The router's decision."
     )
     is_red_alert: bool = Field(
-        description="True si el CSS es críticamente bajo (<40%)."
+        description="True when the CSS is critically low (<40%)."
     )
 
 
 class LLMProfile(BaseModel):
-    """Firma del modelo actualmente en ejecución."""
+    """Signature of the model currently in use."""
 
     model_name: str
     parameters_b: float
@@ -268,7 +268,7 @@ class LLMProfile(BaseModel):
 
 
 class TokenCounter(BaseModel):
-    """Auditoría de uso y costos."""
+    """Usage and cost audit."""
 
     local: int = 0
     cloud: int = 0
@@ -293,7 +293,7 @@ class VFSFile(BaseModel):
     )
     is_dirty: bool = Field(
         default=False,
-        description="True si la IA lo modificó y falta sincronizar al IDE del usuario.",
+        description="True when the AI modified it and the change is not yet synced to the user's IDE.",
     )
 
 
@@ -304,9 +304,9 @@ class ManualAttachment(BaseModel):
     data: Optional[str] = Field(
         None,
         max_length=10_485_760,  # 10 MB ceiling on base64 payload to prevent OOM
-        description="Bytes codificados en base64 (solo imágenes).",
+        description="Base64-encoded bytes (images only).",
     )
-    content: Optional[str] = Field(None, description="Texto plano del documento.")
+    content: Optional[str] = Field(None, description="Plain-text document body.")
     mime: Optional[str] = Field(None, description="Tipo MIME, e.g. 'image/png'.")
     name: Optional[str] = Field(None, description="Nombre del archivo adjunto.")
 
@@ -416,16 +416,16 @@ class AIlienantGraphState(TypedDict):
     explicit_mentions: List[str]           # @-referenced file paths → forced full-file read
     attachments: List[ManualAttachment]    # user-attached images / documents
 
-    # --- Memoria de Mensajes ---
-    # Historial acumulativo O(N) para la comunicación conversacional.
+    # --- Message Memory ---
+    # O(N) cumulative history backing the conversational channel.
     messages: Annotated[List[Dict[str, str]], _merge_messages]
 
-    # --- Contexto y Telemetría ---
+    # --- Context & Telemetry ---
     context_metrics: ContextMeter
     active_llm_profile: LLMProfile
     token_usage: TokenCounter
 
-    # --- Control de Flujo (Prompt Swapping) ---
+    # --- Flow Control (Prompt Swapping) ---
     is_manual_override: bool
     # Reducer-guarded: SWARM fan-out makes multiple CoderAgents write their own
     # step's role in one super-step; _resolve_target_role merges them (see docstring).
@@ -436,7 +436,7 @@ class AIlienantGraphState(TypedDict):
     # step_number in one super-step; _resolve_step_id merges them (see its docstring).
     current_step_id: Annotated[
         Optional[int], _resolve_step_id
-    ]  # Puntero a la tarea actual del WBS en ejecución (step_number).
+    ]  # Pointer to the WBS task currently executing (step_number).
 
     # --- Human-in-the-Loop & Planner Mode (Phase 1.4 / 2.21) ---
     planner_mode_active: bool       # True when user toggled Planner-only mode via WS event
@@ -458,21 +458,21 @@ class AIlienantGraphState(TypedDict):
     # Shape: {"name": str, "args": dict} — args pre-clamped by the writer, never raw.
     pending_tool_call: Optional[Dict[str, Any]]
 
-    # --- Planificación Inmutable (SDD) ---
-    # Reemplaza 'immutable_wbs' y 'completed_steps'.
-    # Todo el estado del plan vive dentro de este único objeto para evitar desincronizaciones.
+    # --- Immutable Planning (SDD) ---
+    # Replaces 'immutable_wbs' and 'completed_steps'.
+    # The whole plan lives inside this single object so the two halves can never drift apart.
     mission_spec: Optional[MissionSpecification]
 
-    # --- Sistema de Archivos Virtual (VFS) ---
-    # Single Source of Truth para el código.
+    # --- Virtual File System (VFS) ---
+    # Single source of truth for the code.
     read_files_state: Dict[str, VFSFile]
     vfs_buffer: Annotated[Dict[str, VFSFile], _merge_vfs]
 
-    # --- Enrutamiento MoE (Phase 2) ---
-    # Shortcuts para que los nodos de orquestación lean TCI/CSS sin navegar context_metrics.
+    # --- MoE Routing ---
+    # Shortcuts so orchestration nodes can read TCI/CSS without walking context_metrics.
     tci: float          # Task Complexity Index  0–100
     css: float          # Context Sufficiency Score  0–100
-    # Payload del fan-out MapReduce: PlannerAgent escribe, route_to_coders lee.
+    # MapReduce fan-out payload: PlannerAgent writes it, route_to_coders reads it.
     parallel_tasks: List[WBSStep]
 
     # --- Routing & Hardware (Phase 2.1) ---
@@ -487,7 +487,7 @@ class AIlienantGraphState(TypedDict):
     # Parallel CoderAgent output buffer; _merge_generated_code prevents fan-out collisions.
     generated_code: Annotated[Dict[str, VFSFile], _merge_generated_code]
 
-    # --- Resiliencia y Diagnóstico ---
+    # --- Resilience & Diagnostics ---
     errors: Annotated[List[str], operator.add]
     retry_count: int
     security_flags: Annotated[List[str], operator.add]

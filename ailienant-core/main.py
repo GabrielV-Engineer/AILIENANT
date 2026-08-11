@@ -129,7 +129,7 @@ from api.ws_contracts import IdeTelemetryPayload
 _AUTH_TOKEN: Optional[str] = os.environ.get("AILIENANT_AUTH_TOKEN") or None
 _API_PORT: int = int(os.environ.get("AILIENANT_API_PORT", "8000"))
 
-# Configuración centralizada de observabilidad
+# Centralized observability configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AILIENANT_API")
 
@@ -262,12 +262,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="AILIENANT API Gateway",
-    description="Backend bicefálico con VFS Middleware O(1)",
+    description="Dual-brain orchestration backend with O(1) VFS middleware",
     version="1.0.0",
     lifespan=lifespan,
 )
 
-# SecOps: CORS es crítico para el Webview (vscode-webview://).
+# SecOps: CORS is critical for the Webview (vscode-webview://).
 # replaced wildcard with explicit allowlist.
 # vscode-webview:// sub-origins change per panel — regex required.
 app.add_middleware(
@@ -561,7 +561,7 @@ def _trigger_dreaming(client_id: str, focus_area: Optional[str]) -> None:
 
 @app.get("/")
 async def health_check() -> dict[str, str]:
-    """Endpoint HTTP tradicional para verificar que el servidor está vivo."""
+    """Plain HTTP liveness probe confirming the server is up."""
     return {"status": "online", "phase": "2.4", "system": "Tiered Checkpoint + PPR Active"}
 
 
@@ -690,7 +690,7 @@ async def submit_task(
                 session_id=x_task_id, payload=payload, execution_mode=resolved_mode
             )
         except Exception as exc:  # noqa: BLE001 — a background failure must reach the UI, not vanish
-            logger.error("Fallo crítico en el motor cognitivo: %s", exc, exc_info=True)
+            logger.error("Critical failure in the cognitive engine: %s", exc, exc_info=True)
             try:
                 await vfs_manager.broadcast_token(
                     x_task_id,
@@ -1147,7 +1147,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
 
             # ---SAFE ROUTING ZONE---
             logger.info(
-                "📥 Evento válido de %s: %s", client_id, valid_event.event_type
+                "📥 Valid event from %s: %s", client_id, valid_event.event_type
             )
 
             if valid_event.event_type == "client_register_session":
@@ -1658,7 +1658,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
 
     except WebSocketDisconnect:
         # 4. Cleaning O(1) to prevent Memory Leaks
-        logger.warning(f"⚠️ Conexión perdida abruptamente con {client_id}")
+        logger.warning(f"⚠️ Connection to {client_id} dropped abruptly")
         vfs_manager.disconnect(client_id, websocket)
         # Evict per-session maps so a reconnect storm cannot grow them unboundedly
         # (one entry per historical connection would otherwise leak for process life).

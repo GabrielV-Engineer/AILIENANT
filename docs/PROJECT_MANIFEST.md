@@ -52,9 +52,9 @@
 | 8.16 Importance-Aware Session Memory | ⬜ PENDING | — | 8.16.0 context-utilization telemetry (GO/NO-GO gate) |
 | 8.18 CoderAgent Tool Activation | ✅ CLOSED | 2026-07-30 | — |
 | Phase 10 Documentation | ✅ CLOSED | 2026-06-11 | — |
-| Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.9 Dashboard checkpoint gate (11.0–11.8 + 11.3.B + 11.10 + 11.11 + 11.12 shipped) |
-| Phase 12 Pre-Launch Innovation Sprint | 🟡 Active | — | 12.14 Pre-13 Critical Debt Closure (12.1-12.13 shipped; 12.10 Pre-Launch Innovation Gate postponed until 12.14-12.17 close) |
-| Phase 13 Portfolio Level Release | ⬜ PENDING | — | 13.1 Dockerization |
+| Phase 11 Dashboard Enterprise Redesign | 🟡 Active | — | 11.2.S Symbol-Level Node Types (11.0–11.13 shipped, incl. 11.3.B + 11.5.B/C/C.4/D + the 11.9 checkpoint gate) |
+| Phase 12 Pre-Launch Innovation Sprint | ✅ CLOSED | 2026-08-06 | — |
+| Phase 13 Portfolio Level Release | 🟡 Active | — | 13.1 Dockerization |
 
 ---
 
@@ -95,8 +95,8 @@
 | 9 | Native Thinking (Real-Time Reasoning Stream) | ✅ |
 | 10 | Professional Documentation & Public Presence | ✅ |
 | 11 | Web Dashboard Enterprise Redesign (10 sub-phases) | ⬜ |
-| 12 | Pre-Launch Innovation Sprint | 🟡 |
-| 13 | Portfolio Level (Standout Release) | ⬜ |
+| 12 | Pre-Launch Innovation Sprint | ✅ |
+| 13 | Portfolio Level (Standout Release) | 🟡 |
 
 **Legend:** ✅ Closed · 🟡 Active · ⬜ Pending
 
@@ -934,7 +934,7 @@
 
 ---
 
-## PHASE 12 — Pre-Launch Innovation Sprint 🟡
+## PHASE 12 — Pre-Launch Innovation Sprint ✅
 
 > The "Phase 9 spirit" — a focused innovation wave immediately before the final launch deploying the highest-ROI features not yet in the system, hardened by a full reliability and debt-closure sweep so the first launched version works correctly end to end.
 
@@ -970,11 +970,11 @@
   A critical self-audit, not a checkbox exercise: DEBT-108's flake being individually re-verified-green and footnoted across 6+ closures rather than fixed is the symptom of a real gap — "pytest green" has functioned as "pytest green, except that one test, again" for two months, which is not the zero-degradation standard CLAUDE.md §8/§12 sets. Close that gap structurally, not just for this one test: (1) adopt a written zero-flake policy (new short section in `DEVELOPERS.md`'s "Testing & quality gates") — a test needing a "pre-existing unrelated flake" footnote becomes a same-sub-phase fix, never a footnote, starting now. (2) Land the 12.15 coverage baseline and record it in `DEV_JOURNAL.md` (observability, not yet gated). (3) Add at least one property-based test (Hypothesis, new dev dependency, justified per CLAUDE.md §9 — smallest viable addition, not a blanket mandate) for the diff apply/revert pipeline (wherever unified-diff reconstruction lives, `core/patcher.py`/`PatchActuator.ts` boundary) as the pattern exemplar for future property-based coverage of the patch-safety-critical surface, since example-based tests alone under-cover "for any valid diff" classes of bugs. (4) Write a debugging runbook (`docs/DEBUGGING_RUNBOOK.md` or a `DEVELOPERS.md` section) covering where to look when a real user's install misbehaves — exec_log ring, Glass-Box Timeline, audit chain, telemetry tables — all of which already exist and are genuinely strong, just undocumented as a triage path today. DoD: DEBT-108/153 verified closed (from 12.14) with the new policy in place; coverage baseline recorded; ≥1 property-based test lands; runbook doc exists and is linked from `DEVELOPERS.md`.
 - [x] **12.17 — Professional Dev-Environment Completion.**
   Close the remaining gap between "solo-dev working discipline" and "a repo ready to accept outside eyes/contributors," per `CONTRIBUTING.md`'s own stated intent. Add: `.pre-commit-config.yaml` (ruff + mypy-on-changed-files + eslint, fast local feedback before a push ever reaches the 12.15 CI gate); `.github/ISSUE_TEMPLATE/bug_report.md` + `feature_request.md` + `.github/PULL_REQUEST_TEMPLATE.md` (today `CONTRIBUTING.md` §8 describes a process nothing structurally enforces); `SECURITY.md` (a documented vulnerability-disclosure path — non-optional for a project whose core surface is a sandboxing/permission engine, before it's publicly installable); `.github/dependabot.yml` (pip + npm + GitHub Actions version/vulnerability PRs — CLAUDE.md §9 already mandates dependency governance; nothing automates it today); `CODEOWNERS` (cheap now, load-bearing the moment Phase 13 brings in a second contributor). Noted but explicitly out of scope here — belongs to Phase 13's own release-process design: the extension's `package.json` version is still `0.0.1` with no semver policy; logged as a forward pointer only, so it isn't lost. DoD: all listed files exist and validate (Dependabot config lints, issue templates render in GitHub's UI); pre-commit hook runs clean on a sample commit.
-- [ ] **12.10 — Pre-Launch Innovation Gate.** Prompt caching tokens-saved metric > 0; DEBT-049/054/051(already closed)/083(already closed)/084(already closed)/085(already closed)/086(already closed)/045(already closed, 12.5)/047(already closed, 12.5)/052(already closed as INVALID, 12.5)/067(already closed, 12.5)/012(already closed, 12.5)/079(already closed, 12.5)/097/100/106/129/130/127(conditional)/121/123/124/125/126/128/132/133/134/141(already closed, 12.11)/142(already closed, 12.11)/143(already closed, 12.11)/144(already closed, 12.12)/140(already closed, 12.13) closed (DEBT-014 closed only if unblocked — re-measured 2026-08-03 at 12.5 and still blocked, 78 errors/24 files; DEBT-122 has an explicit logged decision, not necessarily closed; DEBT-138 stays open — blocked on an OCC-safe sync surface, not a 12.x gate item; DEBT-139 is floating, not required for this gate; DEBT-145 is a new floating item logged at 12.5, not required for this gate; DEBT-146 is a new floating item logged at 12.12, not required for this gate; DEBT-147/148/149 are new floating items logged at 12.13, not required for this gate); manifest and backlog ledger rows internally consistent (12.9); `pytest` green · `mypy .` 0 · `npm run compile` 0. **Sequencing (added 2026-08-04):** this gate is postponed — it does not run, and Phase 13 does not open, until 12.14/12.15/12.16/12.17 are all `[x]`. 12.14 supersedes this gate's own DEBT-098/108/150/151/152/153/154 references above for the items it re-covers.
+- [x] **12.10 — Pre-Launch Innovation Gate.** Cacheable system-prompt prefix verified — the system-message HEAD is byte-identical across repeated calls (`tests/test_prompt_prefix_stability.py`). **Criterion amended 2026-08-06 (CLAUDE.md §4 Option B):** the original "prompt caching tokens-saved metric > 0" was invalidated by 12.1's own kickoff measurement — the stable prefix is ~281-450 tokens, below every current provider's 512-4096 minimum-cacheable floor, and two of its three named components do not exist as stable content. Applying `cache_control` today would pay the 1.25× cache-write premium on every call for zero reads, a net loss; provider-native `cache_control` therefore remains DEBT-137, deferred with cause and an explicit re-evaluation trigger, not silently open. DEBT-049/054/051(already closed)/083(already closed)/084(already closed)/085(already closed)/086(already closed)/045(already closed, 12.5)/047(already closed, 12.5)/052(already closed as INVALID, 12.5)/067(already closed, 12.5)/012(already closed, 12.5)/079(already closed, 12.5)/097/100/106/129/130/127(conditional)/121/123/124/125/126/128/132/133/134/141(already closed, 12.11)/142(already closed, 12.11)/143(already closed, 12.11)/144(already closed, 12.12)/140(already closed, 12.13) closed (DEBT-014 closed only if unblocked — re-measured 2026-08-03 at 12.5 and still blocked, 78 errors/24 files; DEBT-122 has an explicit logged decision, not necessarily closed; DEBT-138 stays open — blocked on an OCC-safe sync surface, not a 12.x gate item; DEBT-139 is floating, not required for this gate; DEBT-145 is a new floating item logged at 12.5, not required for this gate; DEBT-146 is a new floating item logged at 12.12, not required for this gate; DEBT-147/148/149 are new floating items logged at 12.13, not required for this gate); manifest and backlog ledger rows internally consistent (12.9); `pytest` green · `mypy .` 0 · `npm run compile` 0. **Sequencing (added 2026-08-04):** this gate is postponed — it does not run, and Phase 13 does not open, until 12.14/12.15/12.16/12.17 are all `[x]`. 12.14 supersedes this gate's own DEBT-098/108/150/151/152/153/154 references above for the items it re-covers.
 
 ---
 
-## PHASE 13 — Portfolio Level (Standout Release) ⬜
+## PHASE 13 — Portfolio Level (Standout Release) 🟡
 
 > Final preparation to showcase the tool. Content migrated from old Phase 11.
 

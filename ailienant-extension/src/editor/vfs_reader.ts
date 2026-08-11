@@ -2,44 +2,44 @@ import * as vscode from 'vscode';
 
 // Data contract aligned with the backend (FastAPI) schema.
 export interface DirtyBuffer {
-    uri: string;        // Ruta absoluta del archivo
-    content: string;    // Entropía actual (código sin guardar)
-    version: number;    // ID de versión nativo del LSP para resolución de conflictos
-    languageId: string; // Útil para que el GraphRAG sepa qué parser AST usar
+    uri: string;        // Absolute path to the file
+    content: string;    // Current unsaved code
+    version: number;    // Native LSP version id, used for conflict resolution
+    languageId: string; // Lets GraphRAG pick the right AST parser
 }
 
 export class VFSReader {
     /**
-     * Límite de seguridad de 1MB por buffer. 
-     * Previene el bloqueo del Extension Host y sobrecarga de red.
+     * 1 MB safety ceiling per buffer.
+     * Prevents Extension Host stalls and network overload.
      */
     private static readonly MAX_BUFFER_SIZE_BYTES = 1024 * 1024;
 
     /**
-     * Extrae el estado real del IDE (Entropía).
-     * @returns Un array de buffers no guardados, filtrados y seguros.
+     * Capture the IDE's real unsaved state.
+     * @returns A filtered, size-safe array of unsaved buffers.
      */
     public static captureEntropy(): DirtyBuffer[] {
         const dirtyBuffers: DirtyBuffer[] = [];
         const documents = vscode.workspace.textDocuments;
 
         for (const doc of documents) {
-            // 1. Filtrar ruido: Solo archivos físicos reales del disco
+            // 1. Filter noise: real on-disk files only
             if (doc.uri.scheme !== 'file') {
                 continue;
             }
 
-            // 2. Filtrar estado: Solo archivos con cambios sin guardar
+            // 2. Filter state: only files with unsaved changes
             if (!doc.isDirty) {
                 continue;
             }
 
             const textContent = doc.getText();
 
-            // 3. SecOps & Performance: Bloquear payloads masivos
-            // Asumimos ~1 byte por caracter en ASCII estándar
+            // 3. SecOps & performance: reject oversized payloads.
+            // Assumes ~1 byte per character for standard ASCII.
             if (textContent.length > this.MAX_BUFFER_SIZE_BYTES) {
-                vscode.window.showWarningMessage(`AILIENANT: El archivo ${doc.fileName} es demasiado grande y sus cambios no guardados serán ignorados por la IA.`);
+                vscode.window.showWarningMessage(`AILIENANT: ${doc.fileName} is too large — its unsaved changes will be ignored by the AI.`);
                 continue;
             }
 

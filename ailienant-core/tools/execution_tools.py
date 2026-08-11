@@ -483,7 +483,15 @@ class BackgroundTaskManager:
                 await asyncio.sleep(_STOP_POLL_INTERVAL_S)
                 waited += _STOP_POLL_INTERVAL_S
 
-            if proc.returncode is None:
+            # ``create_subprocess_shell`` spawns cmd.exe as the direct child on
+            # Windows and the real command as a GRANDCHILD; TerminateProcess()
+            # above only ever reaches cmd.exe's own handle, so cmd.exe exiting
+            # (proc.returncode turning non-None) proves nothing about whether the
+            # grandchild survived it — the tree must always be swept on Windows.
+            # POSIX keeps the cheaper returncode-gated escalation, since SIGTERM
+            # there was sent to the real process and _force_kill's taskkill path
+            # doesn't apply.
+            if sys.platform == "win32" or proc.returncode is None:
                 await self._force_kill(proc)
         finally:
             self._procs.pop(task_id, None)  # guaranteed cleanup; prevents zombie reference
@@ -491,11 +499,17 @@ class BackgroundTaskManager:
 
     @staticmethod
     async def _force_kill(proc: asyncio.subprocess.Process) -> None:
-        """Force-terminate a process that survived the soft signal + grace window.
+        """Force-terminate a process tree that may have survived the soft signal.
 
-        POSIX sends SIGKILL via ``proc.kill()``. Windows shells out to ``taskkill
-        /T /F`` (via the non-blocking asyncio subprocess — never ``subprocess.run``)
-        to reap the whole process tree, since ``proc.kill()`` is single-PID there.
+        POSIX sends SIGKILL via ``proc.kill()`` — only reached when the shell
+        itself is still alive after the grace window. Windows shells out to
+        ``taskkill /T /F`` (via the non-blocking asyncio subprocess — never
+        ``subprocess.run``) to reap the whole process tree by PPID, since
+        ``proc.kill()`` is single-PID there; ``stop()`` calls this unconditionally
+        on Windows, including when ``proc`` (cmd.exe) has already exited, because
+        Windows retains a terminated process's PPID linkage, so ``taskkill /T``
+        still reaches an orphaned grandchild that survived the shell it was
+        spawned under.
         """
         if sys.platform == "win32":
             try:
