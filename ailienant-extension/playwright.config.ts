@@ -19,9 +19,13 @@ export default defineConfig({
         command: 'node e2e/run-backend.mjs',
         url: `http://127.0.0.1:${PORT}/dashboard`,
         // 60s wasn't enough on a cold CI runner's first-ever run (pip install +
-        // uvicorn cold start) — bumped after the actual server reported ready
-        // just past the old timeout.
-        timeout: 120_000,
+        // uvicorn cold start) — bumped to 120s, which then recurred on every
+        // nightly run (a fresh venv every time, not just a first-ever run).
+        // Root cause fixed in run-backend.mjs/main.py (the fixture seed no
+        // longer pays a second, fully separate cold Python/import cost ahead
+        // of uvicorn); this margin is layered on top as insurance against
+        // ordinary GH Actions runner speed variance, not a substitute for it.
+        timeout: 180_000,
         reuseExistingServer: false,
     },
     projects: [

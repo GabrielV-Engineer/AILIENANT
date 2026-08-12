@@ -13,13 +13,16 @@ on:
   schedule:
     # Nightly Playwright e2e run — not on every push/PR (spec: 12.15).
     - cron: '0 6 * * *'
+  workflow_dispatch:
+    # Manual on-demand trigger — routed to e2e-nightly only (see both jobs'
+    # `if:`), so it can verify a nightly-job fix without waiting for the cron.
 
 permissions:
   contents: read
 
 jobs:
   frontend-gate:
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -49,7 +52,7 @@ jobs:
         run: xvfb-run -a npm test
 
   e2e-nightly:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

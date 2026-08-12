@@ -1,6 +1,7 @@
-// Reads the fixture project ids/names/roots that `run-backend.mjs` seeded and
-// wrote to `.fixture-data/ids.json` (as part of the Playwright `webServer` boot),
-// so the spec never hardcodes a project id it didn't itself request.
+// Reads the fixture project ids/names/roots that main.py's lifespan seeded
+// in-process and wrote to `.fixture-data/ids.json` (as part of the Playwright
+// `webServer` boot, orchestrated by `run-backend.mjs`), so the spec never
+// hardcodes a project id it didn't itself request.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 

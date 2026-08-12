@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import logging
 import mimetypes
 import os
@@ -9,6 +10,7 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, cast
 
 # — force UTF-8 on stdout/stderr BEFORE anything logs or prints.
@@ -165,6 +167,24 @@ def _publish_host_discovery() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
+    # e2e-only, env-gated: the Playwright dashboard suite's run-backend.mjs sets
+    # this instead of spawning tests/e2e/seed_dashboard_fixture.py as a second,
+    # fully separate cold Python process ahead of this one — that used to pay
+    # the cold-import cost of the shared heavy dependency tree twice, serially,
+    # inside Playwright's single webServer wait budget. Seeding in-process here
+    # keeps the same seed-before-serve guarantee (this runs before `yield`, so
+    # the app can't answer a request until it's done) with one cold start
+    # instead of two. Absent on every other boot path (dev, production,
+    # backend-gate.yml, pytest) — the import is local to this branch so the
+    # test module is never even touched otherwise.
+    _e2e_seed_ids_path = os.environ.get("AILIENANT_E2E_SEED_IDS_PATH")
+    if _e2e_seed_ids_path:
+        from tests.e2e.seed_dashboard_fixture import _seed  # e2e-only, deferred import
+
+        _e2e_ids = await _seed()
+        Path(_e2e_seed_ids_path).write_text(json.dumps(_e2e_ids), encoding="utf-8")
+        logger.info("[e2e] Seeded fixture projects: %s", _e2e_ids)
+
     # — install the DLP secrets scrubber. The filter is attached to
     # the root logger AND to every root handler: handler-level filtering is what
     # redacts records propagated from named child loggers (AUDIT, SUPERVISOR…).
