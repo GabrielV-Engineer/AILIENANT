@@ -18,19 +18,25 @@ export default defineConfig({
     webServer: {
         command: 'node e2e/run-backend.mjs',
         url: `http://127.0.0.1:${PORT}/dashboard`,
-        // 60s -> 120s -> 180s -> 300s all recurred on a fresh nightly venv.
-        // 60->120->180 were blind guesses; 180->300 followed real, verified
-        // work (`python -X importtime` proved litellm/lancedb were imported
-        // eagerly via 7 top-level call sites, all deferred to point-of-use —
-        // see docs/DEV_JOURNAL.md and DEBT-163/164) and STILL wasn't enough —
-        // the full 300s elapsed with no uvicorn access-log line ever appearing
-        // for a single /dashboard request. main.py's lifespan() now logs
-        // elapsed time at each phase boundary (search "[startup]"/"[e2e]" in
-        // the CI log) specifically so the NEXT failure, if any, points at a
-        // real phase instead of another guess. 450s is a one-time hedge paired
-        // with that instrumentation, not a re-guess — right-size down once a
-        // real run's phase breakdown is known.
-        timeout: 450_000,
+        // History: 60s -> 120s -> 180s -> 300s all recurred (60->120->180 were
+        // blind guesses; 180->300 followed real, measured import-latency work
+        // — see docs/TECH_DEBT_BACKLOG.md DEBT-163/164 — and still wasn't
+        // enough). Root cause turned out to be twofold: (1) e2e-nightly never
+        // built dist/dashboard, so /dashboard was never actually mounted in
+        // any nightly run; (2) most likely a transient GitHub Actions/platform
+        // issue on the nights the 300s/450s runs failed — the same session
+        // that saw those failures also hit a confirmed GitHub-side
+        // `git push` "Internal Server Error". Once both were fixed, a real
+        // `workflow_dispatch` run completed the FULL job (venv provision, npm
+        // ci, esbuild, Playwright browser install, the suite itself) in 95s
+        // total; a local dry-run with a fully fresh venv completed server
+        // startup + all 4 tests in 16.2s. 120s (right-sized from the 450s
+        // diagnostic hedge) gives ~7-8x margin over both measurements — tight
+        // enough that a real future regression fails loud within two minutes
+        // instead of silently eating 7.5 minutes of CI time every night.
+        // main.py's lifespan() still logs elapsed time per phase (search
+        // "[startup]"/"[e2e]" in the CI log) if this ever needs revisiting.
+        timeout: 120_000,
         reuseExistingServer: false,
     },
     projects: [
