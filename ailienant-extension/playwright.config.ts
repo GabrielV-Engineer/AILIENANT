@@ -18,21 +18,19 @@ export default defineConfig({
     webServer: {
         command: 'node e2e/run-backend.mjs',
         url: `http://127.0.0.1:${PORT}/dashboard`,
-        // 60s -> 120s -> 180s all recurred on a fresh nightly venv (no bytecode
-        // cache, shared/throttled CI CPU) because each raise was a guess, never
-        // a measurement. `python -X importtime -c "import main"` proved the
-        // real cost: litellm (~2.6s) and lancedb (~1s, mostly its unused
-        // namespace REST client) were imported EAGERLY via 7 top-level call
-        // sites across agents/planner.py, agents/researcher.py,
-        // brain/summarizer.py, core/task_service.py, core/memory/
-        // semantic_memory.py, core/janitor.py, and core/tool_rag.py's
-        // `tool_rag_store` singleton — none needed until a real LLM/vector call
-        // happens, never during this dashboard-only e2e suite. All deferred to
-        // point-of-use (core/tool_rag.py's `tool_rag_store` also made
-        // lazy-connect, since its constructor called `lancedb.connect()`
-        // unconditionally at import time). 300s is real headroom on top of the
-        // now-measured, much smaller cost — not a re-guess.
-        timeout: 300_000,
+        // 60s -> 120s -> 180s -> 300s all recurred on a fresh nightly venv.
+        // 60->120->180 were blind guesses; 180->300 followed real, verified
+        // work (`python -X importtime` proved litellm/lancedb were imported
+        // eagerly via 7 top-level call sites, all deferred to point-of-use —
+        // see docs/DEV_JOURNAL.md and DEBT-163/164) and STILL wasn't enough —
+        // the full 300s elapsed with no uvicorn access-log line ever appearing
+        // for a single /dashboard request. main.py's lifespan() now logs
+        // elapsed time at each phase boundary (search "[startup]"/"[e2e]" in
+        // the CI log) specifically so the NEXT failure, if any, points at a
+        // real phase instead of another guess. 450s is a one-time hedge paired
+        // with that instrumentation, not a re-guess — right-size down once a
+        // real run's phase breakdown is known.
+        timeout: 450_000,
         reuseExistingServer: false,
     },
     projects: [

@@ -82,6 +82,16 @@ jobs:
         working-directory: ailienant-extension
         run: npm ci
 
+      # main.py only mounts /dashboard when ailienant-extension/dist/dashboard
+      # exists (dist/ is gitignored) — without this the e2e suite has never
+      # actually served real dashboard content on a fresh CI checkout. Runs
+      # the bundler directly (not `npm run compile`) since type-check/lint are
+      # already enforced by the frontend-gate job on every push/PR — redundant
+      # here, and unwanted extra time in a job already fighting its budget.
+      - name: Build dashboard bundle
+        working-directory: ailienant-extension
+        run: node esbuild.js
+
       - name: Install Playwright browsers
         working-directory: ailienant-extension
         run: npx playwright install --with-deps chromium

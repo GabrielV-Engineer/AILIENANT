@@ -167,6 +167,14 @@ def _publish_host_discovery() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ──────────────────────────────────────────────────────────
+    # Per-phase elapsed-time logging — permanent observability (CLAUDE.md §12),
+    # not CI-only. A recurring, unexplained multi-minute nightly e2e CI timeout
+    # (round 3 of the same investigation; see docs/TECH_DEBT_BACKLOG.md
+    # DEBT-163/164 and the DEV_JOURNAL entry for the fuller history) needs a
+    # real breakdown of where lifespan() actually spends its time rather than
+    # further inference from reading source alone.
+    _t0 = time.monotonic()
+
     # e2e-only, env-gated: the Playwright dashboard suite's run-backend.mjs sets
     # this instead of spawning tests/e2e/seed_dashboard_fixture.py as a second,
     # fully separate cold Python process ahead of this one — that used to pay
@@ -183,7 +191,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         _e2e_ids = await _seed()
         Path(_e2e_seed_ids_path).write_text(json.dumps(_e2e_ids), encoding="utf-8")
-        logger.info("[e2e] Seeded fixture projects: %s", _e2e_ids)
+        logger.info(
+            "[e2e] Seeded fixture projects (elapsed %.1fs): %s",
+            time.monotonic() - _t0, _e2e_ids,
+        )
 
     # — install the DLP secrets scrubber. The filter is attached to
     # the root logger AND to every root handler: handler-level filtering is what
@@ -195,6 +206,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _handler.addFilter(_scrubber)
 
     await resolve_default_adapter()          #— bind sandbox tier
+    logger.info("[startup] sandbox tier resolved (elapsed %.1fs)", time.monotonic() - _t0)
     # Inject the concrete WS host bridge for the trusted devcontainer tier from
     # the composition root, so core depends only on the HostExecutionBridge
     # abstraction it owns and never imports the transport layer.
@@ -213,12 +225,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # touches a live sibling backend's containers (liveness-gated by TCP probe
     # of the owning port — see sweep_orphaned_containers's docstring).
     await sweep_orphaned_containers()
+    logger.info("[startup] orphan-container sweep done (elapsed %.1fs)", time.monotonic() - _t0)
     await catalog_db.init_db()
     await init_dlq_table()                   # — dead_letter_tasks table
     await init_audit_table()                 # — hitl_audit_log ledger
     init_registry()                          # curated regulated-server tier overrides
+    logger.info("[startup] catalog/DLQ/audit DB init done (elapsed %.1fs)", time.monotonic() - _t0)
     await autoconnect_enabled_mcp_servers()  # connect enabled MCP servers once per host lifecycle
+    logger.info("[startup] MCP autoconnect done (elapsed %.1fs)", time.monotonic() - _t0)
     await populate_tool_catalog(tool_rag_store)  #— populate the tool RAG catalog
+    logger.info("[startup] tool catalog populated (elapsed %.1fs)", time.monotonic() - _t0)
     checkpoint_manager.initialize()          # WAL pragmas applied once here
     compute_pool.initialize(initializer=_worker_init)
     io_coalescer.register_dispatch(_dispatch_indexing_and_ppr)
@@ -228,7 +244,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     overnight_daemon.start()                 # on-demand memory consolidation (no timer)
     _publish_host_discovery()                # advertise loopback coords for the gateway
     configure_langsmith()                    # opt-in tracing; no-op unless env-configured
-    logger.info("🟢 AILIENANT startup complete (WAL mode active).")
+    logger.info(
+        "🟢 AILIENANT startup complete (WAL mode active). [elapsed %.1fs]",
+        time.monotonic() - _t0,
+    )
 
     yield  # application handles requests
 
