@@ -413,7 +413,7 @@ async def test_n3_planner_forwards_seam_and_validates() -> None:
     # Planner is a pure WBS engine (no retrieval/cascade); it consumes context_metrics
     # from state. This test pins the thinking-seam forwarding on the WBS draft call.
     with patch("agents.planner.DEBUG_MODE", False), \
-         patch("agents.planner.TrajectoryMemoryManager") as traj_cls, \
+         patch("core.memory.trajectory_memory.TrajectoryMemoryManager") as traj_cls, \
          patch("tools.llm_gateway.LLMGateway.acomplete_with_thinking", new=gw), \
          patch("agents.planner.ResourceBroker.acquire_or_resolve", new=AsyncMock(return_value=decision)), \
          patch("agents.planner.ResourceBroker.release", new=AsyncMock(return_value=None)):

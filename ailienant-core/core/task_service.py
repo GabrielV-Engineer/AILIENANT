@@ -16,7 +16,6 @@ from typing import (
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
 from api.websocket_manager import vfs_manager, LiveCellDispatcher
-from tools.llm_gateway import LLMGateway
 import logging
 
 if TYPE_CHECKING:
@@ -675,6 +674,7 @@ class TaskService:
         # Ambiguous → cheap small-tier classifier; default to 'question' (never silently edit).
         try:
             from shared.config import MODEL_SMALL
+            from tools.llm_gateway import LLMGateway  # deferred — keep module import light
             resp = await LLMGateway.ainvoke(
                 messages=[
                     {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
@@ -1838,6 +1838,8 @@ class TaskService:
         to ``reply_parts`` (shared with the caller's abort handler, so a partial
         answer is still persisted on Stop). Returns the joined answer text.
         """
+        from tools.llm_gateway import LLMGateway  # deferred — keep module import light
+
         loop = asyncio.get_running_loop()
         _THINK_WINDOW_S = 0.060
         _TEXT_WINDOW_S = 0.040
@@ -1935,6 +1937,8 @@ class TaskService:
         models simply never emit thinking deltas. When false, the legacy
         flat-text ``astream_byom`` path runs unchanged (true zero-regression).
         """
+        from tools.llm_gateway import LLMGateway  # deferred — keep module import light
+
         system_content = _resolve_chat_system_prompt(task_prompt) + await self._build_rag_context(
             task_prompt, project_id,
             anchor_file=active_file_path, explicit_mentions=explicit_mentions,

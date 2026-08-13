@@ -108,6 +108,8 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-159 | Pre-commit's mypy-on-changed-files hook (12.17) is a fast local approximation, not a full-tree guarantee — an error surfaced only via a transitive relationship to an unchanged sibling file could theoretically be missed locally; CI's full-tree `mypy .` (`backend-gate.yml`, 12.15) remains authoritative | LOW | Tooling / precision gap | revisit if a partial-invocation blind spot is ever observed in practice | Floating |
 | DEBT-161 | 471 phase/ADR references remain in 130 production files (CLAUDE.md §13.1/§13.2), never scrubbed by any Phase 8-12 pass | LOW | Documentation hygiene | future phase-reference scrub slice | Floating |
 | DEBT-162 | `TaskSubmitRequest`/`TaskSubmitResponse`/`IDEContext` (`api/api_contracts.py`) have zero references outside their own module — the live task-submit path is WebSocket-based, not this REST contract | LOW | Dead code | future dead-contract reclamation slice | Floating |
+| DEBT-163 | `resolve_default_adapter()`'s `docker.from_env()` call has no timeout wrapper, unlike every sibling `docker.from_env` call site in the same file | MEDIUM | Robustness / CLAUDE.md §5.1 | future sandbox-hardening slice | Floating |
+| DEBT-164 | `core/memory/semantic_memory.py`'s `numpy`/`pyarrow`/`pyarrow.compute` imports stay module-level top (only `lancedb`/`litellm` were deferred) — ~35 usages across the file, too invasive to defer safely in one pass | LOW | Startup latency | future import-latency follow-up | Floating |
 
 ---
 
@@ -1311,6 +1313,57 @@ Decision    Not a defect — see [DECISION] tier.
 - **Notes:** the file's own header comment (`# alienant-core/core/api_contracts.py`) was also wrong
   (wrong directory, misspelled project name) — fixed in the same pass that discovered this entry
   (12.10), since it was a one-line Boy-Scout fix, not a scope-widening deletion.
+
+### DEBT-163 [MEDIUM · Floating] — `resolve_default_adapter()`'s `docker.from_env()` call has no timeout
+
+- **Date:** 2026-08-12
+- **Reproduce:** `grep -n "docker.from_env" ailienant-core/core/sandbox.py` — line 2204
+  (`resolve_default_adapter`) calls it bare and synchronous; every other call site in the same file
+  (lines 344, 991, 1003, 1241, 2399) wraps it in `asyncio.to_thread(docker.from_env, ...)` with an
+  explicit `timeout_s=DOCKER_OP_TIMEOUT_S` via the shared `_docker_call` helper.
+- **File(s):** `ailienant-core/core/sandbox.py:2192-2214` (`resolve_default_adapter`).
+- **Error:** CLAUDE.md §5.1 requires an explicit timeout on every external call in the
+  Gateway/Transport zone. `docker.from_env()` constructs the low-level Docker client — depending on
+  docker-py version and the host's Docker context config, this constructor can itself make a network
+  call (version negotiation / TLS handshake) with no bound. Only the subsequent `client.ping()` is
+  wrapped in `asyncio.wait_for(..., timeout=_DOCKER_PROBE_TIMEOUT_S)` (line 2205-2207) — a
+  misconfigured or slow Docker context could make `resolve_default_adapter` hang indefinitely on
+  startup before ever reaching the bounded ping.
+- **Blocked by:** nothing. Found investigating the nightly e2e CI timeout (nothing else in
+  `lifespan()` was unbounded once `_docker_call`'s other five call sites were checked); not the cause
+  of that specific failure — the CI log proves this step completed and logged its "Sandbox tier
+  resolved: DOCKER" success line — so not fixed in the same pass, to keep that fix's diff focused on
+  the actual measured cause (import-time cost, not this real-but-separate robustness gap).
+- **Phase:** future sandbox-hardening slice — wrap `docker.from_env()` here the same way the other
+  five call sites already do, via `_docker_call` or an equivalent `asyncio.to_thread` + timeout.
+- **Notes:** this is the only Docker-touching call in `core/sandbox.py` that doesn't already follow
+  the file's own established bounded-call pattern — a small, easily-verified fix once scheduled.
+
+### DEBT-164 [LOW · Floating] — `core/memory/semantic_memory.py`'s numpy/pyarrow imports stay eager
+
+- **Date:** 2026-08-12
+- **Reproduce:** `grep -c "lancedb\.\|pa\.\|pc\.\|np\." ailienant-core/core/memory/semantic_memory.py`
+  — 48 total usages across ~30 methods/functions before this entry's partial fix; only the 13
+  `lancedb.connect(...)` call sites and 2 `litellm.aembedding(...)` call sites were deferred (12.10
+  round-2 CI-latency fix). `import numpy as np`, `import pyarrow as pa`, `import pyarrow.compute as pc`
+  remain at module top level.
+- **File(s):** `ailienant-core/core/memory/semantic_memory.py:25-27`.
+- **Error:** these three imports still cost real (if smaller than litellm/lancedb) startup time on
+  every process boot that reaches `api/memory_dashboard.py` (which top-level-imports this module),
+  even for a caller that never touches embeddings.
+- **Blocked by:** nothing technical. Not fixed in the same pass: `pa`/`pc`/`np` are used far more
+  pervasively than `lancedb`/`litellm` were (~35 remaining usages, not a clean handful of call sites),
+  spread across most of `SemanticMemoryManager`'s ~30 methods plus several module-level functions
+  (`_chunk_schema_for_dim`, `pca_project_2d`, `_vector_of`) — deferring all of them correctly, without
+  missing a site in a file this central to GraphRAG, needs its own careful pass, not one folded into
+  a CI-timeout fix already touching 7 other files.
+- **Phase:** future import-latency follow-up, same pattern as this entry's sibling fix — either defer
+  each remaining usage to its point of use, or (cleaner, given the usage density) apply the same
+  lazy-accessor pattern `core/tool_rag.py::ToolRAGStore._ensure_connected` now uses, generalized to a
+  shared module-level helper if `SemanticMemoryManager` grows more lancedb-adjacent heavy imports.
+- **Notes:** `numpy` alone is unlikely to be a major contributor (fast-importing relative to
+  litellm/lancedb); `pyarrow`/`pyarrow.compute` are the more plausible remaining cost, partially
+  overlapping with whatever `lancedb`'s own transitive imports would have pulled in anyway.
 
 ### DEBT-160 [HIGH · RESOLVED 2026-08-04, 12.15] — `_WindowsPtyBackend.terminate_tree()`/`.wait()` called pywinpty with the wrong signatures
 

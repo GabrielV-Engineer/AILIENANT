@@ -252,7 +252,7 @@ async def test_v1_scenario_a_low_css_triggers_red_alert_and_cloud_route() -> Non
          patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
          patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
          patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
         # Simulate a non-empty corpus: these tests exercise coverage-based routing,
@@ -306,7 +306,7 @@ async def test_v1_scenario_b_mid_css_judge_medium_escalates_route() -> None:
          patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
          patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
          patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
         # Simulate a non-empty corpus: these tests exercise coverage-based routing,
@@ -571,7 +571,7 @@ async def test_v4_fast_boot_intercepts_lancedb_call(tmp_path: Path) -> None:
          patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
          patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
          patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
         # Simulate a non-empty corpus: these tests exercise coverage-based routing,
@@ -629,7 +629,7 @@ async def test_v4_stale_agents_md_falls_back_to_full_retrieval(tmp_path: Path) -
          patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
          patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
          patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extr_cls, \
-         patch("agents.researcher.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new=AsyncMock(return_value=mock_llm_response)):
         mock_extr_cls.return_value.deep_parse = mock_deep
         mock_sem_cls.return_value.search_with_paths = mock_search
         # Simulate a non-empty corpus: these tests exercise coverage-based routing,
@@ -679,9 +679,8 @@ def test_v4_janitor_removes_orphans_without_corrupting_neighbors() -> None:
     def _exists(path: str) -> bool:
         return path != alpha_orphan and path != "/tmp/ws_alpha/extra.py"
 
-    with patch("core.janitor.lancedb") as mock_lancedb, \
+    with patch("lancedb.connect", return_value=mock_db), \
          patch("core.janitor.os.path.exists", side_effect=_exists):
-        mock_lancedb.connect.return_value = mock_db
         report = _vector_gc_sync(ws_alpha, "/fake/lancedb")
 
     # Two orphans within alpha — extra.py + gone.py — both deleted, omega rows untouched.

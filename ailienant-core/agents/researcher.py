@@ -32,7 +32,6 @@ from core.memory.context_auditor import (
 )
 from shared.config import MODEL_MEDIUM, check_cloud_availability
 from shared.rbac import RESEARCHER_IDENTITY
-from tools.llm_gateway import LLMGateway
 
 logger = logging.getLogger("RESEARCHER_NODE")
 
@@ -565,6 +564,8 @@ async def run_researcher_node(
     skeleton: str = ""
     errors: List[str] = []
     try:
+        from tools.llm_gateway import LLMGateway  # deferred — keep module import light
+
         response = await LLMGateway.ainvoke(
             messages=messages,
             model=MODEL_MEDIUM,

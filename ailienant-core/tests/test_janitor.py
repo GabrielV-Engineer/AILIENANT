@@ -50,9 +50,8 @@ def test_vector_gc_deletes_orphaned_file() -> None:
     mock_db.table_names.return_value = ["workspace_embeddings"]
     mock_db.open_table.return_value = mock_tbl
 
-    with patch("core.janitor.lancedb") as mock_lancedb, \
+    with patch("lancedb.connect", return_value=mock_db), \
          patch("core.janitor.os.path.exists", return_value=False):
-        mock_lancedb.connect.return_value = mock_db
         report = _vector_gc_sync(ws, "/fake/lancedb")
 
     assert report.deleted_count == 1
@@ -79,9 +78,8 @@ def test_vector_gc_skips_existing_file() -> None:
     mock_db.table_names.return_value = ["workspace_embeddings"]
     mock_db.open_table.return_value = mock_tbl
 
-    with patch("core.janitor.lancedb") as mock_lancedb, \
+    with patch("lancedb.connect", return_value=mock_db), \
          patch("core.janitor.os.path.exists", return_value=True):
-        mock_lancedb.connect.return_value = mock_db
         report = _vector_gc_sync(ws, "/fake/lancedb")
 
     assert report.deleted_count == 0
@@ -95,8 +93,7 @@ def test_vector_gc_handles_missing_table() -> None:
     mock_db = MagicMock()
     mock_db.table_names.return_value = []  # table absent
 
-    with patch("core.janitor.lancedb") as mock_lancedb:
-        mock_lancedb.connect.return_value = mock_db
+    with patch("lancedb.connect", return_value=mock_db):
         report = _vector_gc_sync("/some/ws", "/fake/lancedb")
 
     assert report.deleted_count == 0
@@ -120,9 +117,8 @@ def test_vector_gc_escapes_single_quotes_in_path() -> None:
     mock_db.table_names.return_value = ["workspace_embeddings"]
     mock_db.open_table.return_value = mock_tbl
 
-    with patch("core.janitor.lancedb") as mock_lancedb, \
+    with patch("lancedb.connect", return_value=mock_db), \
          patch("core.janitor.os.path.exists", return_value=False):
-        mock_lancedb.connect.return_value = mock_db
         report = _vector_gc_sync(ws, "/fake/lancedb")
 
     assert report.deleted_count == 1

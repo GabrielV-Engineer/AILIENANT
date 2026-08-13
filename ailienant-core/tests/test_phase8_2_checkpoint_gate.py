@@ -264,7 +264,7 @@ async def test_planner_fast_track_skips_graphrag_and_routes_local_small() -> Non
          patch("agents.researcher.audit_task_complexity", new=audit), \
          patch("core.memory.semantic_memory.SemanticMemoryManager") as sem_cls, \
          patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as extr_cls, \
-         patch("agents.researcher.LLMGateway.ainvoke", new=llm):
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new=llm):
         extr_cls.return_value.deep_parse = deep
         sem_cls.return_value.search_with_paths = search
 
@@ -300,7 +300,7 @@ async def test_planner_low_vram_reroutes_local_to_cloud() -> None:
          patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
          patch("core.memory.semantic_memory.SemanticMemoryManager") as sem_cls, \
          patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as extr_cls, \
-         patch("agents.researcher.LLMGateway.ainvoke", new=llm):
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new=llm):
         extr_cls.return_value.deep_parse = deep
         sem_cls.return_value.search_with_paths = search
 

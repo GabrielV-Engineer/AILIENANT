@@ -98,7 +98,7 @@ def _researcher_env(
     ), patch(
         "core.state_manager.dump_state_to_markdown", return_value=None
     ), patch(
-        "agents.researcher.LLMGateway.ainvoke", return_value=_llm_skeleton()
+        "tools.llm_gateway.LLMGateway.ainvoke", return_value=_llm_skeleton()
     ) as m_llm:
         mocks["llm"] = m_llm
         yield mocks
@@ -196,7 +196,7 @@ def test_researcher_always_emits_context_metrics_on_llm_failure() -> None:
     with patch("agents.researcher.DEBUG_MODE", False), patch(
         "agents.researcher.is_fast_track_eligible", return_value=True
     ), patch(
-        "agents.researcher.LLMGateway.ainvoke", side_effect=RuntimeError("byom down")
+        "tools.llm_gateway.LLMGateway.ainvoke", side_effect=RuntimeError("byom down")
     ):
         result = _run(_base_state(), {})
     assert isinstance(result["context_metrics"], ContextMeter)

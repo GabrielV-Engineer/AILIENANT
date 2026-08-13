@@ -89,7 +89,7 @@ async def test_researcher_standard_retrieval() -> None:
     ) as mock_sem_cls, patch(
         "core.memory.graphrag_extractor.GraphRAGDynamicExtractor"
     ) as mock_extractor_cls, patch(
-        "agents.researcher.LLMGateway.ainvoke", return_value=mock_llm_response
+        "tools.llm_gateway.LLMGateway.ainvoke", return_value=mock_llm_response
     ) as mock_ainvoke:
         mock_sem_cls.return_value.search_with_paths = mock_search
         mock_extractor_cls.return_value.deep_parse = mock_deep_parse
@@ -147,7 +147,7 @@ async def test_researcher_explicit_override() -> None:
     ), patch(
         "core.vfs_middleware.VFSMiddleware", return_value=mock_vfs_instance
     ) as mock_vfs_cls, patch(
-        "agents.researcher.LLMGateway.ainvoke", return_value=mock_llm_response
+        "tools.llm_gateway.LLMGateway.ainvoke", return_value=mock_llm_response
     ) as mock_ainvoke:
         mock_sem_cls.return_value.search_with_paths = MagicMock(
             side_effect=AssertionError("search must not run on the @-mention path")

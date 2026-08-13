@@ -1,4 +1,4 @@
-# alienant-core/agents/planner.py
+# ailienant-core/agents/planner.py
 
 import asyncio
 import json
@@ -9,8 +9,11 @@ from typing import Optional, Any, cast
 
 from langchain_core.runnables import RunnableConfig
 
-# We import our gateway and strict contracts
-from tools.llm_gateway import LLMGateway
+# tools.llm_gateway (and core.memory.trajectory_memory, below) both pull in
+# litellm's provider-registry surface (~2.6s to import) — deferred into
+# run_planner_node at their point of use, matching this codebase's established
+# "keep module import light" convention, so a cold process boot never pays
+# this cost until a real planner turn actually runs.
 from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
@@ -25,7 +28,6 @@ from agents.workspace_context import build_workspace_overview
 from core.utils import is_polyglot_file
 from core.rules import rule_manager
 from core.project_instructions import get_project_instructions
-from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
 from core.resource_manager import ResourceBroker
 from brain.retry_policy import PLANNER_MAX_RETRIES
 from tools.planner_tools import BudgetEstimatorTool, ValidateWBSDependenciesTool
@@ -399,6 +401,8 @@ async def run_planner_node(
         _skill_block = build_skill_directive_block(_skills, boundary) or ""
 
     # ── Trajectory Memory Injection ────────────────────────
+    from core.memory.trajectory_memory import TrajectoryMemoryManager, format_trajectories_for_prompt
+
     _traj_mgr = TrajectoryMemoryManager()
     _past_trajectories = await _traj_mgr.search(
         user_input=user_input,
@@ -569,6 +573,8 @@ async def run_planner_node(
     # =====================================================================
     # 4. INVOCATION OF THE LLM ENGINE (With Forced Pydantic Validation)
     # =====================================================================
+    from tools.llm_gateway import LLMGateway
+
     logger.info("⏳ Awaiting the technical specification (SDD) from the LLM...")
     await _emit("drafting_spec")  # about to draft the MissionSpecification.
 

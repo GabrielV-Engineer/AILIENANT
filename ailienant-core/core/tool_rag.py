@@ -32,9 +32,6 @@ from typing import (
     Optional,
 )
 
-import lancedb
-import pyarrow as pa
-
 from core.permissions import (
     SessionPermissionMode,
     ToolPrivilegeTier,
@@ -150,6 +147,28 @@ class ToolRAGStore:
                 atexit.register(shutil.rmtree, store_path, ignore_errors=True)
         self._store_path: str = store_path
 
+        # Deferred — see _ensure_connected. This module's `tool_rag_store`
+        # singleton (bottom of file) is constructed eagerly at import time, and
+        # lancedb/pyarrow cost ~1s to import (plus real disk I/O for
+        # connect/table setup) — paying that unconditionally on every process
+        # boot, even for a caller that never touches the tool-RAG catalog, is
+        # exactly the "unbounded raw I/O at import time" CLAUDE.md §5.5 warns
+        # against. Connected lazily on first real use instead.
+        self._db: Any = None
+        self._schema: Any = None
+        self._table: Any = None
+
+    def _ensure_connected(self) -> None:
+        """Connect to LanceDB and open/create the schemas table — once.
+
+        Idempotent: a no-op once `_db` is set. See the constructor's comment for
+        why this is deferred out of `__init__` rather than run eagerly there.
+        """
+        if self._db is not None:
+            return
+        import lancedb
+        import pyarrow as pa
+
         self._db = lancedb.connect(self._store_path)
         self._schema = pa.schema(
             [
@@ -158,7 +177,7 @@ class ToolRAGStore:
                 pa.field("json_schema", pa.string()),
                 pa.field("privilege_tier", pa.string()),
                 pa.field("allowed_roles_csv", pa.string()),
-                pa.field("vector", pa.list_(pa.float32(), embedding_dim)),
+                pa.field("vector", pa.list_(pa.float32(), self._embedding_dim)),
             ]
         )
 
@@ -176,6 +195,7 @@ class ToolRAGStore:
 
     async def register_schema(self, schema: ToolSchema) -> None:
         """Insert or replace a tool schema. Idempotent on `schema.name`."""
+        self._ensure_connected()
         embedding = schema.embedding
         if embedding is None:
             embedding = await self._embed_fn(schema.description)
@@ -206,6 +226,7 @@ class ToolRAGStore:
 
     def all_schemas(self) -> List[ToolSchema]:
         """Snapshot of every registered schema (embedding stripped)."""
+        self._ensure_connected()
         rows = self._table.to_arrow().to_pylist()
         return [self._row_to_schema(r, include_embedding=False) for r in rows]
 
@@ -218,6 +239,7 @@ class ToolRAGStore:
         session_mode: SessionPermissionMode,
     ) -> List[ToolSchema]:
         """Return ≤ k schemas filtered by RBAC + session matrix, ranked by intent."""
+        self._ensure_connected()
         # 1. Full catalog into RAM (catalog is small — Flag A in plan).
         all_rows: List[Dict[str, Any]] = list(self._table.to_arrow().to_pylist())
         if not all_rows:
@@ -286,6 +308,7 @@ class ToolRAGStore:
 
     def clear(self) -> None:
         """Drop and recreate the underlying table. Test helper."""
+        self._ensure_connected()
         existing_tables = (
             self._db.table_names()
             if hasattr(self._db, "table_names") and not hasattr(self._db, "list_tables")

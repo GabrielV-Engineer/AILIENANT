@@ -365,7 +365,7 @@ async def test_live_chat_stream_opts_into_free_form_scaffolding(
         yield StreamDelta("text", "hi there")
 
     monkeypatch.setattr(
-        ts_mod.LLMGateway, "astream_reasoning", staticmethod(_fake_astream_reasoning),
+        LLMGateway, "astream_reasoning", staticmethod(_fake_astream_reasoning),
     )
     monkeypatch.setattr(ts_mod.vfs_manager, "broadcast_thinking_chunk", AsyncMock())
     monkeypatch.setattr(ts_mod.vfs_manager, "broadcast_token", AsyncMock())

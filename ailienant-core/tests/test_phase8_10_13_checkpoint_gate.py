@@ -52,7 +52,7 @@ def _run_researcher(content: str) -> Dict[str, Any]:
     ), patch(
         "core.state_manager.dump_state_to_markdown", return_value=None
     ), patch(
-        "agents.researcher.LLMGateway.ainvoke", return_value=_llm(content)
+        "tools.llm_gateway.LLMGateway.ainvoke", return_value=_llm(content)
     ):
         return asyncio.run(run_researcher_node(_researcher_state(), None))
 
@@ -138,9 +138,9 @@ async def test_planner_clears_skeleton_after_consuming_it() -> None:
     state = _planner_state(researcher_skeleton=skeleton)
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(

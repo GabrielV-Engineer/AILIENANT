@@ -21,7 +21,6 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from tools.llm_gateway import LLMGateway
 from tools.token_counter import PrecisionTokenCounter
 from shared.config import MODEL_SMALL
 from core.resource_manager import ResourceBroker
@@ -123,6 +122,8 @@ async def _run_summarize_node_core(
         # Lock-held region: LLM call + content extraction. Inner finally guarantees
         # release even if response.choices indexing or attribute access raises.
         try:
+            from tools.llm_gateway import LLMGateway  # deferred — keep module import light
+
             response = await LLMGateway.ainvoke(
                 messages=[{"role": "user", "content": _PROMPT.format(history=history_text)}],
                 model=decision.effective_model,

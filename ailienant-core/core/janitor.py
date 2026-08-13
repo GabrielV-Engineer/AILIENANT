@@ -15,8 +15,6 @@ import time
 from typing import List, Optional
 
 import aiosqlite
-import lancedb
-import pyarrow.compute as pc
 from pydantic import BaseModel
 
 from shared.config import MCTS_DB_PATH
@@ -53,6 +51,9 @@ class JanitorReport(BaseModel):
 
 def _vector_gc_sync(workspace_root: str, lancedb_path: str) -> VectorGCReport:
     """Sync implementation; always called via asyncio.to_thread()."""
+    import lancedb
+    import pyarrow.compute as pc
+
     ws_hash: str = project_id_for(workspace_root)
     db = lancedb.connect(lancedb_path)
     present = db.table_names()

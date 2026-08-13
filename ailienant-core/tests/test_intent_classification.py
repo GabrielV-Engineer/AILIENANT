@@ -77,7 +77,7 @@ async def test_explain_request_with_edit_verb_escalates_to_tie_break_not_edit(
     )
     mock_response = AsyncMock()
     mock_response.choices = [AsyncMock(message=AsyncMock(content='{"intent": "question"}'))]
-    with patch("core.task_service.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
         mock_llm.return_value = mock_response
         intent = await service._classify_intent(prompt)
 
@@ -91,7 +91,7 @@ async def test_mixed_signal_defaults_to_question_when_llm_call_fails(
     """The tie-break's own safety net: an LLM fault during an ambiguous (edit-verb +
     explain-signal) prompt must degrade to 'question', never silently to 'edit'."""
     prompt = "Explain the plan, then make the change we discussed."
-    with patch("core.task_service.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
         mock_llm.side_effect = RuntimeError("provider down")
         intent = await service._classify_intent(prompt)
 

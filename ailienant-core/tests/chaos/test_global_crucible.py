@@ -113,7 +113,7 @@ async def test_summarizer_protects_phase4_state() -> None:
     )()
 
     with patch(
-        "brain.summarizer.LLMGateway.ainvoke",
+        "tools.llm_gateway.LLMGateway.ainvoke",
         new_callable=AsyncMock,
         return_value=fake_response,
     ), patch(

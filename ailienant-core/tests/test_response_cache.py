@@ -260,8 +260,8 @@ async def test_planner_dirty_buffer_bypass_and_clean_cache_hit() -> None:
 
     with ExitStack() as stack:
         stack.enter_context(patch("agents.planner.DEBUG_MODE", False))
-        traj_cls = stack.enter_context(patch("agents.planner.TrajectoryMemoryManager"))
-        stack.enter_context(patch("agents.planner.LLMGateway.ainvoke", mock_ainvoke))
+        traj_cls = stack.enter_context(patch("core.memory.trajectory_memory.TrajectoryMemoryManager"))
+        stack.enter_context(patch("tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke))
         stack.enter_context(patch("agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire))
         stack.enter_context(patch("agents.planner.ResourceBroker.release", AsyncMock()))
         traj_cls.return_value.search = AsyncMock(return_value=[])

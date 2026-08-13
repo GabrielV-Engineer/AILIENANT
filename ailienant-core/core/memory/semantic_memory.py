@@ -22,13 +22,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-import lancedb
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import tiktoken
-
-import litellm
 
 from core.config.embedding_resolver import get_embedding_target
 from core.storage_paths import graphrag_lancedb_path
@@ -368,6 +365,8 @@ class SemanticMemoryManager:
         scan, never raise — content-addressed reuse (finding 11) and the vector
         GC both depend on this never crashing their caller.
         """
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _CHUNK_TABLE_NAME not in db.table_names():
             return []
@@ -409,6 +408,8 @@ class SemanticMemoryManager:
         workspace_hash: str,
         build_index: bool,
     ) -> None:
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         vec_dim = len(records[0]["vector"])
         schema = _chunk_schema_for_dim(vec_dim)
@@ -452,6 +453,8 @@ class SemanticMemoryManager:
             )
 
     def _delete_chunk_rows(self, file_path: str, workspace_hash: str) -> None:
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _CHUNK_TABLE_NAME not in db.table_names():
             return
@@ -481,6 +484,8 @@ class SemanticMemoryManager:
             logger.warning("SemanticMemory: delete failed (non-fatal): %s", del_err)
 
     def _delete_record(self, file_path: str, workspace_hash: str) -> None:
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         safe_path = file_path.replace("'", "''")  # standard SQL single-quote escape
         predicate = f"workspace_hash = '{workspace_hash}' AND file_path = '{safe_path}'"
@@ -531,6 +536,8 @@ class SemanticMemoryManager:
 
     def _is_corpus_empty_sync(self, workspace_hash: str) -> bool:
         """Blocking row-count probe for the workspace. Runs inside to_thread."""
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _TABLE_NAME not in db.table_names():
             return True
@@ -610,6 +617,8 @@ class SemanticMemoryManager:
         file_path: str,
         hash_valid: bool,
     ) -> None:
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         # Provider-agnostic dimension safety: the real vector length wins. If the
         # active embedding provider changed (e.g. 1536 → 768), drop & recreate the
@@ -664,6 +673,8 @@ class SemanticMemoryManager:
         workspace_hash: str,
         k: int,
     ) -> List[float]:
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _TABLE_NAME not in db.table_names():
             return []
@@ -700,6 +711,8 @@ class SemanticMemoryManager:
         ``indexed_at`` rides out of this single query (it is already a column on
         every row) so the recency meter never needs a second DB round-trip.
         """
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _TABLE_NAME not in db.table_names():
             return []
@@ -788,6 +801,8 @@ class SemanticMemoryManager:
         self, vector: List[float], workspace_hash: str, k: int
     ) -> List[Tuple[str, str]]:
         """Return (file_path, content_snippet) pairs for the top-k nearest vectors."""
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _TABLE_NAME not in db.table_names():
             return []
@@ -822,6 +837,8 @@ class SemanticMemoryManager:
         corpus indexed before symbol chunking, and the reason every caller must
         treat chunk evidence as an optional upgrade rather than a requirement.
         """
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _CHUNK_TABLE_NAME not in db.table_names():
             return []
@@ -1185,6 +1202,8 @@ class SemanticMemoryManager:
 
     def _build_chunk_index_once(self) -> None:
         """Build the chunk ANN index a single time after a backfill pass."""
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _CHUNK_TABLE_NAME not in db.table_names():
             return
@@ -1222,6 +1241,8 @@ class SemanticMemoryManager:
     def _dump_vectors_sync(
         self, workspace_hash: str, folder_prefix: str, max_rows: int
     ) -> List[Dict[str, Any]]:
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _TABLE_NAME not in db.table_names():
             return []
@@ -1295,6 +1316,8 @@ class SemanticMemoryManager:
     def _list_embeddings_sync(
         self, workspace_hash: str, folder_prefix: str, max_rows: int
     ) -> List[Dict[str, Any]]:
+        import lancedb  # deferred — keep module import light (~1s: lancedb + its namespace REST client)
+
         db = lancedb.connect(self._lancedb_path)
         if _TABLE_NAME not in db.table_names():
             return []
@@ -1395,6 +1418,8 @@ async def _get_embedding(text: str) -> List[float]:
     OpenAI / custom / legacy proxy). api_base + api_key are applied only when the
     resolved target provides them, so the same call path serves every provider.
     """
+    import litellm  # deferred — keep module import light
+
     t = get_embedding_target()
     kwargs: Dict[str, Any] = {"model": t.model, "input": [text]}
     if t.api_base:
@@ -1466,6 +1491,8 @@ async def _embed_batch(texts: List[str]) -> List[List[float]]:
     servers honor only the first element of a batch ``input``, and silently
     accepting a short array would misalign every vector with its symbol.
     """
+    import litellm  # deferred — keep module import light
+
     t = get_embedding_target()
     kwargs: Dict[str, Any] = {"model": t.model, "input": list(texts)}
     if t.api_base:

@@ -98,7 +98,7 @@ async def test_summarizer_telemetry_record_shape() -> None:
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "summary"
 
-    with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke, \
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke, \
          patch("core.telemetry_log.log_context_utilization") as mock_log:
         mock_invoke.return_value = mock_response
         await run_summarize_node(state)
@@ -150,16 +150,16 @@ async def test_summarizer_all_five_paths_byte_identical() -> None:
         state_core = builder()
 
         if mode == "success":
-            with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mi:
+            with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mi:
                 mi.return_value = mock_response
                 expected = await _run_summarize_node_core(state_core)
-            with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mi2:
+            with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mi2:
                 mi2.return_value = mock_response
                 actual = await run_summarize_node(state_wrapper)
         elif mode == "exception":
-            with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock, side_effect=RuntimeError("x")):
+            with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock, side_effect=RuntimeError("x")):
                 expected = await _run_summarize_node_core(state_core)
-            with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock, side_effect=RuntimeError("x")):
+            with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock, side_effect=RuntimeError("x")):
                 actual = await run_summarize_node(state_wrapper)
         else:
             expected = await _run_summarize_node_core(state_core)
@@ -233,7 +233,7 @@ async def test_summarizer_no_double_tokenization() -> None:
         call_count["n"] += 1
         return real_estimate(text, model)
 
-    with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke, \
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke, \
          patch("brain.summarizer.PrecisionTokenCounter.estimate_with_buffer", side_effect=_counting_estimate):
         mock_invoke.return_value = mock_response
         result = await run_summarize_node(state)
@@ -342,7 +342,7 @@ async def test_synthetic_corpus_range_characterization() -> None:
     mock_response.choices[0].message.content = "summary"
 
     ratios: List[float] = []
-    with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
         mock_invoke.return_value = mock_response
         for session in corpus:
             state = _build_state(

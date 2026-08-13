@@ -67,7 +67,7 @@ async def test_researcher_emits_hard_context_envelope_for_each_mention() -> None
         "core.state_manager.dump_state_to_markdown", return_value=None
     ), patch(
         "core.vfs_middleware.VFSMiddleware", return_value=mock_vfs_instance
-    ), patch("agents.researcher.LLMGateway.ainvoke", mock_ainvoke):
+    ), patch("tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke):
         from agents.researcher import run_researcher_node
 
         await run_researcher_node(state)
@@ -114,7 +114,7 @@ async def test_researcher_skips_missing_mentions_without_raising() -> None:
         "core.state_manager.dump_state_to_markdown", return_value=None
     ), patch(
         "core.vfs_middleware.VFSMiddleware", return_value=mock_vfs_instance
-    ), patch("agents.researcher.LLMGateway.ainvoke", mock_ainvoke):
+    ), patch("tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke):
         from agents.researcher import run_researcher_node
 
         result = await run_researcher_node(state)

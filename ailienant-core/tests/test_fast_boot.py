@@ -252,7 +252,7 @@ async def test_researcher_skips_lancedb_when_cache_fresh() -> None:
          patch("core.state_manager.load_state_from_markdown", return_value=cached), \
          patch("core.memory.semantic_memory.SemanticMemoryManager") as mock_sem_cls, \
          patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as mock_extractor_cls, \
-         patch("agents.researcher.LLMGateway.ainvoke", return_value=mock_llm_response), \
+         patch("tools.llm_gateway.LLMGateway.ainvoke", return_value=mock_llm_response), \
          patch("core.state_manager.dump_state_to_markdown", return_value=True):
 
         mock_extractor_cls.return_value.deep_parse = mock_deep_parse

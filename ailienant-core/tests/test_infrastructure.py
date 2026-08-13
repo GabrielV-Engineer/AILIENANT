@@ -85,7 +85,7 @@ async def test_summarizer_compresses_when_over_threshold() -> None:
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "This is the summary."
 
-    with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
         mock_invoke.return_value = mock_response
         result = await run_summarize_node(state)
 
@@ -110,7 +110,7 @@ async def test_summarizer_uses_model_small() -> None:
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "Summary."
 
-    with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
         mock_invoke.return_value = mock_response
         await run_summarize_node(state)
 
@@ -122,7 +122,7 @@ async def test_summarizer_uses_model_small() -> None:
 async def test_summarizer_truncates_on_llm_failure() -> None:
     state = _build_state(20, context_window=10)
 
-    with patch("brain.summarizer.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_invoke:
         mock_invoke.side_effect = RuntimeError("LLM unreachable")
         result = await run_summarize_node(state)
 

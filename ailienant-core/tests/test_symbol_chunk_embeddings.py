@@ -300,8 +300,10 @@ async def test_embed_batch_falls_back_when_provider_under_returns(monkeypatch: p
         calls["single"] += 1
         return [1.0]
 
+    import litellm  # semantic_memory._embed_batch imports litellm locally (deferred)
+
     monkeypatch.setattr(semantic_memory, "get_embedding_target", lambda: _mk_target())
-    monkeypatch.setattr(semantic_memory.litellm, "aembedding", _fake_aembedding)
+    monkeypatch.setattr(litellm, "aembedding", _fake_aembedding)
     monkeypatch.setattr(semantic_memory, "_get_embedding", _fake_single)
 
     result = await semantic_memory._embed_batch(["a", "b", "c"])
@@ -516,9 +518,8 @@ def test_vector_gc_reports_orphans_from_both_tables(monkeypatch: pytest.MonkeyPa
         file_tbl if name == "workspace_embeddings" else chunk_tbl
     )
 
-    with patch("core.janitor.lancedb") as mock_lancedb, \
+    with patch("lancedb.connect", return_value=mock_db), \
          patch("core.janitor.os.path.exists", return_value=False):
-        mock_lancedb.connect.return_value = mock_db
         report = _vector_gc_sync(ws, "/fake/lancedb")
 
     assert set(report.orphaned_paths) == {file_only_orphan, chunk_only_orphan}

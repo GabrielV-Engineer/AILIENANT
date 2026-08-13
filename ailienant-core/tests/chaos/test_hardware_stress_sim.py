@@ -96,7 +96,7 @@ async def test_synthetic_vram_pressure_triggers_observable_fallback(tmp_path: An
              patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
              patch("core.memory.semantic_memory.SemanticMemoryManager") as sem_cls, \
              patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as extr_cls, \
-             patch("agents.researcher.LLMGateway.ainvoke", new=llm):
+             patch("tools.llm_gateway.LLMGateway.ainvoke", new=llm):
             extr_cls.return_value.deep_parse = deep
             sem_cls.return_value.search_with_paths = search
 

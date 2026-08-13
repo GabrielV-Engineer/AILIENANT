@@ -114,9 +114,9 @@ async def test_planner_instruction_carries_wbs_seed_directive() -> None:
     # The Planner is a pure WBS engine now; it no longer performs retrieval/cascade,
     # so it consumes context_metrics from state instead of computing it.
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(

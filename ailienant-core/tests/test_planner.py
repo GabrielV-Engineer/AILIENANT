@@ -128,9 +128,9 @@ async def test_planner_retries_on_malformed_json_then_succeeds() -> None:
     state = _base_state()
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
@@ -183,9 +183,9 @@ async def test_planner_narrates_critic_cycle_on_handoff_brief() -> None:
     )
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
@@ -223,9 +223,9 @@ async def test_planner_returns_errors_when_retries_exhausted() -> None:
     state = _base_state()
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
@@ -262,9 +262,9 @@ async def test_planner_consumes_researcher_skeleton() -> None:
     state = _base_state(researcher_skeleton=skeleton)
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
@@ -305,9 +305,9 @@ async def test_planner_injects_active_skills() -> None:
     )
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
@@ -382,9 +382,9 @@ async def test_planner_streams_reasoning_before_draft_nonnative() -> None:
     state = _base_state()
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.astream_reasoning", fake
+        "tools.llm_gateway.LLMGateway.astream_reasoning", fake
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
@@ -436,9 +436,9 @@ async def test_planner_skips_reasoning_pass_on_native_model() -> None:
     state = _base_state()
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.astream_reasoning", fake
+        "tools.llm_gateway.LLMGateway.astream_reasoning", fake
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(

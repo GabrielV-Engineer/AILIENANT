@@ -163,9 +163,9 @@ async def _run_planner_and_capture(state: Dict[str, Any]) -> List[Dict[str, str]
     mock_release = AsyncMock(return_value=None)
 
     with patch("agents.planner.DEBUG_MODE", False), patch(
-        "agents.planner.TrajectoryMemoryManager"
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
     ) as mock_traj_cls, patch(
-        "agents.planner.LLMGateway.ainvoke", mock_ainvoke
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
     ), patch(
         "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
     ), patch(
