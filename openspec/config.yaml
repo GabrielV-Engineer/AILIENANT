@@ -1,0 +1,38 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  AILIENANT is a monorepo: ailienant-core/ (Python backend — FastAPI, LangGraph,
+  LanceDB, tree-sitter) and ailienant-extension/ (TypeScript VS Code extension).
+  Canonical operational charter: CLAUDE.md at repo root — read it before authoring
+  any proposal. The project's real source of truth for work breakdown remains
+  docs/PROJECT_MANIFEST.md, docs/DEV_JOURNAL.md, docs/SCHEMA_EVOLUTION.MD, and
+  docs/TECH_DEBT_BACKLOG.md; OpenSpec here is an ADDED structural/drift-check
+  layer, new-phases-only starting with Phase 13 — it does not replace or migrate
+  that system. Conventional Commits for git messages; solo-developer, main-only
+  workflow (no feature branches). Verification gates: `npx pyright` + `mypy .`
+  (backend), `npm run compile` + `npm run lint` (ailienant-extension frontend).
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

@@ -110,6 +110,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-162 | `TaskSubmitRequest`/`TaskSubmitResponse`/`IDEContext` (`api/api_contracts.py`) have zero references outside their own module — the live task-submit path is WebSocket-based, not this REST contract | LOW | Dead code | future dead-contract reclamation slice | Floating |
 | DEBT-163 | `resolve_default_adapter()`'s `docker.from_env()` call has no timeout wrapper, unlike every sibling `docker.from_env` call site in the same file | MEDIUM | Robustness / CLAUDE.md §5.1 | future sandbox-hardening slice | Floating |
 | DEBT-164 | `core/memory/semantic_memory.py`'s `numpy`/`pyarrow`/`pyarrow.compute` imports stay module-level top (only `lancedb`/`litellm` were deferred) — ~35 usages across the file, too invasive to defer safely in one pass | LOW | Startup latency | future import-latency follow-up | Floating |
+| DEBT-165 | OpenSpec adoption is new-phases-only; Phases 0-12 have no OpenSpec representation, by design | DECISION | Architecture | N/A | Decision |
+| DEBT-166 | `openspec validate` starts advisory (`continue-on-error: true`), not blocking | DECISION | Architecture | N/A | Decision |
+| DEBT-167 | Root `package.json` (not `ailienant-extension/package.json`) chosen as the OpenSpec CLI install location | DECISION | Architecture | N/A | Decision |
 
 ---
 
@@ -1553,6 +1556,36 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** N/A — resolved as: leave excluded, documented, and gate-enforced rather than wired or deleted.
 - **Phase:** Decision recorded under Division 8.18; rationale (c) corrected under 12.3. Re-open only if a concrete need surfaces for the coder to mutate files through a path other than `apply_granular_edit` (would need a real `vfs_write` closure design first), if the gateway package's `run_benchmark`/`get_benchmark_report` classes are ever deleted outright, or if a future phase gives a WBS step a planner/orchestrator `target_role` (which would make group (c) reachable and force re-deciding whether to wire it).
 - **Notes:** group (b) (2 of the 11, not 6 as originally recorded) is the strongest candidate for outright deletion rather than permanent exclusion — tracked here rather than acted on. `tests/test_phase12_3_integration_debts.py::test_skill4_skill_roles_disjoint_from_control_roles` is a regression lock on the structural fact rationale (c) depends on.
+
+### DEBT-165 [DECISION] — OpenSpec adoption is new-phases-only (decision record)
+
+- **Date:** 2026-08-17
+- **Reproduce:** N/A (architecture decision, not an error). `13.0` installed `@fission-ai/openspec` as a narrow, ADDED verification-gate layer (CLAUDE.md §15).
+- **File(s):** `openspec/` (new); `docs/PROJECT_MANIFEST.md` (`13.0`); `CLAUDE.md` §15.
+- **Error:** Not a defect. Phases 0-12 are already-closed history documented in `docs/DEV_JOURNAL.md`/`docs/DEV_JOURNAL_ARCHIVE.md` and (where one exists) their own `docs/PHASE_N_BLUEPRINT.md`. Retroactively authoring OpenSpec change proposals for closed phases would be pure migration cost with no reader benefit — nobody needs a drift-check against work that already shipped and is frozen.
+- **Blocked by:** N/A — resolved as: no retroactive backfill planned.
+- **Phase:** Decision recorded at **13.0**.
+- **Notes:** If ever pursued, backfill is optional and low-priority — most naturally scoped as reading each closed blueprint and generating an archived (not in-flight) `openspec/specs/` entry, never as a currently-open `openspec/changes/` proposal.
+
+### DEBT-166 [DECISION] — `openspec validate` starts advisory, not blocking (decision record)
+
+- **Date:** 2026-08-17
+- **Reproduce:** N/A (architecture decision, not an error). `.github/workflows/openspec-gate.yml` runs `npm run openspec:validate` with `continue-on-error: true`.
+- **File(s):** `.github/workflows/openspec-gate.yml`; `CLAUDE.md` §15 item 3.
+- **Error:** Not a defect. OpenSpec is unproven tooling in this repo as of `13.0` — making it a blocking gate on day one risks stalling merges on a tool whose noise characteristics aren't yet known, per CLAUDE.md §11's MVP-declaration process.
+- **Blocked by:** N/A.
+- **Phase:** Decision recorded at **13.0**.
+- **Notes:** Promotion criteria not yet decided — candidates include N consecutive clean CI runs, or waiting until spec content exists beyond the `13-portfolio-level-release` pilot. Revisit once Phase 13 is further along; not scheduled to a specific sub-phase.
+
+### DEBT-167 [DECISION] — OpenSpec CLI installed at repo-root `package.json`, not `ailienant-extension/package.json` (decision record)
+
+- **Date:** 2026-08-17
+- **Reproduce:** N/A (architecture decision, not an error).
+- **File(s):** `package.json` / `package-lock.json` (new, repo root).
+- **Error:** Not a defect. `ailienant-extension/package.json` is the only pre-existing first-party `package.json` in the repo, but OpenSpec governs both `ailienant-core` and `ailienant-extension` — nesting it inside the extension's devDependencies would couple a repo-wide spec tool's version to the extension's own esbuild/vsce packaging pipeline for no benefit. A dedicated root `package.json` (private, tooling-only) keeps that dependency graph fully decoupled, at the cost of one extra lockfile and one extra `dependabot.yml` row.
+- **Blocked by:** N/A.
+- **Phase:** Decision recorded at **13.0**.
+- **Notes:** Precedented by Phase 12.17, which already added bare root-level tooling files (`dependabot.yml`, `.pre-commit-config.yaml`, `CODEOWNERS`) with no accompanying package manifest.
 
 ---
 

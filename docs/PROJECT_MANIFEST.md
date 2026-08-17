@@ -978,6 +978,8 @@
 
 > Final preparation to showcase the tool. Content migrated from old Phase 11.
 
+- [x] **13.0. OpenSpec Verification-Gate Integration.**
+  Install `@fission-ai/openspec` as a narrowly-scoped ADDED verification gate (`openspec validate --all --strict --json --no-interactive`) layered on top of the existing SDD system — `docs/PROJECT_MANIFEST.md`, `docs/DEV_JOURNAL.md`, `docs/SCHEMA_EVOLUTION.MD`, and `docs/TECH_DEBT_BACKLOG.md` remain the source of truth and are NOT replaced or migrated. Scope is new-phases-only starting with Phase 13 (see DEBT-165). DoD: root `package.json`/`package-lock.json` pins the CLI, decoupled from `ailienant-extension`; `openspec/` initialized (`--tools claude`); `AGENTS.md` reconciled to a thin pointer stub before init; `npm run openspec:validate` wired as an ADVISORY CI step (`openspec-gate.yml`); `CLAUDE.md` §2 gate row + new §15 scope-boundary section added; `DEVELOPERS.md` Repository Layout updated; DEBT-165/166/167 logged; `openspec/changes/13-portfolio-level-release/` authored for 13.1-13.5.
 - [ ] **13.1. Full Dockerization.** `Dockerfile` + `docker-compose.yml` to launch the full architecture (LanceDB + Backend) with a single command.
 - [ ] **13.2. Binary Packaging (Zero-Friction Install).** **PyInstaller / Nuitka:** compile `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) into a per-OS binary (`.exe` / macOS / Linux). **VS Code Extension Bundling:** the TS extension unpacks and executes the local binary in background on install. The user needs no Python, Docker, or Node installed.
 - [ ] **13.3. Visual Documentation.** `README.md` final with real architecture diagrams.

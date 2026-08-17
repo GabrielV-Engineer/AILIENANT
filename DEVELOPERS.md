@@ -277,10 +277,16 @@ Proyect_Ailienant/
 │   │                            #     + nightly Playwright e2e)
 │   ├── ISSUE_TEMPLATE/          #   bug_report.md · feature_request.md
 │   ├── PULL_REQUEST_TEMPLATE.md
-│   └── dependabot.yml           #   pip (ailienant-core) · npm (ailienant-extension) · github-actions
+│   └── dependabot.yml           #   pip (ailienant-core) · npm (ailienant-extension, root) · github-actions
 ├── scripts/
 │   └── pre_commit_backend_gate.py # venv-resolving entry point for the ruff/mypy pre-commit hooks
 ├── .pre-commit-config.yaml      # ruff + mypy-on-changed-files (ailienant-core) + eslint (ailienant-extension)
+├── package.json · package-lock.json # root-level, private:true — pins @fission-ai/openspec only,
+│                               #   decoupled from ailienant-extension's own package.json/vsce packaging
+├── openspec/                    # OpenSpec CLI narrow verification layer (structural/drift checks only —
+│                               #   NOT a migration of docs/PROJECT_MANIFEST.md; new-phases-only, Phase 13+;
+│                               #   see CLAUDE.md §15). config.yaml (project context) · changes/ (per-change
+│                               #   proposal/spec-delta/design/tasks folders) · specs/ (archived baseline)
 ├── SECURITY.md · CODEOWNERS     # Vulnerability disclosure path + review routing
 ├── ailienant-core/              # Python orchestration engine
 │   ├── pytest.ini · mypy.ini    #   gate config: unit/integration/e2e markers · typing scope

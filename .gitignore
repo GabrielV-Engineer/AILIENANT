@@ -79,6 +79,9 @@ Thumbs.db
 byom_config.json
 mcp_secrets.json
 config.yaml
+# OpenSpec's project-context config is not a secret — must stay tracked so
+# CI checkouts and other clones have the schema/context declaration.
+!openspec/config.yaml
 # Local agent tooling (Claude Code)
 .claude/
 # Live telemetry sink (audit surface with snippets/prompts) — runtime, never versioned

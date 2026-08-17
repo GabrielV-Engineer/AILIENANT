@@ -1,0 +1,41 @@
+name: OpenSpec Gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'openspec/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/openspec-gate.yml'
+  pull_request:
+    paths:
+      - 'openspec/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/openspec-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  openspec-validate:
+    runs-on: ubuntu-latest
+    # ADVISORY gate — OpenSpec is new, unproven tooling in this repo (see
+    # docs/TECH_DEBT_BACKLOG.md DEBT-166). It does not block merges yet;
+    # promotion to a blocking gate is a separate, explicitly logged decision.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate OpenSpec changes and specs
+        run: npm run openspec:validate
