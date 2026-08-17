@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from enum import Enum
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from shared.config import MINI_JUDGE_MODEL
 
@@ -137,6 +137,44 @@ def is_fast_track_eligible(user_input: str) -> bool:
     if tokens & _ACTION_VERBS or tokens & _CONTEXT_DEICTIC or tokens & _CONTEXT_NOUNS:
         return False
     return True
+
+
+# ── Ambiguity gate: a pre-RAG underspecified-imperative probe ───────────────
+# A short imperative that names an action verb and leans on a deictic pronoun
+# ("fix this", "make it better") but gives the researcher no concrete anchor —
+# no @-mention, no active file, no path/symbol in the text itself — wastes a
+# full retrieval + skeleton pass on a guess. Reuses is_fast_track_eligible's
+# word-lists for consistency. Conservative like its sibling: any concrete
+# anchor always disqualifies, so a false negative just runs retrieval as
+# before (harmless) while a false positive would interrupt a clear request.
+
+
+def is_underspecified(
+    user_input: str,
+    *,
+    explicit_mentions: List[str],
+    active_file_path: str = "",
+) -> bool:
+    """True when a short imperative prompt has no concrete target to act on.
+
+    Pure and side-effect free. A concrete anchor — an @-mention, an open
+    active file, or a code/path signal in the text itself — always
+    disqualifies. Otherwise requires both an action verb and a deictic
+    reference (the combination that signals "do X to this/that" with no
+    named target) inside a short prompt.
+    """
+    if explicit_mentions or active_file_path:
+        return False
+    text = (user_input or "").strip()
+    if not text or len(text) > _FAST_TRACK_MAX_CHARS:
+        return False
+    if _CODE_SIGNAL_RE.search(text):
+        return False
+    lowered = text.lower()
+    if len(lowered.split()) > _FAST_TRACK_MAX_WORDS:
+        return False
+    tokens = set(re.findall(r"[a-z']+", lowered))
+    return bool(tokens & _ACTION_VERBS) and bool(tokens & _CONTEXT_DEICTIC)
 
 
 def derive_routing_decision(
