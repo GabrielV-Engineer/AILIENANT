@@ -19,8 +19,8 @@ jsonpatch==1.33
 jsonpointer==3.1.1
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-lance-namespace==0.6.1
-lance-namespace-urllib3-client==0.6.1
+lance-namespace==0.11.0
+lance-namespace-urllib3-client==0.11.0
 lancedb==0.37.1
 langchain-core==1.4.7
 langchain-protocol==0.0.15
