@@ -29,6 +29,7 @@ from core.memory.context_auditor import (
     derive_routing_decision,
     hardware_reroute,
     is_fast_track_eligible,
+    is_underspecified,
 )
 from shared.config import MODEL_MEDIUM, check_cloud_availability
 from shared.rbac import RESEARCHER_IDENTITY
@@ -253,6 +254,31 @@ async def run_researcher_node(
             "routing_warning": None,
         }
 
+    # ── Ambiguity pre-flight gate — pause before spending the retrieval budget
+    # on a prompt with no concrete anchor to act on. Skipped whenever fast_track
+    # already judged the query self-contained; is_underspecified itself no-ops
+    # once an @-mention or an active file gives the turn a target.
+    if not _fast_track and is_underspecified(
+        user_input, explicit_mentions=explicit_mentions, active_file_path=_active_path
+    ):
+        from core.hitl import request_graph_clarification
+
+        clarification = request_graph_clarification(
+            session_id=session_id,
+            question=(
+                f"The request {user_input!r} doesn't name a file, function, or "
+                "concrete target — what should I act on?"
+            ),
+            context="Reply with a file/symbol name, or pick a suggestion.",
+            suggested_options=[
+                "Use the active editor file",
+                "I'll name the file/function myself",
+            ],
+        )
+        _clarification_answer = clarification.get("answer") or clarification.get("selected_option")
+        if _clarification_answer:
+            user_input = f"{user_input}\n\n[Clarification]: {_clarification_answer}"
+
     # ── Override A: @-mention bypass — read the requested files verbatim ──
     forced_blocks: List[str] = []
     if explicit_mentions:
@@ -398,6 +424,7 @@ async def run_researcher_node(
     _cascade_routing: str = "LOCAL_SMALL"   # conservative safe default
     _cascade_provider: str = "LOCAL"        # safe default
     _routing_warning: Optional[str] = None  # set only when hardware degrades routing
+    _plan_mode_override: Optional[str] = None  # set only when HIGH-risk suggests Plan mode
 
     try:
         if _fast_track:
@@ -434,7 +461,15 @@ async def run_researcher_node(
                 updated_context_metrics.css_total,
             )
         else:
-            _risk: RiskLevel = await audit_task_complexity(user_input, session_id=session_id)
+            # A same-turn LLM tie-break in TaskService._classify_intent_and_risk may
+            # already have answered this exact question — reuse it instead of paying
+            # for a second cheap-model round-trip over the same user_input.
+            _risk_hint = state.get("preclassified_risk")
+            if _risk_hint in ("NONE", "MEDIUM", "HIGH"):
+                _risk: RiskLevel = RiskLevel(_risk_hint)
+                logger.info("MiniJudge skipped — reusing preclassified risk=%s.", _risk_hint)
+            else:
+                _risk = await audit_task_complexity(user_input, session_id=session_id)
             _math_routing: str = derive_routing_decision(
                 tci, updated_context_metrics.css_total, corpus_empty=_corpus_empty
             )
@@ -452,6 +487,32 @@ async def run_researcher_node(
                     update={"task_complexity_index": 100.0}
                 )
                 logger.info("MiniJudge=HIGH → TCI=100.0, routing=CLOUD.")
+
+                # Reuse the same HIGH verdict to offer a Plan-mode de-escalation —
+                # skipped once the session is already planning, so the suggestion
+                # never repeats every turn of an ongoing Plan session.
+                from core.permissions import (
+                    SessionPermissionMode,
+                    normalize_session_mode,
+                    session_mode_from_channel,
+                )
+
+                _current_mode = normalize_session_mode(
+                    session_mode_from_channel(state.get("session_permission_mode"))
+                )
+                if _current_mode != SessionPermissionMode.PLAN_ONLY:
+                    from core.hitl import request_graph_clarification
+
+                    _suggestion = request_graph_clarification(
+                        session_id=session_id,
+                        question=(
+                            "This task looks complex enough that planning first "
+                            "might save rework — switch to Plan mode before continuing?"
+                        ),
+                        suggested_options=["Keep current mode", "Switch to Plan mode"],
+                    )
+                    if _suggestion.get("selected_option") == "Switch to Plan mode":
+                        _plan_mode_override = SessionPermissionMode.PLAN_ONLY.value.upper()
 
             elif _risk == RiskLevel.MEDIUM:
                 if _math_routing == "LOCAL_SMALL":
@@ -603,6 +664,8 @@ async def run_researcher_node(
         result["tool_dispatch_trace"] = dispatch_trace
     if errors:
         result["errors"] = errors
+    if _plan_mode_override is not None:
+        result["session_permission_mode"] = _plan_mode_override
 
     # ── Flush cognitive state to .ailienant/AGENTS.md (fast-boot snapshot) ──
     try:

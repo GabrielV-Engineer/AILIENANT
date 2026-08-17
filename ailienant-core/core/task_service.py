@@ -237,8 +237,10 @@ _EXPLAIN_SIGNALS: tuple[str, ...] = (
 _INTENT_SYSTEM_PROMPT: str = (
     "Classify the user's message for a coding IDE assistant as either an 'edit' "
     "(a request to write, modify, create, refactor or delete code/files) or a "
-    "'question' (asking for information, explanation or discussion). "
-    'Respond with ONLY JSON: {"intent": "edit"} or {"intent": "question"}.'
+    "'question' (asking for information, explanation or discussion). Also rate the "
+    "task's semantic risk as 'NONE' (trivial/simple), 'MEDIUM' (moderate scope), or "
+    "'HIGH' (deep multi-file/architectural impact) — always 'NONE' for a 'question' intent. "
+    'Respond with ONLY JSON: {"intent": "edit"|"question", "risk": "NONE"|"MEDIUM"|"HIGH"}.'
 )
 
 
@@ -531,13 +533,14 @@ class TaskService:
         self.vfs.ingest_dirty_buffers(payload.dirty_buffers)
 
         # 2. Intent routing. Planner-mode toggle forces the coding path.
-        intent = "edit" if payload.planner_mode_active else await self._classify_intent(
-            payload.task_prompt
-        )
+        if payload.planner_mode_active:
+            intent, risk_hint = "edit", None
+        else:
+            intent, risk_hint = await self._classify_intent_and_risk(payload.task_prompt)
         logger.info("[Session: %s] routed intent=%s", session_id, intent)
 
         if intent == "edit":
-            await self._run_coding_task(session_id, payload, execution_mode)
+            await self._run_coding_task(session_id, payload, execution_mode, risk_hint=risk_hint)
         else:
             await self._stream_chat_answer(
                 session_id,
@@ -553,7 +556,8 @@ class TaskService:
         return {"status": "success", "message": "Task completed.", "session_id": session_id}
 
     def _build_initial_state(
-        self, session_id: str, payload: TaskPayload, execution_mode: str
+        self, session_id: str, payload: TaskPayload, execution_mode: str,
+        risk_hint: Optional[str] = None,
     ) -> dict[str, Any]:
         """Construct the AIlienantGraphState seed consumed by run_planner_node."""
         initial_state: dict[str, Any] = {
@@ -574,6 +578,11 @@ class TaskService:
             # active tab prominently; downstream nodes ignore the unknown keys.
             "active_file_path": payload.active_file_path or "",
             "active_file_content": payload.active_file_content or "",
+            # Transient LLM-tie-break hint (edit/question classification's own risk
+            # opinion, when it fired). Not on the AIlienantGraphState TypedDict, same
+            # pattern as active_file_path above — run_researcher_node reads it off the
+            # loose state dict to skip a duplicate Mini-Judge call on the same input.
+            "preclassified_risk": risk_hint,
             "hitl_pending": False,
             "hitl_response": None,
             "shared_understanding_reached": False,
@@ -660,17 +669,31 @@ class TaskService:
         return time.time()
 
     async def _classify_intent(self, prompt: str) -> str:
-        """Return 'edit' or 'question'. Heuristic first, cheap LLM tie-break, safe default."""
+        """Return 'edit' or 'question'. Thin wrapper over ``_classify_intent_and_risk``
+        that drops the risk hint — kept for callers that only need the intent."""
+        intent, _risk_hint = await self._classify_intent_and_risk(prompt)
+        return intent
+
+    async def _classify_intent_and_risk(self, prompt: str) -> Tuple[str, Optional[str]]:
+        """Return (intent, risk_hint). Heuristic first, cheap LLM tie-break, safe default.
+
+        ``risk_hint`` is None unless the LLM tie-break actually fired and returned an
+        opinion — the pure heuristic branches never touch a model, so they have none.
+        Threaded into the coding-task graph's initial state as
+        ``preclassified_risk`` so ``run_researcher_node`` can skip a duplicate
+        Mini-Judge (``audit_task_complexity``) call over the same ``user_input`` when
+        this hint already answered the same question in the same turn.
+        """
         text = prompt.strip().lower()
         if not text:
-            return "question"
+            return "question", None
         starts_question = text.startswith(_QUESTION_STARTERS) or text.endswith("?")
         has_edit_verb = any(re.search(rf"\b{v}\b", text) for v in _EDIT_VERBS)
         has_explain_signal = any(sig in text for sig in _EXPLAIN_SIGNALS)
         if has_edit_verb and not starts_question and not has_explain_signal:
-            return "edit"
+            return "edit", None
         if (starts_question or has_explain_signal) and not has_edit_verb:
-            return "question"
+            return "question", None
         # Ambiguous → cheap small-tier classifier; default to 'question' (never silently edit).
         try:
             from shared.config import MODEL_SMALL
@@ -681,14 +704,17 @@ class TaskService:
                     {"role": "user", "content": prompt},
                 ],
                 model=MODEL_SMALL, temperature=0.0,
-                response_format={"type": "json_object"}, max_tokens=20,
+                response_format={"type": "json_object"}, max_tokens=30,
             )
             raw = LLMGateway._sanitize_json_response(resp.choices[0].message.content or "")
-            intent = str(json.loads(raw).get("intent", "question")).lower()
-            return "edit" if intent == "edit" else "question"
+            parsed = json.loads(raw)
+            intent = str(parsed.get("intent", "question")).lower()
+            risk_raw = str(parsed.get("risk", "")).upper()
+            risk_hint = risk_raw if risk_raw in ("NONE", "MEDIUM", "HIGH") else None
+            return ("edit" if intent == "edit" else "question"), risk_hint
         except Exception as exc:  # noqa: BLE001
             logger.debug("Intent classification failed (defaulting to question): %s", exc)
-            return "question"
+            return "question", None
 
     # Phase 7.11.3 — shared abort response. Broadcasts the "Stopped by user"
     # turn + closes the stream + persists the marker into history. Best-effort:
@@ -801,6 +827,7 @@ class TaskService:
     async def _run_coding_task(
         self, session_id: str, payload: TaskPayload, execution_mode: str,
         resume_value: Optional[Dict[str, Any]] = None,
+        risk_hint: Optional[str] = None,
     ) -> None:
         """Drive the compiled LangGraph engine to propose patches, then apply via the HITL bridge.
 
@@ -832,7 +859,9 @@ class TaskService:
         from langgraph.types import Command
 
         if resume_value is None:
-            state = self._build_initial_state(session_id, payload, execution_mode)
+            state = self._build_initial_state(
+                session_id, payload, execution_mode, risk_hint=risk_hint
+            )
             state["session_start_time"] = self._resolve_session_start_time(session_id)
 
             # Resolve the user-authored skills that apply to this task (auto-matched by

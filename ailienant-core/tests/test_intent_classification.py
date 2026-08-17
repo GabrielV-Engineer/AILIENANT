@@ -102,6 +102,58 @@ async def test_empty_prompt_routes_to_question(service: TaskService) -> None:
     assert await service._classify_intent("   ") == "question"
 
 
+# ─── _classify_intent_and_risk — the risk_hint side-channel (dedup with the
+# researcher's own Mini-Judge, see agents/researcher.py + context_auditor.py) ──
+
+
+async def test_classify_intent_and_risk_returns_llm_risk_hint(service: TaskService) -> None:
+    """The tie-break LLM call's 'risk' field flows through as risk_hint."""
+    prompt = "Handle the thing we discussed."  # ambiguous: no edit verb, no question starter
+    mock_response = AsyncMock()
+    mock_response.choices = [
+        AsyncMock(message=AsyncMock(content='{"intent": "edit", "risk": "HIGH"}'))
+    ]
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = mock_response
+        intent, risk_hint = await service._classify_intent_and_risk(prompt)
+
+    mock_llm.assert_awaited_once()
+    assert intent == "edit"
+    assert risk_hint == "HIGH"
+
+
+async def test_classify_intent_and_risk_ignores_invalid_risk_value(service: TaskService) -> None:
+    """A malformed/unexpected risk value degrades to None rather than propagating garbage."""
+    prompt = "Handle the thing we discussed."
+    mock_response = AsyncMock()
+    mock_response.choices = [
+        AsyncMock(message=AsyncMock(content='{"intent": "question", "risk": "not-a-level"}'))
+    ]
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = mock_response
+        intent, risk_hint = await service._classify_intent_and_risk(prompt)
+
+    assert intent == "question"
+    assert risk_hint is None
+
+
+async def test_classify_intent_and_risk_heuristic_short_circuit_has_no_risk_hint(
+    service: TaskService,
+) -> None:
+    """The pure heuristic branches never touch a model, so they carry no risk opinion."""
+    intent, risk_hint = await service._classify_intent_and_risk(
+        "Add a login button to the navbar."
+    )
+    assert intent == "edit"
+    assert risk_hint is None
+
+
+async def test_classify_intent_wrapper_still_returns_bare_string(service: TaskService) -> None:
+    """_classify_intent stays a thin str-returning wrapper — existing callers unaffected."""
+    intent = await service._classify_intent("Add a login button to the navbar.")
+    assert intent == "edit"
+
+
 # ─── _resolve_chat_system_prompt — adaptive answer depth (Item C) ─────────────
 #
 # The question route (_stream_chat_answer) passes no max_tokens at all — the
