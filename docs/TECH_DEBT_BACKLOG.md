@@ -113,6 +113,11 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-165 | OpenSpec adoption is new-phases-only; Phases 0-12 have no OpenSpec representation, by design | DECISION | Architecture | N/A | Decision |
 | DEBT-166 | `openspec validate` starts advisory (`continue-on-error: true`), not blocking | DECISION | Architecture | N/A | Decision |
 | DEBT-167 | Root `package.json` (not `ailienant-extension/package.json`) chosen as the OpenSpec CLI install location | DECISION | Architecture | N/A | Decision |
+| DEBT-168 | Image attachments (`ManualAttachment.data`) never reach the LLM's multimodal payload — Vision Bypass routes to CLOUD but `LLMGateway.ainvoke()` only accepts text messages | HIGH | Capability gap | future multimodal-payload slice | Floating |
+| DEBT-169 | GraphRAG/tool retrieval has no reranking stage — single-pass cosine kNN via LanceDB, no cross-encoder, no BM25 fusion, no MMR, no recency-weighted reorder of the snippets shown to the LLM | MEDIUM | Architecture / Retrieval quality | future retrieval-quality slice | Floating |
+| DEBT-170 | Resubmitting a prompt mid-run spawns a second concurrent runner on the same session/checkpoint — `register_active_task` overwrites the abort-mesh pointer with no queue or rejection | HIGH | Concurrency / Reliability | future concurrency-safety slice | Floating |
+| DEBT-171 | `AskUserQuestionTool` writes `state["pending_hitl_request"]` but no graph node consumes it — the tool never actually suspends the turn despite its docstring | HIGH | Correctness | future HITL-channel-unification slice | Floating |
+| DEBT-172 | The new ambiguity-gate / Plan-mode-suggestion interrupt cards (this session) carry `suggested_options` in the payload, but the frontend has no multi-choice renderer yet — they render as plain approve/reject | LOW | FE Integration | future HITL-card-UX slice | Floating |
 
 ---
 
@@ -123,6 +128,36 @@ Decision    Not a defect — see [DECISION] tier.
 **HIGH**
 
 ---
+
+### DEBT-168 [HIGH · Floating] — Image attachments never reach the LLM's multimodal payload
+
+- **Date:** 2026-08-17
+- **Reproduce:** attach an image in the WebView and submit a coding task. `has_images` (`core/task_service.py::_build_initial_state`) correctly flips True and `RoutingEngine.resolve_provider` (`brain/routing_engine.py:94-120`, the Vision Bypass rule) correctly forces `CLOUD` — but no node ever builds an `image_url` content block from `state["attachments"]`. `LLMGateway.ainvoke(messages: list[dict], ...)` only accepts text messages. Grep confirms `ManualAttachment` is referenced in exactly 3 files (`core/task_service.py`, `brain/state.py`, `api/api_contracts.py`) and none of them, nor any file under `agents/` or `brain/nodes/`, ever reads the attachment's base64 `data` field to construct a multimodal payload.
+- **File(s):** `brain/state.py` (`ManualAttachment`), `core/task_service.py` (`_build_initial_state`, `has_images`), `brain/routing_engine.py` (`resolve_provider`), `tools/llm_gateway.py` (`LLMGateway.ainvoke`).
+- **Error:** the routing half of Vision Bypass (historical Phase 2.1) shipped; the payload-forwarding half never did. A user who attaches an image gets correctly routed to a vision-capable provider that never actually sees the image.
+- **Blocked by:** nothing — self-contained, but non-trivial (needs a provider-aware content-block builder in the LLM Gateway plus a call site that reads `state["attachments"]`, most naturally the researcher or coder node).
+- **Phase:** future multimodal-payload slice.
+- **Notes:** surfaced during a harness audit (2026-08-17), not from a user report. Cross-references the historical Phase 2.1 Vision Bypass routing work — "the routing was built, the payload wiring wasn't."
+
+### DEBT-170 [HIGH · Floating] — Resubmitting a prompt mid-run spawns a second concurrent runner on the same checkpoint
+
+- **Date:** 2026-08-17
+- **Reproduce:** submit a task, then submit a second, different prompt against the same `session_id` before the first finishes. `submit_task` (`main.py:651-762`) has no concurrency guard per session — it spawns a new `asyncio.create_task(_runner())` unconditionally and calls `register_active_task(x_task_id, _t)`, whose own docstring says it is "idempotent: a second call... **replaces** the previous entry" (`core/task_service.py:2268-2289`). The old runner task keeps executing, untracked and unabortable (the abort-mesh pointer now points at the new task), while both write against the same LangGraph checkpoint concurrently. The frontend does not prevent this either: `PromptBar.tsx`'s submit path only checks `disabled` (HITL-pending), not `isStreaming` — a user can type and hit Enter mid-stream and silently fire a second `SUBMIT_TASK`.
+- **File(s):** `api/main.py` (`submit_task`), `core/task_service.py` (`register_active_task`, `abort_session`), `ailienant-extension/src/workspace/components/PromptBar.tsx`.
+- **Error:** correctness/reliability risk — violates the charter's §5.3 idempotency invariant (a mutation that an accidental or intentional retry/resubmit can corrupt). No data-loss incident observed yet; this is a structural gap, not (yet) a reported failure.
+- **Blocked by:** nothing — needs a per-`session_id` admission guard (reject, queue, or interrupt-and-replace the prior runner) plus a frontend `isStreaming` gate on the submit path.
+- **Phase:** future concurrency-safety slice.
+- **Notes:** surfaced while researching a "user sends new instructions mid-execution" UX question (2026-08-17) — the UX question exposed a real backend safety gap underneath it.
+
+### DEBT-171 [HIGH · Floating] — `AskUserQuestionTool` writes a state channel that nothing consumes
+
+- **Date:** 2026-08-17
+- **Reproduce:** `grep -rn "pending_hitl_request" ailienant-core/` — matches only `brain/state.py` (declaration), `tools/control_tools.py` (`AskUserQuestionTool._arun` writer), `tools/agent_tools.py` (factory), and two test files that assert the state mutation itself. No node under `core/`, `brain/nodes/`, or `agents/` ever reads `state["pending_hitl_request"]` to suspend the graph. The tool's own docstring claims "the orchestrator graph node detects the populated channel and suspends the turn" — that consumer does not exist. The real, working in-graph suspension mechanism is `interrupt()` / `core.hitl.request_graph_approval`, used today only by `drift_gate` (`brain/drift_monitor.py::run_drift_gate_node`).
+- **File(s):** `tools/control_tools.py` (`AskUserQuestionTool`), `core/hitl.py` (`request_graph_approval`, the working mechanism), `brain/drift_monitor.py` (the one real consumer of that mechanism).
+- **Error:** correctness gap — a documented, tested-looking tool silently does nothing when called from a live agent turn (the existing tests only assert the state mutation, not that the turn actually pauses, so they don't catch this).
+- **Blocked by:** nothing.
+- **Phase:** future HITL-channel-unification slice.
+- **Notes:** this session's `request_graph_clarification` (`core/hitl.py`, added for the ambiguity gate / Plan-mode suggestion) is built on the *working* `interrupt()` substrate and is the natural target to repoint `AskUserQuestionTool` at, instead of the dead `pending_hitl_request` channel — not done here, logged for a dedicated pass since it touches an LLM-facing tool contract.
 
 ### DEBT-036 [HIGH · RESOLVED 2026-06-19, 8.10.5] — BenchmarkOracle executed candidate patches on the host (no sandbox isolation)
 
@@ -187,6 +222,16 @@ Decision    Not a defect — see [DECISION] tier.
 **MEDIUM**
 
 ---
+
+### DEBT-169 [MEDIUM · Floating] — GraphRAG/tool retrieval has no reranking stage
+
+- **Date:** 2026-08-17
+- **Reproduce:** read `core/memory/semantic_memory.py::search_with_paths` / `search_snippets` and `core/tool_rag.py::select_tools`. Every retrieval path is a single `tbl.search(vector).metric("cosine").limit(k)` call against LanceDB, with the final ordering being raw cosine distance — `select_tools` literally sorts by `(_distance, name)` and stops. There is no cross-encoder second pass, no BM25/lexical fusion, no MMR diversification (a query can surface k near-duplicate chunks from the same file), and no reordering by recency: `search_with_paths` computes an `indexed_at` timestamp per result and it feeds `agents/recency.py::compute_recency_score`, which blends into the aggregate CSS *meter* — but the individual snippets/files handed to the LLM are never reordered by that signal, only the scalar sufficiency score is adjusted.
+- **File(s):** `core/memory/semantic_memory.py` (`search_with_paths`, `search_snippets`, `_query_chunks`), `core/tool_rag.py` (`ToolRAGStore.select_tools`), `agents/recency.py` (`compute_recency_score` — the existing, unused-for-reordering recency signal to build on).
+- **Error:** architecture/feature gap, not a correctness bug — single-stage kNN is cheap and works for small/medium corpora, but leaves precision on the table for larger codebases (near-duplicate retrieval, no lexical/semantic fusion, no diversity floor).
+- **Blocked by:** nothing — a first cut (recency-weighted reorder of already-retrieved snippets, no new dependency) is a small follow-up; a real cross-encoder or MMR pass is a larger, separately-scoped change.
+- **Phase:** future retrieval-quality slice.
+- **Notes:** surfaced during a harness audit (2026-08-17). Cross-references **DEBT-149** (CSS's semantic term calibrated only against file-centroid distances, never chunk distances — same "retrieval precision left on the table" family) and **DEBT-140** (RESOLVED 12.13, added per-symbol chunking — the substrate a real reranker would sit on top of).
 
 ### DEBT-152 [MEDIUM · RESOLVED 2026-08-04, 12.14] — Orphaned agentic-cell PTY sessions can now permanently occupy a bounded pool slot
 
@@ -715,6 +760,16 @@ Decision    Not a defect — see [DECISION] tier.
 **LOW**
 
 ---
+
+### DEBT-172 [LOW · Floating] — Clarification / Plan-mode-suggestion interrupt cards have no multi-choice renderer yet
+
+- **Date:** 2026-08-17
+- **Reproduce:** the ambiguity pre-flight gate and the HIGH-risk Plan-mode suggestion (shipped this session — `agents/researcher.py`, `core.hitl.request_graph_clarification`) put a `suggested_options: List[str]` list on the `interrupt()` payload, but the frontend's existing HITL approval-card component only renders a binary approve/reject affordance (the same one `drift_gate` uses). `suggested_options` currently reaches the WebView unrendered — the user answers by whatever free-text/approve path the existing card supports, not a real multi-select.
+- **File(s):** `core/hitl.py` (`request_graph_clarification`), `ailienant-extension/src/workspace/` (the HITL approval-card component — needs a `suggested_options`-aware render branch).
+- **Error:** UX gap, explicit MVP declaration per CLAUDE.md §11.2 — the backend contract is additive and forward-compatible (an old card renderer just ignores the extra field), but the "box de preguntas con opciones múltiples" the feature was meant to deliver isn't visually real yet.
+- **Blocked by:** frontend work — out of scope for this (backend-only) session.
+- **Phase:** future HITL-card-UX slice.
+- **Notes:** logged at ship per CLAUDE.md §11.3, alongside DEBT-168/169/170/171 (2026-08-17 harness-audit sweep).
 
 ### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 
