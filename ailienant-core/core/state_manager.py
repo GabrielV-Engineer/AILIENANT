@@ -127,8 +127,15 @@ def _build_agents_md(cached: CachedAgentState) -> str:
     return "\n".join(lines)
 
 
-def _write_agents_md(target: Path, content: str) -> None:
-    """Atomic write using tempfile + os.replace (same pattern as core/rules.py)."""
+def write_markdown_atomic(target: Path, content: str) -> None:
+    """Atomic write using tempfile + os.replace (same pattern as core/rules.py).
+
+    Shared by every `.ailienant/` markdown artifact writer (the fast-boot cache,
+    the plan export, the project-instructions draft). Creates the parent
+    directory when absent and never leaves a partial file behind: the temp file
+    lives in the target's own directory so `os.replace` stays atomic, and is
+    removed on any failure. Windows-safe — the handle is closed before replace.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: str = ""
     try:
@@ -190,7 +197,7 @@ def dump_state_to_markdown(state: Dict[str, Any], workspace_root: str) -> bool:
             generated_at=_iso_now(),
         )
         target: Path = _agents_md_path(workspace_root)
-        _write_agents_md(target, _build_agents_md(cached))
+        write_markdown_atomic(target, _build_agents_md(cached))
         logger.info("Phase 3.6: state dumped to %s", target)
         return True
     except Exception as exc:
@@ -258,7 +265,7 @@ def dump_plan_to_markdown(
         return False
     try:
         target: Path = _plan_md_path(workspace_root, task_id)
-        _write_agents_md(target, _build_plan_md(spec, task_id))
+        write_markdown_atomic(target, _build_plan_md(spec, task_id))
         logger.info("Plan exported to %s", target)
         return True
     except Exception as exc:  # noqa: BLE001 — plan export must never crash planning
@@ -313,7 +320,7 @@ def record_merge_event(workspace_root: str, merged_paths: List[str]) -> bool:
             "last_merge_at": _iso_now(),
             "last_merged_paths": list(merged_paths),
         })
-        _write_agents_md(target, _build_agents_md(updated))
+        write_markdown_atomic(target, _build_agents_md(updated))
         logger.info("Phase 3.6: merge event recorded in AGENTS.md (%d paths).", len(merged_paths))
         return True
     except Exception as exc:

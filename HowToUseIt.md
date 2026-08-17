@@ -19,8 +19,9 @@ A complete, step-by-step guide to installing, configuring, and working with AILI
 9. [Approving and rejecting changes (HITL)](#9-approving-and-rejecting-changes-hitl)
 10. [Checkpoints, Rewind, and branching](#10-checkpoints-rewind-and-branching)
 11. [Controlling cost](#11-controlling-cost)
-12. [The Web Dashboard](#12-the-web-dashboard)
-13. [Troubleshooting](#13-troubleshooting)
+12. [Teaching AILIENANT about your project](#12-teaching-ailienant-about-your-project)
+13. [The Web Dashboard](#13-the-web-dashboard)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -107,7 +108,7 @@ To use it:
 
 BYOM = *Bring Your Own Model*. This is where you tell AILIENANT which engines to use.
 
-1. Open the **Web Dashboard** (see [§12](#12-the-web-dashboard)) and go to the **BYOM** panel — or use the in-sidebar **Models** menu (`/models`).
+1. Open the **Web Dashboard** (see [§13](#13-the-web-dashboard)) and go to the **BYOM** panel — or use the in-sidebar **Models** menu (`/models`).
 2. **Add an endpoint.** Examples:
    - Ollama → `http://localhost:11434`
    - LM Studio → `http://localhost:1234`
@@ -177,7 +178,7 @@ HITL = *Human-In-The-Loop*. When the agent proposes a change (in Ask mode) or hi
 
 Approvals can also appear as native VS Code notifications. Every decision is written to a verifiable audit log.
 
-> **Silent feedback:** if you accept a change but then immediately rewrite most of it (≥70% within 3 minutes), AILIENANT notices and learns from the implicit rejection, distilling it into a rule under `.ailienant/rules/`.
+> **Silent feedback:** if you accept a change but then immediately rewrite most of it (≥70% within 3 minutes), AILIENANT notices and learns from the implicit rejection, distilling it into a rule in `.ailienant/.ailienant.json` (see [§12](#12-teaching-ailienant-about-your-project)).
 
 ---
 
@@ -200,7 +201,52 @@ This is ideal for "try approach A, then back up and try approach B" without manu
 
 ---
 
-## 12. The Web Dashboard
+## 12. Teaching AILIENANT about your project
+
+Two files under `.ailienant/` (per workspace) shape how AILIENANT behaves in your project, and they are not interchangeable:
+
+| | `.ailienant/AILIENANT.md` | `.ailienant/.ailienant.json` |
+| --- | --- | --- |
+| What it is | Freeform prose: stack, conventions, always/never notes | Machine-checkable rules + exclusion patterns |
+| Git | **Tracked** — share it with your team | **Ignored** — local/personal config |
+| Who writes it | You, or the `/init` command below | You, the dashboard's Directory Rules editor, and AILIENANT's own "silent feedback" (see [§9](#9-approving-and-rejecting-changes-hitl)) |
+| Scope | Per workspace (falls back to a flat `<workspace>/AILIENANT.md`) | Hierarchical — a global `~/.ailienant/.ailienant.json` merges with the local one, local wins on conflict |
+| How it's used | Injected into the planner's and the coder's prompt on **every turn** (capped, roughly 8,000 characters) | Resolved and merged on every turn — list-shaped rules concatenate and dedupe, object-shaped rules deep-merge |
+
+### `AILIENANT.md`
+
+A blank starter file is created automatically the first time you open a workspace (`.ailienant/AILIENANT.md`), with three empty sections: **Stack & Conventions**, **Always**, **Never**. Fill it in by hand, or let AILIENANT draft it:
+
+Run **AILIENANT: Analyze Project & Draft AILIENANT.md** from the Command Palette (or click "Analyze" on the notification offered the first time a workspace is provisioned). AILIENANT reads your project's folder tree and root manifests (`README.md`, `package.json`, `pyproject.toml`) and drafts the three sections from what it finds — no LLM call runs until you ask for one. If the file already has content you wrote, the draft goes to a sibling `AILIENANT.generated.md` instead; your file is never overwritten.
+
+### `.ailienant.json`
+
+A plain JSON file with a top-level `rules` key — either a flat list:
+
+```json
+{
+  "rules": [
+    "Never touch files under /legacy without asking first.",
+    "All new endpoints must have a Pydantic response model."
+  ]
+}
+```
+
+or, once AILIENANT has distilled some of its own, an object that keeps yours and the learned ones separate:
+
+```json
+{
+  "rules": {
+    "distilled": ["Prefer composition over inheritance in this codebase."]
+  }
+}
+```
+
+Edit it by hand, from the dashboard's **Rules → Directory Rules** panel ([§13](#13-the-web-dashboard)), or let it grow on its own via silent feedback ([§9](#9-approving-and-rejecting-changes-hitl)). All three writers share the same file safely — a save always preserves whatever keys it doesn't own.
+
+---
+
+## 13. The Web Dashboard
 
 AILIENANT ships a local web dashboard (served by the Core) for the heavier control surfaces:
 
@@ -218,7 +264,7 @@ AILIENANT ships a local web dashboard (served by the Core) for the heavier contr
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 **The sidebar says the Core is unreachable.**
 Check that Python deps installed cleanly. The extension auto-assigns a free port, so clashes are rare — but if startup fails, use the **Start Core** button, or run `uvicorn main:app --port 8000` manually (and set `ailienant.backendUrl` to match) to see the error.

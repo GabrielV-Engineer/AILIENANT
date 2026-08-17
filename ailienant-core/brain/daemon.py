@@ -19,7 +19,6 @@ write.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -47,10 +46,9 @@ _CONSOLIDATION_SYSTEM = (
 
 def _session_budget() -> float:
     """Session spend ceiling — same source of truth as the FinOps supervisor."""
-    try:
-        return float(os.getenv("AILIENANT_MAX_SESSION_BUDGET_USD", "5.00"))
-    except ValueError:
-        return 5.00
+    from shared.config import session_budget_usd
+
+    return session_budget_usd()
 
 
 def _dream_path(focus_area: Optional[str]) -> str:

@@ -87,14 +87,19 @@ async function ensureGitignoreBlock(root: vscode.Uri): Promise<void> {
  * Provision `<workspace>/.ailienant/` on first run. No-op when no folder is open
  * or when a previous run already completed. Fully non-fatal: any filesystem
  * error is logged and swallowed so activation always proceeds.
+ *
+ * Returns `true` only when THIS call performed the first-ever provisioning
+ * (the starter `AILIENANT.md` was just created) — the signal `extension.ts`
+ * uses to offer the /init suggestion. `false` on every later activation, on
+ * "no workspace open," and on any provisioning failure.
  */
-export async function provisionWorkspaceHome(context: vscode.ExtensionContext): Promise<void> {
+export async function provisionWorkspaceHome(context: vscode.ExtensionContext): Promise<boolean> {
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (!root) {
-        return; // No workspace folder — nothing to provision.
+        return false; // No workspace folder — nothing to provision.
     }
     if (context.workspaceState.get<boolean>(PROVISIONED_FLAG)) {
-        return; // Already provisioned in a prior session.
+        return false; // Already provisioned in a prior session.
     }
 
     try {
@@ -105,7 +110,8 @@ export async function provisionWorkspaceHome(context: vscode.ExtensionContext): 
         await vscode.workspace.fs.createDirectory(plansDir);
 
         const ailienantMd = vscode.Uri.joinPath(dir, 'AILIENANT.md');
-        if (!(await pathExists(ailienantMd))) {
+        const isFirstProvision = !(await pathExists(ailienantMd));
+        if (isFirstProvision) {
             await vscode.workspace.fs.writeFile(ailienantMd, new TextEncoder().encode(AILIENANT_MD_TEMPLATE));
         }
 
@@ -113,7 +119,9 @@ export async function provisionWorkspaceHome(context: vscode.ExtensionContext): 
 
         await context.workspaceState.update(PROVISIONED_FLAG, true);
         logger.log('AILIENANT: workspace home provisioned.');
+        return isFirstProvision;
     } catch (err) {
         logger.warn('AILIENANT: workspace provisioning skipped:', err);
+        return false;
     }
 }

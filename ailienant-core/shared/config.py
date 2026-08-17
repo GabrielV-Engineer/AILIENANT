@@ -70,6 +70,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def session_budget_usd() -> float:
+    """Session spend ceiling — shared source of truth for on-demand FinOps gates
+    (Dreaming, project-init) that must read the *current* env value on every
+    call rather than a value baked in at import time, so a runtime override or
+    a test's ``monkeypatch.setenv`` takes effect without a reimport. Distinct
+    from ``core/supervisor.py::_default_budget`` (a graph-node fallback used
+    only when ``state["session_max_budget_usd"]`` is absent) — that one stays
+    separate on purpose.
+    """
+    return _env_float("AILIENANT_MAX_SESSION_BUDGET_USD", 5.00)
+
+
 VRAM_MICRO_SWARM_GB: float = _env_float("AILIENANT_VRAM_MICRO_SWARM_GB", 4.0)
 VRAM_FULL_SWARM_GB: float = _env_float("AILIENANT_VRAM_FULL_SWARM_GB", 12.0)
 VRAM_CLOUD_FLOOR_GB: float = _env_float("AILIENANT_VRAM_CLOUD_FLOOR_GB", 4.0)

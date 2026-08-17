@@ -398,6 +398,44 @@ class ClientDreamingRunEvent(BaseModel):
     data: DreamingRunPayload
 
 
+# =====================================================================
+# 8d. PROJECT INIT — EXPLICIT "DRAFT AILIENANT.md" TRIGGER
+# =====================================================================
+# Same "never wakes on a timer" discipline as Manual Dreaming above: this
+# fires only on an explicit user action (VS Code command / a first-provision
+# notification action). One pass, one draft, one completion event — no
+# progress stream, since it is a single bounded LLM call rather than a
+# batched crawl like workspace indexing.
+
+
+class ProjectInitPayload(BaseModel):
+    """Client → server: draft `.ailienant/AILIENANT.md` from the workspace."""
+
+
+class ClientProjectInitEvent(BaseModel):
+    event_type: Literal["client_project_init"] = "client_project_init"
+    data: ProjectInitPayload = Field(default_factory=ProjectInitPayload)
+
+
+class ProjectInitCompletePayload(BaseModel):
+    """Server → client: outcome of one /init pass.
+
+    ``status`` mirrors ``core.project_init.ProjectInitResult.status`` verbatim
+    ("written" | "refused_budget" | "aborted_stale" | "skipped_empty"); ``path``
+    is workspace-relative-friendly (absolute on disk, empty on any non-written
+    status); ``chars`` is 0 on any non-written status.
+    """
+
+    status: str
+    path: str = ""
+    chars: int = 0
+
+
+class ServerProjectInitCompleteEvent(BaseModel):
+    event_type: Literal["server_project_init_complete"] = "server_project_init_complete"
+    data: ProjectInitCompletePayload
+
+
 class ExportMemorySnapshotPayload(BaseModel):
     """Client → server: export this project's dependency graph to a shareable,
     committable ``.ailienant/memory.db.zst`` snapshot."""
@@ -1508,6 +1546,8 @@ WebSocketMessage = Union[
     ClientFileDeleteEvent,           
     ClientIdeTelemetryEvent,         # IDE telemetry bus — silent file-lifecycle channel
     ClientDreamingRunEvent,          # Manual Dreaming — explicit consolidate-memory trigger
+    ClientProjectInitEvent,          # /init — explicit draft-AILIENANT.md trigger
+    ServerProjectInitCompleteEvent,  # /init outcome (status/path/chars)
     ClientExportMemorySnapshotEvent, # export dependency graph → shareable .ailienant/memory.db.zst
     ServerVfsPatchApprovedEvent,     
     ServerApplyWorkspaceEditEvent,   # write pipeline dispatch

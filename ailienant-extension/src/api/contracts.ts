@@ -702,6 +702,27 @@ export interface ClientDreamingRunEvent {
     data: DreamingRunPayload;
 }
 
+export interface ProjectInitPayload {
+    session_id?: string;
+}
+export interface ClientProjectInitEvent {
+    event_type: 'client_project_init';
+    data: ProjectInitPayload;
+}
+
+/** Mirrors core.project_init.ProjectInitResult.status verbatim. */
+export type ProjectInitStatus = 'written' | 'refused_budget' | 'aborted_stale' | 'skipped_empty';
+export interface ProjectInitCompletePayload {
+    session_id?: string;
+    status: ProjectInitStatus;
+    path: string;
+    chars: number;
+}
+export interface ServerProjectInitCompleteEvent {
+    event_type: 'server_project_init_complete';
+    data: ProjectInitCompletePayload;
+}
+
 export interface PatchAppliedPayload {
     patch_id: string;
     ok: boolean;
@@ -891,6 +912,8 @@ export type ClientWSMessage =
     | ClientFileDeleteEvent
     | ClientIdeTelemetryEvent
     | ClientDreamingRunEvent
+    | ClientProjectInitEvent
+    | ServerProjectInitCompleteEvent
     | ClientPatchAppliedEvent
     | ClientMasterToggleEvent
     | ClientProfileChangeEvent

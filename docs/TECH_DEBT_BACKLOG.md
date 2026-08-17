@@ -118,6 +118,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-170 | Resubmitting a prompt mid-run spawns a second concurrent runner on the same session/checkpoint — `register_active_task` overwrites the abort-mesh pointer with no queue or rejection | HIGH | Concurrency / Reliability | future concurrency-safety slice | Floating |
 | DEBT-171 | `AskUserQuestionTool` writes `state["pending_hitl_request"]` but no graph node consumes it — the tool never actually suspends the turn despite its docstring | HIGH | Correctness | future HITL-channel-unification slice | Floating |
 | DEBT-172 | The new ambiguity-gate / Plan-mode-suggestion interrupt cards (this session) carry `suggested_options` in the payload, but the frontend has no multi-choice renderer yet — they render as plain approve/reject | LOW | FE Integration | future HITL-card-UX slice | Floating |
+| DEBT-173 | `/init`'s `AILIENANT.generated.md` fork (`core/project_init.py`) is not covered by the `.gitignore` block the extension provisions — that block is written once, on first provisioning, and never re-updated on later activations, so a workspace provisioned before `/init` shipped won't ignore the generated file until the user adds it by hand | LOW | Tooling gap | future provisioning-refresh slice | Floating |
 
 ---
 
@@ -770,6 +771,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** frontend work — out of scope for this (backend-only) session.
 - **Phase:** future HITL-card-UX slice.
 - **Notes:** logged at ship per CLAUDE.md §11.3, alongside DEBT-168/169/170/171 (2026-08-17 harness-audit sweep).
+
+### DEBT-173 [LOW · Floating] — `/init`'s generated-file fork isn't covered by an already-provisioned workspace's `.gitignore`
+
+- **Date:** 2026-08-17
+- **Reproduce:** `ensureGitignoreBlock` (`ailienant-extension/src/workspace_provisioning.ts`) only runs the marker check-and-append once, gated behind the same `PROVISIONED_FLAG` as the rest of first-run provisioning (`provisionWorkspaceHome`). A workspace that was provisioned before `/init` shipped already has its `.gitignore` block written and will never re-run `ensureGitignoreBlock` — so `AILIENANT.generated.md` (the sibling `/init` writes when `AILIENANT.md` already has user content, `core/project_init.py::_resolve_target`) is absent from the ignore list on any such workspace, and a careless `git add .` could commit it.
+- **File(s):** `ailienant-extension/src/workspace_provisioning.ts` (`GITIGNORE_BLOCK`, `ensureGitignoreBlock`), `ailienant-core/core/project_init.py` (`_GENERATED_SUFFIX`).
+- **Error:** tooling gap, not a correctness defect — the file is meant to be reviewed and merged/discarded by the user, not committed as-is, so the failure mode is "clutters a commit," not data loss or silent behavior change.
+- **Blocked by:** nothing — the fix is re-running (or additively re-checking) `ensureGitignoreBlock` on every activation instead of only pre-`PROVISIONED_FLAG`, which was deliberately out of scope for this session (touching the provisioning idempotency gate warranted its own review).
+- **Phase:** future provisioning-refresh slice.
+- **Notes:** logged at ship per CLAUDE.md §11.3, alongside the `/init` feature itself (2026-08-17).
 
 ### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 

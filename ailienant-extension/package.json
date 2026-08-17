@@ -83,6 +83,11 @@
         "command": "ailienant.triggerDreamingRun",
         "title": "Trigger Dreaming / Consolidate Memory",
         "category": "AILIENANT"
+      },
+      {
+        "command": "ailienant.initProject",
+        "title": "Analyze Project & Draft AILIENANT.md",
+        "category": "AILIENANT"
       }
     ],
     "menus": {

@@ -267,6 +267,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     for _dream in list(_dreaming_tasks.values()):
         if not _dream.done():
             _dream.cancel()
+    for _init_task in list(_project_init_tasks.values()):
+        if not _init_task.done():
+            _init_task.cancel()
     await overnight_daemon.stop()
 
     # 3. Flush all in-memory L1 sessions to L2 before WAL truncate 
@@ -590,6 +593,73 @@ def _trigger_dreaming(client_id: str, focus_area: Optional[str]) -> None:
         # have already replaced it (one consolidation per project).
         if _dreaming_tasks.get(project_id) is done:
             _dreaming_tasks.pop(project_id, None)
+
+    task.add_done_callback(_evict)
+
+
+# /init — at most one draft pass per project (a new run cancels the prior one).
+# Same epoch/OCC discipline as Manual Dreaming above, kept as its own registry
+# rather than sharing `_dreaming_tasks`: the two actions are independently
+# cancellable and reusing one dict would let an /init run silently evict (or be
+# evicted by) an unrelated Dreaming pass on the same project.
+_project_init_tasks: Dict[str, asyncio.Task[None]] = {}
+_project_init_epoch: Dict[str, int] = {}
+
+
+def _abort_project_init(project_id: str) -> None:
+    """Cancel an in-flight /init pass and bump the project's save epoch.
+
+    Called on every save/telemetry frame, mirroring `_abort_dreaming`: the bump
+    invalidates any snapshot a running pass captured, and the cancel stops the
+    LLM call so a resuming typist is never fought over the same file.
+    """
+    if not project_id:
+        return
+    _project_init_epoch[project_id] = _project_init_epoch.get(project_id, 0) + 1
+    task = _project_init_tasks.get(project_id)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def _trigger_project_init(client_id: str) -> None:
+    """Spawn an AILIENANT.md draft pass for the session's project, one at a time."""
+    project_id = _session_project_id.get(client_id, "")
+    workspace_root = _workspace_registry.get(project_id, "")
+
+    prior = _project_init_tasks.pop(project_id, None)
+    if prior is not None and not prior.done():
+        prior.cancel()
+
+    epoch_at_start = _project_init_epoch.get(project_id, 0)
+
+    def _is_stale() -> bool:
+        return _project_init_epoch.get(project_id, 0) != epoch_at_start
+
+    async def _run() -> None:
+        from core.project_init import run_project_init
+
+        try:
+            result = await run_project_init(
+                project_id,
+                workspace_root=workspace_root,
+                session_id=f"init:{client_id}",
+                stale_check=_is_stale,
+            )
+            await vfs_manager.broadcast_project_init_complete(
+                client_id, status=result.status, path=result.path, chars=result.chars
+            )
+        except asyncio.CancelledError:
+            logger.info("[Session: %s] ProjectInit cancelled (save mid-run).", client_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 — a failed draft never crashes the loop
+            logger.error("[Session: %s] ProjectInit failed: %s", client_id, exc)
+
+    task: asyncio.Task[None] = asyncio.create_task(_run(), name=f"init:{project_id}")
+    _project_init_tasks[project_id] = task
+
+    def _evict(done: "asyncio.Task[None]") -> None:
+        if _project_init_tasks.get(project_id) is done:
+            _project_init_tasks.pop(project_id, None)
 
     task.add_done_callback(_evict)
 
@@ -1216,6 +1286,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _proj = _session_project_id.get(client_id, "")
                 # A live edit invalidates any in-flight consolidation snapshot.
                 _abort_dreaming(_proj)
+                _abort_project_init(_proj)
                 if is_critical_file(valid_event.data.filepath):
                     asyncio.create_task(
                         _dispatch_indexing_and_ppr(
@@ -1242,6 +1313,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 _tel_proj = _session_project_id.get(client_id, "")
                 # A live file lifecycle event invalidates an in-flight snapshot.
                 _abort_dreaming(_tel_proj)
+                _abort_project_init(_tel_proj)
                 # A README save/create reactively re-warms the orientation digest
                 # (debounced downstream, so a save storm collapses to one build).
                 if (
@@ -1265,6 +1337,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     client_id,
                     valid_event.data.focus_area,
                 )
+
+            elif valid_event.event_type == "client_project_init":
+                # /init: explicit, user-owned AILIENANT.md draft. Same discipline as
+                # Manual Dreaming — never rate-limited; one pass per project at a time.
+                _trigger_project_init(client_id)
 
             elif valid_event.event_type == "client_export_memory_snapshot":
                 # Fire-and-forget off the receive loop: a large-graph compress must
@@ -1710,6 +1787,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
             if _disc_task is not None and not _disc_task.done():
                 _disc_task.cancel()
             _dreaming_epoch.pop(_disc_proj, None)
+            _disc_init_task = _project_init_tasks.pop(_disc_proj, None)
+            if _disc_init_task is not None and not _disc_init_task.done():
+                _disc_init_task.cancel()
+            _project_init_epoch.pop(_disc_proj, None)
         if client_id in _session_workspace_pid:
             _pid = _session_workspace_pid.pop(client_id)
             asyncio.create_task(lifecycle_manager.shutdown_workspace(_pid))

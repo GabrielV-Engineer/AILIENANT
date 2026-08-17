@@ -16,6 +16,7 @@ import { boundingBoxRegistry, installDecayListener } from './providers/telemetry
 import { InlineMutationManager } from './core/InlineMutationManager';
 import { IdeSync } from './ide_sync';
 import { provisionWorkspaceHome } from './workspace_provisioning';
+import { registerProjectInit, suggestProjectInit } from './project_init';
 import { getDevcontainerProvisioner, disposeDevcontainerProvisioner, disposeDevcontainerSessionHandler } from './providers/devcontainerFactory';
 import { scaffoldDevcontainer } from './providers/devcontainerScaffold';
 import { logger } from './shared/logger';
@@ -31,8 +32,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logger.log('AILIENANT extension activated.');
 
     // First-run provisioning of the workspace-local .ailienant/ home (idempotent,
-    // non-fatal). Runs before the backend connects so the home is ready early.
-    void provisionWorkspaceHome(context);
+    // non-fatal). Runs before the backend connects so the home is ready early;
+    // stays fire-and-forget, but on a genuinely first provisioning it chains the
+    // (also non-blocking) /init suggestion once the write completes.
+    void provisionWorkspaceHome(context).then((isFirstProvision) => {
+        if (isFirstProvision) {
+            void suggestProjectInit();
+        }
+    });
+    registerProjectInit(context);
 
     // Phase 7.9.A.5.1 — dynamic port selection + ephemeral auth token.
     // findFreePort() is OS-assigned (listen(0)) — no TOCTOU race.

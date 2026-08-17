@@ -25,6 +25,7 @@ from api.ws_contracts import (
     ServerOomEngagedEvent, OomEngagedPayload,
     ServerIndexingProgressEvent, IndexingProgressPayload,
     ServerIndexingErrorEvent, IndexingErrorPayload,
+    ServerProjectInitCompleteEvent, ProjectInitCompletePayload,
     ServerVfsPatchApprovedEvent, VfsPatchApprovedPayload,
     ServerApplyWorkspaceEditEvent, ApplyWorkspaceEditPayload,
     ServerByomConfigAppliedEvent, ByomConfigAppliedPayload,
@@ -567,6 +568,17 @@ class ConnectionManager:
     async def broadcast_indexing_complete(self, session_id: str) -> None:
         """Signal 100% indexing completion to the IDE."""
         await self.broadcast_indexing_progress(session_id, current=1, total=1)
+
+    async def broadcast_project_init_complete(
+        self, session_id: str, *, status: str, path: str = "", chars: int = 0
+    ) -> None:
+        """Signal the outcome of a /init draft pass to the IDE (open the file, or no-op)."""
+        await self.send_personal_message(
+            session_id,
+            ServerProjectInitCompleteEvent(
+                data=ProjectInitCompletePayload(status=status, path=path, chars=chars)
+            ),
+        )
 
     async def broadcast_indexing_progress_for_project(
         self, project_id: str, current: int, total: int
