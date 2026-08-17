@@ -13,6 +13,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 from collections import defaultdict
@@ -31,7 +32,7 @@ from typing import (
     Set,
     Type,
 )
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
 from langchain_core.tools import BaseTool
 from mcp import ClientSession, StdioServerParameters
@@ -788,5 +789,114 @@ def make_brave_search_fn(
             )
             return _SEARCH_UNAVAILABLE
         return _extract_mcp_text(result)[:_SEARCH_RESULT_CAP]
+
+    return _search
+
+
+# =====================================================================
+# DuckDuckGo fallback adapter — no MCP server, no API key
+# =====================================================================
+
+_DDG_SEARCH_URL: str = "https://html.duckduckgo.com/html/"
+_DDG_TIMEOUT_SEC: float = float(os.environ.get("DDG_SEARCH_TIMEOUT_SEC", "10"))
+_DDG_USER_AGENT: str = "Mozilla/5.0 (compatible; AILIENANT/1.0)"
+# Captures (result href, title fragment, snippet fragment) per DuckDuckGo HTML
+# result block. Fragile by nature (an unversioned public page's markup), but
+# this only runs as the fallback leg — see make_search_fn_with_fallback.
+_DDG_RESULT_RE = re.compile(
+    r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?'
+    r'class="result__snippet"[^>]*>(.*?)</a>',
+    re.DOTALL,
+)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html_tags(fragment: str) -> str:
+    return _HTML_TAG_RE.sub("", fragment).strip()
+
+
+def _resolve_ddg_redirect(href: str) -> str:
+    """Unwrap DuckDuckGo's ``/l/?uddg=<encoded-url>`` redirect to the real target.
+
+    Falls back to the raw href untouched when it isn't a redirect wrapper —
+    tolerates a markup change without ever raising.
+    """
+    parsed = urlparse(href)
+    if parsed.path != "/l/":
+        return href
+    for key, value in parse_qsl(parsed.query):
+        if key == "uddg" and value:
+            return unquote(value)
+    return href
+
+
+def make_duckduckgo_fallback_search_fn() -> Callable[[str, int], Awaitable[str]]:
+    """Build a search callable backed directly by DuckDuckGo's public HTML results page.
+
+    No MCP server and no API key — a plain ``httpx`` GET (the same dependency
+    ``WebFetchTool`` already uses for HTML fetching) against the same page a
+    browser renders. Intended as the fallback leg of
+    ``make_search_fn_with_fallback``, never the default: the parse is a light
+    regex over an unversioned public page, lower-fidelity than the Brave API
+    and liable to drift if DuckDuckGo changes its markup. Same signature and
+    degrade-on-any-failure contract as ``make_brave_search_fn`` — never raises.
+    """
+
+    async def _search(query: str, max_results: int) -> str:
+        import httpx  # lazy — same dependency WebFetchTool already uses
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(_DDG_TIMEOUT_SEC)) as client:
+                resp = await client.get(
+                    _DDG_SEARCH_URL,
+                    params={"q": query},
+                    headers={"User-Agent": _DDG_USER_AGENT},
+                )
+            if resp.status_code >= 400:
+                return _SEARCH_UNAVAILABLE
+            body = resp.text
+        except Exception as exc:  # noqa: BLE001 — resilience: never crash the node
+            logger.warning(
+                "make_duckduckgo_fallback_search_fn: fetch failed for %r: %s",
+                query, exc, exc_info=True,
+            )
+            return _SEARCH_UNAVAILABLE
+
+        cap = max(1, min(int(max_results), 10))
+        entries: List[str] = []
+        for href, title_html, snippet_html in _DDG_RESULT_RE.findall(body)[:cap]:
+            title = _strip_html_tags(title_html)
+            if not title:
+                continue
+            target = _resolve_ddg_redirect(href)
+            snippet = _strip_html_tags(snippet_html)
+            entries.append(f"{title}\n{target}\n{snippet}")
+
+        if not entries:
+            return _SEARCH_UNAVAILABLE
+        return "\n\n".join(entries)[:_SEARCH_RESULT_CAP]
+
+    return _search
+
+
+def make_search_fn_with_fallback(
+    primary: Callable[[str, int], Awaitable[str]],
+    secondary: Callable[[str, int], Awaitable[str]],
+) -> Callable[[str, int], Awaitable[str]]:
+    """Wrap two search callables so ``secondary`` only runs when ``primary`` degrades.
+
+    Both callables share the analyst tools' ``(query, max_results) -> str``
+    signature and the "unavailable" degradation contract (``make_brave_search_fn``,
+    ``make_duckduckgo_fallback_search_fn``). ``primary`` stays the preferred,
+    higher-quality provider on every call that succeeds; ``secondary`` only
+    fires when ``primary``'s result is exactly the shared unavailable sentinel,
+    so a healthy Brave session never pays the DuckDuckGo round-trip.
+    """
+
+    async def _search(query: str, max_results: int) -> str:
+        result = await primary(query, max_results)
+        if result == _SEARCH_UNAVAILABLE:
+            return await secondary(query, max_results)
+        return result
 
     return _search

@@ -702,9 +702,134 @@ async def test_make_web_search_tool_defaults_to_brave(monkeypatch: pytest.Monkey
     from tools.analyst_tools import make_web_search_tool
 
     mcp_adapter._sessions.pop("brave-search", None)
-    tool = make_web_search_tool()  # default brave-backed search_fn
+
+    # The default search_fn now also carries a DuckDuckGo fallback leg (A4) — stub
+    # it out so "neither provider configured" stays hermetic (no real network hop)
+    # while still exercising the real degrade-to-unavailable contract end to end.
+    async def _ddg_unavailable(query: str, k: int) -> str:
+        return "search provider unavailable"
+
+    monkeypatch.setattr(
+        mcp_adapter, "make_duckduckgo_fallback_search_fn", lambda: _ddg_unavailable
+    )
+
+    tool = make_web_search_tool()  # default brave-backed search_fn + DDG fallback
     out = await tool._arun(query="x", max_results=1)
     assert "search provider unavailable" in out
+
+
+@pytest.mark.anyio
+async def test_make_web_search_tool_falls_back_to_duckduckgo_when_brave_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import mcp_adapter
+    from tools.analyst_tools import make_web_search_tool
+
+    mcp_adapter._sessions.pop("brave-search", None)
+
+    async def _ddg_stub(query: str, k: int) -> str:
+        return f"ddg-hit:{query}:{k}"
+
+    monkeypatch.setattr(mcp_adapter, "make_duckduckgo_fallback_search_fn", lambda: _ddg_stub)
+
+    tool = make_web_search_tool()
+    out = await tool._arun(query="langgraph", max_results=3)
+    assert "ddg-hit:langgraph:3" in out
+
+
+@pytest.mark.anyio
+async def test_search_fn_with_fallback_skips_secondary_on_primary_success() -> None:
+    from tools.mcp_adapter import make_search_fn_with_fallback
+
+    calls: List[str] = []
+
+    async def primary(q: str, k: int) -> str:
+        calls.append("primary")
+        return "primary-result"
+
+    async def secondary(q: str, k: int) -> str:
+        calls.append("secondary")
+        return "secondary-result"
+
+    out = await make_search_fn_with_fallback(primary, secondary)("q", 3)
+    assert out == "primary-result"
+    assert calls == ["primary"]
+
+
+@pytest.mark.anyio
+async def test_search_fn_with_fallback_uses_secondary_when_primary_unavailable() -> None:
+    from tools.mcp_adapter import make_search_fn_with_fallback
+
+    async def primary(q: str, k: int) -> str:
+        return "search provider unavailable"
+
+    async def secondary(q: str, k: int) -> str:
+        return "secondary-result"
+
+    out = await make_search_fn_with_fallback(primary, secondary)("q", 3)
+    assert out == "secondary-result"
+
+
+@pytest.mark.anyio
+async def test_duckduckgo_fallback_degrades_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from tools import mcp_adapter
+
+    class _FakeResponse:
+        status_code = 503
+        text = ""
+
+    class _FakeClient:
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+        async def get(self, *args: object, **kwargs: object) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _FakeClient())
+
+    search_fn = mcp_adapter.make_duckduckgo_fallback_search_fn()
+    assert await search_fn("q", 3) == "search provider unavailable"
+
+
+@pytest.mark.anyio
+async def test_duckduckgo_fallback_parses_result_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from tools import mcp_adapter
+
+    html = (
+        '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F">'
+        "Example Title</a>"
+        '<a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F">'
+        "An example snippet.</a>"
+    )
+
+    class _FakeResponse:
+        status_code = 200
+        text = html
+
+    class _FakeClient:
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+        async def get(self, *args: object, **kwargs: object) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _FakeClient())
+
+    search_fn = mcp_adapter.make_duckduckgo_fallback_search_fn()
+    out = await search_fn("example", 3)
+    assert "Example Title" in out
+    assert "https://example.com/" in out
+    assert "An example snippet." in out
 
 
 @pytest.mark.anyio

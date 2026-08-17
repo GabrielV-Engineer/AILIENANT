@@ -799,13 +799,21 @@ def make_web_search_tool(
     """Build a WebSearchTool wired to the brave-search MCP provider by default.
 
     With no explicit ``search_fn`` the tool is backed by the lazily-resolved
-    brave-search session (see tools.mcp_adapter.make_brave_search_fn); the tool
-    still degrades to its "unavailable" string until that session connects.
+    brave-search session (see tools.mcp_adapter.make_brave_search_fn) with a
+    DuckDuckGo HTML fallback (tools.mcp_adapter.make_duckduckgo_fallback_search_fn)
+    for when that session is down; the tool still degrades to its "unavailable"
+    string if both providers fail.
     """
     if search_fn is None:
-        from tools.mcp_adapter import make_brave_search_fn  # local — avoid cycle
+        from tools.mcp_adapter import (  # local — avoid cycle
+            make_brave_search_fn,
+            make_duckduckgo_fallback_search_fn,
+            make_search_fn_with_fallback,
+        )
 
-        search_fn = make_brave_search_fn()
+        search_fn = make_search_fn_with_fallback(
+            make_brave_search_fn(), make_duckduckgo_fallback_search_fn()
+        )
     return WebSearchTool(search_fn=search_fn, boundary_provider=boundary_provider)
 
 
