@@ -232,7 +232,10 @@ def build_schema_hint(tools: Mapping[str, RegisteredTool]) -> str:
             arg_names = list(schema.get("properties", {}).keys())
         elif schema is not None:
             try:
-                arg_names = list(schema.model_json_schema().get("properties", {}).keys())
+                # langchain-core types args_schema as possibly a pydantic.v1 model
+                # for legacy-tool compat; every tool registered here is pydantic v2,
+                # and the except below already degrades gracefully if that ever changes.
+                arg_names = list(schema.model_json_schema().get("properties", {}).keys())  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001 — a schema introspection miss is non-fatal
                 arg_names = []
         sig = ", ".join(arg_names)
