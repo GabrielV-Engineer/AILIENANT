@@ -96,13 +96,27 @@ async def _resolve_tools(
         return {}
 
     try:
+        from brain.agent_context import resolve_context_budget
+        from core.deferred_tool_loader import DeferredToolLoader
         from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
         from core.tool_registry import resolve_tools
 
-        schemas = await tool_rag_store.select_tools(
-            intent, k=TOOL_RAG_TOP_K, active_role=role, session_mode=session_mode,
+        # Eager-vs-deferred rather than an unconditional top-k: a subagent whose
+        # role slice fits the context budget gets its whole arsenal with no
+        # embedding round-trip, and otherwise keeps tool_search as its way out of
+        # a bad ranking. Constructed locally, never the module singleton, whose
+        # store is bound at class-definition time and would bypass the
+        # tool_rag_store monkeypatch seam the tests rely on.
+        decision = await DeferredToolLoader(tool_rag_store).resolve(
+            intent,
+            active_role=role,
+            session_mode=session_mode,
+            context_window=resolve_context_budget(state),
+            # +1 so the tool_search slot the deferred branch reserves does not
+            # cost this subagent one of its usable tools (see agentic_cell.py).
+            k=TOOL_RAG_TOP_K + 1,
         )
-        return resolve_tools(schemas, state)
+        return resolve_tools(decision.schemas, state)
     except Exception as exc:  # noqa: BLE001 — degrade to tool-less, never crash the node
         logger.warning(
             "dev-role tool resolution failed for '%s'; running tool-less: %s", role, exc,

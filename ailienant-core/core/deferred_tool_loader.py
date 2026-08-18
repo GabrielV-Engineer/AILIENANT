@@ -25,7 +25,11 @@ import os
 from dataclasses import dataclass
 from typing import List, Literal
 
-from core.permissions import SessionPermissionMode, ToolPrivilegeTier
+from core.permissions import (
+    SessionPermissionMode,
+    ToolPrivilegeTier,
+    normalize_session_mode,
+)
 from core.tool_rag import (
     TOOL_RAG_TOP_K,
     ToolRAGStore,
@@ -94,13 +98,20 @@ class DeferredToolLoader:
         This predicate MUST stay identical to the one tool_rag_select_node used
         before this loader existed (role membership + PLAN -> READ_ONLY only), so
         the eager baseline the reduction metric is measured against does not drift.
+
+        The mode is normalized first, exactly as ``select_tools`` does: the
+        frontend sends the canonical ``PLAN_ONLY``, so gating on the deprecated
+        ``PLAN`` alias alone silently skipped this narrowing in production and
+        would advertise WRITE/EXECUTE schemas to a plan-only session once the
+        eager branch is live.
         """
+        normalized = normalize_session_mode(session_mode)
         return [
             s
             for s in store.all_schemas()
             if active_role in s.allowed_roles
             and (
-                session_mode is not SessionPermissionMode.PLAN
+                normalized is not SessionPermissionMode.PLAN_ONLY
                 or s.privilege_tier is ToolPrivilegeTier.READ_ONLY
             )
         ]

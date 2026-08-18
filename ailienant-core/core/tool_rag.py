@@ -46,7 +46,20 @@ logger = logging.getLogger("TOOL_RAG")
 # =====================================================================
 
 TOOL_RAG_TOP_K: int = 5
-"""Hard cap on schemas returned per select_tools() call (blueprint §5.1)."""
+"""Hard cap on schemas returned per select_tools() call (blueprint §5.1).
+
+Governs the RETRIEVAL path only: when the role-visible catalog fits the context
+budget, DeferredToolLoader injects it whole and this cap is never consulted.
+
+Raising it is gated on the D5 guardrail, not on the full-catalog arithmetic.
+Measured against the whole 53-schema catalog the reduction floor tolerates k up
+to 13, but the Phase-5.7 financial gate measures a 14-schema subset, where
+selecting k of 14 caps the achievable reduction outright (k=8 lands at 0.471 vs
+the 0.70 floor). That guardrail's prescribed remedy is compressing verbose
+tool `description=` strings — until that work is done, this stays at 5. A caller
+that needs N dispatchable tools plus the discovery hatch passes k=N+1 itself
+rather than moving this constant.
+"""
 
 TOOL_RAG_MIN_REDUCTION: float = 0.70
 """Phase 5.7 Checkpoint Gate target — mean prompt-size reduction across intents."""
@@ -89,6 +102,24 @@ def _roles_to_csv(roles: FrozenSet[str]) -> str:
 
 def _roles_from_csv(csv: str) -> FrozenSet[str]:
     return frozenset(r for r in csv.strip(",").split(",") if r)
+
+
+_TIER_STRICTNESS: Dict[ToolPrivilegeTier, int] = {
+    ToolPrivilegeTier.READ_ONLY: 0,
+    ToolPrivilegeTier.WRITE: 1,
+    ToolPrivilegeTier.EXECUTE: 2,
+    ToolPrivilegeTier.DANGEROUS: 3,
+}
+
+
+def stricter_tier(a: ToolPrivilegeTier, b: ToolPrivilegeTier) -> ToolPrivilegeTier:
+    """The more privileged of two tiers — used when two registrars disagree.
+
+    Disagreement is a definition conflict, not role-sharing, so the safe
+    resolution is the stricter classification: a tool gated as EXECUTE by one
+    family must not become READ_ONLY because another family registered it later.
+    """
+    return a if _TIER_STRICTNESS[a] >= _TIER_STRICTNESS[b] else b
 
 
 # =====================================================================
@@ -194,7 +225,13 @@ class ToolRAGStore:
     # -------- public API ----------------------------------------------------
 
     async def register_schema(self, schema: ToolSchema) -> None:
-        """Insert or replace a tool schema. Idempotent on `schema.name`."""
+        """Insert or merge a tool schema. Idempotent on `schema.name`.
+
+        A name registered by more than one family is deliberate cross-listing
+        (the same capability shared by several roles), so the roles of both
+        registrations are UNIONED. A plain replace would let whichever registrar
+        ran last win and silently NARROW access instead of sharing it.
+        """
         self._ensure_connected()
         embedding = schema.embedding
         if embedding is None:
@@ -204,6 +241,8 @@ class ToolRAGStore:
                 f"register_schema: embedding dim mismatch for {schema.name!r} "
                 f"(got {len(embedding)}, expected {self._embedding_dim})"
             )
+
+        merged_roles, merged_tier = self._merge_with_existing(schema)
 
         # Idempotent UPSERT: delete-then-insert is the safest path on lancedb 0.x.
         # Use parameterised-style escaping; names are ASCII identifiers in
@@ -218,11 +257,57 @@ class ToolRAGStore:
             "name": schema.name,
             "description": schema.description,
             "json_schema": schema.json_schema,
-            "privilege_tier": schema.privilege_tier.value,
-            "allowed_roles_csv": _roles_to_csv(schema.allowed_roles),
+            "privilege_tier": merged_tier.value,
+            "allowed_roles_csv": _roles_to_csv(merged_roles),
             "vector": list(embedding),
         }
         self._table.add([row])
+
+    def _merge_with_existing(
+        self, schema: ToolSchema
+    ) -> tuple[FrozenSet[str], ToolPrivilegeTier]:
+        """Union roles (and reconcile tier) against any already-stored row.
+
+        Returns the incoming schema's own values unchanged when the name is new,
+        so a first registration and a re-registration of identical content are
+        both no-ops beyond the row rewrite (union with self is identity).
+
+        A differing tier or json_schema is a *definition* conflict rather than
+        cross-listing. It is logged and resolved toward the stricter tier instead
+        of raising: ``populate_tool_catalog`` swallows per-family exceptions, so
+        raising here would silently amputate an entire tool family at boot — a
+        far worse failure than a reconciled registration plus a loud warning.
+        """
+        existing = next(
+            (
+                r
+                for r in self._table.to_arrow().to_pylist()
+                if r["name"] == schema.name
+            ),
+            None,
+        )
+        if existing is None:
+            return schema.allowed_roles, schema.privilege_tier
+
+        merged_roles = schema.allowed_roles | _roles_from_csv(existing["allowed_roles_csv"])
+        existing_tier = ToolPrivilegeTier(existing["privilege_tier"])
+        merged_tier = stricter_tier(existing_tier, schema.privilege_tier)
+        if existing_tier is not schema.privilege_tier:
+            logger.warning(
+                "register_schema: tier conflict for %r (stored=%s, incoming=%s) — "
+                "keeping the stricter %s. Two registrars disagree on this tool's "
+                "privilege classification; reconcile them at the source.",
+                schema.name, existing_tier.value, schema.privilege_tier.value,
+                merged_tier.value,
+            )
+        elif existing["json_schema"] != schema.json_schema:
+            logger.warning(
+                "register_schema: %r re-registered with a different json_schema — "
+                "the later definition wins. Cross-listed tools should share one "
+                "input model.",
+                schema.name,
+            )
+        return merged_roles, merged_tier
 
     def all_schemas(self) -> List[ToolSchema]:
         """Snapshot of every registered schema (embedding stripped)."""

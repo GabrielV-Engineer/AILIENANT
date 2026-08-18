@@ -704,8 +704,14 @@ class AIlienantGraphState(TypedDict):
     #   (the structured verdict, applied edits, and any OCC-collision diagnostic).
     #   It rides the LangGraph checkpoint, so each loop-back leaves a Rewind-able
     #   record. operator.add reducer keeps parallel/resumed writes additive.
+    # cell_tool_query: the discovery query the model passed to `tool_search` on
+    #   the previous iteration, replayed by the next one so the tool's "name it
+    #   next turn and its schema is injected" instruction resolves to the exact
+    #   tools it listed. Scalar overwrite (no reducer): written on every cell
+    #   return, cleared once consumed, so a stale query cannot keep re-selecting.
     agentic_iteration: int
     agentic_trajectory: Annotated[List[Dict[str, Any]], operator.add]
+    cell_tool_query: Optional[str]
 
     # --- Universal agent TODO list channel ---
     # A per-agent task scratchpad written by the universal `todo_write` tool. Each item is

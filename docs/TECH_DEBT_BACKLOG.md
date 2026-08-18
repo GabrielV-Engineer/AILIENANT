@@ -117,6 +117,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-172 | The clarification / Plan-mode-suggestion interrupt cards carry `suggested_options` in the payload, but the frontend has no multi-choice renderer yet — they render as plain approve/reject | LOW | FE Integration | future HITL-card-UX slice | Floating |
 | DEBT-174 | The coder's one-shot edit-generation call (`agents/coder.py`, `acomplete_with_thinking`) never receives image attachments — only the researcher's answer call does (13.0.1 closed DEBT-168 for that one node) | LOW | Capability gap | future multimodal-payload slice | Floating |
 | DEBT-173 | `/init`'s `AILIENANT.generated.md` fork (`core/project_init.py`) is not covered by the `.gitignore` block the extension provisions — that block is written once, on first provisioning, and never re-updated on later activations, so a workspace provisioned before `/init` shipped won't ignore the generated file until the user adds it by hand | LOW | Tooling gap | future provisioning-refresh slice | Floating |
+| DEBT-175 | `TOOL_RAG_TOP_K` cannot rise past 5 without reworking the Phase-5.7 gate's 14-schema baseline; its prescribed description-compression remedy is near self-cancelling (descriptions are 23.3% of payload, and compressing shrinks both sides of the ratio) | MEDIUM | Capability ceiling | future tool-catalog-economics slice | Floating |
+| DEBT-176 | No tool-invocation telemetry exists; the emit-only half is worth building, but consuming it as a ranking prior is rejected — it would break `select_tools` determinism and with it checkpoint-replay reproducibility | LOW | Capability gap | future observability slice | Floating |
+| DEBT-177 | Three declared conservatisms in the tool-selection path: `register_schema` warns rather than raises on definition conflict; `_visible_eager` sizes unresolvable schemas into the eager estimate; two different metrics share the name `reduction_ratio` | LOW | Declared tradeoff | (3) with the next audit-log touch | Floating |
 
 ---
 
@@ -787,6 +790,42 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing — same `_attach_images_to_messages` seam DEBT-168 built, applied to a second call site/method.
 - **Phase:** future multimodal-payload slice.
 - **Notes:** carved as an explicit scope boundary at 13.0.1 ship per CLAUDE.md §11.3, rather than widening that fix's blast radius to a second agent + a second gateway method.
+
+### DEBT-175 [MEDIUM · Floating] — `TOOL_RAG_TOP_K` cannot rise until the Phase-5.7 gate's baseline is reworked; its prescribed remedy is near self-cancelling
+
+- **Date:** 2026-08-18
+- **Reproduce:** raise `TOOL_RAG_TOP_K` (`core/tool_rag.py`) from 5 to 8 and run `tests/test_phase5_7_checkpoint_gate.py::test_tool_rag_selection_yields_70pct_payload_reduction` — it fails at `reduction_ratio=0.471` against the 0.70 floor. That gate registers only 4 families (14 schemas, 6,302 chars), so selecting k of 14 caps the achievable reduction arithmetically. Measured against the *whole* 53-schema catalog (the R3 gate in `tests/test_phase8_8_tool_parity_gate.py`, baseline `store.all_schemas()`), the same k=8 sits at 0.8379 and the ceiling is k=13 — the two gates disagree because they measure different baselines, not because either is wrong.
+- **Why the prescribed remedy does not work:** the gate's docstring directs the fix to "compress verbose `description=` strings — NOT to lower this threshold or shrink TOOL_RAG_TOP_K". Measured: description text is only **23.3%** of the payload (1,470 of 6,302 chars); the other 76.7% is structural JSON. Worse, `reduction_ratio = 1 - selected/eager` and `eager` is that same catalog, so compressing descriptions shrinks numerator and denominator together and the ratio barely moves. Deleting **100%** of description text — the absolute upper bound of the remedy — lifts the ceiling only from k≈3 to k≈4, and would degrade the embedding signal `select_tools` ranks on.
+- **File(s):** `core/tool_rag.py` (`TOOL_RAG_TOP_K`, `TOOL_RAG_MIN_REDUCTION`), `tests/test_phase5_7_checkpoint_gate.py` (the 14-schema baseline), `tests/test_phase8_8_tool_parity_gate.py` (the full-catalog baseline).
+- **Error:** not a correctness defect — a capability ceiling. The retrieval path is one tool narrower than it could be on small-context (local-tier) turns.
+- **Workaround shipped (13.0.2):** the constant stays 5; callers needing N usable tools plus the `tool_search` hatch pass `k=N+1` themselves (`brain/agentic_cell.py`, `brain/nodes/subagent_worker_node.py`), so no path lost a usable tool. On any adequately-sized window the eager branch injects the whole role slice and the cap is never consulted at all.
+- **Blocked by:** a decision the eager branch reframes — when the visible catalog fits the budget, injecting it whole at 0% reduction is the *correct* outcome, so a flat reduction floor measured on a subset baseline may be the wrong invariant now. Reworking a locked financial gate was deliberately out of scope for a change that had to pass it.
+- **Phase:** future tool-catalog-economics slice.
+- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3, with the measurements above so the decision is made on numbers rather than the docstring's slogan.
+
+### DEBT-176 [LOW · Floating] — No tool-invocation telemetry exists; a usage prior would break `select_tools` determinism
+
+- **Date:** 2026-08-18
+- **Reproduce:** `core/telemetry.py` has five tables (`routing_decisions`, `oom_fallback_events`, `request_latency`, `container_lifecycle`, `action_token_usage`). None is keyed by tool name — `action_token_usage` is keyed by WBS `action` (`write_file`/`edit_file`) and stores token counts only. There is no call-frequency, success-rate, or per-role tool history anywhere in the codebase, so tool ranking has no signal beyond cosine similarity to the composed intent.
+- **Two halves, deliberately split:**
+  - *Emit-only* (worth doing, zero behavioral risk): a `tool_invocations` table (`ts, task_id, role, tool_name, decision, executed, duration_ms, error`) written from `core/tool_dispatch.py::ToolDispatcher.dispatch`. Pure observability, fits the existing substrate, and is the data any future ranking decision would need to justify itself.
+  - *Consuming it as a ranking prior* (**rejected, not merely deferred**): a frequency/success prior makes `select_tools` non-deterministic across runs, contradicting the guarantee in `core/tool_rag.py`'s module docstring and the reproducibility LangGraph checkpoint replay and Rewind depend on. It would also only affect the deferred branch, which 13.0.2's eager wiring makes rare.
+- **File(s):** `core/telemetry.py`, `core/tool_dispatch.py` (`dispatch`), `core/tool_rag.py` (`select_tools`, if ever consumed).
+- **Error:** capability gap, not a defect.
+- **Phase:** emit-only, future observability slice; the prior stays rejected until the determinism conflict has an answer.
+- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
+
+### DEBT-177 [LOW · Floating] — Three declared conservatisms in the tool-selection path
+
+- **Date:** 2026-08-18
+- **Reproduce:** each is a deliberate 13.0.2 tradeoff, recorded so none is later mistaken for an oversight:
+  1. **`register_schema` warns instead of raising on a definition conflict.** A name re-registered with a different `privilege_tier` or `json_schema` resolves toward the stricter tier and logs a warning (`core/tool_rag.py::_merge_with_existing`). Raising would be stricter, but `populate_tool_catalog` swallows per-family exceptions, so a raise would silently amputate an entire tool family at boot — a far worse failure than a reconciled registration plus a loud log.
+  2. **`_visible_eager` sizes the payload before resolvability filtering.** `core/deferred_tool_loader.py` counts `_INTENTIONALLY_UNREGISTERED` schemas (2 of `core_dev`'s 15) in `eager_chars`, inflating the estimate ~10% and biasing the decision *toward* deferred. It errs safe; correcting it would move `eager_count`/`reduction_ratio`, which fixture preconditions pin. The published break-even windows are therefore an upper bound.
+  3. **Two different metrics share the name `reduction_ratio`.** The R3 gate measures against the whole catalog; `DeferredToolDecision.reduction_ratio` measures against the role slice (`prompt_size_metrics(eager, schemas)`). They are not comparable, yet `brain/swarms.py` logs the latter into `permission_audit_log`. Anyone reading that audit entry against the documented 0.70 figure will draw the wrong conclusion. The fix is an additive rename to `slice_reduction_ratio` (old key retained one release per §10).
+- **File(s):** `core/tool_rag.py`, `core/deferred_tool_loader.py`, `brain/swarms.py`.
+- **Error:** none are correctness defects; (3) is a live observability trap.
+- **Phase:** (3) with the next audit-log touch; (1) and (2) only if their premises change.
+- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
 
 ### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 

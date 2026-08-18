@@ -60,8 +60,13 @@ async def tool_rag_select_node(state: AIlienantGraphState) -> Dict[str, Any]:
     except ValueError:
         session_mode = SessionPermissionMode.DEFAULT
 
-    _ctx_window = state.get("context_window")
-    context_window: int = _ctx_window if isinstance(_ctx_window, int) else 8192
+    # The real window comes off the active LLM profile. `context_window` was never
+    # a graph-state channel (it is a field of LLMProfile), so the old read always
+    # resolved None and pinned this node to the 8192 fallback — a threshold below
+    # every role's visible slice, which meant the eager branch could never fire.
+    from brain.agent_context import resolve_context_budget
+
+    context_window: int = resolve_context_budget(state)
 
     # Eager-vs-deferred policy: inject the whole role/mode-visible catalog when it
     # fits under ~10% of the context budget; otherwise retrieve by relevance and

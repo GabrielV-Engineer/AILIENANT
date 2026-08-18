@@ -2523,3 +2523,38 @@ today's unchanged card.
 `client_hitl_response` degrades to `answer=None, selected_option=None`, which the `comment`
 fallback resolves; a pre-13.0.1 backend emitting a card without `question`/`context`/
 `suggested_options` is read by pydantic as `None` on the new fields, unaffected.
+
+---
+
+## §52 — Agentic Cell: `cell_tool_query` Discovery-Replay Channel (Manifest 13.0.2)
+
+`tools/meta_tools.py::ToolSearchTool` returns tool names and descriptions but deliberately
+never their full `json_schema` (token hygiene), closing with an instruction to NAME the tool
+in the next output so its schema is injected on the following cycle. Inside the agentic cell
+that instruction could not be honoured: the cell is re-entered as a fresh graph node per
+iteration and re-ran selection against the frozen `user_input`, and `select_tools` is
+deterministic for a given `(intent, active_role, session_mode)` — so the next iteration's
+catalog was byte-identical and the named tool never appeared. The model was told to do
+something the runtime structurally could not deliver.
+
+**`AIlienantGraphState` gains one optional scalar channel:**
+
+```python
+cell_tool_query: Optional[str]
+```
+
+Written on every `run_agentic_cell_node` return (including both defer paths): set to the
+`query` argument of a `tool_search` call made during that iteration, and otherwise `None`.
+The next iteration reads it, re-runs `select_tools` with that exact query, and unions the
+result into the advertised schemas. Because selection is deterministic, the replay returns
+precisely the names the model was just shown — the shift-left instruction becomes true by
+construction rather than by chance.
+
+**Scalar overwrite, no reducer.** The channel is consumed-and-cleared: writing `None` on
+every iteration that did not call `tool_search` is what prevents a stale query from
+re-selecting forever. An `operator.add` reducer would accumulate queries and defeat that.
+
+**Backward-compat:** additive and optional. A checkpoint written before this channel existed
+deserializes it as absent; `state.get("cell_tool_query")` yields `None` and the replay
+branch is simply skipped, leaving selection identical to the pre-13.0.2 behavior. No existing
+channel changes shape or meaning.

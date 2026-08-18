@@ -25,12 +25,12 @@ cannot silently recur.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, MutableMapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, MutableMapping, Optional, Sequence
 
 from langchain_core.tools import BaseTool
 
 from core.tool_dispatch import RegisteredTool
-from core.tool_rag import ToolSchema
+from core.tool_rag import ToolSchema, stricter_tier
 
 # =====================================================================
 # Intentionally unregistered — documented, reasoned exclusions, checked by
@@ -212,6 +212,44 @@ def _wrap_with_schema(
     return out
 
 
+def _merge_registered(
+    dst: Dict[str, RegisteredTool], src: Dict[str, RegisteredTool]
+) -> None:
+    """Merge one family's resolved tools into the accumulator, unioning roles.
+
+    Several tools are deliberately cross-listed by more than one family with
+    disjoint role sets. A bare ``dict.update`` lets whichever family merges last
+    win, so the surviving ``RegisteredTool`` would carry only that family's roles
+    and ``ToolDispatcher.classify`` would DENY the other role — the same
+    narrowing the store-side upsert had, one layer down. Collisions therefore
+    union their roles and keep the stricter tier. The first callable is retained:
+    the instances are equivalent, and keeping one avoids re-binding live state.
+    """
+    for name, incoming in src.items():
+        current = dst.get(name)
+        if current is None:
+            dst[name] = incoming
+            continue
+        dst[name] = RegisteredTool(
+            current.tool,
+            stricter_tier(current.tier, incoming.tier),
+            current.allowed_roles | incoming.allowed_roles,
+        )
+
+
+def filter_resolvable(schemas: Sequence[ToolSchema]) -> List[ToolSchema]:
+    """Drop schemas that ``resolve_tools`` would never produce a callable for.
+
+    ``resolve_tools`` silently omits names in ``_INTENTIONALLY_UNREGISTERED``
+    (they are deliberate exclusions, not gaps, so they must not raise). A caller
+    that ADVERTISES its selected schemas to the model must therefore filter them
+    first, or it promises a tool that ``classify`` will answer with
+    "tool not found" — the "tool that lies" defect. This is the single predicate
+    that keeps the advertised set identical to the dispatchable set.
+    """
+    return [s for s in schemas if s.name not in _INTENTIONALLY_UNREGISTERED]
+
+
 def resolve_tools(
     schemas: Sequence[ToolSchema], state: MutableMapping[str, Any]
 ) -> Dict[str, RegisteredTool]:
@@ -242,17 +280,20 @@ def resolve_tools(
     #    each is already cheap/lazy per its own docstring, so building the
     #    full family and filtering down is the same cost profile these
     #    factories already have in their existing (analyst/researcher) callers.
-    resolved.update(build_analyst_tools(state))
-    resolved.update(build_researcher_tools(state))
-    resolved.update(build_perception_tools(state))
+    #    Merged rather than dict-updated: the perception trio is cross-listed by
+    #    both the analyst and researcher families with disjoint role sets, so a
+    #    plain update would narrow it to whichever family merges last.
+    _merge_registered(resolved, build_analyst_tools(state))
+    _merge_registered(resolved, build_researcher_tools(state))
+    _merge_registered(resolved, build_perception_tools(state))
 
     # 2. List[BaseTool]-returning factories — pair with the selected schema's
     #    own tier/roles rather than re-deriving/duplicating them here.
-    resolved.update(_wrap_with_schema(make_coder_execute_tools(state), by_name))
-    resolved.update(_wrap_with_schema(build_orchestrator_tools(state), by_name))
+    _merge_registered(resolved, _wrap_with_schema(make_coder_execute_tools(state), by_name))
+    _merge_registered(resolved, _wrap_with_schema(build_orchestrator_tools(state), by_name))
 
     # 3. Shared-dependency cluster (task manager) + simple/state-bound singles.
-    resolved.update(_wrap_with_schema(list(_build_task_tools(state).values()), by_name))
+    _merge_registered(resolved, _wrap_with_schema(list(_build_task_tools(state).values()), by_name))
     for name, factory in _simple_factories().items():
         if name in wanted and name not in resolved:
             schema = by_name[name]

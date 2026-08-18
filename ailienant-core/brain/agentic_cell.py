@@ -54,6 +54,19 @@ _MAX_EDIT_FILE_BYTES: int = 500 * 1024
 # Per-command wall-clock ceiling inside the session; a hung command is killed and
 # surfaces as a non-zero verdict rather than blocking the loop.
 _RUN_TERMINAL_TIMEOUT_S: float = 120.0
+# The discovery meta-tool whose query is replayed on the following iteration so
+# its "name it next turn" instruction resolves to the same tools it just listed.
+_TOOL_SEARCH_NAME: str = "tool_search"
+
+# Never advertised to the cell, regardless of what selection returns.
+# `toggle_plan_mode` rewrites `session_permission_mode`, the very channel
+# `evaluate_action` consults to gate every later dispatch — a self-escalation
+# lever. It is a legitimate tool on the operator-facing paths, but an autonomous
+# multi-iteration cell running unattended must not be able to widen its own
+# permissions mid-run. Selection-tier retrieval kept it out of reach only by
+# accident (it rarely ranked against a coding intent); whole-catalog injection
+# would make it always visible, so the exclusion is made explicit here.
+_CELL_DENIED_FALLBACK_TOOLS: frozenset[str] = frozenset({"toggle_plan_mode"})
 
 
 # =====================================================================
@@ -362,9 +375,12 @@ async def run_agentic_cell_node(
     state: Dict[str, Any], config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """One ReAct iteration. See module docstring for the loop contract."""
+    from brain.agent_context import resolve_context_budget
     from core.blob_storage import blob_storage
+    from core.deferred_tool_loader import DeferredToolLoader
     from core.permissions import PermissionDecision, session_mode_from_channel
     from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
+    from core.tool_registry import filter_resolvable
     from core.workspace_sync import push_vfs_to_surface, pull_surface_to_vfs
 
     task_id: str = str(state.get("task_id", ""))
@@ -626,15 +642,67 @@ async def run_agentic_cell_node(
         # only paid if the model actually proposes one of these names.
         active_role = _resolve_active_role(state)
         session_mode = session_mode_from_channel(state.get("session_permission_mode"))
-        fallback_schemas = await tool_rag_store.select_tools(
-            str(state.get("user_input") or ""),
-            k=TOOL_RAG_TOP_K,
+        # Eager-vs-deferred policy rather than an unconditional top-k retrieval.
+        # When the role-visible catalog fits the context budget it is injected
+        # whole — no embedding round-trip at all — and when it does not, the
+        # loader guarantees tool_search survives into the deferred set, so a bad
+        # ranking has a way out instead of being a hard "tool not found" wall.
+        #
+        # The loader is CONSTRUCTED here rather than imported as its module
+        # singleton: that singleton binds its store as a default argument
+        # evaluated at class-definition time, which would defeat the
+        # `core.tool_rag.tool_rag_store` monkeypatch seam this module's
+        # function-local import exists to preserve.
+        # k = TOOL_RAG_TOP_K + 1 deliberately: the deferred branch spends one slot
+        # on the tool_search hatch, so requesting the bare cap would hand the cell
+        # one FEWER usable tool than the direct select_tools() call this replaces.
+        # Asking for one extra keeps the usable count identical and buys the hatch,
+        # without moving the global constant (which the Phase-5.7 financial gate
+        # measures against a much smaller subset baseline — see its docstring).
+        decision = await DeferredToolLoader(tool_rag_store).resolve(
+            _compose_cell_intent(state),
             active_role=active_role,
             session_mode=session_mode,
+            context_window=resolve_context_budget(state),
+            k=TOOL_RAG_TOP_K + 1,
         )
+        selected_schemas = list(decision.schemas)
+
+        # A tool_search call in the previous iteration recorded the model's own
+        # query. Replaying it returns exactly the names the model was just shown
+        # (selection is deterministic for the same intent/role/mode), which is
+        # what makes tool_search's "name it next turn and its schema is injected"
+        # instruction true by construction rather than aspirational.
+        replay_query = state.get("cell_tool_query")
+        if replay_query:
+            replayed = await tool_rag_store.select_tools(
+                str(replay_query),
+                k=TOOL_RAG_TOP_K,
+                active_role=active_role,
+                session_mode=session_mode,
+            )
+            _already = {s.name for s in selected_schemas}
+            selected_schemas.extend(s for s in replayed if s.name not in _already)
+
+        # Advertise only what dispatch can actually resolve: resolve_tools drops
+        # _INTENTIONALLY_UNREGISTERED names silently, so an unfiltered hint would
+        # promise tools that classify() answers with "tool not found". The cell
+        # denylist is applied at the same seam so a denied tool is absent from the
+        # dispatcher map too, never merely unadvertised.
+        fallback_schemas = [
+            s
+            for s in filter_resolvable(selected_schemas)
+            if s.name not in _CELL_DENIED_FALLBACK_TOOLS
+        ]
         messages = _build_messages(state)
         if fallback_schemas:
-            messages = [*messages, {"role": "system", "content": _format_fallback_tools_hint(fallback_schemas)}]
+            messages = [
+                *messages,
+                {
+                    "role": "system",
+                    "content": _format_fallback_tools_hint(fallback_schemas, decision.mode),
+                },
+            ]
         tool_calls = await reasoner(messages)
 
         record: Dict[str, Any] = {
@@ -661,6 +729,9 @@ async def run_agentic_cell_node(
         # most once per iteration rather than per call.
         state_promotions: Dict[str, Any] = {}
         _fallback_dispatcher_box: List[Any] = []
+        # Consumed-and-cleared each iteration: set only when the model calls
+        # tool_search, read by the NEXT iteration's selection, then reset.
+        tool_search_query: Optional[str] = None
 
         async def _verify(cmd: str) -> Tuple[int, str]:
             code, out = await _run_on_surface(cell, cmd, _RUN_TERMINAL_TIMEOUT_S)
@@ -845,6 +916,7 @@ async def run_agentic_cell_node(
                             "name": call.name, "args": dict(call.args),
                             "activity_ref": _activity_ref,
                         },
+                        "cell_tool_query": tool_search_query,
                     }
                     if edited_paths:
                         tool_defer_delta["vfs_buffer"] = {p: vfs_files[p] for p in edited_paths}
@@ -887,6 +959,7 @@ async def run_agentic_cell_node(
                         "agentic_iteration": iteration + 1,
                         "agentic_trajectory": [clar_rec],
                         "pending_hitl_request": _pending_clarification,
+                        "cell_tool_query": tool_search_query,
                     }
                     if edited_paths:
                         clar_delta["vfs_buffer"] = {p: vfs_files[p] for p in edited_paths}
@@ -905,6 +978,16 @@ async def run_agentic_cell_node(
                 fallback_observations.append(
                     {"role": "system", "content": f"[{call.name}] {result.observation}"}
                 )
+                if call.name == _TOOL_SEARCH_NAME:
+                    # Record the model's own discovery query so the next iteration
+                    # can replay it. tool_search deliberately returns names and
+                    # descriptions but never full schemas, and tells the model to
+                    # name the tool next turn — a promise this cell could not keep
+                    # while selection ran on a frozen intent. Replaying the exact
+                    # query re-selects the exact names the model was just shown.
+                    _query = call.args.get("query")
+                    if _query:
+                        tool_search_query = str(_query)
                 if result.state_delta:
                     state_promotions.update(result.state_delta)
 
@@ -966,6 +1049,10 @@ async def run_agentic_cell_node(
             "agentic_iteration": iteration + 1,
             "agentic_trajectory": [record, *occ_messages, *fallback_observations],
             "current_cost_usd": cost_delta,
+            # Scalar overwrite, always written: carries a fresh tool_search query
+            # forward, and otherwise clears any query the previous iteration
+            # already consumed so a stale one cannot keep re-selecting forever.
+            "cell_tool_query": tool_search_query,
         }
         # Carry edits forward: vfs_buffer keeps the loop-back iteration consistent;
         # pending_contents feeds the write pipeline once the loop exits to apply_patch.
@@ -1045,7 +1132,61 @@ def _resolve_active_role(state: Dict[str, Any]) -> str:
     return str(target_step.target_role or "core_dev")
 
 
-def _format_fallback_tools_hint(schemas: Sequence[Any]) -> str:
+_CELL_INTENT_MAX_CHARS: int = 600
+"""Ceiling on the composed retrieval intent. This string never enters the model's
+prompt — only the embedder — but an unbounded diagnostics splice would still push
+cost and dilute the query's signal, so it is capped like any other I/O."""
+
+_CELL_INTENT_DIAGNOSTIC_CHARS: int = 200
+"""Per-record ceiling when splicing recent verdicts into the intent."""
+
+
+def _compose_cell_intent(state: Dict[str, Any]) -> str:
+    """Build the retrieval intent for this iteration from live progress.
+
+    The cell is re-entered as a fresh graph node per iteration, so selection used
+    to run against the frozen original ``user_input`` — deterministic, and
+    therefore byte-identical on iteration 15 and iteration 1 no matter what the
+    task had actually become. Composing from the active plan step and the most
+    recent verdicts lets the selected tools track where the work went, mirroring
+    the per-step intent ``agents/coder.py::_run_grounding_loop`` already builds.
+
+    PURE: a function of ``state`` alone, using ordered slicing only — no clock,
+    no set/dict iteration order, no randomness. LangGraph replay and Rewind
+    re-execute this node, so an impure intent would make a resumed run diverge
+    from the original.
+    """
+    from core.redaction import truncate_middle
+
+    parts: List[str] = [str(state.get("user_input") or "")]
+
+    mission_spec = state.get("mission_spec")
+    step_id = state.get("current_step_id")
+    if mission_spec is not None and step_id is not None:
+        step = next(
+            (t for t in mission_spec.tasks if t.step_number == step_id), None
+        )
+        if step is not None:
+            parts.append(f"{step.action} {step.target_file} {step.description}")
+
+    trajectory: List[Dict[str, Any]] = list(state.get("agentic_trajectory") or [])
+    for record in trajectory[-2:]:
+        diagnostics = record.get("diagnostics")
+        if diagnostics:
+            parts.append(truncate_middle(str(diagnostics), _CELL_INTENT_DIAGNOSTIC_CHARS))
+
+    edited: List[str] = []
+    for record in trajectory:
+        for path in record.get("edits") or []:
+            if path not in edited:
+                edited.append(str(path))
+    if edited:
+        parts.append(" ".join(edited[-3:]))
+
+    return truncate_middle(" ".join(p for p in parts if p), _CELL_INTENT_MAX_CHARS)
+
+
+def _format_fallback_tools_hint(schemas: Sequence[Any], mode: str = "deferred") -> str:
     """Bounded name+description listing so the reasoner can name one of these tools.
 
     Deliberately not the full json_schema (that's for argument shape, resolved by
@@ -1053,14 +1194,27 @@ def _format_fallback_tools_hint(schemas: Sequence[Any]) -> str:
     the model to decide *whether* to reach for one; ToolDispatcher.dispatch()
     reports an argument-shape mismatch back as a recoverable observation if the
     model gets the args wrong.
+
+    ``mode`` reflects how the listing was assembled. Under ``eager`` this IS the
+    role's complete tool set, so the closing line says so — otherwise the model
+    can burn an iteration calling ``tool_search`` for tools that are all already
+    in front of it.
     """
     lines = [
         f"- {s.name}: {s.description}" for s in schemas
     ]
+    closing = (
+        "This is your COMPLETE tool set for this role — nothing further exists "
+        "to discover."
+        if mode == "eager"
+        else "More tools exist beyond this list; call tool_search to discover them."
+    )
     return (
         "Additional tools are available beyond run_terminal/read_file_ast/"
         "apply_granular_edit — call one by name with args matching its purpose "
-        "if it fits better than the 3 primitives:\n" + "\n".join(lines)
+        "if it fits better than the 3 primitives:\n"
+        + "\n".join(lines)
+        + f"\n{closing}"
     )
 
 
