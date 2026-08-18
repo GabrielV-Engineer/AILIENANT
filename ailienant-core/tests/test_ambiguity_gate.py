@@ -104,7 +104,7 @@ def test_request_graph_clarification_builds_expected_payload() -> None:
     assert payload["question"] == "Which file?"
     assert payload["context"] == "need a concrete target"
     assert payload["suggested_options"] == ["auth.py", "main.py"]
-    assert result == {"answer": None, "selected_option": "auth.py"}
+    assert result == {"answer": None, "selected_option": "auth.py", "answers": None}
 
 
 def test_request_graph_clarification_defaults_options_to_empty_list() -> None:
@@ -123,10 +123,10 @@ def test_request_graph_clarification_defaults_options_to_empty_list() -> None:
 def test_request_graph_clarification_normalizes_bare_string_resume() -> None:
     with patch("core.hitl.interrupt", return_value="auth.py"):
         result = request_graph_clarification(session_id="s", question="q?")
-    assert result == {"answer": "auth.py", "selected_option": None}
+    assert result == {"answer": "auth.py", "selected_option": None, "answers": None}
 
 
 def test_request_graph_clarification_normalizes_none_resume() -> None:
     with patch("core.hitl.interrupt", return_value=None):
         result = request_graph_clarification(session_id="s", question="q?")
-    assert result == {"answer": None, "selected_option": None}
+    assert result == {"answer": None, "selected_option": None, "answers": None}

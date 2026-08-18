@@ -535,20 +535,22 @@ def _is_duplicate_request(request_id: str) -> bool:
 
 
 def _resume_approval_dict(data: HITLResponsePayload) -> Dict[str, Any]:
-    """Build the resume value for a paused-graph ``client_hitl_response`` (DEBT-171/172).
+    """Build the resume value for a paused-graph ``client_hitl_response``.
 
     ``request_graph_approval`` only ever reads ``approved``/``comment`` and
-    ``request_graph_clarification`` only ever reads ``answer``/``selected_option``
-    (``core/hitl.py``), so the union is safe to send regardless of which interrupt
-    shape is actually paused. The frontend has no multi-choice renderer yet
-    (DEBT-172), so ``answer`` falls back to the free-text ``comment`` field the
-    existing card already collects.
+    ``request_graph_clarification`` only ever reads ``answer``/``selected_option``/
+    ``answers`` (``core/hitl.py``), so the union is safe to send regardless of which
+    interrupt shape is actually paused. A single-question client that has no
+    options renderer sends no explicit ``answer``, so it falls back to the
+    free-text ``comment`` field the existing card already collects; a
+    multi-question client sends ``answers`` instead and leaves ``answer`` unset.
     """
     return {
         "approved": data.approved,
         "comment": data.comment,
         "answer": data.answer if data.answer is not None else data.comment,
         "selected_option": data.selected_option,
+        "answers": [a.model_dump() for a in data.answers] if data.answers else None,
     }
 
 # Manual Dreaming — at most one consolidation per project (a new run cancels the

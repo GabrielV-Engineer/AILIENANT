@@ -21,6 +21,8 @@ from tools.agent_tools import (
 )
 from tools.control_tools import (
     DANGEROUS_COMMANDS_REGEX,
+    AskUserQuestionItem,
+    AskUserQuestionOptionInput,
     AskUserQuestionTool,
     TogglePlanModeTool,
     _CONTROL_ROLES,
@@ -75,6 +77,57 @@ async def test_ask_user_question_handles_optional_fields() -> None:
     entry = state["pending_hitl_request"]
     assert entry["context"] is None
     assert entry["suggested_options"] == []
+
+
+@pytest.mark.anyio
+async def test_ask_user_question_batch_mode_populates_questions() -> None:
+    """DEBT-172 — batch mode is additive: legacy singular fields stay absent
+    when `questions` is used, and each option carries its recommended flag."""
+    state: Dict[str, Any] = {}
+    tool = AskUserQuestionTool(state=state)
+    items = [
+        AskUserQuestionItem(
+            header="Docker setup",
+            question="How should we structure the dockerization?",
+            options=[
+                AskUserQuestionOptionInput(label="Single container", recommended=True),
+                AskUserQuestionOptionInput(label="Multi-service compose"),
+            ],
+        ),
+        AskUserQuestionItem(
+            header="Docs",
+            question="Commit the pending docs now?",
+            options=[
+                AskUserQuestionOptionInput(label="Commit now", recommended=True),
+                AskUserQuestionOptionInput(label="Keep iterating"),
+            ],
+            multi_select=False,
+        ),
+    ]
+    out = await tool._arun(questions=items)
+    assert out.startswith("[ask_user_question] HITL_PENDING:")
+
+    entry = state["pending_hitl_request"]
+    assert "question" not in entry
+    questions = entry["questions"]
+    assert len(questions) == 2
+    assert questions[0]["id"] == "q0"
+    assert questions[0]["header"] == "Docker setup"
+    assert questions[0]["options"][0] == {
+        "label": "Single container",
+        "description": None,
+        "recommended": True,
+    }
+    assert questions[1]["id"] == "q1"
+    assert questions[1]["multi_select"] is False
+
+
+@pytest.mark.anyio
+async def test_ask_user_question_requires_question_or_questions() -> None:
+    state: Dict[str, Any] = {}
+    tool = AskUserQuestionTool(state=state)
+    with pytest.raises(ValueError):
+        await tool._arun()
 
 
 # =====================================================================

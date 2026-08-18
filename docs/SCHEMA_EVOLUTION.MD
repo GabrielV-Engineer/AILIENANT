@@ -2526,6 +2526,80 @@ fallback resolves; a pre-13.0.1 backend emitting a card without `question`/`cont
 
 ---
 
+## §52 — Multi-Question Clarification Batch: `questions`/`answers` (closes DEBT-172)
+
+§51 closed the wire round-trip for a *single* clarification question but left two gaps: the
+frontend still had no renderer for `suggested_options` at all (every clarification degraded to
+the plain free-text approve/reject card), and `ask_user_question`'s LLM-facing schema had no way
+to batch several related questions into one pause or to mark a recommended answer. This closure
+adds a second, independent shape alongside the existing singular one — both are additive (§10);
+neither repurposes an existing field.
+
+**Three new nested models (`api/ws_contracts.py`):**
+
+```python
+class ClarificationOption(BaseModel):
+    label: str
+    description: Optional[str] = None
+    recommended: bool = False
+
+class ClarificationQuestion(BaseModel):
+    id: str                      # stable per-question correlation key within the batch
+    header: str                  # short tab label
+    question: str
+    context: Optional[str] = None
+    options: List[ClarificationOption]
+    multi_select: bool = False
+
+class ClarificationAnswer(BaseModel):
+    id: str                      # matches ClarificationQuestion.id
+    selected_labels: List[str] = []
+    free_text: Optional[str] = None
+```
+
+**`HITLApprovalRequestPayload` gains one optional field:** `questions: Optional[List[ClarificationQuestion]] = None`.
+**`HITLResponsePayload` gains one optional field:** `answers: Optional[List[ClarificationAnswer]] = None`.
+
+Both are `None` for every existing request/response shape (approval, single-question
+clarification). `core/hitl.py::request_graph_clarification` gained an additive `questions`
+parameter (its `question` parameter also relaxed from required to `Optional[str]`, a
+backward-compatible widening) and folds a resumed `answers` list into its return dict alongside
+the existing `answer`/`selected_option`. `_emit_interrupt_card` (`core/task_service.py`) forwards
+`questions` the same way it already forwards `question`/`context`/`suggested_options`, and
+synthesizes an `action_description` fallback (`"I have N question(s) before continuing."`) for a
+pure-batch payload with no legacy `question` to fall back to.
+
+**`tools/control_tools.py::AskUserQuestionInput`** gained an additive `questions:
+Optional[List[AskUserQuestionItem]]` field (each item: `header`, `question`, `context?`,
+`options: List[{label, description?, recommended}]`, `multi_select`). This is the actual fix for
+the observed behavior where the LLM would emit at most one "recommended" suggestion instead of a
+real option set: the field descriptions now explicitly instruct 2-4 concrete mutually-exclusive
+options per question with exactly one marked `recommended`, and batching related questions into
+one call. `AskUserQuestionTool._arun` writes `pending_hitl_request["questions"]` (each item
+assigned a stable `q{i}` id) when `questions` is supplied, else keeps today's exact
+singular-field behavior unchanged.
+
+**Frontend** (`ailienant-extension/src/api/contracts.ts`) — this is also where the *existing*
+§51 gap actually lived: `HITLApprovalRequestPayload` never declared `question`/`context`/
+`suggested_options` at all despite the backend already sending them, so they were silently
+dropped. Both closures land together here: the three fields plus the new `questions` are added
+to the TS interface, alongside new `ClarificationOption`/`ClarificationQuestion`/
+`ClarificationAnswer` types mirroring the Pydantic models. A new `ClarificationGrillCard.tsx`
+renders either shape — a real `questions` batch, or a synthesized one-item batch built from the
+legacy `question`/`suggested_options` fields (first suggested option marked recommended) — as a
+tab strip (multi-question) or a single options panel, with an implicit free-text "Other" escape
+hatch per question. `Workspace.tsx` branches to it instead of the plain `HITLInterventionCard`
+whenever `question`/`questions` is present; every other request kind (FILE_WRITE, RISK_INTERCEPT,
+MCP_TOOL_CALL, generic approval) is unaffected. `useClarificationResponder.ts` (modeled on
+`useHitlResponder.ts`) posts `{approval_id, approved: true, answers}` once.
+
+**Backward-compat:** every field is additive and optional. An old backend never populating
+`questions` is read by the new frontend as the existing single-question (or no-question) shape,
+unaffected. An old frontend build ignoring `questions`/`answers` still renders the existing
+approve/reject card off `action_description`'s synthesized fallback text.
+
+---
+
 ## §52 — Agentic Cell: `cell_tool_query` Discovery-Replay Channel (Manifest 13.0.2)
 
 `tools/meta_tools.py::ToolSearchTool` returns tool names and descriptions but deliberately

@@ -140,6 +140,38 @@ class ProposedFile(BaseModel):
     base_hash: Optional[str] = None
 
 
+class ClarificationOption(BaseModel):
+    """One concrete, pickable answer to a `ClarificationQuestion`."""
+
+    label: str
+    description: Optional[str] = None
+    recommended: bool = False
+
+
+class ClarificationQuestion(BaseModel):
+    """One question in a multi-question clarification batch (DEBT-172).
+
+    `id` is a stable per-question correlation key within the batch — the
+    frontend echoes it back on the matching `ClarificationAnswer` so answers
+    can be matched to questions regardless of render order.
+    """
+
+    id: str
+    header: str                         # short tab label (~2-4 words)
+    question: str
+    context: Optional[str] = None
+    options: List[ClarificationOption]
+    multi_select: bool = False
+
+
+class ClarificationAnswer(BaseModel):
+    """The operator's answer to one `ClarificationQuestion`, keyed by `id`."""
+
+    id: str
+    selected_labels: List[str] = []
+    free_text: Optional[str] = None
+
+
 class HITLApprovalRequestPayload(BaseModel):
     """Backend suspends and asks the human to approve a proposed action."""
 
@@ -172,6 +204,12 @@ class HITLApprovalRequestPayload(BaseModel):
     question: Optional[str] = None
     context: Optional[str] = None
     suggested_options: Optional[List[str]] = None
+    # Multi-question batch extension (closes DEBT-172): a richer, additive
+    # sibling of question/context/suggested_options. Populated when
+    # ask_user_question (or an internal caller) asks several related
+    # questions in one pause; None for the legacy single-question shape and
+    # for every non-clarification kind.
+    questions: Optional[List[ClarificationQuestion]] = None
 
 
 class HITLResponsePayload(BaseModel):
@@ -190,6 +228,10 @@ class HITLResponsePayload(BaseModel):
     # comment box.
     answer: Optional[str] = None
     selected_option: Optional[str] = None
+    # Multi-question batch extension (closes DEBT-172): one answer per
+    # ClarificationQuestion.id in the matching request's `questions` list.
+    # None for the legacy single-question shape.
+    answers: Optional[List[ClarificationAnswer]] = None
 
 
 # --- Server → Client Events ---

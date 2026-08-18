@@ -1064,6 +1064,34 @@ html, body, #root { height: 100%; }
 }
 .ws-hitl-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 
+/* ── Clarification Grill Card (DEBT-172) ──────────────────── */
+.ws-clarify-card { gap: 8px; }
+.ws-clarify-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; }
+.ws-clarify-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-main);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.ws-clarify-tab:hover { background: var(--bg-hover); }
+.ws-clarify-tab[data-active="true"] {
+  border-color: var(--accent-warn);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.ws-clarify-panel { display: flex; flex-direction: column; gap: 8px; }
+.ws-clarify-question { font-size: 13px; color: var(--text-primary); line-height: 1.5; font-weight: 600; }
+.ws-clarify-context { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
+.ws-clarify-options { display: flex; flex-direction: column; gap: 3px; }
+.ws-clarify-recommended { font-weight: 600; color: var(--accent-primary); }
+.ws-clarify-freetext { margin-top: 4px; width: 100%; }
+
 /* ── Utility tokens ────────────────────────────────────── */
 .ws-muted  { color: var(--text-secondary); font-size: 11px; }
 .ws-tiny   { font-size: 10px; }

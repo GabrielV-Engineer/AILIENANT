@@ -1506,26 +1506,33 @@ class TaskService:
 
         Two interrupt shapes flow through here: ``request_graph_approval`` (keyed on
         ``approval_id``, carries ``action_description``) and
-        ``request_graph_clarification`` (DEBT-171/172, keyed on ``request_id``, carries
-        ``question``/``context``/``suggested_options`` — no ``approval_id`` at all). The
-        ``request_id`` fallback below is load-bearing: without it a clarification's
-        correlation id resolves to the empty string and the client's echoed reply can
-        never be matched back to the paused interrupt. ``question`` also backs
-        ``action_description`` so today's plain approve/reject card already displays the
-        clarifying question with zero frontend changes.
+        ``request_graph_clarification`` (keyed on ``request_id``, carries
+        ``question``/``context``/``suggested_options`` for a single question, or the
+        additive ``questions`` batch — no ``approval_id`` at all). The ``request_id``
+        fallback below is load-bearing: without it a clarification's correlation id
+        resolves to the empty string and the client's echoed reply can never be
+        matched back to the paused interrupt. ``question`` (or, for a pure batch, a
+        synthesized "N question(s)" summary) also backs ``action_description`` so an
+        older client with no options renderer still shows a sensible headline.
         """
         from api.ws_contracts import (
             HITLApprovalRequestPayload,
             ServerHITLApprovalRequestEvent,
         )
 
+        _questions = payload.get("questions")
+        _default_description = (
+            f"I have {len(_questions)} question(s) before continuing."
+            if _questions
+            else "Approve to continue?"
+        )
         data = HITLApprovalRequestPayload(
             session_id=str(payload.get("session_id") or session_id),
             approval_id=str(payload.get("approval_id") or payload.get("request_id") or ""),
             action_description=str(
                 payload.get("action_description")
                 or payload.get("question")
-                or "Approve to continue?"
+                or _default_description
             ),
             proposed_content=payload.get("proposed_content"),
             request_kind=payload.get("request_kind"),
@@ -1534,6 +1541,7 @@ class TaskService:
             question=payload.get("question"),
             context=payload.get("context"),
             suggested_options=payload.get("suggested_options"),
+            questions=_questions,
         )
         await vfs_manager.send_personal_message(
             session_id, ServerHITLApprovalRequestEvent(data=data)

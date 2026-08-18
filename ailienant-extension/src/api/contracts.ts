@@ -96,6 +96,25 @@ export interface ServerGraphMutationEvent {
     data: GraphMutationPayload;
 }
 
+export interface ClarificationOption {
+    label: string;
+    description?: string | null;
+    recommended?: boolean;
+}
+export interface ClarificationQuestion {
+    id: string;
+    header: string;
+    question: string;
+    context?: string | null;
+    options: ClarificationOption[];
+    multi_select?: boolean;
+}
+export interface ClarificationAnswer {
+    id: string;
+    selected_labels: string[];
+    free_text?: string | null;
+}
+
 export interface HITLApprovalRequestPayload {
     session_id: string;
     approval_id: string;
@@ -104,6 +123,13 @@ export interface HITLApprovalRequestPayload {
     proposed_files?: ProposedFile[] | null;
     request_kind?: string | null;
     risk_patterns_matched?: string[] | null;
+    // DEBT-172: additive clarification fields. `question`/`context`/
+    // `suggested_options` back a single question; `questions` is the
+    // multi-question batch extension. Both independent of the fields above.
+    question?: string | null;
+    context?: string | null;
+    suggested_options?: string[] | null;
+    questions?: ClarificationQuestion[] | null;
 }
 export interface ServerHITLApprovalRequestEvent {
     event_type: 'server_hitl_approval_request';

@@ -317,9 +317,9 @@ Agents under `agents/` — specifically `coder.py`, `planner.py`, `researcher.py
 
 ### 5.6 HITL Escalation Pattern
 
-`AskUserQuestionTool` (`tools/control_tools.py`) is tiered `READ_ONLY` so it is available in every `session_permission_mode`. It:
+`AskUserQuestionTool` (`tools/control_tools.py`) is tiered `READ_ONLY` so it is available in every `session_permission_mode`. It accepts either a single `question`/`context`/`suggested_options`, or a `questions` batch of up to four related items — each with a `header` (short tab label), the full `question`, optional `context`, and 2-4 `options` (`label`, optional `description`, `recommended`). Prefer `questions` whenever the answer space is enumerable: give 2-4 concrete, mutually exclusive options and mark exactly one `recommended` — never leave options empty just to fall back on free text, and batch related questions into one call instead of asking serially. Reserve the bare single `question` form for a truly open-ended question with no sensible fixed options.
 
-1. Populates `state["pending_hitl_request"]` with `{request_id, kind, question, context, suggested_options, requested_at}`.
+1. Populates `state["pending_hitl_request"]` with `{request_id, kind, question, context, suggested_options, requested_at}` (single-question form) or `{request_id, kind, questions, requested_at}` (batch form).
 2. Returns the sentinel string `[ask_user_question] HITL_PENDING:{request_id}`.
 3. The agentic cell's fallback-dispatch loop (`brain/agentic_cell.py`) detects the populated channel right after dispatch and defers — it stops processing further tool calls this super-step rather than suspending inline, since `interrupt()` cannot run safely mid-dispatch-loop (a resume would replay every side effect already committed).
 4. On the next iteration, the cell's clarification-resume phase calls `request_graph_clarification()` (`core/hitl.py`) as its first action, which is what actually suspends the graph via native `interrupt()`. The VS Code extension emits `server_hitl_approval_request`; the user responds via `client_hitl_response`.

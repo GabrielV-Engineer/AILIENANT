@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Icon } from '../../shared/Icon';
 import { Tooltip } from '../../shared/Tooltip';
 import { useHitlResponder } from '../utils/useHitlResponder';
+import type { ClarificationQuestion } from '../../api/contracts';
 
 export interface HITLIntervention {
     approval_id: string;
@@ -17,6 +18,15 @@ export interface HITLIntervention {
      *  Rendered whenever present, regardless of request_kind, so an auto-accept
      *  edit that got routed to manual review can say why. */
     risk_patterns_matched?: string[] | null;
+    /** DEBT-172: present on a CLARIFICATION_NEEDED / ASK_USER_QUESTION card.
+     *  `question`/`context`/`suggested_options` back a single question;
+     *  `questions` is the multi-question batch extension. When either is
+     *  present, Workspace.tsx renders ClarificationGrillCard instead of this
+     *  approve/reject card. */
+    question?: string | null;
+    context?: string | null;
+    suggested_options?: string[] | null;
+    questions?: ClarificationQuestion[] | null;
 }
 
 interface Props {

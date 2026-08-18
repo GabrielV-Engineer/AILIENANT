@@ -16,6 +16,11 @@ existing pending_tool_call (DEBT-129) two-phase pattern. Six things are tested:
      have no `approval_id`).
   6. The inbound resume dict carries `answer`/`selected_option` and falls back
      `answer` to `comment`.
+
+DEBT-172 additionally covers the multi-question batch extension: the outbound
+card synthesizes an action_description when only `questions` is present, the
+resume phase folds a batch `answers` result into one readable trajectory line
+per question, and the inbound resume dict forwards `answers` verbatim.
 """
 from __future__ import annotations
 
@@ -199,6 +204,47 @@ async def test_resume_phase_falls_back_when_operator_gives_no_answer() -> None:
     assert any("no answer" in m["content"] for m in obs)
 
 
+async def test_resume_phase_folds_multi_question_answers_into_trajectory() -> None:
+    """DEBT-172 — a batch resume result (`answers`) folds into one readable
+    trajectory line per question, id-correlated back to its header."""
+    session = StubSession(exit_codes=[0], outputs=[b"ok\n"])
+    adapter = StubAdapter(session, StubSyncSurface())
+    clarify = AsyncMock(return_value={
+        "answer": None, "selected_option": None,
+        "answers": [
+            {"id": "q0", "selected_labels": ["Single container"], "free_text": None},
+            {"id": "q1", "selected_labels": [], "free_text": "Later this week"},
+        ],
+    })
+
+    async def _never_called(_messages: Any) -> List[ToolCall]:
+        raise AssertionError("reasoner must not run during the clarification-resume phase")
+
+    state = _base_state(
+        pending_hitl_request={
+            "request_id": "abc123",
+            "kind": "ASK_USER_QUESTION",
+            "questions": [
+                {"id": "q0", "header": "Docker setup", "question": "How to dockerize?",
+                 "context": None, "options": [], "multi_select": False},
+                {"id": "q1", "header": "Docs", "question": "Commit docs now?",
+                 "context": None, "options": [], "multi_select": False},
+            ],
+            "requested_at": "2026-01-01T00:00:00Z",
+        },
+    )
+    config = _config(adapter, _never_called, cell_clarification_fn=clarify)
+
+    delta = await run_agentic_cell_node(state, config)
+
+    assert delta.get("pending_hitl_request") is None
+    trajectory = delta["agentic_trajectory"]
+    obs = [m for m in trajectory if isinstance(m, dict) and m.get("role") == "system"]
+    combined = " ".join(m["content"] for m in obs)
+    assert "Docker setup: Single container" in combined
+    assert "Docs: Later this week" in combined
+
+
 # ── 4 — the coder's READ_ONLY grounding pre-pass never offers the tool ───────
 
 
@@ -280,6 +326,44 @@ async def test_emit_interrupt_card_surfaces_question_and_falls_back_correlation_
     assert data.suggested_options == ["A", "B"]
 
 
+async def test_emit_interrupt_card_surfaces_questions_batch_with_synthesized_description() -> None:
+    """DEBT-172 — a pure batch payload (no legacy `question`) still gets a
+    sensible action_description fallback, and `questions` rides through."""
+    from core.task_service import TaskService
+
+    ts = TaskService()  # type: ignore[no-untyped-call]
+    sent: List[Any] = []
+
+    async def _capture(session_id: str, event: Any) -> None:
+        sent.append(event)
+
+    batch = [
+        {
+            "id": "q0", "header": "Docker setup", "question": "How to dockerize?",
+            "context": None,
+            "options": [{"label": "Single container", "description": None, "recommended": True}],
+            "multi_select": False,
+        },
+    ]
+    with patch("core.task_service.vfs_manager.send_personal_message", new=_capture):
+        await ts._emit_interrupt_card(
+            "sess-1",
+            {
+                "session_id": "sess-1",
+                "request_id": "req-batch",
+                "request_kind": "CLARIFICATION_NEEDED",
+                "questions": batch,
+            },
+        )
+
+    data = sent[0].data
+    assert data.approval_id == "req-batch"
+    assert data.action_description == "I have 1 question(s) before continuing."
+    assert data.question is None
+    assert data.questions is not None
+    assert [q.model_dump() for q in data.questions] == batch
+
+
 async def test_emit_interrupt_card_approval_shape_is_unaffected() -> None:
     from core.task_service import TaskService
 
@@ -320,7 +404,7 @@ def test_resume_approval_dict_forwards_explicit_answer() -> None:
     result = _resume_approval_dict(data)
     assert result == {
         "approved": True, "comment": "ignored",
-        "answer": "Use approach A", "selected_option": "A",
+        "answer": "Use approach A", "selected_option": "A", "answers": None,
     }
 
 
@@ -334,3 +418,17 @@ def test_resume_approval_dict_falls_back_answer_to_comment() -> None:
     result = _resume_approval_dict(data)
     assert result["answer"] == "Use approach A"
     assert result["selected_option"] is None
+
+
+def test_resume_approval_dict_forwards_answers_batch() -> None:
+    from api.ws_contracts import ClarificationAnswer, HITLResponsePayload
+    from main import _resume_approval_dict
+
+    data = HITLResponsePayload(
+        approval_id="req-xyz", approved=True,
+        answers=[ClarificationAnswer(id="q0", selected_labels=["Single container"])],
+    )
+    result = _resume_approval_dict(data)
+    assert result["answers"] == [
+        {"id": "q0", "selected_labels": ["Single container"], "free_text": None}
+    ]

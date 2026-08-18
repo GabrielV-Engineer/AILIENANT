@@ -64,17 +64,20 @@ def request_graph_approval(
 def request_graph_clarification(
     *,
     session_id: str,
-    question: str,
+    question: Optional[str] = None,
     context: Optional[str] = None,
     suggested_options: Optional[List[str]] = None,
+    questions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Suspend the running graph to ask the human a clarifying question.
 
     Same native-``interrupt()`` substrate as :func:`request_graph_approval`, but
     shaped for a question/answer exchange instead of a binary approval: the
-    frontend renders ``question``/``context``/``suggested_options``, and the
-    resumed run gets back whatever free-text answer or picked option the human
-    supplied, normalized to ``{"answer": str | None, "selected_option": str | None}``.
+    frontend renders ``question``/``context``/``suggested_options`` (single-question
+    shape), or ``questions`` (the multi-question batch extension, DEBT-172) — the
+    two are independent and either may be populated. The resumed run gets back
+    whatever free-text answer or picked option the human supplied, normalized to
+    ``{"answer": str | None, "selected_option": str | None, "answers": list | None}``.
 
     Must be called from within a graph node during execution (``interrupt()`` reads
     the active run context); calling it outside a graph run raises.
@@ -87,15 +90,18 @@ def request_graph_clarification(
         "context": context,
         "suggested_options": list(suggested_options) if suggested_options else [],
     }
+    if questions:
+        payload["questions"] = questions
     resumed: Any = interrupt(payload)
     if isinstance(resumed, dict):
         return {
             "answer": resumed.get("answer"),
             "selected_option": resumed.get("selected_option"),
+            "answers": resumed.get("answers"),
         }
     if isinstance(resumed, str):
-        return {"answer": resumed, "selected_option": None}
-    return {"answer": None, "selected_option": None}
+        return {"answer": resumed, "selected_option": None, "answers": None}
+    return {"answer": None, "selected_option": None, "answers": None}
 
 
 def _collect_interrupts(snapshot: Any) -> List[Any]:

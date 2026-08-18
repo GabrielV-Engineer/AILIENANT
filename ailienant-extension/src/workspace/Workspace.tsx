@@ -27,6 +27,7 @@ import { IndexingStatus } from './components/IndexingStatus';
 import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
 import { HITLInterventionCard } from './components/HITLInterventionCard';
+import { ClarificationGrillCard } from './components/ClarificationGrillCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -718,11 +719,21 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 authorization card lives in the main chat, not the
                                 analyst pane. FILE_WRITE uses the inline diff row above. */}
                             {hitlPending && !hitlHasDiff && (
-                                <HITLInterventionCard
-                                    intervention={hitlPending}
-                                    nattName={nattName}
-                                    onResolved={handleResolveHitl}
-                                />
+                                (hitlPending.questions?.length || hitlPending.question)
+                                    ? (
+                                        <ClarificationGrillCard
+                                            intervention={hitlPending}
+                                            nattName={nattName}
+                                            onResolved={handleResolveHitl}
+                                        />
+                                    )
+                                    : (
+                                        <HITLInterventionCard
+                                            intervention={hitlPending}
+                                            nattName={nattName}
+                                            onResolved={handleResolveHitl}
+                                        />
+                                    )
                             )}
                             <div ref={messagesEndRef} />
                         </div>

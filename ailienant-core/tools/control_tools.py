@@ -93,21 +93,67 @@ def _now_iso() -> str:
 
 
 # =====================================================================
-# Task D — AskUserQuestionTool
+# AskUserQuestionTool
 # =====================================================================
 
 
+class AskUserQuestionOptionInput(BaseModel):
+    label: str = Field(description="Short option text shown to the operator.")
+    description: Optional[str] = Field(
+        default=None,
+        description="One sentence of rationale or trade-off for this option.",
+    )
+    recommended: bool = Field(
+        default=False,
+        description="Set true on exactly one option per question — the one you would pick.",
+    )
+
+
+class AskUserQuestionItem(BaseModel):
+    header: str = Field(
+        description="Very short label (<=3 words) identifying this question in a tab."
+    )
+    question: str = Field(description="The full question to ask.")
+    context: Optional[str] = Field(
+        default=None, description="Optional background to inform the answer."
+    )
+    options: List[AskUserQuestionOptionInput] = Field(
+        description=(
+            "2 to 4 concrete, mutually exclusive answers. Always populate this "
+            "when the answer space is enumerable — never leave it empty just to "
+            "fall back on free text."
+        )
+    )
+    multi_select: bool = Field(
+        default=False,
+        description="True if the operator may pick more than one option for this question.",
+    )
+
+
 class AskUserQuestionInput(BaseModel):
-    question: str = Field(
-        description="Natural-language question to surface to the human operator."
+    question: Optional[str] = Field(
+        default=None,
+        description=(
+            "Legacy single free-form question. Prefer `questions` below whenever "
+            "the answer space is enumerable; only use this bare form for a truly "
+            "open-ended question with no sensible fixed options."
+        ),
     )
     context: Optional[str] = Field(
         default=None,
-        description="Optional context block to inform the operator's answer.",
+        description="Optional context block to inform the operator's answer (single-question mode).",
     )
     suggested_options: Optional[List[str]] = Field(
         default=None,
-        description="Optional structured choices the operator can pick from.",
+        description="Optional structured choices the operator can pick from (single-question mode).",
+    )
+    questions: Optional[List[AskUserQuestionItem]] = Field(
+        default=None,
+        description=(
+            "One to four related questions to ask in a single pause, each with its "
+            "own concrete options. Batch questions the operator needs to answer "
+            "together instead of calling this tool repeatedly."
+        ),
     )
 
 
@@ -143,22 +189,42 @@ class AskUserQuestionTool(BaseTool):
 
     async def _arun(
         self,
-        question: str,
+        question: Optional[str] = None,
         context: Optional[str] = None,
         suggested_options: Optional[List[str]] = None,
+        questions: Optional[List[AskUserQuestionItem]] = None,
     ) -> str:
+        if not questions and not question:
+            raise ValueError(
+                "ask_user_question requires either `question` (single-question "
+                "mode) or `questions` (batch mode)."
+            )
         request_id = uuid.uuid4().hex
-        self._state["pending_hitl_request"] = {
+        request: dict[str, Any] = {
             "request_id": request_id,
             "kind": "ASK_USER_QUESTION",
-            "question": question,
-            "context": context,
-            "suggested_options": list(suggested_options) if suggested_options else [],
             "requested_at": _now_iso(),
         }
-        logger.info(
-            "ask_user_question: HITL requested id=%s question=%r", request_id, question
-        )
+        if questions:
+            request["questions"] = [
+                {
+                    "id": f"q{i}",
+                    "header": item.header,
+                    "question": item.question,
+                    "context": item.context,
+                    "options": [opt.model_dump() for opt in item.options],
+                    "multi_select": item.multi_select,
+                }
+                for i, item in enumerate(questions)
+            ]
+            log_summary = f"{len(questions)} question(s)"
+        else:
+            request["question"] = question
+            request["context"] = context
+            request["suggested_options"] = list(suggested_options) if suggested_options else []
+            log_summary = repr(question)
+        self._state["pending_hitl_request"] = request
+        logger.info("ask_user_question: HITL requested id=%s question=%s", request_id, log_summary)
         return f"[ask_user_question] HITL_PENDING:{request_id}"
 
 

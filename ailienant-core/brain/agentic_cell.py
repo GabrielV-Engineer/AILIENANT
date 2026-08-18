@@ -597,12 +597,27 @@ async def run_agentic_cell_node(
             resolved = await _resolve_pending_clarification(
                 state, pending_clarification, configurable
             )
-            answer = (
-                resolved.get("answer")
-                or resolved.get("selected_option")
-                or "(the operator gave no answer)"
-            )
-            question_text = str(pending_clarification.get("question") or "")
+            answers_list = resolved.get("answers")
+            if answers_list:
+                # Multi-question batch (DEBT-172): fold every per-question
+                # answer into one readable trajectory line, id-correlated back
+                # to the batch's own question text.
+                _by_id = {q.get("id"): q for q in (pending_clarification.get("questions") or [])}
+                answer = "; ".join(
+                    f"{_by_id.get(a.get('id'), {}).get('header', a.get('id'))}: "
+                    f"{', '.join(a.get('selected_labels') or []) or a.get('free_text') or '(no answer)'}"
+                    for a in answers_list
+                )
+                question_text = "; ".join(
+                    str(q.get("question") or "") for q in (pending_clarification.get("questions") or [])
+                )
+            else:
+                answer = (
+                    resolved.get("answer")
+                    or resolved.get("selected_option")
+                    or "(the operator gave no answer)"
+                )
+                question_text = str(pending_clarification.get("question") or "")
             cq_rec: Dict[str, Any] = {
                 "iteration": iteration, "edits": [], "occ_conflicts": [],
                 "exit_code": None, "diagnostics": "", "status": "continue",
@@ -1430,26 +1445,34 @@ async def _resolve_pending_clarification(
     state: Dict[str, Any],
     pending: Dict[str, Any],
     configurable: Dict[str, Any],
-) -> Dict[str, Optional[str]]:
-    """Resolve a deferred ``ask_user_question`` request (DEBT-171) — the FIRST
-    action of the clarification-resume phase.
+) -> Dict[str, Any]:
+    """Resolve a deferred ``ask_user_question`` request — the FIRST action of
+    the clarification-resume phase.
 
     Mirrors ``_approve_exec``/``_approve_tool_call``'s contract: an injected
     ``cell_clarification_fn`` seam in tests, else native
     ``request_graph_clarification`` (LangGraph ``interrupt()``) so the graph
-    suspends and the runtime is freed until the operator replies.
+    suspends and the runtime is freed until the operator replies. ``pending``
+    carries either a single ``question``/``context``/``suggested_options`` or
+    the additive ``questions`` batch (DEBT-172) — both are forwarded so either
+    shape resolves correctly.
     """
     clarification_fn = configurable.get("cell_clarification_fn")
     if clarification_fn is not None:
         raw = await clarification_fn(pending)
-        return {"answer": raw.get("answer"), "selected_option": raw.get("selected_option")}
+        return {
+            "answer": raw.get("answer"),
+            "selected_option": raw.get("selected_option"),
+            "answers": raw.get("answers"),
+        }
     from core.hitl import request_graph_clarification
 
     return request_graph_clarification(
         session_id=str(state.get("task_id") or ""),
-        question=str(pending.get("question") or ""),
+        question=pending.get("question"),
         context=pending.get("context"),
         suggested_options=pending.get("suggested_options"),
+        questions=pending.get("questions"),
     )
 
 
