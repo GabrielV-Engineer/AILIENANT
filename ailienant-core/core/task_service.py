@@ -1141,7 +1141,23 @@ class TaskService:
             # Genuine planner failure (no plan, and not awaiting the user).
             if mission is None:
                 _latency_outcome = "failed"
-                errs = final_state.get("errors") or ["the planner did not return a plan"]
+                errs = list(final_state.get("errors") or [])
+                if not errs:
+                    # route_after_ideation's defensive "nothing distilled and not
+                    # suspended" branch (reason=ideation_no_op, brain/engine.py) ends
+                    # the turn at END without ever invoking the planner and without
+                    # writing to `errors` — distinguish that routing dead-end from a
+                    # genuine planner failure so it doesn't masquerade as one.
+                    if final_state.get("shared_understanding_reached") and not final_state.get(
+                        "ideation_synthesized"
+                    ):
+                        errs = [
+                            "the Socratic dialogue concluded but was never handed off "
+                            "to the planner (ideation_no_op routing dead-end, not a "
+                            "planning failure) — please report this"
+                        ]
+                    else:
+                        errs = ["the planner did not return a plan"]
                 await vfs_manager.broadcast_token(
                     session_id, "I couldn't draft a plan: " + "; ".join(errs)
                 )

@@ -198,3 +198,57 @@ def test_route_after_ideation_hands_off_to_planner_after_synthesis() -> None:
 def test_route_after_ideation_defaults_to_end() -> None:
     from brain.engine import route_after_ideation
     assert route_after_ideation({}) == END
+
+
+# ---------------------------------------------------------------------------
+# DEBT-181: a long grill must not silently forget history StateSummarizer
+# compacted into a role="system" "[HISTORY SUMMARY]: ..." entry. Both replay
+# sites (_stream_question_llm, _dialogue_transcript) used to filter to
+# role in ("user", "assistant") only, dropping it.
+# ---------------------------------------------------------------------------
+
+_HISTORY_SUMMARY = (
+    "[HISTORY SUMMARY]: earlier the user agreed on JWT auth in src/auth/service.py."
+)
+
+
+def test_dialogue_transcript_includes_the_compacted_summary() -> None:
+    from brain.ideation import _dialogue_transcript
+
+    messages = [
+        {"role": "system", "content": _HISTORY_SUMMARY},
+        {"role": "assistant", "content": "What auth scheme?"},
+        {"role": "user", "content": "JWT."},
+    ]
+    text = _dialogue_transcript(messages)
+    assert "earlier the user agreed on JWT auth" in text
+    assert "ANALYST: What auth scheme?" in text
+    assert "USER: JWT." in text
+
+
+@pytest.mark.anyio
+async def test_stream_question_llm_folds_the_summary_into_the_system_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agents.analyst import _stream_question_llm
+
+    captured: Dict[str, Any] = {}
+
+    async def fake_astream_byom(messages, tier: str = "medium", session_id: str = ""):
+        captured["messages"] = messages
+        yield "Next question?"
+
+    monkeypatch.setattr("tools.llm_gateway.LLMGateway.astream_byom", fake_astream_byom)
+
+    messages = [
+        {"role": "system", "content": _HISTORY_SUMMARY},
+        {"role": "assistant", "content": "What auth scheme?"},
+        {"role": "user", "content": "JWT."},
+    ]
+    chunks = [c async for c in _stream_question_llm(messages, "SOUL", "", "sess")]
+    assert chunks
+
+    sent = captured["messages"]
+    system_turns = [m for m in sent if m["role"] == "system"]
+    assert len(system_turns) == 1  # folded, not duplicated as a second system turn
+    assert "earlier the user agreed on JWT auth" in system_turns[0]["content"]

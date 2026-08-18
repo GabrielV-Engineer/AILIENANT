@@ -30,6 +30,13 @@ logger = logging.getLogger("STATE_SUMMARIZER")
 KEEP_LAST_N: int = 5
 THRESHOLD_RATIO: float = 0.80
 
+# Public prefix tag on the injected system-role summary message (see the
+# compression branch below). Readers that replay `state["messages"]` into an
+# LLM prompt (agents/analyst.py, brain/ideation.py) filter on this exact prefix
+# to pick the summary out of the system role without slurping in an unrelated
+# system-role entry some other node might add to the same channel later.
+HISTORY_SUMMARY_PREFIX: str = "[HISTORY SUMMARY]: "
+
 _PROMPT = (
     "Summarize the following technical conversation concisely, "
     "preserving key architectural decisions, variable names, and unresolved issues. "
@@ -149,7 +156,7 @@ async def _run_summarize_node_core(
         return {
             "messages": [
                 {"__replace__": True},
-                {"role": "system", "content": f"[HISTORY SUMMARY]: {summary_text}"},
+                {"role": "system", "content": f"{HISTORY_SUMMARY_PREFIX}{summary_text}"},
                 *recent,
             ]
         }

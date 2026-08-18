@@ -1,6 +1,8 @@
 # ailienant-core/brain/state.py
 
+import logging
 import operator
+import os
 from typing import Any, TypedDict, List, Dict, Optional, Annotated, Literal
 from pydantic import BaseModel, Field, model_validator
 
@@ -443,6 +445,16 @@ class AIlienantGraphState(TypedDict):
     hitl_pending: bool              # True while the graph is awaiting human approval
     hitl_response: Optional[str]   # "approved" | "rejected" + optional comment from HITL response
     shared_understanding_reached: bool  # Phase 2.21: True once analyst confirms Socratic dialogue complete
+    # ideation_synthesized: set by synthesis_node once the Socratic dialogue is distilled
+    #   into a planner brief; route_after_ideation reads it to hand the turn to
+    #   planner_agent instead of dead-ending at END. Scalar overwrite (written once per
+    #   synthesis turn). MUST stay declared here — LangGraph silently drops any state key
+    #   a node returns that isn't a channel on this TypedDict (see assert_declared_channels
+    #   below), which is exactly how this handoff went dark before it was declared.
+    ideation_synthesized: bool
+    # ideation_glossary: ubiquitous language ({term: definition}) settled during the
+    #   Socratic dialogue, folded into the planner's context. Scalar overwrite.
+    ideation_glossary: Dict[str, str]
     # Drift gate decision committed by drift_compute and read by the interrupt-bearing
     # drift_gate (split so the gate decides on already-committed, replay-stable state).
     drift_gate_open: Optional[bool]
@@ -778,3 +790,52 @@ class AIlienantGraphState(TypedDict):
     # every reader falls back to the pre-existing literal defaults (True / 4096).
     enable_native_thinking: Optional[bool]
     thinking_budget_tokens: Optional[int]
+
+
+# =====================================================================
+# 3. NODE-DELTA GUARD — reject writes LangGraph would silently drop
+# =====================================================================
+# LangGraph's compiled StateGraph filters every node's returned dict down to the
+# keys declared on this TypedDict before merging into the checkpoint
+# (langgraph/graph/state.py::attach_node._get_updates: `if k in output_keys`).
+# An undeclared key is dropped with NO exception and NO warning — the write simply
+# never happens. That silent drop is exactly how the ideation→planner handoff went
+# dark: synthesis_node returned `ideation_synthesized` for the life of the feature
+# without it ever being declared here, so route_after_ideation could never see it
+# and every Socratic dialogue dead-ended instead of reaching the planner.
+#
+# assert_declared_channels() closes that whole class of bug at the source: every
+# node wrapper (brain/engine.py::_instrument_node, brain/ideation.py's subgraph
+# nodes) calls it on the raw delta just before returning. It raises under pytest
+# or AILIENANT_STRICT_STATE=1 so CI catches a stray key the moment it's introduced;
+# in a live session it only logs, so a fault here can never crash a running turn
+# (charter §5.2 — no critical path may be taken down by a diagnostic).
+logger = logging.getLogger("GRAPH_STATE")
+
+_DECLARED_CHANNELS: frozenset[str] = frozenset(AIlienantGraphState.__annotations__)
+
+
+def assert_declared_channels(node_name: str, delta: Any) -> None:
+    """Reject state keys LangGraph would otherwise drop without a trace.
+
+    Only plain-dict deltas are checked — a node returning ``None``, a ``Command``,
+    or a list of ``Command``/dict (Send fan-out) is outside this check's scope and
+    passes through untouched; LangGraph's own ``_get_updates`` filters those
+    separately. Keys prefixed with ``__`` (e.g. the ``_merge_messages`` replace
+    sentinel) are reducer-internal markers, not channel names, and are skipped.
+    """
+    if not isinstance(delta, dict):
+        return
+    unknown = sorted(
+        k for k in delta if not k.startswith("__") and k not in _DECLARED_CHANNELS
+    )
+    if not unknown:
+        return
+    message = (
+        f"node {node_name!r} returned undeclared state key(s) {unknown!r} — "
+        "LangGraph silently drops these on write; declare them on "
+        "AIlienantGraphState (brain/state.py) instead."
+    )
+    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("AILIENANT_STRICT_STATE") == "1":
+        raise ValueError(message)
+    logger.error(message)

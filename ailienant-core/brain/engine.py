@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar, cast
 from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
 
-from brain.state import AIlienantGraphState
+from brain.state import AIlienantGraphState, assert_declared_channels
 from brain.checkpoint import checkpoint_manager
 from brain.failure_breaker import failure_breaker, normalize_signature
 from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
@@ -103,6 +103,15 @@ def route_after_ideation(state: Dict[str, Any]) -> str:
     else:
         target = END  # defensive: nothing distilled and not suspended → nothing to plan
         reason = "ideation_no_op"
+        logger.error(
+            "route_after_ideation: ideation_no_op — dialogue concluded without a "
+            "synthesis handoff (shared_understanding_reached=%s, "
+            "ideation_synthesized=%s). The turn dead-ends at END without ever "
+            "reaching planner_agent; task_service.py surfaces this to the user "
+            "as a planner failure, but the planner never ran.",
+            state.get("shared_understanding_reached"),
+            state.get("ideation_synthesized"),
+        )
     log_routing_decision(
         session_id=state.get("task_id", ""),
         project_id=state.get("project_id", ""),
@@ -136,7 +145,9 @@ def _instrument_node(name: str, fn: _NodeFn) -> _NodeFn:
         # Forward the runtime-supplied RunnableConfig (and any positional extras)
         # so nodes that declare a `config` parameter receive it — LangGraph inspects
         # the outermost callable's signature, so the wrapper must be variadic.
-        return await fn(state, *args, **kwargs)
+        result = await fn(state, *args, **kwargs)
+        assert_declared_channels(name, result)
+        return result
 
     return cast(_NodeFn, _wrapped)
 

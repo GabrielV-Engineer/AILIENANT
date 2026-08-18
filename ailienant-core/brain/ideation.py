@@ -20,12 +20,12 @@
 import json
 import logging
 import os as _os
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 
-from brain.state import AIlienantGraphState
+from brain.state import AIlienantGraphState, assert_declared_channels
 
 logger = logging.getLogger("IDEATION_GRAPH")
 
@@ -55,14 +55,26 @@ _DISTILL_SYSTEM_PROMPT: str = (
 
 
 def _dialogue_transcript(messages: List[Dict[str, Any]]) -> str:
-    """Flatten the accumulated Q&A into a plain transcript for the distillation prompt."""
+    """Flatten the accumulated Q&A into a plain transcript for the distillation prompt.
+
+    Includes StateSummarizer's (brain/summarizer.py) compacted-history entry when
+    present — dropping it would silently erase everything the dialogue settled
+    before the turns it evicted once a long grill outgrew its token budget
+    (DEBT-181).
+    """
+    from brain.summarizer import HISTORY_SUMMARY_PREFIX
+
     lines: List[str] = []
     for m in messages:
         role = m.get("role")
         content = m.get("content")
-        if role in ("user", "assistant") and content:
+        if not content:
+            continue
+        if role in ("user", "assistant"):
             speaker = "USER" if role == "user" else "ANALYST"
             lines.append(f"{speaker}: {content}")
+        elif role == "system" and str(content).startswith(HISTORY_SUMMARY_PREFIX):
+            lines.append(f"EARLIER CONTEXT: {content}")
     return "\n".join(lines)
 
 
@@ -211,9 +223,31 @@ def route_after_analyst(state: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 from agents.analyst import run_analyst_node  # noqa: E402 — deferred for engine.py compat
 
+_NodeFn = TypeVar("_NodeFn", bound=Callable[..., Awaitable[Any]])
+
+
+def _guarded(name: str, fn: _NodeFn) -> _NodeFn:
+    """Reject an undeclared state key before it reaches LangGraph's silent filter.
+
+    ``ideation_loop`` is added to the parent graph as a raw compiled subgraph
+    (brain/engine.py), so its own nodes never pass through that module's
+    ``_instrument_node`` wrapper — this is the local equivalent, scoped to
+    ``assert_declared_channels`` only (no parent-graph telemetry to duplicate).
+    This exact gap is what let ``ideation_synthesized`` go undeclared for the
+    life of the feature: the handoff silently dropped on every run.
+    """
+
+    async def _wrapped(state: Any, *args: Any, **kwargs: Any) -> Any:
+        result = await fn(state, *args, **kwargs)
+        assert_declared_channels(name, result)
+        return result
+
+    return cast(_NodeFn, _wrapped)
+
+
 _ideation_workflow: StateGraph[AIlienantGraphState] = StateGraph(AIlienantGraphState)
-_ideation_workflow.add_node("analyst_grill", run_analyst_node)  # type: ignore[type-var]
-_ideation_workflow.add_node("synthesis_node", run_synthesis_node)  # type: ignore[type-var]
+_ideation_workflow.add_node("analyst_grill", _guarded("analyst_grill", run_analyst_node))  # type: ignore[type-var]
+_ideation_workflow.add_node("synthesis_node", _guarded("synthesis_node", run_synthesis_node))  # type: ignore[type-var]
 _ideation_workflow.add_edge(START, "analyst_grill")
 _ideation_workflow.add_conditional_edges(
     "analyst_grill", route_after_analyst, ["synthesis_node", END]

@@ -349,6 +349,7 @@ async def _stream_question_llm(
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
     from transport.token_batcher import batch_tokens
     from agents.roles import LANGUAGE_MIRROR_DIRECTIVE
+    from brain.summarizer import HISTORY_SUMMARY_PREFIX
 
     system_prompt = f"{soul_prompt}\n\n{_GRILL_DIRECTIVE}\n\n{LANGUAGE_MIRROR_DIRECTIVE}"
     if context_block:
@@ -358,8 +359,19 @@ async def _stream_question_llm(
     for m in messages:
         role = m.get("role")
         content = m.get("content")
-        if role in ("user", "assistant") and content:
+        if not content:
+            continue
+        if role in ("user", "assistant"):
             llm_messages.append({"role": role, "content": str(content)})
+        elif role == "system" and str(content).startswith(HISTORY_SUMMARY_PREFIX):
+            # StateSummarizer (brain/summarizer.py) compacted earlier turns into this
+            # entry once the dialogue outgrew its token budget. Fold it into the
+            # leading system message (one system turn, not a second mid-transcript
+            # one) instead of dropping it — otherwise a long grill silently forgets
+            # everything before the last KEEP_LAST_N raw turns (DEBT-181).
+            llm_messages[0]["content"] = (
+                f"{llm_messages[0]['content']}\n\n## Earlier in this dialogue\n{content}"
+            )
 
     raw = LLMGateway.astream_byom(llm_messages, tier="medium", session_id=session_id)
     async for chunk in batch_tokens(raw, chunk_ms=40):

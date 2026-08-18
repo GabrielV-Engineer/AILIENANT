@@ -121,6 +121,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-177 | Three declared conservatisms in the tool-selection path: `register_schema` warns rather than raises on definition conflict; `_visible_eager` sizes unresolvable schemas into the eager estimate; two different metrics share the name `reduction_ratio` | LOW | Declared tradeoff | (3) with the next audit-log touch | Floating |
 | DEBT-178 | `toggle_plan_mode` is deliberately READ_ONLY-tier yet mutates the permission channel — the tier system cannot gate it, so every dispatch-loop consumer must remember to apply `filter_loop_safe` (13.0.3 closed the current 3; a 4th consumer that forgets reopens it) | LOW | Capability-model gap | future permission-model slice | Floating |
 | DEBT-179 | App-runtime `Dockerfile` (13.1) installs the full `ailienant-core/requirements.txt` verbatim, baking dev/test-only tooling (pytest, mypy, ruff, pre-commit, hypothesis) into the production image alongside runtime dependencies | LOW | Image bloat / build hygiene | future prod-requirements split | Floating |
+| DEBT-180 | `agents/analyst.py::_is_agreement` does substring matching against short tokens ("ok", "yes", "bien") — a substantive answer that happens to contain one ends the Socratic grill early, mistaking elaboration for a bare agreement | LOW | Correctness gap | future ideation-quality slice | Floating |
 
 ---
 
@@ -854,6 +855,24 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** not a correctness defect — image is larger and slower to pull/build than necessary; no functional impact (verified: `docker compose up` reaches a healthy backend).
 - **Phase:** future prod-requirements split, e.g. a `requirements-runtime.txt` subset the Dockerfile installs from, keeping the full manifest for local dev/CI/pre-commit.
 - **Notes:** logged at 13.1 ship per CLAUDE.md §11.3 (MVP tradeoff — correctness and the single-command-launch DoD came first; a leaner split needs cross-referencing what CI/pre-commit/pytest actually consume from the manifest so a split doesn't silently break a dev/CI flow).
+
+### DEBT-180 [LOW · Floating] — Socratic grill's agreement detector does substring matching, not intent matching
+
+- **Date:** 2026-08-18
+- **Reproduce:** `agents/analyst.py::_is_agreement` (`agents/analyst.py:85-88`) checks `any(signal in text for signal in _AGREEMENT_SIGNALS)` against the user's raw lowercased reply. Short tokens in `_AGREEMENT_SIGNALS` ("ok", "yes", "bien") match as a substring of any longer answer — e.g. "Yes, establish component files for Header, HeroSlider..." ends the grill on the first word instead of being read as a substantive, still-elaborating answer.
+- **File(s):** `agents/analyst.py` (`_is_agreement`, `_AGREEMENT_SIGNALS`).
+- **Error:** correctness gap, not a crash — the dialogue can close a turn earlier than the user intended, but never breaks the handoff itself.
+- **Phase:** future ideation-quality slice — likely an LLM-based agreement classifier or an anchored match (start/end of string, or whole-message equality against a short allowlist) rather than unanchored substring search.
+- **Notes:** found while root-causing the ideation→planner handoff regression fixed this same session (`docs/DEV_JOURNAL.md`, 2026-08-18 entry); not the cause of that regression, logged separately per CLAUDE.md §11.3.
+
+### DEBT-181 [MEDIUM · RESOLVED 2026-08-18] — Long Socratic grills silently lost pre-compaction history
+
+- **Date:** 2026-08-18
+- **Reproduce (pre-fix):** `brain/summarizer.py::run_summarize_node` compacts `state["messages"]` once the turn count/token estimate crosses its threshold, replacing older turns with a single `role="system"` `"[HISTORY SUMMARY]: ..."` entry. Both `agents/analyst.py::_stream_question_llm` and `brain/ideation.py::_dialogue_transcript` filtered the replayed history to `role in ("user", "assistant")` only, so the injected summary was silently dropped — after compaction, the analyst's next question and the synthesis distillation both lost everything before the last few raw turns.
+- **File(s):** `brain/summarizer.py` (`run_summarize_node`, new public `HISTORY_SUMMARY_PREFIX`), `agents/analyst.py` (`_stream_question_llm`), `brain/ideation.py` (`_dialogue_transcript`).
+- **Fix:** `HISTORY_SUMMARY_PREFIX` is now a shared, exported constant tagging the summary entry. `_stream_question_llm` folds a matching system-role entry into the leading system message (one system turn, not a duplicate mid-transcript one) instead of dropping it; `_dialogue_transcript` renders it as an `EARLIER CONTEXT:` line in the flat transcript. Both readers key on the exact prefix, not a bare `role == "system"` check, so an unrelated future system-role entry in the same channel is not accidentally swept in.
+- **Verify:** `pytest tests/test_ideation.py -k "history_summary or compacted_summary"` — 2 new tests, both green; full `pytest`/`mypy .`/`npx pyright` all green (see `docs/DEV_JOURNAL.md`, 2026-08-18 entry).
+- **Notes:** found while root-causing the ideation→planner handoff regression fixed the same session; fixed immediately rather than deferred, per explicit instruction.
 
 ### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 
