@@ -42,3 +42,14 @@ The system SHALL pass a zero-friction-install end-to-end validation before Phase
 #### Scenario: Closing gate run
 - **WHEN** the Phase 13 checkpoint gate is executed
 - **THEN** both the zero-friction binary install path and the single-command container launch path complete successfully end-to-end, and the gate result is recorded before the phase is marked complete
+
+### Requirement: Protected Main + Automated Release
+The system SHALL protect `main` with a branch-protection ruleset requiring CI status checks to pass before merge, and SHALL provide a tag-triggered release pipeline that publishes the VS Code extension and creates a GitHub Release without a manual publish step. This requirement governs the maintainer/contributor-facing release process only — it has no user-visible surface and is independent of the end-user install paths described above.
+
+#### Scenario: Failing check blocks merge
+- **WHEN** a pull request targeting `main` has a failing `backend-gate` or `frontend-gate` required status check
+- **THEN** the branch-protection ruleset blocks the merge until the check passes
+
+#### Scenario: Tagged release publishes unattended
+- **WHEN** a maintainer pushes a `vX.Y.Z` version tag
+- **THEN** the release workflow builds and publishes the extension to the VS Code Marketplace and creates a corresponding GitHub Release automatically, with no manual publish step

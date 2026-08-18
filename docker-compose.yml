@@ -1,0 +1,35 @@
+# Single-command launch of the full AILIENANT backend architecture.
+#
+# LanceDB is embedded (file-based tables under ~/.ailienant, see
+# ailienant-core/core/storage_paths.py and shared/config.py) rather than a
+# standalone server process, so there is one service here, not two — its
+# persistence is the named volume below, not a second container.
+#
+# Usage: `docker compose up` from the repo root. No .env file is required to
+# reach a healthy backend; if one exists (copy .env.example to .env), the
+# optional provider keys below are picked up automatically.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ailienant-backend:local
+    ports:
+      - "8000:8000"
+    environment:
+      AILIENANT_API_PORT: "8000"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ailienant_home:/home/ailienant/.ailienant
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  ailienant_home:

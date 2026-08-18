@@ -9,7 +9,7 @@
 - Keep both paths exercised by the same closing checkpoint gate (13.5), so neither can silently regress relative to the other.
 
 **Non-Goals:**
-- Auto-update / release-channel infrastructure for the binary — out of scope for this phase; first-install only.
+- Auto-update / release-channel infrastructure for the binary — out of scope for this phase; first-install only. (This is a distinct concern from `13.6`'s release pipeline — see the decision below.)
 - Multi-arch container images beyond what's needed to run the stack locally (no registry publishing pipeline here).
 
 ## Decisions
@@ -17,6 +17,7 @@
 - **Container stack lives at repo root** (`Dockerfile`, `docker-compose.yml`), not nested under `ailienant-core/`, so `docker compose up` from the repo root is the documented single command — matches how `DEVELOPERS.md` already documents repo-root as the orientation point for a new contributor.
 - **Binary compiler choice (PyInstaller vs. Nuitka) is deferred** — see Open Questions. Both satisfy "single per-OS executable bundling FastAPI + LanceDB + tree-sitter"; the choice affects build tooling, not the spec-level behavior in `specs/portfolio-release/spec.md`, so it doesn't block task breakdown.
 - **The extension bootstraps the binary, it doesn't bundle it inside the `.vsix`.** Bundling a per-OS binary inside the extension package would multiply `.vsix` size by platform count; downloading/unpacking it on first activation (per CLAUDE.md §5.6 cross-platform safety — `pathlib`, atomic `os.replace`, closed handles before replace) keeps the package small and matches how other VS Code extensions with native binaries (e.g. language servers) handle this.
+- **`13.6`'s release pipeline is a different concern from the binary-auto-update non-goal above, not a contradiction of it.** The non-goal is about the *end user's installed binary* updating itself post-install — still out of scope. `13.6` is about *how the maintainer produces* each release artifact (the `.vsix`, the container image, the compiled binaries) safely and repeatably — branch protection on `main` plus a tag-triggered `vsce publish` + GitHub Release workflow. The end user never sees or interacts with any part of `13.6`; it has no UI and ships nothing to the install paths in `13.1`/`13.2`. Kept as a fully separate task family (see `tasks.md` §6) so the two audiences — end user vs. maintainer/contributor — are never conflated in implementation.
 
 ## Risks / Trade-offs
 

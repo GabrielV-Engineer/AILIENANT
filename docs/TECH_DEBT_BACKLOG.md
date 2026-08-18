@@ -121,6 +121,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-176 | No tool-invocation telemetry exists; the emit-only half is worth building, but consuming it as a ranking prior is rejected — it would break `select_tools` determinism and with it checkpoint-replay reproducibility | LOW | Capability gap | future observability slice | Floating |
 | DEBT-177 | Three declared conservatisms in the tool-selection path: `register_schema` warns rather than raises on definition conflict; `_visible_eager` sizes unresolvable schemas into the eager estimate; two different metrics share the name `reduction_ratio` | LOW | Declared tradeoff | (3) with the next audit-log touch | Floating |
 | DEBT-178 | `toggle_plan_mode` is deliberately READ_ONLY-tier yet mutates the permission channel — the tier system cannot gate it, so every dispatch-loop consumer must remember to apply `filter_loop_safe` (13.0.3 closed the current 3; a 4th consumer that forgets reopens it) | LOW | Capability-model gap | future permission-model slice | Floating |
+| DEBT-179 | App-runtime `Dockerfile` (13.1) installs the full `ailienant-core/requirements.txt` verbatim, baking dev/test-only tooling (pytest, mypy, ruff, pre-commit, hypothesis) into the production image alongside runtime dependencies | LOW | Image bloat / build hygiene | future prod-requirements split | Floating |
 
 ---
 
@@ -837,6 +838,15 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** a decision on the durable fix: (a) a new tier value the privilege matrix understands (e.g. `POLICY`), gated by `evaluate_action` like any other tier, so the exclusion is structural rather than a maintained list; or (b) move mode-toggling off the tool surface entirely (a dedicated orchestrator-only state-write path, since the orchestrator is its only real consumer and runs no dispatch loop). Both are bigger than a HITL-scoped fix and were out of scope for 13.0.3.
 - **Phase:** future permission-model slice.
 - **Notes:** logged at 13.0.3 ship per CLAUDE.md §11.3.
+
+### DEBT-179 [LOW · Floating] — App-runtime Docker image ships dev/test tooling alongside production dependencies
+
+- **Date:** 2026-08-18
+- **Reproduce:** the new root-level `Dockerfile` (13.1) installs `ailienant-core/requirements.txt` verbatim via `pip install -r requirements.txt`. That file is the single dependency manifest for the whole repo — dev/lint/test tooling (`pytest`, `pytest-cov`, `mypy`, `ruff`, `pre-commit`, `hypothesis`) is interleaved with runtime dependencies (`fastapi`, `lancedb`, `litellm`, the tree-sitter grammar set), so the shipped image installs and carries all of it, unused at runtime.
+- **File(s):** `Dockerfile`, `ailienant-core/requirements.txt`.
+- **Error:** not a correctness defect — image is larger and slower to pull/build than necessary; no functional impact (verified: `docker compose up` reaches a healthy backend).
+- **Phase:** future prod-requirements split, e.g. a `requirements-runtime.txt` subset the Dockerfile installs from, keeping the full manifest for local dev/CI/pre-commit.
+- **Notes:** logged at 13.1 ship per CLAUDE.md §11.3 (MVP tradeoff — correctness and the single-command-launch DoD came first; a leaner split needs cross-referencing what CI/pre-commit/pytest actually consume from the manifest so a split doesn't silently break a dev/CI flow).
 
 ### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 

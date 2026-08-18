@@ -271,6 +271,9 @@ SessionPermissionMode  (PLAN blocks non-READ · DEFAULT asks on WRITE/EXEC/DANGE
 ```
 Proyect_Ailienant/
 ├── assets/                      # Public brand assets (logo, icon) used by the READMEs
+├── Dockerfile · docker-compose.yml · .dockerignore # App-runtime image (backend + embedded
+│                               #   LanceDB) — `docker compose up` from repo root. Distinct from
+│                               #   ailienant-core/Dockerfile (the sandbox/command-exec image).
 ├── .github/
 │   ├── workflows/               #   docker-publish.yml (sandbox image → GHCR), backend-gate.yml
 │   │                            #     (ruff/mypy/pyright/pytest+cov), frontend-gate.yml (compile/lint/test

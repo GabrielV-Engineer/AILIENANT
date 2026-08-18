@@ -1,0 +1,39 @@
+# Build context is the repo root (docker-compose.yml -> Dockerfile), so this
+# keeps the image build fast and the image itself lean.
+
+.git
+.github
+.claude
+.vscode
+
+node_modules
+**/node_modules
+dist
+**/dist
+out
+**/out
+build
+**/build
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/venv
+**/.venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.coverage
+.coverage.*
+coverage.xml
+htmlcov
+
+# Frontend and docs/tooling are irrelevant to the backend image.
+ailienant-extension
+docs
+openspec
+*.md
+
+# Local secrets never enter the build context.
+.env
+.env.*
