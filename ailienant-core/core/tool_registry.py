@@ -250,6 +250,45 @@ def filter_resolvable(schemas: Sequence[ToolSchema]) -> List[ToolSchema]:
     return [s for s in schemas if s.name not in _INTENTIONALLY_UNREGISTERED]
 
 
+# =====================================================================
+# Loop-unsafe tools — dispatchable, but inert inside an autonomous loop
+# =====================================================================
+#
+# Distinct from _INTENTIONALLY_UNREGISTERED above, which means "no factory
+# exists / no reachable role can call it." Every name here HAS a factory, IS
+# permitted to its roles, and resolve_tools still builds it on request — the
+# problem is narrower: driven from a reasoning loop the call cannot do what its
+# own description promises. Advertising it there is the same "tool that lies"
+# defect filter_resolvable prevents, one layer over, so the exclusion is applied
+# by the loop CONSUMERS (before resolve_tools) rather than by resolve_tools
+# itself, which must keep serving its direct, non-loop callers unchanged.
+
+_NO_AUTONOMOUS_LOOP: Dict[str, str] = {
+    "toggle_plan_mode": (
+        "rewrites session_permission_mode, but ToolDispatcher pins its session mode "
+        "at construction and classify() never re-reads state, and no node promotes "
+        "that channel into a returned delta (core/tool_dispatch.py::_STATE_PROMOTERS "
+        "allowlists todo_write alone) — so inside a reasoning loop the call reports "
+        "'CAUTIOUS -> AUTO' and changes nothing, in the current loop or any later one. "
+        "Its designed consumer is the orchestrator, which by permanent architectural "
+        "decision runs no dispatch loop (see the scoping notes above). The privilege "
+        "tiers cannot express this: the tool is deliberately READ_ONLY "
+        "('policy-neutral across the matrix', tools/control_tools.py), so "
+        "evaluate_action ALLOWs it in every session mode but ASK_ALL."
+    ),
+}
+
+
+def filter_loop_safe(schemas: Sequence[ToolSchema]) -> List[ToolSchema]:
+    """Drop tools that are inert when driven from an autonomous reasoning loop.
+
+    Apply this at every consumer that hands a resolved tool map to a reasoner —
+    the agentic cell, the subagent worker, and the coder's grounding pre-pass.
+    Compose with ``filter_resolvable`` where the caller also advertises the list.
+    """
+    return [s for s in schemas if s.name not in _NO_AUTONOMOUS_LOOP]
+
+
 def resolve_tools(
     schemas: Sequence[ToolSchema], state: MutableMapping[str, Any]
 ) -> Dict[str, RegisteredTool]:

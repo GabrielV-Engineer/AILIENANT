@@ -399,9 +399,10 @@ def test_cell_never_advertises_a_phantom_tool(monkeypatch: pytest.MonkeyPatch) -
     assert delta["agentic_trajectory"]
 
 
-def test_cell_denies_session_mode_self_escalation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """toggle_plan_mode rewrites session_permission_mode — the channel evaluate_action
-    consults to gate every later dispatch. Retrieval kept it out of the cell only by
+def test_cell_never_offers_a_loop_unsafe_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """toggle_plan_mode rewrites session_permission_mode, but ToolDispatcher pins its
+    mode at construction and nothing promotes that channel — so from a loop the call
+    reports success and changes nothing. Retrieval kept it out of the cell only by
     accident; whole-catalog injection would make it always visible."""
     store = _isolated_store()
     asyncio.run(populate_tool_catalog(store))
@@ -410,7 +411,9 @@ def test_cell_denies_session_mode_self_escalation(monkeypatch: pytest.MonkeyPatc
     seen: List[Any] = []
     adapter = StubAdapter(StubSession(exit_codes=[0], outputs=[b"ok\n"]), StubSyncSurface())
     reasoner = _capturing_reasoner([[ToolCall("toggle_plan_mode", {"mode": "AUTO"})]], seen)
-    state = _profile_state(200_000)
+    # Seeded deliberately NOT equal to the mode the scripted call requests: with both
+    # set to AUTO the final assertion would hold whether the filter works or not.
+    state = _profile_state(200_000, session_permission_mode="CAUTIOUS")
 
     delta = asyncio.run(run_agentic_cell_node(state, _config(adapter, reasoner)))
 
@@ -420,10 +423,121 @@ def test_cell_denies_session_mode_self_escalation(monkeypatch: pytest.MonkeyPatc
         if isinstance(m, dict) and "[toggle_plan_mode]" in m.get("content", "")
     ]
     assert observations and "not found" in observations[0], (
-        "the denylist must remove it from the dispatcher map, not merely unadvertise it"
+        "the filter must remove it from the dispatcher map, not merely unadvertise it"
     )
-    assert state["session_permission_mode"] == "AUTO", (
-        "the denied call must not have rewritten the permission channel"
+    assert state["session_permission_mode"] == "CAUTIOUS", (
+        "the refused call must not have rewritten the permission channel"
+    )
+
+
+# =====================================================================
+# LOOP-SAFE — one predicate, every dispatch-loop consumer
+# =====================================================================
+
+
+def test_filter_loop_safe_drops_only_the_loop_unsafe_names() -> None:
+    """Guard against a predicate that is too broad — it must remove the named
+    tools and nothing else, preserving order."""
+    from core.tool_registry import _NO_AUTONOMOUS_LOOP, filter_loop_safe
+
+    schemas = [
+        _schema("read_file", {"core_dev"}),
+        _schema("toggle_plan_mode", {"core_dev"}),
+        _schema("validate_ast", {"core_dev"}),
+    ]
+    kept = filter_loop_safe(schemas)
+
+    assert [s.name for s in kept] == ["read_file", "validate_ast"]
+    assert "toggle_plan_mode" in _NO_AUTONOMOUS_LOOP
+    assert filter_loop_safe([]) == []
+
+
+def test_resolve_tools_still_builds_a_loop_unsafe_tool_when_asked_directly() -> None:
+    """The exclusion is consumer-side, applied BEFORE resolve_tools. resolve_tools
+    itself must keep serving its direct, non-loop callers unchanged — pinned by
+    tests/test_tool_registry.py's dispatchability contract for the same name."""
+    store = _isolated_store()
+    asyncio.run(populate_tool_catalog(store))
+    schema = next(s for s in store.all_schemas() if s.name == "toggle_plan_mode")
+
+    resolved = resolve_tools([schema], {"workspace_root": "/work", "project_id": "p"})
+
+    assert "toggle_plan_mode" in resolved
+
+
+def test_subagent_worker_never_resolves_a_loop_unsafe_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE REGRESSION ROW. Routing the subagent through DeferredToolLoader made
+    eager injection hand it the whole role slice, so a loop-unsafe tool went from
+    'surfaced only if it won a top-k ranking' to 'present deterministically'."""
+    from brain.nodes.subagent_worker_node import _resolve_tools
+
+    store = _isolated_store()
+    asyncio.run(populate_tool_catalog(store))
+    # _resolve_tools imports the module-level tool_rag_store singleton, exactly
+    # like the agentic cell — same monkeypatch seam.
+    monkeypatch.setattr("core.tool_rag.tool_rag_store", store)
+
+    state: Dict[str, Any] = {
+        "workspace_root": "/work",
+        "project_id": "p",
+        "active_llm_profile": SimpleNamespace(context_window=200_000),  # force eager
+    }
+    tools = asyncio.run(
+        _resolve_tools(
+            "core_dev", state,
+            intent="add a unit test for the parser",
+            session_mode=SessionPermissionMode.DEFAULT,
+        )
+    )
+
+    assert tools, "fixture must actually resolve a non-empty arsenal"
+    assert "toggle_plan_mode" not in tools, (
+        "eager injection put a loop-unsafe tool in the subagent's dispatcher map"
+    )
+    # Non-vacuous: the same eager slice still carries ordinary tools.
+    assert len(tools) > TOOL_RAG_TOP_K
+
+
+def test_coder_grounding_pre_pass_never_offers_a_loop_unsafe_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-existing exposure, independent of the eager wiring: the pre-pass filters
+    to READ_ONLY, which a loop-unsafe tool passes. `select_tools`'s READ_ONLY-survivor
+    guarantee actively promotes one into the selection when the ranking has no other
+    READ_ONLY candidate, so this loop is more exposed than the tier filter suggests."""
+    from tests.test_coder_tool_grounding import (
+        _fake_llm_response,
+        _make_state,
+        _make_step,
+        _run_with_mocks,
+    )
+
+    store = _isolated_store()
+    for name in ("toggle_plan_mode", "validate_ast"):
+        asyncio.run(store.register_schema(_schema(name, {"core_dev"})))
+    monkeypatch.setattr("core.tool_rag.tool_rag_store", store)
+
+    step = _make_step(action="write_file", target_file="brand_new_module.py")
+    state = _make_state(step)
+
+    _result, calls = asyncio.run(
+        _run_with_mocks(
+            state,
+            file_content=None,      # new file + empty RAG => grounding fires
+            rag_snippets=[],
+            ainvoke_responses=[_fake_llm_response("{}"), _fake_llm_response("")],
+        )
+    )
+
+    assert len(calls) >= 2, "the grounding pre-pass must have fired"
+    advertised = "".join(
+        m.get("content", "") for m in calls[0]["messages"] if isinstance(m, dict)
+    )
+    assert "toggle_plan_mode" not in advertised
+    assert "validate_ast" in advertised, (
+        "non-vacuous: the pre-pass must still offer ordinary READ_ONLY tools"
     )
 
 

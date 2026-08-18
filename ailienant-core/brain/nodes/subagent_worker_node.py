@@ -99,7 +99,7 @@ async def _resolve_tools(
         from brain.agent_context import resolve_context_budget
         from core.deferred_tool_loader import DeferredToolLoader
         from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
-        from core.tool_registry import resolve_tools
+        from core.tool_registry import filter_loop_safe, resolve_tools
 
         # Eager-vs-deferred rather than an unconditional top-k: a subagent whose
         # role slice fits the context budget gets its whole arsenal with no
@@ -116,7 +116,12 @@ async def _resolve_tools(
             # cost this subagent one of its usable tools (see agentic_cell.py).
             k=TOOL_RAG_TOP_K + 1,
         )
-        return resolve_tools(decision.schemas, state)
+        # Loop-unsafe tools are excluded before resolution, not after: this
+        # subagent drives a real reasoning loop (run_loop, up to max_iterations),
+        # and eager injection puts the whole role slice in its map — so a tool that
+        # is inert when called from a loop would be offered deterministically here,
+        # where retrieval previously surfaced it only by chance.
+        return resolve_tools(filter_loop_safe(decision.schemas), state)
     except Exception as exc:  # noqa: BLE001 — degrade to tool-less, never crash the node
         logger.warning(
             "dev-role tool resolution failed for '%s'; running tool-less: %s", role, exc,

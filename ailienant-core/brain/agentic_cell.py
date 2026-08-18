@@ -58,15 +58,9 @@ _RUN_TERMINAL_TIMEOUT_S: float = 120.0
 # its "name it next turn" instruction resolves to the same tools it just listed.
 _TOOL_SEARCH_NAME: str = "tool_search"
 
-# Never advertised to the cell, regardless of what selection returns.
-# `toggle_plan_mode` rewrites `session_permission_mode`, the very channel
-# `evaluate_action` consults to gate every later dispatch — a self-escalation
-# lever. It is a legitimate tool on the operator-facing paths, but an autonomous
-# multi-iteration cell running unattended must not be able to widen its own
-# permissions mid-run. Selection-tier retrieval kept it out of reach only by
-# accident (it rarely ranked against a coding intent); whole-catalog injection
-# would make it always visible, so the exclusion is made explicit here.
-_CELL_DENIED_FALLBACK_TOOLS: frozenset[str] = frozenset({"toggle_plan_mode"})
+# Loop-unsafe tools are excluded via core.tool_registry.filter_loop_safe, shared
+# with the other two dispatch-loop consumers (the subagent worker and the coder's
+# grounding pre-pass) so the three cannot drift apart.
 
 
 # =====================================================================
@@ -380,7 +374,7 @@ async def run_agentic_cell_node(
     from core.deferred_tool_loader import DeferredToolLoader
     from core.permissions import PermissionDecision, session_mode_from_channel
     from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
-    from core.tool_registry import filter_resolvable
+    from core.tool_registry import filter_loop_safe, filter_resolvable
     from core.workspace_sync import push_vfs_to_surface, pull_surface_to_vfs
 
     task_id: str = str(state.get("task_id", ""))
@@ -519,8 +513,18 @@ async def run_agentic_cell_node(
             # select_tools's intent-ranked search: ranking is not guaranteed stable
             # across a suspend/resume boundary, and an approved call must execute
             # the tool the operator actually saw, not whatever ranks highest now).
+            # filter_loop_safe applies here too: a checkpoint written before that
+            # exclusion existed can still carry a pending_tool_call naming a
+            # loop-unsafe tool, and resuming it would execute exactly what the
+            # dispatch seam now refuses. Filtering the single-element list keeps
+            # both paths on one predicate.
             schema = next(
-                (s for s in tool_rag_store.all_schemas() if s.name == tool_name), None
+                (
+                    s
+                    for s in filter_loop_safe(tool_rag_store.all_schemas())
+                    if s.name == tool_name
+                ),
+                None,
             )
             if schema is None:
                 tc_observation = (
@@ -684,16 +688,12 @@ async def run_agentic_cell_node(
             _already = {s.name for s in selected_schemas}
             selected_schemas.extend(s for s in replayed if s.name not in _already)
 
-        # Advertise only what dispatch can actually resolve: resolve_tools drops
-        # _INTENTIONALLY_UNREGISTERED names silently, so an unfiltered hint would
-        # promise tools that classify() answers with "tool not found". The cell
-        # denylist is applied at the same seam so a denied tool is absent from the
-        # dispatcher map too, never merely unadvertised.
-        fallback_schemas = [
-            s
-            for s in filter_resolvable(selected_schemas)
-            if s.name not in _CELL_DENIED_FALLBACK_TOOLS
-        ]
+        # Advertise only what dispatch can actually resolve AND what a reasoning
+        # loop can actually use: resolve_tools drops _INTENTIONALLY_UNREGISTERED
+        # names silently, and loop-unsafe tools report success while changing
+        # nothing. Both filters run at this one seam, so an excluded tool is absent
+        # from the dispatcher map too, never merely unadvertised.
+        fallback_schemas = filter_loop_safe(filter_resolvable(selected_schemas))
         messages = _build_messages(state)
         if fallback_schemas:
             messages = [

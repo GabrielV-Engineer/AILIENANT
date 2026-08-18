@@ -12,6 +12,7 @@ You are an autonomous contributor to **Project AILIENANT**. Your prime directive
   1. Determine the **currently active phase** from `docs/PROJECT_MANIFEST.md` — the first sub-phase not marked `[x]`.
   2. If that phase has a blueprint in `docs/` (named `PHASE_<N>_BLUEPRINT.md`), that blueprint is **binding** and MUST be read **before** any task touching its scope — including read-only research, design questions, and code mutations.
   3. Any deviation from the active blueprint requires a blueprint amendment in the same change. When a phase closes, the anchor advances automatically to the next open phase; do not hardcode a phase into this document or into code.
+  4. When the active phase has an OpenSpec change proposal under `openspec/changes/<slug>/` (see §15), that proposal's spec deltas are binding for the OpenSpec-covered scope. Where a `docs/PHASE_N_BLUEPRINT.md` also exists for the same phase, the blueprint remains the primary narrative authority and the proposal's deltas must not contradict it.
 
 ---
 
@@ -27,6 +28,7 @@ You are an autonomous contributor to **Project AILIENANT**. Your prime directive
 | Backend tests | `pytest` |
 | Frontend build | `npm run compile` |
 | Frontend lint | `npm run lint` |
+| Spec-drift check (ADVISORY) | `npm run openspec:validate` (see §15 — non-blocking until promoted, DEBT-166) |
 
 ---
 
@@ -181,3 +183,15 @@ Git execution is **strictly non-autonomous**: do NOT run Git commands yourself. 
 3. **No novels in commits:** The commit body must be a concise summary. Verbose architectural detail belongs only in `docs/DEV_JOURNAL.md` or PR notes — never in the commit message.
 4. **Granular adds:** Write each `git add` on its own line (one file per line), never inline-chained or backslash-continued, which breaks in some PowerShell environments.
 5. **Main-only workflow — no branches:** This is a solo-developer project. NEVER suggest or generate `git checkout -b`, `git branch`, `git switch -c`, or `git push origin <branch>`. All work commits directly to `main`; the only valid push is `git push origin main`. For isolation, use `git stash` and note the stash ref.
+
+---
+
+## 15. OpenSpec Verification Layer (Scope Boundary)
+
+`openspec` (`@fission-ai/openspec`, pinned in the repo-root `package.json`) is an ADDED structural/drift-check layer, not a replacement for this charter's SDD system:
+
+1. **Not a migration.** `docs/PROJECT_MANIFEST.md`, `docs/DEV_JOURNAL.md`, `docs/SCHEMA_EVOLUTION.MD`, and `docs/TECH_DEBT_BACKLOG.md` remain the source of truth for the roadmap, phase history, contract evolution, and technical debt. OpenSpec never overrides them; see §1.4 for how an OpenSpec change proposal interacts with a `docs/PHASE_N_BLUEPRINT.md` when both exist.
+2. **New-phases-only scope.** OpenSpec adoption starts with Phase 13; Phases 0-12 have no OpenSpec representation and none is planned (see `docs/TECH_DEBT_BACKLOG.md` DEBT-165 — a logged decision, not an oversight).
+3. **Advisory, not blocking.** `npm run openspec:validate` (`openspec validate --all --strict --json --no-interactive`) runs in CI (`.github/workflows/openspec-gate.yml`) with `continue-on-error: true`. Promoting it to a blocking gate is a separate, explicitly logged decision (DEBT-166), not automatic.
+4. **`openspec/` structure.** `openspec/config.yaml` holds project context shown to the authoring assistant; `openspec/changes/<slug>/` holds in-flight change proposals (`proposal.md`, `specs/`, optionally `design.md`, `tasks.md`); `openspec archive` promotes an implemented change's spec deltas into `openspec/specs/` as the accumulated baseline. Use `openspec status --change <slug>` to check artifact completion and `openspec validate <slug> --strict` before considering a change's planning artifacts done.
+5. **`AGENTS.md`** is a thin pointer to this file for cross-tool agent compatibility (OpenSpec and any other assistant that reads `AGENTS.md` by convention) — it is not a second copy of this charter and must not become one again.

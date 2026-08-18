@@ -120,6 +120,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-175 | `TOOL_RAG_TOP_K` cannot rise past 5 without reworking the Phase-5.7 gate's 14-schema baseline; its prescribed description-compression remedy is near self-cancelling (descriptions are 23.3% of payload, and compressing shrinks both sides of the ratio) | MEDIUM | Capability ceiling | future tool-catalog-economics slice | Floating |
 | DEBT-176 | No tool-invocation telemetry exists; the emit-only half is worth building, but consuming it as a ranking prior is rejected — it would break `select_tools` determinism and with it checkpoint-replay reproducibility | LOW | Capability gap | future observability slice | Floating |
 | DEBT-177 | Three declared conservatisms in the tool-selection path: `register_schema` warns rather than raises on definition conflict; `_visible_eager` sizes unresolvable schemas into the eager estimate; two different metrics share the name `reduction_ratio` | LOW | Declared tradeoff | (3) with the next audit-log touch | Floating |
+| DEBT-178 | `toggle_plan_mode` is deliberately READ_ONLY-tier yet mutates the permission channel — the tier system cannot gate it, so every dispatch-loop consumer must remember to apply `filter_loop_safe` (13.0.3 closed the current 3; a 4th consumer that forgets reopens it) | LOW | Capability-model gap | future permission-model slice | Floating |
 
 ---
 
@@ -826,6 +827,16 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** none are correctness defects; (3) is a live observability trap.
 - **Phase:** (3) with the next audit-log touch; (1) and (2) only if their premises change.
 - **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
+
+### DEBT-178 [LOW · Floating] — `toggle_plan_mode`'s READ_ONLY tier cannot express that it mutates the permission channel
+
+- **Date:** 2026-08-18
+- **Reproduce:** `tools/control_tools.py::TogglePlanModeTool` rewrites `state["session_permission_mode"]` — the channel `evaluate_action` consults to gate every dispatch — yet is registered `ToolPrivilegeTier.READ_ONLY` by deliberate design ("policy-neutral across the matrix", `control_tools.py:13-17`). `ToolPrivilegeTier` models effects on disk/network/processes; it has no vocabulary for "mutates the policy engine itself". 13.0.3 closed the concrete exposure (three dispatch-loop consumers could offer/call it while gaining nothing, since `core/tool_dispatch.py::_STATE_PROMOTERS` never promotes the write and `ToolDispatcher` pins its mode at construction) via a new `core/tool_registry.py::filter_loop_safe` predicate — but that predicate is opt-in per consumer. A future fourth dispatch-loop consumer that forgets to apply it reopens the same "tool that lies" defect.
+- **File(s):** `tools/control_tools.py` (`TogglePlanModeTool`), `core/permissions.py` (`ToolPrivilegeTier`), `core/tool_registry.py` (`filter_loop_safe`, `_NO_AUTONOMOUS_LOOP`).
+- **Error:** capability-model gap, not a live defect — 13.0.3 makes the current three consumers safe.
+- **Blocked by:** a decision on the durable fix: (a) a new tier value the privilege matrix understands (e.g. `POLICY`), gated by `evaluate_action` like any other tier, so the exclusion is structural rather than a maintained list; or (b) move mode-toggling off the tool surface entirely (a dedicated orchestrator-only state-write path, since the orchestrator is its only real consumer and runs no dispatch loop). Both are bigger than a HITL-scoped fix and were out of scope for 13.0.3.
+- **Phase:** future permission-model slice.
+- **Notes:** logged at 13.0.3 ship per CLAUDE.md §11.3.
 
 ### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 

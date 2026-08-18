@@ -325,7 +325,7 @@ async def _run_grounding_loop(
         from core.permissions import ToolPrivilegeTier, session_mode_from_channel
         from core.tool_dispatch import ToolDispatcher, make_gateway_reasoner
         from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
-        from core.tool_registry import resolve_tools
+        from core.tool_registry import filter_loop_safe, resolve_tools
         from shared.rbac import PermissionMode
 
         session_mode = session_mode_from_channel(state.get("session_permission_mode"))
@@ -342,8 +342,19 @@ async def _run_grounding_loop(
         # re-entered by the error_correction retry loop, so offering a tool that
         # cannot actually pause the turn is the same "tool that lies" defect the
         # channel itself used to be. Excluded regardless of tier.
+        #
+        # It stays a local exclusion rather than joining _NO_AUTONOMOUS_LOOP: the
+        # predicate there is "inert in ANY reasoning loop", while this one is
+        # "this particular loop has no suspend phase" — ask_user_question works
+        # correctly in the agentic cell, which does have one.
+        #
+        # filter_loop_safe covers the other direction: tools that survive the
+        # READ_ONLY filter yet do nothing when a loop calls them. select_tools's
+        # READ_ONLY-survivor guarantee actively promotes such a tool into the
+        # selection when the ranking has no other READ_ONLY candidate, so this
+        # pre-pass is more exposed to them than the tier filter suggests.
         read_only_schemas = [
-            s for s in schemas
+            s for s in filter_loop_safe(schemas)
             if s.privilege_tier is ToolPrivilegeTier.READ_ONLY and s.name != "ask_user_question"
         ]
         if not read_only_schemas:
