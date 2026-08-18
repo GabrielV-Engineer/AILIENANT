@@ -114,18 +114,21 @@ class AskUserQuestionInput(BaseModel):
 class AskUserQuestionTool(BaseTool):
     """Pause the agent and surface a question to the operator.
 
-    Behaviour: writes a structured payload into state['pending_hitl_request']
-    and returns a sentinel string carrying the request_id. The orchestrator's
-    graph node detects the populated channel and suspends the turn until a
-    matching hitl_response arrives from the WebView.
+    Behaviour: writes a structured payload into state['pending_hitl_request'].
+    The agentic cell's fallback-dispatch loop detects the populated channel
+    right after this call dispatches, defers (stops processing further tool
+    calls this super-step) rather than suspending inline, and a dedicated
+    clarification-resume phase on the NEXT iteration is what actually calls
+    interrupt() — never this tool itself, since interrupt() cannot run safely
+    mid-dispatch-loop. See brain/agentic_cell.py's clarification-resume phase.
     """
 
     name: str = "ask_user_question"
     description: str = (
         "Pause the agent and surface a question to the human operator. "
-        "Sets state['pending_hitl_request']; the orchestrator graph node "
-        "detects the populated channel and suspends the turn. Cleared when "
-        "the WebView posts a structured hitl_response."
+        "Sets state['pending_hitl_request']; the caller's dispatch loop "
+        "detects the populated channel and defers to a suspend-and-resume "
+        "phase on the next iteration. Cleared once the operator answers."
     )
     args_schema: Type[BaseModel] = AskUserQuestionInput  # pyright: ignore[reportIncompatibleVariableOverride]
 

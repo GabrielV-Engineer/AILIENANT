@@ -188,7 +188,10 @@ def make_task_get_tool(state: MutableMapping[str, Any]) -> BaseTool:
 def make_ask_user_question_tool(state: MutableMapping[str, Any]) -> BaseTool:
     """Build an AskUserQuestionTool bound to the shared state mapping.
 
-    The tool mutates state['pending_hitl_request'] on every invocation.
+    The tool mutates state['pending_hitl_request'] on every invocation; the
+    caller's dispatch loop is responsible for detecting it and deferring to a
+    suspend-and-resume phase (see brain/agentic_cell.py) — the tool itself never
+    suspends the turn.
     """
     from tools.control_tools import AskUserQuestionTool
 

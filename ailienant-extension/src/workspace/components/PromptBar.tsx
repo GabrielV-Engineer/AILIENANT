@@ -163,12 +163,16 @@ export function PromptBar({
 
     const submit = useCallback(() => {
         const text = value.trim();
-        if (!text || disabled) { return; }
+        // isStreaming (not just `disabled`, which only covers HITL-pending) blocks a
+        // stray Enter/Send while a prior turn is still running — the backend admission
+        // guard (DEBT-170) rejects a same-session resubmit anyway, but gating here
+        // avoids a round-trip that always comes back "busy".
+        if (!text || disabled || isStreaming) { return; }
         onSubmit(text);
         setValue('');
         setPaletteOpen(false);
         setActiveSkill(sessionId, null);
-    }, [value, disabled, onSubmit, setValue, setPaletteOpen, sessionId, setActiveSkill]);
+    }, [value, disabled, isStreaming, onSubmit, setValue, setPaletteOpen, sessionId, setActiveSkill]);
 
     const onKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         // Phase 7.11.4 — mention-dropdown keyboard navigation. Palette wins

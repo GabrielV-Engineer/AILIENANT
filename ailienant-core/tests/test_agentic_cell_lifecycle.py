@@ -27,6 +27,7 @@ keep the fix from destroying a still-legitimately-open cell:
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Iterator
 
 import pytest
@@ -112,7 +113,7 @@ async def test_life2_paused_graph_guard_preserves_the_cell() -> None:
     # Simulate the native-interrupt pause: the runner completes normally (no
     # cancellation) while task_service._paused_tasks records the suspended turn —
     # exactly the sequence _run_coding_task follows around task_service.py:1076-1086.
-    ts._paused_tasks["sess-2"] = (_minimal_payload(), "AUTO")
+    ts._paused_tasks["sess-2"] = (_minimal_payload(), "AUTO", time.monotonic())
 
     async def _runner() -> None:
         return None
@@ -176,7 +177,7 @@ async def test_life4_disconnect_sweep_reaps_only_the_orphan() -> None:
 
     live_task = asyncio.create_task(asyncio.sleep(5.0))
     ts.register_active_task("sess-live", live_task)
-    ts._paused_tasks["sess-paused"] = (_minimal_payload(), "AUTO")
+    ts._paused_tasks["sess-paused"] = (_minimal_payload(), "AUTO", time.monotonic())
     # "sess-orphan" is registered in the cell registry but has no entry in either
     # _active_tasks or _paused_tasks — exactly what a task that died without
     # either lifecycle hook firing leaves behind.

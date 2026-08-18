@@ -337,8 +337,14 @@ async def _run_grounding_loop(
         schemas = await tool_rag_store.select_tools(
             intent, k=TOOL_RAG_TOP_K, active_role=active_role, session_mode=session_mode,
         )
+        # ask_user_question is READ_ONLY by permission tier but structurally cannot
+        # suspend here (DEBT-171): this pre-pass has no defer/resume phase and is
+        # re-entered by the error_correction retry loop, so offering a tool that
+        # cannot actually pause the turn is the same "tool that lies" defect the
+        # channel itself used to be. Excluded regardless of tier.
         read_only_schemas = [
-            s for s in schemas if s.privilege_tier is ToolPrivilegeTier.READ_ONLY
+            s for s in schemas
+            if s.privilege_tier is ToolPrivilegeTier.READ_ONLY and s.name != "ask_user_question"
         ]
         if not read_only_schemas:
             return ""

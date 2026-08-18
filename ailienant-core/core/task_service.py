@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from api.ws_contracts import PlanDocumentPayload
 from core.activity_context import bind_activity_sink, reset_activity_sink
 from core.storage_paths import is_ailienant_internal_path
+from shared.config import PAUSED_INTERRUPT_TTL_S
 from shared.persona import compose
 from transport.token_batcher import batch_tokens
 
@@ -494,9 +495,12 @@ class TaskService:
         # in flight.
         self._cell_teardown_tasks: Set["asyncio.Task[None]"] = set()
         # Native HITL Suspend & Resume — sessions whose graph paused on an interrupt(),
-        # keyed by session_id → (payload, execution_mode). resume_graph re-enters the
-        # same thread with Command(resume=…). One pending interrupt per session at a time.
-        self._paused_tasks: Dict[str, Tuple["TaskPayload", str]] = {}
+        # keyed by session_id → (payload, execution_mode, paused_at). resume_graph
+        # re-enters the same thread with Command(resume=…). One pending interrupt per
+        # session at a time. paused_at (time.monotonic()) backs is_session_busy's
+        # abandoned-pause reclamation (DEBT-170) — a card nobody answers must not wedge
+        # the session "busy" forever.
+        self._paused_tasks: Dict[str, Tuple["TaskPayload", str, float]] = {}
         # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: tracked tool-call
         # registry keyed by (session_id, tool_call_id). Side-bag (NOT in
         # AIlienantGraphState) so agents stay isolated from this transport-tier
@@ -1112,7 +1116,7 @@ class TaskService:
             pending_interrupt = await extract_pending_interrupt(cfg)
             if pending_interrupt is not None:
                 _latency_outcome = "interrupted"
-                self._paused_tasks[session_id] = (payload, execution_mode)
+                self._paused_tasks[session_id] = (payload, execution_mode, time.monotonic())
                 await self._emit_interrupt_card(session_id, pending_interrupt)
                 try:
                     await hybrid_checkpointer.apromote(session_id)  # offloaded — never block the loop
@@ -1499,6 +1503,16 @@ class TaskService:
         Reuses ``ServerHITLApprovalRequestEvent`` so the frontend renders the same card
         whether the approval came from the event channel or a graph interrupt; the
         client echoes the cosmetic ``approval_id`` back on ``client_hitl_response``.
+
+        Two interrupt shapes flow through here: ``request_graph_approval`` (keyed on
+        ``approval_id``, carries ``action_description``) and
+        ``request_graph_clarification`` (DEBT-171/172, keyed on ``request_id``, carries
+        ``question``/``context``/``suggested_options`` — no ``approval_id`` at all). The
+        ``request_id`` fallback below is load-bearing: without it a clarification's
+        correlation id resolves to the empty string and the client's echoed reply can
+        never be matched back to the paused interrupt. ``question`` also backs
+        ``action_description`` so today's plain approve/reject card already displays the
+        clarifying question with zero frontend changes.
         """
         from api.ws_contracts import (
             HITLApprovalRequestPayload,
@@ -1507,12 +1521,19 @@ class TaskService:
 
         data = HITLApprovalRequestPayload(
             session_id=str(payload.get("session_id") or session_id),
-            approval_id=str(payload.get("approval_id") or ""),
-            action_description=str(payload.get("action_description") or "Approve to continue?"),
+            approval_id=str(payload.get("approval_id") or payload.get("request_id") or ""),
+            action_description=str(
+                payload.get("action_description")
+                or payload.get("question")
+                or "Approve to continue?"
+            ),
             proposed_content=payload.get("proposed_content"),
             request_kind=payload.get("request_kind"),
             proposed_files=None,
             risk_patterns_matched=payload.get("risk_patterns_matched"),
+            question=payload.get("question"),
+            context=payload.get("context"),
+            suggested_options=payload.get("suggested_options"),
         )
         await vfs_manager.send_personal_message(
             session_id, ServerHITLApprovalRequestEvent(data=data)
@@ -1521,6 +1542,30 @@ class TaskService:
     def has_paused_graph(self, session_id: str) -> bool:
         """True if ``session_id`` has a graph paused on a native HITL interrupt."""
         return session_id in self._paused_tasks
+
+    def is_session_busy(self, session_id: str) -> bool:
+        """True if a new submit for ``session_id`` should be rejected (DEBT-170).
+
+        Busy means either a live runner task (registered and not yet ``done()`` —
+        the done-callback that pops ``_active_tasks`` fires on every terminal path,
+        so a lingering entry for a finished task is inert and never counted here)
+        or an unabandoned paused interrupt. A pause older than
+        ``PAUSED_INTERRUPT_TTL_S`` is treated as abandoned — the operator dismissed
+        or never saw the card — and is discarded here so the session can never be
+        permanently stuck "busy"; a genuinely late reply still resolves safely via
+        ``resume_graph``'s existing no-such-entry no-op.
+        """
+        task = self._active_tasks.get(session_id)
+        if task is not None and not task.done():
+            return True
+        paused = self._paused_tasks.get(session_id)
+        if paused is None:
+            return False
+        _, _, paused_at = paused
+        if time.monotonic() - paused_at > PAUSED_INTERRUPT_TTL_S:
+            self._paused_tasks.pop(session_id, None)
+            return False
+        return True
 
     def live_task_ids(self) -> Set[str]:
         """Every session id with an in-flight OR HITL-paused graph run.
@@ -1595,6 +1640,7 @@ class TaskService:
                 thinking_budget_tokens=recovered_thinking_budget,
             ),
             recovered_exec,
+            time.monotonic(),
         )
         interrupt_value = snapshot.interrupts[0].value
         payload = interrupt_value if isinstance(interrupt_value, dict) else {"value": interrupt_value}
@@ -1617,7 +1663,7 @@ class TaskService:
                 session_id,
             )
             return
-        payload, execution_mode = entry
+        payload, execution_mode, _paused_at = entry
         await self._run_coding_task(
             session_id, payload, execution_mode, resume_value=approval
         )

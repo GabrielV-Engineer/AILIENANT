@@ -551,6 +551,30 @@ async def run_researcher_node(
         logger.warning("cascade failed (non-fatal): %s", _cascade_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
+    # ── Vision Bypass (DEBT-168) — an attachment forces CLOUD regardless of the
+    # cascade's own math, since no local target here is treated as vision-capable.
+    # Mirrors the RED ALERT / VETO override idiom above: a hard override applied
+    # after the cascade settles, not folded into derive_routing_decision's pure
+    # TCI/CSS math. check_cloud_availability() mirrors the hardware-reroute check
+    # below — if cloud isn't configured, warn rather than silently dropping the
+    # image on a local call that would never actually see it.
+    if state.get("has_images"):
+        _cascade_routing = "CLOUD"
+        if check_cloud_availability():
+            _cascade_provider = "CLOUD"
+            logger.info("Vision Bypass: image attachment present → routing=CLOUD.")
+        else:
+            _cascade_provider = "LOCAL"
+            _routing_warning = (
+                "An image was attached, but no cloud provider is configured — "
+                "the image cannot be processed by the active local model."
+            )
+            logger.warning("Vision Bypass: image attached but no cloud provider configured.")
+        if updated_context_metrics is not None:
+            updated_context_metrics = updated_context_metrics.model_copy(
+                update={"routing_decision": _cascade_routing}
+            )
+
     # ── Hardware-aware graceful degradation (post-cascade) ───────────────
     # A LOCAL_* decision that the host cannot run safely — VRAM below the cloud
     # floor, or a state predicted to overflow the candidate local context window —
@@ -622,6 +646,16 @@ async def run_researcher_node(
         },
     ]
 
+    # Attachments reach the LLM only here — the researcher's answer call is the
+    # single node that owns comprehension of the request and seeds everything
+    # downstream (DEBT-168). The coder's own edit-generation call is a separate,
+    # out-of-scope surface (DEBT-174).
+    _images: List[Dict[str, str]] = [
+        {"data": a.data, "mime": a.mime or "image/png"}
+        for a in (state.get("attachments") or [])
+        if a.type == "image" and a.data
+    ]
+
     skeleton: str = ""
     errors: List[str] = []
     try:
@@ -633,6 +667,7 @@ async def run_researcher_node(
             temperature=0.0,
             max_tokens=2048,
             session_id=session_id,
+            images=_images or None,
         )
         skeleton = (response.choices[0].message.content or "").strip()
         # Hard ceiling on the buffer handed to the Planner. max_tokens above is the

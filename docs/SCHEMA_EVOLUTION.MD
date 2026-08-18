@@ -2472,3 +2472,54 @@ file bytes read — deliberately out of scope, a PII/token-budget question disti
 metadata-only `read` marker enrichment this phase shipped) and DEBT-125's semantic edit-risk
 classifier (the binary regex proxy stays; only the display wiring closed) — both re-logged in
 `docs/TECH_DEBT_BACKLOG.md` with their scope-narrowing rationale.
+
+## §51 — HITL Clarification Card: Question/Answer Fields (Manifest 13.0.1, closes DEBT-171)
+
+13.0.1 wired `AskUserQuestionTool`'s `pending_hitl_request` channel to the working
+`interrupt()` substrate (`core/hitl.py::request_graph_clarification`, added the same day for the
+ambiguity gate). Doing so exposed that the existing HITL approval-card contract had no shape for
+a clarification at all — `HITLApprovalRequestPayload` carried only `action_description`, and
+`HITLResponsePayload` only `approved`/`comment`. Both extended additively; no existing field
+changed shape or meaning (§10).
+
+**`HITLApprovalRequestPayload` (`api/ws_contracts.py`) gains three optional fields:**
+
+```python
+question: Optional[str] = None
+context: Optional[str] = None
+suggested_options: Optional[List[str]] = None
+```
+
+All `None` for a `request_graph_approval`-shaped interrupt (`RISK_INTERCEPT`, `COMMAND_EXEC`,
+`DRIFT_DETECTED`, `FILE_WRITE`, …); populated for a `CLARIFICATION_NEEDED` interrupt. Two
+existing fields also gained a fallback specific to the clarification shape, not a schema change:
+`task_service.py::_emit_interrupt_card` now resolves `approval_id` as
+`payload.get("approval_id") or payload.get("request_id") or ""` (a clarification payload has no
+`approval_id` at all — `request_graph_clarification` keys its cosmetic correlation id as
+`request_id`; without this fallback the card's id resolved to the empty string), and
+`action_description` as `payload.get("action_description") or payload.get("question") or
+"Approve to continue?"` — so a clarification renders its question as the card's headline with
+zero frontend changes, since the existing plain approve/reject card already displays
+`action_description`.
+
+**`HITLResponsePayload` gains two optional fields:**
+
+```python
+answer: Optional[str] = None
+selected_option: Optional[str] = None
+```
+
+`main.py`'s `client_hitl_response` handler forwards both into the resume value alongside the
+existing `approved`/`comment` (extracted as `main.py::_resume_approval_dict`, unit-testable
+without the WS stack). `request_graph_approval` only ever reads `approved`/`comment`;
+`request_graph_clarification` only ever reads `answer`/`selected_option` (`core/hitl.py`) — so
+sending the union on every resume is safe regardless of which interrupt shape is actually paused.
+The frontend has no multi-choice renderer yet (DEBT-172, narrowed by this closure), so `answer`
+falls back to the existing free-text `comment` field when the client sends no explicit answer —
+the ambiguity gate and Plan-mode suggestion (shipped the same morning) work end-to-end against
+today's unchanged card.
+
+**Backward-compat:** every field above is additive and optional. An old client omitting them on
+`client_hitl_response` degrades to `answer=None, selected_option=None`, which the `comment`
+fallback resolves; a pre-13.0.1 backend emitting a card without `question`/`context`/
+`suggested_options` is read by pydantic as `None` on the new fields, unaffected.

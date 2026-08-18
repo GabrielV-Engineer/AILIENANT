@@ -321,8 +321,8 @@ Agents under `agents/` — specifically `coder.py`, `planner.py`, `researcher.py
 
 1. Populates `state["pending_hitl_request"]` with `{request_id, kind, question, context, suggested_options, requested_at}`.
 2. Returns the sentinel string `[ask_user_question] HITL_PENDING:{request_id}`.
-3. The OrchestratorAgent detects the populated `pending_hitl_request` channel on its next dispatch and suspends the turn.
-4. The VS Code extension emits `server_hitl_approval_request`; the user responds via `client_hitl_response`.
-5. On response, `pending_hitl_request` is cleared and the OrchestratorAgent resumes.
+3. The agentic cell's fallback-dispatch loop (`brain/agentic_cell.py`) detects the populated channel right after dispatch and defers — it stops processing further tool calls this super-step rather than suspending inline, since `interrupt()` cannot run safely mid-dispatch-loop (a resume would replay every side effect already committed).
+4. On the next iteration, the cell's clarification-resume phase calls `request_graph_clarification()` (`core/hitl.py`) as its first action, which is what actually suspends the graph via native `interrupt()`. The VS Code extension emits `server_hitl_approval_request`; the user responds via `client_hitl_response`.
+5. On response, `pending_hitl_request` is cleared and the answer is folded into the trajectory as the resumed call's return value.
 
 **Pre-interception (bash-level):** `DANGEROUS_COMMANDS_REGEX` in `tools/execution_tools.py` intercepts `SandboxBashTool` calls before `asyncio.create_subprocess_shell`. Any match blocks the subprocess spawn and returns a sentinel string advising the CoderAgent to call `AskUserQuestionTool`. This is a defense-in-depth layer below the permission engine.

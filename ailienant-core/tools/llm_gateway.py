@@ -29,6 +29,8 @@ from shared.config import (
     MODEL_BIG,
     LITELLM_PROXY_BASE_URL,
     LLM_MAX_CONCURRENCY,
+    VISION_MAX_IMAGES_PER_CALL,
+    VISION_MAX_TOTAL_BASE64_CHARS,
     get_litellm_config,
     check_cloud_availability,
 )
@@ -409,6 +411,69 @@ def _llm_semaphore() -> asyncio.Semaphore:
     return sem
 
 
+def _attach_images_to_messages(
+    messages: list[dict[str, Any]],
+    images: Optional[List[Dict[str, str]]],
+    model: str,
+    trace_id: str,
+) -> list[dict[str, Any]]:
+    """Turn the last user message's plain-string content into an OpenAI-style
+    multimodal content-block list (DEBT-168).
+
+    Must run against the physically resolved ``model`` (post BYOM-alias
+    resolution), never the caller-supplied alias — ``litellm.supports_vision``
+    only knows real model names. A local pure-Python check (``litellm`` reads
+    its own bundled model-cost map, no network, never raises), so this never
+    blocks on I/O; the size/count ceilings are checked via ``len()`` before any
+    string is built, so an oversized request is refused in O(1) rather than
+    paying for the block construction. Every rejection path is loud (a WARNING
+    naming the reason) and returns ``messages`` unchanged — never a silent drop,
+    since litellm.supports_vision() itself returns False (not an error) for any
+    model absent from its map, which includes most local BYOM targets.
+    """
+    if not images:
+        return messages
+    if not litellm.supports_vision(model):
+        logger.warning(
+            "Vision attachment(s) not sent — model=%s is not recognized as "
+            "vision-capable [trace=%s]",
+            model, trace_id,
+        )
+        return messages
+
+    count = len(images)
+    total_chars = sum(len(img.get("data") or "") for img in images)
+    if count > VISION_MAX_IMAGES_PER_CALL or total_chars > VISION_MAX_TOTAL_BASE64_CHARS:
+        logger.warning(
+            "Vision attachment(s) refused — count=%d (max %d) total_base64_chars=%d "
+            "(max %d) [trace=%s]",
+            count, VISION_MAX_IMAGES_PER_CALL, total_chars,
+            VISION_MAX_TOTAL_BASE64_CHARS, trace_id,
+        )
+        return messages
+
+    last_user_idx: Optional[int] = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+    if last_user_idx is None:
+        return messages
+
+    original = messages[last_user_idx]
+    blocks: List[Dict[str, Any]] = [{"type": "text", "text": original.get("content", "")}]
+    for img in images:
+        data = img.get("data") or ""
+        if not data:
+            continue
+        mime = img.get("mime") or "image/png"
+        blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+
+    new_messages = list(messages)
+    new_messages[last_user_idx] = {**original, "content": blocks}
+    return new_messages
+
+
 class LLMGateway:
     """
     Unified client for all agent LLM calls.
@@ -532,6 +597,7 @@ class LLMGateway:
         session_id: Optional[str] = None,
         state: Optional[Dict[str, Any]] = None,
         action: Optional[str] = None,
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> ModelResponse:
         """Async LLM call — non-blocking on the FastAPI event loop.
 
@@ -547,6 +613,12 @@ class LLMGateway:
         (e.g. "write_file") so DEBT-045's calibration substrate can attribute
         real token usage to that action. Omitted by default; a caller opts in
         explicitly rather than this being inferred from ambient context.
+
+        — `images` optionally attaches vision content blocks (each a
+        `{"data": base64_str, "mime": "image/png"}` dict, mirroring
+        `ManualAttachment`) to the last user message, gated on the physically
+        resolved model actually supporting vision (DEBT-168). A caller on a
+        non-vision target is unaffected — `messages` passes through unchanged.
         """
         trace_id = session_id or str(uuid.uuid4())
         effective_model: str = (
@@ -609,6 +681,13 @@ class LLMGateway:
                 metadata={"session_id": trace_id},
                 extra_headers={"X-Ailienant-Trace-ID": trace_id},
                 **cfg,
+            )
+        if images:
+            # Must run against kwargs["model"] (the physically resolved target,
+            # post BYOM-alias resolution) — the caller-supplied `model`/`tier`
+            # alias tells us nothing about vision capability.
+            kwargs["messages"] = _attach_images_to_messages(
+                kwargs["messages"], images, str(kwargs["model"]), trace_id,
             )
         if response_format and kwargs["model"] not in _RESPONSE_FORMAT_UNSUPPORTED:
             kwargs["response_format"] = response_format

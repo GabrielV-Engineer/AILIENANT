@@ -197,6 +197,28 @@ SANDBOX_PIDS_LIMIT: int = max(1, _env_int("AILIENANT_SANDBOX_PIDS_LIMIT", 512))
 # scoped to that command's own timeout, since exec blocks until it completes.
 DOCKER_OP_TIMEOUT_S: float = max(1.0, _env_float("AILIENANT_DOCKER_OP_TIMEOUT_S", 30.0))
 
+# ---------------------------------------------------------------------------
+# Native HITL interrupt abandonment window — how long a session may sit paused
+# on an unanswered clarification/approval card before a new submit is allowed
+# to reclaim it. Generous by default (a human may legitimately step away for
+# hours), but bounded so a dismissed or lost card can never wedge a session
+# "busy" for the life of the process. Floored so a malformed override can
+# never wedge admission shut entirely.
+# ---------------------------------------------------------------------------
+PAUSED_INTERRUPT_TTL_S: float = max(60.0, _env_float("AILIENANT_PAUSED_INTERRUPT_TTL_S", 6 * 3600.0))
+
+# ---------------------------------------------------------------------------
+# Vision-attachment payload ceilings — bound the cost of building an
+# OpenAI-style image content block on the FastAPI event-loop thread (pure
+# string/dict construction, never off-loaded — see LLMGateway.ainvoke). Refusal
+# past either ceiling is loud (WARNING + a user-facing routing note), never a
+# silent drop.
+# ---------------------------------------------------------------------------
+VISION_MAX_IMAGES_PER_CALL: int = max(1, _env_int("AILIENANT_VISION_MAX_IMAGES_PER_CALL", 4))
+VISION_MAX_TOTAL_BASE64_CHARS: int = max(
+    1, _env_int("AILIENANT_VISION_MAX_TOTAL_BASE64_CHARS", 20_000_000)
+)
+
 
 # ---------------------------------------------------------------------------
 # Cloud availability detection (used by Phase 2 routing engine)

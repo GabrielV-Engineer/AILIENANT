@@ -123,7 +123,7 @@ from shared.contracts import (
 )
 from api.api_contracts import DirtyBuffer
 from core.vfs_middleware import DirtyBuffer as VfsDirtyBuffer
-from api.ws_contracts import IdeTelemetryPayload
+from api.ws_contracts import HITLResponsePayload, IdeTelemetryPayload
 
 # — ephemeral auth token + dynamic port injected by the extension.
 # When AILIENANT_AUTH_TOKEN is absent (manual backend start), auth middleware is bypassed.
@@ -533,6 +533,24 @@ def _is_duplicate_request(request_id: str) -> bool:
         _recent_request_ids.popitem(last=False)
     return False
 
+
+def _resume_approval_dict(data: HITLResponsePayload) -> Dict[str, Any]:
+    """Build the resume value for a paused-graph ``client_hitl_response`` (DEBT-171/172).
+
+    ``request_graph_approval`` only ever reads ``approved``/``comment`` and
+    ``request_graph_clarification`` only ever reads ``answer``/``selected_option``
+    (``core/hitl.py``), so the union is safe to send regardless of which interrupt
+    shape is actually paused. The frontend has no multi-choice renderer yet
+    (DEBT-172), so ``answer`` falls back to the free-text ``comment`` field the
+    existing card already collects.
+    """
+    return {
+        "approved": data.approved,
+        "comment": data.comment,
+        "answer": data.answer if data.answer is not None else data.comment,
+        "selected_option": data.selected_option,
+    }
+
 # Manual Dreaming — at most one consolidation per project (a new run cancels the
 # prior one). The epoch is a monotonic per-project save counter: the OCC anchor a
 # consolidation captures at start and the daemon re-checks before committing, so a
@@ -777,6 +795,19 @@ async def submit_task(
         )
         return {
             "status": "duplicate_ignored",
+            "session_id": x_task_id,
+            "stream_watchdog_ms": stream_watchdog_ms(),
+        }
+
+    # Per-session admission guard (DEBT-170): a resubmit while the session already
+    # has a live runner, or an unabandoned HITL pause, is rejected rather than
+    # spawning a second concurrent runner against the same checkpoint. Reject, not
+    # queue or interrupt-and-replace — the Stop button / Esc already gives an
+    # explicit, user-initiated replace path (client_abort_mesh → abort_session).
+    if task_service.is_session_busy(x_task_id):
+        logger.info("Submit rejected — session %s is already busy.", x_task_id)
+        return {
+            "status": "busy",
             "session_id": x_task_id,
             "stream_watchdog_ms": stream_watchdog_ms(),
         }
@@ -1368,10 +1399,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # apply loop) still resolves the in-memory approval Event. resume_graph
                 # pops the paused entry first, so a duplicate reply is a harmless no-op.
                 if task_service.has_paused_graph(client_id):
-                    _approval = {
-                        "approved": valid_event.data.approved,
-                        "comment": valid_event.data.comment,
-                    }
+                    _approval = _resume_approval_dict(valid_event.data)
                     # Background task — never block the WS receive loop on the resume.
                     _resume_t = asyncio.create_task(
                         task_service.resume_graph(client_id, _approval)

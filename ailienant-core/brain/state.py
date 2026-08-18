@@ -298,17 +298,17 @@ class VFSFile(BaseModel):
 
 
 class ManualAttachment(BaseModel):
-    """Contexto multimodal inyectado manualmente por el usuario (imagen o documento)."""
+    """Multimodal context manually attached by the user (image or document)."""
 
     type: Literal["image", "document"]
     data: Optional[str] = Field(
-        None,
+        default=None,
         max_length=10_485_760,  # 10 MB ceiling on base64 payload to prevent OOM
         description="Base64-encoded bytes (images only).",
     )
-    content: Optional[str] = Field(None, description="Plain-text document body.")
-    mime: Optional[str] = Field(None, description="Tipo MIME, e.g. 'image/png'.")
-    name: Optional[str] = Field(None, description="Nombre del archivo adjunto.")
+    content: Optional[str] = Field(default=None, description="Plain-text document body.")
+    mime: Optional[str] = Field(default=None, description="MIME type, e.g. 'image/png'.")
+    name: Optional[str] = Field(default=None, description="Attached file name.")
 
 
 # =====================================================================

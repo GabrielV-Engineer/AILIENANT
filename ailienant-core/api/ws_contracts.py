@@ -162,6 +162,16 @@ class HITLApprovalRequestPayload(BaseModel):
     # YOLO Guard: when request_kind == "RISK_INTERCEPT", lists the matched pattern
     # category labels (e.g. ["privilege_escalation", "network_egress"]). None otherwise.
     risk_patterns_matched: Optional[List[str]] = None
+    # DEBT-171/172: present only when request_kind == "CLARIFICATION_NEEDED" (a
+    # request_graph_clarification() interrupt). None for every other kind — old
+    # clients that don't know these fields simply omit them (additive, §10).
+    # The frontend's existing plain approve/reject card already displays
+    # `action_description`, which _emit_interrupt_card falls back to `question`
+    # for, so a clarification renders its question today with zero FE changes;
+    # `suggested_options` awaits its own multi-choice renderer (DEBT-172).
+    question: Optional[str] = None
+    context: Optional[str] = None
+    suggested_options: Optional[List[str]] = None
 
 
 class HITLResponsePayload(BaseModel):
@@ -173,6 +183,13 @@ class HITLResponsePayload(BaseModel):
     # optional edited payload from the HITL card's edit mode.
     # For a single-file patch, this overrides the proposed content before apply.
     modified_content: Optional[str] = None
+    # DEBT-171/172: a typed answer to a CLARIFICATION_NEEDED card. Additive (§10);
+    # today's frontend has no multi-choice renderer (DEBT-172), so it always sends
+    # these as None — main.py's resume path falls back to mapping `comment` into
+    # `answer`, so a clarification already round-trips through the existing free-text
+    # comment box.
+    answer: Optional[str] = None
+    selected_option: Optional[str] = None
 
 
 # --- Server → Client Events ---

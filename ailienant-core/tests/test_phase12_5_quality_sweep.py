@@ -73,7 +73,7 @@ async def test_debt079_rehydrate_recovers_prompt_and_thinking_config() -> None:
         "enable_native_thinking": False,
         "thinking_budget_tokens": 8192,
     })
-    payload, exec_mode = svc._paused_tasks["sess-1"]
+    payload, exec_mode, _paused_at = svc._paused_tasks["sess-1"]
     assert isinstance(payload, TaskPayload)
     assert payload.task_prompt == "refactor the auth module"
     assert payload.enable_native_thinking is False
@@ -90,7 +90,7 @@ async def test_debt079_legacy_checkpoint_falls_back_to_defaults() -> None:
         "user_input": "some earlier prompt",
         # enable_native_thinking / thinking_budget_tokens deliberately absent.
     })
-    payload, _exec_mode = svc._paused_tasks["sess-1"]
+    payload, _exec_mode, _paused_at = svc._paused_tasks["sess-1"]
     assert payload.task_prompt == "some earlier prompt"
     assert payload.enable_native_thinking is True
     assert payload.thinking_budget_tokens == 4096
@@ -106,7 +106,7 @@ async def test_debt079_append_history_no_longer_writes_empty_user_message() -> N
         "execution_mode": "SEQUENTIAL",
         "user_input": "the real original prompt",
     })
-    payload, _ = svc._paused_tasks["sess-1"]
+    payload, _exec_mode, _paused_at = svc._paused_tasks["sess-1"]
     assert payload.task_prompt != ""
     assert payload.task_prompt == "the real original prompt"
 

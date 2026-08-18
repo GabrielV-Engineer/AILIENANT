@@ -465,9 +465,9 @@ async def run_agentic_cell_node(
         # interrupt() is the FIRST action here (only the idempotent session-reuse
         # precedes it), so a replay before resume is side-effect-free and the tool
         # executes exactly once after the operator approves. Mutually exclusive
-        # with the exec-approval phase above — each defer branch returns
-        # immediately, so at most one of the two pending_* channels is ever set
-        # entering a given iteration.
+        # with the exec-approval phase above and the clarification-resume phase
+        # below — each defer branch returns immediately, so at most one of the
+        # three pending_* channels is ever set entering a given iteration.
         pending_tool: Optional[Dict[str, Any]] = state.get("pending_tool_call")
         if pending_tool:
             tool_name = str(pending_tool.get("name", ""))
@@ -565,6 +565,39 @@ async def run_agentic_cell_node(
                     dispatcher, state, iteration, result.state_delta
                 )
             return tc_delta
+
+        # ── Clarification-resume phase (DEBT-171) ─────────────────────────────────
+        # A prior iteration deferred an ask_user_question call (see the fallback
+        # loop below). interrupt() is the FIRST action here (only the idempotent
+        # session-reuse precedes it), so a replay before resume is side-effect-free
+        # — mirrors the exec-approval and tool-call-approval phases above; see
+        # their mutual-exclusivity note.
+        pending_clarification: Optional[Dict[str, Any]] = state.get("pending_hitl_request")
+        if pending_clarification:
+            resolved = await _resolve_pending_clarification(
+                state, pending_clarification, configurable
+            )
+            answer = (
+                resolved.get("answer")
+                or resolved.get("selected_option")
+                or "(the operator gave no answer)"
+            )
+            question_text = str(pending_clarification.get("question") or "")
+            cq_rec: Dict[str, Any] = {
+                "iteration": iteration, "edits": [], "occ_conflicts": [],
+                "exit_code": None, "diagnostics": "", "status": "continue",
+            }
+            return {
+                "agentic_iteration": iteration + 1,
+                "agentic_trajectory": [
+                    cq_rec,
+                    {"role": "system", "content": (
+                        f"[ask_user_question] Q: {question_text!r} — "
+                        f"operator answered: {answer!r}"
+                    )},
+                ],
+                "pending_hitl_request": None,
+            }
 
         # ── Working VFS for this turn (clean base for transactional MCTS) ────────
         vfs_files: Dict[str, VFSFile] = dict(state.get("vfs_buffer") or {})
@@ -828,6 +861,47 @@ async def run_agentic_cell_node(
                         )
                     return tool_defer_delta
                 result = await fb_dispatcher.dispatch(call)
+                _pending_clarification = state.get("pending_hitl_request")
+                if _pending_clarification:
+                    # DEBT-171: ask_user_question is READ_ONLY, so classify() above
+                    # resolved ALLOW (never HITL) and the call already dispatched —
+                    # its _arun wrote pending_hitl_request into this same state dict
+                    # (resolve_tools binds the tool to the node's own state mapping,
+                    # see _build_fallback_dispatcher). interrupt() cannot run here,
+                    # mid-loop: a resume would replay every side effect already
+                    # committed this super-step, the exact hazard pending_tool_call
+                    # (DEBT-129) exists to avoid — see core/tool_dispatch.py:601-611
+                    # and the module note above. Defer instead: stop processing
+                    # further calls so nothing after this one runs before the human
+                    # answers. Earlier siblings' mutations are NOT discarded — they
+                    # already live in vfs_files/vfs_buffer/pending_contents and ride
+                    # out on this delta unchanged, exactly like the tool-call-approval
+                    # defer above.
+                    state.pop("pending_hitl_request", None)
+                    clar_rec: Dict[str, Any] = {
+                        "iteration": iteration, "edits": list(record["edits"]),
+                        "occ_conflicts": [], "exit_code": None, "diagnostics": "",
+                        "status": "continue",
+                    }
+                    clar_delta: Dict[str, Any] = {
+                        "agentic_iteration": iteration + 1,
+                        "agentic_trajectory": [clar_rec],
+                        "pending_hitl_request": _pending_clarification,
+                    }
+                    if edited_paths:
+                        clar_delta["vfs_buffer"] = {p: vfs_files[p] for p in edited_paths}
+                    if pending_contents:
+                        clar_delta["pending_contents"] = pending_contents
+                    if audit_entries:
+                        clar_delta["permission_audit_log"] = audit_entries
+                    if security_flags:
+                        clar_delta["security_flags"] = security_flags
+                    if state_promotions:
+                        clar_delta.update(state_promotions)
+                        await _emit_agent_todos_if_changed(
+                            dispatcher, state, iteration, state_promotions
+                        )
+                    return clar_delta
                 fallback_observations.append(
                     {"role": "system", "content": f"[{call.name}] {result.observation}"}
                 )
@@ -1196,6 +1270,33 @@ async def _approve_tool_call(
         request_kind="COMMAND_EXEC",
     )
     return bool(resp.get("approved"))
+
+
+async def _resolve_pending_clarification(
+    state: Dict[str, Any],
+    pending: Dict[str, Any],
+    configurable: Dict[str, Any],
+) -> Dict[str, Optional[str]]:
+    """Resolve a deferred ``ask_user_question`` request (DEBT-171) — the FIRST
+    action of the clarification-resume phase.
+
+    Mirrors ``_approve_exec``/``_approve_tool_call``'s contract: an injected
+    ``cell_clarification_fn`` seam in tests, else native
+    ``request_graph_clarification`` (LangGraph ``interrupt()``) so the graph
+    suspends and the runtime is freed until the operator replies.
+    """
+    clarification_fn = configurable.get("cell_clarification_fn")
+    if clarification_fn is not None:
+        raw = await clarification_fn(pending)
+        return {"answer": raw.get("answer"), "selected_option": raw.get("selected_option")}
+    from core.hitl import request_graph_clarification
+
+    return request_graph_clarification(
+        session_id=str(state.get("task_id") or ""),
+        question=str(pending.get("question") or ""),
+        context=pending.get("context"),
+        suggested_options=pending.get("suggested_options"),
+    )
 
 
 async def _emit_pending_tool_resolution(
