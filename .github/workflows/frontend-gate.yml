@@ -46,6 +46,8 @@ jobs:
         run: npm run lint
 
       - name: Install xvfb
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Test (VS Code extension host, headless)
