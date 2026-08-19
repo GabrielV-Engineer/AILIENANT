@@ -14,11 +14,12 @@ The model is sealed at the reasoner / stream boundary (the Gateway pattern); no 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Callable, Dict, List, Sequence
+from typing import Any, AsyncIterator, Callable, Dict, List, Sequence, Type
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
 
 from core.permissions import (
     PermissionDecision,
@@ -308,6 +309,45 @@ async def test_run_loop_stops_on_empty_envelope() -> None:
 
 
 # ── 4. Analyst node integration (DoD) ────────────────────────────────────────
+#
+# The analyst now asks a structured batch per round and suspends on native
+# interrupt(), so these seal both boundaries: the question-batch LLM call and
+# the clarification suspend (via the injected `analyst_clarification_fn` seam).
+
+
+async def _fake_grill_batch(*_a: Any, **_k: Any) -> Any:
+    from tools.control_tools import (
+        AskUserQuestionItem,
+        AskUserQuestionOptionInput,
+        GrillQuestionBatch,
+    )
+
+    return GrillQuestionBatch(questions=[
+        AskUserQuestionItem(
+            header="API shape",
+            question="What is the desired public API?",
+            options=[
+                AskUserQuestionOptionInput(label="Keep foo() signature", recommended=True),
+                AskUserQuestionOptionInput(label="Rename and re-export"),
+            ],
+        ),
+    ])
+
+
+def _answer_first_option() -> Any:
+    async def _fn(question_dicts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "answers": [
+                {
+                    "id": q["id"],
+                    "selected_labels": [q["options"][0]["label"]] if q["options"] else [],
+                    "free_text": None,
+                }
+                for q in question_dicts
+            ]
+        }
+
+    return _fn
 
 
 async def test_analyst_node_invokes_tool_and_still_suspends(tmp_path: Any) -> None:
@@ -332,21 +372,17 @@ async def test_analyst_node_invokes_tool_and_still_suspends(tmp_path: Any) -> No
         ['{"tool_calls":[{"name":"diff_changes","args":{"file_path":"%s"}}]}'
          % str(target).replace("\\", "\\\\")]
     )
-    config: Any = {"configurable": {"analyst_tool_reasoner": reasoner}}
-
-    async def _fake_question_stream(*args: Any, **kwargs: Any) -> AsyncIterator[str]:
-        yield "What is the desired public API? Recommended: keep foo() signature."
+    config: Any = {
+        "configurable": {
+            "analyst_tool_reasoner": reasoner,
+            "analyst_clarification_fn": _answer_first_option(),
+        }
+    }
 
     with patch(
         "agents.analyst.soul_manager.get_prompt", return_value="PERSONA"
     ), patch(
-        "agents.analyst._stream_question_llm", new=_fake_question_stream
-    ), patch(
-        "api.websocket_manager.vfs_manager.broadcast_token",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "api.websocket_manager.vfs_manager.broadcast_stream_end",
-        new=AsyncMock(return_value=None),
+        "agents.analyst._generate_grill_questions_llm", new=_fake_grill_batch
     ):
         from agents.analyst import run_analyst_node
 
@@ -357,8 +393,7 @@ async def test_analyst_node_invokes_tool_and_still_suspends(tmp_path: Any) -> No
     assert trace, "expected a non-empty tool_dispatch_trace"
     assert trace[0]["name"] == "diff_changes"
 
-    # The Socratic contract is preserved: the node still asks + suspends.
-    assert result["hitl_pending"] is True
+    # The Socratic contract is preserved: the node still asks and stays unfinished.
     assert result["shared_understanding_reached"] is False
     assert any(m.get("role") == "assistant" for m in result["messages"])
 
@@ -374,27 +409,19 @@ async def test_analyst_node_skips_loop_without_workspace() -> None:
         "hitl_pending": False,
         "shared_understanding_reached": False,
     }
-
-    async def _fake_question_stream(*args: Any, **kwargs: Any) -> AsyncIterator[str]:
-        yield "What is the goal? Recommended: a working feature."
+    config: Any = {"configurable": {"analyst_clarification_fn": _answer_first_option()}}
 
     with patch(
         "agents.analyst.soul_manager.get_prompt", return_value="PERSONA"
     ), patch(
-        "agents.analyst._stream_question_llm", new=_fake_question_stream
-    ), patch(
-        "api.websocket_manager.vfs_manager.broadcast_token",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "api.websocket_manager.vfs_manager.broadcast_stream_end",
-        new=AsyncMock(return_value=None),
+        "agents.analyst._generate_grill_questions_llm", new=_fake_grill_batch
     ):
         from agents.analyst import run_analyst_node
 
-        result = await run_analyst_node(state)
+        result = await run_analyst_node(state, config)
 
     assert "tool_dispatch_trace" not in result
-    assert result["hitl_pending"] is True
+    assert result["shared_understanding_reached"] is False
 
 
 # ── 5. Coder skill injection (DEBT-032) ──────────────────────────────────────
@@ -471,3 +498,54 @@ async def test_coder_injects_active_skill_directive() -> None:
 async def test_coder_without_skills_has_no_skill_block() -> None:
     system_prompt = await _capture_coder_system_prompt({})
     assert 'kind="skill"' not in system_prompt
+
+
+# ── 6. build_schema_hint field descriptions (DEBT-172 follow-up) ────────────
+#
+# build_schema_hint is what actually renders a tool's schema for the LLM in
+# this prompt-JSON dispatch path (no native function-calling). It used to
+# render only the tool's first docstring line plus bare argument NAMES,
+# silently discarding every Field(description=...) — including on nested
+# List[BaseModel] fields, where Pydantic v2 never inlines the nested schema
+# (it's a $ref into $defs). These two cases pin the fix.
+
+
+class _FlatArgs(BaseModel):
+    value: str = Field(description="The value to act on.")
+
+
+class _FlatArgsTool(BaseTool):
+    name: str = "flat_tool"
+    description: str = "Does a flat thing."
+    args_schema: Type[BaseModel] = _FlatArgs  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    async def _arun(self, value: str) -> str:
+        return value
+
+
+def test_build_schema_hint_flat_tool_renders_header_and_field_description() -> None:
+    from core.tool_dispatch import build_schema_hint
+
+    reg = _reg(_FlatArgsTool(), ToolPrivilegeTier.READ_ONLY, {"core_dev"})
+    hint = build_schema_hint({"flat_tool": reg})
+
+    assert "- flat_tool(value): Does a flat thing." in hint
+    assert "value: The value to act on." in hint
+
+
+def test_build_schema_hint_recurses_into_nested_model_descriptions() -> None:
+    from core.tool_dispatch import build_schema_hint
+    from tools.control_tools import AskUserQuestionTool
+
+    reg = _reg(AskUserQuestionTool(state={}), ToolPrivilegeTier.READ_ONLY, {"core_dev"})
+    hint = build_schema_hint({"ask_user_question": reg})
+
+    # Top-level field on AskUserQuestionInput.
+    assert "One to four related questions to ask in a single pause" in hint
+    # One level down: AskUserQuestionItem's own field description.
+    assert "2 to 4 concrete, mutually exclusive answers" in hint
+    # Two levels down: AskUserQuestionOptionInput's own field description.
+    assert "recommended: Set true on exactly one option per question" in hint

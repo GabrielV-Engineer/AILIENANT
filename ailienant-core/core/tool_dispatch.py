@@ -37,6 +37,7 @@ from typing import (
     MutableSequence,
     Optional,
     Sequence,
+    Set,
     Tuple,
 )
 
@@ -212,11 +213,71 @@ def parse_tool_call_envelope(text: str) -> Tuple[List[ToolCall], Optional[str]]:
     return calls, None
 
 
+def _resolve_ref(ref: str, defs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a JSON-schema ``$ref`` (e.g. ``#/$defs/Foo``) against ``$defs``."""
+    def_name = ref.rsplit("/", 1)[-1]
+    resolved = defs.get(def_name)
+    return resolved if isinstance(resolved, dict) else None
+
+
+def _find_ref(prop_schema: Dict[str, Any]) -> Optional[str]:
+    """Find a nested-model ``$ref`` on a property, whether direct, inside an
+    array's ``items``, or inside an ``anyOf`` (Optional[Model] renders this way)."""
+    if "$ref" in prop_schema:
+        ref = prop_schema["$ref"]
+        return ref if isinstance(ref, str) else None
+    items = prop_schema.get("items")
+    if isinstance(items, dict) and "$ref" in items:
+        ref = items["$ref"]
+        return ref if isinstance(ref, str) else None
+    for option in prop_schema.get("anyOf", []) or []:
+        if not isinstance(option, dict):
+            continue
+        ref = _find_ref(option)
+        if ref:
+            return ref
+    return None
+
+
+def _describe_schema_properties(
+    schema_dict: Dict[str, Any],
+    defs: Dict[str, Any],
+    seen: Optional[Set[str]] = None,
+    indent: str = "  ",
+) -> List[str]:
+    """Render one line per property with its own ``description``, recursing into
+    ``$ref``-linked nested models so a tool's detailed per-field guidance (e.g. an
+    LLM-facing instruction on a nested batch item) actually reaches the model —
+    ``model_json_schema()`` never inlines nested models, only ``$ref``s them under
+    ``$defs``. ``seen`` guards against a pathological self-referential schema."""
+    seen = seen if seen is not None else set()
+    lines: List[str] = []
+    for prop_name, prop_schema in schema_dict.get("properties", {}).items():
+        if not isinstance(prop_schema, dict):
+            continue
+        desc = prop_schema.get("description")
+        line = f"{indent}{prop_name}"
+        if desc:
+            line += f": {desc}"
+        lines.append(line)
+        ref = _find_ref(prop_schema)
+        if not ref or ref in seen:
+            continue
+        nested = _resolve_ref(ref, defs)
+        if nested is None:
+            continue
+        lines.extend(_describe_schema_properties(nested, defs, seen | {ref}, indent + "  "))
+    return lines
+
+
 def build_schema_hint(tools: Mapping[str, RegisteredTool]) -> str:
     """Build the system instruction listing the callable tools and the envelope.
 
     Each tool is rendered with its name, description, and argument schema so the
     model can form a valid call; the required envelope shape is stated explicitly.
+    Per-field ``description``s (including on nested batch/option models) are
+    rendered too — without this, a tool author's field-level guidance never
+    reaches the model through this prompt-JSON dispatch path.
     """
     lines: List[str] = [
         "You may call tools to gather information before answering. Respond with "
@@ -228,6 +289,7 @@ def build_schema_hint(tools: Mapping[str, RegisteredTool]) -> str:
         desc = (reg.tool.description or "").strip().split("\n", 1)[0]
         schema = reg.tool.args_schema
         arg_names: List[str] = []
+        detail_lines: List[str] = []
         if isinstance(schema, dict):
             arg_names = list(schema.get("properties", {}).keys())
         elif schema is not None:
@@ -235,11 +297,16 @@ def build_schema_hint(tools: Mapping[str, RegisteredTool]) -> str:
                 # langchain-core types args_schema as possibly a pydantic.v1 model
                 # for legacy-tool compat; every tool registered here is pydantic v2,
                 # and the except below already degrades gracefully if that ever changes.
-                arg_names = list(schema.model_json_schema().get("properties", {}).keys())  # type: ignore[union-attr]
+                full_schema = schema.model_json_schema()  # type: ignore[union-attr]
+                arg_names = list(full_schema.get("properties", {}).keys())
+                detail_lines = _describe_schema_properties(
+                    full_schema, full_schema.get("$defs", {})
+                )
             except Exception:  # noqa: BLE001 — a schema introspection miss is non-fatal
                 arg_names = []
         sig = ", ".join(arg_names)
         lines.append(f"- {name}({sig}): {desc}")
+        lines.extend(detail_lines)
     return "\n".join(lines)
 
 

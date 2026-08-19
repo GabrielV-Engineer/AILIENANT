@@ -28,6 +28,18 @@ def _planner_debug(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def _analyst_debug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the analyst's synthetic question batch so the grill needs no model.
+
+    ``DEBUG_MODE`` is read into a module constant at import time, so the env var
+    alone would not take effect here — patch the resolved attribute.
+    """
+    import agents.analyst as analyst_mod
+
+    monkeypatch.setattr(analyst_mod, "DEBUG_MODE", True)
+
+
+@pytest.fixture
 def _l2_checkpoint(tmp_path: Any) -> Any:
     """Open an isolated L2 sqlite so promote() can persist; close on teardown."""
     from brain.checkpoint import checkpoint_manager
@@ -61,31 +73,44 @@ def _payload(*, planner_mode: bool) -> TaskPayload:
 
 
 @pytest.mark.anyio
-async def test_planner_mode_enters_ideation_and_suspends() -> None:
+async def test_planner_mode_enters_ideation_and_suspends(_analyst_debug: None) -> None:
     """planner_mode_active=True must route to the ideation loop: the analyst asks
-    a question and the turn suspends WITHOUT a MissionSpecification or HITL card."""
+    a batch of questions and the turn suspends on a native interrupt WITHOUT a
+    MissionSpecification and without ever reaching the write-tier approval path."""
     ts = TaskService()  # type: ignore[no-untyped-call]
-    broadcast_token = AsyncMock()
     broadcast_stream_end = AsyncMock()
     request_human_approval = AsyncMock()
+    send_personal_message = AsyncMock()
 
-    # The analyst imports vfs_manager locally, so patch it on the source module.
     with patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()), \
          patch("core.task_service.vfs_manager.broadcast_stream_end", broadcast_stream_end), \
          patch("core.task_service.vfs_manager.request_human_approval", request_human_approval), \
-         patch("api.websocket_manager.vfs_manager.broadcast_token", broadcast_token):
+         patch("core.task_service.vfs_manager.send_personal_message", send_personal_message):
         await ts._run_coding_task("sess-ideation", _payload(planner_mode=True), "SEQUENTIAL")
-        # The analyst broadcasts its question via a fire-and-forget task; let it run.
         await asyncio.sleep(0)
 
-    # No approval card on a suspend — Ask/Plan never reached the write tier.
+    # No write-tier approval on a Socratic suspend — Ask/Plan never got that far.
     request_human_approval.assert_not_awaited()
     # The stream was finalized so the UI's isStreaming flips back.
     broadcast_stream_end.assert_awaited()
-    # A Socratic question went out to the user.
-    assert broadcast_token.await_count >= 1
-    asked = " ".join(str(c) for c in broadcast_token.await_args_list)
-    assert "sess-ideation" in asked
+
+    # The grill's question batch went out as a clarification card (the analyst no
+    # longer streams prose questions — it suspends on interrupt() and the card
+    # carries the structured questions).
+    assert send_personal_message.await_count >= 1
+    events = [c.args[1] for c in send_personal_message.await_args_list]
+    cards = [
+        e for e in events
+        if getattr(e, "event_type", "") == "server_hitl_approval_request"
+    ]
+    assert cards, f"expected a HITL clarification card, got: {events}"
+    data = cards[0].data
+    assert data.request_kind == "CLARIFICATION_NEEDED"
+    assert data.questions, "the card must carry the structured question batch"
+    # Every question offers real options with exactly one recommended.
+    for q in data.questions:
+        assert len(q.options) >= 2
+        assert sum(1 for o in q.options if o.recommended) == 1
 
 
 # ──────────────────────────────────────────────────────────────────────────────

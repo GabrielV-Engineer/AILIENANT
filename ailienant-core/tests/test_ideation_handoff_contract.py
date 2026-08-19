@@ -115,12 +115,30 @@ async def test_synthesis_node_only_writes_declared_channels(_force_debug: None) 
 
 @pytest.mark.anyio
 async def test_analyst_node_only_writes_declared_channels(_force_debug: None) -> None:
+    """Covers the ask path (a non-empty batch), which is where the node writes
+    its widest delta — including `grill_round_count`. The clarification seam
+    stands in for the native interrupt(), which needs a live runnable context."""
+
+    async def _answer_first_option(question_dicts: Any) -> Dict[str, Any]:
+        return {
+            "answers": [
+                {
+                    "id": q["id"],
+                    "selected_labels": [q["options"][0]["label"]] if q["options"] else [],
+                    "free_text": None,
+                }
+                for q in question_dicts
+            ]
+        }
+
     state: Dict[str, Any] = {
         "task_id": "test-sess",
         "user_input": "Build me a REST API",
         "messages": [],
     }
-    result = await run_analyst_node(state)
+    result = await run_analyst_node(
+        state, {"configurable": {"analyst_clarification_fn": _answer_first_option}}
+    )
     undeclared = set(result) - set(AIlienantGraphState.__annotations__)
     assert not undeclared, f"analyst_grill wrote undeclared channel(s): {undeclared}"
 

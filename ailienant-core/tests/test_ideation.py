@@ -4,14 +4,14 @@
 #
 # Coverage:
 #   run_analyst_node (async):
-#     1. First turn (no prior exchange) → hitl_pending=True, question in messages
-#     2. Non-agreement response → hitl_pending=True (next question asked)
-#     3. Agreement response → shared_understanding_reached=True
+#     1. First round (no prior exchange) → asks a batch, records it in messages
+#     2. Empty batch (the model's completion signal) → shared_understanding_reached
+#     3. Free-text agreement response → shared_understanding_reached=True
 #   route_after_analyst:
 #     4. shared_understanding_reached=True → "synthesis_node"
-#     5. shared_understanding_reached=False → END
+#     5. shared_understanding_reached=False → "analyst_grill" (another round)
 #   run_synthesis_node (async):
-#     6. Produces MissionSpecification, planner_mode_active=False
+#     6. Distills a planner brief + handoff flags (never a MissionSpecification)
 
 from typing import Any, Dict
 from types import SimpleNamespace
@@ -43,28 +43,50 @@ def _force_debug(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _seam() -> Any:
+    """Config carrying a clarification seam that answers every question with its
+    first option — the node now suspends on native interrupt(), which needs a
+    live runnable context, so tests inject this instead."""
+
+    async def _fn(question_dicts: Any) -> Dict[str, Any]:
+        return {
+            "answers": [
+                {
+                    "id": q["id"],
+                    "selected_labels": [q["options"][0]["label"]] if q["options"] else [],
+                    "free_text": None,
+                }
+                for q in question_dicts
+            ]
+        }
+
+    return {"configurable": {"analyst_clarification_fn": _fn}}
+
+
 @pytest.mark.anyio
-async def test_analyst_first_turn_suspends_with_question(_force_debug: None) -> None:
-    """First Socratic turn: no prior exchange → sends question, sets hitl_pending=True."""
+async def test_analyst_first_round_asks_a_batch(_force_debug: None) -> None:
+    """First Socratic round: no prior exchange → asks a batch, records it, and
+    stays unfinished so ideation's self-loop drives another round."""
     state = {"task_id": "test-sess", "user_input": "Build me a REST API", "messages": []}
-    result = await run_analyst_node(state)
-    assert result.get("hitl_pending") is True
+    result = await run_analyst_node(state, _seam())
     assert result.get("shared_understanding_reached") is not True
+    assert result.get("grill_round_count") == 1
     assert any(m.get("role") == "assistant" for m in result.get("messages", []))
 
 
 @pytest.mark.anyio
-async def test_analyst_non_agreement_response_continues_grilling(_force_debug: None) -> None:
-    """Human answers without agreement → analyst asks next question, hitl_pending=True."""
-    prior = [{"role": "assistant", "content": "What is the primary deliverable?"}]
+async def test_analyst_second_round_completes_on_empty_batch(_force_debug: None) -> None:
+    """The DEBUG stub returns an empty batch on any round after the first —
+    the model's completion signal — so the analyst hands off."""
     state = {
         "task_id": "test-sess",
         "user_input": "I need it to handle 1000 RPS with <50ms p99",
-        "messages": prior,
+        "messages": [{"role": "assistant", "content": "What is the primary deliverable?"}],
+        "grill_round_count": 1,
     }
-    result = await run_analyst_node(state)
-    assert result.get("hitl_pending") is True
-    assert result.get("shared_understanding_reached") is not True
+    result = await run_analyst_node(state, _seam())
+    assert result.get("shared_understanding_reached") is True
+    assert result.get("hitl_pending") is not True
 
 
 @pytest.mark.anyio
@@ -90,8 +112,69 @@ def test_route_after_analyst_goes_to_synthesis_when_understanding_reached() -> N
     assert route_after_analyst({"shared_understanding_reached": True}) == "synthesis_node"
 
 
-def test_route_after_analyst_suspends_to_end_when_not_reached() -> None:
-    assert route_after_analyst({"shared_understanding_reached": False}) == END
+def test_route_after_analyst_loops_for_another_round_when_not_reached() -> None:
+    """The pause for the human's answers happens inside the node (interrupt()),
+    so this edge loops back for another batch instead of ending the run."""
+    assert route_after_analyst({"shared_understanding_reached": False}) == "analyst_grill"
+
+
+def test_route_after_analyst_ends_on_hitl_pending_instead_of_looping() -> None:
+    """Loop-safety guard: the degraded path (no reachable model) sets
+    hitl_pending, which MUST win over the self-loop — otherwise the graph would
+    retry a dead model until its recursion limit."""
+    assert route_after_analyst(
+        {"hitl_pending": True, "shared_understanding_reached": False}
+    ) == END
+
+
+@pytest.mark.anyio
+async def test_analyst_degrades_to_actionable_notice_when_model_unreachable() -> None:
+    """A None batch (model unreachable / never valid) must surface the BYOM
+    notice and end the turn — never silently hand off an un-interviewed brief,
+    and never self-loop."""
+    called = False
+
+    async def _never(_q: Any) -> Dict[str, Any]:
+        nonlocal called
+        called = True
+        return {}
+
+    state = {"task_id": "test-sess", "user_input": "Build a REST API", "messages": []}
+
+    with patch.object(analyst_mod, "DEBUG_MODE", False), patch(
+        "agents.analyst._generate_grill_questions_llm", new=AsyncMock(return_value=None)
+    ), patch(
+        "agents.analyst._assemble_socratic_context", new=AsyncMock(return_value="")
+    ), patch(
+        "agents.analyst._gather_tool_grounding", new=AsyncMock(return_value=("", []))
+    ), patch(
+        "api.websocket_manager.vfs_manager.broadcast_token", new=AsyncMock()
+    ), patch(
+        "api.websocket_manager.vfs_manager.broadcast_stream_end", new=AsyncMock()
+    ):
+        result = await run_analyst_node(
+            state, {"configurable": {"analyst_clarification_fn": _never}}
+        )
+
+    assert result["hitl_pending"] is True
+    assert result["shared_understanding_reached"] is False
+    assert called is False, "a dead model must not reach the clarification suspend"
+    assert route_after_analyst(result) == END, "the degraded turn must not self-loop"
+
+
+@pytest.mark.anyio
+async def test_grill_skips_the_llm_entirely_without_a_byom_target() -> None:
+    """No active BYOM preset must fail fast rather than falling through to the
+    litellm proxy and burning the transport-retry budget."""
+    from agents.analyst import _generate_grill_questions_llm
+
+    with patch("core.config.model_resolver.get_chat_target", return_value=None), patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", new=AsyncMock()
+    ) as ainvoke:
+        batch = await _generate_grill_questions_llm([], "SOUL", "", "sess")
+
+    assert batch is None
+    ainvoke.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +286,7 @@ def test_route_after_ideation_defaults_to_end() -> None:
 # ---------------------------------------------------------------------------
 # DEBT-181: a long grill must not silently forget history StateSummarizer
 # compacted into a role="system" "[HISTORY SUMMARY]: ..." entry. Both replay
-# sites (_stream_question_llm, _dialogue_transcript) used to filter to
+# sites (_build_grill_llm_messages, _dialogue_transcript) used to filter to
 # role in ("user", "assistant") only, dropping it.
 # ---------------------------------------------------------------------------
 
@@ -226,29 +309,19 @@ def test_dialogue_transcript_includes_the_compacted_summary() -> None:
     assert "USER: JWT." in text
 
 
-@pytest.mark.anyio
-async def test_stream_question_llm_folds_the_summary_into_the_system_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from agents.analyst import _stream_question_llm
-
-    captured: Dict[str, Any] = {}
-
-    async def fake_astream_byom(messages, tier: str = "medium", session_id: str = ""):
-        captured["messages"] = messages
-        yield "Next question?"
-
-    monkeypatch.setattr("tools.llm_gateway.LLMGateway.astream_byom", fake_astream_byom)
+def test_grill_llm_messages_fold_the_summary_into_the_system_prompt() -> None:
+    from agents.analyst import _build_grill_llm_messages
 
     messages = [
         {"role": "system", "content": _HISTORY_SUMMARY},
         {"role": "assistant", "content": "What auth scheme?"},
         {"role": "user", "content": "JWT."},
     ]
-    chunks = [c async for c in _stream_question_llm(messages, "SOUL", "", "sess")]
-    assert chunks
+    sent = _build_grill_llm_messages(messages, "SOUL", "")
 
-    sent = captured["messages"]
     system_turns = [m for m in sent if m["role"] == "system"]
     assert len(system_turns) == 1  # folded, not duplicated as a second system turn
     assert "earlier the user agreed on JWT auth" in system_turns[0]["content"]
+    # The prior Q&A is still replayed so the analyst never repeats itself.
+    assert {"role": "assistant", "content": "What auth scheme?"} in sent
+    assert {"role": "user", "content": "JWT."} in sent

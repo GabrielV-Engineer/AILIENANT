@@ -85,13 +85,16 @@ def route_after_summarize(state: Dict[str, Any]) -> str:
 def route_after_ideation(state: Dict[str, Any]) -> str:
     """Conditional edge after the Socratic ideation sub-graph.
 
-    The ideation loop either suspended mid-dialogue (analyst still grilling) or
-    distilled the conversation into a planner brief. On synthesis we hand the brief
-    to the autonomous PlannerAgent — its Actor-Critic reflection loop produces the
-    schema-valid WBS — so the Socratic outcome never dead-ends at a zero-shot plan.
+    The ideation loop runs its Socratic rounds internally (each round pauses on
+    native interrupt(), which suspends the whole run before this edge is ever
+    reached) and exits only once it has distilled the conversation into a planner
+    brief. We hand that brief to the autonomous PlannerAgent — its Actor-Critic
+    reflection loop produces the schema-valid WBS — so the Socratic outcome never
+    dead-ends at a zero-shot plan.
 
-    hitl_pending=True        → END (suspend; the next user turn resumes the dialogue)
     ideation_synthesized=True → planner_agent (run the reflection loop on the brief)
+    hitl_pending=True         → END (legacy end-of-turn suspend; no longer reachable
+                                from the grill, kept for any other node that sets it)
     """
     from core.telemetry import log_routing_decision
     if state.get("hitl_pending"):

@@ -3,13 +3,14 @@
 # — Socratic "Grill Me" AnalystAgent.
 #
 # Implements the "Grill Me" pattern:
-#   - ONE question per turn, always with a recommended answer
+#   - Each round asks a BATCH of structured questions (2-4 concrete options each,
+#     one recommended) in one pass, via the same request_graph_clarification /
+#     ClarificationGrillCard channel ask_user_question uses — not free-text prose.
 #   - Reads codebase via read_file tool before asking (avoid asking what can be known)
-#   - Sets hitl_pending=True to suspend the graph (non-blocking — no asyncio.wait)
-#   - Detects agreement signals in user_input to trigger shared_understanding_reached=True
-#
-# Phase 4 upgrade: replace DEBUG stub with real LLM call +
-#   tool_registry.bind_tools(llm, [make_read_file_tool(vfs.read)]).
+#   - Suspends per-round via native interrupt()/resume; a self-loop edge on
+#     analyst_grill (brain/ideation.py) drives another round when needed.
+#   - The LLM signals completion itself by returning an empty questions batch,
+#     replacing the old free-text agreement-phrase detection as the primary path.
 
 import asyncio
 import json
@@ -19,6 +20,13 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
+
+from tools.control_tools import (
+    AskUserQuestionItem,
+    AskUserQuestionOptionInput,
+    GrillQuestionBatch,
+    questions_to_pending_dicts,
+)
 
 # SOUL.md persona reader. Analyst is the EXCLUSIVE consumer of
 # brain.personality cognitive-isolation fence. Other agents
@@ -51,29 +59,43 @@ _background_tasks: Set[asyncio.Task[Any]] = set()
 # cannot stall the Socratic turn.
 _ANALYST_TOOL_MAX_ITERS: int = 3
 
-_CLOSE_HINT = (
-    "\n> To summarize the plan, respond with 'OK', 'Proceed', or 'Go'."
-)
+# Circuit breaker: an internal graph self-loop (brain/ideation.py's
+# analyst_grill → analyst_grill edge) drives another round whenever the model
+# hasn't yet signalled it has enough shared understanding — bounded so a model
+# that never returns an empty batch can't interview forever.
+_GRILL_MAX_ROUNDS: int = 3
 
 # The "Grill Me" contract handed to the model on top of the SOUL persona. It
-# enforces the one-question-per-turn Socratic rhythm and forbids the robotic
-# failure modes the DEBUG stub exhibited (ignoring the user, repeating itself).
+# instructs the model to emit a structured JSON batch of every question it
+# currently needs answered (not one at a time) — the actual card rendering
+# (tabs, options, "Recommended" badge, free-text "Other") is built from this
+# by ClarificationGrillCard.tsx; the model never sees UI concerns, only the
+# question/options data contract.
 _GRILL_DIRECTIVE: str = (
     "You are running a Socratic 'Grill Me' planning session. Your job is to "
-    "extract a precise, buildable plan from the user one question at a time.\n"
+    "extract a precise, buildable plan from the user by asking every question "
+    "you currently need answered, batched together so the user answers them "
+    "all in one pass instead of a long back-and-forth.\n"
     "RULES:\n"
-    "- Ask EXACTLY ONE focused question this turn. Never bundle multiple "
-    "questions.\n"
+    "- Respond with ONLY a JSON object of the form "
+    '{"questions": [{"header": "<=3 word tab label>", "question": "<the full '
+    'question>", "context": "<optional background, or null>", "options": '
+    '[{"label": "<short answer>", "description": "<optional one-sentence '
+    'rationale, or null>", "recommended": <true on exactly one option>}, '
+    '...2 to 4 options...], "multi_select": <true or false>}, ...]}\n'
+    "- Ask 2 to 6 concrete questions per batch — everything you currently need "
+    "to know, not just one. Never ask something already answered in the "
+    "conversation or the workspace context below, and never repeat a previous "
+    "question.\n"
+    "- Every question needs 2 to 4 concrete, mutually exclusive options with "
+    "exactly one marked recommended=true — never leave the user with only an "
+    "open-ended blank to fill in.\n"
+    "- Once you have enough shared understanding to proceed to planning, "
+    'respond with {"questions": []} — an empty list, nothing else.\n'
     "- Build directly on what the user just said and on the workspace context "
-    "below — reference their actual words, files, and code. Never ask something "
-    "already answered, and never repeat a previous question.\n"
-    "- Always end with a concrete recommended default answer so the user can "
-    "agree in one word (format: 'Recommended: <your best guess>').\n"
-    "- If the user defers ('you choose', 'give me your ideas'), MAKE the "
-    "decision yourself, state it briefly, and ask the next question that moves "
-    "the plan forward.\n"
-    "- Be concise. No preamble, no restating the rules. Output only the question "
-    "and its recommended answer."
+    "below — reference their actual words, files, and code.\n"
+    "- No prose, no markdown fences, no preamble. The JSON object is the "
+    "entire response."
 )
 
 
@@ -114,28 +136,128 @@ async def generate_intent_summary_llm(user_messages: List[str], task_id: str = "
     return str(result).strip()
 
 
+def _render_batch_for_history(batch: "GrillQuestionBatch") -> str:
+    """Flatten a question batch into a readable transcript line for `messages`
+    history (and for the distillation prompt downstream) — the actual UI comes
+    from ClarificationGrillCard, not this string."""
+    return "\n".join(f"- {q.header}: {q.question}" for q in batch.questions)
+
+
+def _fold_answers_into_summary(
+    question_dicts: List[Dict[str, Any]], resolved: Dict[str, Any]
+) -> str:
+    """Turn a resumed clarification's `answers` list into one readable line per
+    question, id-correlated back to its header (mirrors
+    brain/agentic_cell.py::_resolve_pending_clarification's fold-in pattern)."""
+    by_id = {q["id"]: q for q in question_dicts}
+    answers_list = resolved.get("answers") or []
+    lines = [
+        f"{by_id.get(a.get('id'), {}).get('header', a.get('id'))}: "
+        f"{', '.join(a.get('selected_labels') or []) or a.get('free_text') or '(no answer)'}"
+        for a in answers_list
+    ]
+    return "; ".join(lines) or "(the operator gave no answer)"
+
+
+async def _resolve_grill_answers(
+    task_id: str,
+    question_dicts: List[Dict[str, Any]],
+    config: Optional[RunnableConfig],
+) -> Dict[str, Any]:
+    """Suspend this round for the human's answers to `question_dicts`.
+
+    Mirrors brain/agentic_cell.py::_resolve_pending_clarification's contract: an
+    injected ``analyst_clarification_fn`` seam so the node stays unit-testable
+    outside a live graph run (native ``interrupt()`` requires a runnable
+    context), else the real native-``interrupt()`` suspend so the runtime is
+    freed until the operator replies.
+    """
+    clarification_fn = (config or {}).get("configurable", {}).get("analyst_clarification_fn")
+    if clarification_fn is not None:
+        raw = await clarification_fn(question_dicts)
+        return dict(raw or {})
+    from core.hitl import request_graph_clarification  # deferred — avoids import cycle
+
+    return request_graph_clarification(session_id=task_id, questions=question_dicts)
+
+
+def _debug_grill_batch(round_count: int) -> "GrillQuestionBatch":
+    """Deterministic synthetic batch for the CI/UI smoke-test escape hatch —
+    2 questions on the first round, then an empty batch (done) on any round
+    after, exercising both the ask and the completion path deterministically."""
+    if round_count > 0:
+        return GrillQuestionBatch(questions=[])
+    return GrillQuestionBatch(questions=[
+        AskUserQuestionItem(
+            header="Deliverable",
+            question=(
+                "[DEBUG Q1] What is the primary deliverable, and what does "
+                "'done' look like?"
+            ),
+            options=[
+                AskUserQuestionOptionInput(
+                    label="A working feature with all existing tests green "
+                    "plus new unit tests covering the changed behaviour.",
+                    recommended=True,
+                ),
+                AskUserQuestionOptionInput(
+                    label="A minimal proof-of-concept; tests deferred.",
+                ),
+            ],
+        ),
+        AskUserQuestionItem(
+            header="Constraints",
+            question=(
+                "[DEBUG Q2] What are the non-functional constraints "
+                "(performance budget, security surface, dependency restrictions)?"
+            ),
+            options=[
+                AskUserQuestionOptionInput(
+                    label="O(n) complexity max, no new external deps, all "
+                    "inputs sanitised at the boundary.",
+                    recommended=True,
+                ),
+                AskUserQuestionOptionInput(
+                    label="No hard constraints — optimize for speed of delivery.",
+                ),
+            ],
+        ),
+    ])
+
+
 async def run_analyst_node(
     state: Dict[str, Any], config: Optional[RunnableConfig] = None
 ) -> Dict[str, Any]:
     """LangGraph node: Socratic Grill Me AnalystAgent.
 
-    Each invocation asks ONE context-aware question, streams it to the chat, and
-    sets hitl_pending=True so the graph suspends. The next task_service.py
-    invocation carries the user's answer as user_input; the _merge_messages
-    reducer accumulates Q&A history across invocations.
+    Each invocation is ONE round: it asks a batch of every question the model
+    currently needs answered (2-6, each with concrete options), suspends via
+    native interrupt()/resume on the SAME clarification channel ask_user_question
+    uses (ClarificationGrillCard renders it), then folds the answers into
+    `messages`. brain/ideation.py's self-loop edge drives another round when
+    the model hasn't yet signalled it has enough understanding — signalled by
+    the model returning an EMPTY questions batch, which replaces free-text
+    agreement-phrase detection as the primary completion path. grill_round_count
+    bounds the loop (_GRILL_MAX_ROUNDS) since a local Python counter cannot
+    survive across separate graph super-steps.
 
-    The live path grounds each question in the workspace (active file + GraphRAG,
-    via the same assembler the Natt pane uses) and mirrors the user's language, so
-    questions adapt to what the user actually said and to their real code.
+    The live path grounds each round in the workspace (active file + GraphRAG,
+    via the same assembler the Natt pane uses) and mirrors the user's language.
     """
     task_id: str = state.get("task_id", "")
     user_input: str = state.get("user_input", "")
     messages: List[Dict[str, Any]] = list(state.get("messages", []))
+    round_count: int = int(state.get("grill_round_count", 0) or 0)
 
     has_prior = _has_prior_socratic_exchange(messages)
 
-    # If this is a response to a prior Socratic question, check for agreement.
-    if has_prior and _is_agreement(user_input):
+    # Only meaningful on a genuinely fresh top-level invocation (round_count
+    # == 0): on a self-loop continuation, state["user_input"] is stale — the
+    # graph never re-reads a new chat turn between internal rounds, since each
+    # round's answer is resolved via interrupt()/resume instead — so checking
+    # it there would false-positive on original task text that happens to
+    # contain an agreement word (e.g. "Yes, add a dark mode toggle").
+    if round_count == 0 and has_prior and _is_agreement(user_input):
         logger.info("AnalystAgent: agreement detected — shared understanding reached.")
         new_messages: List[Dict[str, Any]] = (
             [{"role": "user", "content": user_input}] if user_input else []
@@ -146,12 +268,12 @@ async def run_analyst_node(
             "messages": new_messages,
         }
 
-    # Accumulate the human's answer from the previous turn (if any).
-    # Guard: only add user_input when has_prior=True (it's a Socratic response).
-    # On the first turn, user_input is the original task brief — don't pollute history.
+    # Accumulate the human's answer from the previous TOP-LEVEL turn (if any).
+    # Guard: only on the true first round — on the first turn, user_input is
+    # the original task brief, not a Socratic response; don't pollute history.
     new_messages = (
         [{"role": "user", "content": user_input}]
-        if has_prior and user_input
+        if round_count == 0 and has_prior and user_input
         else []
     )
 
@@ -168,71 +290,84 @@ async def run_analyst_node(
         "🐜" in soul_prompt,
     )
 
-    from api.websocket_manager import vfs_manager  # deferred: avoids circular import
+    if round_count >= _GRILL_MAX_ROUNDS:
+        logger.warning(
+            "AnalystAgent: grill round cap (%d) reached — forcing handoff.",
+            _GRILL_MAX_ROUNDS,
+        )
+        return {
+            "shared_understanding_reached": True,
+            "hitl_pending": False,
+            "messages": new_messages,
+        }
 
     dispatch_trace: List[Dict[str, Any]] = []
+    batch: Optional[GrillQuestionBatch]
     if DEBUG_MODE:
-        if not has_prior:
-            question = (
-                f"[DEBUG Q1] Before writing any code, I need to understand the goal. "
-                f"Task: '{user_input[:80]}'. "
-                f"What is the primary deliverable, and what does 'done' look like? "
-                f"Recommended: A working feature with all existing tests green + "
-                f"new unit tests covering the changed behaviour."
-                + _CLOSE_HINT
-            )
-        else:
-            question = (
-                "[DEBUG Q2] What are the non-functional constraints "
-                "(performance budget, security surface, dependency restrictions)? "
-                "Recommended: O(n) complexity max, no new external deps, "
-                "all inputs sanitised at the boundary."
-                + _CLOSE_HINT
-            )
-        logger.info("AnalystAgent (DEBUG): synthetic question generated.")
-        # Non-blocking broadcast — graph must not stall on WS I/O.
-        _t = asyncio.create_task(vfs_manager.broadcast_token(task_id, question))
-        _background_tasks.add(_t)
-        _t.add_done_callback(_background_tasks.discard)
+        logger.info("AnalystAgent (DEBUG): synthetic question batch generated.")
+        batch = _debug_grill_batch(round_count)
     else:
-        # Live path: stream a context-aware question token-by-token so it reads
-        # like a real reply, then close the stream. The node MUST fully drain the
-        # stream here (await) before returning hitl_pending=True — the graph
-        # suspends on return, so a backgrounded stream would be truncated.
+        # Before committing to a batch, ground it in the workspace + optionally
+        # call READ_ONLY diagnostic tools. Best-effort and bounded; any failure
+        # degrades to the context-only batch — the analyst must never crash
+        # the graph. Re-runs once on this round's own interrupt()/resume
+        # replay (accepted, bounded cost — matches the pre-existing per-round
+        # grounding cost this node already had before this redesign).
         context_block = await _assemble_socratic_context(state)
-        # Before committing to the question, optionally call READ_ONLY diagnostic
-        # tools to ground it in the user's real code. Best-effort and bounded; any
-        # failure degrades to the context-only question.
         grounding, dispatch_trace = await _gather_tool_grounding(state, config, task_id)
         if grounding:
             context_block = (
                 f"{context_block}\n\n{grounding}" if context_block else grounding
             )
-        parts: List[str] = []
+        batch = await _generate_grill_questions_llm(
+            messages + new_messages, soul_prompt, context_block, task_id
+        )
+
+    if batch is None:
+        # The model is unreachable / never produced a valid batch. Surface the
+        # actionable message and end the turn with hitl_pending=True, which
+        # route_after_analyst routes to END — NOT the self-loop, which would
+        # otherwise retry a dead model until the recursion limit.
+        from api.websocket_manager import vfs_manager  # deferred: avoids circular import
+
         try:
-            async for chunk in _stream_question_llm(
-                messages + new_messages, soul_prompt, context_block, task_id
-            ):
-                parts.append(chunk)
-                await vfs_manager.broadcast_token(task_id, chunk)
-        except Exception as exc:  # noqa: BLE001 — analyst must never crash the graph
-            logger.warning("AnalystAgent live question failed [%s: %s]",
-                           type(exc).__name__, exc)
-            if not parts:
-                await vfs_manager.broadcast_token(task_id, _ANALYST_BYOM_DOWN)
-                parts.append(_ANALYST_BYOM_DOWN)
-        question = "".join(parts).strip() or _ANALYST_BYOM_DOWN
-        try:
+            await vfs_manager.broadcast_token(task_id, _ANALYST_BYOM_DOWN)
             await vfs_manager.broadcast_stream_end(task_id)
-        except Exception:  # noqa: BLE001 — stream_end is best-effort on a dead socket
-            pass
+        except Exception as exc:  # noqa: BLE001 — a dead socket must not crash the graph
+            logger.debug("AnalystAgent: BYOM-down notice not delivered: %s", exc)
+        degraded: Dict[str, Any] = {
+            "hitl_pending": True,
+            "shared_understanding_reached": False,
+            "messages": new_messages + [{"role": "assistant", "content": _ANALYST_BYOM_DOWN}],
+            "grill_round_count": round_count + 1,
+        }
+        if dispatch_trace:
+            degraded["tool_dispatch_trace"] = dispatch_trace
+        return degraded
 
-    new_messages.append({"role": "assistant", "content": question})
+    if not batch.questions:
+        result: Dict[str, Any] = {
+            "shared_understanding_reached": True,
+            "hitl_pending": False,
+            "messages": new_messages,
+            "grill_round_count": round_count + 1,
+        }
+        if dispatch_trace:
+            result["tool_dispatch_trace"] = dispatch_trace
+        return result
 
-    result: Dict[str, Any] = {
-        "hitl_pending": True,
+    question_dicts = questions_to_pending_dicts(batch.questions)
+    resolved = await _resolve_grill_answers(task_id, question_dicts, config)
+    answer_summary = _fold_answers_into_summary(question_dicts, resolved)
+
+    new_messages.append({"role": "assistant", "content": _render_batch_for_history(batch)})
+    new_messages.append({"role": "user", "content": answer_summary})
+
+    result = {
+        "hitl_pending": False,
         "shared_understanding_reached": False,
         "messages": new_messages,
+        "grill_round_count": round_count + 1,
     }
     # Append the executed-tool record only when the loop actually ran a tool, so
     # the read-only no-tool turn keeps its minimal state-delta contract.
@@ -333,21 +468,13 @@ async def _gather_tool_grounding(
         return "", []
 
 
-async def _stream_question_llm(
-    messages: List[Dict[str, Any]],
-    soul_prompt: str,
-    context_block: str,
-    session_id: str,
-) -> AsyncIterator[str]:
-    """Stream ONE Socratic question from the active BYOM model.
-
-    System prompt = SOUL persona + the Grill-Me directive + language mirror +
-    the sandboxed workspace context. Conversation history is replayed so the
-    analyst builds on prior turns and never repeats itself. Tokens are coalesced
-    into 40ms frames via the shared batcher (DOM-thrash neutralization).
-    """
-    from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
-    from transport.token_batcher import batch_tokens
+def _build_grill_llm_messages(
+    messages: List[Dict[str, Any]], soul_prompt: str, context_block: str
+) -> List[Dict[str, str]]:
+    """Assemble the system prompt (SOUL persona + Grill-Me JSON-output contract
+    + language mirror + workspace context) and replay conversation history,
+    folding StateSummarizer's compacted-history entry into the leading system
+    message instead of dropping it (DEBT-181) — shared by the live grill call."""
     from agents.roles import LANGUAGE_MIRROR_DIRECTIVE
     from brain.summarizer import HISTORY_SUMMARY_PREFIX
 
@@ -364,18 +491,73 @@ async def _stream_question_llm(
         if role in ("user", "assistant"):
             llm_messages.append({"role": role, "content": str(content)})
         elif role == "system" and str(content).startswith(HISTORY_SUMMARY_PREFIX):
-            # StateSummarizer (brain/summarizer.py) compacted earlier turns into this
-            # entry once the dialogue outgrew its token budget. Fold it into the
-            # leading system message (one system turn, not a second mid-transcript
-            # one) instead of dropping it — otherwise a long grill silently forgets
-            # everything before the last KEEP_LAST_N raw turns (DEBT-181).
             llm_messages[0]["content"] = (
                 f"{llm_messages[0]['content']}\n\n## Earlier in this dialogue\n{content}"
             )
+    return llm_messages
 
-    raw = LLMGateway.astream_byom(llm_messages, tier="medium", session_id=session_id)
-    async for chunk in batch_tokens(raw, chunk_ms=40):
-        yield chunk
+
+async def _generate_grill_questions_llm(
+    messages: List[Dict[str, Any]],
+    soul_prompt: str,
+    context_block: str,
+    session_id: str,
+) -> Optional[GrillQuestionBatch]:
+    """One structured call producing every question the analyst currently needs
+    answered, batched together (replaces the old one-question-per-turn stream —
+    a JSON batch isn't stream-friendly, matching how the planner's own
+    structured plan generation already works non-streaming).
+
+    Follows the established prompt-JSON pattern (`LLMGateway._extract_nested_schema_target`
+    + `model_validate`, mirroring `agents/planner.py`'s retry-with-correction
+    shape): retries once on a validation failure with the error folded back in.
+
+    Returns ``None`` when the model is unreachable or never produced a valid
+    batch — distinct from ``GrillQuestionBatch(questions=[])``, which is the
+    model's deliberate "I have enough, hand off" signal. The caller surfaces the
+    actionable BYOM message for ``None`` rather than silently skipping the
+    interview. Never raises — the analyst must never crash the graph.
+    """
+    from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
+    from core.config.model_resolver import get_chat_target
+
+    # Resolve the BYOM target up front. Without this, `ainvoke("ailienant/medium")`
+    # silently falls back to the litellm proxy when no preset is active and burns
+    # the full transport-retry budget before failing — the streaming path this
+    # replaced raised NoAvailableProviderError immediately instead.
+    if get_chat_target("medium") is None:
+        logger.warning("AnalystAgent: no active BYOM chat model — cannot run the grill.")
+        return None
+
+    llm_messages = _build_grill_llm_messages(messages, soul_prompt, context_block)
+
+    for attempt in range(2):
+        try:
+            response = await LLMGateway.ainvoke(
+                messages=llm_messages,
+                model="ailienant/medium",
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                session_id=session_id,
+            )
+            raw_content = response.choices[0].message.content or ""
+            parsed = LLMGateway._extract_nested_schema_target(raw_content, GrillQuestionBatch)
+            return GrillQuestionBatch.model_validate(parsed)
+        except Exception as exc:  # noqa: BLE001 — retried once, then degrades below
+            logger.warning(
+                "AnalystAgent grill-question generation failed attempt=%d [%s: %s]",
+                attempt + 1, type(exc).__name__, exc, exc_info=True,
+            )
+            if attempt == 0:
+                llm_messages.append({
+                    "role": "user",
+                    "content": (
+                        f"That response was not valid JSON matching the required "
+                        f"shape. Error: {exc}. Respond again with ONLY the JSON object."
+                    ),
+                })
+    logger.warning("AnalystAgent: grill-question generation exhausted retries.")
+    return None
 
 
 _ANALYST_BYOM_DOWN: str = (

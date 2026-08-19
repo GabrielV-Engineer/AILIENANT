@@ -29,7 +29,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, FrozenSet, List, Literal, MutableMapping, Optional, Type
+from typing import Any, Dict, FrozenSet, List, Literal, MutableMapping, Optional, Type
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
@@ -157,6 +157,35 @@ class AskUserQuestionInput(BaseModel):
     )
 
 
+class GrillQuestionBatch(BaseModel):
+    """A batch of structured questions an interviewing agent currently needs
+    answered, reusing AskUserQuestionItem/AskUserQuestionOptionInput's shape so
+    the ideation "Grill Me" flow (agents/analyst.py) and ask_user_question share
+    one question/option model. An empty `questions` list is the completion
+    signal — the agent has enough shared understanding to proceed without
+    asking anything further this round."""
+
+    questions: List[AskUserQuestionItem] = Field(default_factory=list)
+
+
+def questions_to_pending_dicts(questions: List[AskUserQuestionItem]) -> List[Dict[str, Any]]:
+    """Serialize a batch of AskUserQuestionItem into the plain-dict shape
+    `pending_hitl_request`/`request_graph_clarification` expect, assigning each
+    a stable `q{i}` correlation id. Shared by AskUserQuestionTool._arun and the
+    ideation Grill Me flow so the id-assignment/serialization logic exists once."""
+    return [
+        {
+            "id": f"q{i}",
+            "header": item.header,
+            "question": item.question,
+            "context": item.context,
+            "options": [opt.model_dump() for opt in item.options],
+            "multi_select": item.multi_select,
+        }
+        for i, item in enumerate(questions)
+    ]
+
+
 class AskUserQuestionTool(BaseTool):
     """Pause the agent and surface a question to the operator.
 
@@ -206,17 +235,7 @@ class AskUserQuestionTool(BaseTool):
             "requested_at": _now_iso(),
         }
         if questions:
-            request["questions"] = [
-                {
-                    "id": f"q{i}",
-                    "header": item.header,
-                    "question": item.question,
-                    "context": item.context,
-                    "options": [opt.model_dump() for opt in item.options],
-                    "multi_select": item.multi_select,
-                }
-                for i, item in enumerate(questions)
-            ]
+            request["questions"] = questions_to_pending_dicts(questions)
             log_summary = f"{len(questions)} question(s)"
         else:
             request["question"] = question

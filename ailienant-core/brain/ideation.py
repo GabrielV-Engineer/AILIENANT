@@ -8,7 +8,12 @@
 # Node topology:
 #   analyst_grill → [route_after_analyst]
 #       shared_understanding_reached=True  → synthesis_node → END (handoff to planner)
-#       shared_understanding_reached=False → END  (suspend; await next task_service call)
+#       hitl_pending=True                  → END (degraded — no reachable model)
+#       shared_understanding_reached=False → analyst_grill (another round — the human's
+#           answer for the round just run is already resolved via native
+#           interrupt()/resume inside the node itself before it returns, so there is no
+#           "await the next top-level turn" outcome left to route to END for; the actual
+#           pause lives inside interrupt(), not at this edge)
 #
 # synthesis_node does NOT draft the plan. It distills the dialogue into a brief and
 # hands off to the autonomous PlannerAgent (engine.route_after_ideation), whose
@@ -208,14 +213,24 @@ async def _assemble_synthesis_context(state: Dict[str, Any]) -> str:
 def route_after_analyst(state: Dict[str, Any]) -> str:
     """Conditional edge after analyst_grill.
 
+    hitl_pending=True                  → END (degraded suspend — the analyst could
+        not reach a model and already surfaced an actionable notice. Checked FIRST
+        and load-bearing: without it the self-loop below would retry a dead model
+        until the graph's recursion limit.)
     shared_understanding_reached=True  → synthesis_node (compress, hand off)
-    shared_understanding_reached=False → END (suspend, await next user turn)
+    otherwise                          → analyst_grill (loop for another batch of
+        questions). The pause for the human's answer already happened inside
+        the node via interrupt()/resume — this edge only decides whether
+        another round is needed, never whether to suspend for an answer.
     """
+    if state.get("hitl_pending"):
+        logger.info("route_after_analyst: hitl_pending → END (degraded suspend).")
+        return END
     if state.get("shared_understanding_reached"):
         logger.info("route_after_analyst: understanding reached → synthesis_node.")
         return "synthesis_node"
-    logger.info("route_after_analyst: hitl_pending=True → END (awaiting user response).")
-    return END
+    logger.info("route_after_analyst: another round needed → analyst_grill.")
+    return "analyst_grill"
 
 
 # ---------------------------------------------------------------------------
@@ -250,11 +265,11 @@ _ideation_workflow.add_node("analyst_grill", _guarded("analyst_grill", run_analy
 _ideation_workflow.add_node("synthesis_node", _guarded("synthesis_node", run_synthesis_node))  # type: ignore[type-var]
 _ideation_workflow.add_edge(START, "analyst_grill")
 _ideation_workflow.add_conditional_edges(
-    "analyst_grill", route_after_analyst, ["synthesis_node", END]
+    "analyst_grill", route_after_analyst, ["analyst_grill", "synthesis_node", END]
 )
 _ideation_workflow.add_edge("synthesis_node", END)
 
 # No checkpointer — parent graph's CheckpointManager handles persistence.
 ideation_graph = _ideation_workflow.compile()
 
-logger.info("🟢 ideation_graph compiled: analyst_grill → [synthesis_node | END].")
+logger.info("🟢 ideation_graph compiled: analyst_grill ⟲ (self-loop) → synthesis_node → END.")

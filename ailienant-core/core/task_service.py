@@ -1128,10 +1128,11 @@ class TaskService:
             mission = final_state.get("mission_spec")
             hitl_pending = bool(final_state.get("hitl_pending"))
 
-            # Socratic suspend: in planner mode the ideation loop asked a question
-            # (the analyst broadcasts it itself) and produced no plan yet. Finalize
-            # so the checkpoint is written (Rewind works) and return — the next
-            # user turn resumes on the same thread_id via the messages accumulator.
+            # Legacy end-of-turn suspend: a node set hitl_pending without producing a
+            # plan (agents/orchestrator.py). Finalize so the checkpoint is written
+            # (Rewind works) and return — the next user turn resumes on the same
+            # thread_id via the messages accumulator. The ideation grill no longer
+            # reaches here: it pauses on native interrupt(), caught above.
             if mission is None and hitl_pending:
                 _latency_outcome = "interrupted"
                 await self._finalize_stream(session_id)

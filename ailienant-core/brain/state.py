@@ -455,6 +455,14 @@ class AIlienantGraphState(TypedDict):
     # ideation_glossary: ubiquitous language ({term: definition}) settled during the
     #   Socratic dialogue, folded into the planner's context. Scalar overwrite.
     ideation_glossary: Dict[str, str]
+    # grill_round_count: how many analyst_grill rounds have run this ideation session.
+    #   Each round is now its own graph super-step (a self-loop edge on analyst_grill,
+    #   brain/ideation.py), with the human's answer for that round resolved via native
+    #   interrupt()/resume rather than a fresh top-level invocation — so a round cannot
+    #   track its own count in a local Python variable the way the old
+    #   one-question-per-top-level-turn design implicitly did via separate invocations.
+    #   Scalar overwrite; used as the _GRILL_MAX_ROUNDS circuit breaker.
+    grill_round_count: int
     # Drift gate decision committed by drift_compute and read by the interrupt-bearing
     # drift_gate (split so the gate decides on already-committed, replay-stable state).
     drift_gate_open: Optional[bool]

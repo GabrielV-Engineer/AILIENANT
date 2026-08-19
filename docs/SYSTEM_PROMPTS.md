@@ -326,3 +326,16 @@ Agents under `agents/` — specifically `coder.py`, `planner.py`, `researcher.py
 5. On response, `pending_hitl_request` is cleared and the answer is folded into the trajectory as the resumed call's return value.
 
 **Pre-interception (bash-level):** `DANGEROUS_COMMANDS_REGEX` in `tools/execution_tools.py` intercepts `SandboxBashTool` calls before `asyncio.create_subprocess_shell`. Any match blocks the subprocess spawn and returns a sentinel string advising the CoderAgent to call `AskUserQuestionTool`. This is a defense-in-depth layer below the permission engine.
+
+**Field descriptions actually reach the model.** This project uses prompt-enforced JSON, not native function-calling (`core/tool_dispatch.py`'s docstring) — `build_schema_hint` renders each tool's schema into the system prompt. It renders every field's own `description`, recursing into nested `$ref`-linked models (Pydantic v2 never inlines them), so a tool author's per-field guidance is what the model sees. Before this, only bare argument *names* were rendered and all `Field(description=...)` text was silently discarded.
+
+### 5.7 Socratic "Grill Me" Ideation
+
+`agents/analyst.py::run_analyst_node` (the `analyst_grill` node of `brain/ideation.py`) interviews the user before planning. Each round asks a **batch** of every question it currently needs answered — not one at a time:
+
+1. `_generate_grill_questions_llm` makes one structured call returning a `GrillQuestionBatch` (`tools/control_tools.py`), reusing `AskUserQuestionItem`/`AskUserQuestionOptionInput` so the grill and `ask_user_question` share one question/option model. `_GRILL_DIRECTIVE` instructs 2-6 questions per batch, each with 2-4 concrete mutually-exclusive options and exactly one `recommended`.
+2. An **empty `questions` list is the completion signal** — the model decides it has enough shared understanding, which sets `shared_understanding_reached=True` and hands off to `synthesis_node`. The legacy free-text agreement-phrase check (`_AGREEMENT_SIGNALS`) remains only as a fast path for a genuinely new top-level turn.
+3. Otherwise the round suspends on `request_graph_clarification(questions=...)` (native `interrupt()`), rendering as the same `ClarificationGrillCard` the `ask_user_question` path uses, and folds the resumed answers into `messages`.
+4. `route_after_analyst` loops back to `analyst_grill` for another round — the pause lives *inside* the node, so the edge only decides whether more questions are needed. `grill_round_count` (a declared state channel, since a local counter cannot survive across super-steps) bounds this at `_GRILL_MAX_ROUNDS`.
+
+The batch is not streamed token-by-token — a structured JSON call is inherently non-streaming, matching the planner's own structured generation.

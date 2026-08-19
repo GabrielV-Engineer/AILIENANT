@@ -2600,6 +2600,57 @@ approve/reject card off `action_description`'s synthesized fallback text.
 
 ---
 
+## §53 — `grill_round_count`: Socratic Ideation Round Counter
+
+§52 shipped the multi-question batch contract, but the Socratic "Grill Me" ideation flow
+(`agents/analyst.py::run_analyst_node`, the `analyst_grill` node of `brain/ideation.py`) did
+not use it: it predates the clarification channel entirely, streaming ONE free-text question
+per turn with a "Recommended: …" line baked into the prose, setting `hitl_pending=True`, and
+letting the graph run finalize so the user's next plain chat message was read as the answer.
+Converting it to batch its questions through the same `request_graph_clarification` /
+`ClarificationGrillCard` channel changed how a "round" maps onto graph execution, which
+requires one new state channel.
+
+**`AIlienantGraphState` (`brain/state.py`) gains one field:** `grill_round_count: int`.
+
+Why it must be state and not a local variable: each grill round now suspends on native
+`interrupt()` and resumes, and `brain/ideation.py` drives the next round via a **self-loop
+edge** (`analyst_grill → analyst_grill`) rather than the old "return to END and await the next
+top-level invocation". Each round is therefore its own graph super-step with a fresh Python
+frame, so a local counter cannot survive between rounds. The counter backs
+`_GRILL_MAX_ROUNDS`, the circuit breaker preventing a model that never emits its completion
+signal from interviewing forever.
+
+**Routing change (not a wire contract):** `route_after_analyst` previously returned `END` when
+`shared_understanding_reached` was False (suspend, await the next user turn); it now returns
+`"analyst_grill"`. The actual pause moved *inside* the node (`interrupt()`), so the edge only
+decides whether another batch is needed. `core/task_service.py` needed no change on the pause
+side — `extract_pending_interrupt` is already checked before the legacy `hitl_pending` branch,
+so the grill's suspension flows through the existing `_emit_interrupt_card` path. That legacy
+branch stays reachable for `agents/orchestrator.py`, its only remaining writer.
+
+**Loop-safety guard (load-bearing):** `route_after_analyst` checks `hitl_pending` FIRST and
+returns `END` for it. `_generate_grill_questions_llm` returns `None` — distinct from an empty
+batch, which is the model's deliberate "I have enough" signal — when no BYOM chat target
+resolves or no valid batch survives the retry; the node then surfaces the actionable BYOM
+notice and sets `hitl_pending=True`. Without that guard the self-loop would retry an
+unreachable model until the graph's recursion limit. The `None` path also fast-fails before
+`LLMGateway.ainvoke`: an `ailienant/*` alias silently falls back to the litellm proxy when no
+preset is active, so without the explicit `get_chat_target` check a BYOM-down grill burned the
+full transport-retry budget instead of failing immediately the way the `astream_byom` path it
+replaced did.
+
+**Completion signal:** the model now ends the interview by returning an empty `questions` list
+(`GrillQuestionBatch`), replacing free-text agreement-phrase matching as the primary path;
+`_AGREEMENT_SIGNALS` remains a fast path for a genuinely new top-level turn only.
+
+**Backward-compat:** `grill_round_count` is a new declared channel defaulting to absent/0, read
+with `state.get("grill_round_count", 0)`. A checkpoint written before this change resumes at
+round 0. No wire contract changed — this is graph-internal state; the frontend sees only the
+already-shipped §52 `questions`/`answers` payloads.
+
+---
+
 ## §52 — Agentic Cell: `cell_tool_query` Discovery-Replay Channel (Manifest 13.0.2)
 
 `tools/meta_tools.py::ToolSearchTool` returns tool names and descriptions but deliberately
