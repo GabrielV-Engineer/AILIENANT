@@ -84,18 +84,32 @@ suite('Phase 11.9 — Dashboard Checkpoint Gate (webview)', function () {
     // ── A ──────────────────────────────────────────────────────────────────
 
     suite('A — ActiveTaskHeader appears on submit, clears on completion', () => {
-        test('streaming: shows the working indicator', () => {
+        test('active, no narration yet: shows the generic working indicator', () => {
             const { container, root } = mount(
                 React.createElement(ActiveTaskHeader, {
-                    prompt: 'do X', startedAt: Date.now(), isStreaming: true,
+                    prompt: 'do X', startedAt: Date.now(), isTurnActive: true,
                     onCancel: () => undefined, onDismiss: () => undefined,
                 }),
             );
             const header = container.querySelector('.ws-active-task');
-            assert.ok(header, 'header must render while streaming');
+            assert.ok(header, 'header must render while the turn is active');
             assert.strictEqual(header?.getAttribute('data-done'), 'false');
             assert.strictEqual(container.querySelector('.ws-active-task-status')?.textContent, 'Working…');
             assert.ok(container.querySelector('.ws-active-task-elapsed'), 'elapsed clock must render');
+            unmount(container, root);
+        });
+
+        test('active, real narration arrived: shows it instead of the generic fallback', () => {
+            const { container, root } = mount(
+                React.createElement(ActiveTaskHeader, {
+                    prompt: 'do X', startedAt: Date.now(), isTurnActive: true,
+                    statusLabel: 'Reading foo.py',
+                    onCancel: () => undefined, onDismiss: () => undefined,
+                }),
+            );
+            assert.strictEqual(
+                container.querySelector('.ws-active-task-status')?.textContent, 'Reading foo.py',
+            );
             unmount(container, root);
         });
 
@@ -103,7 +117,7 @@ suite('Phase 11.9 — Dashboard Checkpoint Gate (webview)', function () {
             let dismissed = false;
             const { container, root } = mount(
                 React.createElement(ActiveTaskHeader, {
-                    prompt: 'do X', startedAt: Date.now(), isStreaming: false,
+                    prompt: 'do X', startedAt: Date.now(), isTurnActive: false,
                     onCancel: () => undefined, onDismiss: () => { dismissed = true; },
                 }),
             );

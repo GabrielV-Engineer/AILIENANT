@@ -19,7 +19,6 @@ interface Props {
     disabled: boolean;
     placeholder?: string;
     activeTaskId?: string;
-    isStreaming: boolean;
     /** Phase 7.11.3 — true while a Stop click is in flight (optimistic UI). */
     isAborting: boolean;
     config: AilienantConfig | null;
@@ -44,7 +43,7 @@ interface Props {
 }
 
 export function PromptBar({
-    disabled, placeholder, activeTaskId, isStreaming, isAborting, config,
+    disabled, placeholder, activeTaskId, isAborting, config,
     mode, preset, onModeChange, onPresetChange,
     dreamingActive, dreamingProfile, onDreamingToggle,
     activeModelId, orchestrationMode, onModelPrefChange,
@@ -63,6 +62,10 @@ export function PromptBar({
     const paletteOpen    = useWorkspaceStore((s) => s.paletteOpen);
     const setPaletteOpen = useWorkspaceStore((s) => s.setPaletteOpen);
     const developerMode  = useChatStore((s) => s.developerMode);
+    // Wider than isStreaming (token delivery only) — covers the whole turn,
+    // including node execution and an interrupt()/resume pause with no tokens
+    // yet, so Stop/Esc/submit-blocking never go dark mid-turn.
+    const isTurnActive   = useChatStore((s) => s.isTurnActive);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     useAutoResizeTextarea(textareaRef, value);
     const { slashActive, slashQuery } = useSlashDetect(value);
@@ -163,16 +166,18 @@ export function PromptBar({
 
     const submit = useCallback(() => {
         const text = value.trim();
-        // isStreaming (not just `disabled`, which only covers HITL-pending) blocks a
-        // stray Enter/Send while a prior turn is still running — the backend admission
-        // guard (DEBT-170) rejects a same-session resubmit anyway, but gating here
-        // avoids a round-trip that always comes back "busy".
-        if (!text || disabled || isStreaming) { return; }
+        // isTurnActive (not just `disabled`, which only covers HITL-pending, and
+        // not just isStreaming, which misses the node-execution/interrupt-pause
+        // gap before the first token) blocks a stray Enter/Send while a prior
+        // turn is still running — the backend admission guard (DEBT-170) rejects
+        // a same-session resubmit anyway, but gating here avoids a round-trip
+        // that always comes back "busy".
+        if (!text || disabled || isTurnActive) { return; }
         onSubmit(text);
         setValue('');
         setPaletteOpen(false);
         setActiveSkill(sessionId, null);
-    }, [value, disabled, isStreaming, onSubmit, setValue, setPaletteOpen, sessionId, setActiveSkill]);
+    }, [value, disabled, isTurnActive, onSubmit, setValue, setPaletteOpen, sessionId, setActiveSkill]);
 
     const onKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         // Phase 7.11.4 — mention-dropdown keyboard navigation. Palette wins
@@ -204,7 +209,7 @@ export function PromptBar({
         }
         // Esc stops an in-flight task — the same affordance as the Stop button, so
         // the keyboard mirrors the single source of truth (no separate stop key).
-        if (e.key === 'Escape' && isStreaming && !isAborting && !paletteVisible && !mentionVisible) {
+        if (e.key === 'Escape' && isTurnActive && !isAborting && !paletteVisible && !mentionVisible) {
             e.preventDefault();
             onAbort();
             return;
@@ -213,7 +218,7 @@ export function PromptBar({
             e.preventDefault();
             submit();
         }
-    }, [submit, paletteVisible, mentionVisible, mentionResults, mentionActiveIdx, insertMention, isStreaming, isAborting, onAbort]);
+    }, [submit, paletteVisible, mentionVisible, mentionResults, mentionActiveIdx, insertMention, isTurnActive, isAborting, onAbort]);
 
     /** Track the textarea caret so `useAtMentionDetect` can anchor on it. */
     const updateCaret = useCallback(() => {
@@ -327,7 +332,7 @@ export function PromptBar({
                         onModeChange={onModeChange}
                         onPresetChange={onPresetChange}
                     />
-                    {isStreaming ? (
+                    {isTurnActive ? (
                         <Tooltip content={isAborting ? 'Aborting…' : 'Stop current task (Esc)'} side="top">
                             <button
                                 className="ai-btn ws-send-btn"

@@ -124,6 +124,12 @@ def _classify_activity(
         "unwrapping_schema": "reviewing",
         "plan_validated": "reviewing",
         "plan_budget_overage_advisory": "reviewing",
+        # Socratic "Grill Me" ideation rounds (agents/analyst.py::run_analyst_node)
+        # — without these the whole interview phase narrated nothing on the
+        # Glass-Box Timeline, regardless of how many rounds ran before the
+        # first question card appeared.
+        "grill_grounding": "understanding",
+        "grill_composing_questions": "planning",
     }.get(s)
     if phase is not None:
         return phase, None, None

@@ -188,6 +188,39 @@ export function generateAuthToken(): string {
     return crypto.randomBytes(32).toString('hex');
 }
 
+/**
+ * Maps a webview `HITL_RESPONSE` message into the `client_hitl_response` wire
+ * payload. Exported and kept pure (no `vscode`/`WSClient` dependency) so it is
+ * unit-testable directly — this exact shape is where DEBT-172's `answer`/
+ * `selected_option`/`answers` fields went silently missing for a full release:
+ * the WS contract, the resume path, and every backend test all round-tripped
+ * correctly, but this host-bridge whitelist forwarded only the four original
+ * approve/reject fields and dropped the rest with no error anywhere. Any
+ * future clarification-contract field needs updating here too — a schema
+ * check alone (contracts.ts, ws_contracts.py) cannot catch this gap; only a
+ * fixture in this function's own test does.
+ */
+export function buildHitlResponseData(data: {
+    approval_id?: unknown;
+    approved?: unknown;
+    comment?: unknown;
+    modified_content?: unknown;
+    answer?: unknown;
+    selected_option?: unknown;
+    answers?: unknown;
+}): Record<string, unknown> {
+    return {
+        approval_id:      data.approval_id,
+        approved:         data.approved,
+        comment:          data.comment,
+        modified_content: data.modified_content,
+        ...(typeof data.answer === 'string' && { answer: data.answer }),
+        ...(typeof data.selected_option === 'string'
+            && { selected_option: data.selected_option }),
+        ...(Array.isArray(data.answers) && { answers: data.answers }),
+    };
+}
+
 interface TitleUpdater {
     (sessionId: string, title: string): void;
 }
@@ -987,12 +1020,7 @@ export class WorkspacePanelManager {
                 case 'HITL_RESPONSE':
                     WSClient.getInstance().send({
                         event_type: 'client_hitl_response',
-                        data: {
-                            approval_id:      data.approval_id,
-                            approved:         data.approved,
-                            comment:          data.comment,
-                            modified_content: data.modified_content,
-                        },
+                        data: buildHitlResponseData(data),
                     });
                     // Phase 7.11.7 — in-chat resolution wins the race: a later
                     // click on the still-visible native toast for this same

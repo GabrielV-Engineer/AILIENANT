@@ -24,6 +24,7 @@ You are an autonomous contributor to **Project AILIENANT**. Your prime directive
 
 | Zone | Verification gate |
 |------|-------------------|
+| Backend lint | `ruff check .` (CI-enforced in `backend-gate.yml`; run it locally — a change that only ran mypy/pyright/pytest has shipped red CI before) |
 | Backend type/lint | `npx pyright` and `mypy .` (catches Pylance UI errors at the CLI) |
 | Backend tests | `pytest` |
 | Frontend build | `npm run compile` |

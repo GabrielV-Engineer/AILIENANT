@@ -227,10 +227,21 @@ html, body, #root { height: 100%; }
 }
 .ws-active-task-check { color: var(--accent-primary); }
 .ws-active-task-status {
-  flex: 0 0 auto;
+  /* Real narration ("Editing src/foo.py") runs longer than the old fixed
+     "Working…" literal, so this truncates like .ws-active-task-prompt
+     instead of assuming a short fixed-width label. */
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
   font-weight: 600;
   color: var(--accent-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: ws-reason-pulse 1.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-active-task-status { animation: none; }
 }
 /* Collapsed prompt sits inline and truncates to one line. */
 .ws-active-task-prompt {

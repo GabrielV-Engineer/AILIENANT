@@ -145,6 +145,16 @@ def _answer_first_option() -> Any:
 async def _run_grill_round(
     state: Dict[str, Any], batch: Any, clarification_fn: Any
 ) -> Dict[str, Any]:
+    """Drives one full round through BOTH graph super-steps: the generate
+    phase (commits `pending_grill_batch` to state and returns, no interrupt)
+    then, when a batch was actually asked, the ask phase (reads it back and
+    resolves via the seam, as its first action) — mirrors exactly how
+    brain/ideation.py's analyst_grill self-loop drives the two invocations.
+
+    Returns the two deltas merged (`messages` concatenated, matching the
+    `_merge_messages` reducer's append semantics) so existing single-call
+    assertions still read the full round's outcome in one place.
+    """
     async def _fake_generate(*_a: Any, **_k: Any) -> Any:
         return batch
 
@@ -159,9 +169,19 @@ async def _run_grill_round(
     ):
         from agents.analyst import run_analyst_node
 
-        return await run_analyst_node(
-            state, {"configurable": {"analyst_clarification_fn": clarification_fn}}
+        generate_delta = await run_analyst_node(state, {})
+        if not generate_delta.get("pending_grill_batch"):
+            return generate_delta
+
+        ask_state = {**state, **generate_delta}
+        ask_delta = await run_analyst_node(
+            ask_state, {"configurable": {"analyst_clarification_fn": clarification_fn}}
         )
+        return {
+            **generate_delta,
+            **ask_delta,
+            "messages": generate_delta.get("messages", []) + ask_delta.get("messages", []),
+        }
 
 
 # ── Test C — R1 state-key contract + ReadOnly policy ─────────────────────────
@@ -199,6 +219,7 @@ async def test_analyst_agent_read_only_policy_and_no_phantom_state_keys() -> Non
         "errors",
         "security_flags",
         "grill_round_count",
+        "pending_grill_batch",
     }
     extras = set(result.keys()) - allowed_state_keys
     assert not extras, f"Analyst leaked non-state keys: {extras}"
@@ -208,6 +229,44 @@ async def test_analyst_agent_read_only_policy_and_no_phantom_state_keys() -> Non
     assert sentinel not in surfaced, (
         "soul_prompt is ephemeral — it must NEVER reach state.messages."
     )
+
+
+# ── Test C1b — grill narration ────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_generate_phase_narrates_grounding_and_composing() -> None:
+    """Without this, the whole interview phase narrated nothing on the
+    Glass-Box Timeline — the generic upstream "Understanding your request"
+    marker was the only thing on screen until the first card appeared,
+    regardless of how many rounds ran in between."""
+    narrated: List[str] = []
+
+    async def _narrate(label: str) -> None:
+        narrated.append(label)
+
+    async def _fake_generate(*_a: Any, **_k: Any) -> Any:
+        return _batch_of_one()
+
+    state: Dict[str, Any] = {
+        "task_id": "analyst-test", "user_input": "Add an endpoint.",
+        "messages": [], "hitl_pending": False, "shared_understanding_reached": False,
+    }
+
+    with patch(
+        "agents.analyst.soul_manager.get_prompt", return_value=_SOUL_SENTINEL
+    ), patch(
+        "agents.analyst._generate_grill_questions_llm", new=_fake_generate
+    ), patch(
+        "agents.analyst._assemble_socratic_context", new=AsyncMock(return_value="")
+    ), patch(
+        "agents.analyst._gather_tool_grounding", new=AsyncMock(return_value=("", []))
+    ):
+        from agents.analyst import run_analyst_node
+
+        await run_analyst_node(state, {"configurable": {"narrate": _narrate}})
+
+    assert narrated == ["grill_grounding", "grill_composing_questions"]
 
 
 # ── Test C2 — batched grill rounds ───────────────────────────────────────────
@@ -229,6 +288,84 @@ async def test_grill_round_asks_batch_and_folds_answers_into_messages() -> None:
     assert result["grill_round_count"] == 1
     contents = [m["content"] for m in result["messages"]]
     # The question batch is recorded, and the picked option is folded back.
+    assert any("Which surface should the endpoint live on?" in c for c in contents)
+    assert any("Scope: REST" in c for c in contents)
+
+
+@pytest.mark.anyio
+async def test_generate_phase_commits_batch_without_suspending() -> None:
+    """The generate phase alone (no pending_grill_batch in state yet) must
+    commit the batch to state and return WITHOUT ever calling the
+    clarification seam — interrupt() only happens in the ask phase, on the
+    NEXT self-loop visit. This is the replay-safety split itself: generating
+    and interrupting in the same invocation is what let a resumed round
+    silently regenerate a different batch than the one the operator answered."""
+    called = False
+
+    async def _never(_q: List[Dict[str, Any]]) -> Dict[str, Any]:
+        nonlocal called
+        called = True
+        return {}
+
+    async def _fake_generate(*_a: Any, **_k: Any) -> Any:
+        return _batch_of_one()
+
+    state: Dict[str, Any] = {
+        "task_id": "analyst-test", "user_input": "Add an endpoint.",
+        "messages": [], "hitl_pending": False, "shared_understanding_reached": False,
+    }
+
+    with patch(
+        "agents.analyst.soul_manager.get_prompt", return_value=_SOUL_SENTINEL
+    ), patch(
+        "agents.analyst._generate_grill_questions_llm", new=_fake_generate
+    ), patch(
+        "agents.analyst._assemble_socratic_context", new=AsyncMock(return_value="")
+    ), patch(
+        "agents.analyst._gather_tool_grounding", new=AsyncMock(return_value=("", []))
+    ):
+        from agents.analyst import run_analyst_node
+
+        result = await run_analyst_node(
+            state, {"configurable": {"analyst_clarification_fn": _never}}
+        )
+
+    assert called is False, "generate phase must never resolve answers itself"
+    assert result["pending_grill_batch"], "the batch must be committed to state"
+    assert result["pending_grill_batch"][0]["header"] == "Scope"
+    # No question/answer text yet — that only appears once the ask phase folds
+    # the resumed answer in.
+    assert result.get("messages", []) == []
+
+
+@pytest.mark.anyio
+async def test_ask_phase_never_regenerates_the_batch() -> None:
+    """The ask phase (pending_grill_batch already set) must resolve answers
+    against the STATE-SOURCED batch and must NEVER call
+    _generate_grill_questions_llm — regenerating here is exactly the
+    non-determinism that misaligned answer ids on a resume replay."""
+    from tools.control_tools import questions_to_pending_dicts
+
+    question_dicts = questions_to_pending_dicts(_batch_of_one().questions)
+
+    async def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("must not regenerate the batch in the ask phase")
+
+    state: Dict[str, Any] = {
+        "task_id": "analyst-test", "user_input": "Add an endpoint.",
+        "messages": [], "hitl_pending": False, "shared_understanding_reached": False,
+        "pending_grill_batch": question_dicts,
+    }
+
+    with patch("agents.analyst._generate_grill_questions_llm", new=_boom):
+        from agents.analyst import run_analyst_node
+
+        result = await run_analyst_node(
+            state, {"configurable": {"analyst_clarification_fn": _answer_first_option()}}
+        )
+
+    assert result["pending_grill_batch"] is None, "the channel must be cleared"
+    contents = [m["content"] for m in result["messages"]]
     assert any("Which surface should the endpoint live on?" in c for c in contents)
     assert any("Scope: REST" in c for c in contents)
 

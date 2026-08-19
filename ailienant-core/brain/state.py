@@ -463,6 +463,17 @@ class AIlienantGraphState(TypedDict):
     #   one-question-per-top-level-turn design implicitly did via separate invocations.
     #   Scalar overwrite; used as the _GRILL_MAX_ROUNDS circuit breaker.
     grill_round_count: int
+    # pending_grill_batch: the current round's question batch (already-serialized
+    #   dicts, questions_to_pending_dicts' output), committed to state by
+    #   analyst_grill's generate phase BEFORE the self-loop revisits the node for
+    #   its ask phase. Required by the same invariant pending_exec_command/
+    #   pending_tool_call/pending_hitl_request enforce elsewhere (brain/agentic_cell.py):
+    #   interrupt() must be the node's FIRST action, since LangGraph replays
+    #   everything before it on every resume — a batch generated in the SAME
+    #   invocation that calls interrupt() would be silently regenerated
+    #   (non-deterministically) on replay, misaligning the ids the operator
+    #   actually answered. None once the ask phase resolves and clears it.
+    pending_grill_batch: Optional[List[Dict[str, Any]]]
     # Drift gate decision committed by drift_compute and read by the interrupt-bearing
     # drift_gate (split so the gate decides on already-committed, replay-stable state).
     drift_gate_open: Optional[bool]

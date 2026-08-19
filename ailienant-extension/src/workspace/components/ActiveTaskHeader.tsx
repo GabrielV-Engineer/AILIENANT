@@ -20,8 +20,22 @@ interface Props {
     prompt: string;
     /** Submit timestamp (`Date.now()`) — drives the elapsed clock. */
     startedAt: number;
-    /** True while the turn streams (expanded); false once it settles (collapsed). */
-    isStreaming: boolean;
+    /**
+     * True for the whole turn — including node execution, tool calls, and an
+     * interrupt()/resume pause with no tokens yet, not just token delivery
+     * (expanded while true; collapses once the turn settles). Wider than the
+     * old token-only `isStreaming` signal, which left this header (and the
+     * Stop button) looking idle during exactly the gap a "thinking" turn
+     * spends with no tokens on the wire.
+     */
+    isTurnActive: boolean;
+    /**
+     * The latest real activity narration for this turn (e.g. "Reading
+     * `foo.py`", "Running `pytest`") — the same text AgentTimeline rows show,
+     * so the two surfaces never disagree. Falls back to a generic "Working…"
+     * before the first marker arrives; never a fabricated status verb.
+     */
+    statusLabel?: string;
     /** Abort the in-flight turn (wired to the existing Stop path). */
     onCancel: () => void;
     /** Clear the header (only offered once the turn has settled). */
@@ -37,15 +51,15 @@ function formatElapsed(ms: number): string {
 }
 
 export function ActiveTaskHeader({
-    prompt, startedAt, isStreaming, onCancel, onDismiss,
+    prompt, startedAt, isTurnActive, statusLabel, onCancel, onDismiss,
 }: Props): JSX.Element {
     const [liveMs, setLiveMs] = useState<number>(() => Date.now() - startedAt);
-    // The elapsed value is frozen once on the streaming→false transition so the
-    // collapsed summary shows a stable total instead of a clock that keeps ticking.
+    // The elapsed value is frozen once the turn settles so the collapsed
+    // summary shows a stable total instead of a clock that keeps ticking.
     const frozenRef = useRef<number | null>(null);
 
     useEffect(() => {
-        if (!isStreaming) {
+        if (!isTurnActive) {
             if (frozenRef.current === null) { frozenRef.current = Date.now() - startedAt; }
             return;
         }
@@ -54,9 +68,9 @@ export function ActiveTaskHeader({
         setLiveMs(Date.now() - startedAt);
         const id = window.setInterval(() => setLiveMs(Date.now() - startedAt), 1000);
         return () => window.clearInterval(id);
-    }, [isStreaming, startedAt]);
+    }, [isTurnActive, startedAt]);
 
-    const done = !isStreaming;
+    const done = !isTurnActive;
     const shownMs = done ? (frozenRef.current ?? (Date.now() - startedAt)) : liveMs;
 
     return (
@@ -73,7 +87,7 @@ export function ActiveTaskHeader({
 
                 {done
                     ? <span className="ws-active-task-prompt" title={prompt}>{prompt}</span>
-                    : <span className="ws-active-task-status">Working…</span>}
+                    : <span className="ws-active-task-status">{statusLabel ?? 'Working…'}</span>}
 
                 <span className="ws-active-task-elapsed" aria-label="Elapsed time">
                     {formatElapsed(shownMs)}

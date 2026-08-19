@@ -2598,6 +2598,18 @@ MCP_TOOL_CALL, generic approval) is unaffected. `useClarificationResponder.ts` (
 unaffected. An old frontend build ignoring `questions`/`answers` still renders the existing
 approve/reject card off `action_description`'s synthesized fallback text.
 
+**Correction (13.0.6, closes DEBT-184):** `useClarificationResponder.ts` posting `answers` was
+necessary but not sufficient — the extension-host bridge that relays a webview's `HITL_RESPONSE`
+message onward to the backend WS (`providers/workspace_panel.ts`) whitelisted only the original
+four approve/reject fields (`approval_id`, `approved`, `comment`, `modified_content`) and
+silently dropped `answer`/`selected_option`/`answers`. Every option a `ClarificationGrillCard`
+answer picked was discarded at that one bridge point for a full release cycle: the WS contract,
+the resume path, and every backend test all round-tripped correctly in isolation, so nothing
+caught it. Fixed by adding the three fields to the bridge's forwarded payload (conditional
+spread — an absent field stays absent), extracted into an exported `buildHitlResponseData` pure
+function specifically so this exact class of gap — a contract field correct everywhere except
+one untested relay hop — has a fixture guarding it going forward.
+
 ---
 
 ## §53 — `grill_round_count`: Socratic Ideation Round Counter
@@ -2611,23 +2623,53 @@ Converting it to batch its questions through the same `request_graph_clarificati
 `ClarificationGrillCard` channel changed how a "round" maps onto graph execution, which
 requires one new state channel.
 
-**`AIlienantGraphState` (`brain/state.py`) gains one field:** `grill_round_count: int`.
+**`AIlienantGraphState` (`brain/state.py`) gains two fields:** `grill_round_count: int` and
+`pending_grill_batch: Optional[List[Dict[str, Any]]]` (the latter added 13.0.6, see the
+"Replay-safety correction" subsection below — the shape shipped 13.0.5 only had the counter).
 
-Why it must be state and not a local variable: each grill round now suspends on native
-`interrupt()` and resumes, and `brain/ideation.py` drives the next round via a **self-loop
-edge** (`analyst_grill → analyst_grill`) rather than the old "return to END and await the next
-top-level invocation". Each round is therefore its own graph super-step with a fresh Python
-frame, so a local counter cannot survive between rounds. The counter backs
-`_GRILL_MAX_ROUNDS`, the circuit breaker preventing a model that never emits its completion
-signal from interviewing forever.
+Why the counter must be state and not a local variable: each grill round is now driven by a
+**self-loop edge** (`analyst_grill → analyst_grill`, `brain/ideation.py`) rather than the old
+"return to END and await the next top-level invocation" — every round is its own graph
+super-step with a fresh Python frame, so a local counter cannot survive between rounds. The
+counter backs `_GRILL_MAX_ROUNDS`, the circuit breaker preventing a model that never emits its
+completion signal from interviewing forever.
 
 **Routing change (not a wire contract):** `route_after_analyst` previously returned `END` when
 `shared_understanding_reached` was False (suspend, await the next user turn); it now returns
-`"analyst_grill"`. The actual pause moved *inside* the node (`interrupt()`), so the edge only
-decides whether another batch is needed. `core/task_service.py` needed no change on the pause
-side — `extract_pending_interrupt` is already checked before the legacy `hitl_pending` branch,
-so the grill's suspension flows through the existing `_emit_interrupt_card` path. That legacy
-branch stays reachable for `agents/orchestrator.py`, its only remaining writer.
+`"analyst_grill"`. The pause for the human's answer lives *inside* the node (`interrupt()`), so
+the edge only decides whether another batch is needed. `core/task_service.py` needed no change
+on the pause side — `extract_pending_interrupt` is already checked before the legacy
+`hitl_pending` branch, so the grill's suspension flows through the existing
+`_emit_interrupt_card` path. That legacy branch stays reachable for `agents/orchestrator.py`,
+its only remaining writer.
+
+### Replay-safety correction (13.0.6, closes DEBT-185)
+
+The 13.0.5 shape above had a real bug: `run_analyst_node` composed the question batch
+(`_generate_grill_questions_llm`, temperature 0.2) and called `interrupt()` in the **same**
+invocation. LangGraph replays a node from the top on every resume, so the LLM call that produced
+the batch replayed too — a resumed round could receive a *different* batch than the one the
+operator actually answered. Ids are positional (`q{i}`), so a differently-sized replay batch
+silently misaligned answers to the wrong questions with no mismatch to detect, and a replay
+batch that happened to come back empty skipped `interrupt()` entirely and discarded the resume
+value outright. `brain/agentic_cell.py` documents the opposite invariant in three places (its
+`pending_exec_command`/`pending_tool_call`/`pending_hitl_request` defer-then-interrupt-first
+phases) specifically to prevent this class of bug.
+
+The fix adds `pending_grill_batch`, splitting each round into two graph super-steps (the
+self-loop edge already existed — it now drives two invocations per round instead of one):
+
+- **Generate phase** (`pending_grill_batch` empty): composes the batch, commits it to
+  `pending_grill_batch`, and returns — no `interrupt()` call in this invocation at all.
+- **Ask phase** (`pending_grill_batch` set, the self-loop's next visit): `_resolve_grill_answers`
+  on the **state-sourced** batch is the node's first action, so a resume only ever replays the
+  interrupt call itself, never the LLM call that produced the batch. Folds the resumed answers
+  and clears the channel back to `None`.
+
+The pre-existing "grounding may re-run once on its own round's replay" cost (accepted in 13.0.5)
+is unchanged and still bounded — this fix only removes the LLM call that generates the
+QUESTIONS from the replay path, which is where non-determinism caused a correctness bug rather
+than just a wasted call.
 
 **Loop-safety guard (load-bearing):** `route_after_analyst` checks `hitl_pending` FIRST and
 returns `END` for it. `_generate_grill_questions_llm` returns `None` — distinct from an empty
@@ -2644,10 +2686,12 @@ replaced did.
 (`GrillQuestionBatch`), replacing free-text agreement-phrase matching as the primary path;
 `_AGREEMENT_SIGNALS` remains a fast path for a genuinely new top-level turn only.
 
-**Backward-compat:** `grill_round_count` is a new declared channel defaulting to absent/0, read
-with `state.get("grill_round_count", 0)`. A checkpoint written before this change resumes at
-round 0. No wire contract changed — this is graph-internal state; the frontend sees only the
-already-shipped §52 `questions`/`answers` payloads.
+**Backward-compat:** both fields are new declared channels defaulting to absent (read with
+`state.get(..., 0)` / `state.get("pending_grill_batch")`, `None` treated as "not asking").
+A checkpoint written before either change resumes at round 0 / no pending batch — the
+worst case is one extra generate phase, never a crash or a lost answer. No wire contract
+changed by either shape — both are graph-internal state; the frontend sees only the
+already-shipped §52 `questions`/`answers` payloads, unaffected by which phase produced them.
 
 ---
 

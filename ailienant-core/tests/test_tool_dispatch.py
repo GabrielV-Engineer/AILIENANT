@@ -14,7 +14,7 @@ The model is sealed at the reasoner / stream boundary (the Gateway pattern); no 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Callable, Dict, List, Sequence, Type
+from typing import Any, Callable, Dict, List, Sequence, Type
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -372,12 +372,7 @@ async def test_analyst_node_invokes_tool_and_still_suspends(tmp_path: Any) -> No
         ['{"tool_calls":[{"name":"diff_changes","args":{"file_path":"%s"}}]}'
          % str(target).replace("\\", "\\\\")]
     )
-    config: Any = {
-        "configurable": {
-            "analyst_tool_reasoner": reasoner,
-            "analyst_clarification_fn": _answer_first_option(),
-        }
-    }
+    generate_config: Any = {"configurable": {"analyst_tool_reasoner": reasoner}}
 
     with patch(
         "agents.analyst.soul_manager.get_prompt", return_value="PERSONA"
@@ -386,16 +381,26 @@ async def test_analyst_node_invokes_tool_and_still_suspends(tmp_path: Any) -> No
     ):
         from agents.analyst import run_analyst_node
 
-        result = await run_analyst_node(state, config)
+        # Generate phase: the grounding tool call happens here, and the batch
+        # is committed to state — not resolved in the same invocation (see
+        # run_analyst_node's docstring on why generating and interrupting
+        # can't share one invocation).
+        generate_delta = await run_analyst_node(state, generate_config)
 
-    # DoD: a registered tool was invoked end-to-end through the gated substrate.
-    trace = result.get("tool_dispatch_trace", [])
-    assert trace, "expected a non-empty tool_dispatch_trace"
-    assert trace[0]["name"] == "diff_changes"
+        # DoD: a registered tool was invoked end-to-end through the gated substrate.
+        trace = generate_delta.get("tool_dispatch_trace", [])
+        assert trace, "expected a non-empty tool_dispatch_trace"
+        assert trace[0]["name"] == "diff_changes"
+        assert generate_delta.get("pending_grill_batch"), "expected a committed batch"
+
+        # Ask phase: resolves the state-sourced batch via the clarification seam.
+        ask_state = {**state, **generate_delta}
+        ask_config: Any = {"configurable": {"analyst_clarification_fn": _answer_first_option()}}
+        ask_delta = await run_analyst_node(ask_state, ask_config)
 
     # The Socratic contract is preserved: the node still asks and stays unfinished.
-    assert result["shared_understanding_reached"] is False
-    assert any(m.get("role") == "assistant" for m in result["messages"])
+    assert ask_delta["shared_understanding_reached"] is False
+    assert any(m.get("role") == "assistant" for m in ask_delta["messages"])
 
 
 async def test_analyst_node_skips_loop_without_workspace() -> None:

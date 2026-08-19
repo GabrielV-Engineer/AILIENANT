@@ -39,6 +39,18 @@ const apply = <T>(v: SetStateAction<T>, prev: T): T =>
 export interface ChatState {
     messages: Message[];
     isStreaming: boolean;
+    /**
+     * True from submit (or from sending a HITL/clarification reply that
+     * resumes a paused graph) until the turn genuinely ends — a strictly
+     * wider window than `isStreaming`, which only covers token/thinking
+     * delivery and stays false through node execution, tool calls, and an
+     * interrupt()/resume pause with no tokens yet. Gates the Stop button and
+     * the working indicator so a turn is always cancellable and visible, not
+     * just while text happens to be arriving. Do NOT repurpose `isStreaming`
+     * for this — it legitimately means "tokens are arriving" and other
+     * consumers rely on that narrower meaning.
+     */
+    isTurnActive: boolean;
     wsStatus: WsConnectionStatus;
     nattMessages: NattMessage[];
     hitlPending: HITLIntervention | undefined;
@@ -73,6 +85,7 @@ export interface ChatState {
 
     setMessages: Dispatch<SetStateAction<Message[]>>;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
+    setIsTurnActive: Dispatch<SetStateAction<boolean>>;
     setWsStatus: Dispatch<SetStateAction<WsConnectionStatus>>;
     setNattMessages: Dispatch<SetStateAction<NattMessage[]>>;
     setHitlPending: Dispatch<SetStateAction<HITLIntervention | undefined>>;
@@ -105,6 +118,7 @@ export interface ChatState {
 export const useChatStore = create<ChatState>((set) => ({
     messages: [],
     isStreaming: false,
+    isTurnActive: false,
     wsStatus: 'disconnected',
     nattMessages: [],
     hitlPending: undefined,
@@ -131,6 +145,7 @@ export const useChatStore = create<ChatState>((set) => ({
 
     setMessages:          (v) => set((s) => ({ messages: apply(v, s.messages) })),
     setIsStreaming:       (v) => set((s) => ({ isStreaming: apply(v, s.isStreaming) })),
+    setIsTurnActive:      (v) => set((s) => ({ isTurnActive: apply(v, s.isTurnActive) })),
     setWsStatus:          (v) => set((s) => ({ wsStatus: apply(v, s.wsStatus) })),
     setNattMessages:      (v) => set((s) => ({ nattMessages: apply(v, s.nattMessages) })),
     setHitlPending:       (v) => set((s) => ({ hitlPending: apply(v, s.hitlPending) })),

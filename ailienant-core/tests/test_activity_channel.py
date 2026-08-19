@@ -57,6 +57,13 @@ def test_classify_phase_tokens() -> None:
     )
 
 
+def test_classify_grill_phase_tokens() -> None:
+    """The Socratic grill (agents/analyst.py) narrates its own two phases —
+    without these the whole interview was silent on the timeline."""
+    assert _classify_activity("grill_grounding") == ("understanding", None, None)
+    assert _classify_activity("grill_composing_questions") == ("planning", None, None)
+
+
 def test_classify_unknown_returns_none() -> None:
     # A label with no timeline equivalent flows only to the legacy pipeline-step channel.
     assert _classify_activity("some_new_internal_token") == (None, None, None)

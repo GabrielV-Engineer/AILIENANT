@@ -63,15 +63,46 @@ def _seam() -> Any:
     return {"configurable": {"analyst_clarification_fn": _fn}}
 
 
+async def _run_both_phases(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Drives generate then, if a batch was actually committed, ask — mirrors
+    brain/ideation.py's analyst_grill self-loop, which is now two graph
+    super-steps per round (see agents/analyst.py::run_analyst_node's
+    docstring for why generating and interrupting can't share one invocation).
+    Returns the deltas merged, `messages` concatenated (append reducer)."""
+    generate_delta = await run_analyst_node(state, {})
+    if not generate_delta.get("pending_grill_batch"):
+        return generate_delta
+    ask_delta = await run_analyst_node({**state, **generate_delta}, _seam())
+    return {
+        **generate_delta,
+        **ask_delta,
+        "messages": generate_delta.get("messages", []) + ask_delta.get("messages", []),
+    }
+
+
 @pytest.mark.anyio
 async def test_analyst_first_round_asks_a_batch(_force_debug: None) -> None:
     """First Socratic round: no prior exchange → asks a batch, records it, and
     stays unfinished so ideation's self-loop drives another round."""
     state = {"task_id": "test-sess", "user_input": "Build me a REST API", "messages": []}
-    result = await run_analyst_node(state, _seam())
+    result = await _run_both_phases(state)
     assert result.get("shared_understanding_reached") is not True
     assert result.get("grill_round_count") == 1
+    assert result.get("pending_grill_batch") is None, "the ask phase must clear it"
     assert any(m.get("role") == "assistant" for m in result.get("messages", []))
+
+
+@pytest.mark.anyio
+async def test_analyst_generate_phase_alone_commits_without_a_runnable_context(
+    _force_debug: None,
+) -> None:
+    """The generate phase must not need a live graph context at all — it
+    commits pending_grill_batch and returns; no config is required because it
+    never calls the clarification seam."""
+    state = {"task_id": "test-sess", "user_input": "Build me a REST API", "messages": []}
+    result = await run_analyst_node(state)
+    assert result.get("pending_grill_batch"), "expected a committed batch"
+    assert result.get("messages", []) == []
 
 
 @pytest.mark.anyio
@@ -84,7 +115,7 @@ async def test_analyst_second_round_completes_on_empty_batch(_force_debug: None)
         "messages": [{"role": "assistant", "content": "What is the primary deliverable?"}],
         "grill_round_count": 1,
     }
-    result = await run_analyst_node(state, _seam())
+    result = await _run_both_phases(state)
     assert result.get("shared_understanding_reached") is True
     assert result.get("hitl_pending") is not True
 

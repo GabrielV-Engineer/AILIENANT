@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import * as Popover from '@radix-ui/react-popover';
 import { vscode } from './vscode_bridge';
@@ -39,6 +39,7 @@ import {
     readMergedCellIteration, appendPtyLines,
 } from './utils/messageDispatchHelpers';
 import { upsertCellBody } from './utils/timelineBuilder';
+import { timelineEntryLabel } from './utils/activityLabels';
 import type { Message, ConversationMessage, SystemMessage, InitialState } from './types';
 import { MESSAGE_COMPACTION_THRESHOLD } from './types';
 
@@ -73,6 +74,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const messages = useChatStore((s) => s.messages);
     const setMessages = useChatStore((s) => s.setMessages);
     const isStreaming = useChatStore((s) => s.isStreaming);
+    const isTurnActive = useChatStore((s) => s.isTurnActive);
     const wsStatus = useChatStore((s) => s.wsStatus);
     const nattMessages = useChatStore((s) => s.nattMessages);
     const setNattMessages = useChatStore((s) => s.setNattMessages);
@@ -191,6 +193,19 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         });
     }, [messages, isStreaming]);
 
+    // The Active Task Header's live status text: the same real narration
+    // AgentTimeline rows already render (server_activity_event → typed
+    // kind → timelineEntryLabel), sourced from the latest turn's own
+    // timeline entries — never a fabricated status verb. Undefined before
+    // the first marker arrives, so the header falls back to "Working…".
+    const activeTaskStatusLabel = useMemo(() => {
+        const last = messages[messages.length - 1];
+        const entries = last && 'timeline' in last ? last.timeline : undefined;
+        if (!entries || entries.length === 0) { return undefined; }
+        const latest = entries.reduce((a, b) => (b.seq > a.seq ? b : a));
+        return timelineEntryLabel(latest);
+    }, [messages]);
+
     // Submit a turn under an explicit execution mode. The mode is passed in
     // rather than read from the `mode` state so callers that flip the mode in
     // the same handler (plan acceptance) submit under the NEW mode immediately,
@@ -205,6 +220,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         const chat = useChatStore.getState();
         chat.setActiveTaskPrompt(text === AGREEMENT_SIGNAL ? 'Applying approved plan' : text);
         chat.setActiveTaskStartedAt(Date.now());
+        // Wider than isStreaming (token delivery only) — covers the whole turn,
+        // including node execution and an interrupt()/resume pause with no
+        // tokens yet, so the Stop button and working indicator never go dark.
+        chat.setIsTurnActive(true);
         const storeState = useWorkspaceStore.getState();
         // A cell that finishes without sending an explicit empty todo_write leaves
         // its last list on screen; a new turn always starts a fresh task, so clear
@@ -524,7 +543,8 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                             <ActiveTaskHeader
                                 prompt={activeTaskPrompt}
                                 startedAt={activeTaskStartedAt}
-                                isStreaming={isStreaming}
+                                isTurnActive={isTurnActive}
+                                statusLabel={activeTaskStatusLabel}
                                 onCancel={handleAbort}
                                 onDismiss={() => setActiveTaskPrompt(undefined)}
                             />
@@ -777,7 +797,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             : undefined
                                 }
                                 activeTaskId={activeTaskId}
-                                isStreaming={isStreaming}
                                 isAborting={isAborting}
                                 config={config}
                                 mode={mode}

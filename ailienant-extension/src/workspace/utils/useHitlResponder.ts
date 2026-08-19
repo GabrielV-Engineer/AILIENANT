@@ -12,6 +12,7 @@
  */
 import { useCallback, useRef } from 'react';
 import { vscode } from '../vscode_bridge';
+import { useChatStore } from '../chatStore';
 
 interface RespondOptions {
     comment?: string;
@@ -36,6 +37,10 @@ export function useHitlResponder(
     const respond = useCallback((approved: boolean, opts?: RespondOptions) => {
         if (resolvedRef.current) { return; }
         resolvedRef.current = true;
+        // A reply may resume a paused graph with no tokens/thinking deltas for
+        // a while (e.g. another Socratic grill round) — re-arm the working
+        // indicator here, not just at the original submit.
+        useChatStore.getState().setIsTurnActive(true);
         vscode.postMessage({
             type: 'HITL_RESPONSE',
             approval_id: approvalId,

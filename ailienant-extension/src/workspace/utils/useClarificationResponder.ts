@@ -11,6 +11,7 @@
  */
 import { useCallback, useRef } from 'react';
 import { vscode } from '../vscode_bridge';
+import { useChatStore } from '../chatStore';
 import type { ClarificationAnswer } from '../../api/contracts';
 
 export interface ClarificationResponder {
@@ -27,6 +28,11 @@ export function useClarificationResponder(
     const respond = useCallback((answers: ClarificationAnswer[]) => {
         if (resolvedRef.current) { return; }
         resolvedRef.current = true;
+        // Submitting answers resumes the paused graph, which may run another
+        // grounding + question-generation round with no tokens for a while —
+        // re-arm the working indicator so the Stop button stays live and the
+        // turn never appears to go idle.
+        useChatStore.getState().setIsTurnActive(true);
         vscode.postMessage({
             type: 'HITL_RESPONSE',
             approval_id: approvalId,

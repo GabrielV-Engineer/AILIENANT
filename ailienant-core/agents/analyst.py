@@ -136,11 +136,17 @@ async def generate_intent_summary_llm(user_messages: List[str], task_id: str = "
     return str(result).strip()
 
 
-def _render_batch_for_history(batch: "GrillQuestionBatch") -> str:
+def _render_batch_for_history(question_dicts: List[Dict[str, Any]]) -> str:
     """Flatten a question batch into a readable transcript line for `messages`
     history (and for the distillation prompt downstream) — the actual UI comes
-    from ClarificationGrillCard, not this string."""
-    return "\n".join(f"- {q.header}: {q.question}" for q in batch.questions)
+    from ClarificationGrillCard, not this string.
+
+    Takes the state-sourced ``pending_grill_batch`` dicts (never the live
+    Pydantic batch fresh out of the LLM) so the ask phase always renders
+    exactly what was asked — the same reason it resolves answers against
+    those dicts rather than a replay-regenerated batch.
+    """
+    return "\n".join(f"- {q['header']}: {q['question']}" for q in question_dicts)
 
 
 def _fold_answers_into_summary(
@@ -230,25 +236,70 @@ async def run_analyst_node(
 ) -> Dict[str, Any]:
     """LangGraph node: Socratic Grill Me AnalystAgent.
 
-    Each invocation is ONE round: it asks a batch of every question the model
-    currently needs answered (2-6, each with concrete options), suspends via
-    native interrupt()/resume on the SAME clarification channel ask_user_question
-    uses (ClarificationGrillCard renders it), then folds the answers into
-    `messages`. brain/ideation.py's self-loop edge drives another round when
-    the model hasn't yet signalled it has enough understanding — signalled by
-    the model returning an EMPTY questions batch, which replaces free-text
-    agreement-phrase detection as the primary completion path. grill_round_count
-    bounds the loop (_GRILL_MAX_ROUNDS) since a local Python counter cannot
-    survive across separate graph super-steps.
+    Each round is TWO graph super-steps (brain/ideation.py's analyst_grill self-loop
+    drives both), not one — this split is load-bearing, not cosmetic:
 
-    The live path grounds each round in the workspace (active file + GraphRAG,
-    via the same assembler the Natt pane uses) and mirrors the user's language.
+      1. **Generate phase** (`pending_grill_batch` empty): composes a batch of every
+         question the model currently needs answered (2-6, each with concrete
+         options), commits it to `pending_grill_batch`, and returns — ending this
+         super-step with NO interrupt() call.
+      2. **Ask phase** (`pending_grill_batch` set, next self-loop visit):
+         `_resolve_grill_answers` on the STATE-SOURCED batch is the node's first
+         action, suspending via native interrupt()/resume on the same clarification
+         channel ask_user_question uses (ClarificationGrillCard renders it). Folds
+         the resumed answers into `messages` and clears the channel.
+
+    Why: LangGraph replays a node from the top on every resume. Generating the
+    batch and calling interrupt() in the SAME invocation (the original single-phase
+    design) meant every resume re-ran the LLM call that composed the questions —
+    non-deterministically regenerating a batch the operator never saw, silently
+    misaligning the positional `q{i}` ids `_fold_answers_into_summary` correlates
+    answers against, and in the worst case producing an EMPTY replay batch that
+    skips interrupt() entirely and discards the resume value outright. This is the
+    exact hazard brain/agentic_cell.py's `pending_exec_command`/`pending_tool_call`/
+    `pending_hitl_request` defer-then-interrupt-first pattern exists to avoid;
+    `pending_grill_batch` applies the same fix here.
+
+    The model signals completion itself by returning an EMPTY questions batch in
+    the generate phase — replacing free-text agreement-phrase detection as the
+    primary completion path. `grill_round_count` bounds the loop (_GRILL_MAX_ROUNDS)
+    since a local Python counter cannot survive across super-steps.
+
+    The live path grounds each round in the workspace (active file + GraphRAG, via
+    the same assembler the Natt pane uses) and mirrors the user's language.
     """
     task_id: str = state.get("task_id", "")
-    user_input: str = state.get("user_input", "")
     messages: List[Dict[str, Any]] = list(state.get("messages", []))
     round_count: int = int(state.get("grill_round_count", 0) or 0)
+    pending_batch: Optional[List[Dict[str, Any]]] = state.get("pending_grill_batch")
 
+    # Glass-Box Timeline narration (mirrors brain/ideation.py::run_synthesis_node's
+    # _emit helper). Without this the whole interview phase was silent — the
+    # generic "Understanding your request" marker from an earlier upstream node
+    # was the only thing on screen until the first question card appeared,
+    # regardless of how many grounding/generation rounds ran in between.
+    _narrate = (config or {}).get("configurable", {}).get("narrate")
+
+    async def _emit(node_name: str) -> None:
+        if _narrate is not None:
+            await _narrate(node_name)
+
+    # ── Ask phase ─────────────────────────────────────────────────────────
+    if pending_batch:
+        resolved = await _resolve_grill_answers(task_id, pending_batch, config)
+        answer_summary = _fold_answers_into_summary(pending_batch, resolved)
+        return {
+            "hitl_pending": False,
+            "shared_understanding_reached": False,
+            "messages": [
+                {"role": "assistant", "content": _render_batch_for_history(pending_batch)},
+                {"role": "user", "content": answer_summary},
+            ],
+            "pending_grill_batch": None,
+        }
+
+    # ── Generate phase ───────────────────────────────────────────────────
+    user_input: str = state.get("user_input", "")
     has_prior = _has_prior_socratic_exchange(messages)
 
     # Only meaningful on a genuinely fresh top-level invocation (round_count
@@ -313,12 +364,14 @@ async def run_analyst_node(
         # the graph. Re-runs once on this round's own interrupt()/resume
         # replay (accepted, bounded cost — matches the pre-existing per-round
         # grounding cost this node already had before this redesign).
+        await _emit("grill_grounding")
         context_block = await _assemble_socratic_context(state)
         grounding, dispatch_trace = await _gather_tool_grounding(state, config, task_id)
         if grounding:
             context_block = (
                 f"{context_block}\n\n{grounding}" if context_block else grounding
             )
+        await _emit("grill_composing_questions")
         batch = await _generate_grill_questions_llm(
             messages + new_messages, soul_prompt, context_block, task_id
         )
@@ -356,24 +409,23 @@ async def run_analyst_node(
             result["tool_dispatch_trace"] = dispatch_trace
         return result
 
-    question_dicts = questions_to_pending_dicts(batch.questions)
-    resolved = await _resolve_grill_answers(task_id, question_dicts, config)
-    answer_summary = _fold_answers_into_summary(question_dicts, resolved)
-
-    new_messages.append({"role": "assistant", "content": _render_batch_for_history(batch)})
-    new_messages.append({"role": "user", "content": answer_summary})
-
-    result = {
+    # Commit the batch to state and return — do NOT resolve answers here. The
+    # ask phase (top of this function, next self-loop visit) is where
+    # _resolve_grill_answers runs, as its first action, against these exact
+    # dicts read back from state. See the docstring for why generating and
+    # interrupting in the same invocation is unsafe.
+    committed: Dict[str, Any] = {
         "hitl_pending": False,
         "shared_understanding_reached": False,
         "messages": new_messages,
         "grill_round_count": round_count + 1,
+        "pending_grill_batch": questions_to_pending_dicts(batch.questions),
     }
     # Append the executed-tool record only when the loop actually ran a tool, so
     # the read-only no-tool turn keeps its minimal state-delta contract.
     if dispatch_trace:
-        result["tool_dispatch_trace"] = dispatch_trace
-    return result
+        committed["tool_dispatch_trace"] = dispatch_trace
+    return committed
 
 
 async def _assemble_socratic_context(state: Dict[str, Any]) -> str:
