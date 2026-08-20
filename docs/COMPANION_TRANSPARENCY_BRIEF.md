@@ -1,8 +1,10 @@
 # Companion Transparency — Design Brief
 
-**Status:** Brief only. No implementation in this document or its companion commit —
-this captures the goal and frames the open design questions to work through together
-before any code changes. Tracked as DEBT-183.
+**Status:** RESOLVED 2026-08-20 (13.0.7). DEBT-183 closed. This brief's five open
+questions were answered and implemented — see `docs/DEV_JOURNAL.md`'s 13.0.7 entry and
+`docs/PROJECT_MANIFEST.md` §13.0.7 for the shipped design. Kept below as the historical
+record of the goal and the reasoning that shaped the answers; do not treat anything
+here as still-open.
 
 ## The goal, in the user's own words
 
@@ -57,39 +59,37 @@ already; the "why" half exists only for code-writing turns, arrives once at the 
 and is invisible everywhere else.** The redesign is about the second half, and about
 deciding whether/how it should ride alongside the first rather than duplicate it.
 
-## Open questions to resolve together
+## Open questions — resolved 2026-08-20 (13.0.7)
 
-1. **Input contract.** What does the companion look at when there's no patch to
-   explain? A Plan-mode round has a question batch and grounding trace instead of a
-   diff; a pure research/Ask-mode turn has retrieval results and reasoning instead of
-   either. Does one generalized contract cover all three, or does each mode get its
-   own shaped request feeding a shared explanation model?
+1. **Input contract. RESOLVED:** each mode got its own shaped request, not one
+   generalized contract — three new builders (`build_ideation_companion_request`,
+   `build_planning_companion_request`, `build_healing_companion_request`) each read
+   only their own decision point's data, feeding the same `CompanionAnalysisRequest`
+   carrier via a new `scope`/`scope_summary` pair.
 
-2. **Granularity: per-step or per-turn?** The literal ask is "paso por paso, no todo
-   de una vez al final." Does that mean the companion itself becomes incremental
-   (one explanation per timeline step — expensive, since it multiplies LLM calls by
-   step count), or does it mean the *timeline* stays the step-by-step surface (already
-   true) and the companion's job is a good, promptly-delivered *summary* attached to
-   the round/turn that just happened, not literally streamed token-by-token? These
-   read very differently in cost and complexity.
+2. **Granularity. RESOLVED, and NOT what this brief predicted:** neither per-step nor
+   per-turn — per real graph decision point (a grill round closing, a plan committing,
+   a patch landing, error correction resolving), each already topology-bounded. The
+   deciding factor turned out to be *latency*, not cost: per-step calls, serialized
+   behind the existing semaphore, would desynchronize badly from the actual step. A
+   separate, more valuable fix rode alongside: `AgentTimeline` was only ever rendering
+   the FIRST reasoning entry of a turn (a latent bug, not a scoping choice) — fixing
+   that gives the literal "paso a paso" reasoning trace at zero LLM cost, via the
+   primary model's own thinking, not the Companion.
 
-3. **Division of labour with the Timeline.** If the companion starts explaining
-   *what* happened too, it will drift into duplicating `AgentTimeline`. Proposed
-   framing to test: Timeline = what + when (cheap, structural, already free of LLM
-   cost per step); Companion = why + so what (expensive, LLM-authored, worth gating).
-   Does that boundary hold across Plan/Ask/Auto, or does one mode need something in
-   between?
+3. **Division of labour. RESOLVED, framing held exactly as proposed:** Timeline =
+   what/when (free), the primary model's own reasoning = why inline (now free, see
+   above), Companion = and-so-what (expensive, gated, decision-point-scoped).
 
-4. **Cost and latency governance.** Today's guards — budget check, VRAM-slot
-   contention, a 3-way concurrency semaphore, 12s cloud / 45s local timeout — exist
-   because even ONE post-hoc call per coding turn is worth rate-limiting. Whatever
-   granularity comes out of question 2, the same governance has to scale with it
-   without becoming a second FinOps surface to maintain.
+4. **Cost/latency governance. RESOLVED:** the existing budget/VRAM/semaphore guards
+   are reused unchanged for every scope; a new shared `_MAX_COMPANION_EMISSIONS_PER_TASK`
+   backstop was added since decision points, unlike a single post-hoc call, can recur
+   through a cyclic subgraph (`coder ↔ error_correction`, the grill self-loop).
 
-5. **Frontend delivery.** Removing the `diffBlocks.length > 0` gate is mechanical.
-   Deciding what the card (or a new surface) looks like when there may be several of
-   these per turn, interleaved with timeline rows and possibly with clarification
-   cards, is not — it needs a rendering position, not just a removed condition.
+5. **Frontend delivery. RESOLVED:** the `diffBlocks.length > 0` gate was dropped;
+   companion storage moved from a session-wide store to message-scoped append storage
+   (`Message.companions`), rendering in the same position as before (beside the diff /
+   inside the per-message stack) as a stack of per-decision-point cards.
 
 ## Non-goals for this brief
 

@@ -209,6 +209,39 @@ Cancellation: `client_inline_edit_cancel` aborts the stream mid-flight.
 
 ---
 
+### 3.7 Agent Companion (Post-hoc Decision-Point Explainer)
+
+**Prompt source:** `_build_companion_system_prompt` in `brain/coder_companion.py` — scope-aware
+(13.0.7): branches on `CompanionAnalysisRequest.scope` rather than a single fixed prompt.
+
+**Coding scope (unchanged since introduction):**
+> "You are an expert code reviewer analyzing a patch (SEARCH/REPLACE edits) the Coder just produced. Your job is to explain the patch in structured terms: what it achieves, why those decisions were made, what patterns apply, where bottlenecks or edge cases exist, and what follow-up work remains." — verbosity-gated field expansion (`minimal`/`normal`/`deep`, resolved from patch size + presence of errors/security flags).
+
+**Ideation / planning / healing scopes (13.0.7):** a shared, leaner frame —
+> "You are explaining, to the developer watching, {a round of clarifying questions the Analyst just asked and the operator just answered | the technical plan the Planner just committed | a self-healing correction attempt the system just resolved}. Your job is to explain WHY, in structured terms: what it achieves, what decisions were made, and what — if anything — the developer should follow up on." — populates `objective` always, `follow_ups` only if genuinely warranted, and leaves the patch-specific lists (`patterns_applied`/`bottlenecks`/`errors_found`) empty, since a non-coding decision point has no patch to describe them against.
+
+**Not a graph node.** Fires as a fire-and-forget background task (`schedule_coder_companion` /
+`schedule_agent_companion`) from four call sites — `agents/coder.py` (a patch set lands),
+`agents/analyst.py`'s ask phase (a grill round closes), `agents/planner.py` (a plan
+commits), `agents/error_correction.py` (a correction resolves, healed or conceded) — never
+blocks the graph's own control flow. Output: strict JSON (`CompanionAnalysis`), parsed with
+graceful degradation on any malformed/empty/timed-out response; broadcast over
+`server_coder_companion` on every exit path (success, degraded, budget-skip, VRAM-skip, or
+an unexpected fault) so the frontend card never waits on a producer that silently died.
+
+**Retired (13.0.7): the free-form "simulated" narration pass.** A second, independent
+completion (`_stream_narration`) used to stream conversational prose into the Thought Box
+alongside the structured JSON call — a second model narrating what the first one (the Coder)
+had already done. Removed: it contradicted the same "don't run a second model to explain the
+first" principle that ruled out per-timeline-row Companion emission, and duplicated the
+now-fixed per-entry rendering of the PRIMARY model's own reasoning (`AgentTimeline.tsx`). The
+planner's and analyst's own PRE-action reasoning passes (`astream_reasoning`, conditioning
+the work about to happen) are unaffected — those are genuine reasoning, not post-hoc dubbing.
+
+Source: `brain/coder_companion.py`, `api/ws_contracts.py` (`CoderCompanionPayload`).
+
+---
+
 ## 4. Specialist Nodes
 
 ### 4.1 MCTSCoderNode (Local / Fix / Surgeon)

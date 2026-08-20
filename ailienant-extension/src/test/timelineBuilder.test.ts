@@ -9,7 +9,7 @@ import * as assert from 'assert';
 import type { ActivityEventPayload } from '../api/contracts';
 import type { CellIterationShape, DiffBlockShape, ExecutionDetailShape, TimelineEntry } from '../shared/config';
 import {
-    upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody,
+    upsertActivityMarker, upsertReasoningDelta, freezeActiveReasoningEntries, upsertDiffBody, upsertCellBody,
     upsertExecutionBody, upsertExecutionChunk, stripReasoningForPersist,
 } from '../workspace/utils/timelineBuilder';
 
@@ -80,6 +80,48 @@ suite('11.5.C.1 — timelineBuilder', () => {
         assert.deepStrictEqual(entries.map(e => e.seq), [0, 1, 2]);
         assert.deepStrictEqual(entries.map(e => e.id), ['seq:0', 'r1', 'seq:2']);
         assert.strictEqual(entries[1].thinking, 'thinking...');
+    });
+
+    // ── Reasoning — per-entry chronometry, several spans in one turn ────────
+
+    test('a new reasoning span stamps its own tokenCount/startedAt, independent of a prior span', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertReasoningDelta(entries, 'Grounding…', 'r1', 100, { tokenCount: 3, now: 1_000 });
+        entries = upsertReasoningDelta(entries, ' more', 'r1', 100, { tokenCount: 5, now: 1_050 });
+        assert.strictEqual(entries[0].thinkingTokens, 5, 'tokenCount tracks the latest value, like the message-scoped reducer');
+        assert.strictEqual(entries[0].thinkingStartedAt, 1_000, 'startedAt stamps once, on the first delta, and never moves');
+        assert.strictEqual(entries[0].thinkingElapsedMs, undefined, 'still open — no freeze yet');
+    });
+
+    test('a second reasoning span beginning freezes the first — independent clocks, not a shared one', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertReasoningDelta(entries, 'Grounding…', 'r1', 100, { tokenCount: 3, now: 1_000 });
+        entries = upsertReasoningDelta(entries, 'Composing…', 'r2', 100, { tokenCount: 2, now: 1_800 });
+
+        assert.strictEqual(entries.length, 2);
+        const r1 = entries.find(e => e.id === 'r1')!;
+        const r2 = entries.find(e => e.id === 'r2')!;
+        assert.strictEqual(r1.thinkingElapsedMs, 800, 'r1 froze the instant r2 started (1800 - 1000)');
+        assert.strictEqual(r2.thinkingElapsedMs, undefined, 'r2 is the new open span');
+        assert.strictEqual(r1.thinking, 'Grounding…', 'r1 keeps its own text, unmixed with r2');
+    });
+
+    test('freezeActiveReasoningEntries settles every still-open span and is a no-op once frozen', () => {
+        let entries: TimelineEntry[] = [];
+        entries = upsertReasoningDelta(entries, 'Grounding…', 'r1', 100, { tokenCount: 1, now: 1_000 });
+        const frozen = freezeActiveReasoningEntries(entries, 1_400);
+        assert.strictEqual(frozen[0].thinkingElapsedMs, 400);
+
+        const frozenAgain = freezeActiveReasoningEntries(frozen, 9_999);
+        assert.strictEqual(frozenAgain, frozen, 'idempotent — an already-frozen entry is left untouched, same array identity');
+    });
+
+    test('freezeActiveReasoningEntries ignores non-reasoning entries', () => {
+        const entries: TimelineEntry[] = [
+            { id: 'seq:0', seq: 0, ts: 100, kind: 'read', status: 'active', target: 'a.py' },
+        ];
+        const frozen = freezeActiveReasoningEntries(entries, 1_400);
+        assert.strictEqual(frozen, entries, 'no reasoning entries present — untouched');
     });
 
     // ── Diff — order-agnostic correlation by file_path ───────────────────────

@@ -2727,3 +2727,40 @@ re-selecting forever. An `operator.add` reducer would accumulate queries and def
 deserializes it as absent; `state.get("cell_tool_query")` yields `None` and the replay
 branch is simply skipped, leaving selection identical to the pre-13.0.2 behavior. No existing
 channel changes shape or meaning.
+
+## §54 — Agent Companion: `scope`/`emission_id` (Manifest 13.0.7, closes DEBT-183)
+
+The Coder Companion generalized beyond patch explanations (grill rounds, plan commits,
+error corrections now emit too — see `docs/DEV_JOURNAL.md`'s 13.0.7 entry). Two additive
+fields land on `CoderCompanionPayload` (`api/ws_contracts.py`):
+
+```python
+scope: Literal["coding", "ideation", "planning", "healing"] = "coding"
+emission_id: Optional[str] = None
+```
+
+**`correlation_id` was deliberately NOT redefined.** It stays `f"{task_id}:{attempt_ordinal}"`,
+exactly its pre-13.0.7 shape — reusing it as the new per-decision-point key would have
+been a silent field-repurposing (forbidden by §10) and, worse, would not even have worked:
+two emissions in the same attempt (e.g. an ideation round and, later, a coding attempt
+both at ordinal 0) collide on that key, degrading an append-store to a stomp — precisely
+the class of bug DEBT-184/185 closed in 13.0.6. `emission_id` is the new key a current
+frontend uses instead (`f"{task_id}:{scope}:{ordinal}"`, unique per decision point);
+`correlation_id` remains for whatever narrower "last write for this task+attempt" meaning
+existing/older consumers already gave it.
+
+**Backward-compat:** both fields are optional with defaults. An older backend event
+(pre-13.0.7) validates unchanged — `scope` defaults to `"coding"` (correct, since no
+older backend emitted anything else) and `emission_id` is `None`, which the frontend
+falls back to `correlation_id` for — so an old event still keys coherently in the new
+append-store, just without cross-scope disambiguation it never needed.
+
+**Companion request contract** (`brain/coder_companion.py::CompanionAnalysisRequest`,
+not a wire type, Python-internal) gained matching `scope`/`scope_summary` fields with
+empty/`"coding"` defaults — the coding path's existing fields (`pending_patches` etc.)
+are untouched, so no coding-scope behavior changed. Each non-coding scope builder
+(`build_ideation_companion_request`, `build_planning_companion_request`,
+`build_healing_companion_request`) renders its own decision point's data into
+`scope_summary`, capped at `_MAX_SCOPE_SUMMARY_CHARS` (4000) before it ever reaches an
+LLM prompt — the same token-hygiene discipline `_MAX_DIFF_CHARS_PER_FILE` already
+applies to the coding path (§5.5).

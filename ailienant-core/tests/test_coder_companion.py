@@ -1,8 +1,7 @@
 # ailienant-core/tests/test_coder_companion.py
 #
 # Coder Companion tests.
-# Coverage: background-task lifecycle, LLM call resilience, parsing, UI safety,
-# and the free-form narration pass streamed to the Thought Box.
+# Coverage: background-task lifecycle, LLM call resilience, parsing, UI safety.
 
 import asyncio
 import pytest
@@ -11,14 +10,19 @@ from typing import Dict, Any
 
 from brain.coder_companion import (
     schedule_coder_companion,
+    schedule_agent_companion,
     _companion_background_tasks,
+    _companion_emission_counts,
     _resolve_verbosity,
     _resolve_judge_tier,
     _resolve_companion_llm_timeout,
     _call_analyst_llm,
-    _stream_narration,
     _parse_companion_json,
     _run_coder_companion,
+    _run_agent_companion,
+    build_ideation_companion_request,
+    build_planning_companion_request,
+    build_healing_companion_request,
     CompanionAnalysis,
     CompanionAnalysisRequest,
 )
@@ -27,6 +31,18 @@ pytestmark = pytest.mark.anyio
 
 
 # ─── FIXTURES ────────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _reset_emission_counts():
+    """`_companion_emission_counts` is a module-level dict shared across the
+    whole test session (mirrors the `_MAX_COMPANION_EMISSIONS_PER_TASK`
+    backstop's own module-lifetime scope) — reset it per test so one test's
+    emissions never count against another's cap, keeping every test hermetic
+    regardless of run order."""
+    _companion_emission_counts.clear()
+    yield
+    _companion_emission_counts.clear()
+
 
 @pytest.fixture
 def mock_state() -> Dict[str, Any]:
@@ -290,7 +306,7 @@ async def test_schedule_coder_companion_gc_safety(mock_state):
     # Clear the set to start clean.
     _companion_background_tasks.clear()
 
-    async def quick_task(state, ordinal, enable_narration=False):
+    async def quick_task(state, ordinal):
         pass
 
     with patch("brain.coder_companion._run_coder_companion", new_callable=AsyncMock) as mock_run:
@@ -428,7 +444,141 @@ async def test_broadcast_coder_companion_contract(mock_state):
         assert "Security issue patched" in event.data.security_notes
 
 
-# ─── NARRATION TESTS (Item A — free-form pass streamed to the Thought Box) ────
+async def test_broadcast_coder_companion_defaults_scope_and_emission_id():
+    """A caller that doesn't pass scope/emission_id (the grandfathered shape)
+    still gets a coherent, non-null emission_id (falls back to correlation_id)
+    and the 'coding' scope default — additive fields, zero behavior change for
+    an old call site."""
+    from api.websocket_manager import ConnectionManager
+
+    cm = ConnectionManager()
+    cm.send_personal_message = AsyncMock()
+    await cm.broadcast_coder_companion(
+        session_id="sess1", task_id="task1", correlation_id="task1:0",
+        analysis=CompanionAnalysis(objective="Done", degraded=False),
+    )
+    event = cm.send_personal_message.call_args[0][1]
+    assert event.data.scope == "coding"
+    assert event.data.emission_id == "task1:0"
+
+
+# ─── 13.0.7 — GENERALIZED SCOPE BUILDERS ──────────────────────────────────────
+
+def test_build_ideation_companion_request_uses_only_this_rounds_batch():
+    """The ideation builder must consume ONLY the round-local batch/answers it's
+    handed — never anything accumulated across rounds — so its prompt can never
+    grow the way re-sending an append-only state list would."""
+    batch = [
+        {"id": "q1", "header": "Auth", "question": "Which auth scheme?"},
+        {"id": "q2", "header": "Storage", "question": "Which datastore?"},
+    ]
+    answers = {"q1": "OAuth2", "q2": "Postgres"}
+    request = build_ideation_companion_request(
+        session_id="sess1", task_id="task1", attempt_ordinal=0,
+        task_description="Design the auth flow", question_batch=batch, resolved_answers=answers,
+    )
+    assert request.scope == "ideation"
+    assert "OAuth2" in request.scope_summary
+    assert "Postgres" in request.scope_summary
+    assert len(request.scope_summary) <= 4000
+
+
+def test_build_planning_companion_request_summarizes_the_committed_plan():
+    """The planning builder reads only the just-drafted MissionSpecification's
+    own summary fields."""
+    class _FakeTask:
+        def __init__(self, n):
+            self.step_number = n
+            self.action = "edit_file"
+            self.target_file = f"file{n}.py"
+            self.description = f"do thing {n}"
+
+    class _FakeMission:
+        outcome = "Ship the feature"
+        constraints = ["no new deps"]
+        tasks = [_FakeTask(1), _FakeTask(2)]
+
+    request = build_planning_companion_request(
+        session_id="sess1", task_id="task1", mission_plan=_FakeMission(),
+    )
+    assert request.scope == "planning"
+    assert request.task_description == "Ship the feature"
+    assert "file1.py" in request.scope_summary
+    assert "file2.py" in request.scope_summary
+
+
+def test_build_healing_companion_request_reflects_the_outcome():
+    """The healing builder reports whether THIS attempt healed or conceded —
+    not the accumulated error history."""
+    healed = build_healing_companion_request(
+        session_id="sess1", task_id="task1", attempt_ordinal=1,
+        failed_node="coder", diagnosis="missing import", healed=True,
+    )
+    assert healed.scope == "healing"
+    assert "healed" in healed.scope_summary
+
+    conceded = build_healing_companion_request(
+        session_id="sess1", task_id="task1", attempt_ordinal=2,
+        failed_node="coder", diagnosis="unfixable schema drift", healed=False,
+    )
+    assert "could not auto-fix" in conceded.scope_summary
+
+
+async def test_run_agent_companion_broadcasts_with_scope_and_emission_id(mock_state):
+    """A non-coding emission carries its own scope + a per-decision-point
+    emission_id, distinct from the coding-path correlation_id shape."""
+    request = build_ideation_companion_request(
+        session_id="test-task-123", task_id="test-task-123", attempt_ordinal=0,
+        task_description="task", question_batch=[], resolved_answers={},
+    )
+    mock_analysis = CompanionAnalysis(objective="Explained the round", degraded=False)
+
+    with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
+        with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
+            with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
+                await _run_agent_companion(mock_state, "ideation", 0, lambda: request)
+
+    mock_broadcast.assert_called_once()
+    kwargs = mock_broadcast.call_args[1]
+    assert kwargs["scope"] == "ideation"
+    assert kwargs["emission_id"] == "test-task-123:ideation:0"
+
+
+async def test_schedule_agent_companion_gc_safety(mock_state):
+    """Mirrors schedule_coder_companion's GC-safety contract for the new
+    non-coding entry point."""
+    _companion_background_tasks.clear()
+    request = build_healing_companion_request(
+        session_id="test-task-123", task_id="test-task-123", attempt_ordinal=0,
+        failed_node="coder", diagnosis="x", healed=True,
+    )
+    with patch("brain.coder_companion._run_agent_companion", new_callable=AsyncMock) as mock_run:
+        schedule_agent_companion(mock_state, "healing", 0, lambda: request)
+        assert len(_companion_background_tasks) == 1
+        await asyncio.gather(*_companion_background_tasks)
+        assert len(_companion_background_tasks) == 0
+    mock_run.assert_called_once()
+
+
+async def test_companion_emission_cap_stops_a_pathological_cycle(mock_state):
+    """The shared per-task emission ceiling is a backstop against a cyclic
+    decision-point emitter (e.g. a coder ↔ error_correction loop) — past the
+    cap, no further broadcast fires for that task, regardless of scope."""
+    request = build_healing_companion_request(
+        session_id="test-task-123", task_id="test-task-123", attempt_ordinal=0,
+        failed_node="coder", diagnosis="x", healed=False,
+    )
+    with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock,
+               return_value=CompanionAnalysis(objective="ok", degraded=False)):
+        with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
+            with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
+                for _ in range(25):  # over the 20-emission ceiling
+                    await _run_agent_companion(mock_state, "healing", 0, lambda: request)
+
+    assert mock_broadcast.call_count == 20
+
+
+# ─── JUDGE-TIER / TIMEOUT RESOLUTION TESTS ────────────────────────────────────
 
 def test_resolve_judge_tier_defaults_medium():
     """A non-ailienant/ alias (or unrecognized suffix) resolves to 'medium'."""
@@ -457,131 +607,3 @@ def test_resolve_companion_llm_timeout_unresolved_alias_falls_back_to_cloud():
     """No active BYOM preset (unresolved alias) — advisory failure, cloud default."""
     with patch("core.config.model_resolver.get_chat_target", return_value=None):
         assert _resolve_companion_llm_timeout("medium") == 12.0
-
-
-def _narration_request(session_id: str = "sess1") -> CompanionAnalysisRequest:
-    return CompanionAnalysisRequest(
-        session_id=session_id,
-        task_id="task1",
-        attempt_ordinal=0,
-        task_description="Fix bug",
-        pending_patches={"file.py": "diff"},
-        pending_contents={"file.py": "content"},
-        file_context={},
-        relevant_errors=[],
-        security_flags=[],
-        verbosity="normal",
-    )
-
-
-async def test_stream_narration_skips_without_session_id():
-    """No session_id → nothing to correlate the stream to; returns immediately."""
-    request = _narration_request(session_id="")
-    with patch("brain.coder_companion.LLMGateway.astream_reasoning") as mock_stream:
-        await _stream_narration(request)
-    mock_stream.assert_not_called()
-
-
-async def test_stream_narration_forwards_deltas_to_thought_box():
-    """Each non-empty text delta is forwarded to broadcast_thinking_chunk with
-    source='simulated' — the narration is always a simulated (non-native) stream
-    by construction (free_form_answer=True)."""
-    from tools.stream_delta import StreamDelta
-
-    async def fake_stream(*args, **kwargs):
-        assert kwargs["free_form_answer"] is True
-        assert kwargs.get("response_format") is None
-        yield StreamDelta("text", "This patch ", "simulated")
-        yield StreamDelta("text", "adds input validation.", "simulated")
-
-    request = _narration_request()
-    with patch("brain.coder_companion.LLMGateway.astream_reasoning", side_effect=fake_stream):
-        with patch(
-            "api.websocket_manager.vfs_manager.broadcast_thinking_chunk", new_callable=AsyncMock
-        ) as mock_broadcast:
-            await _stream_narration(request)
-
-    assert mock_broadcast.call_count == 2
-    first_call = mock_broadcast.call_args_list[0]
-    assert first_call[0][0] == "sess1"
-    assert first_call[0][1] == "This patch "
-    assert first_call[1]["source"] == "simulated"
-
-
-async def test_stream_narration_timeout_degrades_to_silence():
-    """A hung stream never raises past the deadline — degrades to silence, exactly
-    like the structured analysis call's own timeout handling."""
-    async def hang(*args, **kwargs):
-        await asyncio.sleep(100)
-        yield  # pragma: no cover — unreachable, keeps this an async generator
-
-    request = _narration_request()
-    with patch("core.config.model_resolver.get_chat_target", return_value=None):  # force cloud (12s) deadline
-        with patch("brain.coder_companion.LLMGateway.astream_reasoning", side_effect=hang):
-            with patch("brain.coder_companion._COMPANION_LLM_TIMEOUT_CLOUD_S", 0.05):
-                # Must not raise.
-                await _stream_narration(request)
-
-
-async def test_stream_narration_provider_exception_degrades_to_silence():
-    """A provider fault during streaming must never propagate — pure color, never
-    load-bearing for the structured companion result running alongside it."""
-    async def boom(*args, **kwargs):
-        raise RuntimeError("provider exploded")
-        yield  # pragma: no cover — unreachable, keeps this an async generator
-
-    request = _narration_request()
-    with patch("brain.coder_companion.LLMGateway.astream_reasoning", side_effect=boom):
-        # Must not raise.
-        await _stream_narration(request)
-
-
-async def test_run_coder_companion_narration_gated_by_flag(mock_state):
-    """enable_narration=False (the default) never invokes the narration pass."""
-    mock_analysis = CompanionAnalysis(objective="Fixed bug X", degraded=False)
-
-    with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
-        with patch("brain.coder_companion._stream_narration", new_callable=AsyncMock) as mock_narrate:
-            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock):
-                with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
-                    await _run_coder_companion(mock_state, attempt_ordinal=0, enable_narration=False)
-
-    mock_narrate.assert_not_called()
-
-
-async def test_run_coder_companion_narration_runs_when_enabled(mock_state):
-    """enable_narration=True (mirrors the turn's Reasoning Mode toggle) fires the
-    narration pass after a successful structured analysis."""
-    mock_analysis = CompanionAnalysis(objective="Fixed bug X", degraded=False)
-
-    with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
-        with patch("brain.coder_companion._stream_narration", new_callable=AsyncMock) as mock_narrate:
-            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock):
-                with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
-                    await _run_coder_companion(mock_state, attempt_ordinal=0, enable_narration=True)
-
-    mock_narrate.assert_called_once()
-
-
-async def test_run_coder_companion_narration_never_fires_on_budget_skip(mock_state):
-    """A budget-ceiling skip must not attempt narration either — no request was
-    ever built, so there's nothing to narrate."""
-    mock_state["current_cost_usd"] = 100.0
-    mock_state["max_budget_usd"] = 50.0
-
-    with patch("brain.coder_companion._stream_narration", new_callable=AsyncMock) as mock_narrate:
-        with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock):
-            await _run_coder_companion(mock_state, attempt_ordinal=0, enable_narration=True)
-
-    mock_narrate.assert_not_called()
-
-
-async def test_schedule_coder_companion_threads_enable_narration(mock_state):
-    """schedule_coder_companion forwards enable_narration to the background task."""
-    _companion_background_tasks.clear()
-
-    with patch("brain.coder_companion._run_coder_companion", new_callable=AsyncMock) as mock_run:
-        schedule_coder_companion(mock_state, attempt_ordinal=0, enable_narration=True)
-        await asyncio.gather(*_companion_background_tasks)
-
-    mock_run.assert_called_once_with(mock_state, 0, True)

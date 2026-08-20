@@ -998,10 +998,16 @@ class ConnectionManager:
         task_id: str,
         correlation_id: str,
         analysis: Any,
+        scope: Literal["coding", "ideation", "planning", "healing"] = "coding",
+        emission_id: Optional[str] = None,
     ) -> None:
-        """Emit the structured post-turn explanation for a coder turn.
+        """Emit the structured explanation for one companion decision point.
 
-        ``correlation_id`` is f"{task_id}:{attempt_ordinal}" for last-write-wins keying.
+        ``correlation_id`` is f"{task_id}:{attempt_ordinal}" for backward-compatible
+        last-write-wins keying. ``scope``/``emission_id`` (additive, 13.0.7) let a
+        current frontend key an append-only store per decision point instead —
+        ``emission_id`` defaults to ``correlation_id`` when the caller omits it, so
+        the grandfathered coding-only call site needn't change to stay coherent.
         ``analysis`` is a CompanionAnalysis from brain/coder_companion.py.
         """
         from api.ws_contracts import (
@@ -1036,6 +1042,8 @@ class ConnectionManager:
                     follow_ups=analysis.follow_ups,
                     reasoning_summary=analysis.reasoning_summary,
                     degraded=analysis.degraded,
+                    scope=scope,
+                    emission_id=emission_id or correlation_id,
                 )
             ),
         )

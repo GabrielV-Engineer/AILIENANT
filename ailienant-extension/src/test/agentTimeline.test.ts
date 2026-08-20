@@ -50,7 +50,6 @@ function render(props: Partial<AgentTimelineProps> & { entries: TimelineEntry[] 
     document.body.appendChild(container);
     const full: AgentTimelineProps = {
         streaming: false,
-        onReasoningToggle: () => { /* noop */ },
         ...props,
     };
     const root = createRoot(container);
@@ -139,6 +138,40 @@ suite('11.5.C.2 — AgentTimeline', function () {
         container.remove();
     });
 
+    test('several reasoning entries in one turn each render their own block with independent toggles', () => {
+        const { container, root } = render({
+            entries: [
+                entry({
+                    id: 'r1', kind: 'reasoning', ref: 'r1', status: 'done', seq: 0,
+                    thinking: 'Grounding the request…', thinkingElapsedMs: 1200,
+                }),
+                entry({
+                    id: 'r2', kind: 'reasoning', ref: 'r2', status: 'active', seq: 1,
+                    thinking: 'Composing the question batch…',
+                }),
+            ],
+            streaming: true, // keep the container expanded so rows render
+        });
+        const rows = container.querySelectorAll('.ws-timeline-row[data-kind="reasoning"]');
+        assert.strictEqual(rows.length, 2, 'both reasoning entries should render their own row');
+        assert.ok(rows[0].textContent?.includes('Reasoned for'), 'r1 (frozen, collapsed) shows only its header label');
+        assert.ok(rows[1].textContent?.includes('Composing the question batch'), 'r2 (open) shows its live body text');
+
+        // The frozen entry (r1) defaults collapsed (thinkingOpen fallback, unset ⇒
+        // false); the still-active entry (r2) defaults open.
+        const bodies = container.querySelectorAll('.ws-reason-body');
+        assert.strictEqual(bodies.length, 1, 'only the active (open) entry should show its body by default');
+        assert.ok(bodies[0].textContent?.includes('Composing the question batch'));
+
+        // Toggling r1's header opens ONLY r1 — independent per-entry state.
+        const r1Header = rows[0].querySelector<HTMLButtonElement>('.ws-reason-header');
+        act(() => { r1Header?.click(); });
+        const bodiesAfter = container.querySelectorAll('.ws-reason-body');
+        assert.strictEqual(bodiesAfter.length, 2, 'toggling r1 should open it without closing r2');
+        act(() => root.unmount());
+        container.remove();
+    });
+
     test('a plan row renders ExecutionChecklist ("Plan · N/M done")', () => {
         const tasks: PlanWBSStep[] = [
             { step_number: 1, target_role: 'core_dev', action: 'edit_file', target_file: 'a.py', description: 'bump', status: 'completed' },
@@ -219,6 +252,36 @@ suite('11.5.C.2 — AgentTimeline', function () {
         assert.ok(audit, 'CellAuditWidget should be mounted for a cell row, not the generic label fallback');
         assert.strictEqual(row!.querySelector('.ws-cell-iter-num')?.textContent, '#2');
         assert.ok(row!.querySelector('.ws-cell-tool-name')?.textContent?.includes('run_terminal'));
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('13.0.7: consecutive same-phase rows share one header; a phase change gets a new one, even repeating', () => {
+        const entries: TimelineEntry[] = [
+            entry({ id: 'a', kind: 'read', seq: 0, target: 'a.py' }),          // gather
+            entry({ id: 'b', kind: 'retrieval', seq: 1 }),                     // gather (same run)
+            entry({ id: 'c', kind: 'edit', seq: 2, target: 'a.py' }),          // act
+            entry({ id: 'd', kind: 'retrieval', seq: 3 }),                     // gather — interrupts the act run
+            entry({ id: 'e', kind: 'edit', seq: 4, target: 'b.py' }),          // act again — header repeats
+        ];
+        const { container, root } = render({ entries, streaming: true });
+        const headers = Array.from(container.querySelectorAll('.ws-timeline-phase-label')).map(h => h.textContent);
+        assert.deepStrictEqual(headers, [
+            'Gathering context', 'Taking action', 'Gathering context', 'Taking action',
+        ], 'one header per phase RUN, repeating when a phase is revisited — not deduped across the whole trace');
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('13.0.7: a reasoning entry in the middle of an act run does not fragment it into two headers', () => {
+        const entries: TimelineEntry[] = [
+            entry({ id: 'a', kind: 'edit', seq: 0, target: 'a.py' }),          // act
+            entry({ id: 'r1', kind: 'reasoning', ref: 'r1', seq: 1, status: 'active' }), // no phase
+            entry({ id: 'b', kind: 'edit', seq: 2, target: 'b.py' }),          // still act — no new header
+        ];
+        const { container, root } = render({ entries, streaming: true });
+        const headers = Array.from(container.querySelectorAll('.ws-timeline-phase-label')).map(h => h.textContent);
+        assert.deepStrictEqual(headers, ['Taking action']);
         act(() => root.unmount());
         container.remove();
     });

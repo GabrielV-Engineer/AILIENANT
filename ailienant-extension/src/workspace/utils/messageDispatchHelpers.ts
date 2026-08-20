@@ -10,6 +10,7 @@ import type { Message } from '../types';
 import type {
     ToolCallShape, CellRunShape, CellIterationShape, PlanWBSStep, TimelineEntry,
 } from '../../shared/config';
+import type { CoderCompanionPayload } from '../../api/contracts';
 import { MAX_IPC_CODE_CHARS } from '../../shared/config';
 import { vscode } from '../vscode_bridge';
 import { extractCodeBlocks } from './StreamingMarkdownParser';
@@ -250,6 +251,41 @@ export function attachOrUpdateTimeline(
         role: 'assistant',
         content: '',
         timeline: update(undefined),
+        authorLabel: authorLabelFor('assistant', agentName),
+    }];
+}
+
+/**
+ * Attach an Agent Companion payload (13.0.7) to the last assistant turn, keyed
+ * by `emission_id` (falls back to `correlation_id` for an older event) —
+ * append-or-replace-by-key, mirroring `workspaceStore`'s own dedupe rule so a
+ * retried emission updates in place rather than duplicating. Message-scoped
+ * (not session-wide): a companion for turn N attaches to turn N's own row,
+ * never bleeding onto an earlier turn the way a session-keyed store would.
+ */
+export function attachOrUpdateCompanion(
+    prev: Message[],
+    payload: CoderCompanionPayload,
+    agentName: string,
+): Message[] {
+    const key = payload.emission_id ?? payload.correlation_id;
+    const merge = (prior: CoderCompanionPayload[] | undefined): CoderCompanionPayload[] => {
+        const existing = prior ?? [];
+        const idx = existing.findIndex(p => (p.emission_id ?? p.correlation_id) === key);
+        return idx === -1
+            ? [...existing, payload]
+            : existing.map((p, i) => (i === idx ? payload : p));
+    };
+    const lastIdx = prev.length - 1;
+    const last = lastIdx >= 0 ? prev[lastIdx] : undefined;
+    if (last?.role === 'assistant') {
+        return [...prev.slice(0, lastIdx), { ...last, companions: merge(last.companions) }];
+    }
+    return [...prev, {
+        id: mkId(),
+        role: 'assistant',
+        content: '',
+        companions: merge(undefined),
         authorLabel: authorLabelFor('assistant', agentName),
     }];
 }

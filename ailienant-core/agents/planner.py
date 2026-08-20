@@ -852,6 +852,17 @@ async def run_planner_node(
         logger.debug("plan dump skipped: %s", _dump_err)
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Companion decision point: the plan just committed. Consumes only THIS
+    # just-drafted MissionSpecification's own summary fields — never blocks
+    # the graph.
+    from brain.coder_companion import schedule_agent_companion, build_planning_companion_request
+    schedule_agent_companion(
+        state, "planning", 0,
+        lambda: build_planning_companion_request(
+            session_id=session_id, task_id=session_id, mission_plan=mission_plan,
+        ),
+    )
+
     # Optionally open a dynamic-dispatch fan-out (no-op unless the feature is enabled
     # and a plan is emitted). On emission the graph routes planner → dispatch subgraph
     # and returns to drift_compute; otherwise the pre-existing edge is taken unchanged.

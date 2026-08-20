@@ -13,8 +13,13 @@
  * correlate against (see `docs/TECH_DEBT_BACKLOG.md` DEBT-122).
  *
  * Reasoning and plan rows render their existing, already-tested components
- * directly (`ReasoningStream` owns its own settle/elapsed logic via the
- * message-level `thinking*` fields; `ExecutionChecklist` is always compact) —
+ * directly. Every 'reasoning' entry gets its own `ReasoningStream` instance and
+ * toggle — settle/elapsed chronometry is entry-scoped (`entry.thinking*`),
+ * falling back to the message-level `thinking*` fields only when an entry has
+ * no correlated delta yet, so several reasoning spans in one turn (e.g. a grill
+ * round's grounding pass, then its composing pass) each render as their own
+ * independently-timed, independently-collapsible block. `ExecutionChecklist` is
+ * always compact —
  * `diff` and `cell` rows carry their own entry-scoped body (`entry.diff` /
  * `entry.cell`), the heaviest elements in the trace; `cell` reuses
  * `CellAuditWidget` fed a synthetic single-iteration run, since it already
@@ -29,12 +34,12 @@
  * `prefers-reduced-motion` (workspace.css) renders every state instantly, no
  * pings/draws/sweeps.
  */
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../../shared/Icon';
 import type { PlanWBSStep, TimelineEntry } from '../../shared/config';
 import type { HitlRespond } from '../utils/useHitlResponder';
 import type { ReasoningSource } from '../utils/thinkingReducer';
-import { timelineEntryLabel } from '../utils/activityLabels';
+import { timelineEntryLabel, timelineEntryPhase, workLoopPhaseLabel, type WorkLoopPhase } from '../utils/activityLabels';
 import { ReasoningGlyph } from './ReasoningGlyph';
 import { ReasoningStream } from './ReasoningStream';
 import { ExecutionChecklist } from './ExecutionChecklist';
@@ -53,7 +58,6 @@ export interface AgentTimelineProps {
     thinkingElapsedMs?: number;
     thinkingOpen?: boolean;
     thinkingSource?: ReasoningSource;
-    onReasoningToggle: () => void;
     // Plan body — reuses ExecutionChecklist (always compact, no extra toggle).
     checklist?: PlanWBSStep[];
     // Diff body — reuses DiffBlock; identical HITL wiring to the pre-timeline render.
@@ -91,7 +95,7 @@ function summarize(entries: TimelineEntry[], turnElapsedMs?: number): string {
 
 function AgentTimelineImpl({
     entries, streaming,
-    thinking, thinkingTokens, thinkingStartedAt, thinkingElapsedMs, thinkingOpen, onReasoningToggle,
+    thinking, thinkingTokens, thinkingStartedAt, thinkingElapsedMs, thinkingOpen,
     checklist, hitlApprovalId, onRespondDiff, onRequestChangesDiff, onCellStdin, turnElapsedMs,
 }: AgentTimelineProps): JSX.Element | null {
     const done = !streaming;
@@ -103,6 +107,7 @@ function AgentTimelineImpl({
 
     const [manualDiffOpen, setManualDiffOpen] = useState<Record<string, boolean>>({});
     const [manualExecOpen, setManualExecOpen] = useState<Record<string, boolean>>({});
+    const [manualReasonOpen, setManualReasonOpen] = useState<Record<string, boolean>>({});
     const lastDiffId = useMemo(() => {
         let id: string | null = null;
         for (const e of entries) { if (e.kind === 'diff') { id = e.id; } }
@@ -118,6 +123,22 @@ function AgentTimelineImpl({
         for (const e of entries) { if (e.kind === 'command' && e.execution) { id = e.id; } }
         return id;
     }, [entries]);
+    // Work-loop phase headers (13.0.7): entry.id → the phase header to render
+    // immediately before it. A phase-less entry (reasoning/cell) doesn't break
+    // a run of the same phase around it, but a genuine phase change — even a
+    // brief one, e.g. a single retrieval interrupting an act run — always gets
+    // its own header rather than being silently folded into its neighbours.
+    const phaseHeaderBefore = useMemo(() => {
+        const map: Record<string, WorkLoopPhase> = {};
+        let current: WorkLoopPhase | undefined;
+        for (const e of entries) {
+            const phase = timelineEntryPhase(e);
+            if (phase === undefined) { continue; }
+            if (phase !== current) { map[e.id] = phase; }
+            current = phase;
+        }
+        return map;
+    }, [entries]);
 
     const rowsRef = useRef<HTMLDivElement>(null);
     const stuckRef = useRef(true);
@@ -131,10 +152,169 @@ function AgentTimelineImpl({
 
     const label = done ? summarize(entries, turnElapsedMs) : 'Working…';
     const anyActive = entries.some(e => e.status === 'active');
-    // Only the FIRST reasoning entry gets the rich ReasoningStream body (the
-    // scoped one-ref-per-turn simplification means a second span is rare this
-    // slice) — later ones degrade to a plain label row rather than a duplicate.
-    let reasoningRendered = false;
+
+    // Extracted (not inlined in the .map() below) so the phase-header wrapper
+    // can call it uniformly regardless of which kind-specific branch an entry
+    // takes — every branch still returns its own `key`-carrying row exactly as
+    // before; only its caller changed.
+    function renderRow(entry: TimelineEntry, idx: number): JSX.Element {
+        const isLast = idx === entries.length - 1;
+
+        if (entry.kind === 'reasoning') {
+            // Every reasoning entry gets its own independent
+            // ReasoningStream + toggle — several spans in one turn
+            // (e.g. a grill round's grounding pass, then its
+            // question-composing pass) each render as their own
+            // collapsible block instead of collapsing into one.
+            // Per-entry fields fall back to the message-scoped
+            // thinking* props when absent, so a marker-only entry
+            // (no correlated delta yet) still renders as before.
+            const entryThinking = entry.thinking ?? thinking ?? '';
+            const entryTokens = entry.thinkingTokens ?? thinkingTokens ?? 0;
+            const entryStartedAt = entry.thinkingStartedAt ?? thinkingStartedAt;
+            const entryElapsedMs = entry.thinkingElapsedMs ?? thinkingElapsedMs;
+            const isOpen = entry.id in manualReasonOpen
+                ? manualReasonOpen[entry.id]
+                : (entry.thinkingElapsedMs === undefined ? true : !!thinkingOpen);
+            return (
+                <div key={entry.id} className="ws-timeline-row" data-kind="reasoning">
+                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
+                    <div className="ws-timeline-row-body">
+                        <ReasoningStream
+                            thinking={entryThinking}
+                            tokens={entryTokens}
+                            startedAt={entryStartedAt}
+                            elapsedMs={entryElapsedMs}
+                            open={isOpen}
+                            streaming={streaming}
+                            onToggle={() => setManualReasonOpen(prev => ({ ...prev, [entry.id]: !isOpen }))}
+                        />
+                    </div>
+                </div>
+            );
+        }
+
+        if (entry.kind === 'plan') {
+            return (
+                <div key={entry.id} className="ws-timeline-row" data-kind="plan">
+                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
+                    <div className="ws-timeline-row-body">
+                        <ExecutionChecklist tasks={checklist ?? []} />
+                    </div>
+                </div>
+            );
+        }
+
+        if (entry.kind === 'diff' && entry.diff) {
+            // A settled diff (already applied to disk — Auto or a decided
+            // Ask-mode approval) is a confirmed record, not a pending
+            // decision — default it open regardless of turn-settle so it
+            // doesn't vanish the instant the turn finishes (which, in Auto
+            // mode, is nearly immediate). An unsettled diff keeps the old
+            // "only the last one, only while streaming" default.
+            const isOpen = entry.id in manualDiffOpen
+                ? manualDiffOpen[entry.id]
+                : (entry.diff.settled || (entry.id === lastDiffId && !done));
+            const hitlActive = !!hitlApprovalId && entry.diff.patch_id === hitlApprovalId;
+            return (
+                <div key={entry.id} className="ws-timeline-row" data-kind="diff">
+                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
+                    <div className="ws-timeline-row-body">
+                        <button
+                            type="button"
+                            className="ws-timeline-row-header"
+                            onClick={() => setManualDiffOpen(prev => ({ ...prev, [entry.id]: !isOpen }))}
+                            aria-expanded={isOpen}
+                        >
+                            <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
+                            <Icon
+                                name={isOpen ? 'chevron-down' : 'chevron-right'}
+                                size={12}
+                                className="ws-timeline-chevron"
+                            />
+                        </button>
+                        {isOpen && (
+                            <DiffBlock
+                                block={entry.diff}
+                                hitlActive={hitlActive}
+                                onRespond={hitlActive ? onRespondDiff : undefined}
+                                onRequestChanges={hitlActive ? onRequestChangesDiff : undefined}
+                            />
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        if (entry.kind === 'cell' && entry.cell) {
+            const live = entry.id === lastCellId && !done;
+            // Derived, not `entry.status`: the marker fires at iteration
+            // start and nothing ever flips it back to 'done' in the data
+            // model (same latent shape as the reasoning row above) — the
+            // dot would pulse forever on re-expand after the turn settles
+            // if left following `entry.status` directly. Reuses the same
+            // liveness check already driving `streaming` below.
+            const cellDotStatus = live ? 'active' : 'done';
+            return (
+                <div key={entry.id} className="ws-timeline-row" data-kind="cell">
+                    <span className="ws-timeline-dot" data-status={cellDotStatus} aria-hidden="true" />
+                    <div className="ws-timeline-row-body">
+                        <CellAuditWidget
+                            run={{ iterations: [entry.cell] }}
+                            streaming={live}
+                            onStdin={onCellStdin}
+                        />
+                    </div>
+                </div>
+            );
+        }
+
+        if (entry.kind === 'command' && entry.execution) {
+            // A command that actually reached an adapter: expandable,
+            // showing the execution envelope + I/O. A 'command' entry
+            // with NO `execution` (e.g. a "blocked" outcome that never
+            // reached one — no I/O body ever exists for it) falls
+            // through to the plain single-line render below instead.
+            const isOpen = entry.id in manualExecOpen
+                ? manualExecOpen[entry.id]
+                : (entry.id === lastExecId && !done);
+            return (
+                <div key={entry.id} className="ws-timeline-row" data-kind="command">
+                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
+                    <div className="ws-timeline-row-body">
+                        <button
+                            type="button"
+                            className="ws-timeline-row-header"
+                            onClick={() => setManualExecOpen(prev => ({ ...prev, [entry.id]: !isOpen }))}
+                            aria-expanded={isOpen}
+                        >
+                            <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
+                            <Icon
+                                name={isOpen ? 'chevron-down' : 'chevron-right'}
+                                size={12}
+                                className="ws-timeline-chevron"
+                            />
+                        </button>
+                        {isOpen && <ExecutionDetail execution={entry.execution} />}
+                    </div>
+                </div>
+            );
+        }
+
+        // Self-contained kinds: understanding/planning/reviewing/read/
+        // edit/command/retrieval/heal — a single line, no expand affordance.
+        return (
+            <div
+                key={entry.id}
+                className="ws-timeline-row"
+                data-kind={entry.kind}
+                data-active={isLast && streaming ? 'true' : 'false'}
+            >
+                <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
+                <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
+            </div>
+        );
+    }
 
     return (
         <div className="ws-timeline" data-open={containerOpen ? 'true' : 'false'} data-streaming={streaming ? 'true' : 'false'}>
@@ -159,147 +339,15 @@ function AgentTimelineImpl({
                     stuckRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - STICK_TOLERANCE_PX;
                 }}>
                     {entries.map((entry, idx) => {
-                        const isLast = idx === entries.length - 1;
-
-                        if (entry.kind === 'reasoning' && !reasoningRendered) {
-                            reasoningRendered = true;
-                            return (
-                                <div key={entry.id} className="ws-timeline-row" data-kind="reasoning">
-                                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
-                                    <div className="ws-timeline-row-body">
-                                        <ReasoningStream
-                                            thinking={thinking ?? ''}
-                                            tokens={thinkingTokens ?? 0}
-                                            startedAt={thinkingStartedAt}
-                                            elapsedMs={thinkingElapsedMs}
-                                            open={!!thinkingOpen}
-                                            streaming={streaming}
-                                            onToggle={onReasoningToggle}
-                                        />
-                                    </div>
-                                </div>
-                            );
-                        }
-
-                        if (entry.kind === 'plan') {
-                            return (
-                                <div key={entry.id} className="ws-timeline-row" data-kind="plan">
-                                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
-                                    <div className="ws-timeline-row-body">
-                                        <ExecutionChecklist tasks={checklist ?? []} />
-                                    </div>
-                                </div>
-                            );
-                        }
-
-                        if (entry.kind === 'diff' && entry.diff) {
-                            // A settled diff (already applied to disk — Auto or a decided
-                            // Ask-mode approval) is a confirmed record, not a pending
-                            // decision — default it open regardless of turn-settle so it
-                            // doesn't vanish the instant the turn finishes (which, in Auto
-                            // mode, is nearly immediate). An unsettled diff keeps the old
-                            // "only the last one, only while streaming" default.
-                            const isOpen = entry.id in manualDiffOpen
-                                ? manualDiffOpen[entry.id]
-                                : (entry.diff.settled || (entry.id === lastDiffId && !done));
-                            const hitlActive = !!hitlApprovalId && entry.diff.patch_id === hitlApprovalId;
-                            return (
-                                <div key={entry.id} className="ws-timeline-row" data-kind="diff">
-                                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
-                                    <div className="ws-timeline-row-body">
-                                        <button
-                                            type="button"
-                                            className="ws-timeline-row-header"
-                                            onClick={() => setManualDiffOpen(prev => ({ ...prev, [entry.id]: !isOpen }))}
-                                            aria-expanded={isOpen}
-                                        >
-                                            <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
-                                            <Icon
-                                                name={isOpen ? 'chevron-down' : 'chevron-right'}
-                                                size={12}
-                                                className="ws-timeline-chevron"
-                                            />
-                                        </button>
-                                        {isOpen && (
-                                            <DiffBlock
-                                                block={entry.diff}
-                                                hitlActive={hitlActive}
-                                                onRespond={hitlActive ? onRespondDiff : undefined}
-                                                onRequestChanges={hitlActive ? onRequestChangesDiff : undefined}
-                                            />
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        }
-
-                        if (entry.kind === 'cell' && entry.cell) {
-                            const live = entry.id === lastCellId && !done;
-                            // Derived, not `entry.status`: the marker fires at iteration
-                            // start and nothing ever flips it back to 'done' in the data
-                            // model (same latent shape as the reasoning row above) — the
-                            // dot would pulse forever on re-expand after the turn settles
-                            // if left following `entry.status` directly. Reuses the same
-                            // liveness check already driving `streaming` below.
-                            const cellDotStatus = live ? 'active' : 'done';
-                            return (
-                                <div key={entry.id} className="ws-timeline-row" data-kind="cell">
-                                    <span className="ws-timeline-dot" data-status={cellDotStatus} aria-hidden="true" />
-                                    <div className="ws-timeline-row-body">
-                                        <CellAuditWidget
-                                            run={{ iterations: [entry.cell] }}
-                                            streaming={live}
-                                            onStdin={onCellStdin}
-                                        />
-                                    </div>
-                                </div>
-                            );
-                        }
-
-                        if (entry.kind === 'command' && entry.execution) {
-                            // A command that actually reached an adapter: expandable,
-                            // showing the execution envelope + I/O. A 'command' entry
-                            // with NO `execution` (e.g. a "blocked" outcome that never
-                            // reached one — no I/O body ever exists for it) falls
-                            // through to the plain single-line render below instead.
-                            const isOpen = entry.id in manualExecOpen
-                                ? manualExecOpen[entry.id]
-                                : (entry.id === lastExecId && !done);
-                            return (
-                                <div key={entry.id} className="ws-timeline-row" data-kind="command">
-                                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
-                                    <div className="ws-timeline-row-body">
-                                        <button
-                                            type="button"
-                                            className="ws-timeline-row-header"
-                                            onClick={() => setManualExecOpen(prev => ({ ...prev, [entry.id]: !isOpen }))}
-                                            aria-expanded={isOpen}
-                                        >
-                                            <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
-                                            <Icon
-                                                name={isOpen ? 'chevron-down' : 'chevron-right'}
-                                                size={12}
-                                                className="ws-timeline-chevron"
-                                            />
-                                        </button>
-                                        {isOpen && <ExecutionDetail execution={entry.execution} />}
-                                    </div>
-                                </div>
-                            );
-                        }
-
-                        // Self-contained kinds: understanding/planning/reviewing/read/
-                        // edit/command/retrieval/heal — a single line, no expand affordance.
+                        const headerPhase = phaseHeaderBefore[entry.id];
+                        if (!headerPhase) { return renderRow(entry, idx); }
                         return (
-                            <div
-                                key={entry.id}
-                                className="ws-timeline-row"
-                                data-kind={entry.kind}
-                                data-active={isLast && streaming ? 'true' : 'false'}
-                            >
-                                <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
-                                <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
-                            </div>
+                            <Fragment key={`group:${entry.id}`}>
+                                <div className="ws-timeline-phase-header">
+                                    <span className="ws-timeline-phase-label">{workLoopPhaseLabel(headerPhase)}</span>
+                                </div>
+                                {renderRow(entry, idx)}
+                            </Fragment>
                         );
                     })}
                 </div>

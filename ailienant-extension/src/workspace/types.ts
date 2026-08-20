@@ -11,6 +11,7 @@ import type {
     BudgetLimitMode, OrchestrationMode,
 } from '../shared/config';
 import type { AilienantConfig } from '../shared/types';
+import type { CoderCompanionPayload } from '../api/contracts';
 import type { ParserState as MdParserState } from './utils/StreamingMarkdownParser';
 
 /** Rich conversation turn (user or assistant). All fields beyond the three required
@@ -61,6 +62,13 @@ export interface ConversationMessage {
     // strips 'reasoning' entries (display-only, matching `thinking`'s own
     // exclusion); every other kind persists as the durable audit record.
     timeline?: TimelineEntry[];
+    // Agent Companion explanations for THIS turn's own decision points (13.0.7),
+    // in arrival order. Message-scoped (not session-wide) — mirrors toolCalls'
+    // attach-to-last-assistant-turn shape via attachOrUpdateCompanion, so a
+    // companion for turn N never bleeds onto turn N-1's row. Display-only,
+    // fire-and-forget, best-effort — excluded from PERSIST_TRANSCRIPT (a stale
+    // explanation after reload would pair with a turn no longer on screen).
+    companions?: CoderCompanionPayload[];
     // Wall-clock turn duration (DEBT-126a) — mirrors thinkingStartedAt/
     // thinkingElapsedMs's set-at-creation/freeze-at-settle shape, but spans the
     // WHOLE turn (generation + actuation), not just the reasoning span. A

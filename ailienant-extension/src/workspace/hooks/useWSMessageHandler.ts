@@ -28,12 +28,15 @@ import { useTpsCalculator } from '../components/TelemetryHUD';
 import {
     mkId, authorLabelFor, normalizeStuckChips, mergeById, requestCodeTokens,
     attachOrUpdateToolCall, attachOrUpdateCellRun, attachOrUpdateChecklist, appendPtyLines,
-    attachOrUpdateTimeline, readMergedCellIteration,
+    attachOrUpdateTimeline, attachOrUpdateCompanion, readMergedCellIteration,
     DEFAULT_STREAM_WATCHDOG_MS, STREAM_WATCHDOG_TICK_MS, MAX_TOOL_OUTPUT_LINES,
     STREAM_ACTIVITY_EVENTS,
 } from '../utils/messageDispatchHelpers';
 import { accumulateThinking, newThinkingTurn, freezeThinkingOnText, bumpLiveTokens } from '../utils/thinkingReducer';
-import { upsertActivityMarker, upsertReasoningDelta, upsertDiffBody, upsertCellBody, upsertExecutionBody, upsertExecutionChunk } from '../utils/timelineBuilder';
+import {
+    upsertActivityMarker, upsertReasoningDelta, freezeActiveReasoningEntries,
+    upsertDiffBody, upsertCellBody, upsertExecutionBody, upsertExecutionChunk,
+} from '../utils/timelineBuilder';
 import { INITIAL_STATE as MD_INITIAL_STATE, pushToken as mdPushToken } from '../utils/StreamingMarkdownParser';
 import { mergeStreamEmits, type StreamLineEmit } from '../utils/streamTokenBuffer';
 import { sanitizePtyChunk } from '../utils/sanitizePty';
@@ -254,6 +257,12 @@ export function useWSMessageHandler(): void {
                             liveTokens: 1,
                         }];
                     });
+                    // Per-entry mirror of the message-scoped freeze above — settles
+                    // any still-open Glass-Box Timeline 'reasoning' entry's own clock
+                    // the instant answer text begins. A no-op when nothing is open.
+                    cs.setMessages(prev => attachOrUpdateTimeline(
+                        prev, prior => freezeActiveReasoningEntries(prior ?? [], performance.now()), nattName,
+                    ));
                     break;
                 }
                 case 'server_thinking_chunk': {
@@ -278,7 +287,11 @@ export function useWSMessageHandler(): void {
                     // Glass-Box Timeline: correlate the delta into its 'reasoning' node
                     // by `ref` (order-agnostic — a marker may not have arrived yet).
                     cs.setMessages(prev => attachOrUpdateTimeline(
-                        prev, prior => upsertReasoningDelta(prior ?? [], d.delta, d.ref), nattName,
+                        prev,
+                        prior => upsertReasoningDelta(prior ?? [], d.delta, d.ref, undefined, {
+                            tokenCount: d.token_count, now: performance.now(),
+                        }),
+                        nattName,
                     ));
                     break;
                 }
@@ -402,6 +415,11 @@ export function useWSMessageHandler(): void {
                 }
                 case 'server_stream_end': {
                     cs.setIsStreaming(false);
+                    // Fires on a genuine turn end AND on every pause (a HITL/
+                    // clarification card mid-turn) — correct either way: nothing
+                    // is cancellable while idle awaiting the operator, and the
+                    // responder hooks re-arm this the moment a reply is sent.
+                    cs.setIsTurnActive(false);
                     // Paint any tokens still buffered for this turn before it finalizes,
                     // so the block doesn't flash back to plain in the gap between
                     // stream-end and the CODE_TOKENS round-trip that supersedes the
@@ -446,6 +464,14 @@ export function useWSMessageHandler(): void {
                             checkpoint_id: _cid ?? cm.checkpoint_id,
                             turnStartedAt: cm.turnStartedAt ?? _turnStartedAt,
                             turnElapsedMs: _turnElapsedMs,
+                            // Defensive freeze — this fires on a genuine end AND on a
+                            // mid-turn pause (a HITL/clarification card), and a turn can
+                            // settle here with no answer text ever following a reasoning
+                            // span (e.g. a grill round that goes straight to a question
+                            // card). Idempotent: a no-op if nothing is still open.
+                            timeline: cm.timeline
+                                ? freezeActiveReasoningEntries(cm.timeline, performance.now())
+                                : cm.timeline,
                         };
                     }));
                     // Round-trip the just-finalized turn's code blocks to the host
@@ -601,10 +627,14 @@ export function useWSMessageHandler(): void {
                     break;
                 }
                 case 'server_coder_companion': {
-                    // Best-effort post-turn explanation. Stored by task_id (last-write-wins
-                    // by correlation_id) so the card renders it beside the diff-approval
-                    // surface; never gates the diff, never persisted.
-                    ws.setCoderCompanion(msg.payload as CoderCompanionPayload);
+                    // Best-effort explanation for a decision point (13.0.7: a grill round,
+                    // a plan commit, a patch set, or a self-heal). Attached to the CURRENT
+                    // assistant turn's own row, append-or-replace by emission_id, so several
+                    // decision points in one turn each get their own entry; never gates
+                    // anything, never persisted.
+                    cs.setMessages(prev => attachOrUpdateCompanion(
+                        prev, msg.payload as CoderCompanionPayload, nattName,
+                    ));
                     break;
                 }
                 case 'server_cell_tool_start': {
@@ -1073,6 +1103,7 @@ export function useWSMessageHandler(): void {
             const cs = useChatStore.getState();
             const ws = useWorkspaceStore.getState();
             cs.setIsStreaming(false);
+            cs.setIsTurnActive(false);
             ws.setIsAborting(false);
             ws.setInflightTurn(null);
             cs.setMessages(prev => prev.map((m, i) => {

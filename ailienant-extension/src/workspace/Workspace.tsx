@@ -636,8 +636,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                             thinkingElapsedMs={m.thinkingElapsedMs}
                                             thinkingOpen={m.thinkingOpen}
                                             thinkingSource={m.thinkingSource}
-                                            onReasoningToggle={() => setMessages(prev => prev.map((mm, j) =>
-                                                j === i ? { ...(mm as ConversationMessage), thinkingOpen: !(mm as ConversationMessage).thinkingOpen } : mm))}
                                             checklist={m.checklist}
                                             hitlApprovalId={hitlPending?.approval_id}
                                             onRespondDiff={respondInlineHitl}
@@ -713,10 +711,11 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                     )}
                                     {/* Diffs now render as 'diff' rows inside AgentTimeline above
                                         (same hitlActive/onRespond/onRequestChanges wiring, relocated).
-                                        Best-effort post-turn explanation still rides alongside them,
-                                        gated on the same underlying diffBlocks field. */}
-                                    {m.role === 'assistant' && m.diffBlocks && m.diffBlocks.length > 0 && (
-                                        <CoderCompanionCard taskId={initial.sessionId} />
+                                        The companion stack (13.0.7) is no longer gated on diffBlocks —
+                                        a Plan-mode or Ask-mode turn produces no diff but can still carry
+                                        its own decision-point explanations. */}
+                                    {m.role === 'assistant' && (
+                                        <CoderCompanionCard entries={m.companions} turnActive={!!m.streaming} />
                                     )}
                                     {/* Phase 7.11.8 (ADR-706 §4.5g) — per-message
                                         Time-Travel branch button. Only rendered
@@ -854,7 +853,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 onAutoAccept={handlePlanAutoAccept}
                                 onManualApprove={handlePlanManualApprove}
                                 onKeepPlanning={handlePlanKeepPlanning}
-                                isStreaming={isStreaming}
+                                isTurnActive={isTurnActive}
                             />
                         </aside>
                     )}

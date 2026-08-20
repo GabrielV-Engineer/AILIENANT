@@ -228,6 +228,15 @@ export interface TimelineEntry {
     // Correlated bodies, attached once the corresponding stream arrives — order
     // independent of the marker. Reused renderers consume these directly.
     thinking?: string;         // kind: 'reasoning' — accumulated delta text
+    // kind: 'reasoning' only — per-entry chronometry, mirroring the message-scoped
+    // thinking*/ fields ThinkingSlice carries, but scoped to THIS span so several
+    // reasoning entries in one turn each get their own independent clock. Undefined
+    // until the entry's first delta stamps it; thinkingElapsedMs stays undefined
+    // while the span is still active (open), freezing once it's superseded — by a
+    // later reasoning entry starting, or by the turn's answer text beginning.
+    thinkingTokens?: number;
+    thinkingStartedAt?: number; // performance.now()-based, matches ReasoningStream's clock
+    thinkingElapsedMs?: number;
     diff?: DiffBlockShape;     // kind: 'diff'
     cell?: CellIterationShape; // kind: 'cell', when ref === cell:{iteration}
     execution?: ExecutionDetailShape; // kind: 'command', when ref is an execution id

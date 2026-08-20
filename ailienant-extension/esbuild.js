@@ -169,9 +169,16 @@ function assertGrammarEngineOffWebview() {
 // dedicated signature check (assertGrammarEngineOffWebview, above) — this ceiling
 // is the coarser backstop. Raised 550→555 KB in Phase 12.8 (Glass-Box Timeline
 // live-chunk streaming + persisted compaction fold added ~200 bytes of organic,
-// reviewed feature code, not a dependency regression); bump again only with the
-// same justification, never to silently absorb an unreviewed size increase.
-const WEBVIEW_BUNDLE_CEILING_BYTES = 555 * 1024;
+// reviewed feature code, not a dependency regression); raised 555→557 KB across
+// 13.0.7 (per-entry reasoning chronometry — several reasoning spans in one turn
+// each get their own independent clock instead of sharing the turn's single one
+// — plus the Agent Companion generalization: additive scope/emission_id wire
+// fields, message-scoped append storage replacing the old single-payload store,
+// a rewritten multi-entry CoderCompanionCard, and purely-frontend work-loop
+// phase grouping in AgentTimeline — organic, reviewed feature code, not a
+// dependency regression). Bump again only with the same justification, never to
+// silently absorb an unreviewed size increase.
+const WEBVIEW_BUNDLE_CEILING_BYTES = 557 * 1024;
 function assertWebviewBundleUnderCeiling() {
 	if (!production) { return; }
 	const bundle = 'dist/workspace.js';

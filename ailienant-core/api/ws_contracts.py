@@ -1556,7 +1556,15 @@ class CompanionDecisionWire(BaseModel):
 
 
 class CoderCompanionPayload(BaseModel):
-    """Structured explanation for a coder turn. Last-write-wins by correlation_id."""
+    """Structured explanation for one decision point. ``correlation_id`` alone is
+    NOT unique across scopes (see 13.0.7 / SCHEMA_EVOLUTION §53) — it stays
+    ``f"{task_id}:{attempt_ordinal}"`` for backward compatibility with an older
+    frontend's last-write-wins keying. ``emission_id`` is the field a current
+    frontend keys its append-store by: unique per decision point
+    (``f"{task_id}:{scope}:{ordinal}"``), so several emissions in one turn (a
+    grill round, then a plan commit, then a patch set) never collide. Both new
+    fields are additive and optional — an older event without them still
+    validates."""
     session_id: str
     task_id: str
     correlation_id: str  # f"{task_id}:{attempt_ordinal}" — retry-safe keying
@@ -1569,6 +1577,8 @@ class CoderCompanionPayload(BaseModel):
     follow_ups: List[str] = Field(default_factory=list)
     reasoning_summary: Optional[str] = None
     degraded: bool = False
+    scope: Literal["coding", "ideation", "planning", "healing"] = "coding"
+    emission_id: Optional[str] = None
 
 
 class ServerCoderCompanionEvent(BaseModel):

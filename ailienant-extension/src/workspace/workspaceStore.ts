@@ -27,7 +27,7 @@
  */
 import type { ExecutionMode } from '../shared/types';
 import type { ReasoningPreset, InferenceTier } from '../shared/config';
-import type { AgentTodoItemPayload, CoderCompanionPayload } from '../api/contracts';
+import type { AgentTodoItemPayload } from '../api/contracts';
 import { createPersistedStore } from '../shared/persistedStore';
 
 /**
@@ -163,14 +163,6 @@ export interface WorkspaceState {
      */
     activeSkills: Record<string, { id: string; name: string } | null>;
     /**
-     * Coder Companion explanations keyed by task_id. Transient — a best-effort,
-     * fire-and-forget post-turn explanation that arrives asynchronously beside the
-     * diff-approval surface. Excluded from `pick` (never persisted): a stale
-     * explanation after reload would pair with a diff that is no longer on screen.
-     * Last-write-wins by correlation_id (task_id + attempt_ordinal).
-     */
-    coderCompanions: Record<string, CoderCompanionPayload>;
-    /**
      * The agentic cell's live TODO list, keyed by session id. Transient — excluded
      * from `pick` (never persisted): a rehydrated list would describe work that
      * already finished by the time the panel reloads. Replace semantics mirror
@@ -181,7 +173,6 @@ export interface WorkspaceState {
 
     // Setters (Zustand pattern — flat actions colocated with state).
     setDraft: (sessionId: string, text: string) => void;
-    setCoderCompanion: (payload: CoderCompanionPayload) => void;
     /**
      * Bails on a deep-equal payload and keeps the SAME array reference in that
      * case, so Zustand's shallow-compare selector stops the re-render at the
@@ -224,15 +215,12 @@ export const useWorkspaceStore = createPersistedStore<WorkspaceState>(
         inflightTurn: null,
         compactionFold: null,
         activeSkills: {},
-        coderCompanions: {},
         agentTodos: {},
 
         setDraft:        (sessionId, text) =>
             set((s) => ({ draftMessages: { ...s.draftMessages, [sessionId]: text } })),
         setActiveSkill:  (sessionId, v) =>
             set((s) => ({ activeSkills: { ...s.activeSkills, [sessionId]: v } })),
-        setCoderCompanion: (payload) =>
-            set((s) => ({ coderCompanions: { ...s.coderCompanions, [payload.task_id]: payload } })),
         setAgentTodos: (sessionId, todos) =>
             set((s) => {
                 const prior = s.agentTodos[sessionId];

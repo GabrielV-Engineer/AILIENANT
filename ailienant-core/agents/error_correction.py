@@ -312,6 +312,21 @@ async def run_error_correction_node(
         traceback_text=tb_text, candidate_files=candidates, state=state
     )
 
+    # Companion decision point: this correction attempt resolved (healed or
+    # conceded). Consumes only THIS attempt's own diagnosis — never blocks the
+    # graph. `correction_attempts` bounds the emission count the same way it
+    # bounds the correction loop itself (CORRECTION_MAX_ATTEMPTS).
+    from brain.coder_companion import schedule_agent_companion, build_healing_companion_request
+    _attempt_ordinal = int(state.get("correction_attempts", 0))
+    _task_id = str(state.get("task_id", ""))
+    schedule_agent_companion(
+        state, "healing", _attempt_ordinal,
+        lambda: build_healing_companion_request(
+            session_id=_task_id, task_id=_task_id, attempt_ordinal=_attempt_ordinal,
+            failed_node=failed_node, diagnosis=result.diagnosis, healed=result.healed,
+        ),
+    )
+
     if result.healed:
         if signature:
             failure_breaker.record_success(signature)

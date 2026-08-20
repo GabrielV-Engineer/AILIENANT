@@ -7,7 +7,7 @@ export interface PlanAcceptancePanelProps {
     onAutoAccept: () => void;
     onManualApprove: () => void;
     onKeepPlanning: (feedback: string) => void;
-    isStreaming?: boolean;
+    isTurnActive?: boolean;
 }
 
 export function PlanAcceptancePanel({
@@ -15,7 +15,7 @@ export function PlanAcceptancePanel({
     onAutoAccept,
     onManualApprove,
     onKeepPlanning,
-    isStreaming = false,
+    isTurnActive = false,
 }: PlanAcceptancePanelProps): JSX.Element {
     const [feedback, setFeedback] = useState('');
 
@@ -78,7 +78,7 @@ export function PlanAcceptancePanel({
                 <button
                     onClick={onAutoAccept}
                     className="btn-primary"
-                    disabled={isStreaming}
+                    disabled={isTurnActive}
                     title="Execute the plan immediately without further review"
                 >
                     Yes, and auto-accept
@@ -86,7 +86,7 @@ export function PlanAcceptancePanel({
                 <button
                     onClick={onManualApprove}
                     className="btn-secondary"
-                    disabled={isStreaming}
+                    disabled={isTurnActive}
                     title="Execute the plan with approval gate on each edit"
                 >
                     Yes, and manually approve edits
@@ -97,7 +97,7 @@ export function PlanAcceptancePanel({
                         setFeedback('');
                     }}
                     className="btn-tertiary"
-                    disabled={isStreaming}
+                    disabled={isTurnActive}
                     title="Refine the plan with a note, or dismiss to keep editing in the composer"
                 >
                     No, keep planning
@@ -111,12 +111,12 @@ export function PlanAcceptancePanel({
                     value={feedback}
                     onChange={(e) => setFeedback(e.target.value)}
                     onKeyDown={(e) => {
-                        if (e.key === 'Enter' && feedback.trim() && !isStreaming) {
+                        if (e.key === 'Enter' && feedback.trim() && !isTurnActive) {
                             onKeepPlanning(feedback);
                             setFeedback('');
                         }
                     }}
-                    disabled={isStreaming}
+                    disabled={isTurnActive}
                     className="plan-feedback-input"
                 />
             </div>

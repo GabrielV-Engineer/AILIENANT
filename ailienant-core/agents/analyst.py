@@ -288,6 +288,27 @@ async def run_analyst_node(
     if pending_batch:
         resolved = await _resolve_grill_answers(task_id, pending_batch, config)
         answer_summary = _fold_answers_into_summary(pending_batch, resolved)
+
+        # Companion decision point: this round closed. Consumes ONLY this
+        # round's own batch + answers (both already round-local, never the
+        # accumulated tool_dispatch_trace) — never blocks the graph.
+        from brain.coder_companion import schedule_agent_companion, build_ideation_companion_request
+
+        _answers_by_id = {
+            a.get("id"): (
+                ", ".join(a.get("selected_labels") or []) or a.get("free_text") or ""
+            )
+            for a in (resolved.get("answers") or [])
+        }
+        schedule_agent_companion(
+            state, "ideation", round_count,
+            lambda: build_ideation_companion_request(
+                session_id=task_id, task_id=task_id, attempt_ordinal=round_count,
+                task_description="Clarifying requirements with the operator",
+                question_batch=pending_batch, resolved_answers=_answers_by_id,
+            ),
+        )
+
         return {
             "hitl_pending": False,
             "shared_understanding_reached": False,

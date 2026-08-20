@@ -976,15 +976,8 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
     # Fire-and-forget structured explanation of this patch set, rendered beside the
     # diff-approval UI. Best-effort side channel — never gates the graph's control flow.
-    # enable_narration mirrors this turn's own Reasoning Mode toggle: the coder's own
-    # generation call above never streams reasoning for a non-native model (the
-    # SEARCH/REPLACE contract is strict and never scaffolded), so the companion's
-    # free-form narration pass fills that gap — but only when the user actually has
-    # reasoning display on.
     from brain.coder_companion import schedule_coder_companion
-    schedule_coder_companion(
-        state, attempt_ordinal=state.get("retry_count", 0), enable_narration=_thinking_on,
-    )
+    schedule_coder_companion(state, attempt_ordinal=state.get("retry_count", 0))
 
     result: Dict[str, Any] = {
         "mission_spec": _mark_step_status(

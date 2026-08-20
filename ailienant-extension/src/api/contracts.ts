@@ -494,10 +494,12 @@ export interface CompanionDecisionWire {
     risk?: string | null;
     tradeoff?: string | null;
 }
+export type CompanionScope = 'coding' | 'ideation' | 'planning' | 'healing';
 export interface CoderCompanionPayload {
     session_id: string;
     task_id: string;
-    /** `${task_id}:${attempt_ordinal}` — last-write-wins / reset key. */
+    /** `${task_id}:${attempt_ordinal}` — kept for backward compatibility; NOT
+     *  unique across scopes (13.0.7). Use `emission_id` for store keying. */
     correlation_id: string;
     objective: string;
     decisions: CompanionDecisionWire[];
@@ -508,6 +510,11 @@ export interface CoderCompanionPayload {
     follow_ups: string[];
     reasoning_summary?: string | null;
     degraded: boolean;
+    /** Additive, 13.0.7. Absent on an older event → defaults applied by the caller. */
+    scope?: CompanionScope;
+    /** Unique per decision point (`${task_id}:${scope}:${ordinal}`) — falls back
+     *  to `correlation_id` when absent, so an older event still keys coherently. */
+    emission_id?: string | null;
 }
 export interface ServerCoderCompanionEvent {
     event_type: 'server_coder_companion';

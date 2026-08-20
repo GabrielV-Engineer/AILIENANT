@@ -9,8 +9,8 @@
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Literal
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Set, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -19,6 +19,8 @@ from tools.llm_gateway import LLMGateway
 from core.vfs_middleware import make_safe_reader
 
 logger = logging.getLogger("CODER_COMPANION")
+
+CompanionScope = Literal["coding", "ideation", "planning", "healing"]
 
 # Strong reference set: prevents GC from destroying broadcast tasks mid-flight.
 _companion_background_tasks: Set[asyncio.Task[None]] = set()
@@ -35,26 +37,54 @@ _COMPANION_LLM_TIMEOUT_LOCAL_S = 45.0
 _MAX_CONCURRENT_COMPANIONS = 3
 _MAX_DIFF_CHARS_PER_FILE = 4000
 _MAX_FILES_IN_PAYLOAD = 8
+# Token-hygiene cap for a non-coding scope's pre-rendered summary (§5.5) —
+# mirrors _MAX_DIFF_CHARS_PER_FILE's role for the coding path. Each scope
+# builder truncates to this BEFORE the summary ever reaches this dataclass, so
+# a single request can never balloon regardless of how much state is behind it.
+_MAX_SCOPE_SUMMARY_CHARS = 4000
+# Defense-in-depth backstop on total companion emissions per task, shared across
+# every scope. Each real decision point is already topology-bounded on its own
+# (_GRILL_MAX_ROUNDS, CORRECTION_MAX_ATTEMPTS, one planning pass), so this
+# ceiling is deliberately generous — it exists to catch a cyclic-graph bug, not
+# to shape normal use. Never explicitly cleared: one small int per task_id for
+# the process lifetime, the same bounded-growth tradeoff ACTIVITY_CAP accepts.
+_MAX_COMPANION_EMISSIONS_PER_TASK = 20
+_companion_emission_counts: Dict[str, int] = {}
 
-# Free-form narration pass (Item A) — a second, independent completion streamed
-# live to the Thought Box. Small budget: this is conversational color, not the
-# structured analysis (which already carries the substantive detail).
-_NARRATION_MAX_TOKENS: int = 420
+
+def _companion_emission_admitted(task_id: str) -> bool:
+    """True and reserves a slot if this task is still under its emission
+    ceiling; False (no slot reserved) once it's been reached."""
+    count = _companion_emission_counts.get(task_id, 0)
+    if count >= _MAX_COMPANION_EMISSIONS_PER_TASK:
+        return False
+    _companion_emission_counts[task_id] = count + 1
+    return True
 
 
 @dataclass(frozen=True)
 class CompanionAnalysisRequest:
-    """Frozen request signature for caching and passing to LLM."""
+    """Frozen request signature for caching and passing to LLM.
+
+    ``scope``/``scope_summary`` (13.0.7) generalize this beyond the coding path:
+    a non-coding scope builder pre-renders its own decision-point slice — never
+    the full accumulated turn state — into ``scope_summary``, already truncated
+    to ``_MAX_SCOPE_SUMMARY_CHARS``, and leaves the coding-only fields at their
+    empty defaults. The coding scope keeps using those fields exactly as before;
+    ``scope_summary`` stays empty for it.
+    """
     session_id: str
     task_id: str
     attempt_ordinal: int
     task_description: str
-    pending_patches: Dict[str, str]
-    pending_contents: Dict[str, str]
-    file_context: Dict[str, str]
-    relevant_errors: List[str]
-    security_flags: List[str]
     verbosity: Literal["minimal", "normal", "deep"]
+    scope: CompanionScope = "coding"
+    scope_summary: str = ""
+    pending_patches: Dict[str, str] = field(default_factory=dict)
+    pending_contents: Dict[str, str] = field(default_factory=dict)
+    file_context: Dict[str, str] = field(default_factory=dict)
+    relevant_errors: List[str] = field(default_factory=list)
+    security_flags: List[str] = field(default_factory=list)
 
 
 class CompanionDecision(BaseModel):
@@ -189,8 +219,122 @@ def _build_companion_request(state: Dict[str, Any], attempt_ordinal: int) -> Com
     )
 
 
-def _build_companion_system_prompt(verbosity: Literal["minimal", "normal", "deep"]) -> str:
+def build_ideation_companion_request(
+    session_id: str,
+    task_id: str,
+    attempt_ordinal: int,
+    task_description: str,
+    question_batch: List[Dict[str, Any]],
+    resolved_answers: Dict[str, Any],
+) -> CompanionAnalysisRequest:
+    """Companion request for one grill round closing (agents/analyst.py's ask
+    phase). Consumes ONLY that round's own batch + answers — both already
+    round-local, never the accumulated `tool_dispatch_trace` — so this never
+    grows across rounds the way re-sending an append-only state list would.
+    """
+    lines: List[str] = []
+    for q in question_batch:
+        qid = q.get("id", "")
+        header = q.get("header", "")
+        question = q.get("question", "")
+        answer = resolved_answers.get(qid)
+        lines.append(f"- [{header}] {question}\n  Answer: {answer if answer else '(no answer)'}")
+    summary = "\n".join(lines)[:_MAX_SCOPE_SUMMARY_CHARS]
+
+    return CompanionAnalysisRequest(
+        session_id=session_id,
+        task_id=task_id,
+        attempt_ordinal=attempt_ordinal,
+        task_description=task_description,
+        verbosity="minimal",
+        scope="ideation",
+        scope_summary=summary,
+    )
+
+
+def build_planning_companion_request(
+    session_id: str,
+    task_id: str,
+    mission_plan: Any,
+) -> CompanionAnalysisRequest:
+    """Companion request for the plan committing (agents/planner.py, after the
+    validated MissionSpecification is assembled). Consumes only the just-drafted
+    plan's own summary fields, never prior turns' plans."""
+    task_lines = [
+        f"- step {getattr(t, 'step_number', '?')}: {getattr(t, 'action', '')} "
+        f"{getattr(t, 'target_file', '')} — {getattr(t, 'description', '')}"
+        for t in list(getattr(mission_plan, "tasks", []))[:_MAX_FILES_IN_PAYLOAD]
+    ]
+    summary = "\n".join([
+        f"Outcome: {getattr(mission_plan, 'outcome', '')}",
+        f"Constraints: {'; '.join(list(getattr(mission_plan, 'constraints', []))[:8])}",
+        "Tasks:",
+        *task_lines,
+    ])[:_MAX_SCOPE_SUMMARY_CHARS]
+
+    return CompanionAnalysisRequest(
+        session_id=session_id,
+        task_id=task_id,
+        attempt_ordinal=0,
+        task_description=str(getattr(mission_plan, "outcome", "")),
+        verbosity="normal",
+        scope="planning",
+        scope_summary=summary,
+    )
+
+
+def build_healing_companion_request(
+    session_id: str,
+    task_id: str,
+    attempt_ordinal: int,
+    failed_node: str,
+    diagnosis: str,
+    healed: bool,
+) -> CompanionAnalysisRequest:
+    """Companion request for error correction resolving (agents/error_correction.py),
+    whether it healed the fault or conceded. Consumes only this attempt's own
+    diagnosis text, never the accumulated error history."""
+    summary = (
+        f"Failed node: {failed_node}\n"
+        f"Outcome: {'healed' if healed else 'could not auto-fix'}\n"
+        f"Diagnosis: {diagnosis}"
+    )[:_MAX_SCOPE_SUMMARY_CHARS]
+
+    return CompanionAnalysisRequest(
+        session_id=session_id,
+        task_id=task_id,
+        attempt_ordinal=attempt_ordinal,
+        task_description=f"Self-healing {failed_node}",
+        verbosity="minimal",
+        scope="healing",
+        scope_summary=summary,
+    )
+
+
+def _build_companion_system_prompt(
+    verbosity: Literal["minimal", "normal", "deep"],
+    scope: CompanionScope = "coding",
+) -> str:
     """System prompt with verbosity-gated field expansion."""
+    if scope != "coding":
+        _scope_noun = {
+            "ideation": "a round of clarifying questions the Analyst just asked and the operator just answered",
+            "planning": "the technical plan the Planner just committed",
+            "healing": "a self-healing correction attempt the system just resolved",
+        }[scope]
+        return (
+            f"You are explaining, to the developer watching, {_scope_noun}. "
+            "Your job is to explain WHY, in structured terms: what it achieves, "
+            "what decisions were made, and what — if anything — the developer "
+            "should follow up on.\n\n"
+            "RULES:\n"
+            "- Explain, do not judge. Do not suggest alternative approaches.\n"
+            "- Output ONLY a JSON object. No preamble, no markdown, no trailing text.\n"
+            "- Be concise. Each list item ≤25 words, full sentences.\n"
+            "- Populate `objective` always; populate `follow_ups` only if something "
+            "genuinely needs the developer's attention. Leave other lists empty — "
+            "they describe a code patch, which this decision point has none of.\n"
+        )
     base = (
         "You are an expert code reviewer analyzing a patch (SEARCH/REPLACE edits) "
         "the Coder just produced. Your job is to explain the patch in structured terms: "
@@ -225,6 +369,15 @@ def _build_companion_system_prompt(verbosity: Literal["minimal", "normal", "deep
 
 def _build_companion_user_payload(request: CompanionAnalysisRequest) -> str:
     """Assemble user message with token-hygiene truncation."""
+    if request.scope != "coding":
+        # scope_summary is already truncated to _MAX_SCOPE_SUMMARY_CHARS by the
+        # scope builder that produced it — nothing further to cap here.
+        return (
+            f"Task: {request.task_description}\n"
+            f"Verbosity: {request.verbosity}\n\n"
+            f"{request.scope_summary}"
+        )
+
     lines = [
         f"Task: {request.task_description}",
         f"Verbosity: {request.verbosity}",
@@ -298,12 +451,20 @@ async def _call_analyst_llm(request: CompanionAnalysisRequest) -> CompanionAnaly
     """Best-effort LLM call. Never raises — returns degraded=True on any failure."""
     from core.response_cache import response_cache  # deferred — avoid circular import
 
-    system_prompt = _build_companion_system_prompt(request.verbosity)
+    system_prompt = _build_companion_system_prompt(request.verbosity, request.scope)
     user_payload = _build_companion_user_payload(request)
 
+    # scope-namespaced so a planning/ideation/healing cache key never collides
+    # with the coding path's (or each other's) — pending_patches is empty for
+    # every non-coding scope, so scope_summary stands in as its context slice.
+    context: List[tuple[str, str]] = (
+        [(f, request.pending_patches[f]) for f in sorted(request.pending_patches)]
+        if request.scope == "coding"
+        else [(str(request.scope), request.scope_summary)]
+    )
     cache_key = response_cache.build_key(
-        intent=f"coder_companion:{request.task_id}:{request.attempt_ordinal}",
-        context=[(f, request.pending_patches[f]) for f in sorted(request.pending_patches)],
+        intent=f"coder_companion:{request.scope}:{request.task_id}:{request.attempt_ordinal}",
+        context=context,
         project_id=request.session_id,
         model=MINI_JUDGE_MODEL,
     )
@@ -355,86 +516,14 @@ def _parse_companion_json(raw_content: str) -> CompanionAnalysis:
     return analysis
 
 
-async def _stream_narration(request: CompanionAnalysisRequest) -> None:
-    """Best-effort free-form narration of the patch, streamed live to the Thought Box.
-
-    A second, INDEPENDENT completion from ``_call_analyst_llm``'s structured JSON
-    analysis above — that call's strict-JSON contract cannot safely carry a
-    reasoning preamble, the same SAFETY INVARIANT that keeps the Coder's own
-    SEARCH/REPLACE generation scaffold-free (tools/llm_gateway.py::
-    astream_reasoning). Consequently the Coder's own generation call never
-    narrates for a non-native model — no ``response_format``, and
-    ``acomplete_with_thinking`` never passes ``free_form_answer=True`` — which is
-    exactly the empty-Thought-Box gap this pass closes. Sets
-    ``free_form_answer=True`` with no ``response_format``, the one combination
-    ``astream_reasoning`` treats as safe to scaffold and stream.
-
-    Pure color, never load-bearing: the deterministic status strings and the
-    structured companion analysis already narrate the turn on their own. Any
-    fault (timeout, provider error, dead sink) degrades to silence and must
-    never propagate — a narration failure must not be mistaken for a failure of
-    the structured analysis this runs alongside.
-    """
-    if not request.session_id:
-        return
-
-    system_prompt = (
-        "You are the code reviewer narrating, in the first person and in plain "
-        "prose, what this patch does and why — a short, conversational commentary "
-        "for the developer watching, not a report. One to three short paragraphs. "
-        "No JSON, no markdown fences, no headings, no preamble."
-    )
-    user_payload = _build_companion_user_payload(request)
-    tier = _resolve_judge_tier()
-    llm_timeout = _resolve_companion_llm_timeout(tier)
-
-    async def _consume() -> None:
-        from api.websocket_manager import vfs_manager  # deferred — avoid circular import
-
-        async for delta in LLMGateway.astream_reasoning(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            tier=tier,
-            temperature=0.4,
-            max_tokens=_NARRATION_MAX_TOKENS,
-            session_id=request.session_id,
-            thinking_budget_tokens=_NARRATION_MAX_TOKENS,
-            free_form_answer=True,
-        ):
-            if delta.text:
-                await vfs_manager.broadcast_thinking_chunk(
-                    request.session_id, delta.text, source="simulated",
-                )
-
-    try:
-        await asyncio.wait_for(_consume(), timeout=llm_timeout)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — narration is pure color; any fault degrades to silence
-        logger.debug("coder_companion: narration stream failed (non-fatal) — %s", exc, exc_info=True)
-
-
-def schedule_coder_companion(
-    state: Dict[str, Any], attempt_ordinal: int, enable_narration: bool = False,
-) -> None:
-    """Fire-and-forget entry point. Synchronous, never awaited. Called from run_coder_node.
-
-    ``enable_narration`` mirrors the caller's own Reasoning Mode toggle
-    (``config.configurable.enable_native_thinking``) — the free-form narration
-    pass (Item A) only fires when the user has reasoning display on; the
-    structured analysis card is unaffected either way. Defaults False so any
-    other/legacy caller (tests, a future dispatch path) keeps today's behavior.
-    """
-    task = asyncio.create_task(_run_coder_companion(state, attempt_ordinal, enable_narration))
+def schedule_coder_companion(state: Dict[str, Any], attempt_ordinal: int) -> None:
+    """Fire-and-forget entry point. Synchronous, never awaited. Called from run_coder_node."""
+    task = asyncio.create_task(_run_coder_companion(state, attempt_ordinal))
     _companion_background_tasks.add(task)
     task.add_done_callback(_companion_background_tasks.discard)
 
 
-async def _run_coder_companion(
-    state: Dict[str, Any], attempt_ordinal: int, enable_narration: bool = False,
-) -> None:
+async def _run_coder_companion(state: Dict[str, Any], attempt_ordinal: int) -> None:
     """Background task body. Must never raise into the event loop — a fault here must
     not affect the coder's checkpoint or the graph's control flow.
 
@@ -445,6 +534,9 @@ async def _run_coder_companion(
     """
     session_id = state.get("task_id", "")
     task_id = state.get("task_id", "")
+    if not _companion_emission_admitted(task_id):
+        logger.info("coder_companion: emission cap reached for task=%s — skipping", task_id)
+        return
     analysis: CompanionAnalysis
 
     try:
@@ -459,13 +551,6 @@ async def _run_coder_companion(
                 else:
                     request = _build_companion_request(state, attempt_ordinal)
                     analysis = await _call_analyst_llm(request)
-                    # Item A — free-form narration streamed to the Thought Box.
-                    # Sequential, after the structured analysis: simpler than a
-                    # concurrent race, and _stream_narration is fully self-contained
-                    # (never raises, own timeout) so it cannot degrade `analysis`
-                    # above even if it fails outright.
-                    if enable_narration:
-                        await _stream_narration(request)
     except Exception as exc:  # noqa: BLE001 — outer safety net: a best-effort explainer
         # must never propagate a fault, from anywhere in this pipeline, to its caller.
         logger.warning("coder_companion: pipeline failed for task=%s — %s", task_id, exc, exc_info=True)
@@ -479,6 +564,82 @@ async def _run_coder_companion(
             session_id=session_id,
             task_id=task_id,
             correlation_id=f"{task_id}:{attempt_ordinal}",
+            emission_id=f"{task_id}:coding:{attempt_ordinal}",
+            scope="coding",
+            analysis=analysis,
+        )
+    except Exception as exc:  # noqa: BLE001 — a broadcast fault must not crash this
+        # fire-and-forget background task; the card simply falls back to its own
+        # client-side safety-net timeout in that (rare) case.
+        logger.debug("coder_companion: broadcast failed — %s", exc, exc_info=True)
+
+
+def schedule_agent_companion(
+    state: Dict[str, Any],
+    scope: CompanionScope,
+    attempt_ordinal: int,
+    build_request: Callable[[], CompanionAnalysisRequest],
+) -> None:
+    """Fire-and-forget entry point for a non-coding decision point (a grill round
+    closing, a plan committing, error correction resolving). Mirrors
+    `schedule_coder_companion`'s lifecycle and governance exactly — same
+    background-task strong-ref set, same budget/VRAM/semaphore admission — but
+    takes a zero-arg request builder instead of building one from `state` itself:
+    each scope's request shape differs too much from the coding path's
+    patch-shaped one to share a single builder.
+    """
+    task = asyncio.create_task(_run_agent_companion(state, scope, attempt_ordinal, build_request))
+    _companion_background_tasks.add(task)
+    task.add_done_callback(_companion_background_tasks.discard)
+
+
+async def _run_agent_companion(
+    state: Dict[str, Any],
+    scope: CompanionScope,
+    attempt_ordinal: int,
+    build_request: Callable[[], CompanionAnalysisRequest],
+) -> None:
+    """Background task body for a non-coding companion emission. Same
+    never-raise contract and broadcast-on-every-exit-path guarantee as
+    `_run_coder_companion` — see that function's docstring for the rationale.
+    """
+    session_id = state.get("task_id", "")
+    task_id = state.get("task_id", "")
+    emission_id = f"{task_id}:{scope}:{attempt_ordinal}"
+    if not _companion_emission_admitted(task_id):
+        logger.info("coder_companion: emission cap reached for task=%s — skipping (%s)", task_id, scope)
+        return
+    analysis: CompanionAnalysis
+
+    try:
+        if not _companion_budget_available(state):
+            logger.debug("coder_companion: skipped (%s) — over budget ceiling", scope)
+            analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
+        else:
+            async with _companion_semaphore:  # bounds SWARM fan-out bursts
+                if not await _companion_gpu_slot_available(session_id):
+                    logger.debug("coder_companion: skipped (%s) — local tier VRAM lock busy", scope)
+                    analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
+                else:
+                    request = build_request()
+                    analysis = await _call_analyst_llm(request)
+    except Exception as exc:  # noqa: BLE001 — outer safety net: a best-effort explainer
+        # must never propagate a fault, from anywhere in this pipeline, to its caller.
+        logger.warning(
+            "coder_companion: pipeline failed for task=%s scope=%s — %s", task_id, scope, exc, exc_info=True,
+        )
+        analysis = CompanionAnalysis(objective="Explanation unavailable.", degraded=True)
+
+    try:
+        # Import here to avoid circular dependency.
+        from api.websocket_manager import vfs_manager
+
+        await vfs_manager.broadcast_coder_companion(
+            session_id=session_id,
+            task_id=task_id,
+            correlation_id=f"{task_id}:{attempt_ordinal}",
+            emission_id=emission_id,
+            scope=scope,
             analysis=analysis,
         )
     except Exception as exc:  # noqa: BLE001 — a broadcast fault must not crash this

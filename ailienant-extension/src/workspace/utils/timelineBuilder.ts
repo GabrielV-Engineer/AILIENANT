@@ -91,6 +91,29 @@ export function upsertActivityMarker(
 }
 
 /**
+ * Freeze every still-open 'reasoning' entry's elapsed clock at `now`
+ * (performance.now()-based, matching `thinkingStartedAt`) — idempotent, a no-op
+ * for an entry that already has `thinkingElapsedMs` or never started. Called
+ * both when a NEW reasoning span begins (the previous one implicitly ended) and
+ * when the turn's answer text begins (mirrors the message-scoped
+ * `freezeThinkingOnText`, but per-entry so several spans in one turn each keep
+ * their own honest duration instead of sharing the turn's single clock).
+ */
+export function freezeActiveReasoningEntries(
+    entries: TimelineEntry[],
+    now: number,
+): TimelineEntry[] {
+    let changed = false;
+    const next = entries.map(e => {
+        if (e.kind !== 'reasoning' || e.thinkingElapsedMs !== undefined) { return e; }
+        changed = true;
+        const elapsed = e.thinkingStartedAt !== undefined ? Math.max(0, now - e.thinkingStartedAt) : 0;
+        return { ...e, thinkingElapsedMs: elapsed };
+    });
+    return changed ? next : entries;
+}
+
+/**
  * Append a streamed reasoning delta, keyed by its `ref` (the same id the matching
  * `reasoning` activity marker carries). If no entry exists yet under that key
  * (the delta arrived before its marker), create an unresolved placeholder — the
@@ -98,16 +121,30 @@ export function upsertActivityMarker(
  * missing `ref` (an older server, or the rare frame with none) falls into one
  * shared bucket — the same "one span per turn" scoped simplification the backend
  * `_ThinkingStreamer` applies when it mints a single ref per instance.
+ *
+ * Per-entry chronometry (`thinkingTokens`/`thinkingStartedAt`) mirrors
+ * `thinkingReducer.ts::accumulateThinking`'s message-scoped semantics, scoped to
+ * this entry: a new key starting freezes any other still-open reasoning entry
+ * first (§ freezeActiveReasoningEntries) — a later span beginning is proof the
+ * earlier one ended, letting several reasoning blocks in one turn each render
+ * with their own independent, correctly-settled clock.
+ *
+ * `ts` stays the 4th positional parameter for existing callers; the new
+ * per-entry chronometry is bundled into a trailing options object rather than
+ * inserted positionally, so no existing call site's argument order shifts.
  */
 export function upsertReasoningDelta(
     entries: TimelineEntry[],
     delta: string,
     ref: string | null | undefined,
     ts: number = Date.now() / 1000,
+    opts: { tokenCount?: number; now?: number } = {},
 ): TimelineEntry[] {
+    const { tokenCount, now = Date.now() } = opts;
     const key = ref ?? '__reasoning_no_ref__';
     const idx = entries.findIndex(e => e.id === key);
     if (idx === -1) {
+        const withPriorFrozen = freezeActiveReasoningEntries(entries, now);
         const placeholder: TimelineEntry = {
             id: key,
             seq: Number.POSITIVE_INFINITY,
@@ -116,11 +153,19 @@ export function upsertReasoningDelta(
             ref: ref ?? undefined,
             status: 'active',
             thinking: delta,
+            thinkingTokens: tokenCount ?? 0,
+            thinkingStartedAt: now,
         };
-        return insertSorted(entries, placeholder);
+        return insertSorted(withPriorFrozen, placeholder);
     }
     const next = [...entries];
-    next[idx] = { ...next[idx], thinking: (next[idx].thinking ?? '') + delta };
+    const prev = next[idx];
+    next[idx] = {
+        ...prev,
+        thinking: (prev.thinking ?? '') + delta,
+        thinkingTokens: tokenCount ?? prev.thinkingTokens ?? 0,
+        thinkingStartedAt: prev.thinkingStartedAt ?? now,
+    };
     return next;
 }
 

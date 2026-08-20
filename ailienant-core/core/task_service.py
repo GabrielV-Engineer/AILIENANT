@@ -113,7 +113,17 @@ def _classify_activity(
         ("retrieving ", "retrieval"),
     ):
         if low.startswith(verb):
-            metric = "denied" if verb == "blocked " else None
+            # "denied"/"verify" both mark a command-kind entry as a verification
+            # outcome rather than the action itself — the frontend's work-loop
+            # phase grouping (13.0.7) reads this to place these under "Verifying
+            # results" instead of the "Taking action" bucket a bare
+            # record_execution-sourced command marker (metric=None) falls into.
+            if verb == "blocked ":
+                metric = "denied"
+            elif verb in ("verified ", "giving up on "):
+                metric = "verify"
+            else:
+                metric = None
             return kind, (s[len(verb):].strip() or None), metric
     phase = {
         "context_gather": "understanding",

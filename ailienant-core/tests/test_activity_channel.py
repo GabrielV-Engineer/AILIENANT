@@ -30,7 +30,13 @@ def test_classify_free_text_action_verbs() -> None:
     assert _classify_activity("reading fibonacci.py") == ("read", "fibonacci.py", None)
     assert _classify_activity("editing app.py") == ("edit", "app.py", None)
     assert _classify_activity("writing gui.py") == ("edit", "gui.py", None)
-    assert _classify_activity("verified mypy .") == ("command", "mypy .", None)
+    # metric="verify" (13.0.7): a "verified "/"giving up on " marker is a
+    # VERIFICATION OUTCOME, not the action itself — distinguishes it, on the wire,
+    # from a bare record_execution-sourced command (metric=None) so the frontend's
+    # work-loop phase grouping can place it under "Verifying results" instead of
+    # "Taking action" (activityLabels.ts::timelineEntryPhase).
+    assert _classify_activity("verified mypy .") == ("command", "mypy .", "verify")
+    assert _classify_activity("giving up on pytest -q") == ("command", "pytest -q", "verify")
     assert _classify_activity("self-healing coder_agent") == ("heal", "coder_agent", None)
     assert _classify_activity("recovered coder_agent") == ("heal", "coder_agent", None)
 
