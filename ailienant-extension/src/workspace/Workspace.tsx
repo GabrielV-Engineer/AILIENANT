@@ -295,6 +295,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
         setPlan(null);
     }, [submitWithMode]);
 
+    // Plan decision: dismiss the panel without submitting anything or changing
+    // mode. Deliberately never gated on isTurnActive — the backend may still be
+    // narrating the planner call itself, but the panel must always be closeable;
+    // it does not call handleAbort, so a still-running turn keeps running behind
+    // the composer rather than being force-stopped by a simple dismiss.
+    const handlePlanClose = useCallback(() => {
+        setPlan(null);
+    }, []);
+
     // Phase 7.11.3 (ADR-706 §4.5b) — Abort Controller Mesh.
     // ABORT_TASK keeps the client-side HTTP AbortController (legacy, harmless).
     // ABORT_MESH is the new path: workspace_panel.ts turns it into a
@@ -626,9 +635,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         narration, reasoning, the plan checklist, diffs, and
                                         the agentic-cell audit into one chronological,
                                         seq-ordered trace. */}
-                                    {m.role === 'assistant' && m.timeline && m.timeline.length > 0 && (
+                                    {m.role === 'assistant' && ((m.timeline && m.timeline.length > 0) || (m.checklist && m.checklist.length > 0)) && (
                                         <AgentTimeline
-                                            entries={m.timeline}
+                                            entries={m.timeline ?? []}
                                             streaming={!!m.streaming}
                                             thinking={m.thinking}
                                             thinkingTokens={m.thinkingTokens}
@@ -853,6 +862,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 onAutoAccept={handlePlanAutoAccept}
                                 onManualApprove={handlePlanManualApprove}
                                 onKeepPlanning={handlePlanKeepPlanning}
+                                onClose={handlePlanClose}
                                 isTurnActive={isTurnActive}
                             />
                         </aside>

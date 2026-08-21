@@ -71,6 +71,23 @@ suite('11.5.C.2 — AgentTimeline', function () {
         container.remove();
     });
 
+    test('a checklist with no timeline entries still renders (survives an empty entries[] round-trip)', () => {
+        // Regression guard: stripReasoningForPersist only strips 'reasoning'
+        // entries, but a turn whose entries were reasoning-only to begin with (or
+        // whose 'plan' marker landed on a different message via a WS-ordering
+        // race) round-trips through persistence as entries:[] while `checklist`
+        // survives — the component used to bail to null on entries.length===0
+        // regardless, silently hiding a checklist that was still present.
+        const tasks: PlanWBSStep[] = [
+            { step_number: 1, target_role: 'core_dev', action: 'edit_file', target_file: 'a.py', description: 'bump', status: 'completed' },
+        ];
+        const { container, root } = render({ entries: [], checklist: tasks, streaming: true });
+        assert.ok(container.querySelector('.ws-timeline'), 'the timeline shell should still mount');
+        assert.ok(container.querySelector('.ws-checklist-head'), 'the checklist should render even with no timeline entries');
+        act(() => root.unmount());
+        container.remove();
+    });
+
     test('header reads "Working…" while streaming', () => {
         const { container, root } = render({
             entries: [entry({ id: 'seq:0', kind: 'understanding', status: 'done' })],

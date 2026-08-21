@@ -175,6 +175,26 @@ def test_check_governor_pure_time() -> None:
     assert check_governor(step=0, cost_usd=0.0, elapsed_s=299.9, max_steps=10, max_cost_usd=100.0, max_elapsed_s=300.0) is None
 
 
+# ── _cell_elapsed_floor (DEBT-191 follow-up) ─────────────────────────────────────────────
+# The old flat 300s LLM timeout kept AGENTIC_CELL_MAX_ELAPSED_S self-consistent with
+# a single call's own duration by construction; DEBT-191's local-hardware-scaled
+# timeout can now legitimately exceed that flat constant, so the per-turn default
+# must never be smaller than what the cell's own single LLM call could need.
+# test_time_axis_exhausted (above) already regression-guards the other half of
+# this contract — an explicit `cell_max_elapsed_s` override still wins untouched.
+
+
+def test_cell_elapsed_floor_is_never_below_the_static_constant() -> None:
+    from brain.retry_policy import AGENTIC_CELL_MAX_ELAPSED_S
+    assert ac._cell_elapsed_floor() >= AGENTIC_CELL_MAX_ELAPSED_S
+
+
+def test_cell_elapsed_floor_scales_with_the_local_timeout() -> None:
+    from brain.retry_policy import AGENTIC_CELL_MAX_ELAPSED_S
+    from tools.llm_gateway import resolve_local_timeout
+    assert ac._cell_elapsed_floor() == max(AGENTIC_CELL_MAX_ELAPSED_S, resolve_local_timeout(4096) * 2)
+
+
 # ── Integration tests through run_agentic_cell_node ──────────────────────────────────────
 
 

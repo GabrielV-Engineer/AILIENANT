@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar, cast
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
+from langgraph.errors import GraphBubbleUp
 
 from brain.state import AIlienantGraphState, assert_declared_channels
 from brain.checkpoint import checkpoint_manager
@@ -126,6 +127,44 @@ def route_after_ideation(state: Dict[str, Any]) -> str:
     return target
 
 
+def route_after_planner(state: Dict[str, Any]) -> str:
+    """Conditional edge: a PLAN_ONLY session stops the turn the instant the plan
+    is produced, instead of falling through into drift_compute -> route_to_coders
+    -> CoderAgent execution.
+
+    agents/coder.py's RBAC gate (session_mode_from_channel + evaluate_action)
+    already denies each individual write/execute action under PLAN_ONLY, but that
+    only stops actions one at a time — it never stopped the graph from running
+    and narrating every WBS step to completion in the same turn, which is what
+    made a plan-mode task look like it was auto-executing unapproved. This edge
+    stops the turn itself, matching the existing resubmit-under-write-capable-
+    mode acceptance design (see agents/analyst.py's _AGREEMENT_SIGNALS): there is
+    nothing further for this turn to safely do until the user decides.
+
+    normalize_session_mode is required, not a raw comparison — the channel can
+    still carry the deprecated "PLAN" alias, which a raw comparison against
+    PLAN_ONLY would silently miss.
+    """
+    from core.permissions import SessionPermissionMode, normalize_session_mode, session_mode_from_channel
+    from core.telemetry import log_routing_decision
+    mode = normalize_session_mode(session_mode_from_channel(state.get("session_permission_mode")))
+    if mode is SessionPermissionMode.PLAN_ONLY:
+        target = END
+        reason = f"session_permission_mode={mode.value} — plan broadcast; turn stops before execution"
+    else:
+        target = "drift_compute"
+        reason = f"session_permission_mode={mode.value} — continuing to drift_compute"
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        project_id=state.get("project_id", ""),
+        source="planner_agent",
+        target=str(target),
+        reason=reason,
+    )
+    logger.info("route_after_planner: → %s (%s).", target, reason)
+    return target
+
+
 _NodeFn = TypeVar("_NodeFn", bound=Callable[..., Awaitable[Any]])
 
 
@@ -180,6 +219,13 @@ def reflexion_guard(node_name: str) -> Callable[[_NodeFn], _NodeFn]:
                 # that declares `config` — LangGraph reads the outermost signature.
                 return await fn(state, *args, **kwargs)
             except asyncio.CancelledError:
+                raise
+            except GraphBubbleUp:
+                # A native interrupt() (GraphInterrupt, GraphDelegate, ParentCommand)
+                # subclasses Exception and would otherwise be caught by the broad
+                # handler below and converted into a healing_required signal — silently
+                # destroying the pause instead of asking the user. A HITL suspension is
+                # not a failure; let LangGraph's own suspend/resume machinery see it.
                 raise
             except Exception as exc:  # noqa: BLE001 — convert to a healing signal or concede
                 attempts = (
@@ -377,8 +423,13 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 
 
 def _route_planner_dispatch(state: Dict[str, Any]) -> str:
-    """Planner exit: fan out to the dispatch subgraph when a plan was emitted, else the
-    normal successor (drift_compute)."""
+    """Planner exit: a PLAN_ONLY session stops the turn (mirrors route_after_planner
+    below, which owns the non-dispatch path); otherwise fan out to the dispatch
+    subgraph when a plan was emitted, else the normal successor (drift_compute)."""
+    from core.permissions import SessionPermissionMode, normalize_session_mode, session_mode_from_channel
+    mode = normalize_session_mode(session_mode_from_channel(state.get("session_permission_mode")))
+    if mode is SessionPermissionMode.PLAN_ONLY:
+        return END
     return "dispatch_origin" if state.get("dispatch_plan") else "drift_compute"
 
 
@@ -469,12 +520,14 @@ if ENABLE_DYNAMIC_DISPATCH:
     )
     workflow.add_conditional_edges(
         "planner_agent", _route_planner_dispatch,
-        {"dispatch_origin": "dispatch_origin", "drift_compute": "drift_compute"},
+        {"dispatch_origin": "dispatch_origin", "drift_compute": "drift_compute", END: END},
     )
     _wire_dynamic_dispatch(workflow)
 else:
     workflow.add_edge("researcher_agent", "planner_agent")
-    workflow.add_edge("planner_agent", "drift_compute")
+    workflow.add_conditional_edges(
+        "planner_agent", route_after_planner, {"drift_compute": "drift_compute", END: END},
+    )
 workflow.add_edge("drift_compute", "drift_gate")
 workflow.add_conditional_edges("drift_gate", route_to_coders, ["coder_agent", "agentic_cell"])
 # The ReAct cell loops back onto itself while its latest verdict says "continue" (each

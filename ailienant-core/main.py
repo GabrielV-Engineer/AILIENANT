@@ -553,6 +553,22 @@ def _resume_approval_dict(data: HITLResponsePayload) -> Dict[str, Any]:
         "answers": [a.model_dump() for a in data.answers] if data.answers else None,
     }
 
+
+def _resolve_hitl_session_id(data: HITLResponsePayload, client_id: str) -> str:
+    """Which paused graph a ``client_hitl_response`` resumes (DEBT-188).
+
+    ``client_id`` is the WS connection's own identity (the route's path
+    param) — several sessions can share one connection at once
+    (``register_alias``, ``RegisterSessionPayload``). The paused graph is
+    keyed by the chat's own ``session_id``, not the connection, so route by
+    the reply's own ``session_id`` when the frontend supplies one, falling
+    back to ``client_id`` only for a stale/un-reloaded webview that predates
+    this field. Using the bare connection id when more than one session
+    shares it silently resumes the wrong session — or none at all.
+    """
+    return data.session_id or client_id
+
+
 # Manual Dreaming — at most one consolidation per project (a new run cancels the
 # prior one). The epoch is a monotonic per-project save counter: the OCC anchor a
 # consolidation captures at start and the daemon re-checks before committing, so a
@@ -1400,13 +1416,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # Command(resume=…); everything else (MCP adapter, post-graph file-write
                 # apply loop) still resolves the in-memory approval Event. resume_graph
                 # pops the paused entry first, so a duplicate reply is a harmless no-op.
-                if task_service.has_paused_graph(client_id):
+                _resolved_session_id = _resolve_hitl_session_id(valid_event.data, client_id)
+                if task_service.has_paused_graph(_resolved_session_id):
                     _approval = _resume_approval_dict(valid_event.data)
                     # Background task — never block the WS receive loop on the resume.
                     _resume_t = asyncio.create_task(
-                        task_service.resume_graph(client_id, _approval)
+                        task_service.resume_graph(_resolved_session_id, _approval)
                     )
-                    task_service.register_active_task(client_id, _resume_t)
+                    task_service.register_active_task(_resolved_session_id, _resume_t)
                 else:
                     vfs_manager.resolve_human_approval(
                         approval_id=valid_event.data.approval_id,
@@ -1417,11 +1434,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                 # Confirm receipt so a response from a hidden/torn-down webview is
                 # never silently orphaned.
                 await vfs_manager.broadcast_hitl_ack(
-                    client_id, valid_event.data.approval_id, True
+                    _resolved_session_id, valid_event.data.approval_id, True
                 )
                 logger.info(
                     "✅ HITL response from %s: approved=%s (approval_id=%s)",
-                    client_id,
+                    _resolved_session_id,
                     valid_event.data.approved,
                     valid_event.data.approval_id,
                 )

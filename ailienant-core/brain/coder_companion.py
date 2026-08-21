@@ -27,13 +27,12 @@ _companion_background_tasks: Set[asyncio.Task[None]] = set()
 _companion_semaphore = asyncio.Semaphore(3)
 
 _MAX_TOKENS_BY_VERBOSITY = {"minimal": 220, "normal": 420, "deep": 800}
-# A local judge model needs far more than a cloud call's latency budget (the gateway
-# itself grants local calls up to 300s, see llm_gateway._LOCAL_LLM_TIMEOUT_S) — 12s
-# was calibrated for a cloud round-trip and reliably starves a local completion before
-# it can finish. Kept as two named constants (rather than one bumped flat value) so a
-# fast cloud judge still gets a fast unavailable-fallback instead of waiting needlessly.
+# 12s was calibrated for a cloud round-trip. A local judge target instead delegates
+# to llm_gateway.resolve_local_timeout (DEBT-191) — a flat local deadline reliably
+# starved a real local completion (measured on hardware doing ~2-3 tokens/sec, this
+# call's 220-800 token budget needs 140-400+s) before it could ever finish, so
+# every coding-scope turn degraded to "Explanation unavailable." on slow hardware.
 _COMPANION_LLM_TIMEOUT_CLOUD_S = 12.0
-_COMPANION_LLM_TIMEOUT_LOCAL_S = 45.0
 _MAX_CONCURRENT_COMPANIONS = 3
 _MAX_DIFF_CHARS_PER_FILE = 4000
 _MAX_FILES_IN_PAYLOAD = 8
@@ -428,20 +427,25 @@ def _resolve_judge_tier() -> str:
     return "medium"
 
 
-def _resolve_companion_llm_timeout(tier: str) -> float:
+def _resolve_companion_llm_timeout(tier: str, max_tokens: int) -> float:
     """Tier-aware deadline shared by the structured analysis and narration calls.
 
-    A local judge target needs far more than a cloud round-trip's budget (the
-    gateway itself grants local calls up to 300s, see
-    llm_gateway._LOCAL_LLM_TIMEOUT_S) — 12s reliably starves a local completion
-    before it can finish. Best-effort: an unresolved alias (no BYOM preset active
-    yet) falls back to the cloud deadline.
+    A local judge target's own generation speed varies by an order of magnitude
+    across deployments (DEBT-191) — delegate to the calibrated/max_tokens-scaled
+    tools.llm_gateway.resolve_local_timeout instead of a flat guess, passing this
+    call's own max_tokens budget so a "minimal" verbosity companion still gets a
+    fast unavailable-fallback while a "deep" one gets real room to finish. Best-
+    effort: an unresolved alias (no BYOM preset active yet) falls back to the
+    cloud deadline.
     """
     try:
         from core.config.model_resolver import get_chat_target
         _target = get_chat_target(tier)
         if _target is not None and _target.is_local:
-            return _COMPANION_LLM_TIMEOUT_LOCAL_S
+            from tools.llm_gateway import resolve_local_timeout  # deferred — mirrors
+            # brain/agentic_cell.py's _cell_elapsed_floor() deferred import of the
+            # same symbol, avoiding a module-load-order dependency between the two.
+            return resolve_local_timeout(max_tokens, _target.model)
     except Exception:  # noqa: BLE001 — resolution is advisory; keep the cloud default on any fault
         logger.debug("coder_companion: judge-tier resolution failed; using cloud deadline", exc_info=True)
     return _COMPANION_LLM_TIMEOUT_CLOUD_S
@@ -472,7 +476,7 @@ async def _call_analyst_llm(request: CompanionAnalysisRequest) -> CompanionAnaly
     if cached is not None:
         return _parse_companion_json(cached)
 
-    llm_timeout = _resolve_companion_llm_timeout(_resolve_judge_tier())
+    llm_timeout = _resolve_companion_llm_timeout(_resolve_judge_tier(), _MAX_TOKENS_BY_VERBOSITY[request.verbosity])
 
     try:
         response = await asyncio.wait_for(
@@ -485,6 +489,13 @@ async def _call_analyst_llm(request: CompanionAnalysisRequest) -> CompanionAnaly
                 temperature=0.0,
                 response_format={"type": "json_object"},
                 max_tokens=_MAX_TOKENS_BY_VERBOSITY[request.verbosity],
+                # Note: for a resolved local BYOM target this is a no-op —
+                # `ainvoke` unconditionally computes its own budget via
+                # `resolve_local_timeout` (DEBT-191) regardless of the caller's
+                # `timeout`. Left in for the non-BYOM-local (litellm-proxy)
+                # case, where the caller's value is still honored; the outer
+                # `wait_for` below is what actually bounds the local-BYOM case.
+                timeout=llm_timeout,
                 session_id=request.session_id,
             ),
             timeout=llm_timeout,
@@ -593,6 +604,38 @@ def schedule_agent_companion(
     task.add_done_callback(_companion_background_tasks.discard)
 
 
+def _ideation_companion_would_contend_local_compute() -> bool:
+    """True when the judge tier resolves to a local BYOM target (DEBT-190).
+
+    `_companion_gpu_slot_available`'s VRAM-lock probe cannot see this
+    contention: `agents/analyst.py`'s own grill LLM calls never acquire
+    `GPUResourceManager`'s lock (that plumbing exists only on the coding
+    path), so the lock always reads as free during a grill round. But a
+    local inference server (Ollama, observed) still serializes requests to
+    one model regardless — the grill's self-loop issues its OWN next local
+    call (grounding + question generation) essentially the instant this
+    companion is scheduled, so the two queue against each other at the
+    server, not at any lock AILIENANT tracks. Measured: two concurrent
+    calls to the same local judge model took 28s total vs 11s solo — on
+    real (larger) grill prompts this reliably exceeds the companion's
+    45s budget, so every round degrades instead of a rare few. Skipping
+    before the attempt (like the emission-cap/budget checks below) avoids
+    both the wasted queued compute and a guaranteed-to-degrade card, unlike
+    the coding scope, where the companion is scheduled only after the
+    coder's own local generation has already finished — no such contention
+    exists there, so that path is untouched.
+    """
+    try:
+        from core.config.model_resolver import get_chat_target
+
+        target = get_chat_target(_resolve_judge_tier())
+        return target is not None and target.is_local
+    except Exception as exc:  # noqa: BLE001 — fail-open: a probe fault must not
+        # suppress the card; worst case is the pre-existing degrade-on-timeout path.
+        logger.debug("coder_companion: local-contention probe failed — %s", exc, exc_info=True)
+        return False
+
+
 async def _run_agent_companion(
     state: Dict[str, Any],
     scope: CompanionScope,
@@ -608,6 +651,12 @@ async def _run_agent_companion(
     emission_id = f"{task_id}:{scope}:{attempt_ordinal}"
     if not _companion_emission_admitted(task_id):
         logger.info("coder_companion: emission cap reached for task=%s — skipping (%s)", task_id, scope)
+        return
+    if scope == "ideation" and _ideation_companion_would_contend_local_compute():
+        logger.info(
+            "coder_companion: skipping (%s) for task=%s — judge tier is local, "
+            "would contend with the grill's own next local call", scope, task_id,
+        )
         return
     analysis: CompanionAnalysis
 

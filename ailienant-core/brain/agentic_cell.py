@@ -63,6 +63,33 @@ _TOOL_SEARCH_NAME: str = "tool_search"
 # grounding pre-pass) so the three cannot drift apart.
 
 
+def _cell_elapsed_floor() -> float:
+    """Per-turn ceiling floor, aware of local-hardware LLM timing (DEBT-191).
+
+    Before DEBT-191, the LLM gateway's own local-tier timeout was a flat 300s —
+    the same as `AGENTIC_CELL_MAX_ELAPSED_S`, so a single call could never itself
+    exceed the whole turn's budget. DEBT-191 made the LLM timeout scale with
+    `max_tokens` (and a per-model calibrated rate) to fit slow local hardware,
+    which breaks that implicit alignment: one call inside one iteration can now
+    legitimately need several times the old flat ceiling. This never lets the
+    per-turn budget be smaller than what the cell's own single LLM call
+    (``ainvoke``'s default ``max_tokens=4096``, the exact call this module makes)
+    could need on local hardware, including its own retry allowance — the ``× 2``
+    mirrors the local-target retry count DEBT-191 also introduced, so both
+    budgets reason about the same worst-case number of attempts.
+
+    Deliberately uses the static formula only (no ``model=`` argument, so no
+    per-model calibration lookup) — the cell doesn't know in advance which
+    concrete model its ``MODEL_BIG`` alias will resolve to, and a calibration-
+    free floor is the right precision for a protective ceiling, not a tight
+    prediction.
+    """
+    from tools.llm_gateway import resolve_local_timeout  # deferred — mirrors
+    # this module's own deferred `from tools.llm_gateway import LLMGateway`
+    # import above; avoids a module-load-order dependency between the two.
+    return max(AGENTIC_CELL_MAX_ELAPSED_S, resolve_local_timeout(4096) * 2)
+
+
 # =====================================================================
 # Tool schemas (strict JSON contracts bound to the model)
 # =====================================================================
@@ -1042,7 +1069,7 @@ async def run_agentic_cell_node(
                     )
                 ),
                 max_elapsed_s=float(
-                    configurable.get("cell_max_elapsed_s", AGENTIC_CELL_MAX_ELAPSED_S)
+                    configurable.get("cell_max_elapsed_s", _cell_elapsed_floor())
                 ),
             )
         terminal = success or (axis is not None)

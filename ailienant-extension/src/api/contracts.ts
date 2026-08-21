@@ -671,6 +671,12 @@ export interface HITLResponsePayload {
     approved: boolean;
     comment?: string | null;
     modified_content?: string | null;
+    answer?: string;
+    selected_option?: string;
+    answers?: ClarificationAnswer[];
+    // DEBT-188: which session (of possibly several sharing one WS connection)
+    // this reply belongs to — see buildHitlResponseData in workspace_panel.ts.
+    session_id?: string;
 }
 export interface ClientHITLResponseEvent {
     event_type: 'client_hitl_response';

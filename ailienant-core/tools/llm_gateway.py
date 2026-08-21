@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 import weakref
+from collections import deque
 from enum import Enum
 from typing import (
     TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Type, TypedDict, cast,
@@ -139,9 +140,142 @@ _OOM_CUDA_RE = re.compile(r"cuda|out of memory", re.IGNORECASE)
 # StateSummarizer's own failure fallback (brain/summarizer.py KEEP_LAST_N).
 _OOM_FALLBACK_KEEP_LAST_N: int = 6
 
-# Generous budget for local models (Ollama on CPU/low-VRAM can be slow for
-# structured JSON).  Cloud calls keep the caller-supplied default (60 s).
-_LOCAL_LLM_TIMEOUT_S: float = 300.0
+def _env_timeout_s(name: str, default: float) -> float:
+    """Local mirror of ``shared.config._env_float`` (module-private there, and a
+    single float read doesn't warrant a cross-module import of a leading-
+    underscore helper). Never raises — a malformed override falls back silently.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Local-model timeout (DEBT-191). Was a single flat constant (300s) — wrong
+# by construction: a fixed ceiling can never fit every deployment's hardware,
+# because the actual constraint is real generation *speed*, which varies by
+# an order of magnitude or more across CPU/low-VRAM setups (observed directly:
+# ~2-3 tokens/sec on constrained hardware). A flat 300s budget covers barely
+# 600-900 tokens at that speed — nowhere near a demanding structured-output
+# call's real ceiling (e.g. the planner's MissionSpecification draft, sized up
+# to several thousand output tokens for a broad request) — so every attempt
+# degraded into an empty, unparseable response instead of a legibly slow one,
+# no matter how many retries ran. Scaling the budget by the call's own
+# `max_tokens` fixes the guessing-one-number problem structurally: a small
+# call (a mini-judge classification) still times out quickly; a large one (a
+# full plan draft) gets proportionally more room. All knobs are
+# env-overridable for a deployment that needs to tune further. Cloud calls are
+# untouched — they keep the caller-supplied default (60s).
+_LOCAL_LLM_SECONDS_PER_TOKEN: float = _env_timeout_s("AILIENANT_LOCAL_LLM_SECONDS_PER_TOKEN", 0.5)
+_LOCAL_LLM_TIMEOUT_CUSHION_S: float = _env_timeout_s("AILIENANT_LOCAL_LLM_TIMEOUT_CUSHION_S", 60.0)
+_LOCAL_LLM_TIMEOUT_FLOOR_S: float = _env_timeout_s("AILIENANT_LOCAL_LLM_TIMEOUT_FLOOR_S", 300.0)
+
+# Adaptive calibration on top of the static formula above. The assumed
+# 0.5s/token rate is still a guess — a smaller one than a flat 300s ceiling,
+# but a guess nonetheless. Once a model has actually completed a few local
+# calls, its OWN observed generation speed is a better estimate than any
+# assumption. Deliberately layered, not a replacement: the static formula
+# above remains the seed for a model with no history yet (the highest-stakes
+# call — e.g. the very first large structured-generation request on unfamiliar
+# hardware — has nothing to calibrate from until it survives once), and the
+# floor stays load-bearing even after calibration kicks in.
+#
+# Recorded per resolved model string (not globally): a single deployment can
+# have genuinely different-speed models behind different tiers (a 3B "small"
+# and a bigger "big"), and collapsing them into one rate would misjudge one or
+# the other. A bounded window of the most recent (completion_tokens,
+# wall_clock_seconds) samples is kept per model; the rate is total tokens over
+# total duration across the window (NOT an average of per-call ratios — a
+# duration-weighted combination is the statistically correct way to merge
+# heterogeneously-sized samples, and is naturally more robust to one noisy
+# small-call ratio than an unweighted mean would be).
+#
+# A non-streaming call's wall-clock time also includes prompt-eval and model
+# load time, not pure generation time — this makes the measured "seconds per
+# completion token" somewhat pessimistic for a large-prompt call, which is the
+# safe direction to be wrong in for a timeout budget. `_LOCAL_RATE_SAFETY_MARGIN`
+# additionally inflates the measured rate before use, so normal run-to-run
+# variance (a colder cache, thermal throttling, a bigger prompt than any
+# sample seen so far) doesn't turn an average into a call that undershoots.
+_LOCAL_RATE_WINDOW: int = 10
+_LOCAL_RATE_MIN_SAMPLES: int = 2
+# A handful of tiny completions (a mini-judge classification, a few tokens
+# each) is NOT enough evidence to estimate a per-token rate — their wall-clock
+# time is dominated by fixed per-request overhead (connection, prompt-eval,
+# model warm-up), not steady-state generation, so a small-completion-only
+# window wildly overestimates seconds/token (measured directly: two 3-token
+# samples produced a >3-hour timeout estimate). Require a real minimum of
+# accumulated OUTPUT before trusting the measurement — not just a sample
+# count — so the estimate is actually dominated by generation time.
+_LOCAL_RATE_MIN_TOTAL_TOKENS: int = 200
+_LOCAL_RATE_SAFETY_MARGIN: float = _env_timeout_s("AILIENANT_LOCAL_RATE_SAFETY_MARGIN", 1.3)
+
+_local_model_completions: Dict[str, "deque[tuple[int, float]]"] = {}
+
+
+def _record_local_completion(model: str, completion_tokens: int, duration_s: float) -> None:
+    """Feed one completed local call's (tokens, wall-clock time) into that
+    model's rolling calibration window. Best-effort — a degenerate sample
+    (no tokens, non-positive duration) is simply skipped, never raised.
+    """
+    if completion_tokens <= 0 or duration_s <= 0:
+        return
+    history = _local_model_completions.setdefault(model, deque(maxlen=_LOCAL_RATE_WINDOW))
+    history.append((completion_tokens, duration_s))
+
+
+def _measured_local_seconds_per_token(model: str) -> Optional[float]:
+    """This model's own observed generation rate, or None with too few (or
+    no) samples — or too little accumulated output — to trust over the
+    static assumption."""
+    history = _local_model_completions.get(model)
+    if history is None or len(history) < _LOCAL_RATE_MIN_SAMPLES:
+        return None
+    total_tokens = sum(tokens for tokens, _ in history)
+    total_duration = sum(duration for _, duration in history)
+    if total_tokens < _LOCAL_RATE_MIN_TOTAL_TOKENS:
+        return None
+    return total_duration / total_tokens
+
+
+def resolve_local_timeout(max_tokens: int, model: Optional[str] = None) -> float:
+    """Local-tier request timeout, scaled to the call's own output ceiling.
+
+    Prefers this model's own measured generation rate once enough completed
+    calls have calibrated it; falls back to the conservative static
+    assumption otherwise. Never below `_LOCAL_LLM_TIMEOUT_FLOOR_S` either way
+    — calibration can only make the estimate more accurate, never remove the
+    safety net.
+
+    Public (not module-private) because `brain/agentic_cell.py` calls this too
+    — the ReAct cell's own per-turn budget (`AGENTIC_CELL_MAX_ELAPSED_S`) must
+    never be smaller than what a single local LLM call inside one iteration
+    can legitimately need, or the governor's ceiling contradicts its own
+    single operation's floor (DEBT-191 follow-up).
+    """
+    measured = _measured_local_seconds_per_token(model) if model else None
+    seconds_per_token = (
+        measured * _LOCAL_RATE_SAFETY_MARGIN if measured is not None else _LOCAL_LLM_SECONDS_PER_TOKEN
+    )
+    return max(_LOCAL_LLM_TIMEOUT_FLOOR_S, max_tokens * seconds_per_token + _LOCAL_LLM_TIMEOUT_CUSHION_S)
+
+
+# Local-target transport retries (DEBT-191 follow-up). `LLM_MAX_TRANSPORT_RETRIES`
+# (brain/retry_policy.py) exists for connection blips / transient 5xx against a
+# remote provider — retrying re-issues the identical request at the identical
+# full timeout (confirmed: litellm hands `timeout`/`max_retries` straight to the
+# OpenAI SDK's async retry loop, which does exactly this; `litellm.exceptions.
+# Timeout` IS in its default retryable set). For a local target, a timeout means
+# the hardware is slow or the endpoint is dead — retrying doesn't fix either
+# case, it just re-runs the same slow generation from scratch. Left at 1 (not 0)
+# so a genuine transient local blip (a dropped socket, Ollama momentarily busy)
+# still gets one retry; this caps the worst case at 2x `resolve_local_timeout(...)`
+# instead of 3x. Cloud targets are unaffected — this constant is only read at the
+# same `if target.is_local` branches `_effective_timeout` already uses.
+_LOCAL_LLM_MAX_RETRIES: int = int(_env_timeout_s("AILIENANT_LOCAL_LLM_MAX_RETRIES", 1.0))
 
 
 def _looks_like_oom(exc: Exception) -> bool:
@@ -635,6 +769,7 @@ class LLMGateway:
         # (back-compat litellm-proxy path), where the alias-name classifier applies.
         resolved_is_local: Optional[bool] = None
         _effective_timeout = timeout  # default; overridden below for a resolved local target
+        _effective_max_retries = LLM_MAX_TRANSPORT_RETRIES  # default; reduced below for a local target
         if effective_model.startswith("ailienant/"):
             from core.config.model_resolver import get_chat_target
             _alias_tier = effective_model.split("/", 1)[1]
@@ -643,7 +778,12 @@ class LLMGateway:
             )
             if _target is not None:
                 resolved_is_local = _target.is_local
-                _effective_timeout = _LOCAL_LLM_TIMEOUT_S if _target.is_local else timeout
+                _effective_timeout = (
+                    resolve_local_timeout(max_tokens, _target.model) if _target.is_local else timeout
+                )
+                _effective_max_retries = (
+                    _LOCAL_LLM_MAX_RETRIES if _target.is_local else LLM_MAX_TRANSPORT_RETRIES
+                )
                 byom_kwargs = {"model": _target.model}
                 if _target.api_base:
                     byom_kwargs["api_base"] = _target.api_base
@@ -660,7 +800,7 @@ class LLMGateway:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=_effective_timeout,
-                max_retries=LLM_MAX_TRANSPORT_RETRIES,
+                max_retries=_effective_max_retries,
                 metadata={"session_id": trace_id},
                 extra_headers={"X-Ailienant-Trace-ID": trace_id},
                 **byom_kwargs,
@@ -698,6 +838,11 @@ class LLMGateway:
         if sem.locked():
             logger.debug("LLM gateway at concurrency ceiling; ainvoke queued [trace=%s]", trace_id)
         async with sem:
+            # Timed from inside the semaphore hold, not from admission — this
+            # measures the model's own generation speed, not AILIENANT's own
+            # concurrency queueing, which would otherwise pollute the DEBT-191
+            # calibration below with an unrelated wait.
+            _call_started = time.monotonic()
             try:
                 response: ModelResponse = cast(ModelResponse, await litellm.acompletion(**kwargs))
             except ContextWindowExceededError:
@@ -723,6 +868,10 @@ class LLMGateway:
                     )
                     _remember_rf_unsupported(kwargs["model"])
                     kwargs.pop("response_format", None)
+                    # Re-armed so a calibration sample below reflects only the
+                    # call that actually produced its completion_tokens — not
+                    # the wasted first attempt's negotiation round-trip too.
+                    _call_started = time.monotonic()
                     response = cast(ModelResponse, await litellm.acompletion(**kwargs))
                 else:
                     logger.error("LLM ainvoke failed [trace=%s]: %s", trace_id, e)
@@ -754,6 +903,17 @@ class LLMGateway:
                     token_ledger.record_cloud(prompt_tokens, completion_tokens)
                 else:
                     token_ledger.record_local(prompt_tokens, completion_tokens)
+                    # DEBT-191: feed this completed call's own speed into that
+                    # model's rolling calibration window, gated on the
+                    # physically resolved target actually being local (not
+                    # merely the requested tier — see the accuracy-order
+                    # comment above) so a cloud completion never pollutes a
+                    # local model's estimate under the wrong key.
+                    if resolved_is_local:
+                        _record_local_completion(
+                            str(kwargs["model"]), completion_tokens,
+                            time.monotonic() - _call_started,
+                        )
                 _maybe_log_action_tokens(
                     action, prompt_tokens, completion_tokens,
                     project_id=state.get("project_id") if state else None,
@@ -1140,7 +1300,8 @@ class LLMGateway:
         if target is None:
             raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
         trace_id = session_id or str(uuid.uuid4())
-        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+        _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
+        _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
         attempted_failover = False
         # One concurrency slot spans the whole call, including the bounded local
         # failover retry (a single logical op holds a single slot).
@@ -1151,7 +1312,7 @@ class LLMGateway:
             while True:
                 kwargs = LLMGateway._byom_kwargs(
                     target, messages, temperature=temperature, max_tokens=max_tokens,
-                    timeout=_effective_timeout, max_retries=LLM_MAX_TRANSPORT_RETRIES,
+                    timeout=_effective_timeout, max_retries=_effective_max_retries,
                 )
                 logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
                 try:
@@ -1168,7 +1329,8 @@ class LLMGateway:
                         target.model, trace_id, nxt.model,
                     )
                     target = nxt
-                    _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+                    _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
+                    _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
                     attempted_failover = True
 
     @staticmethod
@@ -1201,7 +1363,8 @@ class LLMGateway:
         if target is None:
             raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
         trace_id = session_id or str(uuid.uuid4())
-        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+        _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
+        _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
         prompt_tokens: int = 0
         completion_tokens: int = 0
         # Hold one concurrency slot for the full stream lifetime; the token
@@ -1220,7 +1383,7 @@ class LLMGateway:
                 while True:
                     kwargs = LLMGateway._byom_kwargs(
                         target, messages, temperature=temperature, max_tokens=max_tokens,
-                        timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
+                        timeout=_effective_timeout, stream=True, max_retries=_effective_max_retries,
                     )
                     kwargs.setdefault("stream_options", {"include_usage": True})
                     logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
@@ -1238,7 +1401,8 @@ class LLMGateway:
                             target.model, trace_id, nxt.model,
                         )
                         target = nxt
-                        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+                        _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
+                        _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
                         attempted_failover = True
                 async for chunk in response:
                     # Final-chunk shape (include_usage): `usage` populated, `choices`
@@ -1313,10 +1477,11 @@ class LLMGateway:
         if target is None:
             raise NoAvailableProviderError("No active BYOM chat model — activate a preset.")
         trace_id = session_id or str(uuid.uuid4())
-        _effective_timeout = _LOCAL_LLM_TIMEOUT_S if target.is_local else timeout
+        _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
+        _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
-            timeout=_effective_timeout, stream=True, max_retries=LLM_MAX_TRANSPORT_RETRIES,
+            timeout=_effective_timeout, stream=True, max_retries=_effective_max_retries,
         )
         kwargs.setdefault("stream_options", {"include_usage": True})
         thinking_on = bool(enable_thinking) and _supports_native_thinking(target.model)

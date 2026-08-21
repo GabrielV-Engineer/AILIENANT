@@ -7,6 +7,7 @@ export interface PlanAcceptancePanelProps {
     onAutoAccept: () => void;
     onManualApprove: () => void;
     onKeepPlanning: (feedback: string) => void;
+    onClose: () => void;
     isTurnActive?: boolean;
 }
 
@@ -15,6 +16,7 @@ export function PlanAcceptancePanel({
     onAutoAccept,
     onManualApprove,
     onKeepPlanning,
+    onClose,
     isTurnActive = false,
 }: PlanAcceptancePanelProps): JSX.Element {
     const [feedback, setFeedback] = useState('');
@@ -64,6 +66,15 @@ export function PlanAcceptancePanel({
     return (
         <div className="plan-acceptance-panel">
             <div className="plan-acceptance-header">
+                <button
+                    type="button"
+                    onClick={onClose}
+                    className="plan-acceptance-close"
+                    aria-label="Close plan review"
+                    title="Return to the composer without submitting a decision"
+                >
+                    &times;
+                </button>
                 <h2>Accept this plan?</h2>
                 <p className="subtitle">
                     Select text in the preview to add comments

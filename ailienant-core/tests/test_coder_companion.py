@@ -16,6 +16,7 @@ from brain.coder_companion import (
     _resolve_verbosity,
     _resolve_judge_tier,
     _resolve_companion_llm_timeout,
+    _ideation_companion_would_contend_local_compute,
     _call_analyst_llm,
     _parse_companion_json,
     _run_coder_companion,
@@ -26,6 +27,7 @@ from brain.coder_companion import (
     CompanionAnalysis,
     CompanionAnalysisRequest,
 )
+from tools.llm_gateway import resolve_local_timeout
 
 pytestmark = pytest.mark.anyio
 
@@ -533,15 +535,94 @@ async def test_run_agent_companion_broadcasts_with_scope_and_emission_id(mock_st
     )
     mock_analysis = CompanionAnalysis(objective="Explained the round", degraded=False)
 
-    with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
-        with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
-            with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
-                await _run_agent_companion(mock_state, "ideation", 0, lambda: request)
+    with patch("brain.coder_companion._ideation_companion_would_contend_local_compute", return_value=False):
+        with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
+            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
+                with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
+                    await _run_agent_companion(mock_state, "ideation", 0, lambda: request)
 
     mock_broadcast.assert_called_once()
     kwargs = mock_broadcast.call_args[1]
     assert kwargs["scope"] == "ideation"
     assert kwargs["emission_id"] == "test-task-123:ideation:0"
+
+
+def test_ideation_local_contention_probe_true_for_local_judge_tier():
+    """DEBT-190: the judge tier resolving to a local BYOM target means the
+    grill's own next local call would contend with the companion's — the
+    probe must say so."""
+    with patch("core.config.model_resolver.get_chat_target", return_value=Mock(is_local=True)):
+        assert _ideation_companion_would_contend_local_compute() is True
+
+
+def test_ideation_local_contention_probe_false_for_cloud_judge_tier():
+    with patch("core.config.model_resolver.get_chat_target", return_value=Mock(is_local=False)):
+        assert _ideation_companion_would_contend_local_compute() is False
+
+
+def test_ideation_local_contention_probe_false_when_unresolved():
+    """No BYOM preset resolves this tier — nothing to contend with locally."""
+    with patch("core.config.model_resolver.get_chat_target", return_value=None):
+        assert _ideation_companion_would_contend_local_compute() is False
+
+
+def test_ideation_local_contention_probe_fails_open_on_error():
+    with patch("core.config.model_resolver.get_chat_target", side_effect=RuntimeError("boom")):
+        assert _ideation_companion_would_contend_local_compute() is False
+
+
+async def test_run_agent_companion_ideation_skips_cleanly_when_judge_tier_is_local(mock_state):
+    """The actual bug this closes: on a local-only BYOM setup, every grill
+    round's companion attempt queued behind the grill's own immediately-
+    following local LLM call (Ollama serializes same-model requests) and
+    reliably exceeded the 45s companion timeout, surfacing as 'N explanation(s)
+    were unavailable' in the chat on every single round. The fix skips BEFORE
+    attempting the call — no broadcast at all, not even a degraded one — since
+    `_companion_gpu_slot_available`'s VRAM-lock probe can't see this: the
+    grill's own local calls never register with that lock."""
+    request = build_ideation_companion_request(
+        session_id="test-task-123", task_id="test-task-123", attempt_ordinal=0,
+        task_description="task", question_batch=[], resolved_answers={},
+    )
+    with patch("brain.coder_companion._ideation_companion_would_contend_local_compute", return_value=True):
+        with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock) as mock_llm:
+            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
+                await _run_agent_companion(mock_state, "ideation", 0, lambda: request)
+
+    mock_llm.assert_not_called()
+    mock_broadcast.assert_not_called()
+
+
+async def test_run_agent_companion_ideation_proceeds_when_judge_tier_is_cloud(mock_state):
+    """The skip is scoped to genuine local-vs-local contention — a cloud judge
+    tier never contends for the same local inference slot, so it fires as before."""
+    request = build_ideation_companion_request(
+        session_id="test-task-123", task_id="test-task-123", attempt_ordinal=0,
+        task_description="task", question_batch=[], resolved_answers={},
+    )
+    mock_analysis = CompanionAnalysis(objective="Explained the round", degraded=False)
+    with patch("brain.coder_companion._ideation_companion_would_contend_local_compute", return_value=False):
+        with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock, return_value=mock_analysis):
+            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
+                with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
+                    await _run_agent_companion(mock_state, "ideation", 0, lambda: request)
+
+    mock_broadcast.assert_called_once()
+
+
+async def test_run_coder_companion_unaffected_by_ideation_local_contention_gate(mock_state):
+    """The coding-scope path never consults the new probe at all — the coder's
+    own local generation always finishes (and releases the GPU lock) before
+    schedule_coder_companion fires, so no such contention exists there."""
+    with patch("brain.coder_companion._ideation_companion_would_contend_local_compute", return_value=True) as mock_probe:
+        with patch("brain.coder_companion._call_analyst_llm", new_callable=AsyncMock,
+                   return_value=CompanionAnalysis(objective="ok", degraded=False)):
+            with patch("api.websocket_manager.vfs_manager.broadcast_coder_companion", new_callable=AsyncMock) as mock_broadcast:
+                with patch("brain.coder_companion._companion_gpu_slot_available", new_callable=AsyncMock, return_value=True):
+                    await _run_coder_companion(mock_state, 0)
+
+    mock_probe.assert_not_called()
+    mock_broadcast.assert_called_once()
 
 
 async def test_schedule_agent_companion_gc_safety(mock_state):
@@ -593,17 +674,18 @@ def test_resolve_judge_tier_reads_alias_suffix():
 
 
 def test_resolve_companion_llm_timeout_local_vs_cloud():
-    """A resolved local target gets the local deadline; a remote one the cloud deadline."""
-    local_target = Mock(is_local=True)
+    """A resolved local target delegates to the DEBT-191 calibrated/scaled timeout
+    (not a flat guess); a remote one keeps the fixed cloud deadline."""
+    local_target = Mock(is_local=True, model="ollama_chat/phi4")
     with patch("core.config.model_resolver.get_chat_target", return_value=local_target):
-        assert _resolve_companion_llm_timeout("medium") == 45.0
+        assert _resolve_companion_llm_timeout("medium", 420) == resolve_local_timeout(420, "ollama_chat/phi4")
 
     remote_target = Mock(is_local=False)
     with patch("core.config.model_resolver.get_chat_target", return_value=remote_target):
-        assert _resolve_companion_llm_timeout("medium") == 12.0
+        assert _resolve_companion_llm_timeout("medium", 420) == 12.0
 
 
 def test_resolve_companion_llm_timeout_unresolved_alias_falls_back_to_cloud():
     """No active BYOM preset (unresolved alias) — advisory failure, cloud default."""
     with patch("core.config.model_resolver.get_chat_target", return_value=None):
-        assert _resolve_companion_llm_timeout("medium") == 12.0
+        assert _resolve_companion_llm_timeout("medium", 420) == 12.0

@@ -232,6 +232,12 @@ class HITLResponsePayload(BaseModel):
     # ClarificationQuestion.id in the matching request's `questions` list.
     # None for the legacy single-question shape.
     answers: Optional[List[ClarificationAnswer]] = None
+    # DEBT-188: which of possibly several sessions multiplexed on one shared WS
+    # connection this reply belongs to (RegisterSessionPayload docstring — "one
+    # panel announcing its session id on the shared connection"). None falls back
+    # to the connection's own client_id in main.py, preserving behavior for a
+    # stale/un-reloaded webview during rollout.
+    session_id: Optional[str] = None
 
 
 # --- Server → Client Events ---

@@ -148,7 +148,12 @@ function AgentTimelineImpl({
         el.scrollTop = el.scrollHeight;
     }, [entries.length, streaming]);
 
-    if (entries.length === 0) { return null; }
+    // A checklist can outlive its own 'plan'-kind marker: stripReasoningForPersist
+    // only strips 'reasoning' entries, but a turn whose entries were reasoning-only
+    // to begin with (or whose 'plan' marker landed on a different message via a WS-
+    // ordering race) round-trips through persistence as `entries:[]` while
+    // `checklist` survives — bail only when there is truly nothing to show.
+    if (entries.length === 0 && !(checklist && checklist.length > 0)) { return null; }
 
     const label = done ? summarize(entries, turnElapsedMs) : 'Working…';
     const anyActive = entries.some(e => e.status === 'active');
@@ -194,16 +199,13 @@ function AgentTimelineImpl({
             );
         }
 
-        if (entry.kind === 'plan') {
-            return (
-                <div key={entry.id} className="ws-timeline-row" data-kind="plan">
-                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
-                    <div className="ws-timeline-row-body">
-                        <ExecutionChecklist tasks={checklist ?? []} />
-                    </div>
-                </div>
-            );
-        }
+        // A 'plan'-kind marker no longer renders the checklist inline — the
+        // checklist is rendered once, unconditionally, as its own standalone
+        // block below (see the `checklist` block just above `entries.map(...)`)
+        // so it survives even when `entries` round-trips through persistence
+        // empty. The marker itself falls through to the generic self-contained
+        // one-liner below (timelineEntryLabel already renders "Planned N steps"
+        // for it), keeping its place as a chronological marker in the trace.
 
         if (entry.kind === 'diff' && entry.diff) {
             // A settled diff (already applied to disk — Auto or a decided
@@ -338,6 +340,14 @@ function AgentTimelineImpl({
                     if (!el) { return; }
                     stuckRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - STICK_TOLERANCE_PX;
                 }}>
+                    {checklist && checklist.length > 0 && (
+                        <div className="ws-timeline-row" data-kind="plan">
+                            <span className="ws-timeline-dot" data-status="done" aria-hidden="true" />
+                            <div className="ws-timeline-row-body">
+                                <ExecutionChecklist tasks={checklist} />
+                            </div>
+                        </div>
+                    )}
                     {entries.map((entry, idx) => {
                         const headerPhase = phaseHeaderBefore[entry.id];
                         if (!headerPhase) { return renderRow(entry, idx); }

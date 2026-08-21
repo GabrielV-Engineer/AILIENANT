@@ -87,13 +87,19 @@ export function requestCodeTokens(turnId: string, content: string): void {
 
 /**
  * Id-keyed transcript merge for REHYDRATE_TRANSCRIPT. The host transcript is the
- * authoritative COMPLETED history; `local` may hold an in-flight turn the host
- * hasn't persisted yet. Merge by stable `id` — never a length heuristic (fragile
- * under mid-stream tab-switches → state tearing):
+ * authoritative COMPLETED history; `local` may hold turns the host hasn't
+ * persisted yet. Merge by stable `id` — never a length heuristic (fragile under
+ * mid-stream tab-switches → state tearing):
  *   • host order is preserved as the spine;
  *   • a still-`streaming` local copy wins for a matching id (live content is
  *     fresher than the debounced host snapshot);
- *   • local turns with an id absent from host are appended (brand-new in-flight).
+ *   • any local turn with an id absent from host is appended — whether it's
+ *     still streaming (brand-new in-flight) or already completed. A completed
+ *     local turn the host doesn't know about yet is a race in WHEN the host
+ *     learned about it (a hide→teardown that raced the persist flush), not
+ *     licence to discard it: dropping it here deletes a finished turn outright
+ *     rather than merely reverting a partial one. The very next persist
+ *     re-teaches the host once the fresh webview mounts.
  */
 export function mergeById<T extends { id?: string; streaming?: boolean }>(host: T[], local: T[]): T[] {
     const hostIds = new Set(host.map(m => m.id).filter(Boolean));
@@ -101,7 +107,7 @@ export function mergeById<T extends { id?: string; streaming?: boolean }>(host: 
         const liveLocal = m.id ? local.find(l => l.id === m.id && l.streaming) : undefined;
         return liveLocal ?? m;
     });
-    const tail = local.filter(m => m.id && m.streaming && !hostIds.has(m.id));
+    const tail = local.filter(m => m.id && !hostIds.has(m.id));
     return [...spine, ...tail];
 }
 

@@ -2764,3 +2764,29 @@ are untouched, so no coding-scope behavior changed. Each non-coding scope builde
 `scope_summary`, capped at `_MAX_SCOPE_SUMMARY_CHARS` (4000) before it ever reaches an
 LLM prompt — the same token-hygiene discipline `_MAX_DIFF_CHARS_PER_FILE` already
 applies to the coding path (§5.5).
+
+## §55 — `HITLResponsePayload.session_id` (Manifest 13.0.8, closes DEBT-188)
+
+One additive field on `HITLResponsePayload` (`api/ws_contracts.py`):
+
+```python
+session_id: Optional[str] = None
+```
+
+**Why:** `main.py`'s `client_hitl_response` handler resumed a paused graph by `client_id` —
+the WS route's path parameter, stable for the whole physical connection — instead of the
+chat's own `session_id`, under which `TaskService._paused_tasks` actually keys the pause.
+`register_alias`/§51's `RegisterSessionPayload` already support several sessions sharing
+one connection; this payload had no field to say which one a reply belonged to, so the two
+identities only ever coincided when exactly one session was active on a connection. See
+`docs/TECH_DEBT_BACKLOG.md` DEBT-188 for the full mechanism and the telemetry-log evidence.
+
+**Backward-compat:** `None` (the default) falls back to `client_id` in `main.py`, preserving
+resume behavior for a stale, pre-13.0.8 webview that hasn't reloaded yet — an older client
+still round-trips correctly as long as it is the only session on its connection, exactly the
+implicit assumption the pre-fix code always made.
+
+**Frontend:** `workspace_panel.ts::buildHitlResponseData` now stamps the panel's own
+`session.id` unconditionally (unlike `answer`/`selected_option`/`answers`, which forward
+conditionally per §52 — the host always knows its own session identity, so there is no
+"absent" case to preserve).

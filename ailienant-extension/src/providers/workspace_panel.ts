@@ -200,15 +200,18 @@ export function generateAuthToken(): string {
  * check alone (contracts.ts, ws_contracts.py) cannot catch this gap; only a
  * fixture in this function's own test does.
  */
-export function buildHitlResponseData(data: {
-    approval_id?: unknown;
-    approved?: unknown;
-    comment?: unknown;
-    modified_content?: unknown;
-    answer?: unknown;
-    selected_option?: unknown;
-    answers?: unknown;
-}): Record<string, unknown> {
+export function buildHitlResponseData(
+    data: {
+        approval_id?: unknown;
+        approved?: unknown;
+        comment?: unknown;
+        modified_content?: unknown;
+        answer?: unknown;
+        selected_option?: unknown;
+        answers?: unknown;
+    },
+    sessionId: string,
+): Record<string, unknown> {
     return {
         approval_id:      data.approval_id,
         approved:         data.approved,
@@ -218,6 +221,11 @@ export function buildHitlResponseData(data: {
         ...(typeof data.selected_option === 'string'
             && { selected_option: data.selected_option }),
         ...(Array.isArray(data.answers) && { answers: data.answers }),
+        // DEBT-188: which session this reply belongs to, since one physical WS
+        // connection can host several panels/sessions at once (register_alias).
+        // Without this, main.py's resume falls back to the connection's own
+        // client_id and can silently resume the wrong (or no) paused graph.
+        session_id: sessionId,
     };
 }
 
@@ -255,14 +263,39 @@ export class WorkspacePanelManager {
     // One panel per AILIENANT session (session.id → panel)
     private _panels: Map<string, vscode.WebviewPanel> = new Map();
     private _sessions: Map<string, Session> = new Map();
-    // Track which sessions currently have a task in-flight (for conflict warnings)
-    private _runningTasks: Set<string> = new Set();
+    // Track which sessions currently have a task in-flight (for conflict warnings,
+    // and — since 13.0.8 — to restore the active-task header/spinner after a
+    // hidden webview is torn down and reconstructed: retainContextWhenHidden is
+    // deliberately false (see the panel-reveal handler below), so the webview's
+    // own in-memory chatStore state (activeTaskPrompt/isTurnActive) is lost on
+    // every hide/reveal cycle. This host-side map survives that cycle and is the
+    // one place that still knows a task is running and what it was asked to do.
+    private _runningTasks: Map<string, { prompt: string; startedAt: number }> = new Map();
+    // Sessions with an outstanding, unanswered HITL/clarification card. A
+    // stream_end/task_complete fires even when the graph merely PAUSED on an
+    // interrupt (astream ends "naturally" on a native interrupt) — so the
+    // running-task marker must survive that pause, or the header would vanish
+    // the instant a clarification card appears, both defeating the header's
+    // purpose and losing the original prompt before the user even answers.
+    private _pendingHitlSessions: Set<string> = new Set();
     // Track which sessions have the Natt pane open (gates native notifications)
     private _nattOpen: Set<string> = new Set();
     // Latest finalized plan per session, held in HOST memory (not webview
     // setState) so a large MissionSpecification can never blow the webview's
     // persistent-state quota. Re-posted when a torn-down panel becomes visible.
     private _latestPlan: Map<string, PlanDocumentShape> = new Map();
+    // Reveal-time rehydration (REHYDRATE_TRANSCRIPT/WS_STATUS/plan/
+    // ACTIVE_TASK_RESTORED) is deferred behind this per-session callback until the
+    // freshly-reloaded webview announces WEBVIEW_READY, closing a race where the
+    // host posts it synchronously on visible:true before the webview's message
+    // listener has even subscribed (postMessage to a not-yet-listening webview is
+    // silently dropped, not queued). A timeout fallback fires it anyway if the
+    // handshake never arrives, so a missing/broken webview build can't hang
+    // rehydration forever. A later Map.set from a rapid second reveal simply
+    // replaces the pending callback; a stale timer that fires after the map entry
+    // was already consumed finds nothing and is a safe no-op.
+    private _pendingRehydration: Map<string, () => void> = new Map();
+    private static readonly REHYDRATION_READY_TIMEOUT_MS = 3000;
     // Per-session streaming code tokenizer (host-push incremental AST).
     // Keyed by session.id; reset on stream-end and on WS disconnect.
     private _streamTokenizers: Map<string, StreamingCodeTokenizer> = new Map();
@@ -537,42 +570,69 @@ export class WorkspacePanelManager {
             // from a stale creation-time data-initial snapshot. Re-post the
             // authoritative host transcript; the webview merges it by message id.
             if (e.webviewPanel.visible) {
-                const t = this._getTranscript(session.id);
-                e.webviewPanel.webview.postMessage({
-                    type: 'REHYDRATE_TRANSCRIPT',
-                    messages: t.messages,
-                    nattMessages: t.nattMessages,
-                });
-                // Phase 7.12.9 (Fix 1) — the singleton WS survives the webview
-                // teardown, but a remounted webview boots with a stale status and
-                // the socket may have dropped while hidden. Re-assert the tunnel
-                // and mirror the *actual* socket state back to the indicator.
-                SessionManager.forSession(session.id).ensureConnected();
-                e.webviewPanel.webview.postMessage({
-                    type: 'WS_STATUS',
-                    payload: WSClient.getInstance().getStatus(),
-                });
-                // Re-post the last finalized plan from host memory — the
-                // remounted webview holds it only in transient React state, so
-                // without this the Plan panel would be empty after a tab-switch.
-                // BUT: only re-post if its summary pointer is not already in the
-                // persisted transcript. Match the plan's OWN summary text, not a
-                // fixed phrase — the pointer reads "Drafted a plan…" on the plan
-                // surface but "Proposed N file change(s)…" in Ask/Auto, and a
-                // phrase-specific guard let the latter re-inject a duplicate
-                // bubble on every reveal. (The webview handler is also idempotent
-                // on the summary; this is defense in depth.)
-                const plan = this._latestPlan.get(session.id);
-                if (plan) {
+                const doRehydrate = () => {
                     const t = this._getTranscript(session.id);
-                    const summaryHead = (plan.summary ?? '').split('\n')[0].trim();
-                    const hasInTranscript = summaryHead.length > 0 && t.messages.some(m =>
-                        m.role === 'assistant' && (m.content ?? '').includes(summaryHead)
-                    );
-                    if (!hasInTranscript) {
-                        e.webviewPanel.webview.postMessage({ type: 'server_plan_document', payload: plan });
+                    e.webviewPanel.webview.postMessage({
+                        type: 'REHYDRATE_TRANSCRIPT',
+                        messages: t.messages,
+                        nattMessages: t.nattMessages,
+                    });
+                    // Phase 7.12.9 (Fix 1) — the singleton WS survives the webview
+                    // teardown, but a remounted webview boots with a stale status and
+                    // the socket may have dropped while hidden. Re-assert the tunnel
+                    // and mirror the *actual* socket state back to the indicator.
+                    SessionManager.forSession(session.id).ensureConnected();
+                    e.webviewPanel.webview.postMessage({
+                        type: 'WS_STATUS',
+                        payload: WSClient.getInstance().getStatus(),
+                    });
+                    // Re-post the last finalized plan from host memory — the
+                    // remounted webview holds it only in transient React state, so
+                    // without this the Plan panel would be empty after a tab-switch.
+                    // BUT: only re-post if its summary pointer is not already in the
+                    // persisted transcript. Match the plan's OWN summary text, not a
+                    // fixed phrase — the pointer reads "Drafted a plan…" on the plan
+                    // surface but "Proposed N file change(s)…" in Ask/Auto, and a
+                    // phrase-specific guard let the latter re-inject a duplicate
+                    // bubble on every reveal. (The webview handler is also idempotent
+                    // on the summary; this is defense in depth.)
+                    const plan = this._latestPlan.get(session.id);
+                    if (plan) {
+                        const t2 = this._getTranscript(session.id);
+                        const summaryHead = (plan.summary ?? '').split('\n')[0].trim();
+                        const hasInTranscript = summaryHead.length > 0 && t2.messages.some(m =>
+                            m.role === 'assistant' && (m.content ?? '').includes(summaryHead)
+                        );
+                        if (!hasInTranscript) {
+                            e.webviewPanel.webview.postMessage({ type: 'server_plan_document', payload: plan });
+                        }
                     }
-                }
+                    // 13.0.8 — the active-task header/spinner (activeTaskPrompt,
+                    // activeTaskStartedAt, isTurnActive) lives in the webview's
+                    // memory-only chatStore and is lost with the rest of the torn-down
+                    // JS context. _runningTasks is the one thing that survived (host
+                    // memory) and still knows whether this session has a task in
+                    // flight — including one merely paused on an unanswered HITL
+                    // card, per the stream_end guard above. Without this, a task
+                    // that's still genuinely running becomes indistinguishable from
+                    // one that was silently cancelled the moment the tab is switched.
+                    const running = this._runningTasks.get(session.id);
+                    if (running) {
+                        e.webviewPanel.webview.postMessage({
+                            type: 'ACTIVE_TASK_RESTORED',
+                            prompt: running.prompt,
+                            startedAt: running.startedAt,
+                        });
+                    }
+                };
+                this._pendingRehydration.set(session.id, doRehydrate);
+                setTimeout(() => {
+                    const pending = this._pendingRehydration.get(session.id);
+                    if (pending) {
+                        this._pendingRehydration.delete(session.id);
+                        pending();
+                    }
+                }, WorkspacePanelManager.REHYDRATION_READY_TIMEOUT_MS);
             }
         });
         panel.onDidDispose(() => hitlNotifier.setVisibility(false));
@@ -723,6 +783,7 @@ export class WorkspacePanelManager {
                 const reqData = msg.data as HITLApprovalRequestPayload & {
                     proposed_files?: Array<{ file_path: string; unified_diff?: string; new_content?: string; base_hash?: string | null }>;
                 };
+                this._pendingHitlSessions.add(session.id);
                 hitlNotifier.onApprovalRequest(reqData);
                 const proposed = reqData.proposed_files;
                 if (proposed && proposed.length > 0) {
@@ -777,11 +838,16 @@ export class WorkspacePanelManager {
             // Clear running-task marker and streaming tokenizer on stream/task completion.
             // Resetting the tokenizer on stream-end is the normal-path cleanup;
             // the disconnect path handles abrupt drops (see wsStatusHandler above).
+            // A stream_end that merely reflects a pause-on-interrupt (a HITL card
+            // just went out for this session) must NOT clear the running-task
+            // marker — the task is still in flight, just waiting on the operator.
             if (
                 msg.event_type === 'server_stream_end' ||
                 msg.event_type === 'server_task_complete'
             ) {
-                this._runningTasks.delete(session.id);
+                if (!this._pendingHitlSessions.has(session.id)) {
+                    this._runningTasks.delete(session.id);
+                }
                 this._streamTokenizers.get(session.id)?.reset();
                 // Refresh the context-budget meter once the turn settles: the
                 // window has stopped growing, so this is the cheapest moment to
@@ -806,14 +872,15 @@ export class WorkspacePanelManager {
                     const taskText = data.value as string;
                     this._maybeAutoTitle(session, taskText, panel);
                     // Inform this session if others are running (educational, non-blocking)
-                    const parallelCount = [...this._runningTasks].filter(id => id !== session.id).length;
+                    const parallelCount = [...this._runningTasks.keys()].filter(id => id !== session.id).length;
                     if (parallelCount > 0) {
                         panel.webview.postMessage({
                             type: 'PARALLEL_SESSION_NOTIFY',
                             count: parallelCount,
                         });
                     }
-                    this._runningTasks.add(session.id);
+                    this._pendingHitlSessions.delete(session.id);
+                    this._runningTasks.set(session.id, { prompt: taskText, startedAt: Date.now() });
                     // Refresh the context-budget meter at task start so it reflects
                     // the window the turn begins from — paired with the post-turn
                     // read on stream end, the meter updates each turn instead of
@@ -897,6 +964,7 @@ export class WorkspacePanelManager {
                 }
                 case 'ABORT_TASK':
                     this._runningTasks.delete(session.id);
+                    this._pendingHitlSessions.delete(session.id);
                     SessionManager.forSession(session.id).abortCurrentTask();
                     break;
                 case 'ABORT_MESH': {
@@ -1017,10 +1085,10 @@ export class WorkspacePanelManager {
                     }
                     break;
                 }
-                case 'HITL_RESPONSE':
+                case 'HITL_RESPONSE': {
                     WSClient.getInstance().send({
                         event_type: 'client_hitl_response',
-                        data: buildHitlResponseData(data),
+                        data: buildHitlResponseData(data, session.id),
                     });
                     // Phase 7.11.7 — in-chat resolution wins the race: a later
                     // click on the still-visible native toast for this same
@@ -1028,7 +1096,19 @@ export class WorkspacePanelManager {
                     if (typeof data.approval_id === 'string') {
                         hitlNotifier.markResolved(data.approval_id);
                     }
+                    // Answering resumes the graph — re-arm the running-task
+                    // marker (the original entry's prompt survived the pause
+                    // untouched, since the stream_end cleanup above skips it
+                    // while _pendingHitlSessions holds this session) so the
+                    // active-task header/spinner stays honest through the resume.
+                    this._pendingHitlSessions.delete(session.id);
+                    const inFlight = this._runningTasks.get(session.id);
+                    this._runningTasks.set(session.id, {
+                        prompt: inFlight?.prompt ?? '',
+                        startedAt: Date.now(),
+                    });
                     break;
+                }
                 case 'NATT_MESSAGE':
                     WSClient.getInstance().send({
                         event_type: 'client_analyst_query',
@@ -1226,6 +1306,18 @@ export class WorkspacePanelManager {
                     this._latestPlan.delete(session.id);
                     break;
                 }
+                case 'WEBVIEW_READY': {
+                    // The freshly-(re)loaded webview's message listener is now subscribed —
+                    // safe to fire whatever reveal rehydration is waiting on this session
+                    // (see the onDidChangeViewState handler above). A no-op if the timeout
+                    // fallback already consumed and cleared the pending callback.
+                    const pending = this._pendingRehydration.get(session.id);
+                    if (pending) {
+                        this._pendingRehydration.delete(session.id);
+                        pending();
+                    }
+                    break;
+                }
                 case 'PERSIST_TRANSCRIPT': {
                     // Phase 7.9.B.20 — save the per-session transcript so closing VS Code
                     // no longer empties the session.
@@ -1409,6 +1501,7 @@ export class WorkspacePanelManager {
             this._panels.delete(session.id);
             this._sessions.delete(session.id);
             this._runningTasks.delete(session.id);
+            this._pendingHitlSessions.delete(session.id);
             this._nattOpen.delete(session.id);
         });
 

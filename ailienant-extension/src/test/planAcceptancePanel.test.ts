@@ -50,6 +50,7 @@ function render(over: Partial<PlanAcceptancePanelProps> = {}): { container: HTML
         onAutoAccept: () => { /* noop */ },
         onManualApprove: () => { /* noop */ },
         onKeepPlanning: () => { /* noop */ },
+        onClose: () => { /* noop */ },
         ...over,
     };
     const root = createRoot(container);
@@ -74,6 +75,18 @@ suite('13.0.7 — PlanAcceptancePanel isTurnActive gating', () => {
         const buttons = container.querySelectorAll<HTMLButtonElement>('.plan-acceptance-buttons button');
         buttons.forEach(b => assert.strictEqual(b.disabled, false));
         assert.strictEqual(container.querySelector<HTMLInputElement>('.plan-feedback-input')?.disabled, false);
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('the close button is never disabled by isTurnActive and invokes onClose', () => {
+        let closed = false;
+        const { container, root } = render({ isTurnActive: true, onClose: () => { closed = true; } });
+        const closeBtn = container.querySelector<HTMLButtonElement>('.plan-acceptance-close');
+        assert.ok(closeBtn, 'expected a .plan-acceptance-close button');
+        assert.strictEqual(closeBtn?.disabled, false);
+        act(() => { closeBtn?.click(); });
+        assert.strictEqual(closed, true);
         act(() => root.unmount());
         container.remove();
     });

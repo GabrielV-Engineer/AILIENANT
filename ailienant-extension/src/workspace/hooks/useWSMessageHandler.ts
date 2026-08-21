@@ -215,6 +215,21 @@ export function useWSMessageHandler(): void {
                     ws.setIsAborting(false);
                     break;
                 }
+                case 'ACTIVE_TASK_RESTORED': {
+                    // Host-side counterpart to REHYDRATE_TRANSCRIPT (13.0.8): the
+                    // active-task header/spinner (activeTaskPrompt, activeTaskStartedAt,
+                    // isTurnActive) lives in this memory-only store and is lost on the
+                    // same teardown — without this, a task genuinely still running
+                    // (including one merely paused on an unanswered HITL card) becomes
+                    // indistinguishable from one silently cancelled by the tab switch.
+                    const at = msg as unknown as { prompt?: string; startedAt?: number };
+                    if (typeof at.prompt === 'string' && typeof at.startedAt === 'number') {
+                        cs.setActiveTaskPrompt(at.prompt);
+                        cs.setActiveTaskStartedAt(at.startedAt);
+                        cs.setIsTurnActive(true);
+                    }
+                    break;
+                }
                 case 'CONFIG_UPDATED':
                     cs.setConfig((msg.config ?? null) as AilienantConfig | null);
                     break;
@@ -1067,6 +1082,13 @@ export function useWSMessageHandler(): void {
             }
         };
         window.addEventListener('message', handler);
+        // Tells the host it's now safe to post rehydration messages. Without this,
+        // onDidChangeViewState's reveal handler posts REHYDRATE_TRANSCRIPT/WS_STATUS/
+        // etc. synchronously the instant VS Code reports visible:true — which can
+        // race a freshly-reloaded webview's bundle re-parse and land before this
+        // listener is even subscribed. postMessage to a not-yet-listening webview is
+        // silently dropped, not queued, so that reveal's whole rehydration is lost.
+        vscode.postMessage({ type: 'WEBVIEW_READY' });
         return () => window.removeEventListener('message', handler);
         // Registers once: the handler reads all state via getState() and closes over
         // only stable refs / the []-stable flushers, so re-registration is never needed.
