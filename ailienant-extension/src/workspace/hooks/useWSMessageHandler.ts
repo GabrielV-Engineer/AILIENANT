@@ -227,6 +227,16 @@ export function useWSMessageHandler(): void {
                         cs.setActiveTaskPrompt(at.prompt);
                         cs.setActiveTaskStartedAt(at.startedAt);
                         cs.setIsTurnActive(true);
+                        // DEBT-196: telemetry/snapshot/tps have no host-side mirror to
+                        // rehydrate from (tps is computed client-side from live WS token
+                        // timing — there is no backend value to pull), so without this
+                        // the pre-teardown reading sits frozen, looking live, until the
+                        // next token/telemetry event happens to arrive. Render an
+                        // explicit neutral state instead for that gap — nothing is
+                        // destructively lost, it is a live reading, not stored data.
+                        cs.setTelemetry(undefined);
+                        cs.setSnapshot(undefined);
+                        cs.setTps(0);
                     }
                     break;
                 }

@@ -64,6 +64,12 @@ function MessageRowFallback(): JSX.Element {
  */
 const AGREEMENT_SIGNAL = 'Looks good, proceed.';
 
+/** Single source of truth for the Socratic-grill, read-only planning mode's
+ * literal — every comparison/assignment below goes through this constant or
+ * `isPlanMode()` so a future mode-picker change has one place to update. */
+const PLAN_MODE: ExecutionMode = 'plan_mode';
+const isPlanMode = (mode: ExecutionMode): boolean => mode === PLAN_MODE;
+
 export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // Seed the live chat store from the host snapshot ONCE, synchronously, before any
     // selector below reads — a lazy initializer (not an effect) so render 1 paints the
@@ -241,7 +247,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             // latest value (survives reload) is injected.
             enable_native_thinking: storeState.nativeThinking,
             // Plan mode → route the turn into the backend Socratic loop.
-            planner_mode_active: executionMode === 'plan_mode',
+            planner_mode_active: isPlanMode(executionMode),
             // Persisted auto-accept toggle, read at submit time. The backend elides
             // the approval card for edits whose added lines trip no risk pattern.
             auto_accept_low_risk: storeState.autoAcceptLowRisk,
@@ -290,7 +296,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     const handlePlanKeepPlanning = useCallback((feedback: string) => {
         const trimmed = feedback.trim();
         if (trimmed) {
-            submitWithMode(trimmed, 'plan_mode');
+            submitWithMode(trimmed, PLAN_MODE);
         }
         setPlan(null);
     }, [submitWithMode]);
@@ -539,7 +545,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                 </div>
 
                 {/* Main split-grid */}
-                <main className={`ws-main${plan && mode === 'plan_mode' ? ' plan-mode-active' : ''}`}>
+                <main className={`ws-main${plan && isPlanMode(mode) ? ' plan-mode-active' : ''}`}>
                     {/* LEFT: chat + bar */}
                     <section className="ws-main-left">
                         <CSSAlertBanner telemetry={telemetry} />
@@ -801,7 +807,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 placeholder={
                                     hitlPending
                                         ? `${nattName} is waiting for your decision`
-                                        : mode === 'plan_mode'
+                                        : isPlanMode(mode)
                                             ? `Describe what you want to build — ${nattName} will grill you into a plan…`
                                             : undefined
                                 }
@@ -856,7 +862,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         plan opens as a split panel carrying the three-way decision
                         (auto-accept / manual-approve / keep-planning); the chat
                         composer folds away so the acceptance controls own the input. */}
-                    {plan && mode === 'plan_mode' && (
+                    {plan && isPlanMode(mode) && (
                         <aside className="plan-panel-container">
                             <PlanAcceptancePanel
                                 plan={plan}

@@ -118,4 +118,25 @@ suite('ACTIVE_TASK_RESTORED — active-task state survives a webview teardown', 
         assert.strictEqual(s.isTurnActive, false);
         unmount(container, root);
     });
+
+    test('DEBT-196: clears the stale telemetry/snapshot/tps HUD reading on restore', () => {
+        const { container, root } = mountHarness();
+        // Simulate the pre-teardown HUD holding a live-looking reading from
+        // before the hide→reveal cycle — there is no host-side mirror for any
+        // of these three, so without the fix they would survive untouched and
+        // look live even though nothing has updated them since the teardown.
+        useChatStore.setState({
+            telemetry: { context_pct: 42 } as unknown as ReturnType<typeof useChatStore.getState>['telemetry'],
+            snapshot: { context_window: 8192, context_used_tokens: 4096, total_cost_usd: 1.23 } as unknown as ReturnType<typeof useChatStore.getState>['snapshot'],
+            tps: 37,
+        });
+
+        dispatch('ACTIVE_TASK_RESTORED', { prompt: 'build the landing page stack', startedAt: 1_700_000_000_000 });
+
+        const s = useChatStore.getState();
+        assert.strictEqual(s.telemetry, undefined);
+        assert.strictEqual(s.snapshot, undefined);
+        assert.strictEqual(s.tps, 0);
+        unmount(container, root);
+    });
 });
