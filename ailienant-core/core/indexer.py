@@ -374,6 +374,21 @@ class LazyIndexer:
                             await upsert_indexed_file(file_path, project_id)
                             if result.imports:
                                 await upsert_dependencies(file_path, result.imports, project_id)
+                            try:
+                                # Accelerator-only: the symbol-definition catalog is an
+                                # advisory Tier-2 substrate (mirrors ReactiveIndexer's
+                                # per-save write of the same catalog below) — a failed
+                                # write only costs a lookup miss, never a corrupted
+                                # graph, so it must never block the canonical
+                                # index/embed flow. Without this call the bulk crawl
+                                # left the catalog empty until each file was
+                                # individually re-saved (DEBT-147).
+                                await upsert_symbol_definitions(file_path, result.symbols, project_id)
+                            except Exception as sym_exc:  # noqa: BLE001 — log and continue; catalog is advisory
+                                logger.warning(
+                                    "LazyIndexer: symbol-catalog write failed for %s: %s",
+                                    file_path, sym_exc,
+                                )
                             # Semantic upsert is fire-and-forget; deferred import isolates
                             # grammar/embedding errors from the core indexing path.
                             try:

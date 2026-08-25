@@ -169,6 +169,44 @@ def test_A2_docker_daemon_offline(monkeypatch: pytest.MonkeyPatch) -> None:
         sandbox.ACTIVE_TIER, sandbox.ACTIVE_ADAPTER = saved
 
 
+def test_A3_docker_from_env_hang_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hanging ``docker.from_env()`` (stuck named pipe / half-alive daemon)
+    must not block the resolver forever (DEBT-163).
+
+    ``docker.from_env()`` does real I/O (server API-version negotiation) and
+    can hang. Every other Docker call site in ``core/sandbox.py`` dispatches
+    through ``_docker_call``'s bounded-thread + ``asyncio.wait_for`` pairing;
+    this construction used to bypass it entirely and run unbounded on the
+    event loop. Regression: without the fix this test hangs for the full
+    simulated daemon delay instead of degrading within the probe timeout.
+    """
+    import time as _time
+
+    from core import sandbox
+
+    saved = (sandbox.ACTIVE_TIER, sandbox.ACTIVE_ADAPTER)
+    monkeypatch.setattr(sandbox, "_DOCKER_PROBE_TIMEOUT_S", 0.1)
+    sandbox.reset_daemon_breaker()
+    try:
+        def _hang() -> Any:
+            _time.sleep(2.0)  # far past the 0.1s probe timeout above
+            raise AssertionError("docker.from_env() was not bounded by the probe timeout")
+
+        monkeypatch.setattr(sandbox.docker, "from_env", _hang)
+
+        started = _time.monotonic()
+        asyncio.run(sandbox.resolve_default_adapter())
+        elapsed = _time.monotonic() - started
+
+        # Bounded by the probe timeout (with headroom for scheduling), never
+        # by the simulated 2s daemon hang — the resolver degraded to Wasm.
+        assert elapsed < 1.0
+        assert sandbox.get_active_tier() == "WASM"
+    finally:
+        sandbox.ACTIVE_TIER, sandbox.ACTIVE_ADAPTER = saved
+        sandbox.reset_daemon_breaker()
+
+
 def test_B1_wasm_scope_guard(tmp_path: Any) -> None:
     """A .wasm payload importing a non-WASI host module trips the Scope Guard.
 

@@ -29,12 +29,13 @@ def anyio_backend() -> str:
 
 
 def _step(n: int, status: str = "pending", action: str = "edit_file",
-          target_file: str = "f.py") -> WBSStep:
+          target_file: str = "f.py", depends_on: "List[int] | None" = None) -> WBSStep:
     return WBSStep(
         step_number=n, target_role="core_dev",  # type: ignore[arg-type]
         action=action,  # type: ignore[arg-type]
         target_file=target_file, description=f"step {n}",
         status=status,  # type: ignore[arg-type]
+        depends_on=depends_on,
     )
 
 
@@ -86,6 +87,47 @@ def test_stall_guard_ends_when_just_ran_step_still_pending() -> None:
 
 def test_no_mission_ends_gracefully() -> None:
     assert route_after_validation({"guardrail_failed": False}) == END
+
+
+def test_dependent_step_skipped_when_prerequisite_rejected() -> None:
+    """DEBT-197: a step's depends_on names a REJECTED prerequisite — it must
+    not be treated as dispatchable, so the loop ends instead of sending it to
+    a coder against a prerequisite that never landed."""
+    mission = _mission([
+        _step(1, "rejected"),
+        _step(2, "pending", depends_on=[1]),
+    ])
+    target = route_after_validation(
+        {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False}
+    )
+    assert target == END
+
+
+def test_dependent_step_dispatches_once_prerequisite_completes() -> None:
+    """Same shape, but the prerequisite genuinely completed — step 2 becomes
+    dispatchable and the loop advances normally."""
+    mission = _mission([
+        _step(1, "completed"),
+        _step(2, "pending", depends_on=[1]),
+    ])
+    target = route_after_validation(
+        {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False}
+    )
+    assert target == "drift_gate"
+
+
+def test_unrelated_pending_step_still_dispatches_despite_blocked_sibling() -> None:
+    """A step with an unmet dependency must not block an unrelated, independent
+    pending step from dispatching."""
+    mission = _mission([
+        _step(1, "rejected"),
+        _step(2, "pending", depends_on=[1]),
+        _step(3, "pending"),
+    ])
+    target = route_after_validation(
+        {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False}
+    )
+    assert target == "drift_gate"
 
 
 # ── run_coder_node: durable status delta (read_file path) ────────────────────

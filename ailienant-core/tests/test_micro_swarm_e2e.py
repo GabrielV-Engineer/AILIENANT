@@ -68,7 +68,6 @@ def _swarm_state(session_id: str, tasks: list) -> dict:
         "security_flags": [],
         "terminal_output": "",
         "session_delta": "",
-        "is_indexing_complete": True,
         "guardrail_failed": False,
         "validation_feedback": None,
         "immutable_wbs": None,

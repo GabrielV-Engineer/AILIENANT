@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
+import logging
 import os
 import sys
 from typing import Dict, Iterator, Optional
@@ -143,6 +145,61 @@ def _reset_response_cache() -> None:
     from core.response_cache import response_cache
 
     response_cache.clear()
+
+
+@contextlib.contextmanager
+def _litellm_leak_guard() -> Iterator[None]:
+    """Testable core of ``_guard_litellm_patch_leakage`` below.
+
+    Factored out as a plain context manager (rather than exercising the
+    ``pytest.fixture``-wrapped generator directly) so its restore-and-log
+    behavior is unit-tested without depending on pytest's own fixture
+    machinery or cross-test ordering.
+    """
+    import litellm
+
+    real_aembedding = litellm.aembedding
+    real_acompletion = litellm.acompletion
+    try:
+        yield
+    finally:
+        current_test = os.environ.get("PYTEST_CURRENT_TEST", "<unknown>")
+        if litellm.aembedding is not real_aembedding:
+            logging.getLogger("AILIENANT_TEST_ISOLATION").error(
+                "litellm.aembedding leaked past test %s — a patch (monkeypatch/"
+                "mock.patch) was not restored; forcing it back so later tests "
+                "are not corrupted (DEBT-201).",
+                current_test,
+            )
+            litellm.aembedding = real_aembedding
+        if litellm.acompletion is not real_acompletion:
+            logging.getLogger("AILIENANT_TEST_ISOLATION").error(
+                "litellm.acompletion leaked past test %s — a patch (monkeypatch/"
+                "mock.patch) was not restored; forcing it back so later tests "
+                "are not corrupted (DEBT-201).",
+                current_test,
+            )
+            litellm.acompletion = real_acompletion
+
+
+@pytest.fixture(autouse=True)
+def _guard_litellm_patch_leakage() -> Iterator[None]:
+    """Self-heal a litellm patch a prior test failed to restore (DEBT-201).
+
+    A live incident saw a cascade of real ``litellm.exceptions.BadRequestError:
+    ... model=ailienant/embedding`` failures in unrelated tests, followed by
+    one flaky failure in an e2e apply-gate test three tests later — the shape
+    of a leaked mock (or a leaked real call where a mock was expected)
+    corrupting whichever test ran next. Re-running the suite never reproduced
+    it, so the exact leaking test/fixture was never pinned down. Rather than
+    guess at which of the dozen call sites that mock ``litellm.aembedding``/
+    ``acompletion`` is responsible, this restores the real functions the
+    instant a leak is detected and logs the offending test's nodeid — turning
+    the failure mode from "a mystery cascade" into "self-healed and
+    attributable" the next time it happens.
+    """
+    with _litellm_leak_guard():
+        yield
 
 
 def pytest_sessionfinish(session, exitstatus):

@@ -374,7 +374,8 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         # is_dispatchable also selects revision_requested — a step the human
         # asked to be regenerated with feedback. Must move in lockstep with
         # guardrails.py's stall guard and advance predicate (brain/state.py).
-        next((t for t in mission_spec.tasks if is_dispatchable(t)), None)
+        # Passing the full task list lets it enforce depends_on (DEBT-197).
+        next((t for t in mission_spec.tasks if is_dispatchable(t, mission_spec.tasks)), None)
         if mission_spec
         else None
     )

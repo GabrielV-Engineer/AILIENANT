@@ -2201,7 +2201,16 @@ async def resolve_default_adapter() -> None:
 
     # Tier 1 — Docker (daemon reachable within 2 s).
     try:
-        client = docker.from_env()
+        # Unlike every other call site in this module, this construction used
+        # to run `docker.from_env()` directly on the event loop with no
+        # timeout — it does real I/O (server API-version negotiation) and can
+        # hang indefinitely against a half-alive daemon or a stuck named pipe
+        # on Windows, blocking the FastAPI startup lifespan forever. Routed
+        # through `_docker_call` for the same bounded-thread + timeout +
+        # breaker treatment every other `docker.from_env` call gets.
+        client = await _docker_call(
+            docker.from_env, timeout_s=_DOCKER_PROBE_TIMEOUT_S, op="from_env_probe",
+        )
         await asyncio.wait_for(
             asyncio.to_thread(client.ping), timeout=_DOCKER_PROBE_TIMEOUT_S,
         )
@@ -2394,9 +2403,13 @@ async def pull_sandbox_image() -> None:
 
     Blocking SDK calls are offloaded to a worker thread. Propagates
     ``docker.errors.*`` / connection errors to the caller for structured
-    handling (the ``api.runtime`` endpoint maps them to client error codes).
+    handling (the ``api.runtime`` endpoint maps them to client error codes);
+    a hung/unreachable daemon instead raises ``SandboxDaemonTimeout``, which
+    the endpoint's catch-all branch already handles.
     """
-    client = await asyncio.to_thread(docker.from_env)
+    client = await _docker_call(
+        docker.from_env, timeout_s=DOCKER_OP_TIMEOUT_S, op="pull_from_env",
+    )
     await asyncio.to_thread(_pull_and_tag_sync, client)
 
 

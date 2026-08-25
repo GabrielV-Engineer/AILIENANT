@@ -179,11 +179,30 @@ _DISPATCHABLE_STATUSES: frozenset[str] = frozenset({"pending", "revision_request
 _TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "rejected"})
 
 
-def is_dispatchable(step: "WBSStep") -> bool:
-    """True when a step is eligible to be sent to a coder — either it has
-    never run (``pending``) or a human asked for a different attempt
-    (``revision_requested``)."""
-    return step.status in _DISPATCHABLE_STATUSES
+def is_dispatchable(step: "WBSStep", all_steps: Optional[List["WBSStep"]] = None) -> bool:
+    """True when a step is eligible to be sent to a coder — it has never run
+    (``pending``) or a human asked for a different attempt
+    (``revision_requested``) — AND, when ``all_steps`` is supplied, every
+    step named in its ``depends_on`` has itself reached ``completed``.
+
+    ``all_steps`` is optional so this stays a drop-in for any single-argument
+    caller; the two live dispatch-selection sites (``route_to_coders`` and
+    ``route_after_validation``'s stall guard, per the shared-predicate
+    invariant above) pass the full task list precisely so a step whose
+    declared prerequisite was rejected or failed can no longer dispatch and
+    run against whatever that prerequisite left on disk — or didn't.
+    """
+    if step.status not in _DISPATCHABLE_STATUSES:
+        return False
+    # getattr, not direct attribute access: several call sites (both real and
+    # test-only) pass lightweight stand-ins for WBSStep that never carry this
+    # field.
+    depends_on = getattr(step, "depends_on", None)
+    if depends_on and all_steps is not None:
+        completed = {s.step_number for s in all_steps if s.status == "completed"}
+        if not all(dep in completed for dep in depends_on):
+            return False
+    return True
 
 
 def is_terminal(step: "WBSStep") -> bool:
@@ -612,8 +631,6 @@ class AIlienantGraphState(TypedDict):
     # docs/PROJECT_MANIFEST.md Tech Debt section.
     # ──────────────────────────────────────────────────────────────────────
     code_under_validation: Optional[str]
-    # Phase 2.5: Workspace Indexing Gate — seeded from lazy_indexer.is_complete at graph invocation
-    is_indexing_complete: bool
 
     # --- Guardrail State (Phase 2.1.14) ---
     guardrail_failed: bool              # True if validate_output detected a schema violation

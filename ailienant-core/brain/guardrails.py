@@ -155,7 +155,7 @@ def route_after_validation(state: Dict[str, Any]) -> str:
         _log_end(state, "wbs_stall_step_not_terminal")
         return END
 
-    if any(is_dispatchable(t) for t in tasks):
+    if any(is_dispatchable(t, tasks) for t in tasks):
         log_routing_decision(
             session_id=state.get("task_id", ""),
             source="validate_output",

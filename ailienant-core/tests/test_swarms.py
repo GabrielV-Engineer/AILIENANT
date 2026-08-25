@@ -133,6 +133,33 @@ def test_relay_send_carries_pending_step_role() -> None:
     assert sends[0].arg["active_role"] == "devops_infra"
 
 
+def test_relay_skips_step_blocked_on_unmet_depends_on() -> None:
+    """DEBT-197: route_to_coders must not select a step whose depends_on names
+    a prerequisite that isn't completed — it should fall through to the next
+    genuinely dispatchable step instead."""
+    import types
+
+    blocked = WBSStep(
+        step_number=1, target_role="core_dev", action="edit_file",  # type: ignore[arg-type]
+        target_file="a.py", description="depends on a rejected step",
+        status="pending", depends_on=[0],  # type: ignore[arg-type]
+    )
+    fallback = WBSStep(
+        step_number=2, target_role="qa_tester", action="edit_file",  # type: ignore[arg-type]
+        target_file="b.py", description="independent, no dependency",
+        status="pending",  # type: ignore[arg-type]
+    )
+    mission = types.SimpleNamespace(tasks=[blocked, fallback])
+    state = {
+        "provider": "LOCAL", "parallel_tasks": [], "mission_spec": mission,
+        "active_role": "core_dev",
+    }
+    sends = route_to_coders(cast(AIlienantGraphState, state))
+    assert len(sends) == 1
+    assert sends[0].arg["current_step_id"] == 2
+    assert sends[0].arg["active_role"] == "qa_tester"
+
+
 # ---------------------------------------------------------------------------
 # run_planner_node — async planner fan-out tests
 # ---------------------------------------------------------------------------

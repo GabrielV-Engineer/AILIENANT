@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os as _os
+import re as _re
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Set
 
 from langchain_core.runnables import RunnableConfig
@@ -104,10 +105,58 @@ def _has_prior_socratic_exchange(messages: List[Dict[str, Any]]) -> bool:
     return any(m.get("role") == "assistant" for m in messages)
 
 
+# Trimmed from both ends of the message AND of each clause below — covers the
+# punctuation a real reply carries ("yes.", "dale!", "¿bien?") without
+# inventing a tokenizer for what is otherwise a set-membership check.
+_AGREEMENT_STRIP_CHARS = " \t\r\n.,;:!¡¿?\"'"
+_CLAUSE_SPLIT_RE = _re.compile(r"[,.;]+")
+
+# A small, fixed set of leading connectives that don't change a clause's
+# meaning ("let's proceed" IS "proceed") — stripped before the signal-set
+# lookup so a clause built from one of these plus a real signal still
+# matches, without loosening the lookup itself into a substring search.
+_AGREEMENT_LEADING_FILLERS = ("let's ", "lets ", "let us ", "we can ", "we'll ", "please ")
+
+
+def _is_agreement_clause(clause: str) -> bool:
+    """A clause counts as agreement if it IS a signal, or a signal once a
+    leading filler connective ("let's ", "please ", …) is removed."""
+    if clause in _AGREEMENT_SIGNALS:
+        return True
+    for filler in _AGREEMENT_LEADING_FILLERS:
+        if clause.startswith(filler):
+            return clause[len(filler):] in _AGREEMENT_SIGNALS
+    return False
+
+
 def _is_agreement(user_input: str) -> bool:
-    """Detect if the user's latest message signals shared understanding."""
-    text = user_input.strip().lower()
-    return any(signal in text for signal in _AGREEMENT_SIGNALS)
+    """Detect a bare agreement reply — anchored to the message's clauses, not
+    an unanchored substring search.
+
+    A short affirmation ("yes", "looks good", "dale") ends the grill; a
+    substantive, still-elaborating answer that merely OPENS with one of those
+    words ("Yes, establish component files for Header, HeroSlider...") must
+    not, since `signal in text` previously treated the two identically
+    (DEBT-180). A message counts as agreement only if it is a single
+    agreement clause, or every comma/period-separated clause is
+    independently one — the latter is load-bearing: the frontend's own
+    canonical hand-off phrase (`AGREEMENT_SIGNAL = 'Looks good, proceed.'` in
+    Workspace.tsx) is two signals joined by a comma, and "looks good, let's
+    proceed" (a pre-existing regression-tested phrase) combines a signal with
+    a filler-plus-signal clause, neither literally one entry in
+    `_AGREEMENT_SIGNALS`. A clause that ISN'T itself an agreement clause
+    disqualifies the whole message — the safe direction for this fast path:
+    a missed match just asks one more round, while a false match prematurely
+    ends a still-elaborating answer.
+    """
+    text = user_input.lower().strip(_AGREEMENT_STRIP_CHARS)
+    if not text:
+        return False
+    if _is_agreement_clause(text):
+        return True
+    clauses = [c.strip(_AGREEMENT_STRIP_CHARS) for c in _CLAUSE_SPLIT_RE.split(text)]
+    clauses = [c for c in clauses if c]
+    return bool(clauses) and all(_is_agreement_clause(c) for c in clauses)
 
 
 _INTENT_SYSTEM_PROMPT: str = (
