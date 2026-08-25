@@ -80,8 +80,9 @@ START
                      → contract_guard       (assert workspace state before write)
                        → finops_gate        (cost < ceiling?)
                          → supervisor_node   (FinOps hard-kill or proposal)
-                           → apply_patch
-                             → validate_output (AST + LSP)
+                           → apply_patch     (PREPARE: diff/risk/verdict, no interrupt)
+                             → apply_commit  (GATE: interrupt-first HITL approval, then the actual write/exec)
+                               → validate_output (AST + LSP)
                                → [retry / advance / heal?]
                                    → coder_agent       (retry the same step)
                                    → drift_gate        (advance: next pending WBS step — the RELAY multi-step loop)
@@ -192,20 +193,21 @@ The name→callable bridge — [core/tool_registry.py](ailienant-core/core/tool_
 
 ### Closed-loop execution
 
-The reliability core. A `run_command` step dispatches into `core.sandbox.ACTIVE_ADAPTER` and reads the **typed** `SandboxResult.exit_code` — never string-sniffed from stdout:
+The reliability core. `agents/coder.py` only validates the command string (`tools/execution_tools.py::validate_step_command` — fails closed on an empty/placeholder/bare-path command) and stages it in `pending_step_command`; the actual dispatch, permission verdict, HITL approval, and self-heal all live downstream in `brain/apply_gate.py`'s `apply_commit` node (`run_apply_commit_node` → `_commit_command`), which reads the **typed** `SandboxResult.exit_code` — never string-sniffed from stdout:
 
 ```python
-result = await get_active_adapter().execute(cmd, timeout_s=…, cwd=…, env_whitelist=…)
+result = await run_guarded_command(command, session_id=…, session_permission_mode=None)  # gate already decided above
 diagnostics = parse_diagnostics(result)          # tools/validation/diagnostics.py — total, never raises
 if result.exit_code == 0:
-    state["step_status"] = "completed"
+    state["mission_spec"] = _mark_step_status(mission, step_number, "completed")
 else:
-    # emit a reflexion-mimicking healing delta; route_after_coder carries it to error_correction
-    state["healing_required"] = format_diagnostics(diagnostics)   # bounded
+    # emit a reflexion-mimicking healing delta; route_after_validation carries it to error_correction
+    state["healing_required"] = True
+    state["last_error_trace"] = format_diagnostics(diagnostics)   # bounded
 # correction budget concedes rather than looping forever
 ```
 
-If no adapter resolved, the step is honestly surfaced as deferred (`EXECUTE_TIER_DEFERRED`) rather than falsely "completed."
+If no adapter resolved (checked earlier, in `agents/coder.py`), the step is honestly surfaced as deferred (`EXECUTE_TIER_DEFERRED`) rather than falsely "completed."
 
 ### State management
 
@@ -317,6 +319,7 @@ Proyect_Ailienant/
 │   │   ├── coder_companion.py    #     fire-and-forget structured post-turn explanation (best-effort WS side channel)
 │   │   ├── iteration_governor.py #    multi-axis circuit breaker
 │   │   ├── retry_policy.py      #     centralized retry/correction budgets
+│   │   ├── apply_gate.py        #     incremental per-step approval: apply_patch (PREPARE) + apply_commit (interrupt-first GATE)
 │   │   └── mcts/ · episodic/    #     tree + UCB1 + audit checkpointer
 │   ├── core/                    #   Infrastructure
 │   │   ├── sandbox.py           #     SandboxAdapter ABC + Docker/Wasm/NativeHITL + resolver

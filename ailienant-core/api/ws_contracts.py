@@ -110,7 +110,16 @@ class GraphMutationPayload(BaseModel):
     """WBS step status transition emitted by the Orchestrator."""
 
     step_number: int
-    new_status: Literal["pending", "in_progress", "completed", "failed"]
+    # 13.0.9 — widened alongside WBSStep.status (brain/state.py) for incremental
+    # per-step approval. This Literal is closed: emitting a value outside it
+    # raises inside emit_graph_mutation's Pydantic construction — and every
+    # caller fire-and-forgets that call (asyncio.create_task), so a missed
+    # widening here fails *silently*, not loudly. Must move in lockstep with
+    # WBSStep.status.
+    new_status: Literal[
+        "pending", "in_progress", "completed", "failed",
+        "awaiting_approval", "rejected", "revision_requested",
+    ]
     agent_name: Optional[str] = None
 
 
@@ -566,6 +575,10 @@ class PatchAppliedPayload(BaseModel):
     applied_files: list[str] = Field(default_factory=list)
     stale_files: list[str] = Field(default_factory=list)
     error: Optional[str] = None
+    # 13.0.9 — files the host recognized as already holding the exact intended
+    # content (a lost-ack retry) rather than genuinely stale. Always a subset
+    # of applied_files. Additive/diagnostic: no consumer branches on it today.
+    already_applied: list[str] = Field(default_factory=list)
 
 
 class ClientPatchAppliedEvent(BaseModel):
@@ -717,6 +730,7 @@ ActivityKind = Literal[
     "plan",           # the plan document node (body = ExecutionChecklist)
     "diff",           # a proposed/applied edit (ref = patch_id, target = path)
     "cell",           # an agentic-cell loop iteration (ref = cell:{iteration}, target = tool_name)
+    "subagent",       # a dispatched subagent invocation (ref = task_id, target = role)
 ]
 
 

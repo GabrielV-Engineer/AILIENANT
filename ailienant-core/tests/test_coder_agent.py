@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, Dict, List, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -156,10 +156,12 @@ async def test_coder_agent_ephemeral_system_prompt_does_not_leak_to_messages_or_
     # Every returned key must be a declared field on AIlienantGraphState.
     allowed_state_keys = {
         "vfs_buffer",
-        "pending_patches",   # Phase 7.9.B.16 — coder now proposes diffs
-        "pending_contents",  # Phase 7.9.B.18 — full new content for the write pipeline
-        "pending_base_hash", # Phase 7.9.B.18 — pre-edit hash for the stale guard
-        "mission_spec",      # durable WBS-step status delta (multi-step loop)
+        "pending_patches",    # coder proposes diffs, never writes directly
+        "pending_contents",   # full new content for the write pipeline
+        "pending_base_hash",  # pre-edit hash for the stale guard
+        "pending_step_files", # paths this step touched, scoping the apply-gate commit
+        "apply_feedback",     # cleared unconditionally so a revision never replays stale cache
+        "mission_spec",       # durable WBS-step status delta (multi-step loop)
         "target_role",
         "current_step_id",
         "current_cost_usd",
@@ -456,6 +458,151 @@ async def test_coder_prompt_includes_mission_context_block() -> None:
     user_content = next(m["content"] for m in captured_messages if m["role"] == "user")
     assert "Stack: Godot" in user_content
     assert user_content.index("Stack: Godot") < user_content.index(content.splitlines()[0])
+
+
+# ── 13.0.9 — agent_notes reaches the prompt, description stays clean ─────────
+
+
+@pytest.mark.anyio
+async def test_agent_notes_reaches_the_prompt_but_never_touches_description() -> None:
+    """agent_notes (e.g. the polyglot patch-tool directive, agents/planner.py) is
+    a coder-only channel — this asserts it lands in the generation prompt while
+    the human-facing description string it was split out of stays untouched."""
+    from core.vfs_middleware import VFSReadResult
+    from agents.coder import run_coder_node
+
+    step = _make_step(target_file="App.vue", description="Add a prop.").model_copy(
+        update={"agent_notes": "[!] POLYGLOT FILE DETECTED: App.vue. Use patch_file."}
+    )
+    mission = _make_mission([step])
+    state = _make_state(mission, step_id=1)
+    content = "<template></template>\n"
+    edit_blob = (
+        "### EDIT App.vue\n<<<<<<< SEARCH\n<template></template>\n=======\n"
+        "<template><p/></template>\n>>>>>>> REPLACE\n"
+    )
+
+    captured_messages: List[Any] = []
+
+    async def _capture_ainvoke(*, messages: Any, **_kwargs: Any) -> Any:
+        captured_messages.extend(messages)
+        return _fake_llm_response(edit_blob)
+
+    with patch(
+        "core.vfs_middleware.VFSMiddleware.read_safe",
+        return_value=VFSReadResult(content=content),
+    ), patch(
+        "tools.llm_gateway.LLMGateway.ainvoke",
+        new=AsyncMock(side_effect=_capture_ainvoke),
+    ):
+        await run_coder_node(state)
+
+    user_content = next(m["content"] for m in captured_messages if m["role"] == "user")
+    assert "Use patch_file" in user_content
+    # The description itself was never mutated with the directive text.
+    assert step.description == "Add a prop."
+
+
+# ── 13.0.9 — honest native-thinking: a separate pass on non-native models ────
+
+
+def _fake_astream_reasoning_factory(reasoning_chunks: List[str]):
+    """A fake ``astream_reasoning`` — the coder's new pre-generation reasoning
+    pass is its only caller, so (unlike the planner's fake) there is no second
+    call shape to branch on."""
+    from tools.stream_delta import StreamDelta
+
+    async def _fake(messages, tier="big", *, temperature=0.0, max_tokens=512,
+                     timeout=60.0, session_id=None, thinking_budget_tokens=4096,
+                     free_form_answer=False):
+        for chunk in reasoning_chunks:
+            yield StreamDelta("thinking", chunk, "simulated")
+
+    def _factory(*args: Any, **kwargs: Any) -> Any:
+        return _fake(*args, **kwargs)
+
+    return _factory
+
+
+@pytest.mark.anyio
+async def test_coder_streams_a_reasoning_pass_before_generation_on_nonnative_model() -> None:
+    """The toggle previously did nothing at all for a local/unsupported model
+    during a coding turn — assert the new pass actually reaches the sink."""
+    collected: List[tuple[str, str]] = []
+
+    async def _sink(text: str, source: str) -> None:
+        collected.append((text, source))
+
+    mission = _make_mission([_make_step()])
+    state = _make_state(mission, step_id=1)
+    cfg: Dict[str, Any] = {
+        "configurable": {
+            "stream_thinking": _sink,
+            "enable_native_thinking": True,
+            "thinking_budget_tokens": 4096,
+        }
+    }
+    fake = _fake_astream_reasoning_factory(["Looking at the file, ", "I'll adjust the return."])
+
+    with patch("tools.llm_gateway.LLMGateway.astream_reasoning", fake), patch(
+        "core.config.model_resolver.get_chat_target",
+        return_value=MagicMock(model="ollama/llama3"),
+    ), patch("tools.llm_gateway._supports_native_thinking", return_value=False):
+        from agents.coder import run_coder_node
+
+        await run_coder_node(state, cast(Any, cfg))
+
+    reasoning_deltas = [t for t, _ in collected]
+    assert len(reasoning_deltas) == 2
+    assert "".join(reasoning_deltas).startswith("Looking at the file")
+
+
+@pytest.mark.anyio
+async def test_coder_skips_the_reasoning_pass_on_a_native_model() -> None:
+    """A native model already streams its own reasoning inside
+    acomplete_with_thinking — the extra pass must not fire (no double trace)."""
+    collected: List[tuple[str, str]] = []
+
+    async def _sink(text: str, source: str) -> None:
+        collected.append((text, source))
+
+    mission = _make_mission([_make_step()])
+    state = _make_state(mission, step_id=1)
+    cfg: Dict[str, Any] = {
+        "configurable": {
+            "stream_thinking": _sink,
+            "enable_native_thinking": True,
+            "thinking_budget_tokens": 4096,
+        }
+    }
+    fake = _fake_astream_reasoning_factory(["should NOT be emitted"])
+
+    with patch("tools.llm_gateway.LLMGateway.astream_reasoning", fake), patch(
+        "core.config.model_resolver.get_chat_target",
+        return_value=MagicMock(model="claude-sonnet-5"),
+    ), patch("tools.llm_gateway._supports_native_thinking", return_value=True):
+        from agents.coder import run_coder_node
+
+        await run_coder_node(state, cast(Any, cfg))
+
+    assert collected == []
+
+
+@pytest.mark.anyio
+async def test_coder_reasoning_pass_stays_off_when_the_toggle_is_off() -> None:
+    """No configurable at all (the shape every other test in this file uses)
+    must behave exactly as before this addition — no reasoning call attempted."""
+    mission = _make_mission([_make_step()])
+    state = _make_state(mission, step_id=1)
+    mock_reasoning = MagicMock()
+
+    with patch("tools.llm_gateway.LLMGateway.astream_reasoning", mock_reasoning):
+        from agents.coder import run_coder_node
+
+        result = await run_coder_node(state)
+
+    mock_reasoning.assert_not_called()
+    assert result.get("mission_spec") is not None
 
 
 # ── Test F — SEARCH/REPLACE block parser ──────────────────────────────────────

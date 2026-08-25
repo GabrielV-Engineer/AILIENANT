@@ -26,8 +26,8 @@
  * tps. Local component state retains activeModelId, orchestrationMode, dreaming*.
  */
 import type { ExecutionMode } from '../shared/types';
-import type { ReasoningPreset, InferenceTier } from '../shared/config';
-import type { AgentTodoItemPayload } from '../api/contracts';
+import type { ReasoningPreset, InferenceTier, PlanWBSStep, TimelineEntry } from '../shared/config';
+import type { AgentTodoItemPayload, CoderCompanionPayload } from '../api/contracts';
 import { createPersistedStore } from '../shared/persistedStore';
 
 /**
@@ -57,6 +57,20 @@ export type AnalystTier = 'small' | 'medium' | 'big' | 'cloud';
  * imported from Workspace.tsx) to avoid a circular type import; a `Message` is
  * assignable to it. `parserState`/`toolCalls` are intentionally omitted to keep
  * the persisted blob small.
+ *
+ * 13.0.9: widened to also carry `checklist`/`companions`/`timeline` — the
+ * confirmed root cause of a live bug report ("switching tabs once removes the
+ * plan checkmarks and the Planning Explanation text; switching repeatedly
+ * removes the whole plan step list"). A mid-stream tab switch tears down the
+ * webview before the debounced host-side `PERSIST_TRANSCRIPT` (which DOES
+ * carry these fields) can flush; this `setState`-backed snapshot is the only
+ * thing that survives that exact race, but it never carried these newer
+ * (post-Phase-7.12) fields — so a fast-enough teardown restored prose and
+ * thinking while silently dropping the plan/explanation/trace. `timeline` is
+ * stripped of its 'reasoning' entries first (`stripReasoningForPersist`,
+ * display-only, same exclusion PERSIST_TRANSCRIPT already applies) to keep
+ * this blob small — checklist and companions are small by construction (a
+ * handful of WBS steps / one structured explanation), unlike toolCalls.
  */
 export interface InflightSnapshot {
     id?: string;
@@ -70,6 +84,9 @@ export interface InflightSnapshot {
     thinkingOpen?: boolean;
     steps?: string[];
     stepsDone?: boolean;
+    checklist?: PlanWBSStep[];
+    companions?: CoderCompanionPayload[];
+    timeline?: TimelineEntry[];
 }
 
 /**

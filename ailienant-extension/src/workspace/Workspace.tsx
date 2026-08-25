@@ -639,6 +639,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         <AgentTimeline
                                             entries={m.timeline ?? []}
                                             streaming={!!m.streaming}
+                                            isLatestTurn={i === messages.length - 1}
                                             thinking={m.thinking}
                                             thinkingTokens={m.thinkingTokens}
                                             thinkingStartedAt={m.thinkingStartedAt}

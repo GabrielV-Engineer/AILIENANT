@@ -302,6 +302,21 @@ async def subagent_worker(
         iterations_used=trace_len,
         error_message=error_message,
     )
+    # Glass-Box Timeline: this node previously emitted nothing at all, so a
+    # dispatched subagent's work was invisible regardless of how long its tool
+    # loop ran. `push_activity` (the same off-state config seam apply_gate.py's
+    # diff marker uses) is called directly rather than through `narrate`'s
+    # verb-classification, since "subagent" is dispatch metadata, not a
+    # repurposed free-text node label. Fire-and-forget: never let narration
+    # blot the envelope this node exists to return.
+    _push_activity = configurable.get("push_activity")
+    if _push_activity is not None:
+        try:
+            await _push_activity(
+                "subagent", target=task.subagent_role, metric=status, ref=task.task_id,
+            )
+        except Exception:  # noqa: BLE001 — narration must never fail a subagent's result
+            logger.debug("subagent_worker: activity emit skipped for %s", task.task_id, exc_info=True)
     return {
         "_dispatch_results": [envelope.model_dump()],
         "subagent_dispatch_trace": [{"task_id": task.task_id, "status": status}],

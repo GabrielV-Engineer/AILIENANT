@@ -46,3 +46,11 @@ LLM_MAX_TRANSPORT_RETRIES: int = 2
 # SQLite WAL checkpoint backoff: attempts before conceding a deferred checkpoint
 # when a concurrent writer keeps the WAL busy.
 WAL_CHECKPOINT_MAX_RETRIES: int = 3
+
+# Incremental apply gate (brain/apply_gate.py, 13.0.9): how many "request
+# changes" rounds one WBS step may go through before a further revision
+# request degrades to a plain reject. Without this bound, an operator
+# repeatedly requesting changes on the same step could re-dispatch it
+# indefinitely — LangGraph's own recursion_limit would eventually stop it, but
+# that surfaces as an opaque graph error, not an honest step-failure message.
+APPLY_REJECT_MAX_ATTEMPTS: int = 2

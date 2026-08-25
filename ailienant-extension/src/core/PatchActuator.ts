@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { applyPatch } from 'diff';
 import type { ASTToken } from '../shared/config';
 
-interface WorkspaceEditItem {
+export interface WorkspaceEditItem {
     file_path: string;
     // O(Δ) transport (DEBT-024): the HITL preview carries a server-computed unified
     // diff and the host reconstructs the new side via applyPatch. The apply-write
@@ -50,6 +50,48 @@ export interface PatchAppliedResult {
     // applied/stale fields, so this rides along the existing ack harmlessly and
     // also seeds the webview's inline diff.
     diffs?: PatchedFileDiff[];
+    // 13.0.9 — files recognized as already holding the exact intended content
+    // (see classifyPatchEdit's 'already-applied' case) rather than genuinely
+    // stale. Always included in applied_files too; additive and diagnostic
+    // only — no consumer branches on it today.
+    already_applied?: string[];
+}
+
+/**
+ * The pure per-file classification the stale guard makes — extracted so the
+ * decision itself is unit-testable without touching any `vscode.*` API
+ * (mirrors `buildHitlResponseData`'s extraction in providers/workspace_panel.ts).
+ *
+ * 'already-applied' recognizes a lost-ack retry: a WS disconnect right after a
+ * PRIOR apply already wrote and saved this exact content, before the ack ever
+ * reached the backend, makes the backend re-send the same edit. Without this
+ * case the retry's currentHash no longer matches base_hash (the file moved on
+ * from the original proposal to its own already-correct destination) and the
+ * whole atomic set aborted as stale, even though nothing was actually wrong.
+ */
+export type PatchEditClassification =
+    | { kind: 'write'; newContent: string }
+    | { kind: 'already-applied'; newContent: string }
+    | { kind: 'stale' };
+
+export function classifyPatchEdit(
+    item: WorkspaceEditItem,
+    currentHash: string,
+    oldContent: string,
+): PatchEditClassification {
+    // A real base_hash is always a 64-char sha256 (never empty); skip the
+    // guard only when it's genuinely absent.
+    if (item.base_hash && currentHash !== item.base_hash) {
+        if (typeof item.new_content === 'string' && currentHash === PatchActuator._hash(item.new_content)) {
+            return { kind: 'already-applied', newContent: item.new_content };
+        }
+        return { kind: 'stale' };
+    }
+    const newContent = PatchActuator._effectiveNewContent(item, oldContent);
+    if (newContent === null) {
+        return { kind: 'stale' };
+    }
+    return { kind: 'write', newContent };
 }
 
 /**
@@ -78,7 +120,9 @@ export class PatchActuator {
      * guard — a permanent, deterministic false "changed since the proposal" for
      * that file regardless of whether anything actually changed.
      */
-    private static _hash(text: string): string {
+    // Package-visible (not `private`) so the module-level classifyPatchEdit
+    // function above can call it directly, matching this class's own usage.
+    static _hash(text: string): string {
         const normalized = PatchActuator._normalizeEol(text).replace(/^\uFEFF/, '');
         return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex');
     }
@@ -101,7 +145,8 @@ export class PatchActuator {
      * `null` so callers degrade to a stale-file notice rather than write/show
      * corrupt content. A normalized old side keeps the match EOL-stable.
      */
-    private static _effectiveNewContent(item: WorkspaceEditItem, oldContent: string): string | null {
+    // Package-visible (not `private`) for the same reason as _hash above.
+    static _effectiveNewContent(item: WorkspaceEditItem, oldContent: string): string | null {
         if (typeof item.new_content === 'string') {
             return item.new_content;
         }
@@ -179,37 +224,34 @@ export class PatchActuator {
             ok: false,
             applied_files: [],
             stale_files: [],
+            already_applied: [],
         };
 
         try {
             const edit = new vscode.WorkspaceEdit();
             const toSave: vscode.Uri[] = [];
 
-            // Pass 1 — resolve + stale guard for every file (atomic: any stale aborts all).
-            // The effective new side is resolved here too: full new_content when the
-            // backend shipped it, else reconstructed from the unified diff. A diff that
-            // cannot be reconstructed against the live old side is a drift — treated as
-            // stale so the whole set aborts rather than writing corrupt content.
-            const resolved: Array<{ uri: vscode.Uri; doc: vscode.TextDocument | null; item: WorkspaceEditItem; newContent: string }> = [];
+            // Pass 1 — resolve + stale guard for every file (atomic: any genuine
+            // conflict aborts all). classifyPatchEdit also recognizes a lost-ack
+            // retry (the file already holds the exact intended content) as
+            // 'already-applied' rather than 'stale', so a dropped WS ack can
+            // never falsely abort an otherwise-successful apply on retry.
+            const resolved: Array<{ uri: vscode.Uri; doc: vscode.TextDocument | null; item: WorkspaceEditItem; newContent: string; alreadyApplied: boolean }> = [];
             for (const item of payload.edits) {
                 const uri = PatchActuator._resolveUri(item.file_path);
                 const doc = await PatchActuator._openExisting(uri);
                 const oldContent = doc ? doc.getText() : '';
                 const currentHash = doc ? PatchActuator._hash(doc.getText()) : PatchActuator._hash('');
-                // A real base_hash is always a 64-char sha256 (never empty); skip the
-                // guard only when it's genuinely absent.
-                if (item.base_hash && currentHash !== item.base_hash) {
+                const classified = classifyPatchEdit(item, currentHash, oldContent);
+                if (classified.kind === 'stale') {
                     result.stale_files.push(item.file_path);
-                    resolved.push({ uri, doc, item, newContent: '' });
+                    resolved.push({ uri, doc, item, newContent: '', alreadyApplied: false });
                     continue;
                 }
-                const newContent = PatchActuator._effectiveNewContent(item, oldContent);
-                if (newContent === null) {
-                    result.stale_files.push(item.file_path);
-                    resolved.push({ uri, doc, item, newContent: '' });
-                    continue;
-                }
-                resolved.push({ uri, doc, item, newContent });
+                resolved.push({
+                    uri, doc, item, newContent: classified.newContent,
+                    alreadyApplied: classified.kind === 'already-applied',
+                });
             }
 
             if (result.stale_files.length > 0) {
@@ -222,18 +264,25 @@ export class PatchActuator {
             // Pass 2 — build one atomic WorkspaceEdit (create new files, full-range replace existing).
             // The pre-edit text (doc.getText()) is captured here for the inline diff the
             // webview renders — the actuator is the only place that holds both sides.
+            // An already-applied file is reported as a success WITHOUT a redundant
+            // write (no dirty flag, no mtime bump, no re-save of identical bytes).
             const diffs: PatchedFileDiff[] = [];
-            for (const { uri, doc, item, newContent } of resolved) {
+            for (const { uri, doc, item, newContent, alreadyApplied } of resolved) {
                 const oldContent = doc ? doc.getText() : '';
-                if (!doc) {
-                    edit.createFile(uri, { ignoreIfExists: true });
-                    edit.insert(uri, new vscode.Position(0, 0), newContent);
+                if (!alreadyApplied) {
+                    if (!doc) {
+                        edit.createFile(uri, { ignoreIfExists: true });
+                        edit.insert(uri, new vscode.Position(0, 0), newContent);
+                    } else {
+                        const fullRange = new vscode.Range(
+                            new vscode.Position(0, 0),
+                            doc.lineAt(Math.max(doc.lineCount - 1, 0)).range.end
+                        );
+                        edit.replace(uri, fullRange, newContent);
+                    }
+                    toSave.push(uri);
                 } else {
-                    const fullRange = new vscode.Range(
-                        new vscode.Position(0, 0),
-                        doc.lineAt(Math.max(doc.lineCount - 1, 0)).range.end
-                    );
-                    edit.replace(uri, fullRange, newContent);
+                    result.already_applied?.push(item.file_path);
                 }
                 diffs.push({
                     file_path: item.file_path,
@@ -241,13 +290,13 @@ export class PatchActuator {
                     new_content: PatchActuator._normalizeEol(newContent),
                     status: doc ? 'edit' : 'create',
                 });
-                toSave.push(uri);
                 result.applied_files.push(item.file_path);
             }
 
             const applied = await vscode.workspace.applyEdit(edit);
             if (!applied) {
                 result.applied_files = [];
+                result.already_applied = [];
                 result.error = 'VS Code rejected the workspace edit.';
                 return result;
             }
@@ -266,6 +315,7 @@ export class PatchActuator {
         } catch (err: unknown) {
             result.ok = false;
             result.applied_files = [];
+            result.already_applied = [];
             result.error = err instanceof Error ? err.message : String(err);
             return result;
         }

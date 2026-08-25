@@ -102,11 +102,21 @@ def route_after_validation(state: Dict[str, Any]) -> str:
       iteration). This is the RELAY multi-step loop.
     - else → END (all steps reached a terminal status).
 
-    Uses the SAME ``status == "pending"`` predicate ``route_to_coders`` selects on,
-    so routing and dispatch never disagree. A stall guard ends the graph if the step
-    just executed is still ``pending`` (a durable-write failure or an early-return
-    step) so a non-advancing loop can never spin.
+    Uses the SAME ``is_dispatchable`` predicate ``route_to_coders`` selects on
+    (``brain/state.py``), so routing and dispatch never disagree — widened
+    alongside it for 13.0.9's incremental apply gate (``revision_requested`` is
+    dispatchable-again, not a stall). A stall guard ends the graph if the step
+    just executed reached neither a terminal status NOR ``revision_requested``
+    (a durable-write failure, an early-return step, or — new in 13.0.9 — a step
+    that reached ``apply_patch`` still ``in_progress`` with no artifact to
+    apply, since orphaning it there would otherwise defeat this exact guard)
+    so a non-advancing loop can never spin.
+
+    Also routes ``healing_required`` to ``error_correction`` (13.0.9): once
+    ``run_command`` execution moves downstream of the coder into the apply
+    gate, a non-zero-exit self-heal signal has nowhere else to route from.
     """
+    from brain.state import is_dispatchable, is_terminal
     from core.telemetry import log_routing_decision
 
     if state.get("guardrail_failed"):
@@ -118,22 +128,34 @@ def route_after_validation(state: Dict[str, Any]) -> str:
         )
         return "coder_agent"
 
+    if state.get("healing_required"):
+        log_routing_decision(
+            session_id=state.get("task_id", ""),
+            source="validate_output",
+            target="error_correction",
+            reason="healing_required=True",
+        )
+        return "error_correction"
+
     mission = state.get("mission_spec")
     tasks = list(getattr(mission, "tasks", []) or [])
     current = state.get("current_step_id")
 
-    # Stall guard: the step we just ran MUST have reached a terminal status. If it is
-    # still pending, looping would re-dispatch the same step forever — end instead.
+    # Stall guard: the step we just ran MUST have reached a terminal status, or
+    # be legitimately re-dispatchable (revision_requested). Anything else —
+    # still pending, or orphaned in_progress/awaiting_approval — means looping
+    # would re-dispatch nothing or nobody forever; end instead.
     just_ran = next((t for t in tasks if t.step_number == current), None)
-    if just_ran is not None and just_ran.status == "pending":
+    if just_ran is not None and not is_terminal(just_ran) and just_ran.status != "revision_requested":
         logger.error(
-            "route_after_validation: step #%s still 'pending' after execution — "
-            "ending to avoid a non-advancing loop.", current,
+            "route_after_validation: step #%s in non-advancing status %r after "
+            "execution — ending to avoid a non-advancing loop.",
+            current, just_ran.status,
         )
         _log_end(state, "wbs_stall_step_not_terminal")
         return END
 
-    if any(t.status == "pending" for t in tasks):
+    if any(is_dispatchable(t) for t in tasks):
         log_routing_decision(
             session_id=state.get("task_id", ""),
             source="validate_output",

@@ -155,11 +155,19 @@ def test_i18n1_language_mirror_reaches_the_coder_prompt() -> None:
 
 
 def test_hon1_summary_does_not_claim_apply_disabled() -> None:
+    # 13.0.9: _format_coding_summary is now an outcome report sourced from
+    # applied_files_log (per-step in-graph approval), not a pre-apply
+    # proposal — signature/semantics updated, HON1's core guarantee (never
+    # claim disk-write is disabled or promise an undo that can't happen) held.
     mission = _mission(outcome="ship it")
-    summary = TaskService._format_coding_summary(mission, {"src/x.py": "patch"}, [], plan_surface=True)
+    applied_log = [{"file_path": "src/x.py", "command": None, "status": "completed", "step_number": 1}]
+    summary = TaskService._format_coding_summary(mission, applied_log, [])
     assert "not yet enabled" not in summary       # the old contradictory lie is gone
-    assert "Plan panel" in summary                # points to the rich surface
+    assert "Ctrl+Z" not in summary                # no editor is ever opened for these writes
     assert "```diff" not in summary               # diffs live in the panel, not chat
+
+    empty_summary = TaskService._format_coding_summary(mission, [], [])
+    assert "Plan panel" in empty_summary          # a no-edits turn still points to the rich surface
 
 
 # ── OBS1 — narration rides the injected seam; the agent never imports transport ─

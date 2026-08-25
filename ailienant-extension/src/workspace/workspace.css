@@ -2115,6 +2115,14 @@ html, body, #root { height: 100%; }
   overflow-y: auto;
   scroll-behavior: smooth;
 }
+/* The current turn (the one still visibly "live" to the user, whether it is
+   actively streaming or has just settled) grows naturally in the page instead
+   of scrolling inside a small box — a past turn a user manually re-expands to
+   inspect history keeps the bounded internal scroll above. */
+.ws-timeline[data-latest="true"] .ws-timeline-rows {
+  max-height: none;
+  overflow-y: visible;
+}
 
 .ws-timeline-row {
   position: relative;
@@ -2388,6 +2396,122 @@ html, body, #root { height: 100%; }
 }
 .ws-diff-loadfull:hover {
   background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-surface));
+}
+
+/* ── Agent Companion Explanation Stack (13.0.7) ──────────────────────── */
+/* A best-effort structured explanation fired at a decision point (grill round
+   closing, plan committing, patch landing, self-heal resolving). Reuses the
+   diff/exec card's bordered-surface convention so it reads as part of the
+   same visual family rather than a competing style. */
+.ws-companion-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+.ws-companion-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--vscode-editor-background, var(--bg-main));
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.ws-companion-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-primary);
+  margin-bottom: 5px;
+}
+.ws-companion-objective {
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.ws-companion-security {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700);
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 8%, transparent);
+}
+.ws-companion-security-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  margin-bottom: 3px;
+}
+.ws-companion-list {
+  margin: 0;
+  padding-left: 16px;
+}
+.ws-companion-list li { margin: 2px 0; }
+.ws-companion-decisions { margin: 6px 0; }
+.ws-companion-subheading {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+.ws-companion-decision {
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid var(--border-subtle);
+  margin-bottom: 3px;
+}
+.ws-companion-decision-name { color: var(--text-primary); font-weight: 600; }
+.ws-companion-decision-rationale { margin-top: 1px; }
+.ws-companion-decision-meta { margin-top: 2px; font-size: 10.5px; opacity: 0.85; }
+.ws-companion-details { margin-top: 6px; }
+/* Button-neutralized to a plain row, mirroring .ws-timeline-row-header. */
+.ws-companion-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--accent-primary);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  padding: 0;
+}
+.ws-companion-details-body { margin-top: 6px; }
+.ws-companion-detail-section { margin-bottom: 6px; }
+.ws-companion-detail-heading {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.ws-companion-note {
+  padding: 4px 2px;
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+/* Skeleton placeholder — shown only while the turn is still active and no
+   companion has arrived yet (the pending affordance belongs to the turn, not
+   to any one entry). Reuses the existing opacity-pulse keyframe. */
+.ws-companion-skeleton-bar {
+  height: 9px;
+  border-radius: 3px;
+  margin: 5px 0;
+  background: var(--border-subtle);
+  animation: ws-pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-companion-skeleton-bar { animation: none; }
 }
 
 /* ── Ghost Telemetry (ADR-723) — live action-log + per-turn token footer ── */

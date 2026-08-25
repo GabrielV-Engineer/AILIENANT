@@ -2790,3 +2790,80 @@ implicit assumption the pre-fix code always made.
 `session.id` unconditionally (unlike `answer`/`selected_option`/`answers`, which forward
 conditionally per §52 — the host always knows its own session identity, so there is no
 "absent" case to preserve).
+
+## §56 — Incremental Per-Step Apply Gate (Manifest 13.0.9)
+
+The post-graph whole-WBS approval replay (a single pass over the frozen `pending_patches`
+dict after every step had already run) is replaced by two graph nodes — `apply_patch`
+(PREPARE, `brain/apply_gate.py::run_apply_prepare_node`) and `apply_commit` (GATE,
+interrupt-first, `run_apply_commit_node`) — gating one step at a time. All changes below are
+additive; a pre-13.0.9 checkpoint deserializes unchanged.
+
+**`WBSStep` (`brain/state.py`):**
+
+- `status` widened: `+ "awaiting_approval", "rejected", "revision_requested"`. A step now only
+  reaches `completed` after the human decision (or the ALLOW/auto-accept path) is known, never
+  the instant the coder generates it.
+- `agent_notes: Optional[str] = None` — a directive FOR THE CODER ONLY (e.g. the polyglot-file
+  patch-tool requirement `agents/planner.py::_inject_polyglot_constraints` now attaches here
+  instead of appending to `description`). Never rendered on the human-facing checklist, never
+  folded into a semantic-cache key or a retrieval query.
+
+**New `AIlienantGraphState` channels (`brain/state.py`), all additive:**
+
+| Channel | Type | Reducer | Safe default |
+|---|---|---|---|
+| `pending_step_files` | `Dict[str, List[str]]` | `operator.or_` | `{}` |
+| `pending_step_command` | `Dict[str, str]` | `operator.or_` | `{}` |
+| `pending_apply` | `Optional[Dict[str, Any]]` | scalar overwrite | `None` |
+| `apply_feedback` | `Optional[Dict[str, Any]]` | scalar overwrite | `None` |
+| `apply_attempts` | `Dict[str, int]` | `operator.or_` | `{}` |
+| `applied_step_ids` | `List[int]` | `operator.add` | `[]` |
+| `applied_files_log` | `List[Dict[str, Any]]` | `operator.add` | `[]` |
+| `auto_accept_low_risk` | `bool` | scalar overwrite | `False` |
+| `last_execution_context` | `Optional[Dict[str, Any]]` | scalar overwrite | `None` |
+
+`pending_step_files` is load-bearing: the pre-existing `pending_patches`/`pending_contents`
+channels use `operator.or_` and can never be cleared, so `apply_patch` must be told which
+paths belong to THIS step — a later step re-editing an earlier step's file no longer makes
+the first diff unrecoverable. `pending_apply` carries diffs, not file bodies (commit re-reads
+from `pending_contents`) and is a plain dict (serialized into the checkpoint's pending
+writes). `last_execution_context` (`{command, exit_code, stdout_tail, stderr_tail}`) is set
+ONLY alongside a `healing_required=True` signal that originated from `_commit_command`
+(which also sets `failed_node="apply_commit"` in the SAME return dict) — a consumer
+(`agents/error_correction.py`) MUST gate on `failed_node == "apply_commit"` before reading it,
+since — like every other field in the self-healing block — it is a scalar overwrite with no
+cross-turn staleness guard on its own.
+
+**`ActivityKind` (`api/ws_contracts.py`):** one new arm, `"subagent"` (`ref = task_id`,
+`target = role`) — `brain/nodes/subagent_worker_node.py::subagent_worker` previously emitted
+nothing at all on the Glass-Box Timeline channel regardless of how long its tool loop ran.
+Emitted via the same `push_activity` config seam `apply_gate.py`'s `diff` marker uses, not
+`narrate`'s verb-classification, since this is structured dispatch metadata rather than a
+repurposed free-text node label.
+
+**`GraphMutationPayload.new_status`** (`api/ws_contracts.py`) widened to match `WBSStep.status`
+above — an un-widened `Literal` would raise inside `emit_graph_mutation`'s fire-and-forget
+task and fail silently the first time a step reached `awaiting_approval`/`rejected`/
+`revision_requested`.
+
+**`PatchAppliedPayload.already_applied: List[str] = []`** (`api/ws_contracts.py`) — files the
+host (`PatchActuator.ts::classifyPatchEdit`) recognized as already holding the exact intended
+content (a lost WS ack after a prior apply already succeeded) rather than genuinely stale, so
+a retry can never falsely abort the whole atomic write as a conflict. Always a subset of
+`applied_files`. Additive/diagnostic only — no backend consumer branches on it differently
+today; `core/write_pipeline.py::apply_patch_set`'s caller already treats an already-applied
+file identically to a freshly-applied one (both land in `applied_files`), which is the
+correct behavior.
+
+**Why the split (replay-safety).** LangGraph replays a node from the top on resume
+(DEBT-185). `apply_commit`'s first statement is `if not state.get("pending_apply"): return {}`
+— pure and idempotent — and its actual `interrupt()` call (via `core/hitl.py::request_graph_approval`)
+is the FIRST side-effectful action in the node, mirroring the existing
+`drift_compute`/`drift_gate` and `finops_gate` precedent. Idempotency against a
+double-delivered resume is enforced by checking `applied_step_ids` before anything else.
+
+**Backward-compat.** Every new channel defaults to an empty/`None` value a pre-13.0.9
+checkpoint already implicitly has (`.get(...) or <empty>` everywhere it's read). The three new
+`WBSStep.status` values and `agent_notes` are additive Pydantic fields — an older persisted
+plan missing them deserializes with the new field(s) absent/`None`.

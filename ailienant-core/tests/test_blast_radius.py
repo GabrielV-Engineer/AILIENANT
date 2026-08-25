@@ -16,7 +16,7 @@ tuples (no live DB), plus the async fetch wrapper and the pre-apply gate wired i
 """
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict
+from typing import Any, Dict
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -140,7 +140,15 @@ async def test_async_wrapper_fetches_and_delegates(monkeypatch: pytest.MonkeyPat
     assert result == ["/ws/main.ts"]
 
 
-# ── task_service integration (additive, boy-scout) ───────────────────────────
+# ── apply-gate integration (13.0.9) ──────────────────────────────────────────
+#
+# The blast-radius pre-apply gate now lives in brain/apply_gate.py's
+# run_apply_prepare_node (escalation) and run_apply_commit_node (the actual
+# interrupt + veto), gating one WBS step at a time instead of the whole turn's
+# frozen pending_patches dict. These three tests used to drive
+# TaskService._run_coding_task end-to-end via a faked alienant_app.astream —
+# that seam no longer runs any apply logic at all (it moved into the graph),
+# so the tests call the two nodes directly, mirroring test_task_service_apply.py.
 
 
 def _mission() -> Any:
@@ -164,127 +172,88 @@ def _mission() -> Any:
     )
 
 
-def _final_state() -> Dict[str, Any]:
+def _state() -> Dict[str, Any]:
     return {
+        "task_id": "s1",
+        "project_id": "p1",
+        "workspace_root": "/ws",
+        "current_step_id": 1,
         "mission_spec": _mission(),
-        "pending_patches": {"calc.py": "--- a/calc.py\n+++ b/calc.py\n"},
+        "session_permission_mode": "STANDARD",  # ALLOW for WRITE, absent an escalation
+        "pending_step_files": {"1": ["calc.py"]},
+        "pending_step_command": {},
         "pending_contents": {"calc.py": "def f():\n    return 2\n"},
         "pending_base_hash": {"calc.py": "deadbeef"},
-        "errors": [],
-        "hitl_pending": False,
+        "auto_accept_low_risk": False,
+        "applied_files_log": [],
+        "applied_step_ids": [],
+        "apply_attempts": {},
     }
 
 
-def _fake_astream(*_a: Any, **_k: Any) -> AsyncIterator[Dict[str, Any]]:
-    async def _gen() -> AsyncIterator[Dict[str, Any]]:
-        yield _final_state()
-
-    return _gen()
-
-
-def _payload() -> Any:
-    from core.task_service import TaskPayload
-
-    return TaskPayload(
-        task_prompt="bump the increment",
-        dirty_buffers=[],
-        project_id=None,
-        workspace_root="/ws",
-    )
-
-
 async def test_over_threshold_radius_escalates_and_veto_blocks_apply() -> None:
-    from core.task_service import TaskService
+    from brain.apply_gate import run_apply_commit_node, run_apply_prepare_node
 
-    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
     over_threshold = [f"dep{i}.py" for i in range(30)]
+    with patch("core.blast_radius.compute_blast_radius", new=AsyncMock(return_value=over_threshold)):
+        prepared = await run_apply_prepare_node(_state())
 
-    # This payload's default permission mode may route through the per-file
-    # FILE_WRITE HITL card before the blast-radius gate; approve that one (so the
-    # flow actually reaches the gate) and decline only the BLAST_RADIUS escalation —
-    # the two request kinds share one mocked function, so they're disambiguated by
-    # the call's own request_kind rather than a single fixed return value.
-    async def _approval_side_effect(*_a: Any, **kwargs: Any) -> Dict[str, Any]:
-        if kwargs.get("request_kind") == "BLAST_RADIUS":
-            return {"approved": False, "comment": None}
-        return {"approved": True, "comment": None, "modified_content": None}
+    assert prepared["pending_apply"]["decision"] == "hitl"  # escalated from ALLOW
+    assert prepared["pending_apply"]["blast_radius_files"] == over_threshold
+    assert prepared["mission_spec"].tasks[0].status == "awaiting_approval"
 
-    approval_mock = AsyncMock(side_effect=_approval_side_effect)
-    ctxs = [
-        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
-        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
-        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
-        patch("core.blast_radius.compute_blast_radius", new=AsyncMock(return_value=over_threshold)),
-    ]
-    for c in ctxs:
-        c.start()
-    try:
-        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
-    finally:
-        for c in ctxs:
-            c.stop()
+    state = _state()
+    state["pending_apply"] = prepared["pending_apply"]
+    apply_mock = AsyncMock()
+    with patch("brain.apply_gate.request_graph_approval", return_value={"approved": False, "comment": None, "modified_content": None}), \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        committed = await run_apply_commit_node(state)
 
-    blast_calls = [
-        c for c in approval_mock.await_args_list if c.kwargs.get("request_kind") == "BLAST_RADIUS"
-    ]
-    assert len(blast_calls) == 1
-    assert str(len(over_threshold)) in blast_calls[0].kwargs["action_description"]
     apply_mock.assert_not_awaited()  # declined escalation vetoes the write
+    assert committed["mission_spec"].tasks[0].status == "rejected"
 
 
-async def test_under_threshold_radius_does_not_prompt() -> None:
-    from core.task_service import TaskService
+async def test_under_threshold_radius_does_not_escalate() -> None:
+    from brain.apply_gate import run_apply_commit_node, run_apply_prepare_node
 
-    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
-    approval_mock = AsyncMock(return_value={"approved": True, "comment": None, "modified_content": None})
-    ctxs = [
-        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
-        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
-        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
-        patch("core.blast_radius.compute_blast_radius", new=AsyncMock(return_value=["dep.py"])),
-    ]
-    for c in ctxs:
-        c.start()
-    try:
-        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
-    finally:
-        for c in ctxs:
-            c.stop()
+    with patch("core.blast_radius.compute_blast_radius", new=AsyncMock(return_value=["dep.py"])):
+        prepared = await run_apply_prepare_node(_state())
 
-    # Under threshold: no BLAST_RADIUS escalation call at all — only the
-    # per-file HITL approval fires (this payload's default permission mode).
-    for call in approval_mock.await_args_list:
-        assert call.kwargs.get("request_kind") != "BLAST_RADIUS"
+    assert prepared["pending_apply"]["decision"] == "allow"  # never escalated
+    assert prepared["pending_apply"]["blast_radius_files"] == []
+
+    state = _state()
+    state["pending_apply"] = prepared["pending_apply"]
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        committed = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()  # under threshold, ALLOW never interrupts
     apply_mock.assert_awaited_once()
+    assert committed["mission_spec"].tasks[0].status == "completed"
 
 
 async def test_mapper_fault_fails_open_and_still_applies() -> None:
-    from core.task_service import TaskService
+    from brain.apply_gate import run_apply_commit_node, run_apply_prepare_node
 
-    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
-    approval_mock = AsyncMock(return_value={"approved": True, "comment": None, "modified_content": None})
-    ctxs = [
-        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
-        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
-        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
-        patch("core.blast_radius.compute_blast_radius", side_effect=RuntimeError("graph boom")),
-    ]
-    for c in ctxs:
-        c.start()
-    try:
-        await TaskService()._run_coding_task("s1", _payload(), "SEQUENTIAL")
-    finally:
-        for c in ctxs:
-            c.stop()
+    with patch("core.blast_radius.compute_blast_radius", side_effect=RuntimeError("graph boom")), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        prepared = await run_apply_prepare_node(_state())
 
-    # A mapper fault is advisory — it must never block a legitimate write.
+    # A mapper fault is advisory — it must never block a legitimate write, and
+    # must not itself raise out of prepare.
+    assert prepared["pending_apply"]["decision"] == "allow"
+
+    state = _state()
+    state["pending_apply"] = prepared["pending_apply"]
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        committed = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
     apply_mock.assert_awaited_once()
+    assert committed["mission_spec"].tasks[0].status == "completed"

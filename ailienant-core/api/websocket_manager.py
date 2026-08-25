@@ -500,12 +500,16 @@ class ConnectionManager:
             ServerGraphMutationEvent(
                 data=GraphMutationPayload(
                     step_number=step_number,
-                    # Callers (e.g. agents/coder.py) pass a plain str; the
-                    # payload field is a closed Literal. Cast here rather than
-                    # tightening the param type, which would cascade to the
-                    # locked agent call sites.
+                    # Callers (e.g. agents/coder.py, brain/apply_gate.py) pass a
+                    # plain str; the payload field is a closed Literal. Cast here
+                    # rather than tightening the param type, which would cascade
+                    # to the locked agent call sites. Kept in lockstep with
+                    # GraphMutationPayload.new_status and WBSStep.status.
                     new_status=cast(
-                        Literal["pending", "in_progress", "completed", "failed"],
+                        Literal[
+                            "pending", "in_progress", "completed", "failed",
+                            "awaiting_approval", "rejected", "revision_requested",
+                        ],
                         new_status,
                     ),
                     agent_name=agent_name,

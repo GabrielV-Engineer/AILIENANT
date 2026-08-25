@@ -10,6 +10,7 @@ map) with an injected answer synthesiser, so no gateway or VFS is touched.
 from __future__ import annotations
 
 from typing import Any, Dict, List, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from langgraph.constants import Send
@@ -151,3 +152,73 @@ async def test_worker_flags_nonconforming_answer() -> None:
     env = result["_dispatch_results"][0]
     assert env["status"] == "error"
     assert "summary" in (env["error_message"] or "")
+
+
+# ── B6 — the Glass-Box Timeline "subagent" activity marker (13.0.9) ────────────
+# Previously this node emitted nothing at all — a dispatched subagent's work
+# was invisible regardless of how long its tool loop ran.
+
+
+@pytest.mark.anyio
+async def test_worker_emits_a_subagent_activity_marker_on_success() -> None:
+    push_activity = AsyncMock()
+    result = await subagent_worker(
+        {"_dispatch_task": _task(0, role="core_dev").model_dump(), "session_permission_mode": "READ_ONLY"},
+        {"configurable": {"dispatch_answer_fn": _answer_fn, "push_activity": push_activity}},
+    )
+    assert result["_dispatch_results"][0]["status"] == "ok"
+    push_activity.assert_awaited_once_with("subagent", target="core_dev", metric="ok", ref="t0")
+
+
+@pytest.mark.anyio
+async def test_worker_emits_the_marker_even_on_a_failed_answer() -> None:
+    async def _boom(task: SubagentTask, obs: List[str]) -> Dict[str, Any]:
+        raise RuntimeError("synth failed")
+
+    push_activity = AsyncMock()
+    await subagent_worker(
+        {"_dispatch_task": _task(0).model_dump(), "session_permission_mode": "READ_ONLY"},
+        {"configurable": {"dispatch_answer_fn": _boom, "push_activity": push_activity}},
+    )
+    push_activity.assert_awaited_once_with("subagent", target="core_dev", metric="error", ref="t0")
+
+
+@pytest.mark.anyio
+async def test_worker_with_no_push_activity_configured_is_a_silent_no_op() -> None:
+    # No "push_activity" key at all (the shape most existing call sites/tests
+    # already use) must behave exactly as before this addition — no crash.
+    result = await subagent_worker(
+        {"_dispatch_task": _task(0).model_dump(), "session_permission_mode": "READ_ONLY"},
+        {"configurable": {"dispatch_answer_fn": _answer_fn}},
+    )
+    assert result["_dispatch_results"][0]["status"] == "ok"
+
+
+@pytest.mark.anyio
+async def test_push_activity_reaches_a_send_dispatched_worker() -> None:
+    """The seam this node actually uses (RunnableConfig.configurable) is an
+    explicit parameter LangGraph threads to every node in a run — Send() fans
+    out STATE, never config — so this is real evidence the marker fires
+    through a genuine Send() dispatch, not just a direct subagent_worker(...)
+    call. (A separate, narrower concern — whether core/activity_context.py's
+    contextvars-based sink for record_execution's "command" markers survives
+    THIS SAME fan-out — is orthogonal: that sink is bound by the turn-level
+    caller in core/task_service.py, several layers above dispatch_origin, and
+    is not exercised by this harness at all.)"""
+    g: StateGraph = StateGraph(AIlienantGraphState)
+    g.add_node("dispatch_origin", cast(Any, dispatch_origin))
+    g.add_node("subagent_worker", cast(Any, subagent_worker))
+    g.add_edge(START, "dispatch_origin")
+    g.add_conditional_edges("dispatch_origin", dispatch_router, ["subagent_worker"])
+    g.add_edge("subagent_worker", END)
+    app = g.compile()
+
+    push_activity = AsyncMock()
+    result = await app.ainvoke(
+        cast(AIlienantGraphState, _base_state(_plan(2))),
+        {"configurable": {"dispatch_answer_fn": _answer_fn, "push_activity": push_activity}},
+    )
+    assert len(result["_dispatch_results"]) == 2
+    assert push_activity.await_count == 2
+    fired_refs = {c.kwargs.get("ref") for c in push_activity.await_args_list}
+    assert fired_refs == {"t0", "t1"}

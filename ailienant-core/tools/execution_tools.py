@@ -60,7 +60,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.activity_context import current_activity_sink
 from core.permissions import ToolPrivilegeTier
-from core.sandbox import resolve_execution_adapter
+from core.sandbox import SandboxResult, resolve_execution_adapter
 from core.tool_rag import ToolRAGStore, ToolSchema
 from tools.control_tools import DANGEROUS_COMMANDS_REGEX
 
@@ -155,6 +155,67 @@ def _match_dangerous(command: str) -> Optional[str]:
     return None
 
 
+# A WBS run_command step overloads WBSStep.target_file to carry either a file
+# path or a command (brain/state.py's target_file docstring: "Exact path of
+# the affected file ... or command to run"). When the planner LLM has nothing
+# concrete to put there, it writes a placeholder rather than an empty string —
+# confirmed live: "N/A" reached a real cmd.exe shell (137s, then a Windows
+# "'N' is not recognized" failure) because nothing on the execution path ever
+# validated the string before spawning it.
+_COMMAND_PLACEHOLDER_TOKENS: FrozenSet[str] = frozenset({
+    "n/a", "na", "tbd", "todo", "none", "-", "--", "...", "<command>", "null",
+})
+_COMMAND_MAX_LEN: int = 4000
+# Denylist, not an allowlist — a real command can be an arbitrary executable
+# name (pytest, npm, ./gradlew, ./build.sh have no signal in common), but a
+# source/config file extension on an unquoted, space-free single token is a
+# reliable "this is target_file's PATH meaning, not a command" signal. An
+# allowlist of "looks executable" would be unbounded and reject legitimate
+# one-word invocations; this denylist only fires on the shape the live bug
+# actually had.
+_NON_EXECUTABLE_EXTENSIONS: FrozenSet[str] = frozenset({
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".md", ".txt", ".yml", ".yaml",
+    ".css", ".html", ".htm", ".xml", ".toml", ".ini", ".cfg", ".env", ".lock",
+    ".java", ".go", ".rs", ".rb", ".php", ".c", ".cpp", ".h", ".hpp", ".cs",
+    ".sql", ".csv", ".log",
+})
+
+
+def validate_step_command(raw: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Fail-closed hygiene check for a command string before it ever reaches a
+    shell. Returns ``(command, None)`` when the string looks like a real
+    command, or ``(None, reason)`` when it must be refused outright — a
+    refusal here is a step failure with an actionable error, never "run it
+    anyway and see what happens."
+
+    Deliberately conservative: this is a hygiene filter for placeholder/empty/
+    path-shaped garbage, NOT a security boundary — `_match_dangerous` and the
+    permission gate (`run_guarded_command`) are what actually gate a
+    legitimate-looking but dangerous command. A false rejection here just
+    fails one WBS step with a clear reason; a false negative still has two
+    more gates behind it.
+    """
+    if raw is None:
+        return None, "no command was provided"
+    cmd = raw.strip()
+    if not cmd:
+        return None, "command is empty"
+    if cmd.lower() in _COMMAND_PLACEHOLDER_TOKENS:
+        return None, f"command is a placeholder token ({raw!r}), not a real command"
+    if len(cmd) > _COMMAND_MAX_LEN:
+        return None, f"command exceeds the {_COMMAND_MAX_LEN}-character ceiling"
+    # A single, space-free token with a path separator AND a source/config
+    # extension is almost certainly the overloaded target_file's PATH meaning
+    # leaking through on a run_command step (e.g. "src/components/Layout.jsx"),
+    # not an intentional command — a real script invocation ("./build.sh",
+    # "./gradlew") or bare executable name ("pytest", "npm") never matches this.
+    if ("/" in cmd or "\\" in cmd) and " " not in cmd:
+        _, _, _suffix = cmd.rpartition(".")
+        if _suffix and f".{_suffix.lower()}" in _NON_EXECUTABLE_EXTENSIONS:
+            return None, f"command looks like a bare file path ({raw!r}), not a command to run"
+    return cmd, None
+
+
 # =====================================================================
 # Task A — SandboxBashTool
 # =====================================================================
@@ -170,6 +231,164 @@ class SandboxBashInput(BaseModel):
     # NOT model-chosen arguments — the LLM must never pick its own permission
     # mode. They are accepted by _arun but kept OUT of args_schema so they never
     # enter the tool-selection payload (preserving the Tool-RAG size guarantee).
+
+
+# Synthetic exit code marking a SandboxResult that never reached an adapter —
+# the command was refused by a permission/dangerous-pattern guard before any
+# subprocess spawned. render_guarded_command_result() detects this sentinel
+# and returns the guard's own pre-formatted message (carried verbatim in
+# `stdout`) instead of wrapping it in the `exit=N` envelope a real execution
+# gets. Distinct from -1, which NativeHITLSandboxAdapter already uses for an
+# adapter-level decline/timeout — this sentinel means "never reached an
+# adapter at all," a different failure class worth telling apart in a log.
+_GUARD_REFUSED_EXIT_CODE: int = -9
+
+
+async def run_guarded_command(
+    command: str,
+    *,
+    timeout_sec: float = _DEFAULT_BASH_TIMEOUT_SEC,
+    working_dir: Optional[str] = None,
+    session_id: Optional[str] = None,
+    session_permission_mode: Optional[str] = None,
+) -> SandboxResult:
+    """The full guard chain — permission gate, YOLO/dangerous-pattern
+    interceptor, adapter dispatch — as a single typed call, shared by every
+    command-execution path in the codebase.
+
+    Extracted verbatim from ``SandboxBashTool._arun`` (unchanged logic, only
+    the string-building split out into ``render_guarded_command_result``) so a
+    second caller — the apply-gate's ``run_command`` step (13.0.9) — gets the
+    IDENTICAL guard stack instead of a parallel, weaker one. Confirmed live
+    bug this closes: ``agents/coder.py``'s own ``run_command`` branch read
+    ``command = target_step.target_file`` raw and checked only the DENY
+    verdict, so an EXECUTE-tier HITL verdict fell straight through to a real
+    shell spawn with no approval card and no dangerous-pattern check at all.
+
+    Execute-tier permission gate, consulted before any spawn. It engages only
+    when a caller supplies the session policy — the gate is the contract for a
+    graph-wired dispatch that knows the session mode. An unwired caller (no
+    mode) falls through to the dangerous-pattern interceptor, which remains
+    the floor for that path. PLAN denies outright; DEFAULT routes through the
+    HITL card; AUTO falls through.
+    """
+    if session_permission_mode is not None:
+        from core.permissions import (  # deferred — keeps the tool import light
+            PermissionDecision,
+            gate_execute_action,
+            risk_intercept_guard,
+            session_mode_from_channel,
+        )
+
+        session_mode = session_mode_from_channel(session_permission_mode)
+        verdict = gate_execute_action(session_mode)
+        # YOLO Guard: upgrade ALLOW -> HITL for high-risk commands in permissive modes.
+        verdict, _risk_labels = risk_intercept_guard(command, verdict, session_mode)
+
+        if verdict is PermissionDecision.DENY:
+            return SandboxResult(
+                exit_code=_GUARD_REFUSED_EXIT_CODE,
+                stdout=(
+                    "[sandbox_bash] DENIED — plan mode is read-only; "
+                    "command not executed."
+                ),
+                stderr="",
+            )
+
+        if verdict is PermissionDecision.HITL:
+            # No session means no channel to surface the card on — refuse
+            # rather than silently spawn an unapproved command.
+            if not session_id:
+                return SandboxResult(
+                    exit_code=_GUARD_REFUSED_EXIT_CODE,
+                    stdout=(
+                        "[sandbox_bash] BLOCKED — command requires HITL approval but "
+                        "no session is available to request it; command not executed."
+                    ),
+                    stderr="",
+                )
+            from api.websocket_manager import vfs_manager  # deferred — import cycle
+
+            # Await releases the loop until the operator responds or the
+            # tighter execute timeout fires; the loop is never busy-spun.
+            # Every refusal path returns before get_active_adapter(), so no
+            # subprocess is spawned while (or because) we are awaiting.
+            _kind = "RISK_INTERCEPT" if _risk_labels else "COMMAND_EXECUTE"
+            approval = await vfs_manager.request_human_approval(
+                session_id=session_id,
+                action_description=f"COMMAND_EXECUTE: {command}",
+                proposed_content=command,
+                request_kind=_kind,
+                timeout_s=_EXEC_HITL_TIMEOUT_SEC,
+                risk_patterns_matched=_risk_labels or None,
+            )
+            if not approval or not approval.get("approved"):
+                return SandboxResult(
+                    exit_code=_GUARD_REFUSED_EXIT_CODE,
+                    stdout=(
+                        "[sandbox_bash] BLOCKED — command execution was not "
+                        "approved; command not executed."
+                    ),
+                    stderr="",
+                )
+
+    pattern = _match_dangerous(command)
+    if pattern is not None:
+        logger.warning(
+            "sandbox_bash: blocked DANGEROUS command (pattern=%r): %s",
+            pattern,
+            command,
+        )
+        # This tool runs several call-stack layers below the coding turn
+        # (no `_narrate` closure in scope), so the turn-scoped ContextVar
+        # sink is the only way to keep an intercepted command from simply
+        # vanishing off the Glass-Box Timeline. Best-effort: observability
+        # must never interfere with the refusal already decided above.
+        _sink = current_activity_sink()
+        if _sink is not None:
+            try:
+                await _sink.emit_blocked(target=command)
+            except Exception:  # noqa: BLE001 — must never block the refusal
+                logger.debug("blocked-command activity emit skipped", exc_info=True)
+        return SandboxResult(
+            exit_code=_GUARD_REFUSED_EXIT_CODE,
+            stdout=(
+                f"[sandbox_bash] DANGEROUS_COMMAND_INTERCEPTED — pattern {pattern!r} "
+                f"matched. Use ask_user_question to request HITL approval before retrying."
+            ),
+            stderr="",
+        )
+
+    # Trusted project execution: route to the devcontainer tier when a
+    # session is present, else the resolved oracle tier. The adapter absorbs
+    # the timeout internally and always returns a SandboxResult; an
+    # unavailable devcontainer delegates to the HITL-gated native fallback.
+    adapter = resolve_execution_adapter(session_id=session_id, trusted=True)
+    if adapter is None:
+        raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
+
+    from core.exec_log import record_execution  # deferred — keeps the tool import light
+
+    return await record_execution(
+        adapter,
+        command,
+        timeout_s=timeout_sec,
+        cwd=working_dir or "",
+        env_whitelist=_sandbox_env(),
+        session_id=session_id,
+        source="run_command",
+    )
+
+
+def render_guarded_command_result(result: SandboxResult) -> str:
+    """Render a ``run_guarded_command`` result into the exact human-facing
+    string ``SandboxBashTool._arun`` has always returned — a refusal's
+    pre-formatted message verbatim, or the ``exit=N`` envelope around a real
+    execution's truncated stdout+stderr."""
+    if result.exit_code == _GUARD_REFUSED_EXIT_CODE:
+        return result.stdout
+    body = _truncate(result.stdout + result.stderr)
+    return f"[sandbox_bash] exit={result.exit_code}\n{body}"
 
 
 class SandboxBashTool(BaseTool):
@@ -201,104 +420,14 @@ class SandboxBashTool(BaseTool):
         session_id: Optional[str] = None,
         session_permission_mode: Optional[str] = None,
     ) -> str:
-        # Execute-tier permission gate, consulted before any spawn. It engages
-        # only when a caller supplies the session policy — the gate is the
-        # contract for a graph-wired dispatch that knows the session mode. An
-        # unwired caller (no mode) falls through to the dangerous-pattern
-        # interceptor, which remains the floor for that path. PLAN denies
-        # outright; DEFAULT routes through the HITL card; AUTO falls through.
-        if session_permission_mode is not None:
-            from core.permissions import (  # deferred — keeps the tool import light
-                PermissionDecision,
-                gate_execute_action,
-                risk_intercept_guard,
-                session_mode_from_channel,
-            )
-
-            session_mode = session_mode_from_channel(session_permission_mode)
-            verdict = gate_execute_action(session_mode)
-            # YOLO Guard: upgrade ALLOW -> HITL for high-risk commands in permissive modes.
-            verdict, _risk_labels = risk_intercept_guard(command, verdict, session_mode)
-
-            if verdict is PermissionDecision.DENY:
-                return (
-                    "[sandbox_bash] DENIED — plan mode is read-only; "
-                    "command not executed."
-                )
-
-            if verdict is PermissionDecision.HITL:
-                # No session means no channel to surface the card on — refuse
-                # rather than silently spawn an unapproved command.
-                if not session_id:
-                    return (
-                        "[sandbox_bash] BLOCKED — command requires HITL approval but "
-                        "no session is available to request it; command not executed."
-                    )
-                from api.websocket_manager import vfs_manager  # deferred — import cycle
-
-                # Await releases the loop until the operator responds or the
-                # tighter execute timeout fires; the loop is never busy-spun.
-                # Every refusal path returns before get_active_adapter(), so no
-                # subprocess is spawned while (or because) we are awaiting.
-                _kind = "RISK_INTERCEPT" if _risk_labels else "COMMAND_EXECUTE"
-                approval = await vfs_manager.request_human_approval(
-                    session_id=session_id,
-                    action_description=f"COMMAND_EXECUTE: {command}",
-                    proposed_content=command,
-                    request_kind=_kind,
-                    timeout_s=_EXEC_HITL_TIMEOUT_SEC,
-                    risk_patterns_matched=_risk_labels or None,
-                )
-                if not approval or not approval.get("approved"):
-                    return (
-                        "[sandbox_bash] BLOCKED — command execution was not "
-                        "approved; command not executed."
-                    )
-
-        pattern = _match_dangerous(command)
-        if pattern is not None:
-            logger.warning(
-                "sandbox_bash: blocked DANGEROUS command (pattern=%r): %s",
-                pattern,
-                command,
-            )
-            # This tool runs several call-stack layers below the coding turn
-            # (no `_narrate` closure in scope), so the turn-scoped ContextVar
-            # sink is the only way to keep an intercepted command from simply
-            # vanishing off the Glass-Box Timeline. Best-effort: observability
-            # must never interfere with the refusal already decided above.
-            _sink = current_activity_sink()
-            if _sink is not None:
-                try:
-                    await _sink.emit_blocked(target=command)
-                except Exception:  # noqa: BLE001 — must never block the refusal
-                    logger.debug("blocked-command activity emit skipped", exc_info=True)
-            return (
-                f"[sandbox_bash] DANGEROUS_COMMAND_INTERCEPTED — pattern {pattern!r} "
-                f"matched. Use ask_user_question to request HITL approval before retrying."
-            )
-
-        # Trusted project execution: route to the devcontainer tier when a
-        # session is present, else the resolved oracle tier. The adapter absorbs
-        # the timeout internally and always returns a SandboxResult; an
-        # unavailable devcontainer delegates to the HITL-gated native fallback.
-        adapter = resolve_execution_adapter(session_id=session_id, trusted=True)
-        if adapter is None:
-            raise RuntimeError(_SANDBOX_UNINITIALIZED_MSG)
-
-        from core.exec_log import record_execution  # deferred — keeps the tool import light
-
-        result = await record_execution(
-            adapter,
+        result = await run_guarded_command(
             command,
-            timeout_s=timeout_sec,
-            cwd=working_dir or "",
-            env_whitelist=_sandbox_env(),
+            timeout_sec=timeout_sec,
+            working_dir=working_dir,
             session_id=session_id,
-            source="run_command",
+            session_permission_mode=session_permission_mode,
         )
-        body = _truncate(result.stdout + result.stderr)
-        return f"[sandbox_bash] exit={result.exit_code}\n{body}"
+        return render_guarded_command_result(result)
 
 
 # =====================================================================

@@ -208,6 +208,17 @@ DOCKER_OP_TIMEOUT_S: float = max(1.0, _env_float("AILIENANT_DOCKER_OP_TIMEOUT_S"
 PAUSED_INTERRUPT_TTL_S: float = max(60.0, _env_float("AILIENANT_PAUSED_INTERRUPT_TTL_S", 6 * 3600.0))
 
 # ---------------------------------------------------------------------------
+# LangGraph super-step ceiling for one coding turn. No value was ever set on
+# the production run config, so LangGraph's own default of 25 applied — the
+# RELAY multi-step loop already spends ~7 super-steps per WBS step plus ~6
+# prologue steps, and per-step incremental approval (13.0.9) adds one more
+# node per step, making a modest multi-step WBS a real risk of hitting the
+# ceiling mid-turn. Generous by default; env-overridable for a deployment
+# running unusually long WBS plans.
+# ---------------------------------------------------------------------------
+GRAPH_RECURSION_LIMIT: int = max(25, _env_int("AILIENANT_GRAPH_RECURSION_LIMIT", 150))
+
+# ---------------------------------------------------------------------------
 # Vision-attachment payload ceilings — bound the cost of building an
 # OpenAI-style image content block on the FastAPI event-loop thread (pure
 # string/dict construction, never off-loaded — see LLMGateway.ainvoke). Refusal

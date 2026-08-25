@@ -40,7 +40,7 @@ def request_graph_approval(
     First execution raises ``GraphInterrupt`` (the LangGraph engine catches it,
     checkpoints, and pauses the run — the ``astream`` generator ends naturally). On
     resume the same call returns the ``Command(resume=…)`` value, normalized to
-    ``{"approved": bool, "comment": str | None}``.
+    ``{"approved": bool, "comment": str | None, "modified_content": str | None}``.
 
     Must be called from within a graph node during execution (``interrupt()`` reads the
     active run context); calling it outside a graph run raises.
@@ -56,9 +56,18 @@ def request_graph_approval(
     }
     resumed: Any = interrupt(payload)
     if isinstance(resumed, dict):
-        return {"approved": bool(resumed.get("approved")), "comment": resumed.get("comment")}
+        return {
+            "approved": bool(resumed.get("approved")),
+            "comment": resumed.get("comment"),
+            # Edit-before-apply from the HITL card's edit mode. Must be forwarded
+            # here too — normalizing it away is exactly as destructive as dropping
+            # it upstream in main.py::_resume_approval_dict; both links in the
+            # chain have to carry it or a FILE_WRITE edit silently reverts to the
+            # original proposed content.
+            "modified_content": resumed.get("modified_content"),
+        }
     # A bare truthy/falsey resume value is tolerated (fail-safe: unknown → not approved).
-    return {"approved": bool(resumed), "comment": None}
+    return {"approved": bool(resumed), "comment": None, "modified_content": None}
 
 
 def request_graph_clarification(

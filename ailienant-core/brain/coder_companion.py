@@ -289,15 +289,40 @@ def build_healing_companion_request(
     failed_node: str,
     diagnosis: str,
     healed: bool,
+    step_description: Optional[str] = None,
+    command: Optional[str] = None,
+    exit_code: Optional[int] = None,
+    stdout_tail: Optional[str] = None,
+    stderr_tail: Optional[str] = None,
 ) -> CompanionAnalysisRequest:
     """Companion request for error correction resolving (agents/error_correction.py),
     whether it healed the fault or conceded. Consumes only this attempt's own
-    diagnosis text, never the accumulated error history."""
-    summary = (
-        f"Failed node: {failed_node}\n"
-        f"Outcome: {'healed' if healed else 'could not auto-fix'}\n"
-        f"Diagnosis: {diagnosis}"
-    )[:_MAX_SCOPE_SUMMARY_CHARS]
+    diagnosis text, never the accumulated error history.
+
+    ``command``/``exit_code``/``stdout_tail``/``stderr_tail`` are present only
+    when this attempt's failure genuinely came from a run_command execution
+    (see ``last_execution_context`` in brain/state.py) — all default to None
+    for every other failure kind, in which case those lines are simply
+    omitted rather than rendered as "None". Before this, the request carried
+    only three generic lines regardless of failure kind, which is why the
+    model had nothing concrete to explain and fell back to filler.
+    """
+    lines = [
+        f"Failed node: {failed_node}",
+        f"Outcome: {'healed' if healed else 'could not auto-fix'}",
+    ]
+    if step_description:
+        lines.append(f"Step: {step_description}")
+    if command is not None:
+        lines.append(f"Command: {command}")
+    if exit_code is not None:
+        lines.append(f"Exit code: {exit_code}")
+    lines.append(f"Diagnosis: {diagnosis}")
+    if stdout_tail:
+        lines.append(f"Stdout (tail):\n{stdout_tail}")
+    if stderr_tail:
+        lines.append(f"Stderr (tail):\n{stderr_tail}")
+    summary = "\n".join(lines)[:_MAX_SCOPE_SUMMARY_CHARS]
 
     return CompanionAnalysisRequest(
         session_id=session_id,

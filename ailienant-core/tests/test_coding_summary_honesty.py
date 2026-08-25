@@ -1,10 +1,17 @@
-"""The proposal summary must not claim disk application is disabled.
+"""The turn-end summary must report what actually happened, not a prediction.
 
-``_format_coding_summary`` renders the proposal turn BEFORE the permission gate
-decides DENY / HITL / ALLOW, so its copy must be mode-neutral and truthful. The
-bug it guards: the summary asserted "Applying changes to disk is not yet
-enabled" while the very same flow applies via ``apply_patch_set`` and reports
-"✓ Applied N file(s) to disk" — a lie to the operator.
+``_format_coding_summary`` used to render the proposal turn BEFORE the
+permission gate decided DENY/HITL/ALLOW — the whole WBS ran to completion
+inside the graph before the first approval card ever appeared, so its copy
+had to guess an outcome ("Proposed N file change(s) — review the diff below
+and authorize") that hadn't happened yet. 13.0.9 moved approval per-step and
+in-graph (brain/apply_gate.py), so by the time this function runs every step
+has already been generated, decided, and (if approved) applied — it now
+reports the outcome, sourced from ``applied_files_log``, instead of a
+promise. It must also never claim the old "use Ctrl+Z to undo" affordance: no
+editor is ever opened for these files (PatchActuator.ts never calls
+showTextDocument) and the actuator saves immediately, so there is no undo
+stack for the keystroke to reach.
 """
 from __future__ import annotations
 
@@ -18,47 +25,114 @@ def _mission() -> SimpleNamespace:
     return SimpleNamespace(outcome="Refactor the parser.")
 
 
-def test_summary_does_not_claim_apply_disabled() -> None:
-    summary = TaskService._format_coding_summary(
-        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [], plan_surface=False
-    )
+def _completed(path: str) -> dict:
+    return {"file_path": path, "command": None, "status": "completed", "step_number": 1}
+
+
+def _rejected(path: str) -> dict:
+    return {"file_path": path, "command": None, "status": "rejected", "step_number": 2}
+
+
+def _failed(path: str) -> dict:
+    return {"file_path": path, "command": None, "status": "failed", "step_number": 3}
+
+
+def _revision_requested(path: str) -> dict:
+    return {"file_path": path, "command": None, "status": "revision_requested", "step_number": 4}
+
+
+def _completed_command(cmd: str) -> dict:
+    return {"file_path": None, "command": cmd, "status": "completed", "step_number": 5}
+
+
+def test_summary_never_claims_ctrl_z_undo() -> None:
+    """The specific dishonesty this was originally written to catch, updated
+    for the current false claim: no editor is opened for these writes, so
+    Ctrl+Z genuinely cannot revert them — the summary must not say it can."""
+    summary = TaskService._format_coding_summary(_mission(), [_completed("src/x.py")], [])
+    assert "Ctrl+Z" not in summary
     assert "not yet enabled" not in summary
 
 
-def test_summary_points_to_the_plan_panel_without_embedding_diffs() -> None:
-    # In plan mode the chat bubble is a pointer to the rich Plan surface — the
-    # diffs (and the full WBS) render there, not flattened into chat prose. This
-    # keeps the bubble small regardless of plan size; the honesty guarantee above
-    # is unchanged (the copy still never claims apply is disabled).
+def test_summary_points_to_local_history_for_applied_changes() -> None:
+    summary = TaskService._format_coding_summary(_mission(), [_completed("src/x.py")], [])
+    assert "Local History" in summary
+
+
+def test_summary_reports_applied_file_count() -> None:
     summary = TaskService._format_coding_summary(
-        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [], plan_surface=True
+        _mission(), [_completed("a.py"), _completed("b.py")], [],
     )
-    assert "Plan panel" in summary
-    assert "```diff" not in summary
+    assert "Applied 2 file changes to disk" in summary
 
 
-def test_summary_ask_mode_points_to_the_inline_diff_not_the_panel() -> None:
-    # In Ask/Auto the Plan panel does not render — the diff is shown inline in the
-    # chat — so the pointer must NOT send the user to a non-existent panel.
+def test_summary_singular_wording_for_one_file() -> None:
+    summary = TaskService._format_coding_summary(_mission(), [_completed("a.py")], [])
+    assert "Applied 1 file change to disk" in summary
+    assert "1 file changes" not in summary
+
+
+def test_summary_reports_rejected_steps() -> None:
     summary = TaskService._format_coding_summary(
-        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [], plan_surface=False
+        _mission(), [_completed("a.py"), _rejected("b.py")], [],
     )
-    assert "Plan panel" not in summary
-    assert "review the diff" in summary
+    assert "1 declined" in summary
 
 
-def test_summary_auto_mode_announces_apply_not_authorize() -> None:
-    # Auto mode applies without an authorize step, so the pointer must announce the
-    # apply rather than ask the user to review/authorize a diff that never appears.
+def test_summary_reports_failed_steps() -> None:
+    summary = TaskService._format_coding_summary(_mission(), [_failed("a.py")], [])
+    assert "1 not applied" in summary
+
+
+def test_summary_reports_steps_still_under_revision() -> None:
+    summary = TaskService._format_coding_summary(_mission(), [_revision_requested("a.py")], [])
+    assert "1 still under revision" in summary
+
+
+def test_summary_reports_successful_commands_distinctly_from_files() -> None:
     summary = TaskService._format_coding_summary(
-        _mission(), {"src/x.py": "@@ -1 +1 @@\n-old\n+new"}, [],
-        plan_surface=False, auto_apply=True,
+        _mission(), [_completed("a.py"), _completed_command("pytest -q")], [],
     )
-    assert "Applying" in summary
-    assert "authorize" not in summary
-    assert "Plan panel" not in summary
+    assert "Applied 1 file change to disk" in summary
+    assert "ran 1 command successfully" in summary
 
 
-def test_summary_empty_patches_branch_unchanged() -> None:
-    summary = TaskService._format_coding_summary(_mission(), {}, [], plan_surface=True)
+def test_summary_combines_multiple_outcomes_in_one_turn() -> None:
+    log = [
+        _completed("a.py"), _completed("b.py"), _rejected("c.py"),
+        _failed("d.py"), _revision_requested("e.py"),
+    ]
+    summary = TaskService._format_coding_summary(_mission(), log, [])
+    assert "Applied 2 file changes to disk" in summary
+    assert "1 declined" in summary
+    assert "1 not applied" in summary
+    assert "1 still under revision" in summary
+
+
+def test_summary_empty_log_reports_no_concrete_edits() -> None:
+    """No applied_files_log entries at all (e.g. a read_file-only plan, or a
+    PLAN_ONLY turn that never reached the apply gate) — same wording as
+    before, still points to the Plan panel."""
+    summary = TaskService._format_coding_summary(_mission(), [], [])
     assert "no concrete edits" in summary
+    assert "Plan panel" in summary
+
+
+def test_summary_all_steps_rejected_reports_no_changes_applied() -> None:
+    summary = TaskService._format_coding_summary(_mission(), [_rejected("a.py")], [])
+    assert "Local History" not in summary  # nothing landed on disk to revert
+
+
+def test_summary_surfaces_user_facing_errors_as_notes() -> None:
+    summary = TaskService._format_coding_summary(
+        _mission(), [_completed("a.py")], ["Skipped AILIENANT's own runtime files (they cannot be moved): `x.log`"],
+    )
+    assert "_Notes:_" in summary
+    assert "Skipped AILIENANT's own runtime files" in summary
+
+
+def test_summary_hides_internal_self_heal_diagnostics_from_notes() -> None:
+    summary = TaskService._format_coding_summary(
+        _mission(), [_completed("a.py")], ["self-heal could not correct coder_agent: no readable offending file"],
+    )
+    assert "self-heal could not correct" not in summary

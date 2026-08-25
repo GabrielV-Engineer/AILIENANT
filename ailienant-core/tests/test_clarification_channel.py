@@ -403,7 +403,7 @@ def test_resume_approval_dict_forwards_explicit_answer() -> None:
     )
     result = _resume_approval_dict(data)
     assert result == {
-        "approved": True, "comment": "ignored",
+        "approved": True, "comment": "ignored", "modified_content": None,
         "answer": "Use approach A", "selected_option": "A", "answers": None,
     }
 

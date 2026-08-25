@@ -30,6 +30,7 @@ import asyncio
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,7 +38,8 @@ import core.sandbox as sb
 from agents.coder import _build_style_block, content_hash, run_coder_node
 from agents.prompts import STYLE_EXEMPLAR_HEADER
 from agents.recency import compute_recency_score
-from brain.engine import route_after_coder
+from brain.apply_gate import run_apply_commit_node
+from brain.guardrails import route_after_validation
 from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
 from brain.state import (
     MissionSpecification,
@@ -55,18 +57,26 @@ _PKG_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ── EXLOOP1 — a failed run_command reaches the existing self-heal edge ─────────
+#
+# Execution and self-heal for run_command now live downstream of the coder, in
+# the apply gate's run_apply_commit_node (brain/apply_gate.py, 13.0.9) — the
+# coder only stages pending_step_command. The conditional edge that must carry
+# the heal signal is therefore route_after_validation (post validate_output),
+# not route_after_coder.
 
 
 def test_exloop1_run_command_failure_routes_to_error_correction() -> None:
-    # A non-zero sandbox exit must emit the reflexion-mimicking heal delta and the
-    # existing conditional edge must carry it into self-healing — not a dead branch.
-    adapter = _StubAdapter(
-        [SandboxResult(exit_code=1, stdout="x.py:1: error: boom [misc]", stderr="")]
-    )
-    with _bind_adapter(adapter):
-        result = asyncio.run(run_coder_node(_run_command_state("mypy .")))
+    # A non-zero guarded-command exit must emit the reflexion-mimicking heal
+    # delta and the existing conditional edge must carry it into self-healing.
+    with patch(
+        "tools.execution_tools.run_guarded_command",
+        new=AsyncMock(
+            return_value=SimpleNamespace(exit_code=1, stdout="x.py:1: error: boom [misc]", stderr="")
+        ),
+    ):
+        result = asyncio.run(run_apply_commit_node(_run_command_apply_state("mypy .")))
     assert result.get("healing_required") is True
-    assert route_after_coder(result) == "error_correction"
+    assert route_after_validation(result) == "error_correction"
 
 
 # ── EXLOOP2 — the budget concedes, and a missing adapter defers honestly ───────
@@ -74,19 +84,22 @@ def test_exloop1_run_command_failure_routes_to_error_correction() -> None:
 
 def test_exloop2_budget_concedes_and_no_adapter_defers() -> None:
     # At the correction budget the loop forwards instead of spinning on heal.
-    adapter = _StubAdapter(
-        [SandboxResult(exit_code=1, stdout="x.py:1: error: e [misc]", stderr="")]
-    )
-    with _bind_adapter(adapter):
+    with patch(
+        "tools.execution_tools.run_guarded_command",
+        new=AsyncMock(
+            return_value=SimpleNamespace(exit_code=1, stdout="x.py:1: error: e [misc]", stderr="")
+        ),
+    ):
         at_budget = asyncio.run(
-            run_coder_node(
-                _run_command_state("mypy .", correction_attempts=CORRECTION_MAX_ATTEMPTS)
+            run_apply_commit_node(
+                _run_command_apply_state("mypy .", correction_attempts=CORRECTION_MAX_ATTEMPTS)
             )
         )
-    assert not at_budget.get("healing_required")
-    assert route_after_coder(at_budget) == "contract_guard"  # forward, not heal
+    assert "healing_required" not in at_budget
+    assert route_after_validation(at_budget) != "error_correction"  # forward, not heal
 
-    # With no resolved adapter the honest deferral is preserved (never a false pass).
+    # With no resolved adapter the honest deferral is preserved (never a false pass),
+    # unchanged coder-side behavior.
     with _bind_adapter(None):
         deferred = asyncio.run(run_coder_node(_run_command_state("pytest -q")))
     assert not deferred.get("healing_required")
@@ -315,6 +328,35 @@ def _run_command_state(command: str, **overrides: Any) -> Dict[str, Any]:
         "session_permission_mode": "AUTO",
         "workspace_root": "",
         "project_id": "",
+    }
+    state.update(overrides)
+    return state
+
+
+def _run_command_apply_state(command: str, **overrides: Any) -> Dict[str, Any]:
+    """A state that already reached the apply gate with this step's command
+    staged and ALLOW-decided — mirrors what run_apply_prepare_node commits."""
+    step = WBSStep(
+        step_number=1, target_role="core_dev", action="run_command",  # type: ignore[arg-type]
+        target_file=command, description="Run the project verification.",
+        status="pending",  # type: ignore[arg-type]
+    )
+    mission = MissionSpecification(
+        outcome="Gate.", scope=["main.py"], constraints=["-"], decisions=["-"],
+        tasks=[step], checks=["-"],
+    )
+    state: Dict[str, Any] = {
+        "task_id": "gate-7-18",
+        "project_id": "",
+        "mission_spec": mission,
+        "current_step_id": 1,
+        "correction_attempts": 0,
+        "applied_step_ids": [],
+        "applied_files_log": [],
+        "pending_apply": {
+            "step_number": 1, "kind": "COMMAND_EXECUTE", "decision": "allow",
+            "files": [], "command": command, "risk_labels": [], "auto_accept": False, "attempt": 0,
+        },
     }
     state.update(overrides)
     return state

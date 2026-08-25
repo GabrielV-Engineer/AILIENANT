@@ -7,9 +7,11 @@
  *     never persisted; `timeline`'s 'reasoning' entries are dropped (display-only,
  *     matching `thinking`'s own exclusion) while every other kind survives as the
  *     durable audit trail AgentTimeline renders on rehydrate.
- *  2. In-flight Thought-Box resilience — throttled snapshot of the active streaming
- *     turn into the panel-survivable store, so a partial reasoning trace survives a
- *     teardown/reconnect (cleared on server_stream_end).
+ *  2. In-flight resilience — throttled snapshot of the active streaming turn into
+ *     the panel-survivable store, so a partial reasoning trace AND its plan
+ *     checklist / companion explanation / activity trace survive a teardown/
+ *     reconnect that lands inside the first effect's debounce window (cleared
+ *     on server_stream_end).
  *  3. Mount rehydrate — restore a persisted in-flight turn once, merged by id so it
  *     never duplicates a turn already present in the restored transcript.
  */
@@ -80,10 +82,15 @@ export function useSessionPersistence(): void {
         return () => clearTimeout(handle);
     }, [messages, nattMessages]);
 
-    // Snapshot the active streaming turn (id + content + thinking slice, NO
-    // parserState/toolCalls) into the panel-survivable store, throttled. Reasoning
-    // is display-only and out of the host transcript, so this webview-local copy is
-    // the only way a partial trace survives a teardown/reconnect.
+    // Snapshot the active streaming turn (id + content + thinking slice + the
+    // plan checklist / companion explanation / activity trace, NO parserState/
+    // toolCalls) into the panel-survivable store, throttled. This is the ONLY
+    // thing that survives a teardown landing inside the first effect's 400ms
+    // debounce window — omitting checklist/companions/timeline here (as this
+    // used to) meant a mid-stream tab switch could restore the prose while
+    // silently dropping the plan checkmarks and the Planning Explanation card.
+    // `timeline` is stripped of its display-only 'reasoning' entries first,
+    // matching stripReasoningForPersist's use in the first effect above.
     useEffect(() => {
         const inflight = messages.find((m): m is ConversationMessage => m.role === 'assistant' && !!(m as ConversationMessage).streaming);
         const handle = setTimeout(() => {
@@ -100,6 +107,9 @@ export function useSessionPersistence(): void {
                     thinkingOpen: inflight.thinkingOpen,
                     steps: inflight.steps,
                     stepsDone: inflight.stepsDone,
+                    checklist: inflight.checklist,
+                    companions: inflight.companions,
+                    timeline: inflight.timeline ? stripReasoningForPersist(inflight.timeline) : inflight.timeline,
                 }
                 : null);
         }, 200);

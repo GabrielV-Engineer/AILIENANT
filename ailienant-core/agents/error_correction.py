@@ -286,12 +286,20 @@ async def run_error_correction_node(
     candidates = candidate_files_from_traceback(tb_text, state.get("workspace_root"))
     mission = state.get("mission_spec")
     step_id = state.get("current_step_id")
+    step_description: Optional[str] = None
     if mission is not None and step_id is not None:
         for task in getattr(mission, "tasks", []):
             if getattr(task, "step_number", None) == step_id:
                 target = getattr(task, "target_file", None)
                 if target and os.path.normpath(target) not in candidates:
                     candidates.append(os.path.normpath(target))
+                step_description = getattr(task, "description", None)
+
+    # Only trustworthy when failed_node == "apply_commit" — set in the SAME
+    # return dict by brain/apply_gate.py::_commit_command, so it can never be
+    # a stale carry-over from an earlier, unrelated run_command failure (see
+    # last_execution_context's docstring in brain/state.py).
+    _exec_ctx = state.get("last_execution_context") if failed_node == "apply_commit" else None
 
     # Narrate the pivot in plain language so a transient fault (e.g. a model
     # timeout) reads as a deliberate retry rather than an unexplained stall.
@@ -324,6 +332,11 @@ async def run_error_correction_node(
         lambda: build_healing_companion_request(
             session_id=_task_id, task_id=_task_id, attempt_ordinal=_attempt_ordinal,
             failed_node=failed_node, diagnosis=result.diagnosis, healed=result.healed,
+            step_description=step_description,
+            command=_exec_ctx.get("command") if _exec_ctx else None,
+            exit_code=_exec_ctx.get("exit_code") if _exec_ctx else None,
+            stdout_tail=_exec_ctx.get("stdout_tail") if _exec_ctx else None,
+            stderr_tail=_exec_ctx.get("stderr_tail") if _exec_ctx else None,
         ),
     )
 

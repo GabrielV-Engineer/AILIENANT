@@ -2,27 +2,29 @@
 """Mode → RBAC enforcement at the write gate (ADR-728).
 
 The frontend's three-way mode selector (automatic | ask_before_edits |
-plan_mode) maps to a SessionPermissionMode that governs the live write gate in
-``_run_coding_task``. The gate composes the session mode with the WRITE tier and
-the coder's identity floor via the existing ``evaluate_action`` matrix:
+plan_mode) maps to a SessionPermissionMode that governs the incremental
+per-step apply gate (brain/apply_gate.py, 13.0.9). The gate composes the
+session mode with the WRITE tier and the coder's identity floor via the
+existing ``evaluate_action`` matrix:
 
-  * Plan  → DENY  : the change set is discarded, the HITL card is never shown,
-                    and the write pipeline is never touched.
-  * Ask   → HITL  : the approval card runs; apply only on approval.
-  * Auto  → ALLOW : the change set auto-applies, with an explicit "auto-applying"
-                    notice emitted BEFORE the disk I/O (no silent mutation).
+  * Plan  → DENY  : the step's change is discarded, no interrupt is ever
+                    raised, and the write pipeline is never touched.
+  * Ask   → HITL  : a native interrupt() approval card runs; apply only on
+                    approval.
+  * Auto  → ALLOW : the step's change auto-applies, no interrupt at all.
 
-These patch the engine at the ``astream`` seam (yielding a crafted final state
-that carries ``session_permission_mode``, exactly as a real graph run would) so
-the gate's control flow is exercised in isolation from the agents.
+Sections 1-3 used to drive this end-to-end via a faked ``alienant_app.astream``
+(that seam no longer runs any apply logic — it moved into the graph), so they
+now call ``run_apply_prepare_node``/``run_apply_commit_node`` directly.
 """
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from brain.apply_gate import run_apply_commit_node, run_apply_prepare_node
 from brain.state import MissionSpecification, WBSStep
 from core.permissions import (
     PermissionDecision,
@@ -32,7 +34,7 @@ from core.permissions import (
     evaluate_action,
     session_mode_from_frontend,
 )
-from core.task_service import TaskPayload, TaskService
+from core.task_service import TaskPayload
 
 
 def _mission() -> MissionSpecification:
@@ -54,32 +56,25 @@ def _mission() -> MissionSpecification:
     )
 
 
-def _final_state(session_mode: str) -> Dict[str, Any]:
-    """A finished plan + one merged coder patch, tagged with a session mode.
-
-    ``session_permission_mode`` is uppercase here because the graph state channel
-    is ``Literal["DEFAULT","PLAN","AUTO"]``; the gate lowercases before building
-    the enum.
-    """
+def _state(session_mode: str) -> Dict[str, Any]:
+    """``session_permission_mode`` is uppercase here because the graph state
+    channel stores it that way; the gate lowercases before building the enum."""
     return {
+        "task_id": "s1",
+        "project_id": "p1",
+        "workspace_root": "/ws",
+        "current_step_id": 1,
         "mission_spec": _mission(),
-        "pending_patches": {"calc.py": "--- a/calc.py\n+++ b/calc.py\n"},
+        "session_permission_mode": session_mode,
+        "pending_step_files": {"1": ["calc.py"]},
+        "pending_step_command": {},
         "pending_contents": {"calc.py": "def f():\n    return 2\n"},
         "pending_base_hash": {"calc.py": "deadbeef"},
-        "errors": [],
-        "hitl_pending": False,
-        "session_permission_mode": session_mode,
+        "auto_accept_low_risk": False,
+        "applied_files_log": [],
+        "applied_step_ids": [],
+        "apply_attempts": {},
     }
-
-
-def _fake_astream(final_state: Dict[str, Any]) -> Any:
-    def _factory(*_a: Any, **_k: Any) -> AsyncIterator[Dict[str, Any]]:
-        async def _gen() -> AsyncIterator[Dict[str, Any]]:
-            yield final_state
-
-        return _gen()
-
-    return _factory
 
 
 def _payload(execution_mode: Optional[str]) -> TaskPayload:
@@ -92,48 +87,25 @@ def _payload(execution_mode: Optional[str]) -> TaskPayload:
     )
 
 
-def _gate_patches(
-    *,
-    session_mode: str,
-    approval: Optional[Dict[str, Any]],
-    apply_mock: AsyncMock,
-    approval_mock: AsyncMock,
-    token_mock: AsyncMock,
-) -> List[Any]:
-    return [
-        patch("brain.engine.alienant_app.astream", side_effect=_fake_astream(_final_state(session_mode))),
-        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
-        patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.broadcast_token", new=token_mock),
-        patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()),
-        patch("core.task_service.vfs_manager.request_human_approval", new=approval_mock),
-    ]
-
-
 # ── 1. Plan → DENY ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.anyio
 async def test_plan_mode_denies_write_without_card() -> None:
-    apply_mock = AsyncMock()
-    approval_mock = AsyncMock()
-    token_mock = AsyncMock()
-    ctxs = _gate_patches(
-        session_mode="PLAN", approval=None,
-        apply_mock=apply_mock, approval_mock=approval_mock, token_mock=token_mock,
-    )
-    for c in ctxs:
-        c.start()
-    try:
-        await TaskService()._run_coding_task("s-plan", _payload("plan_mode"), "SEQUENTIAL")
-    finally:
-        for c in ctxs:
-            c.stop()
+    prepared = await run_apply_prepare_node(_state("PLAN_ONLY"))
+    assert prepared["pending_apply"]["decision"] == "deny"
 
-    approval_mock.assert_not_awaited()  # no HITL card in Plan mode
+    state = _state("PLAN_ONLY")
+    state["pending_apply"] = prepared["pending_apply"]
+    apply_mock = AsyncMock()
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        committed = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()  # no HITL card in Plan mode
     apply_mock.assert_not_awaited()     # nothing applied
-    # The read-only refusal was streamed.
-    assert any("read-only" in str(c) for c in token_mock.await_args_list)
+    assert committed["mission_spec"].tasks[0].status == "failed"
+    assert "read-only" in committed["errors"][0]
 
 
 # ── 2. Ask → HITL ────────────────────────────────────────────────────────────
@@ -141,73 +113,68 @@ async def test_plan_mode_denies_write_without_card() -> None:
 
 @pytest.mark.anyio
 async def test_ask_mode_routes_through_hitl_and_applies_on_approval() -> None:
-    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
-    approval_mock = AsyncMock(return_value={"approved": True, "comment": None, "modified_content": None})
-    ctxs = _gate_patches(
-        session_mode="DEFAULT", approval=None,
-        apply_mock=apply_mock, approval_mock=approval_mock, token_mock=AsyncMock(),
-    )
-    for c in ctxs:
-        c.start()
-    try:
-        await TaskService()._run_coding_task("s-ask", _payload("ask_before_edits"), "SEQUENTIAL")
-    finally:
-        for c in ctxs:
-            c.stop()
+    prepared = await run_apply_prepare_node(_state("CAUTIOUS"))
+    assert prepared["pending_apply"]["decision"] == "hitl"
 
-    approval_mock.assert_awaited_once()
+    state = _state("CAUTIOUS")
+    state["pending_apply"] = prepared["pending_apply"]
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
+    with patch(
+        "brain.apply_gate.request_graph_approval",
+        return_value={"approved": True, "comment": None, "modified_content": None},
+    ) as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        committed = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_called_once()
     apply_mock.assert_awaited_once()
+    assert committed["mission_spec"].tasks[0].status == "completed"
 
 
 @pytest.mark.anyio
 async def test_ask_mode_rejection_applies_nothing() -> None:
+    state = _state("CAUTIOUS")
+    state["pending_apply"] = {
+        "step_number": 1, "kind": "FILE_WRITE", "decision": "hitl",
+        "files": [{"file_path": "calc.py", "unified_diff": "@@ -1 +1 @@\n", "base_hash": "deadbeef"}],
+        "command": None, "risk_labels": [], "auto_accept": False, "attempt": 0,
+    }
     apply_mock = AsyncMock()
-    approval_mock = AsyncMock(return_value={"approved": False, "comment": None, "modified_content": None})
-    ctxs = _gate_patches(
-        session_mode="DEFAULT", approval=None,
-        apply_mock=apply_mock, approval_mock=approval_mock, token_mock=AsyncMock(),
-    )
-    for c in ctxs:
-        c.start()
-    try:
-        await TaskService()._run_coding_task("s-ask2", _payload("ask_before_edits"), "SEQUENTIAL")
-    finally:
-        for c in ctxs:
-            c.stop()
+    with patch(
+        "brain.apply_gate.request_graph_approval",
+        return_value={"approved": False, "comment": None, "modified_content": None},
+    ) as mock_interrupt, patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        committed = await run_apply_commit_node(state)
 
-    approval_mock.assert_awaited_once()
+    mock_interrupt.assert_called_once()
     apply_mock.assert_not_awaited()
+    assert committed["mission_spec"].tasks[0].status == "rejected"
 
 
-# ── 3. Auto → ALLOW (no card, announced) ─────────────────────────────────────
+# ── 3. Auto → ALLOW (no card, applies directly) ──────────────────────────────
 
 
 @pytest.mark.anyio
-async def test_auto_mode_auto_applies_without_card_and_announces() -> None:
-    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
-    approval_mock = AsyncMock()
-    token_mock = AsyncMock()
-    ctxs = _gate_patches(
-        session_mode="AUTO", approval=None,
-        apply_mock=apply_mock, approval_mock=approval_mock, token_mock=token_mock,
-    )
-    for c in ctxs:
-        c.start()
-    try:
-        await TaskService()._run_coding_task("s-auto", _payload("automatic"), "SEQUENTIAL")
-    finally:
-        for c in ctxs:
-            c.stop()
+async def test_auto_mode_auto_applies_without_card() -> None:
+    prepared = await run_apply_prepare_node(_state("STANDARD"))
+    assert prepared["pending_apply"]["decision"] == "allow"
 
-    approval_mock.assert_not_awaited()  # Auto skips the card
+    state = _state("STANDARD")
+    state["pending_apply"] = prepared["pending_apply"]
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        committed = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()  # Auto skips the card entirely
     apply_mock.assert_awaited_once()
-    # The actuation received the coder's original proposal (guards the decouple
-    # fix against an empty-dataset apply in the no-card path).
+    # The actuation received the coder's original proposal.
     assert apply_mock.await_args is not None
     _sid, contents, _bh = apply_mock.await_args.args[:3]
     assert contents == {"calc.py": "def f():\n    return 2\n"}
-    # The "auto-applying" intent was streamed before the write completed.
-    assert any("Auto-applying" in str(c) for c in token_mock.await_args_list)
+    assert committed["mission_spec"].tasks[0].status == "completed"
 
 
 # ── 4. Mapping helper ────────────────────────────────────────────────────────

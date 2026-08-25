@@ -69,6 +69,13 @@ def content_hash(s: str) -> str:
 _CODER_MIN_MAX_TOKENS: int = 4096
 _CODER_MAX_MAX_TOKENS: int = 16384
 
+# Token ceiling for the coder's own pre-generation reasoning pass (non-native
+# models only — mirrors agents/planner.py's _PLANNER_REASONING_MAX_TOKENS).
+# Small on purpose: a conceptual narrative shown while the user waits, never
+# the edit itself — the strict SEARCH/REPLACE generation that follows carries
+# the real output budget and is never scaffolded (DEBT-013 invariant).
+_CODER_REASONING_MAX_TOKENS: int = 512
+
 
 def _resolve_coder_max_tokens(target_step: WBSStep, current_content: Optional[str], budget: int) -> int:
     """Derive the coder's output-token ceiling from step complexity.
@@ -424,6 +431,21 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     step_id: int | None = state.get("current_step_id")
     mission_spec = state.get("mission_spec")
 
+    # 13.0.9 — a "request changes" verdict from the apply-gate's interrupt-based
+    # approval. Scoped to THIS step via an explicit step_number match: a stale
+    # comment left over from an earlier step's regeneration (state is a single
+    # shared channel, scalar-overwrite) must never leak into a later step's
+    # prompt. Cleared unconditionally in the result below regardless of whether
+    # it matched, so a mismatched/stale entry can never survive past one node
+    # execution either.
+    _apply_feedback_raw = state.get("apply_feedback")
+    apply_feedback: Optional[str] = None
+    if (
+        isinstance(_apply_feedback_raw, dict)
+        and _apply_feedback_raw.get("step_number") == step_id
+    ):
+        apply_feedback = _apply_feedback_raw.get("comment") or None
+
     if mission_spec is None:
         logger.error("CoderAgent invoked without mission_spec in state.")
         return {"errors": ["CoderAgent: mission_spec missing — aborting step."]}
@@ -511,11 +533,16 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             **({"security_flags": new_security_flags} if new_security_flags else {}),
         }
 
-    # run_command closes the feedback loop: dispatch the step's command into the
-    # resolved sandbox tier and convert a non-zero exit into the same self-healing
-    # signal an in-node exception would raise, so the existing route_after_coder →
-    # error_correction path re-drafts. For a run_command step the command lives in
-    # target_file (the WBS schema overloads it: "ruta ... o comando a ejecutar").
+    # run_command stages the step's command for the apply gate
+    # (brain/apply_gate.py, 13.0.9) — permission verdict, HITL approval, the
+    # dangerous-pattern guard, execution itself, and self-heal on a non-zero
+    # exit all moved downstream. This node's job is narrower now: confirm
+    # there is an adapter to run on at all, and refuse a hygiene-invalid
+    # command outright (closes a live-reproduced bug: "N/A", a placeholder the
+    # WBS schema's overloaded target_file field produced when the planner had
+    # no concrete command to give, reached a real shell before this check
+    # existed). For a run_command step the command lives in target_file (the
+    # schema overloads it: "path of the affected file ... OR command to run").
     if target_step.action == "run_command":
 
         def _notify_status(new_status: str) -> None:
@@ -537,6 +564,9 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
         # Trusted project execution: prefer the user's devcontainer (with a
         # HITL-gated native fallback) when a session is live; else the oracle tier.
+        # Only a capability PROBE here — the apply gate re-resolves the adapter
+        # itself at actuation time; this just avoids staging a command that has
+        # nowhere to run at all.
         adapter = resolve_execution_adapter(session_id=session_id, trusted=True)
 
         # No resolved tier → nothing to spawn into. Marking it "completed" would lie
@@ -560,26 +590,11 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
                 "security_flags": new_security_flags,
             }
 
-        command = target_step.target_file
+        from tools.execution_tools import validate_step_command
 
-        # Execute-tier gate, consulted before any spawn — the same choke point
-        # SandboxBashTool uses (imported, not duplicated). PLAN denies outright.
-        # No "running {command}" announcement here: record_execution
-        # (core/exec_log.py) is now the sole emitter of the "command" timeline
-        # marker, and only once execution is actually attempted below — a
-        # narration fired before this gate would falsely show a denied command
-        # as having run. The DENY branch narrates its own "blocked" marker
-        # instead, so a command intercepted here still surfaces on the
-        # timeline, distinctly, rather than vanishing.
-        from core.permissions import (
-            PermissionDecision,
-            gate_execute_action,
-            session_mode_from_channel,
-        )
-
-        session_mode = session_mode_from_channel(state.get("session_permission_mode"))
-        if gate_execute_action(session_mode) is PermissionDecision.DENY:
-            await _emit(f"blocked {command}")
+        command, validation_error = validate_step_command(target_step.target_file)
+        if command is None:
+            await _emit(f"blocked {target_step.target_file}")
             _notify_status("failed")
             return {
                 "mission_spec": _mark_step_status(
@@ -588,81 +603,18 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
                 "current_step_id": target_step.step_number,
                 "target_role": target_step.target_role,
                 "errors": [
-                    f"CoderAgent step #{target_step.step_number}: run_command DENIED "
-                    "— plan mode is read-only; command not executed."
+                    f"CoderAgent step #{target_step.step_number}: run_command "
+                    f"refused before execution — {validation_error}"
                 ],
                 **({"security_flags": new_security_flags} if new_security_flags else {}),
             }
 
-        from tools.execution_tools import _sandbox_env
-        from core.exec_log import record_execution
-
-        # Read the verdict from the typed SandboxResult.exit_code (an int) — never
-        # re-parse it from rendered text, where a stdout containing the literal
-        # "exit=" could corrupt extraction.
-        verify_result = await record_execution(
-            adapter,
-            command,
-            timeout_s=120.0,
-            cwd=workspace_root,
-            env_whitelist=_sandbox_env(),
-            session_id=session_id,
-            source="coder_verify",
-        )
-
-        if verify_result.exit_code == 0:
-            _notify_status("completed")
-            await _emit(f"verified {command}")
-            return {
-                "mission_spec": _mark_step_status(
-                    mission_spec, target_step.step_number, "completed"
-                ),
-                "current_step_id": target_step.step_number,
-                "target_role": target_step.target_role,
-                **({"security_flags": new_security_flags} if new_security_flags else {}),
-            }
-
-        # Non-zero exit → distil structured diagnostics (NOT raw stdout) and re-enter
-        # the self-heal path. Mirror the reflexion_guard delta so the existing edge
-        # routes to error_correction, which threads this step's target_file as the
-        # correction candidate (pytest/mypy output yields no traceback frame).
-        from brain.failure_breaker import normalize_signature
-        from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
-        from tools.validation.diagnostics import format_diagnostics, select_parser
-
-        parser = select_parser(command)
-        diagnostics = format_diagnostics(parser(verify_result.stdout, verify_result.stderr))
-        attempts = int(state.get("correction_attempts", 0))
-
-        _notify_status("failed")
-        _failed_mission = _mark_step_status(
-            mission_spec, target_step.step_number, "failed"
-        )
-
-        # Budget exhausted → concede gracefully instead of looping forever (mirrors
-        # reflexion_guard re-raising to the DLQ at the budget edge, without raising).
-        if attempts >= CORRECTION_MAX_ATTEMPTS:
-            await _emit(f"giving up on {command} after {attempts} attempts")
-            return {
-                "mission_spec": _failed_mission,
-                "current_step_id": target_step.step_number,
-                "target_role": target_step.target_role,
-                "errors": [
-                    f"CoderAgent step #{target_step.step_number}: '{command}' still "
-                    f"failing after {attempts} correction attempts:\n{diagnostics}"
-                ],
-                **({"security_flags": new_security_flags} if new_security_flags else {}),
-            }
-
+        _notify_status("in_progress")
         return {
-            "mission_spec": _failed_mission,
-            "healing_required": True,
-            "correction_attempts": attempts + 1,
-            "last_error_trace": diagnostics,
-            "failed_node": "coder_agent",
-            "failure_signature": normalize_signature(
-                "coder_agent", "VerifyFailure", command
+            "mission_spec": _mark_step_status(
+                mission_spec, target_step.step_number, "in_progress"
             ),
+            "pending_step_command": {str(target_step.step_number): command},
             "current_step_id": target_step.step_number,
             "target_role": target_step.target_role,
             **({"security_flags": new_security_flags} if new_security_flags else {}),
@@ -693,6 +645,16 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         explicit_mentions=state.get("explicit_mentions"),
         workspace_root=workspace_root,
     )
+    # Surface the GraphRAG lookup on the Glass-Box Timeline — the "retrieval"
+    # kind was declared on the wire from the start but nothing ever emitted
+    # it. Gated on project_id (matching _fetch_rag_snippets' own short-circuit)
+    # so a project-less call never claims a lookup that never ran; emitted
+    # AFTER the fetch so the metric reflects the real hit count.
+    if project_id:
+        await _emit(
+            f"retrieving {os.path.basename(target_file)}",
+            metric=f"{len(rag_snippets)} snippet(s)",
+        )
     rag_block = _build_rag_block(rag_snippets)
     style_block = _build_style_block(target_file, rag_snippets)
 
@@ -736,13 +698,34 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     else:
         file_block = f"(The file {target_file} does not exist yet — you will create it.)"
 
+    # 13.0.9 — a human's "request changes" reply, scoped to this exact step
+    # (matched above). Placed right after the task line, before the boundary/
+    # context material, so it reads as a direct amendment to the task rather
+    # than being buried after the file content.
+    _apply_feedback_block = (
+        f"\nReviewer feedback on your previous attempt at this step — address "
+        f"it in this regeneration: {apply_feedback}\n"
+        if apply_feedback else ""
+    )
+
+    # A coder-only tool-usage constraint a post-generation annotator attached
+    # (e.g. the polyglot-file patch-tool requirement, agents/planner.py) —
+    # deliberately kept out of `description` itself so it never reaches the
+    # human-facing checklist, a semantic-cache key, or a retrieval query.
+    _agent_notes_block = (
+        f"\nAgent directive for this step: {target_step.agent_notes}\n"
+        if target_step.agent_notes else ""
+    )
+
     # Task preamble + format postamble bracket the budget-guarded context block so
     # the model sees: task → (current file + RAG topology + style exemplars) →
     # output-format rules, preserving the original ordering after the splice.
     _task_preamble = (
         f"WBS step #{target_step.step_number} — role {target_step.target_role}, "
         f"action {target_step.action}.\nTarget file: {target_file}\n"
-        f"Task: {target_step.description}\n\n"
+        f"Task: {target_step.description}\n"
+        f"{_agent_notes_block}"
+        f"{_apply_feedback_block}\n"
         # Bare reference only — no axiom/declaration language here (SEAL2): the
         # sandbox rule and which tag is authoritative are declared exclusively in
         # the system message via build_boundary_declaration(), a trusted-only
@@ -849,6 +832,11 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # existed.
     if grounding_block:
         cache_context.append(("<grounding>", grounding_block))
+    # A "request changes" regeneration must never replay the exact attempt the
+    # human just rejected — fold the feedback text into the key so it always
+    # misses the cache and produces a genuinely new completion.
+    if apply_feedback:
+        cache_context.append(("<apply_feedback>", apply_feedback))
     cache_key = response_cache.build_key(
         intent=f"{target_step.action}|{target_file}|{target_step.description}",
         context=cache_context,
@@ -863,6 +851,64 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         if cached is not None:
             content = cached
         else:
+            # Live pre-generation reasoning pass — ONLY for a non-native model
+            # with the toggle on. A native model already surfaces its own
+            # reasoning on a separate channel inside acomplete_with_thinking
+            # below; a second pass here would double the trace and the cost.
+            # A non-native model's strict SEARCH/REPLACE generation cannot
+            # safely carry a reasoning preamble (DEBT-013: it corrupts the
+            # machine-parsed output), so — mirroring agents/planner.py's own
+            # pre-draft reasoning pass exactly — it runs here as a separate,
+            # free-form completion instead. Before this, enable_native_thinking
+            # was a silent no-op on any non-native target (the toggle promised
+            # "show me the model's reasoning" but a local/unsupported model
+            # showed nothing at all during a coding turn, regardless of the
+            # setting). Best-effort: a sink or generation fault never blocks
+            # the actual edit; only a real abort propagates.
+            if _on_thinking is not None and _thinking_on:
+                from core.config.model_resolver import get_chat_target  # deferred — load order
+                from tools.llm_gateway import _supports_native_thinking
+
+                _r_target = get_chat_target("big")
+                _r_native = _r_target is not None and _supports_native_thinking(_r_target.model)
+                if not _r_native:
+                    _reasoning_messages = [
+                        {"role": "system", "content": _system_content},
+                        {"role": "user", "content": (
+                            "Before writing the edit, think out loud about your approach "
+                            "to this step: what needs to change, why, and any risk or "
+                            "edge case to watch for. Write concise, conceptual prose — "
+                            "no code, no SEARCH/REPLACE blocks, no file dumps.\n\n"
+                            f"{instruction}"
+                        )},
+                    ]
+                    _sink_live = True
+                    try:
+                        async for _d in LLMGateway.astream_reasoning(
+                            _reasoning_messages,
+                            tier="big",
+                            temperature=0.0,
+                            max_tokens=_CODER_REASONING_MAX_TOKENS,
+                            session_id=session_id,
+                            thinking_budget_tokens=_thinking_budget,
+                            free_form_answer=True,
+                        ):
+                            if _sink_live and _d.text:
+                                try:
+                                    await _on_thinking(_d.text, _d.source)
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception:  # noqa: BLE001 — best-effort stream
+                                    logger.debug(
+                                        "coder reasoning sink failed; latching off",
+                                        exc_info=True,
+                                    )
+                                    _sink_live = False
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 — reasoning is best-effort; never block the edit
+                        logger.debug("coder reasoning pass failed (non-fatal)", exc_info=True)
+
             # Streams native reasoning to the Thought Box while generating; the
             # structured JSON answer is buffered and returned exactly as before.
             # On a non-reasoning model (or thinking off) this is a plain JSON-mode
@@ -962,12 +1008,18 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             contents[p] = final           # full new content for the write pipeline
             base_hash[p] = content_hash(orig)  # pre-edit anchor for the stale guard
 
-    # 4. Mark step complete + notify the IDE (non-blocking).
+    # 4. Generated, not yet approved — notify the IDE (non-blocking). 13.0.9:
+    # this used to announce "completed" here, before the human ever saw the
+    # diff, let alone approved it — the checklist was lying. The apply gate
+    # (brain/apply_gate.py) owns every transition from here on: awaiting_approval
+    # while a HITL decision is pending, then completed/rejected/revision_requested
+    # once the human actually decides, or failed if apply-time validation finds
+    # nothing to apply (the orphaned-in_progress backstop).
     _t = asyncio.create_task(
         vfs_manager.emit_graph_mutation(
             session_id=session_id,
             step_number=target_step.step_number,
-            new_status="completed",
+            new_status="in_progress",
             agent_name="CoderAgent",
         )
     )
@@ -981,14 +1033,23 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
 
     result: Dict[str, Any] = {
         "mission_spec": _mark_step_status(
-            mission_spec, target_step.step_number, "completed"
+            mission_spec, target_step.step_number, "in_progress"
         ),
         "pending_patches": patches,
         "pending_contents": contents,
         "pending_base_hash": base_hash,
+        # Which of the (potentially many, cross-step-accumulated) pending_*
+        # entries belong to THIS step — pending_patches/contents/base_hash use
+        # operator.or_ and can never be cleared, so the apply gate cannot infer
+        # "this step's files" from them alone once a later step has touched the
+        # same path.
+        "pending_step_files": {str(target_step.step_number): list(patches.keys())},
         "current_step_id": target_step.step_number,
         "target_role": target_step.target_role,
         "current_cost_usd": 0.0,
+        # Consumed above (matched by step_number) or discarded as stale —
+        # either way this node's own turn is the last one that may ever see it.
+        "apply_feedback": None,
     }
     if new_security_flags:
         result["security_flags"] = new_security_flags

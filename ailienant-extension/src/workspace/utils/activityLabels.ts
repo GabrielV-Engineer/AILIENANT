@@ -21,6 +21,7 @@ const KIND_VERB: Record<TimelineEntryKind, string> = {
     plan: 'Planned',
     diff: 'Edited',
     cell: 'Agentic cell',
+    subagent: 'Dispatched',
 };
 
 /**
@@ -52,6 +53,7 @@ export function timelineEntryPhase(
         case 'plan':
         case 'edit':
         case 'diff':
+        case 'subagent':
             return 'act';
         case 'reviewing':
         case 'heal':
@@ -91,6 +93,18 @@ export function timelineEntryLabel(entry: Pick<TimelineEntry, 'kind' | 'target' 
             }
             return entry.target ? `${verb} ${entry.target}` : verb;
         case 'diff':
+            return entry.target
+                ? `${verb} ${entry.target}${entry.metric ? ` · ${entry.metric}` : ''}`
+                : verb;
+        case 'retrieval':
+            // target is the file the lookup was scoped to (coder.py); metric is
+            // the hit count (coder.py and researcher.py both supply it, the
+            // latter with no target — a workspace-wide lookup, not one file).
+            return entry.target
+                ? `${verb}: ${entry.target}${entry.metric ? ` · ${entry.metric}` : ''}`
+                : (entry.metric ? `${verb} · ${entry.metric}` : verb);
+        case 'subagent':
+            // target is the dispatched role, metric its outcome status.
             return entry.target
                 ? `${verb} ${entry.target}${entry.metric ? ` · ${entry.metric}` : ''}`
                 : verb;

@@ -43,18 +43,28 @@ import * as React from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { act } from 'react';
 import { AgentTimeline, type AgentTimelineProps } from '../workspace/components/AgentTimeline';
-import type { TimelineEntry, PlanWBSStep, DiffBlockShape, CellIterationShape } from '../shared/config';
+import type { TimelineEntry, PlanWBSStep, DiffBlockShape, CellIterationShape, ExecutionDetailShape } from '../shared/config';
 
 function render(props: Partial<AgentTimelineProps> & { entries: TimelineEntry[] }): { container: HTMLDivElement; root: Root } {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const full: AgentTimelineProps = {
         streaming: false,
+        // Default to "this is the current turn" — the vast majority of these
+        // tests exercise streaming/label/row behavior and don't care about
+        // the newer-turn-collapses-this-one policy; the tests that DO care
+        // set it explicitly.
+        isLatestTurn: true,
         ...props,
     };
     const root = createRoot(container);
     act(() => { root.render(React.createElement(AgentTimeline, full)); });
     return { container, root };
+}
+
+function rerender(root: Root, props: Partial<AgentTimelineProps> & { entries: TimelineEntry[] }): void {
+    const full: AgentTimelineProps = { streaming: false, isLatestTurn: true, ...props };
+    act(() => { root.render(React.createElement(AgentTimeline, full)); });
 }
 
 function entry(over: Partial<TimelineEntry> & { id: string; kind: TimelineEntry['kind'] }): TimelineEntry {
@@ -113,10 +123,11 @@ suite('11.5.C.2 — AgentTimeline', function () {
         container.remove();
     });
 
-    test('done: the timeline auto-collapses (rows hidden until re-expanded)', () => {
+    test('a past (not-the-latest), done turn mounts already-collapsed (rows hidden until re-expanded)', () => {
         const { container, root } = render({
             entries: [entry({ id: 'seq:0', kind: 'read', target: 'x.py' })],
             streaming: false,
+            isLatestTurn: false,
         });
         assert.strictEqual(container.querySelector('.ws-timeline-rows'), null);
         assert.strictEqual(container.querySelector('.ws-timeline')?.getAttribute('data-open'), 'false');
@@ -125,6 +136,42 @@ suite('11.5.C.2 — AgentTimeline', function () {
         const header = container.querySelector<HTMLButtonElement>('.ws-timeline-header');
         act(() => { header?.click(); });
         assert.ok(container.querySelector('.ws-timeline-rows'), 'rows should reappear once re-expanded');
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('the current turn stays open after its own stream settles — done alone never collapses it', () => {
+        // The corrected policy (13.0.9): unlike the five widgets this component
+        // replaced, settling its OWN stream must NOT auto-collapse the current
+        // turn — only a NEWER turn starting does. Regression guard for the
+        // exact bug users hit: switching tabs (which re-renders with the same
+        // isLatestTurn=true) used to strip the plan checklist / timeline the
+        // instant the backend's "done" arrived, even though this was still the
+        // most recent turn on screen.
+        const { container, root } = render({
+            entries: [entry({ id: 'seq:0', kind: 'read', target: 'x.py' })],
+            streaming: true,
+            isLatestTurn: true,
+        });
+        assert.ok(container.querySelector('.ws-timeline-rows'), 'rows visible while streaming');
+
+        // The turn settles (streaming -> false) but remains the latest turn.
+        rerender(root, {
+            entries: [entry({ id: 'seq:0', kind: 'read', target: 'x.py' })],
+            streaming: false,
+            isLatestTurn: true,
+        });
+        assert.strictEqual(container.querySelector('.ws-timeline')?.getAttribute('data-open'), 'true');
+        assert.ok(container.querySelector('.ws-timeline-rows'), 'rows must stay visible after done while still latest');
+
+        // A newer turn starts — NOW it collapses to the summary.
+        rerender(root, {
+            entries: [entry({ id: 'seq:0', kind: 'read', target: 'x.py' })],
+            streaming: false,
+            isLatestTurn: false,
+        });
+        assert.strictEqual(container.querySelector('.ws-timeline')?.getAttribute('data-open'), 'false');
+        assert.strictEqual(container.querySelector('.ws-timeline-rows'), null);
         act(() => root.unmount());
         container.remove();
     });
@@ -213,8 +260,9 @@ suite('11.5.C.2 — AgentTimeline', function () {
         const { container, root } = render({
             entries: [entry({ id: 'calc.py', kind: 'diff', target: 'calc.py', metric: '+2 -1', diff })],
             streaming: false,
+            isLatestTurn: false,
         });
-        // Re-expand the outer timeline first (it auto-collapses on done).
+        // Re-expand the outer timeline first (a past, not-the-latest turn mounts collapsed).
         act(() => { container.querySelector<HTMLButtonElement>('.ws-timeline-header')?.click(); });
 
         const rowHeader = container.querySelector<HTMLButtonElement>('.ws-timeline-row[data-kind="diff"] .ws-timeline-row-header');
@@ -241,13 +289,39 @@ suite('11.5.C.2 — AgentTimeline', function () {
         const { container, root } = render({
             entries: [entry({ id: 'calc.py', kind: 'diff', target: 'calc.py', metric: '+2 -1', diff })],
             streaming: false,
+            isLatestTurn: false,
         });
-        // Re-expand the outer timeline first (it auto-collapses on done).
+        // Re-expand the outer timeline first (a past, not-the-latest turn mounts collapsed).
         act(() => { container.querySelector<HTMLButtonElement>('.ws-timeline-header')?.click(); });
 
         const rowHeader = container.querySelector<HTMLButtonElement>('.ws-timeline-row[data-kind="diff"] .ws-timeline-row-header');
         assert.ok(rowHeader, 'diff row header missing');
         assert.strictEqual(rowHeader!.getAttribute('aria-expanded'), 'true');
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('command rows default to expanded — every one, not click-per-row', () => {
+        // Regression guard: the old default only opened the LAST command row,
+        // and only while the turn was still streaming — every other row (and
+        // every row once the turn settled) needed an explicit click even
+        // though it is the actual record of what ran, not a pending decision.
+        const execA: ExecutionDetailShape = { source: 'native_host', exit_code: 0, stdout: 'ok' };
+        const execB: ExecutionDetailShape = { source: 'native_host', exit_code: 1, stderr: 'boom' };
+        const { container, root } = render({
+            entries: [
+                entry({ id: 'exec-1', kind: 'command', target: 'pytest -q', execution: execA }),
+                entry({ id: 'exec-2', kind: 'command', target: 'mypy .', execution: execB }),
+            ],
+            streaming: false,
+            isLatestTurn: true,
+        });
+        const headers = container.querySelectorAll<HTMLButtonElement>(
+            '.ws-timeline-row[data-kind="command"] .ws-timeline-row-header',
+        );
+        assert.strictEqual(headers.length, 2);
+        assert.strictEqual(headers[0].getAttribute('aria-expanded'), 'true', 'first command row should default open');
+        assert.strictEqual(headers[1].getAttribute('aria-expanded'), 'true', 'second command row should default open too');
         act(() => root.unmount());
         container.remove();
     });

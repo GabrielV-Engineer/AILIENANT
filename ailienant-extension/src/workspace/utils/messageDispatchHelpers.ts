@@ -256,6 +256,10 @@ export function attachOrUpdateTimeline(
         id: mkId(),
         role: 'assistant',
         content: '',
+        // A fresh placeholder IS the start of a live turn — without this,
+        // AgentTimeline mounts with streaming=false, reads done=true, and
+        // auto-collapses on its very first frame.
+        streaming: true,
         timeline: update(undefined),
         authorLabel: authorLabelFor('assistant', agentName),
     }];

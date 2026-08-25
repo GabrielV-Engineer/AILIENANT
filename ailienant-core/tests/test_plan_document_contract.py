@@ -73,16 +73,22 @@ def test_event_round_trips_through_the_ws_adapter() -> None:
 
 
 def test_summary_is_a_pointer_not_an_embedded_wbs() -> None:
-    # A large plan must not bloat the chat bubble — the WBS/diffs live in the panel.
+    # A large plan must not bloat the chat bubble — the WBS/diffs live in the
+    # panel (the tasks/checklist), never re-flattened into chat prose here.
+    # 13.0.9: the summary is now an outcome report sourced from
+    # applied_files_log, not a pre-apply proposal — a 50-file turn must stay
+    # just as short as a 1-file one.
     mission = _mission(n_steps=50)
-    patches = {f"src/module_{i}.py": f"@@ diff {i} @@" for i in range(1, 51)}
+    applied_log = [
+        {"file_path": f"src/module_{i}.py", "command": None, "status": "completed", "step_number": i}
+        for i in range(1, 51)
+    ]
 
-    summary = TaskService._format_coding_summary(mission, patches, errors=[], plan_surface=True)
+    summary = TaskService._format_coding_summary(mission, applied_log, errors=[])
 
-    assert "Plan panel" in summary
     assert "```diff" not in summary  # diffs are not re-flattened into chat prose
     assert "@@ diff" not in summary
-    # Pointer stays short regardless of a 50-step plan.
+    # Stays short regardless of a 50-file turn.
     assert len(summary) < 200
 
 

@@ -200,7 +200,8 @@ export interface ExecutionDetailShape {
 // node token never reaches the screen.
 export type TimelineEntryKind =
     | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
-    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell';
+    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell'
+    | 'subagent';
 
 // 'active' applies to a 'reasoning' or 'cell' entry (both fire their marker at
 // the start of an open-ended span — deltas / further iteration body still

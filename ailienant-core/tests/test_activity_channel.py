@@ -208,7 +208,16 @@ async def test_live_cell_dispatcher_without_push_activity_is_a_noop() -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def test_plan_and_diff_activity_markers_fire_in_order() -> None:
+async def test_understanding_then_plan_markers_fire_in_order() -> None:
+    """13.0.9: the "diff" marker moved from this single-snapshot post-graph
+    pass into brain/apply_gate.py's run_apply_commit_node — a real graph node
+    this fake-astream harness never reaches (it stands in for the WHOLE
+    graph). The "plan" marker is still seeded here, from the same early-latch
+    logic in _run_coding_task that existed before. The plan->diff ordering
+    this test used to assert is still true in production (apply_commit only
+    ever runs after the plan has been seeded), just no longer provable inside
+    one harness — see test_apply_commit_diff_marker_shape below for the diff
+    marker's own shape, verified directly against the real node."""
     from typing import AsyncIterator, Dict
 
     from core.task_service import TaskService, TaskPayload
@@ -225,30 +234,26 @@ async def test_plan_and_diff_activity_markers_fire_in_order() -> None:
     )
     final_state: Dict[str, Any] = {
         "mission_spec": mission,
-        "pending_patches": {"calc.py": "--- a/calc.py\n+++ b/calc.py\n@@\n-def f():\n-    return 1\n+def f():\n+    return 2\n"},
-        "pending_contents": {"calc.py": "def f():\n    return 2\n"},
-        "pending_base_hash": {"calc.py": "deadbeef"},
         "errors": [],
         "hitl_pending": False,
         "session_permission_mode": "AUTO",
+        "applied_files_log": [],
     }
 
     async def _fake_astream(*_a: Any, **_k: Any) -> AsyncIterator[Dict[str, Any]]:
-        yield final_state  # single snapshot: both the early-seed latch and the final pass see it
+        yield final_state
 
     captured: List[dict] = []
 
     async def _capture_activity(sid: str, *, seq: int, ts: float, kind: str, target=None, metric=None, ref=None) -> None:
         captured.append({"seq": seq, "kind": kind, "target": target, "metric": metric, "ref": ref})
 
-    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"], "stale_files": []})
     payload = TaskPayload(
         task_prompt="bump the increment", dirty_buffers=[], project_id=None, workspace_root="/ws",
     )
 
     ctxs = [
         patch("brain.engine.alienant_app.astream", side_effect=_fake_astream),
-        patch("core.write_pipeline.apply_patch_set", new=apply_mock),
         patch("core.task_service.vfs_manager.broadcast_activity_event", new=AsyncMock(side_effect=_capture_activity)),
         patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()),
         patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()),
@@ -264,22 +269,63 @@ async def test_plan_and_diff_activity_markers_fire_in_order() -> None:
             c.stop()
 
     kinds = [c["kind"] for c in captured]
-    # "understanding" (context_gather) fires first, then "plan" (seeded as soon as
-    # mission_spec appears), then "diff" once the file actually lands on disk.
+    # "understanding" (context_gather) fires first, then "plan" (seeded as soon
+    # as mission_spec appears).
     assert kinds[0] == "understanding"
     assert "plan" in kinds
-    assert "diff" in kinds
-    assert kinds.index("plan") < kinds.index("diff")
 
     plan_evt = next(c for c in captured if c["kind"] == "plan")
     assert plan_evt["metric"] == "1 steps"
-
-    diff_evt = next(c for c in captured if c["kind"] == "diff")
-    assert diff_evt["target"] == "calc.py"
-    assert diff_evt["ref"] == "calc.py"
-    assert diff_evt["metric"] == "+2 -2"
 
     # seq is strictly increasing across the whole captured sequence.
     seqs = [c["seq"] for c in captured]
     assert seqs == sorted(seqs)
     assert len(seqs) == len(set(seqs))
+
+
+async def test_apply_commit_diff_marker_shape() -> None:
+    """The "diff" marker's real shape (target/ref/metric), verified directly
+    against brain/apply_gate.py::run_apply_commit_node — the actual node that
+    emits it in production, via the same push_activity config seam
+    _run_coding_task wires it through with."""
+    from typing import Dict
+
+    from brain.apply_gate import run_apply_commit_node
+
+    captured: List[dict] = []
+
+    async def _capture_activity(kind: str, target=None, metric=None, ref=None) -> None:
+        captured.append({"kind": kind, "target": target, "metric": metric, "ref": ref})
+
+    state: Dict[str, Any] = {
+        "task_id": "s1",
+        "mission_spec": None,
+        "applied_step_ids": [],
+        "pending_contents": {"calc.py": "def f():\n    return 2\n"},
+        "pending_apply": {
+            "step_number": 1, "kind": "FILE_WRITE", "decision": "allow",
+            "files": [{
+                "file_path": "calc.py",
+                "unified_diff": "--- a/calc.py\n+++ b/calc.py\n@@\n-def f():\n-    return 1\n+def f():\n+    return 2\n",
+                "base_hash": "deadbeef",
+            }],
+            "command": None, "risk_labels": [], "auto_accept": False, "attempt": 0,
+        },
+    }
+    from brain.state import MissionSpecification, WBSStep
+    state["mission_spec"] = MissionSpecification(
+        outcome="Bump the increment.", scope=["calc.py"], constraints=["none"], decisions=["go"],
+        tasks=[WBSStep(step_number=1, target_role="core_dev", action="edit_file",
+                        target_file="calc.py", description="bump")],
+        checks=["ok"],
+    )
+
+    with patch("brain.apply_gate.request_graph_approval"), \
+         patch("core.write_pipeline.apply_patch_set", new=AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        await run_apply_commit_node(state, {"configurable": {"push_activity": _capture_activity}})  # type: ignore[arg-type]
+
+    diff_evt = next(c for c in captured if c["kind"] == "diff")
+    assert diff_evt["target"] == "calc.py"
+    assert diff_evt["ref"] == "calc.py"
+    assert diff_evt["metric"] == "+2 -2"

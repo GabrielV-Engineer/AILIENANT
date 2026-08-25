@@ -526,6 +526,44 @@ def test_build_healing_companion_request_reflects_the_outcome():
     assert "could not auto-fix" in conceded.scope_summary
 
 
+def test_build_healing_companion_request_carries_real_execution_context():
+    """13.0.9: previously this request carried only three generic lines
+    (failed_node/outcome/diagnosis) regardless of what actually failed — the
+    model had nothing concrete to explain and fell back to filler. When the
+    failure came from a run_command attempt, the caller (agents/error_correction.py)
+    now threads the step description, the command, its exit code, and the
+    stdout/stderr tail through."""
+    request = build_healing_companion_request(
+        session_id="sess1", task_id="task1", attempt_ordinal=1,
+        failed_node="apply_commit", diagnosis="mypy.py:12: error: bad type [arg-type]",
+        healed=False, step_description="Fix the type hints in calc.py",
+        command="mypy .", exit_code=1,
+        stdout_tail="calc.py:12: error: bad type [arg-type]", stderr_tail="",
+    )
+    assert "Step: Fix the type hints in calc.py" in request.scope_summary
+    assert "Command: mypy ." in request.scope_summary
+    assert "Exit code: 1" in request.scope_summary
+    assert "Stdout (tail):" in request.scope_summary
+    assert "calc.py:12: error: bad type" in request.scope_summary
+    # An empty stderr tail is falsy — omitted rather than rendered as a bare header.
+    assert "Stderr (tail):" not in request.scope_summary
+
+
+def test_build_healing_companion_request_omits_execution_fields_for_a_non_command_failure():
+    """A write_file/edit_file-originated failure has no command/exit_code/tail
+    at all — the caller passes None for each, and none of those lines should
+    render (never "Command: None", "Exit code: None", ...)."""
+    request = build_healing_companion_request(
+        session_id="sess1", task_id="task1", attempt_ordinal=1,
+        failed_node="coder_agent", diagnosis="KeyError: 'foo'", healed=False,
+    )
+    assert "Command:" not in request.scope_summary
+    assert "Exit code:" not in request.scope_summary
+    assert "Stdout" not in request.scope_summary
+    assert "Stderr" not in request.scope_summary
+    assert "Step:" not in request.scope_summary
+
+
 async def test_run_agent_companion_broadcasts_with_scope_and_emission_id(mock_state):
     """A non-coding emission carries its own scope + a per-decision-point
     emission_id, distinct from the coding-path correlation_id shape."""

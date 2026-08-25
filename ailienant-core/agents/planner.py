@@ -153,21 +153,22 @@ logger = logging.getLogger("PLANNER_NODE")
 DEBUG_MODE: bool = os.getenv("AILIENANT_PLANNER_DEBUG", "0") != "0"
 
 _POLYGLOT_WARNING = (
-    " [!] POLYGLOT FILE DETECTED: {target_file}. "
+    "[!] POLYGLOT FILE DETECTED: {target_file}. "
     "You MUST use the 'patch_file' tool for any modifications. "
     "Full file rewrites are strictly forbidden to prevent corrupting mixed syntax."
 )
 
 
 def _inject_polyglot_constraints(tasks: list[WBSStep]) -> list[WBSStep]:
-    """Return a new task list with polyglot-file constraints appended to step descriptions."""
+    """Return a new task list with a polyglot-file tool-usage directive attached
+    to each affected step's ``agent_notes`` — coder-only, never appended to the
+    human-facing ``description`` the checklist renders."""
     result = []
     for step in tasks:
         if step.target_file and is_polyglot_file(step.target_file):
-            step = step.model_copy(update={
-                "description": step.description
-                    + _POLYGLOT_WARNING.format(target_file=step.target_file)
-            })
+            warning = _POLYGLOT_WARNING.format(target_file=step.target_file)
+            notes = f"{step.agent_notes}\n{warning}" if step.agent_notes else warning
+            step = step.model_copy(update={"agent_notes": notes})
         result.append(step)
     return result
 

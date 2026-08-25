@@ -114,9 +114,12 @@ async def test_planner_mode_enters_ideation_and_suspends(_analyst_debug: None) -
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2. Non-planner: graph proposes patches → summary + HITL apply
-#    (the apply-gate control flow lives in test_task_service_apply.py; here we
-#     assert the graph's final-state patches reach the approval card.)
+# 2. Non-planner: graph's final state -> the honest turn-end summary
+#    (13.0.9: approve/reject/hooks/apply-gate control flow lives entirely in
+#     brain/apply_gate.py now, exercised at the node level in
+#     test_task_service_apply.py. What's left of _run_coding_task's own logic
+#     at this point is reporting the graph's final applied_files_log as the
+#     turn-end plan-document summary — that's what this test now certifies.)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -137,11 +140,11 @@ _MISSION = MissionSpecification(
     checks=["ok"],
 )
 
-_FINAL_WITH_PATCH: Dict[str, Any] = {
+_FINAL_WITH_APPLIED_STEP: Dict[str, Any] = {
     "mission_spec": _MISSION,
-    "pending_patches": {"export.py": "--- a/export.py\n+++ b/export.py\n"},
-    "pending_contents": {"export.py": "def to_csv():\n    return ''\n"},
-    "pending_base_hash": {"export.py": "cafef00d"},
+    "applied_files_log": [
+        {"file_path": "export.py", "command": None, "status": "completed", "step_number": 1}
+    ],
     "errors": [],
     "hitl_pending": False,
 }
@@ -158,26 +161,56 @@ def _astream_final(state: Dict[str, Any]) -> Any:
 
 
 @pytest.mark.anyio
-async def test_non_planner_proposes_patches_and_requests_approval() -> None:
+async def test_non_planner_final_state_produces_the_applied_summary() -> None:
+    """An initial (non-resumed) run legitimately broadcasts the plan document
+    twice: the early empty-summary seed (as soon as mission_spec first
+    appears — lets the chat show the checklist before any step resolves) and
+    the final one carrying the real, applied-outcome summary. Only the LAST
+    call matters here; the seed's own behavior is exercised in the resume
+    test below."""
     ts = TaskService()  # type: ignore[no-untyped-call]
-    request_human_approval = AsyncMock(
-        return_value={"approved": True, "comment": None, "modified_content": None}
-    )
-    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["export.py"]})
+    plan_doc = AsyncMock()
 
-    with patch("brain.engine.alienant_app.astream", side_effect=_astream_final(_FINAL_WITH_PATCH)), \
-         patch("core.write_pipeline.apply_patch_set", apply_mock), \
+    with patch("brain.engine.alienant_app.astream", side_effect=_astream_final(_FINAL_WITH_APPLIED_STEP)), \
+         patch("core.task_service.vfs_manager.broadcast_plan_document", plan_doc), \
          patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()), \
          patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()), \
-         patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()), \
-         patch("core.task_service.vfs_manager.request_human_approval", request_human_approval):
+         patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()):
         await ts._run_coding_task("sess-code", _payload(planner_mode=False), "SEQUENTIAL")
 
-    request_human_approval.assert_awaited_once()
-    apply_mock.assert_awaited_once()
-    assert apply_mock.await_args is not None
-    _sid, contents, _bh = apply_mock.await_args.args[:3]
-    assert contents == _FINAL_WITH_PATCH["pending_contents"]
+    assert plan_doc.await_count == 2
+    assert plan_doc.await_args is not None
+    _sid, final_payload = plan_doc.await_args.args[:2]
+    assert "Applied 1 file change to disk" in final_payload.summary
+    assert final_payload.tasks[0]["target_file"] == "export.py"
+
+
+@pytest.mark.anyio
+async def test_resume_does_not_re_seed_the_plan_document() -> None:
+    """13.0.9 regression guard: every per-step approval interrupt re-enters
+    _run_coding_task via resume_graph (resume_value is not None). Without
+    gating the early-seed latch on that, EVERY step's resume would
+    re-broadcast the (now-redundant) empty-summary plan seed on top of the
+    turn's real final summary — noisy at best, and on a multi-step WBS,
+    proportional to step count. A resumed run must broadcast the plan
+    document exactly once: the real final summary, never the seed."""
+    ts = TaskService()  # type: ignore[no-untyped-call]
+    plan_doc = AsyncMock()
+
+    with patch("brain.engine.alienant_app.astream", side_effect=_astream_final(_FINAL_WITH_APPLIED_STEP)), \
+         patch("core.task_service.vfs_manager.broadcast_plan_document", plan_doc), \
+         patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()), \
+         patch("core.task_service.vfs_manager.broadcast_token", new=AsyncMock()), \
+         patch("core.task_service.vfs_manager.broadcast_stream_end", new=AsyncMock()):
+        await ts._run_coding_task(
+            "sess-code", _payload(planner_mode=False), "SEQUENTIAL",
+            resume_value={"approved": True, "comment": None, "modified_content": None},
+        )
+
+    plan_doc.assert_awaited_once()
+    assert plan_doc.await_args is not None
+    _sid, payload = plan_doc.await_args.args[:2]
+    assert "Applied 1 file change to disk" in payload.summary
 
 
 # ──────────────────────────────────────────────────────────────────────────────

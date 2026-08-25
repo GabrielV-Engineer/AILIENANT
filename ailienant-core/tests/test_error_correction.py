@@ -194,6 +194,103 @@ async def test_run_node_noop_without_signal() -> None:
     assert await run_error_correction_node({"healing_required": False}) == {}
 
 
+# ── 13.0.9 — the healing companion request carries real execution context ────
+
+
+@pytest.mark.anyio
+async def test_run_node_threads_execution_context_when_failed_node_is_apply_commit(
+    monkeypatch: Any,
+) -> None:
+    """A run_command failure (brain/apply_gate.py::_commit_command) sets both
+    failed_node="apply_commit" and last_execution_context in the SAME delta —
+    the node must forward the command/exit_code/tails/step description into
+    the companion request, not just the three generic lines."""
+    from brain.state import MissionSpecification, WBSStep
+
+    _patch_read(monkeypatch, _ORIGINAL)
+    monkeypatch.setattr(
+        "agents.error_correction._default_agent",
+        ErrorCorrectionAgent(llm_invoker=_stub_invoker(_WS_OFFENDER, _FIXED)),
+    )
+    captured: Dict[str, Any] = {}
+
+    def _capture_schedule(state: Any, scope: Any, attempt: Any, build_fn: Any) -> None:
+        captured["request"] = build_fn()
+
+    monkeypatch.setattr(
+        "brain.coder_companion.schedule_agent_companion", _capture_schedule,
+    )
+    mission = MissionSpecification(
+        outcome="o", scope=["x"], constraints=[], decisions=[],
+        tasks=[WBSStep(
+            step_number=1, target_role="core_dev", action="run_command",
+            target_file="mypy .", description="Type-check the project.",
+        )],
+        checks=[],
+    )
+    state: Dict[str, Any] = {
+        "healing_required": True,
+        "last_error_trace": "mypy.py:1: error: bad type [arg-type]",
+        "failed_node": "apply_commit",
+        "failure_signature": normalize_signature("apply_commit", "VerifyFailure", "mypy ."),
+        "last_execution_context": {
+            "command": "mypy .", "exit_code": 1,
+            "stdout_tail": "mypy.py:1: error: bad type [arg-type]", "stderr_tail": "",
+        },
+        "mission_spec": mission,
+        "current_step_id": 1,
+        "workspace_root": _WS_ROOT,
+        "task_id": "t1",
+        "correction_attempts": 0,
+    }
+    await run_error_correction_node(state)
+
+    summary = captured["request"].scope_summary
+    assert "Step: Type-check the project." in summary
+    assert "Command: mypy ." in summary
+    assert "Exit code: 1" in summary
+
+
+@pytest.mark.anyio
+async def test_run_node_ignores_stale_execution_context_from_a_different_failed_node(
+    monkeypatch: Any,
+) -> None:
+    """A last_execution_context left over from an EARLIER run_command healing
+    attempt must never leak into a DIFFERENT node's failure — the gate is
+    failed_node == "apply_commit", set fresh in the same delta as the context
+    it guards, per last_execution_context's docstring in brain/state.py."""
+    _patch_read(monkeypatch, _ORIGINAL)
+    monkeypatch.setattr(
+        "agents.error_correction._default_agent",
+        ErrorCorrectionAgent(llm_invoker=_stub_invoker(_WS_OFFENDER, _FIXED)),
+    )
+    captured: Dict[str, Any] = {}
+
+    def _capture_schedule(state: Any, scope: Any, attempt: Any, build_fn: Any) -> None:
+        captured["request"] = build_fn()
+
+    monkeypatch.setattr(
+        "brain.coder_companion.schedule_agent_companion", _capture_schedule,
+    )
+    state: Dict[str, Any] = {
+        "healing_required": True,
+        "last_error_trace": f'File "{_WS_OFFENDER}", line 2, in f\nNameError',
+        "failed_node": "coder_agent",  # NOT apply_commit
+        "failure_signature": normalize_signature("coder_agent", "NameError", "x"),
+        "last_execution_context": {  # stale, from an earlier command failure
+            "command": "pytest -q", "exit_code": 1, "stdout_tail": "1 failed", "stderr_tail": "",
+        },
+        "workspace_root": _WS_ROOT,
+        "task_id": "t1",
+        "correction_attempts": 0,
+    }
+    await run_error_correction_node(state)
+
+    summary = captured["request"].scope_summary
+    assert "Command:" not in summary
+    assert "pytest -q" not in summary
+
+
 # ── traceback parsing ────────────────────────────────────────────────────────
 
 

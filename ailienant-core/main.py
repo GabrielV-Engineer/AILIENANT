@@ -175,6 +175,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # further inference from reading source alone.
     _t0 = time.monotonic()
 
+    # Startup must be idempotent across repeated lifespan cycles in one process
+    # (multiple TestClient(app) instantiations in a single pytest session — the
+    # ASGI app object is re-entered but `vfs_manager` is a module-level singleton
+    # that outlives any single lifespan run). Without this reset, a prior
+    # shutdown's `shutting_down = True` latch permanently rejects every new WS
+    # connection with code 1001 on the next boot in the same process.
+    vfs_manager.shutting_down = False
+
     # e2e-only, env-gated: the Playwright dashboard suite's run-backend.mjs sets
     # this instead of spawning tests/e2e/seed_dashboard_fixture.py as a second,
     # fully separate cold Python process ahead of this one — that used to pay
@@ -548,6 +556,12 @@ def _resume_approval_dict(data: HITLResponsePayload) -> Dict[str, Any]:
     return {
         "approved": data.approved,
         "comment": data.comment,
+        # DEBT-fix (13.0.9 W0): request_graph_approval's normalizer only ever reads
+        # this key, but it was never forwarded here — edit-before-apply silently
+        # disappeared the instant a FILE_WRITE approval moved onto the native
+        # interrupt() channel. `request_human_approval` (the older event-channel
+        # path) always carried it; the in-graph path must match.
+        "modified_content": data.modified_content,
         "answer": data.answer if data.answer is not None else data.comment,
         "selected_option": data.selected_option,
         "answers": [a.model_dump() for a in data.answers] if data.answers else None,

@@ -21,8 +21,7 @@ import logging
 if TYPE_CHECKING:
     from api.ws_contracts import PlanDocumentPayload
 from core.activity_context import bind_activity_sink, reset_activity_sink
-from core.storage_paths import is_ailienant_internal_path
-from shared.config import PAUSED_INTERRUPT_TTL_S
+from shared.config import GRAPH_RECURSION_LIMIT, PAUSED_INTERRUPT_TTL_S
 from shared.persona import compose
 from transport.token_batcher import batch_tokens
 
@@ -70,6 +69,91 @@ def _diff_line_delta(unified_diff: str) -> str:
         elif line.startswith("-"):
             removed += 1
     return f"+{added} -{removed}"
+
+
+async def run_patch_hooks(session_id: str, event: str) -> Tuple[bool, List[str]]:
+    """Run enabled ``event`` hooks through the sandbox adapter.
+
+    Returns ``(ok, messages)``. ``ok`` is False only when a hook execution
+    fails (non-zero exit, timeout, or no adapter available for a gate) — the
+    caller treats a False from a ``pre_patch`` event as a veto and a False from
+    ``post_patch`` as advisory. Every hook fault is **non-fatal to the host**:
+    it is logged and folded into ``messages``, never raised into the task.
+
+    The per-hook ceiling is enforced by the adapter's own ``timeout_s`` (it
+    kills + reaps its subprocess on expiry); we never wrap ``execute()`` in an
+    outer ``wait_for``, which would cancel without reaping and orphan the child.
+
+    Module-level (13.0.9): never touched TaskService state, and
+    ``brain/apply_gate.py``'s per-step apply nodes need it without an instance.
+    ``TaskService._run_patch_hooks`` is kept as a thin back-compat shim.
+    """
+    try:
+        from core.db import list_hooks  # local import — avoid a load-time cycle
+
+        rows = await list_hooks()
+    except Exception as exc:  # noqa: BLE001 — hook lookup must never crash a task
+        logger.warning(
+            "[Session: %s] %s hook lookup failed: %s",
+            session_id, event, exc, exc_info=True,
+        )
+        return True, []  # no hooks visible → never block the apply
+
+    commands = [
+        str(row.get("command") or "")
+        for row in rows
+        if row.get("event") == event
+        and row.get("enabled")
+        and str(row.get("command") or "").strip()
+    ]
+    if not commands:
+        return True, []
+
+    from core.sandbox import get_active_adapter
+    from tools.execution_tools import _sandbox_env
+
+    adapter = get_active_adapter()
+    if adapter is None:
+        # A gate that cannot run must fail closed for pre_patch; a post_patch
+        # config simply degrades to a logged warning (the write already landed).
+        msg = f"{event} hook(s) configured but no sandbox adapter is active"
+        logger.warning("[Session: %s] %s", session_id, msg)
+        return (event != "pre_patch"), [msg]
+
+    ok = True
+    messages: List[str] = []
+    from core.exec_log import record_execution
+
+    for command in commands:
+        try:
+            result = await record_execution(
+                adapter,
+                command,
+                timeout_s=_HOOK_TIMEOUT_SEC,
+                cwd="",
+                env_whitelist=_sandbox_env(),
+                session_id=session_id,
+                source="hook",
+            )
+        except Exception as exc:  # noqa: BLE001 — a hook fault never crashes the host
+            logger.warning(
+                "[Session: %s] %s hook raised for %r: %s",
+                session_id, event, command, exc, exc_info=True,
+            )
+            ok = False
+            messages.append(f"{event} hook errored: {command}")
+            continue
+        if int(result.exit_code) != 0:
+            ok = False
+            tail = _truncate_tool_output((result.stdout or "") + (result.stderr or ""))
+            logger.warning(
+                "[Session: %s] %s hook non-zero exit=%s cmd=%r\n%s",
+                session_id, event, result.exit_code, command, tail,
+            )
+            messages.append(
+                f"{event} hook failed (exit {result.exit_code}): {command}"
+            )
+    return ok, messages
 
 
 # Glass-Box Timeline activity channel — un-throttled by design, but bounded: past
@@ -641,6 +725,10 @@ class TaskService:
             # so it survives a checkpoint (DEBT-079) — see AIlienantGraphState.
             "enable_native_thinking": payload.enable_native_thinking,
             "thinking_budget_tokens": payload.thinking_budget_tokens,
+            # 13.0.9 — the apply gate's prepare node reads this from graph state
+            # (only TaskPayload carried it before; a graph node has no access to
+            # the original payload).
+            "auto_accept_low_risk": payload.auto_accept_low_risk,
         }
         # The per-task execution-mode selector takes precedence over the global
         # settings-file preference: the selector reflects the user's intent for
@@ -1070,7 +1158,15 @@ class TaskService:
                     "on_state_compacted": functools.partial(
                         vfs_manager.broadcast_state_compacted, session_id
                     ),
-                }
+                    # 13.0.9 — the apply gate's commit node emits a "diff" marker
+                    # per file as each one actually lands on disk. Same off-state
+                    # seam as `narrate`/`stream_thinking`: a callable never rides
+                    # graph state, so the checkpointer never has to serialize it.
+                    "push_activity": _push_activity,
+                },
+                # No value was set here before, so LangGraph's own default (25)
+                # silently applied — see shared.config.GRAPH_RECURSION_LIMIT.
+                "recursion_limit": GRAPH_RECURSION_LIMIT,
             }
             final_state: Dict[str, Any] = {}
             try:
@@ -1088,7 +1184,16 @@ class TaskService:
                 # early so the chat can seed the execution checklist BEFORE the coder
                 # starts emitting per-step status mutations. Reuses the existing
                 # server_plan_document event; an empty summary marks it seed-only.
-                _plan_seeded = False
+                # 13.0.9 — a resume is now common (every per-step approval interrupt
+                # re-enters here), and the resumed astream's first snapshot already
+                # carries mission_spec, same as the very first run's does. Without
+                # gating on resume_value, this local latch (reset to False on every
+                # _run_coding_task call, resume or not) would re-broadcast the seed
+                # plan document — and re-emit the "N steps" plan activity marker —
+                # on EVERY single step's approval round-trip. The frontend already
+                # knows the plan from the original seed; only the initial run needs
+                # to seed it at all.
+                _plan_seeded = resume_value is not None
                 # Initial run seeds the full state; a resume re-enters the checkpointed
                 # thread with Command(resume=…). Same stream_mode ("values") either way.
                 graph_input: Any = (
@@ -1181,320 +1286,29 @@ class TaskService:
                 await self._finalize_stream(session_id)
                 return
 
-            # The graph's reducers (operator.or_ / operator.add) already merged
-            # every coder step — across SWARM fan-out and the RELAY/validation
-            # loop — into the final state, plus any in-graph self-healing fix.
-            patches: Dict[str, str] = dict(final_state.get("pending_patches") or {})
-            contents: Dict[str, str] = dict(final_state.get("pending_contents") or {})
-            base_hashes: Dict[str, str] = dict(final_state.get("pending_base_hash") or {})
+            # 13.0.9 — the per-step apply gate (brain/apply_gate.py) already
+            # generated, gated (via a native interrupt() approval card — the
+            # same standard HITL card the event-channel path renders, per
+            # _emit_interrupt_card), and applied every step's write/command
+            # DURING the graph run above. This block used to be where ALL of
+            # that happened, in one post-graph pass over the whole WBS's
+            # frozen pending_patches dict — permission verdict, the sequential
+            # per-file approval loop, blast radius, pre/post_patch hooks, the
+            # actual apply — every bit of it now lives in the graph, per step.
+            # This block's only remaining job is to report what already
+            # happened, sourced from the turn-scoped applied_files_log ledger
+            # (brain/state.py) rather than predicting a gate outcome that, by
+            # the time this code runs, is no longer pending.
+            applied_log: List[Dict[str, Any]] = list(final_state.get("applied_files_log") or [])
             errors: List[str] = list(final_state.get("errors") or [])
 
-            # Refuse to mutate AILIENANT's own runtime artifacts. The telemetry log
-            # self-rewrites mid-task, so any proposed move fails the host's
-            # optimistic-concurrency hash check and strands the whole batch. The
-            # workspace tree already hides these, but guard the write path too so a
-            # path reaching the patch set by any route can never be actuated.
-            _internal = [p for p in contents if is_ailienant_internal_path(p)]
-            if _internal:
-                for p in _internal:
-                    patches.pop(p, None)
-                    contents.pop(p, None)
-                    base_hashes.pop(p, None)
-                logger.info(
-                    "[Session: %s] dropped %d AILIENANT-internal path(s) from the patch set: %s",
-                    session_id, len(_internal), ", ".join(sorted(_internal)),
-                )
-                errors.append(
-                    "Skipped AILIENANT's own runtime files (they cannot be moved): "
-                    + ", ".join(f"`{p}`" for p in sorted(_internal))
-                )
-
-            # 1) Surface the plan. The structured document and its one-line chat
-            # pointer ride in a single message so the bubble and the rich Plan
-            # panel land on one frontend state transition — two sequential
-            # broadcasts could arrive out of order and flash the pointer against
-            # an empty panel. The proposed diffs keep their own DiffBlock render
-            # path on apply, so they are not re-flattened into chat prose here.
-            # Plan mode is the only surface where the rich Plan panel renders; in
-            # Ask/Auto the diff is shown inline in the chat, so the pointer text
-            # must not send the user to a panel that won't appear.
-            # Resolve the permission verdict ONCE, up-front, so the chat pointer and
-            # the actuation path below share a single source of truth. Deriving the
-            # pointer from a separate string check (mode == "auto") let a mode that
-            # resolves to ALLOW without being literally "auto" render the Ask-style
-            # "review and authorize" pointer while the write auto-applied — the two
-            # must never diverge. evaluate_action is pure, so computing it here (before
-            # the summary) is side-effect-free. The channel stores uppercase; the enum
-            # is lowercase, so lowercase before constructing it.
-            from core.permissions import (
-                PermissionDecision,
-                SessionPermissionMode,
-                ToolPrivilegeTier,
-                evaluate_action,
-            )
-            from shared.rbac import PermissionMode
-
-            raw_mode = str(final_state.get("session_permission_mode") or "DEFAULT").lower()
-            try:
-                session_mode = SessionPermissionMode(raw_mode)
-            except ValueError:
-                session_mode = SessionPermissionMode.DEFAULT
-            verdict = evaluate_action(
-                session_mode, ToolPrivilegeTier.WRITE, PermissionMode.EDIT_EXECUTE_RBW
-            )
-
-            # Plan mode is the only surface that renders the rich Plan panel; ALLOW
-            # (Auto) applies without an authorize step, so its pointer announces the
-            # apply rather than asking the user to review/authorize a vanishing diff.
-            summary = self._format_coding_summary(
-                mission, patches, errors,
-                plan_surface=(raw_mode == "plan"),
-                auto_apply=(verdict is PermissionDecision.ALLOW),
-            )
+            summary = self._format_coding_summary(mission, applied_log, errors)
             await vfs_manager.broadcast_plan_document(
                 session_id, self._build_plan_payload(mission, summary)
             )
             await self._finalize_stream(session_id)
             self._append_history(session_id, "user", payload.task_prompt)
             self._append_history(session_id, "assistant", summary)
-
-            # 2) No concrete edits → nothing to apply.
-            if not contents:
-                return
-
-            # 3) Permission gate. The verdict resolved above composes the session mode
-            # (driven by the user's mode selector) with the WRITE tier and the coder's
-            # identity floor: DENY blocks the write outright (Plan mode), HITL routes
-            # through the approval card (Ask), ALLOW applies without interruption (Auto).
-            if verdict is PermissionDecision.DENY:
-                blocked = (
-                    "Plan mode is read-only — no files were changed. "
-                    "Switch to Ask or Auto to apply edits."
-                )
-                await vfs_manager.broadcast_token(session_id, blocked)
-                await self._finalize_stream(session_id)
-                return
-
-            # Decouple the payload from the UI so the actuation reads one variable
-            # in every path: HITL may overwrite a single-file entry with the
-            # operator's edited text; ALLOW applies the coder's proposal as-is.
-            patches_to_apply: Dict[str, str] = dict(contents)
-
-            if verdict is PermissionDecision.HITL:
-                from api.ws_contracts import ProposedFile
-                from core.permissions import scan_risk_patterns
-                from core.vfs_middleware import make_safe_reader
-
-                # Old-side reader for the server-computed diff: RAM-buffer-first,
-                # firewalled. A new file (or unreadable path) reads as empty, so its
-                # diff is a pure addition.
-                _old_reader = make_safe_reader(
-                    final_state.get("project_id"),
-                    (final_state.get("workspace_root") or "") or None,
-                    session_id,
-                    vfs=self.vfs,
-                )
-                # Compute each file's unified diff once — the risk scan and (on
-                # the manual path) the approval card both read from this map, so
-                # the diff is never computed twice.
-                ordered_paths = list(patches_to_apply)
-                diffs: Dict[str, str] = {
-                    path: compute_unified_diff(
-                        _old_reader(path) or "", patches_to_apply[path], path
-                    )
-                    for path in ordered_paths
-                }
-
-                def _added_lines(diff: str) -> str:
-                    # The '+' side of a unified diff, minus the '+++' file header —
-                    # the content this edit introduces.
-                    return "".join(
-                        ln[1:]
-                        for ln in diff.splitlines(keepends=True)
-                        if ln.startswith("+") and not ln.startswith("+++")
-                    )
-
-                # Shift-left auto-accept: risk is judged on the ADDED lines only —
-                # what this edit introduces — so an unchanged region that merely
-                # mentions a secret token never blocks auto-accept. When the
-                # operator opted in AND no added line trips a high-risk pattern
-                # (secret access, mass deletion, privilege escalation, network
-                # egress, package install), apply without ever emitting an approval
-                # card — the round-trip is elided at the source. Any match forces
-                # the manual card, and the blast-radius gate below still guards the
-                # write on both paths.
-                risk_labels = sorted({
-                    label
-                    for diff in diffs.values()
-                    for label in scan_risk_patterns(_added_lines(diff))
-                })
-                auto_low_risk = bool(payload.auto_accept_low_risk) and not risk_labels
-
-                if auto_low_risk:
-                    logger.info(
-                        "Auto-accept: applying %d low-risk file(s) without an approval card",
-                        len(ordered_paths),
-                    )
-                    notice = "⚡ Auto-accepting low-risk changes directly to disk…"
-                    await vfs_manager.broadcast_token(session_id, notice)
-                    # patches_to_apply already mirrors `contents`; fall through to
-                    # the blast-radius gate and the single apply commit — no
-                    # server_hitl_approval_request is emitted on this path.
-                else:
-                    if payload.auto_accept_low_risk and risk_labels:
-                        logger.info(
-                            "Auto-accept requested but %d file(s) tripped risk pattern(s) "
-                            "%s — routing to the approval card",
-                            len(ordered_paths),
-                            risk_labels,
-                        )
-                    # Strictly sequential approval: one file at a time. Only a single
-                    # approval is ever in flight, so the chat shows one card; each file
-                    # gets its own approval_id and an independent decision — rejecting
-                    # one never discards the others. The proposed diff rides inside each
-                    # request as a unified diff (O(Δ) on the wire) so the inline card can
-                    # never desync from its authorization; the host reconstructs both
-                    # sides. The accepted subset is applied once after the loop. No
-                    # wall-clock deadline (the wait is bounded by the connection: a
-                    # disconnect wakes the waiter).
-                    total = len(ordered_paths)
-                    accepted: Dict[str, str] = {}
-                    revise_comment: Optional[str] = None
-                    for idx, path in enumerate(ordered_paths, start=1):
-                        unified_diff = diffs[path]
-                        # Per-file labels (not the whole-set `risk_labels` above, which
-                        # only drives the auto-accept gate) so the card names exactly
-                        # why THIS file was flagged, not every file in the batch —
-                        # closes DEBT-125's display gap.
-                        file_risk_labels = scan_risk_patterns(_added_lines(unified_diff))
-                        approval = await vfs_manager.request_human_approval(
-                            session_id=session_id,
-                            action_description=f"Apply change to {path} ({idx} of {total})",
-                            proposed_content=patches[path],
-                            request_kind="FILE_WRITE",
-                            proposed_files=[
-                                ProposedFile(
-                                    file_path=path,
-                                    unified_diff=unified_diff,
-                                    base_hash=base_hashes.get(path),
-                                )
-                            ],
-                            risk_patterns_matched=file_risk_labels or None,
-                            timeout_s=None,
-                        )
-                        if approval and approval.get("approved"):
-                            # Honor an edit-before-apply payload from the card's edit mode.
-                            modified = approval.get("modified_content")
-                            accepted[path] = modified if modified else patches_to_apply[path]
-                            continue
-                        # Not approved. A note → request to revise: stop and let the host
-                        # re-submit the feedback as a fresh turn. A plain reject (or a
-                        # disconnect/None) drops only this file and the loop continues.
-                        comment = (approval or {}).get("comment")
-                        if comment:
-                            revise_comment = comment
-                            break
-
-                    if revise_comment is not None:
-                        msg = "Revising based on your feedback…"
-                        await vfs_manager.broadcast_token(session_id, msg)
-                        await self._finalize_stream(session_id)
-                        return
-                    if not accepted:
-                        discarded = "Changes discarded — no files were modified."
-                        await vfs_manager.broadcast_token(session_id, discarded)
-                        await self._finalize_stream(session_id)
-                        return
-                    patches_to_apply = accepted
-            else:
-                # ALLOW (Auto): announce the write BEFORE touching disk so the live
-                # action log never shows a silent mutation — apply_patch_set's I/O
-                # may take noticeable time behind VFS locks.
-                notice = "⚡ Auto-applying approved changes directly to disk…"
-                await vfs_manager.broadcast_token(session_id, notice)
-
-            # Blast-radius gate: how many files transitively import what we're about to
-            # change? A mapper fault is advisory (fail-open) so a graph hiccup never blocks
-            # a legitimate write — the pre_patch hooks below remain the fail-closed backstop.
-            # A radius over threshold escalates to human review and a decline vetoes the write.
-            from core.blast_radius import DEFAULT_DEPTH, compute_blast_radius
-            from shared.config import BLAST_RADIUS_THRESHOLD_FILES
-            try:
-                affected = await compute_blast_radius(
-                    final_state.get("project_id") or "",
-                    list(patches_to_apply),  # dict keys = file-path strings (Dict[str, str])
-                    workspace_root=final_state.get("workspace_root") or "",
-                )
-            except Exception:  # noqa: BLE001 — a mapper fault must never crash the apply path
-                logger.warning("Blast-radius mapper failed (advisory, skipped)", exc_info=True)
-                affected = []
-            if len(affected) > BLAST_RADIUS_THRESHOLD_FILES:
-                approval = await vfs_manager.request_human_approval(
-                    session_id=session_id,
-                    action_description=(
-                        f"This change impacts {len(affected)} dependent file(s) — blast radius "
-                        f"exceeds the threshold of {BLAST_RADIUS_THRESHOLD_FILES}."
-                    ),
-                    request_kind="BLAST_RADIUS",
-                    risk_patterns_matched=[
-                        f"{len(affected)} transitive dependents (depth {DEFAULT_DEPTH})"
-                    ],
-                    timeout_s=None,
-                )
-                if not (approval and approval.get("approved")):
-                    blocked = "Changes not applied — blast-radius review was declined."
-                    await vfs_manager.broadcast_token(session_id, blocked)
-                    await self._finalize_stream(session_id)
-                    return
-
-            # pre_patch gate: a non-zero (or timed-out / un-runnable) pre_patch hook
-            # vetoes the write fail-closed — the patch never touches disk.
-            pre_ok, pre_msgs = await self._run_patch_hooks(session_id, "pre_patch")
-            if not pre_ok:
-                blocked = "Changes not applied — a pre_patch hook vetoed the write."
-                if pre_msgs:
-                    blocked += " " + "; ".join(pre_msgs[:3])
-                await vfs_manager.broadcast_token(session_id, blocked)
-                await self._finalize_stream(session_id)
-                return
-
-            # 4) Actuate via the VS Code applyEdit bridge (Python never writes to disk).
-            from core.write_pipeline import apply_patch_set
-            res = await apply_patch_set(session_id, patches_to_apply, base_hashes)
-            if res.get("ok"):
-                applied = res.get("applied_files") or list(patches_to_apply)
-                # Timeline diff markers — one per file that actually landed on disk
-                # (never a merely-proposed file). ref = file_path: stable and unique
-                # within a turn, so the frontend correlates this marker to the
-                # DiffBlock the host already renders for the same path.
-                for _p in applied:
-                    _diff_text = patches.get(_p, "")
-                    await _push_activity(
-                        "diff", target=_p, metric=_diff_line_delta(_diff_text), ref=_p,
-                    )
-                result_msg = f"✓ Applied {len(applied)} file(s) to disk — use Ctrl+Z to undo."
-                # post_patch hooks run after the write committed; a failure here is
-                # advisory only (the apply already landed) and is surfaced as a note.
-                _, post_msgs = await self._run_patch_hooks(session_id, "post_patch")
-                if post_msgs:
-                    result_msg += "\n_Post-patch hook notes:_ " + "; ".join(post_msgs[:3])
-            elif res.get("stale_files"):
-                # Wrap paths in backticks so the markdown renderer treats them as
-                # inline code — bare paths with underscores (e.g. a *_telemetry.log)
-                # would otherwise be mangled into italics on the client.
-                stale = ", ".join(f"`{p}`" for p in res["stale_files"])
-                result_msg = (
-                    "⚠️ Not applied — these files changed since the proposal: "
-                    + stale
-                    + ". Re-run the request to regenerate against the current code."
-                )
-            else:
-                result_msg = "⚠️ Could not apply the changes: " + str(
-                    res.get("error") or "unknown error"
-                )
-            await vfs_manager.broadcast_token(session_id, result_msg)
-            await self._finalize_stream(session_id)
-            self._append_history(session_id, "assistant", result_msg)
         except asyncio.CancelledError:
             # Phase 7.11.3 — emergency savepoint. Cold-serializable marker
             # written into state for the next checkpointer promote(); see
@@ -1569,7 +1383,12 @@ class TaskService:
             ),
             proposed_content=payload.get("proposed_content"),
             request_kind=payload.get("request_kind"),
-            proposed_files=None,
+            # Was hardcoded None: _emit_interrupt_card is the ONLY path a native
+            # interrupt() reaches the frontend by, so any FILE_WRITE interrupt
+            # (request_graph_approval called with proposed_files=[...]) rendered an
+            # approval card with no diff at all. HITLApprovalRequestPayload.proposed_files
+            # is typed List[ProposedFile]; pydantic coerces the raw dicts on construction.
+            proposed_files=payload.get("proposed_files"),
             risk_patterns_matched=payload.get("risk_patterns_matched"),
             question=payload.get("question"),
             context=payload.get("context"),
@@ -1712,131 +1531,67 @@ class TaskService:
     async def _run_patch_hooks(
         self, session_id: str, event: str
     ) -> Tuple[bool, List[str]]:
-        """Run enabled ``event`` hooks through the sandbox adapter.
-
-        Returns ``(ok, messages)``. ``ok`` is False only when a hook execution
-        fails (non-zero exit, timeout, or no adapter available for a gate) — the
-        caller treats a False from a ``pre_patch`` event as a veto and a False from
-        ``post_patch`` as advisory. Every hook fault is **non-fatal to the host**:
-        it is logged and folded into ``messages``, never raised into the task.
-
-        The per-hook ceiling is enforced by the adapter's own ``timeout_s`` (it
-        kills + reaps its subprocess on expiry); we never wrap ``execute()`` in an
-        outer ``wait_for``, which would cancel without reaping and orphan the child.
-        """
-        try:
-            from core.db import list_hooks  # local import — avoid a load-time cycle
-
-            rows = await list_hooks()
-        except Exception as exc:  # noqa: BLE001 — hook lookup must never crash a task
-            logger.warning(
-                "[Session: %s] %s hook lookup failed: %s",
-                session_id, event, exc, exc_info=True,
-            )
-            return True, []  # no hooks visible → never block the apply
-
-        commands = [
-            str(row.get("command") or "")
-            for row in rows
-            if row.get("event") == event
-            and row.get("enabled")
-            and str(row.get("command") or "").strip()
-        ]
-        if not commands:
-            return True, []
-
-        from core.sandbox import get_active_adapter
-        from tools.execution_tools import _sandbox_env
-
-        adapter = get_active_adapter()
-        if adapter is None:
-            # A gate that cannot run must fail closed for pre_patch; a post_patch
-            # config simply degrades to a logged warning (the write already landed).
-            msg = f"{event} hook(s) configured but no sandbox adapter is active"
-            logger.warning("[Session: %s] %s", session_id, msg)
-            return (event != "pre_patch"), [msg]
-
-        ok = True
-        messages: List[str] = []
-        from core.exec_log import record_execution
-
-        for command in commands:
-            try:
-                result = await record_execution(
-                    adapter,
-                    command,
-                    timeout_s=_HOOK_TIMEOUT_SEC,
-                    cwd="",
-                    env_whitelist=_sandbox_env(),
-                    session_id=session_id,
-                    source="hook",
-                )
-            except Exception as exc:  # noqa: BLE001 — a hook fault never crashes the host
-                logger.warning(
-                    "[Session: %s] %s hook raised for %r: %s",
-                    session_id, event, command, exc, exc_info=True,
-                )
-                ok = False
-                messages.append(f"{event} hook errored: {command}")
-                continue
-            if int(result.exit_code) != 0:
-                ok = False
-                tail = _truncate_tool_output((result.stdout or "") + (result.stderr or ""))
-                logger.warning(
-                    "[Session: %s] %s hook non-zero exit=%s cmd=%r\n%s",
-                    session_id, event, result.exit_code, command, tail,
-                )
-                messages.append(
-                    f"{event} hook failed (exit {result.exit_code}): {command}"
-                )
-        return ok, messages
+        """Back-compat instance-method shim — delegates to the module-level
+        ``run_patch_hooks``, extracted (13.0.9) so ``brain/apply_gate.py``'s
+        per-step apply nodes can run the same hook logic without a TaskService
+        instance (the body never touched ``self`` in the first place)."""
+        return await run_patch_hooks(session_id, event)
 
     @staticmethod
     def _format_coding_summary(
         mission: Any,
-        patches: Dict[str, str],
+        applied_log: List[Dict[str, Any]],
         errors: List[str],
-        *,
-        plan_surface: bool,
-        auto_apply: bool = False,
     ) -> str:
-        """Render the one-line chat pointer for the proposed edits.
+        """Render the turn-end chat summary from what actually happened.
 
-        Wording follows the session mode so the pointer never over-promises:
-          * Plan  — the rich Plan panel holds the breakdown + diffs; point there.
-          * Auto  — edits apply without an authorize step, so announce the apply
-                    rather than asking the user to review/authorize a diff that
-                    never appears.
-          * Ask   — the diff renders inline in the chat for explicit authorization.
+        13.0.9 — this used to predict a gate outcome BEFORE any approval had
+        happened ("Proposed N file change(s) — review the diff below and
+        authorize"), because the whole WBS ran to completion inside the graph
+        before the first approval card ever appeared. Approval is now
+        per-step and in-graph, so by the time this runs every step has
+        already been generated, decided, and (if approved) applied — this
+        reports the outcome, sourced from ``applied_files_log``, instead of
+        a promise. Also drops the old "use Ctrl+Z to undo" claim: no editor
+        is ever opened for these files (PatchActuator.ts never calls
+        showTextDocument) and the actuator saves immediately after applying,
+        so there is no undo stack for the keystroke to reach — VS Code's own
+        Local History is the honest affordance for reverting a specific file.
         """
-        lines: List[str] = []
-        if patches:
-            if plan_surface:
-                lines.append(
-                    f"Drafted a plan with {len(patches)} proposed file change(s) — "
-                    "see the Plan panel for the full breakdown and diffs."
-                )
-            elif auto_apply:
-                lines.append(
-                    f"Applying {len(patches)} file change(s) directly…"
-                )
-            else:
-                lines.append(
-                    f"Proposed {len(patches)} file change(s) — review the diff below "
-                    "and authorize."
-                )
-        else:
-            lines.append(
-                "Drafted a plan but produced no concrete edits for this request."
-                + (" See the Plan panel." if plan_surface else "")
-            )
+        completed_files = [e for e in applied_log if e.get("status") == "completed" and e.get("file_path")]
+        completed_cmds = [e for e in applied_log if e.get("status") == "completed" and e.get("command")]
+        rejected = [e for e in applied_log if e.get("status") == "rejected"]
+        revised = [e for e in applied_log if e.get("status") == "revision_requested"]
+        failed = [e for e in applied_log if e.get("status") == "failed"]
+
+        if not applied_log:
+            return "Drafted a plan but produced no concrete edits for this request. See the Plan panel."
+
+        parts: List[str] = []
+        if completed_files:
+            n = len(completed_files)
+            parts.append(f"Applied {n} file change{'s' if n != 1 else ''} to disk")
+        if completed_cmds:
+            n = len(completed_cmds)
+            parts.append(f"ran {n} command{'s' if n != 1 else ''} successfully")
+        if rejected:
+            parts.append(f"{len(rejected)} declined")
+        if failed:
+            parts.append(f"{len(failed)} not applied")
+        if revised:
+            parts.append(f"{len(revised)} still under revision")
+
+        summary = (", ".join(parts) if parts else "No changes were applied") + "."
+        if completed_files:
+            summary += " Previous versions are recoverable via VS Code's Local History (Timeline view)."
+
         # Internal self-heal plumbing ("self-heal could not correct …") is a
         # diagnostic event, not actionable user feedback — keep it in the errors
         # list for logs/audit but never surface it as a chat note.
         user_notes = [e for e in errors if not e.startswith("self-heal could not correct")]
         if user_notes:
-            lines.append("_Notes:_ " + "; ".join(user_notes[:5]))
-        return "\n".join(lines)
+            summary += "\n\n_Notes:_ " + "; ".join(user_notes[:5])
+        return summary
 
     @staticmethod
     def _build_plan_payload(mission: Any, summary: str) -> "PlanDocumentPayload":

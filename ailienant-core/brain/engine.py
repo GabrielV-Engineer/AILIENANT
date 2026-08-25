@@ -10,7 +10,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.constants import Send
 from langgraph.errors import GraphBubbleUp
 
-from brain.state import AIlienantGraphState, assert_declared_channels
+from brain.state import AIlienantGraphState, assert_declared_channels, is_dispatchable
 from brain.checkpoint import checkpoint_manager
 from brain.failure_breaker import failure_breaker, normalize_signature
 from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
@@ -44,16 +44,11 @@ from agents.error_correction import run_error_correction_node  # noqa: E402 — 
 # for branch governance lives entirely inside brain.agentic_cell, so the live graph spine
 # never imports the offline tree directly.
 from brain.agentic_cell import run_agentic_cell_node, route_after_cell  # noqa: E402
-
-
-async def run_apply_patch_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """applies pending_patches via blob_storage.
-
-    reads state["pending_patches"] (filepath → unified diff written by
-    CoderAgent), calls blob_storage.apply_patch() per entry, and writes updated
-    VFSFile(blob_hash=new_hash, ...) objects back into vfs_buffer.
-    """
-    return {}
+# Incremental per-step approval (13.0.9) — see brain/apply_gate.py's module
+# docstring for the full PREPARE/GATE split rationale. Replaces the old
+# apply_patch stub (a permanent `return {}` — the actual write lived entirely
+# in core/task_service.py's post-graph replay) with two real nodes.
+from brain.apply_gate import run_apply_commit_node, run_apply_prepare_node  # noqa: E402
 
 
 from brain.ideation import ideation_graph  # noqa: E402 — deferred to avoid circular import
@@ -288,7 +283,14 @@ workflow.add_node("drift_gate", _instrument_node("drift_gate", run_drift_gate_no
 # budget re-raises into the DLQ.
 workflow.add_node("coder_agent", _instrument_node("coder_agent", dead_letter_decorator("coder_agent")(reflexion_guard("coder_agent")(run_coder_node))))  # pyright: ignore[reportArgumentType]
 workflow.add_node("error_correction", _instrument_node("error_correction", dead_letter_decorator("error_correction")(run_error_correction_node)))  # pyright: ignore[reportArgumentType]
-workflow.add_node("apply_patch", _instrument_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_patch_node)))  # pyright: ignore[reportArgumentType]
+# apply_patch (PREPARE) / apply_commit (GATE) — 13.0.9 incremental per-step
+# approval, see brain/apply_gate.py's module docstring. apply_commit is
+# deliberately NOT reflexion_guard-wrapped: a native interrupt() raised inside
+# it must reach LangGraph's own suspend/resume machinery untouched, never be
+# converted into a healing signal (dead_letter_decorator already re-raises
+# GraphBubbleUp — see core/dead_letter.py — so wrapping it here is safe).
+workflow.add_node("apply_patch", _instrument_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_prepare_node)))  # pyright: ignore[reportArgumentType]
+workflow.add_node("apply_commit", _instrument_node("apply_commit", dead_letter_decorator("apply_commit")(run_apply_commit_node)))  # pyright: ignore[reportArgumentType]
 workflow.add_node("validate_output", _instrument_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node)))  # pyright: ignore[reportArgumentType]
 workflow.add_node("finops_gate", _instrument_node("finops_gate", run_finops_node))  # pyright: ignore[reportArgumentType]
 workflow.add_node("ideation_loop", ideation_graph)  # pyright: ignore[reportArgumentType]
@@ -369,7 +371,10 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 
     # RELAY: send exactly one pending step to protect VRAM
     first_pending = (
-        next((t for t in mission_spec.tasks if t.status == "pending"), None)
+        # is_dispatchable also selects revision_requested — a step the human
+        # asked to be regenerated with feedback. Must move in lockstep with
+        # guardrails.py's stall guard and advance predicate (brain/state.py).
+        next((t for t in mission_spec.tasks if is_dispatchable(t)), None)
         if mission_spec
         else None
     )
@@ -565,11 +570,19 @@ workflow.add_conditional_edges(
     "supervisor_node", route_after_supervisor,
     {"apply_patch": "apply_patch", "__end__": END},
 )
-workflow.add_edge("apply_patch", "validate_output")
+# apply_patch (PREPARE, no interrupt) -> apply_commit (GATE, interrupt-first).
+# Unconditional edge — apply_commit's own first statement
+# (`if not state.get("pending_apply"): return {}`) is the routing, mirroring
+# drift_compute -> drift_gate's identical shape.
+workflow.add_edge("apply_patch", "apply_commit")
+workflow.add_edge("apply_commit", "validate_output")
 # validate_output → retry the same step (coder_agent) · advance to the next pending
-# WBS step (drift_gate re-runs route_to_coders and re-checks finops/budget) · END.
+# WBS step (drift_gate re-runs route_to_coders and re-checks finops/budget) ·
+# self-heal a run_command failure surfaced downstream in the apply gate
+# (error_correction, 13.0.9) · END.
 workflow.add_conditional_edges(
-    "validate_output", route_after_validation, ["coder_agent", "drift_gate", END]
+    "validate_output", route_after_validation,
+    ["coder_agent", "drift_gate", "error_correction", END],
 )
 
 # =====================================================================

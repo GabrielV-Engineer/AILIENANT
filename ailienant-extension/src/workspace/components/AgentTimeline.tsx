@@ -28,11 +28,14 @@
  * retrieval) render one line.
  *
  * While streaming: expanded by default, auto-follows new rows unless the user
- * has scrolled up to inspect history. The instant the turn settles it collapses
- * to a single honest summary line — "Worked for Ns · N actions · N files
- * changed" (never a throttled count) — re-expandable to the full, quiet trace.
- * `prefers-reduced-motion` (workspace.css) renders every state instantly, no
- * pings/draws/sweeps.
+ * has scrolled up to inspect history. Unlike the five widgets it replaced, it
+ * does NOT collapse the instant its own turn settles — the current turn stays
+ * expanded and uncapped (see `isLatestTurn`) exactly as long as it remains the
+ * most recent one, matching a chat transcript rather than a disappearing
+ * progress bar. It collapses to a single honest summary line — "Worked for
+ * Ns · N actions · N files changed" (never a throttled count) — only once a
+ * NEWER turn begins; re-expandable afterward at any time. `prefers-reduced-
+ * motion` (workspace.css) renders every state instantly, no pings/draws/sweeps.
  */
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../../shared/Icon';
@@ -50,6 +53,11 @@ import { ExecutionDetail } from './ExecutionDetail';
 export interface AgentTimelineProps {
     entries: TimelineEntry[];
     streaming: boolean;
+    // Whether this turn is still the most recent one in the transcript — the
+    // collapse trigger (see the class docstring above). True for the entire
+    // lifetime of the current turn, including after it settles; flips false
+    // the moment a newer turn is appended, at which point this one collapses.
+    isLatestTurn: boolean;
     // Reasoning body — reuses ReasoningStream's own header/glyph/toggle/settle
     // logic unchanged (message-scoped fields, not per-entry).
     thinking?: string;
@@ -94,16 +102,18 @@ function summarize(entries: TimelineEntry[], turnElapsedMs?: number): string {
 }
 
 function AgentTimelineImpl({
-    entries, streaming,
+    entries, streaming, isLatestTurn,
     thinking, thinkingTokens, thinkingStartedAt, thinkingElapsedMs, thinkingOpen,
     checklist, hitlApprovalId, onRespondDiff, onRequestChangesDiff, onCellStdin, turnElapsedMs,
 }: AgentTimelineProps): JSX.Element | null {
     const done = !streaming;
-    const [containerOpen, setContainerOpen] = useState(true);
-    // Auto-collapse to the summary bar the instant the turn settles; still
-    // re-expandable by the user afterward (mirrors PipelineProgress's prior
-    // done-state auto-collapse).
-    useEffect(() => { if (done) { setContainerOpen(false); } }, [done]);
+    // Initial state is derived from isLatestTurn, not hardcoded true: a
+    // rehydrated past turn mounts already-collapsed (no expand-then-collapse
+    // flash); the current turn mounts open. The effect below only ever
+    // reacts to isLatestTurn flipping false — done settling this turn's own
+    // stream does NOT collapse it; only a newer turn starting does.
+    const [containerOpen, setContainerOpen] = useState(isLatestTurn);
+    useEffect(() => { if (!isLatestTurn) { setContainerOpen(false); } }, [isLatestTurn]);
 
     const [manualDiffOpen, setManualDiffOpen] = useState<Record<string, boolean>>({});
     const [manualExecOpen, setManualExecOpen] = useState<Record<string, boolean>>({});
@@ -116,11 +126,6 @@ function AgentTimelineImpl({
     const lastCellId = useMemo(() => {
         let id: string | null = null;
         for (const e of entries) { if (e.kind === 'cell') { id = e.id; } }
-        return id;
-    }, [entries]);
-    const lastExecId = useMemo(() => {
-        let id: string | null = null;
-        for (const e of entries) { if (e.kind === 'command' && e.execution) { id = e.id; } }
         return id;
     }, [entries]);
     // Work-loop phase headers (13.0.7): entry.id → the phase header to render
@@ -277,9 +282,9 @@ function AgentTimelineImpl({
             // with NO `execution` (e.g. a "blocked" outcome that never
             // reached one — no I/O body ever exists for it) falls
             // through to the plain single-line render below instead.
-            const isOpen = entry.id in manualExecOpen
-                ? manualExecOpen[entry.id]
-                : (entry.id === lastExecId && !done);
+            // Default expanded (not click-per-row) — this IS the record of
+            // what actually ran, not a pending decision to hide by default.
+            const isOpen = entry.id in manualExecOpen ? manualExecOpen[entry.id] : true;
             return (
                 <div key={entry.id} className="ws-timeline-row" data-kind="command">
                     <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
@@ -319,7 +324,12 @@ function AgentTimelineImpl({
     }
 
     return (
-        <div className="ws-timeline" data-open={containerOpen ? 'true' : 'false'} data-streaming={streaming ? 'true' : 'false'}>
+        <div
+            className="ws-timeline"
+            data-open={containerOpen ? 'true' : 'false'}
+            data-streaming={streaming ? 'true' : 'false'}
+            data-latest={isLatestTurn ? 'true' : 'false'}
+        >
             <button
                 type="button"
                 className="ws-timeline-header"
@@ -371,6 +381,7 @@ function AgentTimelineImpl({
 export const AgentTimeline = memo(AgentTimelineImpl, (a, b) =>
     a.entries === b.entries &&
     a.streaming === b.streaming &&
+    a.isLatestTurn === b.isLatestTurn &&
     a.thinking === b.thinking &&
     a.thinkingTokens === b.thinkingTokens &&
     a.thinkingElapsedMs === b.thinkingElapsedMs &&

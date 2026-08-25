@@ -218,6 +218,17 @@ async def run_researcher_node(
     _retrieval_fn = _configurable.get("planner_retrieval_fn")
     _graph_fn = _configurable.get("graph_fn")
 
+    # Glass-Box Timeline narration for the deep-context retrieval below — the
+    # "retrieval" activity kind has been declared on the wire since the
+    # channel's introduction but nothing ever emitted it (this node runs
+    # first in the graph, before any node that does narrate, so the retrieval
+    # phase itself was invisible regardless of how long it took).
+    _narrate = _configurable.get("narrate")
+
+    async def _emit(node_name: str, metric: Optional[str] = None) -> None:
+        if _narrate is not None:
+            await _narrate(node_name, metric=metric)
+
     # Read TCI and CSS from state; fall back to the carried ContextMeter fields.
     tci: float = state.get("tci", 0.0)
     css: float = state.get("css", 100.0)
@@ -416,6 +427,7 @@ async def run_researcher_node(
                 _sem_score, _deep_result.coverage_ratio, _new_css,
                 len(_deep_result.parsed_files), len(_deep_result.target_files),
             )
+            await _emit("retrieving context", metric=f"{len(_top_k_files)} file(s)")
         except Exception as _ctx_err:
             logger.warning("Researcher: context extraction failed (non-fatal): %s", _ctx_err)
     # ────────────────────────────────────────────────────────────────────────────────────

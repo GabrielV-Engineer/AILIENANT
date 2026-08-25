@@ -458,3 +458,40 @@ async def test_planner_skips_reasoning_pass_on_native_model() -> None:
     # The reasoning pass was gated out — the draft's own stream yields no 'thinking'.
     assert collected == []
     assert result.get("mission_spec") is not None
+
+
+# ── 13.0.9 — polyglot directive lives on agent_notes, never on description ────
+
+
+def _step(target_file: str, description: str = "bump") -> WBSStep:
+    return WBSStep(
+        step_number=1, target_role="core_dev", action="edit_file",
+        target_file=target_file, description=description,
+    )
+
+
+def test_polyglot_directive_attaches_to_agent_notes_not_description() -> None:
+    from agents.planner import _inject_polyglot_constraints
+
+    [step] = _inject_polyglot_constraints([_step("frontend/App.vue", "Add a prop.")])
+    assert step.description == "Add a prop."  # untouched — the human-facing field
+    assert step.agent_notes is not None
+    assert "patch_file" in step.agent_notes
+    assert "App.vue" in step.agent_notes
+
+
+def test_non_polyglot_step_gets_no_agent_notes() -> None:
+    from agents.planner import _inject_polyglot_constraints
+
+    [step] = _inject_polyglot_constraints([_step("src/main.py")])
+    assert step.agent_notes is None
+
+
+def test_polyglot_directive_appends_to_existing_agent_notes_rather_than_overwriting() -> None:
+    from agents.planner import _inject_polyglot_constraints
+
+    step = _step("frontend/App.vue").model_copy(update={"agent_notes": "prior note"})
+    [result] = _inject_polyglot_constraints([step])
+    assert result.agent_notes is not None
+    assert result.agent_notes.startswith("prior note")
+    assert "patch_file" in result.agent_notes

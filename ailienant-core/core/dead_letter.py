@@ -23,6 +23,7 @@ import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import aiosqlite
+from langgraph.errors import GraphBubbleUp
 from pydantic import BaseModel
 
 from core.blob_storage import blob_storage
@@ -217,6 +218,14 @@ def dead_letter_decorator(node_name: str) -> Callable[[_AsyncNode], _AsyncNode]:
         ) -> Dict[str, Any]:
             try:
                 return await fn(state, *args, **kwargs)
+            except GraphBubbleUp:
+                # A native interrupt() (GraphInterrupt, GraphDelegate, ParentCommand)
+                # subclasses Exception. Without this guard every HITL pause on a
+                # DLQ-wrapped node (coder_agent, apply_commit, agentic_cell, …) wrote a
+                # bogus dead_letter_tasks row and force-promoted L1→L2 on every single
+                # pause — a suspend-and-resume is not a crash. Re-raise untouched so
+                # LangGraph's own checkpoint/resume machinery handles it.
+                raise
             except Exception as exc:  # noqa: BLE001 — capture-all → DLQ, re-raise
                 task_id = (
                     str(state.get("task_id", "")) if isinstance(state, dict) else ""
