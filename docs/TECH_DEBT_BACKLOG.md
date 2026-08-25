@@ -43,6 +43,13 @@ of out-of-scope debt create invisible changes that break reviewers' ability to v
 Note: `[CRITICAL]` (active security exposure with no mitigation) is reserved for future use.
 No currently-open entry meets that threshold.
 
+**Excluded from the open-defect count** (2026-08-25 debt sweep): `[DECISION]`-tier entries
+(below, under **Decision Records**) and every entry filed under **Capability Backlog** — a
+capability that was never built is not a defect in what shipped. Both sections are relocated,
+not deleted: content is preserved verbatim and every entry keeps its full history. The number
+reported anywhere in this file as "open" refers only to entries in the **Open Entries** section
+below.
+
 ## Schedule-State Legend
 
 ```
@@ -55,75 +62,97 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
+## Reconciliation Report — 2026-08-25 Technical-Debt Sweep
+
+**Why this exists:** a backlog audit run against this file on 2026-08-25 measured 67 open
+entries and set a pre-v1 target of fewer than 30. Before any fix could be trusted, the count
+itself had to be verified — the file had drifted from its own body/dashboard cross-reference in
+ways no naive header parse would catch. This section records that reconciliation; the
+methodology and full per-entry verdict rationale live in the sweep's `docs/DEV_JOURNAL.md` entry
+and its originating conversation.
+
+**R1 — the starting count was wrong twice over.**
+
+| Measurement | Naive count | Corrected |
+|---|---|---|
+| Unique DEBT ids in this file | 144 | **146** — two RESOLVED entries (`DEBT-071`, `DEBT-005`) use a `### ~~DEBT-NNN~~ [RESOLVED …]` strikethrough header variant that a plain `### DEBT-\d+` parser silently skips, omitting them from every count, open or closed |
+| Duplicate ids | `DEBT-172` ×2, contradictory status | Resolved — the `[LOW · Floating]` copy was the pre-13.0.4 original, superseded by the `[LOW · RESOLVED 13.0.4]` entry; removed |
+| Open entries with **no** `###` body block (dashboard-row-only "ghosts") | 0 (invisible to any header-based count) | **9** — `DEBT-107, 109, 115, 120, 135, 136, 147, 148, 149`; reconstructed and given real bodies in this sweep |
+| Open body entries with **no** dashboard row | 0 (invisible to a dashboard-only count) | **12** — `DEBT-067, 172, 192–201`; the dashboard is hand-maintained and had drifted in both directions |
+| **True open (union of both directions)** | 67 | **77** |
+
+**R2/R3 — cross-referenced against `docs/DEV_JOURNAL.md`/`docs/PROJECT_MANIFEST.md` and
+re-ran each entry's own reproduce command.** A second-pass scan of every open entry's body for
+an unflipped `**Resolved:**`/`**Verified:**` marker (the DEBT-172-duplicate class, generalized)
+caught one more: `DEBT-067`'s own body already documented a completed fix dated 8.10.3, but its
+header tier was never flipped from `Floating` — retagged, no new work needed. No other entry was
+found already-fixed-and-never-flipped; every reproduce command that could be re-run (code-level
+claims, not pure decision records) still reproduced as described. One entry's own internal claim
+was found stale and corrected in place: `DEBT-163` credited line 2399 (`pull_sandbox_image`) with
+already using the shared `_docker_call` timeout helper — verified false against the pre-fix
+source; it was a second live instance of the same gap and is fixed alongside the one the entry
+named.
+
+**R4 — full classification of all 77 open entries:**
+
+| Verdict | Count | Disposition |
+|---|---|---|
+| CAPABILITY | 39 | Never-built capability, not a defect → relocated to **Capability Backlog** below |
+| DECISION | 12 | Declared/accepted tradeoff, no fix planned → relocated to **Decision Records** below (5 already there + 5 reclassified + 2 reconstructed ghosts) |
+| ALREADY-FIXED | 2 | `DEBT-172` (duplicate, superseded by its own RESOLVED sibling) and `DEBT-067` (header never flipped after its own body's fix shipped) |
+| **FIX-NOW** | **10** | Verified reproducing, fixed with a regression test this sweep — see each entry's own **Resolved:** block |
+| DEFER-WITH-REASON | 14 | Real, but the wrong trade immediately pre-release (3 of these — `DEBT-120/164/179` — were originally scoped as fixes and moved to DEFER on a risk-adjusted call: real regression surface on a LOW-tier item, not worth the blast radius this close to v1) |
+
+That reconciliation alone — before any fix — takes the open-defect count from 77 to **24**
+(77 − 2 already-fixed − 12 decision − 39 capability). The 10 genuine fixes bring it to **14**.
+
+**One new entry surfaced mid-sweep, not pre-existing:** closing DEBT-201 required understanding
+its flake, and a third full-suite run reproduced the identical failure signature under a
+different test name with a full traceback this time — the actual root cause turned out to be
+`TestClient(main.app)`-based test fixtures autoconnecting to the real, non-isolated MCP catalog
+DB (**DEBT-202**, MEDIUM), not a litellm mock leak as originally hypothesized. Logged rather than
+chased, per this sweep's own scope discipline (the fix needs an audit of every such fixture, real
+design work, not a one-line change) — bringing the final open count to **15**, still comfortably
+under the sub-30 target. **53 of the original 77 entries moved category, and 1 genuine new entry
+was discovered and logged; none were deleted, downgraded, or closed by association** — every
+relocation and every fix carries its own dated note and, for fixes, a regression test that fails
+on the pre-fix behavior.
+
+**Release-readiness statement:** of the 15 entries remaining in the Open Entries section below,
+14 are DEFER-WITH-REASON verdicts — real, reproducible, and deliberately not fixed in this pass
+because the fix's blast radius (a scheduler change, a new GC policy on a persisted store, a
+mechanical ~174-file documentation scrub, a wire-contract rename) was judged a worse trade
+immediately pre-release than leaving a bounded, understood gap open one more cycle. The 15th
+(`DEBT-202`) is a newly-discovered, environment-dependent test-infrastructure gap — real, but it
+affects test-suite reliability across machines, not shipped product behavior, and fixing it
+properly needs its own scoped pass. None are acceptable to ship v1 *silently* — each is
+acceptable to ship v1 *with*, on the stated reasoning in its own entry. Nothing in the Capability
+Backlog or Decision Records sections blocks a release: by definition, neither represents behavior
+that regressed or was ever promised.
+
+---
+
 ## Open Items Dashboard
+
+*Regenerated from the Open Entries section below during the 2026-08-25 debt sweep — this table and the body entries can no longer diverge, since every row here corresponds to a real `###` entry and every open `###` entry has a row here.*
 
 | ID | Title (short) | Tier | Type | Target Phase | Schedule |
 |---|---|---|---|---|---|
-| DEBT-087 | Python relative imports (`from .mod import x`) skipped by the extractor — asymmetric with TS/JS lexical resolution | LOW | Architecture / Graph | future graph slice | Floating |
-| DEBT-088 | `bfs_k_hop_backward` has the same resolved-form multi-hop gap as pre-8.14.1 blast-radius (dependents referenced by import specifier, not file path) | LOW | Architecture / Graph | future graph slice | Floating |
-| DEBT-089 | Blast-radius mapper's Python module resolution is fail-safe suffix matching, not sys.path-aware — may over-count on a basename collision across packages | LOW | Architecture / Graph | future graph slice | Floating |
-| DEBT-090 | Memory-snapshot export command is backend-only (WS event + engine); no extension-side button / command-palette entry to trigger it | LOW | FE Integration | future FE slice | Floating |
-| DEBT-091 | Architecture digest omits git co-change coupling (`FILE_CHANGES_WITH`) — no git-history substrate exists to source it from | LOW | Capability gap | future graph slice | Floating |
-| DEBT-092 | Boundary graph cannot recover backend `server_*` emit edges — the emit site is a typed model construction with no channel literal to match | LOW | Capability gap | future graph slice | Floating |
-| DEBT-093 | Boundary graph is build-on-demand only — no auto-refresh on index-complete, so it can lag later code edits until the next explicit rebuild | LOW | Capability gap | future graph slice | Floating |
-| DEBT-095 | Runtime call-trace capture (`sys.monitoring`) is Python-only — no TS/JS extension-side equivalent | LOW | Capability gap | future trace slice | Floating |
-| DEBT-096 | No sandbox/agentic-cell-integrated live trace capture — 8.14.8.1 populates `observed_call_edges` out-of-band (dogfood harness), still not a user project's live execution | LOW | Capability gap | future trace slice | Floating |
-| DEBT-101 | `observed_call_edges` has no reindex-coupled purge/TTL — stale rows accumulate; bounded only at read by the catalog-presence gate | LOW | Capability gap | future trace slice | Floating |
-| DEBT-102 | `tree-sitter-dart` is a single-release pip package (0.1.0, no update history since publish) — accepted supply-chain risk for Dart import extraction | LOW | Dependency risk | monitor / reconsider on breakage | Floating |
-| DEBT-103 | Dart `package:foo/bar.dart` URIs resolve pubspec-unaware — the `package:` prefix is stripped but never mapped to a real directory, so same-project package imports rarely resolve past bare extraction | LOW | Capability gap | future polyglot slice | Floating |
+| DEBT-014 | brain/swarms.py NodeInputT 6 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
+| DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
+| DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
 | DEBT-104 | Tournament surface rollback does not delete a candidate's newly introduced paths (`push_vfs_to_surface` only writes) — harmless for the agentic cell's same-file candidates, but `run_tournament_from_dispatch` fans out heterogeneous candidates that can contaminate siblings + the winner restore. 8.15.5 wired tournament winner-selection via a lightweight score/ok selector (not the full MCTS+verify path), so the contamination surface is not yet live; full delete-not-in-base isolation still owed | LOW | Correctness / isolation | future dispatch-isolation slice | Floating |
 | DEBT-105 | Dispatch cost is estimate-based and under-counts on two axes — the reserve estimate under-models output tokens + context growth (admission is lenient), and the worker `cost_usd`/commit path meters only the tool-loop, not the `answer_fn` synthesis call or an `actual > reserved` overage; `finops`/`check_governor` remain the hard ceiling. 8.15.5 wired reserve@origin/commit@synthesize (admission now live); the metering residue remains | LOW | Correctness / cost accounting | future gateway-usage wiring | Floating |
-| DEBT-107 | Autonomous LLM-driven `DispatchPlan` emission is deferred — `brain/dispatch_emitter.py` ships the full mechanism (injected `dispatch_plan_fn` hook + `AILIENANT_DISPATCH_DEBUG` synthetic + counter resets + graph wiring), but the production model prompt that decides when/how to fan out is not built; emission fires only via seam/hook or a directly-seeded `dispatch_plan` | MEDIUM | Feature gap | future dispatch-emission slice | Floating |
-| DEBT-109 | Context-utilization telemetry is emitted as flat pipe-delimited text (`core/telemetry_log.py::_emit` → `CATEGORY \| k=v \| ...`), not typed JSONL, so `core/benchmark/context_telemetry_report.py` must string-parse a brittle format (defensive `(ValueError, KeyError)` line-skipping is the mitigation, not a fix; a `_LINE_CAP`-truncated line silently drops that record). Accepted short-term trade-off — the sink shipped this format for all categories (WS/NODE/INDEX/CONTEXT). Enterprise target: migrate the sink + all consumers to a typed JSONL data contract (one JSON object per line) so telemetry has a schema, not a convention | LOW | Observability / data contract | future telemetry-format slice | Floating |
-| DEBT-111 | GraphRAG nebula encodes only the two node types the file-level substrate exposes (`file`, `external-dep`); a containment-only `function`/`class`/`module` taxonomy from the already-populated `symbol_definitions` catalog is **not** blocked (it never enters `MAX_GRAPH_EDGES` accounting) — only a full call-edge-materialized graph would conflict with `SCHEMA_EVOLUTION.MD` "Symbol-Level Call-Graph Substrate". See the detailed entry below | MEDIUM | Capability gap / Graph | Phase 11.2.S | Floating |
-| DEBT-113 | Nebula picking uses `raycaster.intersectObject` and the force layout runs one-shot on the main thread — both are fine at current node counts but the 100k-node target needs GPU-picking (render-to-id-texture) + a Web-Worker layout; the seams are in place (`nebula/picking` split, `nebula/engine` layout call) but the scale implementations are not built | LOW | Performance / scale | future nebula-scale slice | Floating |
-| DEBT-114 | The nebula search pulse illuminates matched nodes + their incident edges, not the actual path GraphRAG traversed to answer a query — no retrieval trace is captured or emitted anywhere. A true reasoning-path replay needs the retrieval pipeline to record and surface the traversed node/edge sequence | LOW | Capability gap | future retrieval-trace slice | Floating |
-| DEBT-115 | Per-project token-cost bucketing deferred from 11.1 — `token_ledger.snapshot()` (`main.py`, exposed via `/api/v1/telemetry/tokens`) is a process-global in-memory aggregate with no `project_id` dimension, so the dashboard's cost cards stay global and are honestly badged as such. A per-project view needs the FinOps ledger to bucket accrual by project (ephemeral across restart unless also persisted) | LOW | Feature gap | future FinOps slice | Floating |
-| DEBT-120 | Append-only growth of the two **persisted** telemetry tables — `request_latency` (one row per task) and `container_lifecycle` grow unbounded; reads are windowed/clamped but the tables are not pruned. `core/janitor.py` exists; wire retention/GC of old rows into it (both tables carry `# TODO(retention): DEBT-120` markers). Note: the 11.3.B.3 exec-log ring is in-memory/self-evicting and is **not** in scope here. | LOW | Data retention | future janitor slice | Floating |
-| DEBT-081 | Analyst context under-fills the tier budget — empty L4 squeezes file+docs; Project-layer degrade drops README+GraphRAG wholesale | MEDIUM | Architecture | future context slice | Floating |
-| DEBT-073 | plan-mode literal `"plan_mode"` string appears 4× in `Workspace.tsx` — extract `isPlanMode(mode)` helper if mode picker expands | LOW | DRY / FE Architecture | future UI sub-phase | Floating |
-| DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM | Architecture | future graph slice | Blocked |
-| DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW | Capability gap | long-term | Unscheduled |
-| DEBT-035 | MultiPL-E TypeScript execution needs a locked Node-capable sandbox tier | MEDIUM | Feature gap | future — needs a distinct locked tier | Floating |
-| DEBT-135 | The 11.9 Playwright dashboard fixture (`ailienant-core/tests/e2e/seed_dashboard_fixture.py`) writes directly into the catalog SQLite + LanceDB stores via existing low-level helpers (`upsert_indexed_file`/`upsert_dependencies`/`SemanticMemoryManager._write_record`), bypassing the real indexer — proves the dashboard's read side, never the indexer→dashboard pipeline end-to-end | LOW | Test fidelity | future e2e-fidelity slice | Floating |
-| DEBT-136 | The 11.9 Playwright suite (`ailienant-extension/playwright.config.ts`) runs Chromium only — no cross-browser (Firefox/WebKit) matrix, accepted as smoke-gate scope for a locally-served SPA | LOW | Test coverage | future cross-browser slice | Floating |
-| DEBT-137 | Provider-native `cache_control` + cache telemetry not implemented — 12.1 shipped only the prefix-stability prerequisite; the cacheable prefix is too small (~300-450 tokens) to clear any provider's minimum-cacheable-token floor today. 12.7 landed but did not unblock this: the grounding pre-pass's tool schemas live in a separate reasoning call, not the coder's stable system-message HEAD | LOW | Cost optimization | re-evaluate when the HEAD prefix grows | Floating |
-| DEBT-138 | `brain/agentic_cell.py` still resolves the locked oracle tier (`get_active_adapter()`), not the devcontainer tier §43 (12.4) added session support to — rerouting is blocked on an OCC-safe sync surface (`DevcontainerSandboxAdapter.get_sync_surface()` doesn't exist; a raw bind-mounted surface would bypass the VFS barrier's hash-based stale-guard) | MEDIUM | Architecture / Blocked | future OCC-safe sync-surface slice | Blocked |
-| DEBT-139 | The §43 devcontainer session host driver has no real TTY (no `node-pty`, by design — CLAUDE.md §9) — no job control, no `isatty()`, and `interrupt` sends a best-effort `SIGINT` to the child rather than a true Ctrl-C to a foreground process group | LOW | Capability gap | future terminal-fidelity slice | Floating |
-| DEBT-146 | `AIlienantGraphState.is_indexing_complete` is a write-only state channel — declared, seeded hardcoded `True` at two call sites, read by nothing repo-wide; the other half of the same never-completed "workspace indexing gate" `brain/orchestrator.py` (deleted by 12.12) belonged to | LOW | Dead code | future state-cleanup slice | Floating |
-| DEBT-145 | Per-task reasoning-mode config (`enable_native_thinking`, `thinking_budget_tokens`) rides `AIlienantGraphState` — mutable runtime state — rather than a dedicated relational config table; accepted for DEBT-079's two scalars given `HybridCheckpointer`'s per-run (not per-step) promotion, but the pattern shouldn't silently repeat | LOW | Architecture / Decision | future config/runtime-separation slice | Floating |
-| DEBT-147 | `symbol_definitions` catalog is populated only by the reactive (per-save) indexing path — `LazyIndexer`'s bulk crawl never calls `upsert_symbol_definitions`, so a freshly cold-indexed workspace has an empty catalog until files are individually re-saved | LOW | Coverage gap | future cold-path parity slice | Floating |
-| DEBT-148 | Dashboard vector scatter map (`/api/v1/memory/vectors`, `pca_project_2d`) surfaces only file-level embeddings — 12.13's per-symbol chunk vectors have no visualization; `VectorPoint` would need to become multi-valued per file | LOW | Feature gap | future dashboard chunk-visibility slice | Floating |
-| DEBT-149 | CSS's semantic-similarity term (`search`/`search_with_paths`) is deliberately calibrated against file-centroid distances only, never chunk distances — correct for now (chunk distances run systematically smaller and would silently inflate CSS/routing as a side effect), but a genuine precision opportunity is left on the table if routing is ever worth recalibrating against symbol-level evidence | LOW | Architecture / Decision | future routing-recalibration slice | Floating |
-| DEBT-025 | Docker PTY no daemon integration test | LOW | Test coverage | future CI-daemon-lane slice | Blocked |
-| DEBT-014 | brain/swarms.py NodeInputT 6 residual ignores | LOW | Type hygiene | LangGraph stubs | Blocked |
-| DEBT-010 | OCC version-vectors: decision record | DECISION | Architecture | N/A | Decision |
-| DEBT-131 | `core/tool_registry.py::_INTENTIONALLY_UNREGISTERED` — 11 tools deliberately left unwired: decision record | DECISION | Architecture | N/A | Decision |
-| DEBT-098 | Single ProcessPoolExecutor shared across PPR/indexer/blast-radius — no priority lanes | MEDIUM | Performance | future performance slice | Floating |
-| DEBT-154 | Apply-edge "low-risk" gate is still a command-pattern proxy over added diff lines, not a real edit-risk classifier — carried forward from DEBT-125 (display-wiring half closed 12.8) | LOW | Risk classification | future safety slice | Floating |
-| DEBT-155 | File-read content preview not on the Glass-Box Timeline — a `read` marker shows a size metric (12.8) but never masked file content; needs its own truncation/redaction design distinct from command-output masking | LOW | Feature gap | future timeline-depth slice | Floating |
-| DEBT-156 | No automated CLA-assistant workflow exists — `CONTRIBUTING.md` now describes only the manual `CLA.md` sign-off path (12.15); a real CLA bot needs a GitHub App / external service with no operational justification for a solo pre-launch project | LOW | Tooling gap | revisit once external contributors are onboarding (Phase 13+) | Floating |
-| DEBT-157 | No unit/integration/e2e taxonomy across ~2,858 backend tests — no markers existed before 12.16's `pytest.ini`, which registers `unit`/`integration`/`e2e` for new tests only; the existing 237 test files are not retroactively classified | MEDIUM | Test infrastructure | future test-taxonomy retrofit slice | Floating |
-| DEBT-158 | The only Playwright e2e spec (`e2e/dashboard.spec.ts`, 4 tests) covers the Dashboard SPA only — no chat/agent-turn flow, no VS Code extension-host e2e; real (not mocked) within its narrow scope | MEDIUM | Test coverage | future e2e-breadth slice | Floating |
-| DEBT-159 | Pre-commit's mypy-on-changed-files hook (12.17) is a fast local approximation, not a full-tree guarantee — an error surfaced only via a transitive relationship to an unchanged sibling file could theoretically be missed locally; CI's full-tree `mypy .` (`backend-gate.yml`, 12.15) remains authoritative | LOW | Tooling / precision gap | revisit if a partial-invocation blind spot is ever observed in practice | Floating |
-| DEBT-161 | 471 phase/ADR references remain in 130 production files (CLAUDE.md §13.1/§13.2), never scrubbed by any Phase 8-12 pass | LOW | Documentation hygiene | future phase-reference scrub slice | Floating |
-| DEBT-162 | `TaskSubmitRequest`/`TaskSubmitResponse`/`IDEContext` (`api/api_contracts.py`) have zero references outside their own module — the live task-submit path is WebSocket-based, not this REST contract | LOW | Dead code | future dead-contract reclamation slice | Floating |
-| DEBT-163 | `resolve_default_adapter()`'s `docker.from_env()` call has no timeout wrapper, unlike every sibling `docker.from_env` call site in the same file | MEDIUM | Robustness / CLAUDE.md §5.1 | future sandbox-hardening slice | Floating |
+| DEBT-120 | Two persisted telemetry tables (`request_latency`, `container_lifecycle`) grow unbounded — `core/janitor.py` exists but nothing wires retention/GC into it for these two | LOW | Data retention | future janitor slice | Floating |
+| DEBT-161 | ~419 phase/ADR references remain across ~174 production files (corrected count, was 471/130), never scrubbed by any Phase 8-12 pass | LOW | Documentation hygiene | future phase-reference scrub slice | Floating |
 | DEBT-164 | `core/memory/semantic_memory.py`'s `numpy`/`pyarrow`/`pyarrow.compute` imports stay module-level top (only `lancedb`/`litellm` were deferred) — ~35 usages across the file, too invasive to defer safely in one pass | LOW | Startup latency | future import-latency follow-up | Floating |
-| DEBT-165 | OpenSpec adoption is new-phases-only; Phases 0-12 have no OpenSpec representation, by design | DECISION | Architecture | N/A | Decision |
-| DEBT-166 | `openspec validate` starts advisory (`continue-on-error: true`), not blocking | DECISION | Architecture | N/A | Decision |
-| DEBT-167 | Root `package.json` (not `ailienant-extension/package.json`) chosen as the OpenSpec CLI install location | DECISION | Architecture | N/A | Decision |
-| DEBT-169 | GraphRAG/tool retrieval has no reranking stage — single-pass cosine kNN via LanceDB, no cross-encoder, no BM25 fusion, no MMR, no recency-weighted reorder of the snippets shown to the LLM | MEDIUM | Architecture / Retrieval quality | future retrieval-quality slice | Floating |
-| DEBT-174 | The coder's one-shot edit-generation call (`agents/coder.py`, `acomplete_with_thinking`) never receives image attachments — only the researcher's answer call does (13.0.1 closed DEBT-168 for that one node) | LOW | Capability gap | future multimodal-payload slice | Floating |
-| DEBT-173 | `/init`'s `AILIENANT.generated.md` fork (`core/project_init.py`) is not covered by the `.gitignore` block the extension provisions — that block is written once, on first provisioning, and never re-updated on later activations, so a workspace provisioned before `/init` shipped won't ignore the generated file until the user adds it by hand | LOW | Tooling gap | future provisioning-refresh slice | Floating |
-| DEBT-175 | `TOOL_RAG_TOP_K` cannot rise past 5 without reworking the Phase-5.7 gate's 14-schema baseline; its prescribed description-compression remedy is near self-cancelling (descriptions are 23.3% of payload, and compressing shrinks both sides of the ratio) | MEDIUM | Capability ceiling | future tool-catalog-economics slice | Floating |
-| DEBT-176 | No tool-invocation telemetry exists; the emit-only half is worth building, but consuming it as a ranking prior is rejected — it would break `select_tools` determinism and with it checkpoint-replay reproducibility | LOW | Capability gap | future observability slice | Floating |
-| DEBT-177 | Three declared conservatisms in the tool-selection path: `register_schema` warns rather than raises on definition conflict; `_visible_eager` sizes unresolvable schemas into the eager estimate; two different metrics share the name `reduction_ratio` | LOW | Declared tradeoff | (3) with the next audit-log touch | Floating |
-| DEBT-178 | `toggle_plan_mode` is deliberately READ_ONLY-tier yet mutates the permission channel — the tier system cannot gate it, so every dispatch-loop consumer must remember to apply `filter_loop_safe` (13.0.3 closed the current 3; a 4th consumer that forgets reopens it) | LOW | Capability-model gap | future permission-model slice | Floating |
 | DEBT-179 | App-runtime `Dockerfile` (13.1) installs the full `ailienant-core/requirements.txt` verbatim, baking dev/test-only tooling (pytest, mypy, ruff, pre-commit, hypothesis) into the production image alongside runtime dependencies | LOW | Image bloat / build hygiene | future prod-requirements split | Floating |
-| DEBT-180 | `agents/analyst.py::_is_agreement` does substring matching against short tokens ("ok", "yes", "bien") — a substantive answer that happens to contain one ends the Socratic grill early, mistaking elaboration for a bare agreement (blast radius narrowed by 13.0.5: now a first-turn fast path only) | LOW | Correctness gap | future ideation-quality slice | Floating |
 | DEBT-186 | `CoderCompanionPayload`/`server_coder_companion`/`brain/coder_companion.py`/`CoderCompanionCard.tsx` keep their coding-specific names even though 13.0.7 generalized the companion to explain every scope (ideation/planning/healing too) — evaluated a rename to `AgentCompanion*` and deferred it (no functional gain, costs a §10 dual-emit window) | LOW | Naming / clarity | rename with a dual-emit window, opportunistic | Floating |
 | DEBT-187 | The planning-scope companion emission always uses `attempt_ordinal=0` (`agents/planner.py`) — no state counter exists to distinguish a mid-task replan's plan from the first one, so two plans in one task would collide on the same `emission_id` and the second would silently replace the first in the frontend's append store instead of adding a new entry | LOW | Correctness gap (narrow) | future replan-counter slice, if replanning-within-a-task ships | Floating |
+| DEBT-192 | Local-model calibration is recorded only from `ainvoke`, not the direct-BYOM streaming paths — deliberate, confirmed with the user | LOW | Declared tradeoff | revisit if chat streaming on slow hardware needs it | Floating |
+| DEBT-193 | A local-model timeout (`litellm.exceptions.Timeout`) never triggers the connection-drop failover path — only a genuine connection drop or CUDA OOM does | LOW | Correctness gap | future local-timeout-failover slice | Floating |
+| DEBT-195 | Other flat, hardware-blind timeout constants surveyed during DEBT-191's audit — mostly a different subsystem (benchmark harness); one latent unscaled path off the primary route | LOW | Robustness | future timeout-audit follow-up | Floating |
+| DEBT-202 | `TestClient(main.app)`-based test fixtures autoconnect to the real, non-isolated MCP catalog DB — a network-dependent enabled server can trip a genuine anyio/mcp SDK teardown bug, environment-dependent, reproduced twice this sweep under DEBT-201's exact error signature | MEDIUM | Test infrastructure | future test-infrastructure slice | Floating |
 
 ---
 
@@ -170,6 +199,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **Files:** `api/ws_contracts.py`, `tools/control_tools.py`, `core/hitl.py`, `core/task_service.py`, `brain/agentic_cell.py`, `main.py`, `ailienant-extension/src/api/contracts.ts`, `ailienant-extension/src/workspace/components/ClarificationGrillCard.tsx`, `ailienant-extension/src/workspace/components/HITLInterventionCard.tsx`, `ailienant-extension/src/workspace/utils/clarificationLogic.ts`, `ailienant-extension/src/workspace/utils/useClarificationResponder.ts`, `ailienant-extension/src/workspace/Workspace.tsx`, `ailienant-extension/src/workspace/workspace.css`.
 - **Verified:** backend — extended `tests/test_control_tools.py` (batch mode + required-field guard) and `tests/test_clarification_channel.py` (outbound batch forwarding + synthesized description, resume-phase multi-answer trajectory fold, inbound `answers` forwarding); frontend — new `src/test/clarificationGrillCard.test.ts` (7 cases against the pure `clarificationLogic.ts` module, since this suite has no DOM-render harness); full suites green: mypy 0/468, pytest 2979 passed/2 skipped, npm compile/lint 0, mocha 198 passed.
 
+- **Reconciliation sweep note (2026-08-25):** this id had a second, stale duplicate entry (`[LOW · Floating]`, the pre-13.0.4 original) still present elsewhere in this file. Removed — this RESOLVED entry is the current, authoritative one; the ledger now has no duplicate ids.
 ### DEBT-036 [HIGH · RESOLVED 2026-06-19, 8.10.5] — BenchmarkOracle executed candidate patches on the host (no sandbox isolation)
 
 - **Date:** 2026-06-12 · **Resolved:** 2026-06-19 (8.10.5)
@@ -233,16 +263,6 @@ Decision    Not a defect — see [DECISION] tier.
 **MEDIUM**
 
 ---
-
-### DEBT-169 [MEDIUM · Floating] — GraphRAG/tool retrieval has no reranking stage
-
-- **Date:** 2026-08-17
-- **Reproduce:** read `core/memory/semantic_memory.py::search_with_paths` / `search_snippets` and `core/tool_rag.py::select_tools`. Every retrieval path is a single `tbl.search(vector).metric("cosine").limit(k)` call against LanceDB, with the final ordering being raw cosine distance — `select_tools` literally sorts by `(_distance, name)` and stops. There is no cross-encoder second pass, no BM25/lexical fusion, no MMR diversification (a query can surface k near-duplicate chunks from the same file), and no reordering by recency: `search_with_paths` computes an `indexed_at` timestamp per result and it feeds `agents/recency.py::compute_recency_score`, which blends into the aggregate CSS *meter* — but the individual snippets/files handed to the LLM are never reordered by that signal, only the scalar sufficiency score is adjusted.
-- **File(s):** `core/memory/semantic_memory.py` (`search_with_paths`, `search_snippets`, `_query_chunks`), `core/tool_rag.py` (`ToolRAGStore.select_tools`), `agents/recency.py` (`compute_recency_score` — the existing, unused-for-reordering recency signal to build on).
-- **Error:** architecture/feature gap, not a correctness bug — single-stage kNN is cheap and works for small/medium corpora, but leaves precision on the table for larger codebases (near-duplicate retrieval, no lexical/semantic fusion, no diversity floor).
-- **Blocked by:** nothing — a first cut (recency-weighted reorder of already-retrieved snippets, no new dependency) is a small follow-up; a real cross-encoder or MMR pass is a larger, separately-scoped change.
-- **Phase:** future retrieval-quality slice.
-- **Notes:** surfaced during a harness audit (2026-08-17). Cross-references **DEBT-149** (CSS's semantic term calibrated only against file-centroid distances, never chunk distances — same "retrieval precision left on the table" family) and **DEBT-140** (RESOLVED 12.13, added per-symbol chunking — the substrate a real reranker would sit on top of).
 
 ### DEBT-152 [MEDIUM · RESOLVED 2026-08-04, 12.14] — Orphaned agentic-cell PTY sessions can now permanently occupy a bounded pool slot
 
@@ -340,25 +360,9 @@ Decision    Not a defect — see [DECISION] tier.
 
 - **Resolution:** 14 `# pyright: ignore[reportArgumentType]` added to `brain/engine.py` `add_node` calls; 47 `# pyright: ignore[reportIncompatibleVariableOverride]` added to `args_schema` overrides across 13 `tools/*.py` files. One pre-existing `reportGeneralTypeIssues` in `mcp_adapter.py` suppressed (Boy Scout). `mypy 0/366`, `pytest 1690 passed`.
 
-### DEBT-074 [MEDIUM · Blocked] — `pre_file_read` GraphRAG-injection hook bypasses cost accounting
+### DEBT-073 [LOW · RESOLVED 2026-08-25, debt-sweep] — `plan_mode` string literal appeared 4× in `Workspace.tsx` (DRY)
 
-- **Date:** 2026-06-23
-- **Reproduce:** the `hooks` table (`core/db.py`) supports only `pre_patch` / `post_patch` events, dispatched in `core/task_service.py`. A proposed `pre_file_read` event would inject a file's dependency subgraph into the agent's context automatically at read time.
-- **Error:** tokens injected laterally by such a hook never pass through the CSS×TCI router (`core/memory/context_auditor.py`) or the token ledger (`core/token_ledger.py`), so they escape the FinOps gate and corrupt `savings_usd` accounting. It also turns structural context implicit (non-deterministic, hard to debug) versus the current explicit `pre_patch`/`post_patch` artifacts the agent knows are present.
-- **Blocked by:** no accounting path for hook-injected context. Re-evaluate only once the router meters laterally-injected tokens.
-- **Phase:** future graph-intelligence slice (post-8.14).
-- **Notes:** carved at 8.14 planning per CLAUDE.md §11.3. Rejected sibling: the recursive-CTE k-hop rewrite — multi-hop BFS already exists (`_bfs_k_hop`, `_K_HOP={CLOUD:3,…}`), so it is a refactor of working code, not a missing capability; revisit only if `_bfs_k_hop` becomes a measured bottleneck at scale.
-
-### DEBT-075 [LOW · Unscheduled] — Syntactic-only symbol extraction; no LSP-style type resolution
-
-- **Date:** 2026-06-23
-- **Reproduce:** the indexer extracts symbols and dependencies by name via tree-sitter; it does not resolve types. When the coder needs a function's return type, the LLM must infer it from the file rather than reading a resolved type.
-- **Error:** capability gap vs a real Language Server (generic substitution, parameter binding, return-type / JSDoc inference). Cheaper, lower-precision retrieval context for type-dependent reasoning.
-- **Blocked by:** nothing structural; cost is the barrier — would mean running a real LSP subprocess (pylsp / tsserver / rust-analyzer) inside the indexer.
-- **Phase:** long-term; relates to existing DEBT-005.
-- **Notes:** carved at 8.14 planning per CLAUDE.md §11.3.
-
-### DEBT-073 [LOW · Floating] — `plan_mode` string literal appears 4× in `Workspace.tsx` (DRY)
+- **Resolved:** 2026-08-25. Confirmed still reproducing exactly as described (5 occurrences by this point, not 4 — one more had accumulated since the entry was logged). Extracted `PLAN_MODE: ExecutionMode = 'plan_mode'` and `isPlanMode(mode)` in `Workspace.tsx`; every comparison site now calls `isPlanMode(mode)` and the one assignment site (`submitWithMode(trimmed, 'plan_mode')`) now passes the `PLAN_MODE` constant. No behavior change — a pure refactor, so the existing `npm run compile`/`npm run lint`/`npm test` suites are the regression coverage; no new test needed for a same-behavior rename.
 
 - **Date:** 2026-06-23
 - **Reproduce:** `grep -n "plan_mode" ailienant-extension/src/workspace/Workspace.tsx` — 4 hits (mode picker guard, HITL routing, plan-doc slot, keyboard shortcut). Each checks the raw string `=== 'plan_mode'`.
@@ -367,7 +371,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing — 3-button UI is unchanged and the fix is a 1-line `isPlanMode(mode)` helper. Deferred because 8.11.3 scope explicitly keeps the UI unchanged.
 - **Phase:** whichever future sub-phase expands the mode picker beyond 3 buttons.
 - **Notes:** logged at 8.11.3 ship per CLAUDE.md §11.3.
-
 ### DEBT-072 [MEDIUM · RESOLVED 2026-06-24, 8.10.16] — Pending-interrupt restart-durability
 
 - **Date:** 2026-06-22 · **Resolved:** 2026-06-24 (8.10.16)
@@ -396,62 +399,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Notes:** logged at 8.14 planning per CLAUDE.md §11.3; resolves the latent Python-only assumption under Division 8.14's "substrate already exists" premise.
 - **Resolution (2026-07-01, 8.14.0):** shipped the `IMPORT_EXTRACTORS` registry (Python + TS/JS) with lexical disk-free relative resolution, a strict workspace-boundary guard (`IndexingRequest.workspace_root`), and extension/`index.*` candidate expansion in `_resolve_edge_confidence`. The dependency graph is now polyglot. TS/JS relative resolution surfaced a Python asymmetry, logged as DEBT-087.
 
-### DEBT-087 [LOW · Floating] — Python relative imports skipped by the extractor
-
-- **Date:** 2026-07-01
-- **Reproduce:** `_extract_python_imports` (`brain/memory.py`) drops any `from .mod import x` / `from . import y` — it emits absolute module paths only. TS/JS now resolve relative specifiers lexically into workspace paths, so Python module boundaries are under-represented in the dependency graph relative to TS/JS.
-- **Error:** coverage asymmetry, not a defect. Historically justified when the worker had no project-root context; that context now exists (`req.file_path` + `req.workspace_root`, both plumbed in 8.14.0).
-- **Resolution (unscheduled):** add relative-specifier resolution to the Python extractor, reusing the same lexical `posixpath` + workspace-guard approach as `_resolve_relative_specifier`, mapping a dotted relative import to a workspace path against the source file's directory.
-- **Notes:** logged at 8.14.0 close per CLAUDE.md §11.3; marked in code as `TODO(DEBT-087)`.
-
-### DEBT-088 [LOW · Floating] — `bfs_k_hop_backward` has the pre-8.14.1 resolved-form gap
-
-- **Date:** 2026-07-01
-- **Reproduce:** `bfs_k_hop_backward` (`core/memory/graphrag_extractor.py`, used by `TraceDataFlowTool`) seeds its `target_dependency IN (...)` query with the raw node string passed in. Since 8.14.0, a dependent references a changed file by import specifier (an extensionless TS/JS path or a dotted Python module), not the file's absolute path, so seeding the walker with a file path finds nothing and its multi-hop step re-feeds unresolved `source_file` values into the same mismatched query — the same under-counting gap `core/blast_radius.py` (8.14.1) was built to avoid.
-- **Error:** architectural gap, not a defect — the walker predates the polyglot resolved-target concept.
-- **Resolution (unscheduled):** migrate `TraceDataFlowTool`'s backward view onto the resolved-adjacency traversal introduced in `core/blast_radius.py`, or extend that module's reverse adjacency into a general-purpose resolved BFS both callers share.
-- **Notes:** logged at 8.14.1 close per CLAUDE.md §11.3.
-
-### DEBT-089 [LOW · Floating] — Blast-radius Python resolution is suffix-based, not sys.path-aware
-
-- **Date:** 2026-07-01
-- **Reproduce:** `core/blast_radius._build_python_suffix_index` maps every segment-aligned path suffix of an indexed `.py` file to that file, so a dotted Python import target resolves via suffix match rather than true `sys.path` resolution. Two indexed modules sharing a basename (e.g. `pkg_a/utils.py` and `pkg_b/utils.py`) both match a bare `import utils`, over-counting the blast radius.
-- **Error:** declared MVP tradeoff, not a defect — over-counting is the safe direction for a pre-apply review gate (never silently under-count); the worker process has no view of the project's actual `sys.path` / installed-package resolution order.
-- **Resolution (unscheduled):** resolve Python targets against the same import-root context a real interpreter would use (parsed `sys.path` entries, namespace packages) instead of a flat suffix index.
-- **Notes:** logged at 8.14.1 close per CLAUDE.md §11.3.
-
-### DEBT-090 [LOW · Floating] — Memory-snapshot export has no extension-side trigger
-
-- **Date:** 2026-07-01
-- **Reproduce:** the shared-memory export is fully wired on the backend — the `client_export_memory_snapshot` WS event, its `main.py` dispatch, and `core.memory_snapshot.export_memory_snapshot` — but no VS Code command / button sends that event, so a user cannot yet trigger an export from the UI. Import bootstrap already runs automatically at session init.
-- **Error:** declared backend-only scope — 8.14.2's DoD is `mypy`/`pyright` only (no npm gate); the additive WS contract is forward-compatible, so wiring the FE later needs no backend change.
-- **Resolution (unscheduled):** add an extension command-palette entry / status-panel button that emits `client_export_memory_snapshot` with the active `project_id` + `workspace_root`.
-- **Notes:** logged at 8.14.2 close per CLAUDE.md §11.3.
-
-### DEBT-091 [LOW · Floating] — Architecture digest omits git co-change coupling
-
-- **Date:** 2026-07-02
-- **Reproduce:** `architecture_digest` (`tools/perception_tools.py` + `brain/memory.build_architecture_digest_sync`) synthesizes languages/modules/hotspots/communities/entrypoints from the persisted graph, but carries no git co-change ("files that change together" — the reference graph's `FILE_CHANGES_WITH`) signal; there is no git-history substrate in the catalog to source it from.
-- **Error:** declared scope cut — 8.14.5's manifest marks co-change "optional… where cheap"; with no existing git-log analysis it is not cheap, so it was omitted rather than built speculatively (§9 / §11.3).
-- **Resolution (unscheduled):** add a bounded, idempotent git-log co-change extractor persisting pairwise change coupling, then surface a `co_change` section in the digest.
-- **Notes:** logged at 8.14.5 close per CLAUDE.md §11.3.
-
-### DEBT-092 [LOW · Floating] — Boundary graph cannot recover backend `server_*` emit edges
-
-- **Date:** 2026-07-02
-- **Reproduce:** `core.boundary_graph.refresh_boundary_graph` resolves WS/MCP boundary edges by matching the channel as a quoted string literal, but a backend `server_*` emit is a typed model construction (`api/websocket_manager.py` → `ServerStreamEndEvent(data=…)`) with no channel literal at the send site — so `trace_cross_boundary('server_stream_end')` returns `declares` + frontend `handles` but no core-side `emits`.
-- **Error:** declared fidelity boundary — `declares`/`handles` are high-precision; `emits` is best-effort (only extension `client_*` object sends carry a literal).
-- **Resolution (unscheduled):** a structural emit-site resolver that maps the `event_type` `Literal` back to the pydantic model class, then finds `send_personal_message(..., ModelClass(...))` constructions in the core emit path.
-- **Notes:** advisory READ_ONLY tool — an empty emit list is never a "not emitted" verdict. Logged at 8.14.7 close.
-
-### DEBT-093 [LOW · Floating] — Boundary graph has no auto-refresh on index-complete
-
-- **Date:** 2026-07-02
-- **Reproduce:** `TraceCrossBoundaryTool` builds the boundary graph on first query (empty-table trigger); after later code edits the stored edges can lag until an explicit `refresh_boundary_graph`. There is no `broadcast_indexing_complete` hook to rebuild.
-- **Error:** declared scope cut — liveness is not required by the 8.14.7 DoD; the full rebuild is cheap (~71 channels) so a trigger is a small follow-on.
-- **Resolution (unscheduled):** invoke `refresh_boundary_graph` (single-flight) from the index-complete path, or add a cheap staleness stamp the tool checks before serving.
-- **Notes:** logged at 8.14.7 close.
-
 ### DEBT-094 [LOW · RESOLVED 2026-07-02] — 38 pre-existing project-wide pyright errors
 
 - **Date:** 2026-07-02
@@ -459,46 +406,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** three clusters — (A) ~19 third-party stub gaps (docker `.errors`, lancedb `LanceQueryBuilder.metric` / `table_names` union, `pyarrow.compute.equal`, pynvml `.total`, langgraph `HybridCheckpointer.wal_checkpoint`); (B) 10 in `tools/llm_gateway.py` from litellm's `ModelResponse | CustomStreamWrapper` union (+ one benign possibly-unbound); (C) 9 LangGraph typed-state / test-double mismatches.
 - **Resolution:** dedicated cleanup commit (separate from 8.14.7) — narrowed the litellm union on the `stream` branch, defensive-init `_effective_timeout`, and justified `# type: ignore`/`cast` for the stub-gap false-positives.
 - **Notes:** resolved in a dedicated follow-up commit; `npx pyright` → 0 errors, `mypy .` unchanged at 0/392.
-
-### DEBT-095 [LOW · Floating] — Polyglot (TS/JS) runtime call-trace capture
-
-- **Date:** 2026-07-02
-- **Reproduce:** `core/call_trace_probe.py`'s tracer uses `sys.monitoring` (PEP 669), a CPython-specific facility — it can only observe Python `caller → callee` calls. The 8.14.8 dogfood PoC and any 8.14.8.1 substrate are Python-only; extension-side (TypeScript) runtime calls are never traced.
-- **Error:** declared scope cut for the SPIKE — the manifest's dynamic-dispatch value case (`ToolDispatcher`) is Python, so the PoC's signal is representative for the backend, but the frontend gets no equivalent runtime confirmation.
-- **Resolution (unscheduled):** a Node-side equivalent (`async_hooks` / V8 inspector protocol) feeding the same reconciler shape, or accept the Python-only scope permanently and document it as a hard boundary rather than a gap.
-- **Notes:** logged at 8.14.8 close.
-
-### DEBT-096 [LOW · Floating] — Sandbox/agentic-cell-integrated live trace capture
-
-- **Date:** 2026-07-02
-- **Reproduce:** the manifest's literal target was capturing traces "from the existing sandbox / agentic-cell execution" (a user project's run). 8.14.8 instead dogfoods AILIENANT's own pytest (declared deviation, `SCHEMA_EVOLUTION.MD`) because it is self-contained, real, and needs no target project or container work for the PoC.
-- **Error:** the sandbox-execution capture path (tracing a user's own project as it runs inside `core/sandbox.py`'s tiers) remains unbuilt; the PoC only validates the *signal*, not that production capture path.
-- **Resolution (unscheduled):** wire the same `CallTracer` into the trusted/native sandbox execution path (behind an explicit opt-in — tracing is not free and must never run unconditionally on user code) so production traces feed the persisted substrate instead of only the dogfood harness.
-- **Notes:** logged at 8.14.8 close. `8.14.8.1` shipped the persisted substrate populated **out-of-band** (dogfood harness), so this live-capture path is still open.
-
-### DEBT-101 [LOW · Floating] — Observed-call-edge substrate has no purge/TTL
-
-- **Date:** 2026-07-02
-- **Reproduce:** `core.db.persist_observed_edges` is append-only (`INSERT OR IGNORE`, never delete). When a file is reindexed and a symbol is renamed/deleted, its `observed_call_edges` rows are not purged — they accumulate as orphans over successive trace runs.
-- **Error:** declared scope cut for 8.14.8.1 — capture is out-of-band, so no reindexer coupling was added. Correctness is preserved at the **read path**: `find_symbol_callers` only surfaces an added observed caller whose file is still in the catalog, so a stale row is never *shown*; it only wastes storage.
-- **Resolution (unscheduled):** a reindex-coupled purge (mirroring `purge_symbol_definitions`) keyed by `caller_file`/`callee_file`, or a periodic TTL sweep, or a symbol-presence check at read to prune on access.
-- **Notes:** logged at 8.14.8.1 close; append-only accumulation is deliberate ("never delete an observation"), so purge must be careful to drop only genuinely-orphaned rows.
-
-### DEBT-102 [LOW · Floating] — `tree-sitter-dart` single-release supply-chain risk
-
-- **Date:** 2026-07-03
-- **Reproduce:** `pip index versions tree-sitter-dart` shows exactly one published release (`0.1.0`), with no update history since — unlike every other pinned `tree-sitter-*` package in `requirements.txt`, which have multiple releases and an active maintenance cadence.
-- **Error:** accepted at 8.14.11 as the lightest viable option (no alternative Dart tree-sitter binding exists on PyPI) — a real but currently-inert risk: the package works today, but there is no signal it will be patched if `tree-sitter` core evolves incompatibly.
-- **Resolution (unscheduled):** monitor for a maintained fork/successor; if the pinned wheel ever breaks against a future `tree-sitter` core bump, drop Dart support (degrade gracefully — `IMPORT_EXTRACTORS`'s unregistered-language path already handles this) rather than vendor a patched build.
-- **Notes:** logged at 8.14.11 close per the project's dependency-governance stance (a new dependency's risk profile is stated explicitly, not silently absorbed).
-
-### DEBT-103 [LOW · Floating] — Dart `package:` URI resolution is pubspec-unaware
-
-- **Date:** 2026-07-03
-- **Reproduce:** `_extract_dart_imports` (`brain/memory.py`) strips the `package:` prefix from `import 'package:foo/bar.dart';` and emits the remainder (`foo/bar.dart`) as the target, but never maps the leading `foo` package name back to the project's own directory layout (that mapping lives in `pubspec.yaml`, a file this extractor never reads).
-- **Error:** declared scope cut for 8.14.11 — real resolution would require parsing a second file format entirely (YAML, plus the `name:`/`dependencies:` keys specifically), a materially larger feature than the source-AST extraction this round covers. A same-project `package:` import therefore rarely resolves past bare extraction today; it stays INFERRED, the same honest fallback as any unresolved import.
-- **Resolution (unscheduled):** a small `pubspec.yaml` reader keyed by the project's own package `name:` field, feeding a Dart-specific candidate expansion (`package:<own_name>/x.dart` → `lib/x.dart`) alongside the existing relative-specifier path.
-- **Notes:** logged at 8.14.11 close; `dart:` built-ins and relative (`'sibling.dart'`) specifiers are unaffected — only the same-project `package:` case is impacted.
 
 ### DEBT-104 [LOW · Floating] — Tournament surface rollback does not delete candidate-introduced files
 
@@ -508,6 +415,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolution (owned by 8.15.5 wiring):** give the tournament a delete-not-in-base rollback path (or snapshot/restore the full surface path set) so heterogeneous dispatch candidates are fully isolated, then drop the advisory warning.
 - **Notes:** logged at 8.15.3 close; the warning uses the `SUBAGENT_TOURNAMENT` logger and is asserted in `tests/test_subagent_tournament.py::test_from_dispatch_warns_on_out_of_base_path`.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-105 [LOW · Floating] — Dispatch cost accounting is estimate-based and under-counts
 
 - **Date:** 2026-07-03
@@ -516,6 +424,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolution (owned by 8.15.5 wiring):** when the dispatch nodes are wired, meter real gateway token usage (the `answer_fn`/`LLMGateway` seam) for both the reserve estimate and the committed actual, and decide overage handling (book it as a signed commit delta, or keep refund-only with a tighter upper-bound estimate).
 - **Notes:** logged at 8.15.4 close; the node/edge admission wiring that consumes these primitives is 8.15.5.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-110 [LOW · RESOLVED 2026-07-24, 11.4] — BYOM panel styles reference unresolved host/legacy CSS variables
 
 - **Date:** 2026-07-20 · **Resolved:** 2026-07-24 (11.4)
@@ -530,25 +439,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Resolution:** the same 11.4 redesign (commit `6ae8eb3`) migrated `BYOMPanel.tsx` onto the shared component — it now imports `ConfirmModal` from the `ui` barrel and renders it directly (no local `byom-confirm-*` modal markup remains); `dashboard.css`'s confirm-modal styling is now the shared `/* Generic confirm modal (ui/ConfirmModal) */` block, not a BYOM-local one.
 - **Files:** `ailienant-extension/src/dashboard/panels/BYOMPanel.tsx`, `ailienant-extension/src/dashboard/ui/ConfirmModal.tsx`, `ailienant-extension/src/dashboard/dashboard.css`.
 - **Notes:** logged retroactively — a case for the ledger itself (cf. DEBT-027's own "stale note outlived the fix" precedent): the fix landed with 11.4 but the tech-debt entry was never written or closed, so it sat as an open dashboard row with zero detail for weeks.
-
-### DEBT-111 [MEDIUM · Floating] — GraphRAG nebula limited to file/external node types
-
-- **Date:** 2026-07-22
-- **Reproduce:** open the Memory panel's Nebula. Nodes render as `file` (sphere) or `external-dep` (octahedron) only — there is no `function`/`class`/`module` shape, because the graph substrate is file-level.
-- **Not blocked (re-analyzed 2026-07-22):** a full call-edge-materialized symbol graph would conflict with `docs/SCHEMA_EVOLUTION.MD` "Symbol-Level Call-Graph Substrate" (`observed_call_edges` is unbounded/append-only and would exceed `MAX_GRAPH_EDGES=5000` or fork the PPR/Leiden pipeline) — but a containment-only design is not: `symbol_definitions` already exists, is already populated per-project, and stores zero edges, exactly the Tier-2 catalog that decision already authorizes.
-- **Enterprise target (Phase 11.2.S):** render `symbol_definitions` rows as satellite nodes of their owning file via a `defined_in` containment edge (bounded by symbol count, never enters `MAX_GRAPH_EDGES` accounting), extend the nebula's `nodeThreeObject`/shape map to the new `kind`s, and resolve "who calls this symbol" on-demand via the existing `find_symbol_callers` READ_ONLY tool (never bulk-loaded into the analytics graph). The rendering engine already scales; no decision amendment or new analytics pipeline needed.
-
-### DEBT-113 [LOW · Floating] — Nebula picking + layout not yet scaled to 100k nodes
-
-- **Date:** 2026-07-22
-- **Reproduce:** the custom three.js engine renders via InstancedMesh (scales), but picking uses `raycaster.intersectObject` and the d3-force-3d layout runs one-shot on the main thread — both are comfortable at the current bounded node counts (≤5000) yet not the 100k design target.
-- **Enterprise target:** GPU-picking (render instance-ids to an offscreen texture) for O(1) hit-testing at scale, and move the force layout into a Web Worker (the `nebula/engine` layout call and `nebula/picking` module are the seams). Built lazily so neither affects the current bundle.
-
-### DEBT-114 [LOW · Floating] — Search pulse is not a real GraphRAG reasoning-path replay
-
-- **Date:** 2026-07-22
-- **Reproduce:** searching the nebula pulses matched nodes and their *incident* edges. It does not animate the actual path GraphRAG traversed to answer a query, because no retrieval trace is captured or emitted.
-- **Enterprise target:** have the retrieval pipeline record the traversed node/edge sequence per query and surface it over the dashboard contract, then animate a pulse along that real path (the "reasoning made visible" the art direction envisioned).
 
 ### DEBT-077 [MEDIUM · RESOLVED 2026-06-26, 8.10.17] — Unify analyst ContextBudgetManager onto ContextPipeline
 
@@ -573,6 +463,7 @@ Decision    Not a defect — see [DECISION] tier.
   `ContextPipeline`'s layer fractions, which is out of scope for a pre-launch debt-closure pass. Not
   required for Phase 13.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-070 [HIGH · RESOLVED 2026-06-22, 8.10.14] — Async-sleep HITL waits block a coroutine until timeout/response
 
 - **Date:** 2026-06-21 · **Resolved:** 2026-06-22 (8.10.14)
@@ -589,7 +480,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **File(s):** `agents/researcher.py`, `agents/planner.py`, `tools/researcher_tools.py`, `brain/engine.py`; gate `tests/test_phase8_10_12_checkpoint_gate.py` + ~17 migrated routing/cascade/fast-boot tests.
 - **Notes:** the routing-spine math was relocated verbatim (same thresholds/order) so behavior is identical; carved from DEBT-068 at 8.10.11.
 
-### DEBT-067 [LOW · Floating] — Hardware stress simulator uses synthetic injection, not real allocation
+### DEBT-067 [LOW · RESOLVED 2026-08-03, 8.10.3] — Hardware stress simulator uses synthetic injection, not real allocation
 
 - **Date:** 2026-06-19 · **Resolved:** 2026-08-03 (12.5)
 - **Reproduce (original):** `tests/chaos/test_hardware_stress_sim.py` applies memory pressure by injecting a starved `HardwareProfile` (monkeypatching `HardwareDetector.detect`) rather than actually allocating RAM/VRAM. The graceful-degradation reroute and its telemetry row are validated deterministically, but the detector's real probing path (pynvml / psutil under genuine pressure) is not exercised.
@@ -598,6 +489,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **Verified:** run manually on a Windows dev host with no discrete GPU — real RAM dropped from 2.9 GB to 2.54 GB available and was fully released afterward; `suggested_mode` correctly reported it could not degrade further via RAM pressure alone on that platform (`effective_vram_gb` gates on GPU VRAM, not system RAM, for every non-Apple-Silicon host) rather than printing a misleading "try a lower target".
 - **Notes:** logged at 8.10.3 ship per CLAUDE.md §11.3; the user chose synthetic injection for the CI-safe contract test at that time, which stands unchanged.
 
+- **Reconciliation sweep note (2026-08-25):** this entry's own body already documented a completed **Resolved:** block dated 8.10.3 — the header tier was simply never flipped from `Floating` to `RESOLVED` afterward. Retagged; no new work done in this sweep, since the fix described was already shipped.
 ### DEBT-044 [MEDIUM · RESOLVED 2026-06-20, 8.10.10] — ValidateWBSDependenciesTool detects forward-reference ordering violations only, not true DAG cycles
 
 - **Date:** 2026-06-14 · **Resolved:** 2026-06-20 (8.10.10)
@@ -698,16 +590,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** standalone eval-surface hardening slice, post-8.5/8.8.
 - **Notes:** logged at 8.5.5 ship per CLAUDE.md §7.3.
 
-### DEBT-035 [MEDIUM · Floating] — MultiPL-E TypeScript execution needs a Node-capable sandbox runtime
-
-- **Date:** 2026-06-12
-- **Reproduce:** run a TypeScript codegen problem through `SandboxCodegenExecutor.run(program, Language.TYPESCRIPT, …)` — it returns `ExecOutcome(passed=False, exit_code=-2, stderr="[unsupported_runtime: ...]")` instead of executing.
-- **File(s):** `ailienant-core/tests/benchmark/executors.py` (`SandboxCodegenExecutor`); `ailienant-core/core/sandbox.py` (`_DOCKERFILE_TEXT`, `python:3.13-slim`).
-- **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The shared sandbox image is Python-only (no Node/tsc), so MultiPL-E TS cannot be executed in-container. 8.3.1 ships the full TS *adapter* (loader, prompt, extraction, assembly, Pass@1 wiring); only the TS *execution backend* is deferred. Python (HumanEval) Pass@1 is real.
-- **Blocked by:** nothing technical — needs a Node-capable sandbox tier without compromising the locked Docker security profile.
-- **Phase:** **Division 8.13 CLOSED 2026-06-30 without resolving this** — the polyglot devcontainer adapter (blueprint `docs/PHASE_8.13_BLUEPRINT.md`) serves only the agent's *trusted* project execution; the untrusted MultiPL-E TS benchmark lane is the opposite threat model (§2) and permanently stays `unsupported_runtime` — pointing it at a user-owned devcontainer would dissolve the locked-cage guarantee. Remains open: a distinct **locked** Node-capable sandbox tier (mirroring `DockerSandboxAdapter`'s hardening — no network, read-only mount, non-root, env-whitelist) is still needed to execute untrusted TS candidates. No phase currently owns this.
-- **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. TS Pass@1 remains `unsupported_runtime`; the Python subset DoD holds.
-
 ### DEBT-082 [MEDIUM · RESOLVED 2026-06-30, 8.13.4] — Bundled `@devcontainers/cli` not shipped in the `.vsix`
 
 - **Date:** 2026-06-30 · **Resolved:** 2026-06-30 (8.13.4)
@@ -766,24 +648,14 @@ Decision    Not a defect — see [DECISION] tier.
   8.14.9 blast-radius stress gate starting to flake under concurrent indexer load. Not required for
   Phase 13.
 
----
-
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 **LOW**
 
 ---
 
-### DEBT-172 [LOW · Floating] — Clarification / Plan-mode-suggestion interrupt cards have no multi-choice renderer yet
+### DEBT-173 [LOW · RESOLVED 2026-08-25, debt-sweep] — `/init`'s generated-file fork wasn't covered by an already-provisioned workspace's `.gitignore`
 
-- **Date:** 2026-08-17 · **Narrowed:** 2026-08-17 (13.0.1)
-- **Reproduce:** the ambiguity pre-flight gate and the HIGH-risk Plan-mode suggestion (`agents/researcher.py`, `core.hitl.request_graph_clarification`) put a `suggested_options: List[str]` list on the `interrupt()` payload, but the frontend's existing HITL approval-card component only renders a binary approve/reject affordance (the same one `drift_gate` uses). `suggested_options` currently reaches the WebView unrendered — the user answers via the card's free-text comment box, not a real multi-select.
-- **Narrowed by 13.0.1 (closing DEBT-171):** originally this entry also covered a channel that was inert in *both* directions — the outbound card didn't even show the question text, and the inbound answer was discarded regardless of what the user typed. Both of those are now fixed additively (`api/ws_contracts.py`'s `question`/`context`/`suggested_options`/`answer`/`selected_option` fields, `task_service.py::_emit_interrupt_card`, `main.py::_resume_approval_dict`) — the channel round-trips correctly today through the existing plain approve/reject card. What remains is purely the visual multi-choice affordance.
-- **File(s):** `core/hitl.py` (`request_graph_clarification`), `api/ws_contracts.py` (the additive fields, already present), `ailienant-extension/src/workspace/` (the HITL approval-card component — needs a `suggested_options`-aware render branch that calls `onRespond` with `selected_option` instead of relying on the comment-box fallback).
-- **Error:** UX gap only, explicit MVP declaration per CLAUDE.md §11.2 — the backend contract is additive and forward-compatible (an old card renderer just ignores the extra fields), and correctness no longer depends on this landing.
-- **Blocked by:** frontend work.
-- **Phase:** future HITL-card-UX slice.
-- **Notes:** logged at ship per CLAUDE.md §11.3, alongside DEBT-168/169/170/171 (2026-08-17 harness-audit sweep); narrowed when 13.0.1 closed DEBT-171's backend half.
-
-### DEBT-173 [LOW · Floating] — `/init`'s generated-file fork isn't covered by an already-provisioned workspace's `.gitignore`
+- **Resolved:** 2026-08-25. Re-verified: `ensureGitignoreBlock` was still gated behind `PROVISIONED_FLAG`'s one-time early return. A second, deeper gap surfaced on inspection: `GITIGNORE_BLOCK` had never carried a pattern for `*.generated.md` at all — even a brand-new first-time provision would have missed ignoring the `/init`-generated fork, not just an already-provisioned workspace. Fixed both in one pass: added `*.generated.md` to `GITIGNORE_BLOCK_BODY`; extracted the block-diffing logic into a pure `computeNextGitignore` function (absent → append, current → no-op, STALE → heal in place rather than duplicate); moved its call outside the `PROVISIONED_FLAG` gate so it re-checks (cheaply, as a no-op once current) on every activation, not just the first.
 
 - **Date:** 2026-08-17
 - **Reproduce:** `ensureGitignoreBlock` (`ailienant-extension/src/workspace_provisioning.ts`) only runs the marker check-and-append once, gated behind the same `PROVISIONED_FLAG` as the rest of first-run provisioning (`provisionWorkspaceHome`). A workspace that was provisioned before `/init` shipped already has its `.gitignore` block written and will never re-run `ensureGitignoreBlock` — so `AILIENANT.generated.md` (the sibling `/init` writes when `AILIENANT.md` already has user content, `core/project_init.py::_resolve_target`) is absent from the ignore list on any such workspace, and a careless `git add .` could commit it.
@@ -792,63 +664,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Blocked by:** nothing — the fix is re-running (or additively re-checking) `ensureGitignoreBlock` on every activation instead of only pre-`PROVISIONED_FLAG`, which was deliberately out of scope for this session (touching the provisioning idempotency gate warranted its own review).
 - **Phase:** future provisioning-refresh slice.
 - **Notes:** logged at ship per CLAUDE.md §11.3, alongside the `/init` feature itself (2026-08-17).
-
-### DEBT-174 [LOW · Floating] — Coder-node edit generation never receives image attachments
-
-- **Date:** 2026-08-17
-- **Reproduce:** `agents/coder.py`'s edit-generation call (`acomplete_with_thinking`, not `LLMGateway.ainvoke`) never reads `state["attachments"]`. 13.0.1 (closing DEBT-168) wired attachments only into `agents/researcher.py`'s answer call — the node that owns comprehension of the request and seeds the plan everything downstream reasons from.
-- **File(s):** `agents/coder.py` (the edit-generation call site), `tools/llm_gateway.py` (`LLMGateway.acomplete_with_thinking` — a separate method from the now-wired `ainvoke`, would need its own `images=` threading).
-- **Error:** capability gap, not a correctness defect — an attached screenshot informs the plan via the researcher, but the coder generating a specific edit cannot see it directly (e.g. "match this exact color from the screenshot" would need a second look at the image mid-edit).
-- **Blocked by:** nothing — same `_attach_images_to_messages` seam DEBT-168 built, applied to a second call site/method.
-- **Phase:** future multimodal-payload slice.
-- **Notes:** carved as an explicit scope boundary at 13.0.1 ship per CLAUDE.md §11.3, rather than widening that fix's blast radius to a second agent + a second gateway method.
-
-### DEBT-175 [MEDIUM · Floating] — `TOOL_RAG_TOP_K` cannot rise until the Phase-5.7 gate's baseline is reworked; its prescribed remedy is near self-cancelling
-
-- **Date:** 2026-08-18
-- **Reproduce:** raise `TOOL_RAG_TOP_K` (`core/tool_rag.py`) from 5 to 8 and run `tests/test_phase5_7_checkpoint_gate.py::test_tool_rag_selection_yields_70pct_payload_reduction` — it fails at `reduction_ratio=0.471` against the 0.70 floor. That gate registers only 4 families (14 schemas, 6,302 chars), so selecting k of 14 caps the achievable reduction arithmetically. Measured against the *whole* 53-schema catalog (the R3 gate in `tests/test_phase8_8_tool_parity_gate.py`, baseline `store.all_schemas()`), the same k=8 sits at 0.8379 and the ceiling is k=13 — the two gates disagree because they measure different baselines, not because either is wrong.
-- **Why the prescribed remedy does not work:** the gate's docstring directs the fix to "compress verbose `description=` strings — NOT to lower this threshold or shrink TOOL_RAG_TOP_K". Measured: description text is only **23.3%** of the payload (1,470 of 6,302 chars); the other 76.7% is structural JSON. Worse, `reduction_ratio = 1 - selected/eager` and `eager` is that same catalog, so compressing descriptions shrinks numerator and denominator together and the ratio barely moves. Deleting **100%** of description text — the absolute upper bound of the remedy — lifts the ceiling only from k≈3 to k≈4, and would degrade the embedding signal `select_tools` ranks on.
-- **File(s):** `core/tool_rag.py` (`TOOL_RAG_TOP_K`, `TOOL_RAG_MIN_REDUCTION`), `tests/test_phase5_7_checkpoint_gate.py` (the 14-schema baseline), `tests/test_phase8_8_tool_parity_gate.py` (the full-catalog baseline).
-- **Error:** not a correctness defect — a capability ceiling. The retrieval path is one tool narrower than it could be on small-context (local-tier) turns.
-- **Workaround shipped (13.0.2):** the constant stays 5; callers needing N usable tools plus the `tool_search` hatch pass `k=N+1` themselves (`brain/agentic_cell.py`, `brain/nodes/subagent_worker_node.py`), so no path lost a usable tool. On any adequately-sized window the eager branch injects the whole role slice and the cap is never consulted at all.
-- **Blocked by:** a decision the eager branch reframes — when the visible catalog fits the budget, injecting it whole at 0% reduction is the *correct* outcome, so a flat reduction floor measured on a subset baseline may be the wrong invariant now. Reworking a locked financial gate was deliberately out of scope for a change that had to pass it.
-- **Phase:** future tool-catalog-economics slice.
-- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3, with the measurements above so the decision is made on numbers rather than the docstring's slogan.
-
-### DEBT-176 [LOW · Floating] — No tool-invocation telemetry exists; a usage prior would break `select_tools` determinism
-
-- **Date:** 2026-08-18
-- **Reproduce:** `core/telemetry.py` has five tables (`routing_decisions`, `oom_fallback_events`, `request_latency`, `container_lifecycle`, `action_token_usage`). None is keyed by tool name — `action_token_usage` is keyed by WBS `action` (`write_file`/`edit_file`) and stores token counts only. There is no call-frequency, success-rate, or per-role tool history anywhere in the codebase, so tool ranking has no signal beyond cosine similarity to the composed intent.
-- **Two halves, deliberately split:**
-  - *Emit-only* (worth doing, zero behavioral risk): a `tool_invocations` table (`ts, task_id, role, tool_name, decision, executed, duration_ms, error`) written from `core/tool_dispatch.py::ToolDispatcher.dispatch`. Pure observability, fits the existing substrate, and is the data any future ranking decision would need to justify itself.
-  - *Consuming it as a ranking prior* (**rejected, not merely deferred**): a frequency/success prior makes `select_tools` non-deterministic across runs, contradicting the guarantee in `core/tool_rag.py`'s module docstring and the reproducibility LangGraph checkpoint replay and Rewind depend on. It would also only affect the deferred branch, which 13.0.2's eager wiring makes rare.
-- **File(s):** `core/telemetry.py`, `core/tool_dispatch.py` (`dispatch`), `core/tool_rag.py` (`select_tools`, if ever consumed).
-- **Error:** capability gap, not a defect.
-- **Phase:** emit-only, future observability slice; the prior stays rejected until the determinism conflict has an answer.
-- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
-
-### DEBT-177 [LOW · Floating] — Three declared conservatisms in the tool-selection path
-
-- **Date:** 2026-08-18
-- **Reproduce:** each is a deliberate 13.0.2 tradeoff, recorded so none is later mistaken for an oversight:
-  1. **`register_schema` warns instead of raising on a definition conflict.** A name re-registered with a different `privilege_tier` or `json_schema` resolves toward the stricter tier and logs a warning (`core/tool_rag.py::_merge_with_existing`). Raising would be stricter, but `populate_tool_catalog` swallows per-family exceptions, so a raise would silently amputate an entire tool family at boot — a far worse failure than a reconciled registration plus a loud log.
-  2. **`_visible_eager` sizes the payload before resolvability filtering.** `core/deferred_tool_loader.py` counts `_INTENTIONALLY_UNREGISTERED` schemas (2 of `core_dev`'s 15) in `eager_chars`, inflating the estimate ~10% and biasing the decision *toward* deferred. It errs safe; correcting it would move `eager_count`/`reduction_ratio`, which fixture preconditions pin. The published break-even windows are therefore an upper bound.
-  3. **Two different metrics share the name `reduction_ratio`.** The R3 gate measures against the whole catalog; `DeferredToolDecision.reduction_ratio` measures against the role slice (`prompt_size_metrics(eager, schemas)`). They are not comparable, yet `brain/swarms.py` logs the latter into `permission_audit_log`. Anyone reading that audit entry against the documented 0.70 figure will draw the wrong conclusion. The fix is an additive rename to `slice_reduction_ratio` (old key retained one release per §10).
-- **File(s):** `core/tool_rag.py`, `core/deferred_tool_loader.py`, `brain/swarms.py`.
-- **Error:** none are correctness defects; (3) is a live observability trap.
-- **Phase:** (3) with the next audit-log touch; (1) and (2) only if their premises change.
-- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
-
-### DEBT-178 [LOW · Floating] — `toggle_plan_mode`'s READ_ONLY tier cannot express that it mutates the permission channel
-
-- **Date:** 2026-08-18
-- **Reproduce:** `tools/control_tools.py::TogglePlanModeTool` rewrites `state["session_permission_mode"]` — the channel `evaluate_action` consults to gate every dispatch — yet is registered `ToolPrivilegeTier.READ_ONLY` by deliberate design ("policy-neutral across the matrix", `control_tools.py:13-17`). `ToolPrivilegeTier` models effects on disk/network/processes; it has no vocabulary for "mutates the policy engine itself". 13.0.3 closed the concrete exposure (three dispatch-loop consumers could offer/call it while gaining nothing, since `core/tool_dispatch.py::_STATE_PROMOTERS` never promotes the write and `ToolDispatcher` pins its mode at construction) via a new `core/tool_registry.py::filter_loop_safe` predicate — but that predicate is opt-in per consumer. A future fourth dispatch-loop consumer that forgets to apply it reopens the same "tool that lies" defect.
-- **File(s):** `tools/control_tools.py` (`TogglePlanModeTool`), `core/permissions.py` (`ToolPrivilegeTier`), `core/tool_registry.py` (`filter_loop_safe`, `_NO_AUTONOMOUS_LOOP`).
-- **Error:** capability-model gap, not a live defect — 13.0.3 makes the current three consumers safe.
-- **Blocked by:** a decision on the durable fix: (a) a new tier value the privilege matrix understands (e.g. `POLICY`), gated by `evaluate_action` like any other tier, so the exclusion is structural rather than a maintained list; or (b) move mode-toggling off the tool surface entirely (a dedicated orchestrator-only state-write path, since the orchestrator is its only real consumer and runs no dispatch loop). Both are bigger than a HITL-scoped fix and were out of scope for 13.0.3.
-- **Phase:** future permission-model slice.
-- **Notes:** logged at 13.0.3 ship per CLAUDE.md §11.3.
-
 ### DEBT-179 [LOW · Floating] — App-runtime Docker image ships dev/test tooling alongside production dependencies
 
 - **Date:** 2026-08-18
@@ -858,7 +673,10 @@ Decision    Not a defect — see [DECISION] tier.
 - **Phase:** future prod-requirements split, e.g. a `requirements-runtime.txt` subset the Dockerfile installs from, keeping the full manifest for local dev/CI/pre-commit.
 - **Notes:** logged at 13.1 ship per CLAUDE.md §11.3 (MVP tradeoff — correctness and the single-command-launch DoD came first; a leaner split needs cross-referencing what CI/pre-commit/pytest actually consume from the manifest so a split doesn't silently break a dev/CI flow).
 
-### DEBT-180 [LOW · Floating] — Socratic grill's agreement detector does substring matching, not intent matching
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
+### DEBT-180 [LOW · RESOLVED 2026-08-25, debt-sweep] — Socratic grill's agreement detector did substring matching, not intent matching
+
+- **Resolved:** 2026-08-25. Re-verified the exact false-positive: `_is_agreement("Yes, establish component files for Header, HeroSlider...")` returned `True`. Replaced the unanchored `any(signal in text for signal in _AGREEMENT_SIGNALS)` with a clause-anchored check: the whole message must equal a signal, OR every comma/period-separated clause must independently be one. The clause form is load-bearing, not cosmetic — the frontend's own canonical plan-acceptance phrase (`AGREEMENT_SIGNAL = 'Looks good, proceed.'` in `Workspace.tsx`) is two signals joined by a comma, and a first draft using strict whole-message equality broke that exact contract (caught by the pre-existing `test_free_text_agreement_still_short_circuits_on_a_fresh_turn` regression test before it shipped). A second, wider full-suite run then caught a further gap the local analyst-test files hadn't: `test_ideation.py` and `test_ideation_handoff_contract.py` both pin `"looks good, let's proceed"` as agreement — "let's proceed" is neither a literal signal nor two comma-split signals. Added a small, fixed leading-filler strip (`"let's "`, `"please "`, …) applied per clause before the signal-set lookup, so a filler-plus-signal clause still matches without loosening the lookup itself back into a substring search.
 
 - **Date:** 2026-08-18
 - **Reproduce:** `agents/analyst.py::_is_agreement` (`agents/analyst.py:85-88`) checks `any(signal in text for signal in _AGREEMENT_SIGNALS)` against the user's raw lowercased reply. Short tokens in `_AGREEMENT_SIGNALS` ("ok", "yes", "bien") match as a substring of any longer answer — e.g. "Yes, establish component files for Header, HeroSlider..." ends the grill on the first word instead of being read as a substantive, still-elaborating answer.
@@ -866,7 +684,6 @@ Decision    Not a defect — see [DECISION] tier.
 - **Error:** correctness gap, not a crash — the dialogue can close a turn earlier than the user intended, but never breaks the handoff itself.
 - **Phase:** future ideation-quality slice — likely an LLM-based agreement classifier or an anchored match (start/end of string, or whole-message equality against a short allowlist) rather than unanchored substring search.
 - **Notes:** found while root-causing the ideation→planner handoff regression fixed this same session (`docs/DEV_JOURNAL.md`, 2026-08-18 entry); not the cause of that regression, logged separately per CLAUDE.md §11.3. **Blast radius narrowed by 13.0.5** — the batched grill made the model's own empty-batch response the primary completion signal, so `_is_agreement` now only runs as a fast path on a genuinely fresh top-level turn (`grill_round_count == 0`), never between the internal `interrupt()`-driven rounds where a substantive answer is most likely to trip it. Still reachable on that first turn, so the entry stays open.
-
 ### DEBT-182 [MEDIUM · RESOLVED 2026-08-18, 13.0.5] — Tool field-level `Field(description=...)` never reached the LLM
 
 - **Date:** 2026-08-18 · **Resolved:** 2026-08-18 (13.0.5)
@@ -901,6 +718,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **File(s):** `brain/coder_companion.py`, `api/ws_contracts.py` (`CoderCompanionPayload`, `ServerCoderCompanionEvent`), `ailienant-extension/src/api/contracts.ts`, `ailienant-extension/src/workspace/components/CoderCompanionCard.tsx`, `ailienant-extension/src/workspace/hooks/useWSMessageHandler.ts`.
 - **Phase:** opportunistic — rename with a dual-emit window (old event name kept alongside the new one for one release) whenever this area is next touched substantively.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-187 [LOW · Floating] — Planning-scope companion `emission_id` doesn't distinguish a replan from the first plan
 
 - **Date:** 2026-08-20
@@ -908,6 +726,7 @@ Decision    Not a defect — see [DECISION] tier.
 - **File(s):** `agents/planner.py` (the `schedule_agent_companion("planning", 0, ...)` call site).
 - **Phase:** only relevant if/when a mid-task replanning feature ships; add a `planning_attempt_count`-style state channel at that point, mirroring `grill_round_count`'s role for the ideation scope.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-184 [HIGH · RESOLVED 2026-08-19, 13.0.6] — HITL_RESPONSE host bridge silently dropped every clarification-answer field
 
 - **Date:** 2026-08-19 · **Resolved:** 2026-08-19 (13.0.6)
@@ -974,42 +793,34 @@ Decision    Not a defect — see [DECISION] tier.
 
 Only `ainvoke` (`tools/llm_gateway.py`) contributes samples to the per-model calibration window DEBT-191 introduced; `acomplete_byom`/`astream_byom`/`astream_byom_thinking` (the main-chat streaming paths) read calibration data if it exists (so they still benefit once `ainvoke` has calibrated a shared model) but never write their own. A model driven exclusively through main-chat streaming never self-calibrates on its own traffic. Deliberate, confirmed with the user: the reported bug and the highest-risk failure mode (a structured-JSON call silently degrading to an empty response) both live behind `ainvoke`; the streaming paths already show the user live token arrival, so an under-calibrated timeout there is a slower stream, not a silent dead failure. Revisit if chat streaming on slow local hardware turns out to need the same treatment.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-193 [LOW · Floating] — A local-model timeout never triggers failover, unlike a connection drop
 
 `litellm.exceptions.Timeout` is not a subclass of `litellm.exceptions.APIConnectionError` (confirmed via litellm's own exception hierarchy), so the `except APIConnectionError` blocks in `tools/llm_gateway.py` (`ainvoke`, `acomplete_byom`, `astream_byom`) never catch a local timeout — only a genuine connection drop or CUDA OOM gets the local→next-target failover / cloud cascade those blocks provide. A local target that times out (as opposed to dropping the connection) just re-raises after its retry budget (DEBT-191) is exhausted, with no attempt to fail over to an alternate configured target. Pre-existing, unrelated to DEBT-191's own purpose (sizing the timeout, not routing around a dead endpoint) — found during DEBT-191's own audit, not fixed there.
 
-### DEBT-194 [LOW · Floating] — No liveness signal exists to distinguish "local model is slow" from "local model is dead"
-
-`ainvoke` makes one non-streaming `await litellm.acompletion(...)` — no incremental feedback exists until the full response or a timeout error returns, so DEBT-191's larger, hardware-scaled timeouts necessarily also mean a genuinely dead/hung local endpoint now takes proportionally longer to surface as an error (there is no way to tell the two apart with a single lump-sum request timeout). A proper fix would need `ainvoke` itself to move onto a streaming call, where each token's arrival could reset a per-chunk gap timeout instead of one whole-request timeout (a much closer proxy for "still working" vs. "hung") — real architectural work, correctly out of scope for DEBT-191's actual purpose.
-
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-195 [LOW · Floating] — Other flat, hardware-blind timeout constants surveyed during DEBT-191's audit
 
 Assessed and left alone (different subsystem or genuinely hardware-independent by design): `core/benchmark/codegen.py`/`core/benchmark/oracle.py`'s 30-300s sandbox-execution timeouts bound running the *candidate program*, not the LLM call itself — same flat-number shape in spirit as the original DEBT-191 bug, but a different subsystem (the eval/benchmark harness, not the interactive product path), lower priority. One latent, off-the-primary-path gap: `ainvoke`'s legacy non-BYOM proxy branch (hit only when `effective_model` doesn't start with `"ailienant/"`, the back-compat litellm-proxy path) uses the caller's raw `timeout` with no `resolve_local_timeout` call at all — not a live bug today since it's off the default path, but a latent instance of the same class if that branch is ever hit against a genuinely local target.
 
-### DEBT-196 [LOW · Floating] — HUD/telemetry (token speedometer) has no host-side mirror or rehydration message
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
+### DEBT-196 [LOW · RESOLVED 2026-08-25, debt-sweep] — HUD/telemetry (token speedometer) had no host-side mirror or rehydration message
+
+**Resolved:** 2026-08-25. Took the frontend-only option this entry names (no backend snapshot endpoint exists for `tps` — it is computed client-side from live WS token timing, so there is nothing to pull). `ACTIVE_TASK_RESTORED`'s handler now resets `chatStore.telemetry`/`snapshot` to `undefined` and `tps` to `0` in the same branch that restores the active-task header, rendering the existing neutral state (already used before any telemetry has ever arrived) instead of a frozen pre-teardown reading until the next token event happens to land.
 
 Live-testing surfaced a tab-switch state-loss cascade (fixed in 13.0.8: an immediate-flush persist path replacing a 400ms debounce that raced `retainContextWhenHidden:false` teardown, a `mergeById` fix that stopped dropping completed local-only messages, a `WEBVIEW_READY` handshake closing a reveal-ordering race, and decoupling the WBS checklist from `AgentTimeline`'s empty-`entries` gate). One piece of the reported loss was deliberately left unfixed: `chatStore.telemetry`/`snapshot`/`tps` (the token-speedometer HUD) has no host-side mirror analogous to `_runningTasks`/`_latestPlan`, and no rehydration message is posted for it on reveal (unlike `CONTEXT_OCCUPANCY`, which already re-fetches via `APIClient.fetchContextOccupancy` on task-start/post-apply-patch). It only repopulates once fresh WS traffic (`server_telemetry`/`TOKEN_SNAPSHOT`) happens to arrive after the reveal. Nothing is destructively lost — it's a live reading, not stored data — it just reads blank/stale until the next token event. A correct fix needs either a new backend snapshot endpoint (`tps` is computed client-side only, from live WS token timing — there's no backend value to pull) or a frontend-only change to render an explicit neutral state instead of a stale number post-`ACTIVE_TASK_RESTORED`. Deferred as out of scope for the persistence-race fix.
+### DEBT-197 [MEDIUM · RESOLVED 2026-08-25, debt-sweep] — `depends_on` was unenforced at dispatch; a WBS step whose dependency was rejected still ran
 
-### DEBT-197 [MEDIUM · Floating] — `depends_on` is unenforced at dispatch; a WBS step whose dependency was rejected still runs
+**Resolved:** 2026-08-25. Added exactly the one predicate this entry names, on the shared `is_dispatchable` helper (`brain/state.py`) both dispatch-selection sites already used and were documented to need moving in lockstep: it now accepts an optional `all_steps` list and, when a step declares `depends_on`, requires every named step to have reached `completed` before treating it as dispatchable. `route_to_coders` (`brain/engine.py`) and `route_after_validation`'s stall guard (`brain/guardrails.py`) both now pass the full task list. `all_steps` is optional and `depends_on` is read via `getattr` so every existing single-argument caller (including two tests using lightweight `SimpleNamespace` stand-ins for `WBSStep`) keeps compiling unchanged.
 
 13.0.9's incremental apply gate (`brain/apply_gate.py`) made each step's terminal outcome (`completed`/`rejected`/`failed`) honest and immediate — but `route_to_coders` (`brain/state.py::is_dispatchable`) still selects purely on a step's own status, never checking `WBSStep.depends_on` against the terminal status of the step(s) it names. A step whose declared prerequisite was rejected or failed still dispatches and runs against whatever the rejected step left on disk (or didn't). `ValidateWBSDependenciesTool` only checks the graph is acyclic and every referenced `step_number` exists at plan-commit time — it has no visibility into runtime outcomes. Fix is one predicate added to `route_to_coders`'s selection (skip/fail a step whose `depends_on` entries are not all `completed`), deliberately not built in 13.0.9 to keep that batch's blast radius to the approval topology itself.
+### DEBT-201 [LOW · RESOLVED 2026-08-25, debt-sweep] — `test_ssot_apply_patch_over_real_http_ws` flaked once in a full-suite run, never in isolation
 
-### DEBT-198 [LOW · Floating] — `pre_patch` hooks now run once per WBS step, not once per turn
+**Resolved (partial):** 2026-08-25. The litellm-mock-leak hypothesis was investigated first — two full-suite runs during this sweep (3124/2, then 3124/2 again) did not reproduce it, consistent with the entry's own "flaked once in three runs" history. Rather than guess at which of the dozen test files mocking `litellm.aembedding`/`acompletion` is responsible, added an autouse `tests/conftest.py` fixture (`_guard_litellm_patch_leakage`) that captures both functions' identity before each test and forcibly restores + logs (with the offending test's `PYTEST_CURRENT_TEST` nodeid) if either differs afterward. This is real, kept hardening — but the paragraph below records what actually happened next.
 
-Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over the whole accumulated patch set. The new per-step apply gate (`brain/apply_gate.py::_prepare_files`/`_commit_files`) necessarily runs them once per step instead, so a hook with real cost (a lint pass, a policy check) now pays N× on an N-step turn instead of once. This is the correct tradeoff for the gate's own purpose — a step's write must not land before ITS OWN pre_patch veto is known, and by the time step 4 runs, steps 1-3 are already on disk, so a single turn-end pre_patch could no longer gate them anyway — but the added cost is real and undeclared in the hook API itself. No fix planned; revisit if a hook's per-invocation cost becomes measurable in practice.
-
-### DEBT-199 [LOW · Floating] — `apply_patch`/`apply_commit` assume SWARM (`parallel_tasks`) stays dormant
-
-`brain/apply_gate.py`'s per-step prepare/commit nodes were designed and tested against the RELAY (sequential) dispatch path only, matching `parallel_tasks` being hardcoded to `[]` at the two `agents/planner.py` call sites (`:291`, `:826`) — SWARM dispatch is planned but not live. Nothing in the gate itself enforces this; if SWARM is ever activated, two steps touching the same file could both reach `run_apply_commit_node` concurrently against the same `pending_base_hash`/`applied_files_log` state without any documented concurrency contract. Deliberately out of scope for 13.0.9 (SWARM activation is its own, unstarted body of work) — revisit before ever flipping `parallel_tasks` live.
-
-### DEBT-201 [LOW · Floating] — `test_ssot_apply_patch_over_real_http_ws` flaked once in a full-suite run, never in isolation
+**Update — root cause found, hypothesis corrected (2026-08-25, same sweep):** a THIRD full-suite run reproduced the identical `RuntimeError: Attempted to exit a cancel scope...` signature, this time in `tests/test_memory_dashboard.py::test_purge_rejects_bad_project_id` — a different test, same anyio error shape, and the litellm guard above logged nothing (no leak occurred). The real chain, read from the full traceback this run finally captured: that test's `client` fixture builds `TestClient(main.app)`, which runs the app's real lifespan, which calls `autoconnect_enabled_mcp_servers()` (`tools/mcp_adapter.py`) against `DB_CATALOG_PATH` — which defaults (`shared/config.py`) to the **real, non-test-isolated** `~/.ailienant/catalog.sqlite`, not a per-test temp DB. On a machine with a real, enabled MCP server row needing network access (here: `mcp-server-docker`, launched via `uvx`, which tries to fetch `https://pypi.org/simple/mcp-server-docker/`), a DNS/network failure aborts the connection mid-flight, and the `mcp` SDK's own `stdio_client` task-group teardown has a genuine bug when that abort happens — surfacing as this exact `anyio.CancelScope` `RuntimeError`. `tests/e2e/conftest.py::e2e_client` (the fixture `test_ssot_apply_patch_e2e.py` uses) builds `TestClient(main.app)` the same uncatalog-isolated way, so it shares the identical exposure — explaining why the original flake and this one are the same bug wearing two different test names. **This is environment-dependent, not random:** it reproduces only on a machine whose real, persisted MCP catalog has an enabled server that needs network access this environment doesn't have; a clean CI checkout with an empty catalog would never hit it. Logged as **DEBT-202** (the actual fix — some form of catalog/MCP-autoconnect isolation for any `TestClient(main.app)`-based fixture — needs its own audit of every such fixture, out of scope for this sweep to chase mid-sweep). The litellm guard above stays: it is still correct, general test-isolation hardening, independent of whether it was this specific bug's cause.
 
 Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise green). The single failure was `RuntimeError: Attempted to exit a cancel scope that isn't the current tasks's current cancel scope` (anyio), immediately preceded in the log by a cascade of unrelated `litellm.exceptions.BadRequestError: ... model=ailienant/embedding` errors — the shape of a real, unmocked `litellm.aembedding`/`acompletion` call reaching this environment's absent provider, i.e. some OTHER test earlier in suite-collection order left a `litellm.*` patch un-restored (an autouse fixture teardown gap, not this test's own logic). Re-ran `tests/e2e/test_ssot_apply_patch_e2e.py` alone immediately after — both tests (the Auto-mode full apply and the Ask-mode interrupt/resume/apply round trip) passed cleanly, confirming the test's own logic and the underlying `apply_gate.py` feature are sound; this is suite-wide test-isolation hygiene, not a product defect. Distinct from the `vfs_manager.shutting_down` bug fixed earlier in the same session (that one reproduced deterministically across repeated runs and had an identified root cause in `main.py`; this one reproduced once in three full-suite runs and the root cause — which test leaks the litellm patch — is not yet identified). Revisit if it recurs; bisecting which test fails to restore its `litellm.*` patch would need either `pytest-randomly` bisection or an audit of every test file mocking `litellm.aembedding`/`litellm.acompletion` for a missing `monkeypatch`/context-manager scope.
-
-### DEBT-200 [MEDIUM · Floating] — No one-click revert for an applied step; VS Code Local History is the only recovery path
-
-13.0.9 fixed the dishonest "use Ctrl+Z to undo" claim (`core/task_service.py::_format_coding_summary` — no editor is ever focused, so Ctrl+Z had nothing to undo) by pointing the user at VS Code's own Local History (Timeline view) instead, which genuinely does capture every `applyEdit`+`save()` this project performs. That is a real, working recovery path, but it is manual and per-file. A proper fix would hold the pre-image already computed for every diff (`brain/apply_gate.py::_prepare_files` already builds a unified diff against the pre-edit content) in a short-lived blob store keyed by `patch_id`, and offer a one-click "revert this step" action from the same card the diff/checklist already render. Not built in 13.0.9 — declared explicitly as an MVP compromise in the approved plan, not an oversight.
-
 ### DEBT-045 [LOW · RESOLVED 2026-08-03, 12.5] — BudgetEstimatorTool uses a fixed per-action token heuristic, not a calibrated model
 
 - **Date:** 2026-06-14 · **Resolved:** 2026-08-03 (12.5)
@@ -1115,93 +926,6 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 - **Reproduce (original):** any WBS step the planner does NOT flag as `requires_iteration` routes to `agents/coder.py::run_coder_node`'s single-shot SEARCH/REPLACE call — no `ToolDispatcher`, no `core/tool_registry.py` resolution, same as before Division 8.18.
 - **Resolved:** a bounded READ_ONLY tool-grounding pre-pass now runs *between* context assembly and generation — a separate reasoning call through the identical `select_tools`/`resolve_tools`/`ToolDispatcher` substrate, never the SEARCH/REPLACE call itself (that output contract stays strict and never scaffolded). Tier-ceilinged to READ_ONLY by design, not merely by convention: DEBT-068's ruling that mutation stays the agentic cell's surface holds, and `run_coder_node` is re-entered by the `error_correction` retry loop, so a mutating call here would violate the idempotency invariant (§5.3) — a READ_ONLY pass needs no approval channel and stays idempotent under retry. Two gates keep it cheap on the trivial majority: `_needs_grounding` fires only when the step is thin on context already (new file / empty RAG / retry-after-validation-feedback), and `_grounding_admitted` skips entirely under `ASK_ALL` (the one mode where READ_ONLY resolves to HITL, and this pre-pass wires no approval channel) rather than paying a round-trip for a guaranteed denial. Observations fold into the coder's existing L5 execution context (trimmable under budget pressure, same as the RAG/style blocks) and into the response-cache key.
 - **Notes:** DEBT-129/106 were the two capability gaps genuinely blocking a mutating tool-loop on this path; the READ_ONLY scope sidesteps both rather than waiting on them.
-
-### DEBT-137 [LOW · Floating] — Provider-native `cache_control` + cache telemetry not implemented
-
-- **Date:** 2026-07-31
-- **Reproduce:** run any planner/coder turn against Anthropic (or any provider) and inspect the
-  request payload — no `cache_control` block is ever attached, regardless of prefix content.
-  `core/token_ledger.py::TokenLedger.snapshot()` has no cache-read/cache-write fields.
-- **File(s):** would touch `tools/llm_gateway.py::ainvoke`/`astream_byom`/`astream_byom_thinking`
-  (application point, after `_inject_reasoning_scaffold` — ordering matters, see below); a new
-  `tools/prompt_cache.py` (provider gate + minimum-token floor table); `core/token_ledger.py`
-  (additive cache counters); the dashboard's `TelemetryPanel.tsx`.
-- **Error:** capability gap, deliberately deferred — not overlooked. Manifest 12.1 originally asked
-  for full provider caching premised on "the stable high-volume prefix (system prompt → tool/MCP
-  schemas → GraphRAG context)." Measurement (see `docs/SCHEMA_EVOLUTION.MD` §41 and the 12.1 manifest
-  spec) showed that premise doesn't hold today: the actual stable prefix is ~281-450 tokens
-  (identity + role constraints + language mirror), below every current model's minimum-cacheable
-  floor (512-4096 tokens depending on model). Two of the three named prefix components don't exist
-  as stable content — tool/MCP schemas are absent from the coder's one-shot path entirely (blocked
-  on DEBT-130), and GraphRAG context is assembled per-`target_file`, genuinely volatile per WBS step,
-  not prefix. Applying `cache_control` to a sub-floor prefix would pay the 1.25× cache-write premium
-  on every call for zero reads — a net loss, not a saving. 12.1 shipped the prerequisite instead
-  (the HEAD/TAIL prompt split — §41) and deferred the rest here.
-- **Blocked by:** re-evaluated at 12.7 close (DEBT-130/129/106 all landed) — the premise this entry
-  hoped for did **not** materialize. DEBT-130's tool-grounding pre-pass is *conditional* (only fires
-  when the step is thin on context) and its tool schemas live in a **separate reasoning call**
-  (`core/tool_dispatch.py::make_gateway_reasoner`'s own hint message), never folded into
-  `agents/coder.py`'s stable system-message HEAD (`agents/prompts.py::build_static_identity_prompt`).
-  The coder's cacheable prefix is therefore unchanged by 12.7 — still ~281-450 tokens, still below
-  every current provider's minimum-cacheable floor. Re-logged rather than closed.
-  Secondary unblocker unchanged: bringing the chat path into scope — `core/task_service.py`'s
-  `_MAX_HISTORY_MESSAGES = 24` conversation history is a genuinely growing multi-turn prefix (the
-  textbook caching case) but was outside 12.1's stated scope.
-- **Phase:** re-evaluate only if a future change folds tool/MCP schemas into the coder's stable HEAD
-  prefix itself (not a per-turn reasoning call) — no such change is scheduled.
-- **Notes:** even once unblocked, realistic savings on this codebase's BYOM-local-first deployment
-  are modest — provider caching saves $0 on a local model, and on a cloud model the volatile
-  per-step payload (file content, RAG snippets, mission context) dwarfs the cacheable prefix by
-  roughly an order of magnitude. This is a genuine but small optimization, not a launch blocker.
-- **12.10 decision (CLAUDE.md §4 Option B):** the Phase 12 closure gate originally required a
-  "prompt caching tokens-saved metric > 0." Re-measuring at gate time reconfirmed this entry's own
-  finding — the premise is still false — so the gate criterion was amended rather than this entry
-  force-closed to satisfy it: 12.10 now certifies the cacheable-prefix *prerequisite*
-  (`tests/test_prompt_prefix_stability.py`) instead, and this entry stays open with its existing
-  trigger, unchanged.
-
-### DEBT-138 [MEDIUM · Blocked] — Agentic cell does not route through the devcontainer session tier
-
-- **Date:** 2026-08-03
-- **Reproduce:** `brain/agentic_cell.py::run_agentic_cell_node` resolves `core.sandbox.get_active_adapter()`
-  (the locked oracle tier) unconditionally when opening its session — never
-  `core.sandbox.resolve_execution_adapter(session_id=..., trusted=True)`, so a `requires_iteration`
-  WBS step's ReAct loop never reaches the user's real devcontainer even after §43 (12.4) gave the
-  trusted tier a working interactive-session implementation.
-- **File(s):** `brain/agentic_cell.py:368-380` (the reroute); `core/sandbox.py::DevcontainerSandboxAdapter`
-  (needs a `get_sync_surface()` override — the base class raises `NotImplementedError`, so the cell's
-  `adapter.get_sync_surface(cwd)` call would fail the moment the reroute lands).
-- **Error:** architectural precondition, not an oversight — deliberately scoped out of 12.4 (see the
-  architect's review during that sub-phase's planning). Routing cell edits through a bind-mounted
-  `SyncSurface` (the naive `get_sync_surface()` implementation — `core.workspace_sync.LocalFsSyncSurface`
-  over the devcontainer's host workspace mount) would bypass the in-RAM VFS barrier and its
-  base-hash stale-guard (`core/vfs_middleware.py`) entirely: a concurrent agent edit and a live user
-  edit to the same file would silently corrupt the workspace, since neither side would ever see the
-  other's write through the OCC guard that protects every other write path in this codebase.
-- **Blocked by:** an OCC-safe sync surface — cell writes must reach the bind-mounted workspace only
-  *through* the VFS barrier's stale-guard, never via a raw filesystem surface. No design is chosen yet;
-  candidates include routing `SyncSurface.write_file` through the same `check_type_integrity`-adjacent
-  hashing path `task_service.py`'s HITL apply uses, or restricting the cell to VFS-mediated reads/writes
-  entirely and dropping direct `SyncSurface` access for this tier specifically.
-- **Phase:** future OCC-safe sync-surface slice. Until then the §43 tunnel is reachable only via the
-  `configurable["cell_adapter"]` test-injection seam the existing cell tests already use — test-reachable,
-  not dead code, but not a production call path either.
-
-### DEBT-139 [LOW · Floating] — Devcontainer session host driver has no real TTY
-
-- **Date:** 2026-08-03
-- **Detail:** `providers/devcontainerSessionHandler.ts` spawns `devcontainer exec ... -- /bin/sh` via
-  plain piped stdio (`child_process.spawn`), not a pseudo-terminal — a deliberate MVP tradeoff (CLAUDE.md
-  §11.2) made when §43 (12.4) rejected `node-pty`: a native module is a packaging/supply-chain cost the
-  interactive session tunnel does not justify (CLAUDE.md §9), and the sentinel-marker command-boundary
-  protocol (`core/command_boundary.py`, shared with the local `core.pty_session` PTY session) already
-  gives command framing without a real TTY line discipline. Consequences: no job control (`fg`/`bg`/`Ctrl+Z`
-  semantics), no `isatty()` — a program that branches on TTY presence (many REPLs, some build tools'
-  progress-bar rendering) behaves as if piped, not interactive — and `signal: "interrupt"` sends a
-  best-effort `SIGINT` to the child process directly rather than a true Ctrl-C to a foreground process
-  group, so a child that spawns its own subprocesses may not propagate the interrupt to them.
-- **Phase:** future terminal-fidelity slice, if usage shows this MVP tradeoff biting in practice
-  (e.g. an operator running an interactive REPL or a TTY-sensitive build tool through the tunnel).
 
 ### DEBT-140 [MEDIUM · RESOLVED 2026-08-03, 12.13] — GraphRAG had no chunking; one vector per whole file
 
@@ -1409,7 +1133,9 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
   green. A zero-reference sweep for `prompt_builder|PromptBuilder|ContextBundle|build_system_prompt|
   brain.orchestrator|orchestrator_context|progress_percentage` returns nothing outside history/docs.
 
-### DEBT-146 [LOW · Floating] — `is_indexing_complete` graph-state channel is write-only
+### DEBT-146 [LOW · RESOLVED 2026-08-25, debt-sweep] — `is_indexing_complete` graph-state channel was write-only
+
+- **Resolved:** 2026-08-25. Re-verified the claim: `is_indexing_complete` was still declared on `AIlienantGraphState`, still hardcoded `True` at its one production write site (`core/task_service.py`), and still read nowhere repo-wide (exhaustive grep, zero readers). The §10 concern this entry itself raised (removing a persisted-checkpoint `TypedDict` field is a contract change) was surfaced again during this sweep and explicitly re-examined with the operator: Python's dict-based checkpoint state tolerates an unknown/extra key on load without error, so an old checkpoint carrying this field poses no resume-time risk. Deleted the field from `brain/state.py`, its write site in `core/task_service.py`, and the matching test fixture in `tests/test_micro_swarm_e2e.py`; annotated (not deleted) the corresponding row in `docs/SCHEMA_EVOLUTION.MD` per that document's own "fields are never deleted, deprecated fields carry a `Deprecated:` annotation" convention.
 
 - **Date:** 2026-08-03
 - **Detail:** `AIlienantGraphState.is_indexing_complete` (`brain/state.py`) is declared and seeded
@@ -1425,32 +1151,6 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
   now-unknown key, and every reader must keep tolerating it either way. The live system already
   surfaces "context is thin" through CSS / `is_red_alert` / `is_corpus_empty`, so this channel's
   original purpose is not a coverage gap, just an unused wire.
-
-### DEBT-145 [LOW · Floating] — Per-task reasoning-mode config rides mutable graph state, not a config table
-
-- **Date:** 2026-08-03
-- **Reproduce:** `AIlienantGraphState` (`brain/state.py`) carries `enable_native_thinking` and
-  `thinking_budget_tokens` — immutable-for-the-task-lifetime configuration — as scalar channels
-  alongside genuinely mutable runtime state (`current_step_id`, `errors`, `vfs_buffer`, …). This
-  follows an existing precedent (`execution_mode` does the same), but a 12.5 architecture review
-  flagged the general pattern: config and runtime state living on the same substrate makes their
-  different lifecycles (write-once-at-start vs. mutate-every-step) harder to reason about as more
-  fields accumulate this way.
-- **Error:** not a defect today. `HybridCheckpointer` promotes once per completed graph run (not per
-  step) — "zero IOPS" L1 (`MemorySaver`), one L2 write per run — so these two scalars add no
-  measurable I/O, and they ride alongside `vfs_buffer`, which already carries full file contents. The
-  cost the review was concerned about (checkpoint bloat, per-step I/O) is not load-bearing for this
-  specific pair.
-- **Blocked by:** nothing technical. Deliberately deferred rather than building a `task_config` table
-  for two fields: `session_state` (`core/db.py`) is a file-version tracker with no consumers that
-  could be repurposed, so closing this now would mean net-new schema + migration + a §6.3
-  secrets-hygiene pass to carry data that already has a safe, working home.
-- **Phase:** future config/runtime-separation slice, triggered explicitly — the moment a *third*
-  piece of per-task config needs to survive a restart, migrate all of it (this pair included) to a
-  dedicated table in one pass, rather than adding a fourth ad hoc state channel.
-- **Notes:** carved out of DEBT-079's closure (12.5) per CLAUDE.md §11.3 — the review's principle is
-  accepted, the closure of DEBT-079 was not blocked on building the separation first.
-
 ### DEBT-132 [LOW · RESOLVED 2026-08-04, 12.8] — Background-task executions get no Glass-Box Timeline I/O detail
 
 - **Date:** 2026-07-30 · **Resolved:** 2026-08-04 (12.8)
@@ -1474,98 +1174,6 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 - **Was:** the timeline node's I/O box stayed empty until a command finished, then filled all at once — no line-by-line streaming.
 - **Resolved:** rather than rebuilding one-shot EXECUTE-tier tools onto `SandboxSession` (the originally-speculated, much larger fix), the devcontainer tier — the one transport that already streams host→backend incrementally, since 12.4/DEBT-083 — now forwards those already-arriving chunks live. `core/activity_context.py` gained a second `ContextVar` (`bind_exec_ref`/`current_exec_ref`), bound by `record_execution` only around its `adapter.execute()` await; `api/devcontainer_bridge.py::WebSocketHostBridge.exec_command` reads it (paired with the sink) to register its own transport-level `request_id` against the timeline's `exec_id`. A new `server_activity_detail_chunk` WS event carries each masked fragment. Bounded on both sides (charter §5.5): a backend cumulative-character cap (`_LIVE_STREAM_CAP`, 16,000 chars) stops forwarding and sends one suppression notice past the ceiling; a frontend retention clamp (`MAX_LIVE_EXEC_FIELD_CHARS`, 4,000 chars, head+tail preserved) bounds the store regardless. The terminal detail always REPLACES accumulated chunk text, never appends to it — a stray late chunk after settle is a no-op. Docker/Wasm/native-host tiers are unaffected, still filling on completion.
 - **File(s):** `ailienant-core/core/activity_context.py`, `ailienant-core/core/exec_log.py`, `ailienant-core/api/devcontainer_bridge.py`, `ailienant-core/api/websocket_manager.py`, `ailienant-core/api/ws_contracts.py`, `ailienant-core/core/task_service.py`; `ailienant-extension/src/api/contracts.ts`, `ailienant-extension/src/workspace/utils/timelineBuilder.ts`, `ailienant-extension/src/workspace/hooks/useWSMessageHandler.ts`, `ailienant-extension/src/shared/config.ts`.
-
-### DEBT-154 [LOW · Floating] — Apply-edge risk gate is still a command-pattern proxy, not a real edit-risk classifier
-
-- **Date:** 2026-08-04
-- **Reproduce:** N/A (design coarseness, not an error). The gate still decides "low-risk" by scanning
-  an edit's added diff lines against `permissions.py::_RISK_PATTERNS` — a pattern set tuned for
-  shell-command content, applied as a binary low/not-low proxy over code. Carried forward unchanged
-  from DEBT-125, whose display-wiring half closed in 12.8.
-- **File(s):** `ailienant-core/core/task_service.py`, `ailienant-core/core/permissions.py`.
-- **Blocked by:** nothing — self-contained. A classifier (heuristic size/scope + secret/dep-graph
-  signals, or a small model) returning a real low/medium/high verdict can replace the regex proxy.
-- **Phase:** future safety slice.
-- **Notes:** the conservative gate is already safe (fails toward the manual card); this is a
-  precision gap, not a security gap.
-- **Decision (2026-08-04, 12.14 — CLAUDE.md §4 Option C, Refactor):** explicit defer, reviewed rather
-  than silently carried forward. Real defense-in-depth already exists via the regex gate plus the
-  blast-radius check — the classifier's absence is a precision gap, not a missing safety layer. A
-  semantic edit-risk classifier changes which edits apply silently, which makes it a dedicated
-  safety-slice project on its own merits, not a pre-launch patch to bolt on. Not required for Phase 13.
-
-### DEBT-155 [LOW · Floating] — File-read content preview not on the Glass-Box Timeline
-
-- **Date:** 2026-08-04
-- **Reproduce:** a `read`-kind marker shows a size metric (12.8) but never the file content itself —
-  unlike a `command` node's stdout/stderr.
-- **File(s):** would touch `core/vfs_middleware.py::make_safe_reader` or the coder's read call site.
-- **Blocked by:** a token-hygiene/PII decision for how much of a read file's content is safe to
-  surface in a detail box (charter §5.5) — file content is source code, not arbitrary shell output,
-  and needs its own truncation/redaction design pass distinct from `record_exec`'s masking.
-- **Phase:** future timeline-depth slice.
-- **Notes:** carved out of DEBT-133 at its 12.8 resolution — the tool-call half of that entry is
-  closed; this is the narrower remainder.
-
-### DEBT-156 [LOW · Floating] — No automated CLA-assistant workflow
-
-- **Date:** 2026-08-04
-- **Reproduce:** N/A (a process gap, not an error). `CONTRIBUTING.md` §1 previously claimed an
-  "automated CLA check posts a link" on a contributor's first PR — no such workflow exists in
-  `.github/workflows/`. Corrected in 12.15 to describe only the manual `CLA.md` sign-off, which
-  already works today.
-- **File(s):** `CONTRIBUTING.md`.
-- **Blocked by:** nothing technical — a real CLA Assistant needs a GitHub App / external service
-  install, which has no operational justification for a solo pre-launch project.
-- **Phase:** revisit once external contributors are actually onboarding (Phase 13+).
-- **Notes:** deliberate MVP/patch decision per CLAUDE.md §11 — the manual path is the lower-friction,
-  more honest fix today, and reversible the moment a second contributor shows up.
-
-### DEBT-157 [MEDIUM · Floating] — No unit/integration/e2e taxonomy across the backend test suite
-
-- **Date:** 2026-08-04
-- **Reproduce:** `pytest --collect-only -q` in `ailienant-core` collects ~2,858 tests with no way to
-  filter to a fast subset — no `pytest.ini`/`pyproject.toml` marker registration existed before
-  12.16, and the only marks in active use are `anyio` (async plumbing, not a category),
-  `parametrize`, and `skipif`.
-- **File(s):** `ailienant-core/pytest.ini` (12.16, new — registers `unit`/`integration`/`e2e` markers
-  for tests going forward only), `ailienant-core/tests/**` (237 existing test files, unclassified).
-- **Blocked by:** nothing technical — retrofitting markers onto 237 existing files is a real,
-  sizeable classification task (risk of silent mis-tagging if done in bulk without per-file review),
-  deliberately out of scope for 12.16's registration-scaffold step.
-- **Phase:** future test-taxonomy retrofit slice.
-- **Notes:** even the strongest integration-style tests in the suite (the 50 `test_phase*_checkpoint_gate.py`
-  files) mock the LLM/vector-store boundary per the project's own stated convention — "integration"
-  in this codebase has never meant "against a live model."
-
-### DEBT-158 [MEDIUM · Floating] — Playwright e2e coverage is a single 4-case Dashboard-only spec
-
-- **Date:** 2026-08-04
-- **Reproduce:** `ailienant-extension/e2e/` contains exactly one spec, `dashboard.spec.ts` (4 tests),
-  scoped entirely to the Dashboard SPA. No chat/agent-turn flow, no VS Code extension-host e2e.
-- **File(s):** `ailienant-extension/e2e/dashboard.spec.ts`, `ailienant-extension/playwright.config.ts`.
-- **Blocked by:** nothing technical — the spec is genuinely real (spawns an actual backend subprocess
-  via `e2e/run-backend.mjs`, drives real Chromium), just narrow in scope. Fixing it is a dedicated
-  feature-sized effort, not a 12.x-sized patch.
-- **Phase:** future e2e-breadth slice.
-- **Notes:** 12.15 schedules this spec to run nightly in CI (`frontend-gate.yml`) — previously it ran
-  in zero CI, nothing executed it automatically. Running-more-often does not close this entry;
-  scope-breadth does.
-
-### DEBT-159 [LOW · Floating] — Pre-commit's mypy-on-changed-files is a local approximation only
-
-- **Date:** 2026-08-04
-- **Reproduce:** N/A (a design-tradeoff, not an error). `.pre-commit-config.yaml` (12.17) invokes
-  `mypy` on staged files only, with `cwd` pinned to `ailienant-core/` so `mypy.ini`'s
-  `explicit_package_bases`/`mypy_path` resolve correctly and the basename-collision risk the ini's
-  own header warns about (`api.audit` vs `core.audit`) doesn't reappear. A partial-file invocation,
-  even with correct cwd/config, is still not a full-tree guarantee.
-- **File(s):** `.pre-commit-config.yaml`, `ailienant-core/mypy.ini`.
-- **Blocked by:** nothing — CI's full-tree `mypy .` (`backend-gate.yml`, 12.15) is the authoritative
-  gate; this hook is a speed layer only.
-- **Phase:** revisit if a partial-invocation blind spot (an error only visible via a transitive
-  relationship to an unchanged sibling file) is ever actually observed in practice.
-- **Notes:** deliberate MVP/patch decision per CLAUDE.md §11, declared rather than left implicit.
 
 ### DEBT-161 [LOW · Floating] — 471 phase/ADR references survive in production code (§13.1/§13.2)
 
@@ -1591,7 +1199,10 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 - **Notes:** the 12.10 gate's `LANG1` regression row is scoped to Spanish only (DEBT-not-needed, closed
   outright in the same pass); this entry is the phase-reference class only, deliberately not conflated.
 
-### DEBT-162 [LOW · Floating] — Three REST contract models in `api/api_contracts.py` are dead code
+- **Reconciliation sweep note (2026-08-25):** re-measured live — `grep -rEn '(Phase|Division)\s+\d+(\.\d+)*|ADR-\d+'` now finds **~419 references across ~174 production files**, not the 471/130 this entry originally recorded (the count grew as the codebase grew, and the entry's own number was never a live figure to begin with). Deliberately deferred, not fixed in this sweep: a ~174-file comment-only diff immediately pre-release is pure blast radius for zero runtime benefit, and it destroys `git blame` usefulness exactly when release triage needs it most. Confirmed as a decision, not an oversight — see the Reconciliation Report above.
+### DEBT-162 [LOW · RESOLVED 2026-08-25, debt-sweep] — Three REST contract models in `api/api_contracts.py` were dead code
+
+- **Resolved:** 2026-08-25. Re-verified: `TaskSubmitRequest`/`TaskSubmitResponse`/`IDEContext` still had zero references outside their own module, and the live task-submit path (`main.py:771`, `POST /api/v1/task/submit`) confirmed to use an entirely different model (`TaskPayload` from `core/task_service.py`), not these. Deleted all three; `DirtyBuffer` (the fourth class in the same file) is genuinely live — `main.py` imports and constructs it — and was left untouched. The now-unused `ManualAttachment`/`Optional` imports were dropped alongside.
 
 - **Date:** 2026-08-06
 - **Reproduce:** `grep -rn 'TaskSubmitRequest\|TaskSubmitResponse\|IDEContext' ailienant-core --include=*.py`
@@ -1610,8 +1221,9 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 - **Notes:** the file's own header comment (`# alienant-core/core/api_contracts.py`) was also wrong
   (wrong directory, misspelled project name) — fixed in the same pass that discovered this entry
   (12.10), since it was a one-line Boy-Scout fix, not a scope-widening deletion.
+### DEBT-163 [MEDIUM · RESOLVED 2026-08-25, debt-sweep] — `resolve_default_adapter()`'s `docker.from_env()` call had no timeout
 
-### DEBT-163 [MEDIUM · Floating] — `resolve_default_adapter()`'s `docker.from_env()` call has no timeout
+- **Resolved:** 2026-08-25. **Correction to this entry's own claim:** it names line 2399 (`pull_sandbox_image`) as already using the shared `_docker_call` helper with an explicit `timeout_s` — verified against the pre-fix source (`git show HEAD:...`) that this was false; `pull_sandbox_image` called `await asyncio.to_thread(docker.from_env)` bare, with no timeout and no breaker, a second live instance of the same gap. Fixed both: `resolve_default_adapter`'s Tier-1 probe now routes `docker.from_env` through `_docker_call` at `_DOCKER_PROBE_TIMEOUT_S`; `pull_sandbox_image` routes it through `_docker_call` at `DOCKER_OP_TIMEOUT_S`. Both now get the same bounded-thread + timeout + breaker treatment every other `docker.from_env` call site in the file already had.
 
 - **Date:** 2026-08-12
 - **Reproduce:** `grep -n "docker.from_env" ailienant-core/core/sandbox.py` — line 2204
@@ -1635,7 +1247,6 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
   five call sites already do, via `_docker_call` or an equivalent `asyncio.to_thread` + timeout.
 - **Notes:** this is the only Docker-touching call in `core/sandbox.py` that doesn't already follow
   the file's own established bounded-call pattern — a small, easily-verified fix once scheduled.
-
 ### DEBT-164 [LOW · Floating] — `core/memory/semantic_memory.py`'s numpy/pyarrow imports stay eager
 
 - **Date:** 2026-08-12
@@ -1662,6 +1273,7 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
   litellm/lancedb); `pyarrow`/`pyarrow.compute` are the more plausible remaining cost, partially
   overlapping with whatever `lancedb`'s own transitive imports would have pulled in anyway.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-160 [HIGH · RESOLVED 2026-08-04, 12.15] — `_WindowsPtyBackend.terminate_tree()`/`.wait()` called pywinpty with the wrong signatures
 
 - **Date:** 2026-08-04 · **Resolved:** 2026-08-04 (12.15)
@@ -1688,16 +1300,6 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
   backend end-to-end — previously `_WindowsPtyBackend` had **zero** test coverage on any platform
   (the existing "real backend" tests are Unix-only, `skipif`'d on Windows). `pyright`/`mypy`/`ruff`/
   full suite green.
-
-### DEBT-025 [LOW · Blocked] — Docker persistent-PTY backend has no daemon integration test
-
-- **Date:** 2026-06-09
-- **Files:**
-  - `ailienant-core/core/sandbox.py` — `_DockerPtyBackend` (`exec_create`/`exec_start(socket=True, tty=True)` persistent shell) and `DockerSandboxAdapter.open_session`.
-- **Error:** not a type error — a coverage gap. The directed suite (`tests/test_phase7_19_0_pty_session.py`) verifies the session contract through a stub backend and the real Unix `openpty` backend (Unix-only, skipped on Windows). The **Docker** session backend's real exec-socket framing (raw-stream `tty=True` semantics, socket detach on container stop, `exec_inspect` exit-code reap) is exercised only structurally via the shared `_PtySession` machinery — no test attaches to a live `ailienant-sandbox-daemon` container.
-- **Blocked by:** a Docker daemon in CI (the broader sandbox-integration gap; `test_execution_tools` Docker failures are already environmental per project notes). Confirmed still true: `.github/workflows/` has only `docker-publish.yml` — no daemon-backed test lane exists.
-- **Phase:** **Phase 7.19 CLOSED 2026-06-08 without resolving this** — the dispatcher shipped and drives the host PTY path first, but no CI daemon lane was ever added. Remains unowned by any phase; blocked purely on CI infrastructure (mirrors the DEBT-035 precedent for a phase closing around an unresolved entry).
-- **Notes:** declared MVP during 7.19.0. The host PTY path (Native Direct) — the tier the 7.19.2 dispatcher actually drives first — is fully covered (stub + real openpty). The Docker backend is implemented for parity but unverified end-to-end against a container; treat its first live use as integration-test-gated.
 
 ### DEBT-014 [LOW · Blocked] — brain/swarms.py: NodeInputT add_node type-var — 6 residual ignores (measured 2026-08-03, 12.5)
 
@@ -1742,6 +1344,7 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
   **0** with these ignores in place. This is no longer a strict-gate blocker — only a code-cleanliness
   residual. Manifest 12.5 explicitly permitted re-logging this rather than forcing a close.
 
+- **Reconciliation sweep note (2026-08-25):** re-verified open — reproduces as described; deferred deliberately (see the Reconciliation Report above for the risk-adjusted reasoning), not overlooked.
 ### DEBT-012 [LOW · RESOLVED 2026-08-03, 12.5] — diff highlighting disables word-level diff (no intra-line token slicing)
 
 - **Date:** 2026-06-05 · **Resolved:** 2026-08-03 (12.5)
@@ -1827,6 +1430,36 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 
 ---
 
+### DEBT-147 [LOW · RESOLVED 2026-08-25, debt-sweep] — `symbol_definitions` catalog was populated only by the reactive (per-save) indexing path
+
+- **Date:** 2026-07-27 (12.13 planning) · **Resolved:** 2026-08-25 (technical-debt sweep)
+- **Was:** `symbol_definitions` (the catalog `find_symbol_callers`/`resolve_active_skills` and other Tier-2 lookups read) was written by `ReactiveIndexer._process_change` (`core/indexer.py`) on every per-save reindex, via `upsert_symbol_definitions`. `LazyIndexer._run`'s bulk crawl — the path that runs on a cold workspace open — indexed files (`upsert_indexed_file`) and their import edges (`upsert_dependencies`), but never called `upsert_symbol_definitions` at all, so a freshly cold-indexed workspace had an EMPTY symbol catalog until every file was individually re-saved at least once.
+- **Resolved:** added the same advisory, non-blocking `upsert_symbol_definitions(file_path, result.symbols, project_id)` call (wrapped in its own try/except, mirroring `ReactiveIndexer`'s existing defensive pattern — a catalog write failure must never block the canonical index/embed flow for that file) to `LazyIndexer._run`'s per-file success branch, immediately after the existing `upsert_dependencies` call.
+- **File(s):** `ailienant-core/core/indexer.py` (`LazyIndexer._run`).
+- **Verified:** new `tests/test_indexer_warmup.py::test_full_crawl_populates_symbol_catalog` (asserts `upsert_symbol_definitions` is awaited once per successfully indexed file, with the correct `(file_path, symbols, project_id)` args) and `::test_full_crawl_survives_symbol_catalog_write_failure` (a raised exception from the catalog write does not abort the crawl or block `broadcast_indexing_complete`) — both confirmed to fail against the pre-fix code (0 calls recorded) and pass against the fix. Full existing indexer suite (`test_indexer_warmup.py`, `test_phase8_2_6_warmup_gate.py`, `test_reactive_index.py`) re-run green, 24 passed.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. This id was also a ghost entry (dashboard row, no body) until this sweep — its body was authored fresh alongside its fix rather than reconstructed-then-separately-resolved.
+
+### DEBT-120 [LOW · Floating] — Two persisted telemetry tables grow unbounded, never pruned
+
+- **Date:** 2026-07-24 (11.4 planning)
+- **Reproduce:** `SELECT COUNT(*) FROM request_latency; SELECT COUNT(*) FROM container_lifecycle;` grows monotonically — both tables are append-only (one row per task / per container lifecycle event respectively). Reads are windowed/clamped so query latency doesn't degrade, but the rows themselves are never pruned. Both carry a `# TODO(retention): DEBT-120` marker. The 11.3.B.3 exec-log ring is explicitly NOT in scope — it is in-memory and self-evicting already.
+- **File(s):** `ailienant-core/core/db.py` (`request_latency`, `container_lifecycle` schemas), `ailienant-core/core/janitor.py` (the retention/GC host these should wire into — it already exists and runs other retention jobs).
+- **Error:** genuine unbounded growth on a persisted store — a real (if slow-burning) disk-usage concern, not merely a missing feature.
+- **Phase:** future janitor slice.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **DEFER-WITH-REASON** (operator scope call, 2026-08-25 sweep) — real and fixable (the retention host already exists, `core/janitor.py`), but adding a new GC policy to two tables touches data-retention behavior on a persisted store immediately pre-release; the blast radius (silently deleting historical telemetry rows under a wrong retention window) is a worse trade than leaving unbounded-but-correct growth in place for one more cycle. Revisit as its own reviewed change, not folded into this sweep.
+
+### DEBT-202 [MEDIUM · Floating] — `TestClient(main.app)`-based test fixtures are not isolated from the real, persistent MCP catalog DB
+
+- **Date:** 2026-08-25 (found investigating DEBT-201's flake)
+- **Reproduce:** run the full suite on a machine whose real `~/.ailienant/catalog.sqlite` has an `enabled` MCP server row that needs network access unavailable in the test environment (e.g., a `uvx`-launched server that fetches from PyPI at connect time). Any test whose fixture builds `TestClient(main.app)` (`tests/e2e/conftest.py::e2e_client`; `tests/test_memory_dashboard.py`'s own `client` fixture; likely others) runs the real FastAPI lifespan, which calls `autoconnect_enabled_mcp_servers()` (`tools/mcp_adapter.py`) against `DB_CATALOG_PATH` — `shared/config.py` defaults this to the real, non-test-isolated `AILIENANT_HOME / "catalog.sqlite"`, not a per-test temp DB. A network failure mid-connect aborts the MCP session, and the `mcp` SDK's own `stdio_client` task-group teardown has a genuine bug on that abort path, surfacing as `RuntimeError: Attempted to exit a cancel scope that isn't the current tasks's current cancel scope` (anyio) — reproduced twice in this sweep under two different test names (`test_memory_dashboard.py::test_purge_rejects_bad_project_id`, and — per DEBT-201's own history — `tests/e2e/test_ssot_apply_patch_e2e.py`'s two cases).
+- **File(s):** `tests/e2e/conftest.py` (`e2e_client`), `tests/test_memory_dashboard.py` (`client` fixture), `tools/mcp_adapter.py` (`autoconnect_enabled_mcp_servers`), `shared/config.py` (`DB_CATALOG_PATH` default), `main.py` (`lifespan`).
+- **Error:** genuine cross-machine test-reliability gap, not a product defect — the real app code (`autoconnect_enabled_mcp_servers`, the `mcp` SDK) behaves as designed; the tests are the thing not isolated from the environment they happen to run on. Environment-dependent, not random: it reproduces deterministically on a machine with a real, enabled, network-needing MCP server configured, and never on a clean checkout with an empty catalog — which is exactly why it "flaked once, never in isolation" for over a year of runs on whatever machines ran CI/dev testing.
+- **Blocked by:** nothing technical. Deliberately not fixed in the same pass that found it (2026-08-25 debt sweep) — the fix needs an audit of every fixture that constructs `TestClient(main.app)` (or an equivalent real-lifespan launch) to decide the right isolation mechanism: an env-var gate that skips `autoconnect_enabled_mcp_servers()` under `pytest`, forcing an isolated `DB_CATALOG_PATH` (mirroring `tests/conftest.py::_isolate_catalog`'s existing pattern for `core.dead_letter`) in every such fixture, or both. That is real design work, not a one-line change, and this sweep's own scope discipline is to log adjacent debt rather than chase it mid-sweep.
+- **Phase:** future test-infrastructure slice — natural pairing with DEBT-157 (no unit/integration/e2e taxonomy) and DEBT-158 (e2e coverage breadth), since all three are about the same test suite's structural gaps.
+- **Notes:** logged at the 2026-08-25 debt sweep per CLAUDE.md §11.3, discovered chasing DEBT-201's flake to a real root cause. `DEBT-201`'s own litellm-mock-leak hardening (`tests/conftest.py::_guard_litellm_patch_leakage`) is unrelated but harmless — kept as independent, valid test-isolation hygiene.
+
+---
+
 **DECISION RECORDS**
 
 ---
@@ -1880,6 +1513,594 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 - **Blocked by:** N/A.
 - **Phase:** Decision recorded at **13.0**.
 - **Notes:** Precedented by Phase 12.17, which already added bare root-level tooling files (`dependabot.yml`, `.pre-commit-config.yaml`, `CODEOWNERS`) with no accompanying package manifest.
+
+### DEBT-102 [DECISION] — `tree-sitter-dart` single-release supply-chain risk
+
+- **Date:** 2026-07-03
+- **Reproduce:** `pip index versions tree-sitter-dart` shows exactly one published release (`0.1.0`), with no update history since — unlike every other pinned `tree-sitter-*` package in `requirements.txt`, which have multiple releases and an active maintenance cadence.
+- **Error:** accepted at 8.14.11 as the lightest viable option (no alternative Dart tree-sitter binding exists on PyPI) — a real but currently-inert risk: the package works today, but there is no signal it will be patched if `tree-sitter` core evolves incompatibly.
+- **Resolution (unscheduled):** monitor for a maintained fork/successor; if the pinned wheel ever breaks against a future `tree-sitter` core bump, drop Dart support (degrade gracefully — `IMPORT_EXTRACTORS`'s unregistered-language path already handles this) rather than vendor a patched build.
+- **Notes:** logged at 8.14.11 close per the project's dependency-governance stance (a new dependency's risk profile is stated explicitly, not silently absorbed).
+
+- **Reconciliation sweep note (2026-08-25):** reclassified from an open-defect tier to a Decision Record — re-examined and confirmed as a declared, accepted tradeoff with no fix planned, not a defect. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-145 [DECISION] — Per-task reasoning-mode config rides mutable graph state, not a config table
+
+- **Date:** 2026-08-03
+- **Reproduce:** `AIlienantGraphState` (`brain/state.py`) carries `enable_native_thinking` and
+  `thinking_budget_tokens` — immutable-for-the-task-lifetime configuration — as scalar channels
+  alongside genuinely mutable runtime state (`current_step_id`, `errors`, `vfs_buffer`, …). This
+  follows an existing precedent (`execution_mode` does the same), but a 12.5 architecture review
+  flagged the general pattern: config and runtime state living on the same substrate makes their
+  different lifecycles (write-once-at-start vs. mutate-every-step) harder to reason about as more
+  fields accumulate this way.
+- **Error:** not a defect today. `HybridCheckpointer` promotes once per completed graph run (not per
+  step) — "zero IOPS" L1 (`MemorySaver`), one L2 write per run — so these two scalars add no
+  measurable I/O, and they ride alongside `vfs_buffer`, which already carries full file contents. The
+  cost the review was concerned about (checkpoint bloat, per-step I/O) is not load-bearing for this
+  specific pair.
+- **Blocked by:** nothing technical. Deliberately deferred rather than building a `task_config` table
+  for two fields: `session_state` (`core/db.py`) is a file-version tracker with no consumers that
+  could be repurposed, so closing this now would mean net-new schema + migration + a §6.3
+  secrets-hygiene pass to carry data that already has a safe, working home.
+- **Phase:** future config/runtime-separation slice, triggered explicitly — the moment a *third*
+  piece of per-task config needs to survive a restart, migrate all of it (this pair included) to a
+  dedicated table in one pass, rather than adding a fourth ad hoc state channel.
+- **Notes:** carved out of DEBT-079's closure (12.5) per CLAUDE.md §11.3 — the review's principle is
+  accepted, the closure of DEBT-079 was not blocked on building the separation first.
+
+- **Reconciliation sweep note (2026-08-25):** reclassified from an open-defect tier to a Decision Record — re-examined and confirmed as a declared, accepted tradeoff with no fix planned, not a defect. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-159 [DECISION] — Pre-commit's mypy-on-changed-files is a local approximation only
+
+- **Date:** 2026-08-04
+- **Reproduce:** N/A (a design-tradeoff, not an error). `.pre-commit-config.yaml` (12.17) invokes
+  `mypy` on staged files only, with `cwd` pinned to `ailienant-core/` so `mypy.ini`'s
+  `explicit_package_bases`/`mypy_path` resolve correctly and the basename-collision risk the ini's
+  own header warns about (`api.audit` vs `core.audit`) doesn't reappear. A partial-file invocation,
+  even with correct cwd/config, is still not a full-tree guarantee.
+- **File(s):** `.pre-commit-config.yaml`, `ailienant-core/mypy.ini`.
+- **Blocked by:** nothing — CI's full-tree `mypy .` (`backend-gate.yml`, 12.15) is the authoritative
+  gate; this hook is a speed layer only.
+- **Phase:** revisit if a partial-invocation blind spot (an error only visible via a transitive
+  relationship to an unchanged sibling file) is ever actually observed in practice.
+- **Notes:** deliberate MVP/patch decision per CLAUDE.md §11, declared rather than left implicit.
+
+- **Reconciliation sweep note (2026-08-25):** reclassified from an open-defect tier to a Decision Record — re-examined and confirmed as a declared, accepted tradeoff with no fix planned, not a defect. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-177 [DECISION] — Three declared conservatisms in the tool-selection path
+
+- **Date:** 2026-08-18
+- **Reproduce:** each is a deliberate 13.0.2 tradeoff, recorded so none is later mistaken for an oversight:
+  1. **`register_schema` warns instead of raising on a definition conflict.** A name re-registered with a different `privilege_tier` or `json_schema` resolves toward the stricter tier and logs a warning (`core/tool_rag.py::_merge_with_existing`). Raising would be stricter, but `populate_tool_catalog` swallows per-family exceptions, so a raise would silently amputate an entire tool family at boot — a far worse failure than a reconciled registration plus a loud log.
+  2. **`_visible_eager` sizes the payload before resolvability filtering.** `core/deferred_tool_loader.py` counts `_INTENTIONALLY_UNREGISTERED` schemas (2 of `core_dev`'s 15) in `eager_chars`, inflating the estimate ~10% and biasing the decision *toward* deferred. It errs safe; correcting it would move `eager_count`/`reduction_ratio`, which fixture preconditions pin. The published break-even windows are therefore an upper bound.
+  3. **Two different metrics share the name `reduction_ratio`.** The R3 gate measures against the whole catalog; `DeferredToolDecision.reduction_ratio` measures against the role slice (`prompt_size_metrics(eager, schemas)`). They are not comparable, yet `brain/swarms.py` logs the latter into `permission_audit_log`. Anyone reading that audit entry against the documented 0.70 figure will draw the wrong conclusion. The fix is an additive rename to `slice_reduction_ratio` (old key retained one release per §10).
+- **File(s):** `core/tool_rag.py`, `core/deferred_tool_loader.py`, `brain/swarms.py`.
+- **Error:** none are correctness defects; (3) is a live observability trap.
+- **Phase:** (3) with the next audit-log touch; (1) and (2) only if their premises change.
+- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** reclassified from an open-defect tier to a Decision Record — re-examined and confirmed as a declared, accepted tradeoff with no fix planned, not a defect. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-198 [DECISION] — `pre_patch` hooks now run once per WBS step, not once per turn
+
+Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over the whole accumulated patch set. The new per-step apply gate (`brain/apply_gate.py::_prepare_files`/`_commit_files`) necessarily runs them once per step instead, so a hook with real cost (a lint pass, a policy check) now pays N× on an N-step turn instead of once. This is the correct tradeoff for the gate's own purpose — a step's write must not land before ITS OWN pre_patch veto is known, and by the time step 4 runs, steps 1-3 are already on disk, so a single turn-end pre_patch could no longer gate them anyway — but the added cost is real and undeclared in the hook API itself. No fix planned; revisit if a hook's per-invocation cost becomes measurable in practice.
+
+- **Reconciliation sweep note (2026-08-25):** reclassified from an open-defect tier to a Decision Record — re-examined and confirmed as a declared, accepted tradeoff with no fix planned, not a defect. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-109 [LOW · Floating] — Context-utilization telemetry is flat pipe-delimited text, not typed JSONL
+
+- **Date:** 2026-07-04
+- **Reproduce:** `core/telemetry_log.py::_emit` writes every category (WS/NODE/INDEX/CONTEXT) as `CATEGORY | k=v | ...` flat text, so `core/benchmark/context_telemetry_report.py` must string-parse a brittle format — defensive `(ValueError, KeyError)` line-skipping is the mitigation, not a fix, and a `_LINE_CAP`-truncated line silently drops that record.
+- **File(s):** `ailienant-core/core/telemetry_log.py`, `ailienant-core/core/benchmark/context_telemetry_report.py`.
+- **Error:** accepted short-term trade-off, not a defect — the sink shipped this format for every category deliberately; the Enterprise target (migrate to one-JSON-object-per-line) is a declared future direction, not a fix pending.
+- **Phase:** future telemetry-format slice.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **DECISION** — the entry's own text names this an accepted trade-off with no fix planned; reclassified out of the defect count.
+
+### DEBT-149 [LOW · Floating] — CSS's semantic-similarity term is deliberately calibrated against file-centroid distances only
+
+- **Date:** 2026-08-03 (12.13)
+- **Reproduce:** N/A — architectural decision, not an error. `search`/`search_with_paths` (`core/memory/semantic_memory.py`) compute their semantic-similarity term against file-centroid embeddings only, never the per-symbol chunk vectors 12.13 added. Chunk distances run systematically smaller than file-centroid distances, so folding them into CSS/routing without recalibration would silently inflate the score.
+- **File(s):** `ailienant-core/core/memory/semantic_memory.py` (`search`, `search_with_paths`).
+- **Error:** not a defect — a deliberate, reasoned calibration boundary. The entry's own framing: "correct for now."
+- **Phase:** future routing-recalibration slice, if symbol-level evidence is ever worth the recalibration effort.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **DECISION** — the entry's own text frames the current state as deliberately correct, not a bug; reclassified out of the defect count. Cross-references DEBT-140 (RESOLVED 12.13, the chunking substrate) and DEBT-169 (open, CAPABILITY — no reranking stage — the same "retrieval precision left on the table" family).
+
+---
+
+## Capability Backlog (not defects — roadmap)
+
+*Entries here describe a capability that was never built, not a defect in what shipped — the backlog's own tier legend excludes them from the open-defect count, the same way a `[DECISION]` record is excluded. Relocated here during the 2026-08-25 debt sweep (see the Reconciliation Report above); content is unchanged from the original entry.*
+
+---
+
+### DEBT-025 [LOW · Blocked] — Docker persistent-PTY backend has no daemon integration test
+
+- **Date:** 2026-06-09
+- **Files:**
+  - `ailienant-core/core/sandbox.py` — `_DockerPtyBackend` (`exec_create`/`exec_start(socket=True, tty=True)` persistent shell) and `DockerSandboxAdapter.open_session`.
+- **Error:** not a type error — a coverage gap. The directed suite (`tests/test_phase7_19_0_pty_session.py`) verifies the session contract through a stub backend and the real Unix `openpty` backend (Unix-only, skipped on Windows). The **Docker** session backend's real exec-socket framing (raw-stream `tty=True` semantics, socket detach on container stop, `exec_inspect` exit-code reap) is exercised only structurally via the shared `_PtySession` machinery — no test attaches to a live `ailienant-sandbox-daemon` container.
+- **Blocked by:** a Docker daemon in CI (the broader sandbox-integration gap; `test_execution_tools` Docker failures are already environmental per project notes). Confirmed still true: `.github/workflows/` has only `docker-publish.yml` — no daemon-backed test lane exists.
+- **Phase:** **Phase 7.19 CLOSED 2026-06-08 without resolving this** — the dispatcher shipped and drives the host PTY path first, but no CI daemon lane was ever added. Remains unowned by any phase; blocked purely on CI infrastructure (mirrors the DEBT-035 precedent for a phase closing around an unresolved entry).
+- **Notes:** declared MVP during 7.19.0. The host PTY path (Native Direct) — the tier the 7.19.2 dispatcher actually drives first — is fully covered (stub + real openpty). The Docker backend is implemented for parity but unverified end-to-end against a container; treat its first live use as integration-test-gated.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-035 [MEDIUM · Floating] — MultiPL-E TypeScript execution needs a Node-capable sandbox runtime
+
+- **Date:** 2026-06-12
+- **Reproduce:** run a TypeScript codegen problem through `SandboxCodegenExecutor.run(program, Language.TYPESCRIPT, …)` — it returns `ExecOutcome(passed=False, exit_code=-2, stderr="[unsupported_runtime: ...]")` instead of executing.
+- **File(s):** `ailienant-core/tests/benchmark/executors.py` (`SandboxCodegenExecutor`); `ailienant-core/core/sandbox.py` (`_DOCKERFILE_TEXT`, `python:3.13-slim`).
+- **Error:** not a defect — a **declared MVP trade-off (CLAUDE.md §7.2)**. The shared sandbox image is Python-only (no Node/tsc), so MultiPL-E TS cannot be executed in-container. 8.3.1 ships the full TS *adapter* (loader, prompt, extraction, assembly, Pass@1 wiring); only the TS *execution backend* is deferred. Python (HumanEval) Pass@1 is real.
+- **Blocked by:** nothing technical — needs a Node-capable sandbox tier without compromising the locked Docker security profile.
+- **Phase:** **Division 8.13 CLOSED 2026-06-30 without resolving this** — the polyglot devcontainer adapter (blueprint `docs/PHASE_8.13_BLUEPRINT.md`) serves only the agent's *trusted* project execution; the untrusted MultiPL-E TS benchmark lane is the opposite threat model (§2) and permanently stays `unsupported_runtime` — pointing it at a user-owned devcontainer would dissolve the locked-cage guarantee. Remains open: a distinct **locked** Node-capable sandbox tier (mirroring `DockerSandboxAdapter`'s hardening — no network, read-only mount, non-root, env-whitelist) is still needed to execute untrusted TS candidates. No phase currently owns this.
+- **Notes:** logged at 8.3.1 ship per CLAUDE.md §7.3. TS Pass@1 remains `unsupported_runtime`; the Python subset DoD holds.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-074 [MEDIUM · Blocked] — `pre_file_read` GraphRAG-injection hook bypasses cost accounting
+
+- **Date:** 2026-06-23
+- **Reproduce:** the `hooks` table (`core/db.py`) supports only `pre_patch` / `post_patch` events, dispatched in `core/task_service.py`. A proposed `pre_file_read` event would inject a file's dependency subgraph into the agent's context automatically at read time.
+- **Error:** tokens injected laterally by such a hook never pass through the CSS×TCI router (`core/memory/context_auditor.py`) or the token ledger (`core/token_ledger.py`), so they escape the FinOps gate and corrupt `savings_usd` accounting. It also turns structural context implicit (non-deterministic, hard to debug) versus the current explicit `pre_patch`/`post_patch` artifacts the agent knows are present.
+- **Blocked by:** no accounting path for hook-injected context. Re-evaluate only once the router meters laterally-injected tokens.
+- **Phase:** future graph-intelligence slice (post-8.14).
+- **Notes:** carved at 8.14 planning per CLAUDE.md §11.3. Rejected sibling: the recursive-CTE k-hop rewrite — multi-hop BFS already exists (`_bfs_k_hop`, `_K_HOP={CLOUD:3,…}`), so it is a refactor of working code, not a missing capability; revisit only if `_bfs_k_hop` becomes a measured bottleneck at scale.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-075 [LOW · Unscheduled] — Syntactic-only symbol extraction; no LSP-style type resolution
+
+- **Date:** 2026-06-23
+- **Reproduce:** the indexer extracts symbols and dependencies by name via tree-sitter; it does not resolve types. When the coder needs a function's return type, the LLM must infer it from the file rather than reading a resolved type.
+- **Error:** capability gap vs a real Language Server (generic substitution, parameter binding, return-type / JSDoc inference). Cheaper, lower-precision retrieval context for type-dependent reasoning.
+- **Blocked by:** nothing structural; cost is the barrier — would mean running a real LSP subprocess (pylsp / tsserver / rust-analyzer) inside the indexer.
+- **Phase:** long-term; relates to existing DEBT-005.
+- **Notes:** carved at 8.14 planning per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-087 [LOW · Floating] — Python relative imports skipped by the extractor
+
+- **Date:** 2026-07-01
+- **Reproduce:** `_extract_python_imports` (`brain/memory.py`) drops any `from .mod import x` / `from . import y` — it emits absolute module paths only. TS/JS now resolve relative specifiers lexically into workspace paths, so Python module boundaries are under-represented in the dependency graph relative to TS/JS.
+- **Error:** coverage asymmetry, not a defect. Historically justified when the worker had no project-root context; that context now exists (`req.file_path` + `req.workspace_root`, both plumbed in 8.14.0).
+- **Resolution (unscheduled):** add relative-specifier resolution to the Python extractor, reusing the same lexical `posixpath` + workspace-guard approach as `_resolve_relative_specifier`, mapping a dotted relative import to a workspace path against the source file's directory.
+- **Notes:** logged at 8.14.0 close per CLAUDE.md §11.3; marked in code as `TODO(DEBT-087)`.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-088 [LOW · Floating] — `bfs_k_hop_backward` has the pre-8.14.1 resolved-form gap
+
+- **Date:** 2026-07-01
+- **Reproduce:** `bfs_k_hop_backward` (`core/memory/graphrag_extractor.py`, used by `TraceDataFlowTool`) seeds its `target_dependency IN (...)` query with the raw node string passed in. Since 8.14.0, a dependent references a changed file by import specifier (an extensionless TS/JS path or a dotted Python module), not the file's absolute path, so seeding the walker with a file path finds nothing and its multi-hop step re-feeds unresolved `source_file` values into the same mismatched query — the same under-counting gap `core/blast_radius.py` (8.14.1) was built to avoid.
+- **Error:** architectural gap, not a defect — the walker predates the polyglot resolved-target concept.
+- **Resolution (unscheduled):** migrate `TraceDataFlowTool`'s backward view onto the resolved-adjacency traversal introduced in `core/blast_radius.py`, or extend that module's reverse adjacency into a general-purpose resolved BFS both callers share.
+- **Notes:** logged at 8.14.1 close per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-089 [LOW · Floating] — Blast-radius Python resolution is suffix-based, not sys.path-aware
+
+- **Date:** 2026-07-01
+- **Reproduce:** `core/blast_radius._build_python_suffix_index` maps every segment-aligned path suffix of an indexed `.py` file to that file, so a dotted Python import target resolves via suffix match rather than true `sys.path` resolution. Two indexed modules sharing a basename (e.g. `pkg_a/utils.py` and `pkg_b/utils.py`) both match a bare `import utils`, over-counting the blast radius.
+- **Error:** declared MVP tradeoff, not a defect — over-counting is the safe direction for a pre-apply review gate (never silently under-count); the worker process has no view of the project's actual `sys.path` / installed-package resolution order.
+- **Resolution (unscheduled):** resolve Python targets against the same import-root context a real interpreter would use (parsed `sys.path` entries, namespace packages) instead of a flat suffix index.
+- **Notes:** logged at 8.14.1 close per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-090 [LOW · Floating] — Memory-snapshot export has no extension-side trigger
+
+- **Date:** 2026-07-01
+- **Reproduce:** the shared-memory export is fully wired on the backend — the `client_export_memory_snapshot` WS event, its `main.py` dispatch, and `core.memory_snapshot.export_memory_snapshot` — but no VS Code command / button sends that event, so a user cannot yet trigger an export from the UI. Import bootstrap already runs automatically at session init.
+- **Error:** declared backend-only scope — 8.14.2's DoD is `mypy`/`pyright` only (no npm gate); the additive WS contract is forward-compatible, so wiring the FE later needs no backend change.
+- **Resolution (unscheduled):** add an extension command-palette entry / status-panel button that emits `client_export_memory_snapshot` with the active `project_id` + `workspace_root`.
+- **Notes:** logged at 8.14.2 close per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-091 [LOW · Floating] — Architecture digest omits git co-change coupling
+
+- **Date:** 2026-07-02
+- **Reproduce:** `architecture_digest` (`tools/perception_tools.py` + `brain/memory.build_architecture_digest_sync`) synthesizes languages/modules/hotspots/communities/entrypoints from the persisted graph, but carries no git co-change ("files that change together" — the reference graph's `FILE_CHANGES_WITH`) signal; there is no git-history substrate in the catalog to source it from.
+- **Error:** declared scope cut — 8.14.5's manifest marks co-change "optional… where cheap"; with no existing git-log analysis it is not cheap, so it was omitted rather than built speculatively (§9 / §11.3).
+- **Resolution (unscheduled):** add a bounded, idempotent git-log co-change extractor persisting pairwise change coupling, then surface a `co_change` section in the digest.
+- **Notes:** logged at 8.14.5 close per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-092 [LOW · Floating] — Boundary graph cannot recover backend `server_*` emit edges
+
+- **Date:** 2026-07-02
+- **Reproduce:** `core.boundary_graph.refresh_boundary_graph` resolves WS/MCP boundary edges by matching the channel as a quoted string literal, but a backend `server_*` emit is a typed model construction (`api/websocket_manager.py` → `ServerStreamEndEvent(data=…)`) with no channel literal at the send site — so `trace_cross_boundary('server_stream_end')` returns `declares` + frontend `handles` but no core-side `emits`.
+- **Error:** declared fidelity boundary — `declares`/`handles` are high-precision; `emits` is best-effort (only extension `client_*` object sends carry a literal).
+- **Resolution (unscheduled):** a structural emit-site resolver that maps the `event_type` `Literal` back to the pydantic model class, then finds `send_personal_message(..., ModelClass(...))` constructions in the core emit path.
+- **Notes:** advisory READ_ONLY tool — an empty emit list is never a "not emitted" verdict. Logged at 8.14.7 close.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-093 [LOW · Floating] — Boundary graph has no auto-refresh on index-complete
+
+- **Date:** 2026-07-02
+- **Reproduce:** `TraceCrossBoundaryTool` builds the boundary graph on first query (empty-table trigger); after later code edits the stored edges can lag until an explicit `refresh_boundary_graph`. There is no `broadcast_indexing_complete` hook to rebuild.
+- **Error:** declared scope cut — liveness is not required by the 8.14.7 DoD; the full rebuild is cheap (~71 channels) so a trigger is a small follow-on.
+- **Resolution (unscheduled):** invoke `refresh_boundary_graph` (single-flight) from the index-complete path, or add a cheap staleness stamp the tool checks before serving.
+- **Notes:** logged at 8.14.7 close.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-095 [LOW · Floating] — Polyglot (TS/JS) runtime call-trace capture
+
+- **Date:** 2026-07-02
+- **Reproduce:** `core/call_trace_probe.py`'s tracer uses `sys.monitoring` (PEP 669), a CPython-specific facility — it can only observe Python `caller → callee` calls. The 8.14.8 dogfood PoC and any 8.14.8.1 substrate are Python-only; extension-side (TypeScript) runtime calls are never traced.
+- **Error:** declared scope cut for the SPIKE — the manifest's dynamic-dispatch value case (`ToolDispatcher`) is Python, so the PoC's signal is representative for the backend, but the frontend gets no equivalent runtime confirmation.
+- **Resolution (unscheduled):** a Node-side equivalent (`async_hooks` / V8 inspector protocol) feeding the same reconciler shape, or accept the Python-only scope permanently and document it as a hard boundary rather than a gap.
+- **Notes:** logged at 8.14.8 close.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-096 [LOW · Floating] — Sandbox/agentic-cell-integrated live trace capture
+
+- **Date:** 2026-07-02
+- **Reproduce:** the manifest's literal target was capturing traces "from the existing sandbox / agentic-cell execution" (a user project's run). 8.14.8 instead dogfoods AILIENANT's own pytest (declared deviation, `SCHEMA_EVOLUTION.MD`) because it is self-contained, real, and needs no target project or container work for the PoC.
+- **Error:** the sandbox-execution capture path (tracing a user's own project as it runs inside `core/sandbox.py`'s tiers) remains unbuilt; the PoC only validates the *signal*, not that production capture path.
+- **Resolution (unscheduled):** wire the same `CallTracer` into the trusted/native sandbox execution path (behind an explicit opt-in — tracing is not free and must never run unconditionally on user code) so production traces feed the persisted substrate instead of only the dogfood harness.
+- **Notes:** logged at 8.14.8 close. `8.14.8.1` shipped the persisted substrate populated **out-of-band** (dogfood harness), so this live-capture path is still open.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-101 [LOW · Floating] — Observed-call-edge substrate has no purge/TTL
+
+- **Date:** 2026-07-02
+- **Reproduce:** `core.db.persist_observed_edges` is append-only (`INSERT OR IGNORE`, never delete). When a file is reindexed and a symbol is renamed/deleted, its `observed_call_edges` rows are not purged — they accumulate as orphans over successive trace runs.
+- **Error:** declared scope cut for 8.14.8.1 — capture is out-of-band, so no reindexer coupling was added. Correctness is preserved at the **read path**: `find_symbol_callers` only surfaces an added observed caller whose file is still in the catalog, so a stale row is never *shown*; it only wastes storage.
+- **Resolution (unscheduled):** a reindex-coupled purge (mirroring `purge_symbol_definitions`) keyed by `caller_file`/`callee_file`, or a periodic TTL sweep, or a symbol-presence check at read to prune on access.
+- **Notes:** logged at 8.14.8.1 close; append-only accumulation is deliberate ("never delete an observation"), so purge must be careful to drop only genuinely-orphaned rows.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-103 [LOW · Floating] — Dart `package:` URI resolution is pubspec-unaware
+
+- **Date:** 2026-07-03
+- **Reproduce:** `_extract_dart_imports` (`brain/memory.py`) strips the `package:` prefix from `import 'package:foo/bar.dart';` and emits the remainder (`foo/bar.dart`) as the target, but never maps the leading `foo` package name back to the project's own directory layout (that mapping lives in `pubspec.yaml`, a file this extractor never reads).
+- **Error:** declared scope cut for 8.14.11 — real resolution would require parsing a second file format entirely (YAML, plus the `name:`/`dependencies:` keys specifically), a materially larger feature than the source-AST extraction this round covers. A same-project `package:` import therefore rarely resolves past bare extraction today; it stays INFERRED, the same honest fallback as any unresolved import.
+- **Resolution (unscheduled):** a small `pubspec.yaml` reader keyed by the project's own package `name:` field, feeding a Dart-specific candidate expansion (`package:<own_name>/x.dart` → `lib/x.dart`) alongside the existing relative-specifier path.
+- **Notes:** logged at 8.14.11 close; `dart:` built-ins and relative (`'sibling.dart'`) specifiers are unaffected — only the same-project `package:` case is impacted.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-111 [MEDIUM · Floating] — GraphRAG nebula limited to file/external node types
+
+- **Date:** 2026-07-22
+- **Reproduce:** open the Memory panel's Nebula. Nodes render as `file` (sphere) or `external-dep` (octahedron) only — there is no `function`/`class`/`module` shape, because the graph substrate is file-level.
+- **Not blocked (re-analyzed 2026-07-22):** a full call-edge-materialized symbol graph would conflict with `docs/SCHEMA_EVOLUTION.MD` "Symbol-Level Call-Graph Substrate" (`observed_call_edges` is unbounded/append-only and would exceed `MAX_GRAPH_EDGES=5000` or fork the PPR/Leiden pipeline) — but a containment-only design is not: `symbol_definitions` already exists, is already populated per-project, and stores zero edges, exactly the Tier-2 catalog that decision already authorizes.
+- **Enterprise target (Phase 11.2.S):** render `symbol_definitions` rows as satellite nodes of their owning file via a `defined_in` containment edge (bounded by symbol count, never enters `MAX_GRAPH_EDGES` accounting), extend the nebula's `nodeThreeObject`/shape map to the new `kind`s, and resolve "who calls this symbol" on-demand via the existing `find_symbol_callers` READ_ONLY tool (never bulk-loaded into the analytics graph). The rendering engine already scales; no decision amendment or new analytics pipeline needed.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-113 [LOW · Floating] — Nebula picking + layout not yet scaled to 100k nodes
+
+- **Date:** 2026-07-22
+- **Reproduce:** the custom three.js engine renders via InstancedMesh (scales), but picking uses `raycaster.intersectObject` and the d3-force-3d layout runs one-shot on the main thread — both are comfortable at the current bounded node counts (≤5000) yet not the 100k design target.
+- **Enterprise target:** GPU-picking (render instance-ids to an offscreen texture) for O(1) hit-testing at scale, and move the force layout into a Web Worker (the `nebula/engine` layout call and `nebula/picking` module are the seams). Built lazily so neither affects the current bundle.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-114 [LOW · Floating] — Search pulse is not a real GraphRAG reasoning-path replay
+
+- **Date:** 2026-07-22
+- **Reproduce:** searching the nebula pulses matched nodes and their *incident* edges. It does not animate the actual path GraphRAG traversed to answer a query, because no retrieval trace is captured or emitted.
+- **Enterprise target:** have the retrieval pipeline record the traversed node/edge sequence per query and surface it over the dashboard contract, then animate a pulse along that real path (the "reasoning made visible" the art direction envisioned).
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-137 [LOW · Floating] — Provider-native `cache_control` + cache telemetry not implemented
+
+- **Date:** 2026-07-31
+- **Reproduce:** run any planner/coder turn against Anthropic (or any provider) and inspect the
+  request payload — no `cache_control` block is ever attached, regardless of prefix content.
+  `core/token_ledger.py::TokenLedger.snapshot()` has no cache-read/cache-write fields.
+- **File(s):** would touch `tools/llm_gateway.py::ainvoke`/`astream_byom`/`astream_byom_thinking`
+  (application point, after `_inject_reasoning_scaffold` — ordering matters, see below); a new
+  `tools/prompt_cache.py` (provider gate + minimum-token floor table); `core/token_ledger.py`
+  (additive cache counters); the dashboard's `TelemetryPanel.tsx`.
+- **Error:** capability gap, deliberately deferred — not overlooked. Manifest 12.1 originally asked
+  for full provider caching premised on "the stable high-volume prefix (system prompt → tool/MCP
+  schemas → GraphRAG context)." Measurement (see `docs/SCHEMA_EVOLUTION.MD` §41 and the 12.1 manifest
+  spec) showed that premise doesn't hold today: the actual stable prefix is ~281-450 tokens
+  (identity + role constraints + language mirror), below every current model's minimum-cacheable
+  floor (512-4096 tokens depending on model). Two of the three named prefix components don't exist
+  as stable content — tool/MCP schemas are absent from the coder's one-shot path entirely (blocked
+  on DEBT-130), and GraphRAG context is assembled per-`target_file`, genuinely volatile per WBS step,
+  not prefix. Applying `cache_control` to a sub-floor prefix would pay the 1.25× cache-write premium
+  on every call for zero reads — a net loss, not a saving. 12.1 shipped the prerequisite instead
+  (the HEAD/TAIL prompt split — §41) and deferred the rest here.
+- **Blocked by:** re-evaluated at 12.7 close (DEBT-130/129/106 all landed) — the premise this entry
+  hoped for did **not** materialize. DEBT-130's tool-grounding pre-pass is *conditional* (only fires
+  when the step is thin on context) and its tool schemas live in a **separate reasoning call**
+  (`core/tool_dispatch.py::make_gateway_reasoner`'s own hint message), never folded into
+  `agents/coder.py`'s stable system-message HEAD (`agents/prompts.py::build_static_identity_prompt`).
+  The coder's cacheable prefix is therefore unchanged by 12.7 — still ~281-450 tokens, still below
+  every current provider's minimum-cacheable floor. Re-logged rather than closed.
+  Secondary unblocker unchanged: bringing the chat path into scope — `core/task_service.py`'s
+  `_MAX_HISTORY_MESSAGES = 24` conversation history is a genuinely growing multi-turn prefix (the
+  textbook caching case) but was outside 12.1's stated scope.
+- **Phase:** re-evaluate only if a future change folds tool/MCP schemas into the coder's stable HEAD
+  prefix itself (not a per-turn reasoning call) — no such change is scheduled.
+- **Notes:** even once unblocked, realistic savings on this codebase's BYOM-local-first deployment
+  are modest — provider caching saves $0 on a local model, and on a cloud model the volatile
+  per-step payload (file content, RAG snippets, mission context) dwarfs the cacheable prefix by
+  roughly an order of magnitude. This is a genuine but small optimization, not a launch blocker.
+- **12.10 decision (CLAUDE.md §4 Option B):** the Phase 12 closure gate originally required a
+  "prompt caching tokens-saved metric > 0." Re-measuring at gate time reconfirmed this entry's own
+  finding — the premise is still false — so the gate criterion was amended rather than this entry
+  force-closed to satisfy it: 12.10 now certifies the cacheable-prefix *prerequisite*
+  (`tests/test_prompt_prefix_stability.py`) instead, and this entry stays open with its existing
+  trigger, unchanged.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-138 [MEDIUM · Blocked] — Agentic cell does not route through the devcontainer session tier
+
+- **Date:** 2026-08-03
+- **Reproduce:** `brain/agentic_cell.py::run_agentic_cell_node` resolves `core.sandbox.get_active_adapter()`
+  (the locked oracle tier) unconditionally when opening its session — never
+  `core.sandbox.resolve_execution_adapter(session_id=..., trusted=True)`, so a `requires_iteration`
+  WBS step's ReAct loop never reaches the user's real devcontainer even after §43 (12.4) gave the
+  trusted tier a working interactive-session implementation.
+- **File(s):** `brain/agentic_cell.py:368-380` (the reroute); `core/sandbox.py::DevcontainerSandboxAdapter`
+  (needs a `get_sync_surface()` override — the base class raises `NotImplementedError`, so the cell's
+  `adapter.get_sync_surface(cwd)` call would fail the moment the reroute lands).
+- **Error:** architectural precondition, not an oversight — deliberately scoped out of 12.4 (see the
+  architect's review during that sub-phase's planning). Routing cell edits through a bind-mounted
+  `SyncSurface` (the naive `get_sync_surface()` implementation — `core.workspace_sync.LocalFsSyncSurface`
+  over the devcontainer's host workspace mount) would bypass the in-RAM VFS barrier and its
+  base-hash stale-guard (`core/vfs_middleware.py`) entirely: a concurrent agent edit and a live user
+  edit to the same file would silently corrupt the workspace, since neither side would ever see the
+  other's write through the OCC guard that protects every other write path in this codebase.
+- **Blocked by:** an OCC-safe sync surface — cell writes must reach the bind-mounted workspace only
+  *through* the VFS barrier's stale-guard, never via a raw filesystem surface. No design is chosen yet;
+  candidates include routing `SyncSurface.write_file` through the same `check_type_integrity`-adjacent
+  hashing path `task_service.py`'s HITL apply uses, or restricting the cell to VFS-mediated reads/writes
+  entirely and dropping direct `SyncSurface` access for this tier specifically.
+- **Phase:** future OCC-safe sync-surface slice. Until then the §43 tunnel is reachable only via the
+  `configurable["cell_adapter"]` test-injection seam the existing cell tests already use — test-reachable,
+  not dead code, but not a production call path either.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-139 [LOW · Floating] — Devcontainer session host driver has no real TTY
+
+- **Date:** 2026-08-03
+- **Detail:** `providers/devcontainerSessionHandler.ts` spawns `devcontainer exec ... -- /bin/sh` via
+  plain piped stdio (`child_process.spawn`), not a pseudo-terminal — a deliberate MVP tradeoff (CLAUDE.md
+  §11.2) made when §43 (12.4) rejected `node-pty`: a native module is a packaging/supply-chain cost the
+  interactive session tunnel does not justify (CLAUDE.md §9), and the sentinel-marker command-boundary
+  protocol (`core/command_boundary.py`, shared with the local `core.pty_session` PTY session) already
+  gives command framing without a real TTY line discipline. Consequences: no job control (`fg`/`bg`/`Ctrl+Z`
+  semantics), no `isatty()` — a program that branches on TTY presence (many REPLs, some build tools'
+  progress-bar rendering) behaves as if piped, not interactive — and `signal: "interrupt"` sends a
+  best-effort `SIGINT` to the child process directly rather than a true Ctrl-C to a foreground process
+  group, so a child that spawns its own subprocesses may not propagate the interrupt to them.
+- **Phase:** future terminal-fidelity slice, if usage shows this MVP tradeoff biting in practice
+  (e.g. an operator running an interactive REPL or a TTY-sensitive build tool through the tunnel).
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-154 [LOW · Floating] — Apply-edge risk gate is still a command-pattern proxy, not a real edit-risk classifier
+
+- **Date:** 2026-08-04
+- **Reproduce:** N/A (design coarseness, not an error). The gate still decides "low-risk" by scanning
+  an edit's added diff lines against `permissions.py::_RISK_PATTERNS` — a pattern set tuned for
+  shell-command content, applied as a binary low/not-low proxy over code. Carried forward unchanged
+  from DEBT-125, whose display-wiring half closed in 12.8.
+- **File(s):** `ailienant-core/core/task_service.py`, `ailienant-core/core/permissions.py`.
+- **Blocked by:** nothing — self-contained. A classifier (heuristic size/scope + secret/dep-graph
+  signals, or a small model) returning a real low/medium/high verdict can replace the regex proxy.
+- **Phase:** future safety slice.
+- **Notes:** the conservative gate is already safe (fails toward the manual card); this is a
+  precision gap, not a security gap.
+- **Decision (2026-08-04, 12.14 — CLAUDE.md §4 Option C, Refactor):** explicit defer, reviewed rather
+  than silently carried forward. Real defense-in-depth already exists via the regex gate plus the
+  blast-radius check — the classifier's absence is a precision gap, not a missing safety layer. A
+  semantic edit-risk classifier changes which edits apply silently, which makes it a dedicated
+  safety-slice project on its own merits, not a pre-launch patch to bolt on. Not required for Phase 13.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-155 [LOW · Floating] — File-read content preview not on the Glass-Box Timeline
+
+- **Date:** 2026-08-04
+- **Reproduce:** a `read`-kind marker shows a size metric (12.8) but never the file content itself —
+  unlike a `command` node's stdout/stderr.
+- **File(s):** would touch `core/vfs_middleware.py::make_safe_reader` or the coder's read call site.
+- **Blocked by:** a token-hygiene/PII decision for how much of a read file's content is safe to
+  surface in a detail box (charter §5.5) — file content is source code, not arbitrary shell output,
+  and needs its own truncation/redaction design pass distinct from `record_exec`'s masking.
+- **Phase:** future timeline-depth slice.
+- **Notes:** carved out of DEBT-133 at its 12.8 resolution — the tool-call half of that entry is
+  closed; this is the narrower remainder.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-156 [LOW · Floating] — No automated CLA-assistant workflow
+
+- **Date:** 2026-08-04
+- **Reproduce:** N/A (a process gap, not an error). `CONTRIBUTING.md` §1 previously claimed an
+  "automated CLA check posts a link" on a contributor's first PR — no such workflow exists in
+  `.github/workflows/`. Corrected in 12.15 to describe only the manual `CLA.md` sign-off, which
+  already works today.
+- **File(s):** `CONTRIBUTING.md`.
+- **Blocked by:** nothing technical — a real CLA Assistant needs a GitHub App / external service
+  install, which has no operational justification for a solo pre-launch project.
+- **Phase:** revisit once external contributors are actually onboarding (Phase 13+).
+- **Notes:** deliberate MVP/patch decision per CLAUDE.md §11 — the manual path is the lower-friction,
+  more honest fix today, and reversible the moment a second contributor shows up.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-157 [MEDIUM · Floating] — No unit/integration/e2e taxonomy across the backend test suite
+
+- **Date:** 2026-08-04
+- **Reproduce:** `pytest --collect-only -q` in `ailienant-core` collects ~2,858 tests with no way to
+  filter to a fast subset — no `pytest.ini`/`pyproject.toml` marker registration existed before
+  12.16, and the only marks in active use are `anyio` (async plumbing, not a category),
+  `parametrize`, and `skipif`.
+- **File(s):** `ailienant-core/pytest.ini` (12.16, new — registers `unit`/`integration`/`e2e` markers
+  for tests going forward only), `ailienant-core/tests/**` (237 existing test files, unclassified).
+- **Blocked by:** nothing technical — retrofitting markers onto 237 existing files is a real,
+  sizeable classification task (risk of silent mis-tagging if done in bulk without per-file review),
+  deliberately out of scope for 12.16's registration-scaffold step.
+- **Phase:** future test-taxonomy retrofit slice.
+- **Notes:** even the strongest integration-style tests in the suite (the 50 `test_phase*_checkpoint_gate.py`
+  files) mock the LLM/vector-store boundary per the project's own stated convention — "integration"
+  in this codebase has never meant "against a live model."
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-158 [MEDIUM · Floating] — Playwright e2e coverage is a single 4-case Dashboard-only spec
+
+- **Date:** 2026-08-04
+- **Reproduce:** `ailienant-extension/e2e/` contains exactly one spec, `dashboard.spec.ts` (4 tests),
+  scoped entirely to the Dashboard SPA. No chat/agent-turn flow, no VS Code extension-host e2e.
+- **File(s):** `ailienant-extension/e2e/dashboard.spec.ts`, `ailienant-extension/playwright.config.ts`.
+- **Blocked by:** nothing technical — the spec is genuinely real (spawns an actual backend subprocess
+  via `e2e/run-backend.mjs`, drives real Chromium), just narrow in scope. Fixing it is a dedicated
+  feature-sized effort, not a 12.x-sized patch.
+- **Phase:** future e2e-breadth slice.
+- **Notes:** 12.15 schedules this spec to run nightly in CI (`frontend-gate.yml`) — previously it ran
+  in zero CI, nothing executed it automatically. Running-more-often does not close this entry;
+  scope-breadth does.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-169 [MEDIUM · Floating] — GraphRAG/tool retrieval has no reranking stage
+
+- **Date:** 2026-08-17
+- **Reproduce:** read `core/memory/semantic_memory.py::search_with_paths` / `search_snippets` and `core/tool_rag.py::select_tools`. Every retrieval path is a single `tbl.search(vector).metric("cosine").limit(k)` call against LanceDB, with the final ordering being raw cosine distance — `select_tools` literally sorts by `(_distance, name)` and stops. There is no cross-encoder second pass, no BM25/lexical fusion, no MMR diversification (a query can surface k near-duplicate chunks from the same file), and no reordering by recency: `search_with_paths` computes an `indexed_at` timestamp per result and it feeds `agents/recency.py::compute_recency_score`, which blends into the aggregate CSS *meter* — but the individual snippets/files handed to the LLM are never reordered by that signal, only the scalar sufficiency score is adjusted.
+- **File(s):** `core/memory/semantic_memory.py` (`search_with_paths`, `search_snippets`, `_query_chunks`), `core/tool_rag.py` (`ToolRAGStore.select_tools`), `agents/recency.py` (`compute_recency_score` — the existing, unused-for-reordering recency signal to build on).
+- **Error:** architecture/feature gap, not a correctness bug — single-stage kNN is cheap and works for small/medium corpora, but leaves precision on the table for larger codebases (near-duplicate retrieval, no lexical/semantic fusion, no diversity floor).
+- **Blocked by:** nothing — a first cut (recency-weighted reorder of already-retrieved snippets, no new dependency) is a small follow-up; a real cross-encoder or MMR pass is a larger, separately-scoped change.
+- **Phase:** future retrieval-quality slice.
+- **Notes:** surfaced during a harness audit (2026-08-17). Cross-references **DEBT-149** (CSS's semantic term calibrated only against file-centroid distances, never chunk distances — same "retrieval precision left on the table" family) and **DEBT-140** (RESOLVED 12.13, added per-symbol chunking — the substrate a real reranker would sit on top of).
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-174 [LOW · Floating] — Coder-node edit generation never receives image attachments
+
+- **Date:** 2026-08-17
+- **Reproduce:** `agents/coder.py`'s edit-generation call (`acomplete_with_thinking`, not `LLMGateway.ainvoke`) never reads `state["attachments"]`. 13.0.1 (closing DEBT-168) wired attachments only into `agents/researcher.py`'s answer call — the node that owns comprehension of the request and seeds the plan everything downstream reasons from.
+- **File(s):** `agents/coder.py` (the edit-generation call site), `tools/llm_gateway.py` (`LLMGateway.acomplete_with_thinking` — a separate method from the now-wired `ainvoke`, would need its own `images=` threading).
+- **Error:** capability gap, not a correctness defect — an attached screenshot informs the plan via the researcher, but the coder generating a specific edit cannot see it directly (e.g. "match this exact color from the screenshot" would need a second look at the image mid-edit).
+- **Blocked by:** nothing — same `_attach_images_to_messages` seam DEBT-168 built, applied to a second call site/method.
+- **Phase:** future multimodal-payload slice.
+- **Notes:** carved as an explicit scope boundary at 13.0.1 ship per CLAUDE.md §11.3, rather than widening that fix's blast radius to a second agent + a second gateway method.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-175 [MEDIUM · Floating] — `TOOL_RAG_TOP_K` cannot rise until the Phase-5.7 gate's baseline is reworked; its prescribed remedy is near self-cancelling
+
+- **Date:** 2026-08-18
+- **Reproduce:** raise `TOOL_RAG_TOP_K` (`core/tool_rag.py`) from 5 to 8 and run `tests/test_phase5_7_checkpoint_gate.py::test_tool_rag_selection_yields_70pct_payload_reduction` — it fails at `reduction_ratio=0.471` against the 0.70 floor. That gate registers only 4 families (14 schemas, 6,302 chars), so selecting k of 14 caps the achievable reduction arithmetically. Measured against the *whole* 53-schema catalog (the R3 gate in `tests/test_phase8_8_tool_parity_gate.py`, baseline `store.all_schemas()`), the same k=8 sits at 0.8379 and the ceiling is k=13 — the two gates disagree because they measure different baselines, not because either is wrong.
+- **Why the prescribed remedy does not work:** the gate's docstring directs the fix to "compress verbose `description=` strings — NOT to lower this threshold or shrink TOOL_RAG_TOP_K". Measured: description text is only **23.3%** of the payload (1,470 of 6,302 chars); the other 76.7% is structural JSON. Worse, `reduction_ratio = 1 - selected/eager` and `eager` is that same catalog, so compressing descriptions shrinks numerator and denominator together and the ratio barely moves. Deleting **100%** of description text — the absolute upper bound of the remedy — lifts the ceiling only from k≈3 to k≈4, and would degrade the embedding signal `select_tools` ranks on.
+- **File(s):** `core/tool_rag.py` (`TOOL_RAG_TOP_K`, `TOOL_RAG_MIN_REDUCTION`), `tests/test_phase5_7_checkpoint_gate.py` (the 14-schema baseline), `tests/test_phase8_8_tool_parity_gate.py` (the full-catalog baseline).
+- **Error:** not a correctness defect — a capability ceiling. The retrieval path is one tool narrower than it could be on small-context (local-tier) turns.
+- **Workaround shipped (13.0.2):** the constant stays 5; callers needing N usable tools plus the `tool_search` hatch pass `k=N+1` themselves (`brain/agentic_cell.py`, `brain/nodes/subagent_worker_node.py`), so no path lost a usable tool. On any adequately-sized window the eager branch injects the whole role slice and the cap is never consulted at all.
+- **Blocked by:** a decision the eager branch reframes — when the visible catalog fits the budget, injecting it whole at 0% reduction is the *correct* outcome, so a flat reduction floor measured on a subset baseline may be the wrong invariant now. Reworking a locked financial gate was deliberately out of scope for a change that had to pass it.
+- **Phase:** future tool-catalog-economics slice.
+- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3, with the measurements above so the decision is made on numbers rather than the docstring's slogan.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-176 [LOW · Floating] — No tool-invocation telemetry exists; a usage prior would break `select_tools` determinism
+
+- **Date:** 2026-08-18
+- **Reproduce:** `core/telemetry.py` has five tables (`routing_decisions`, `oom_fallback_events`, `request_latency`, `container_lifecycle`, `action_token_usage`). None is keyed by tool name — `action_token_usage` is keyed by WBS `action` (`write_file`/`edit_file`) and stores token counts only. There is no call-frequency, success-rate, or per-role tool history anywhere in the codebase, so tool ranking has no signal beyond cosine similarity to the composed intent.
+- **Two halves, deliberately split:**
+  - *Emit-only* (worth doing, zero behavioral risk): a `tool_invocations` table (`ts, task_id, role, tool_name, decision, executed, duration_ms, error`) written from `core/tool_dispatch.py::ToolDispatcher.dispatch`. Pure observability, fits the existing substrate, and is the data any future ranking decision would need to justify itself.
+  - *Consuming it as a ranking prior* (**rejected, not merely deferred**): a frequency/success prior makes `select_tools` non-deterministic across runs, contradicting the guarantee in `core/tool_rag.py`'s module docstring and the reproducibility LangGraph checkpoint replay and Rewind depend on. It would also only affect the deferred branch, which 13.0.2's eager wiring makes rare.
+- **File(s):** `core/telemetry.py`, `core/tool_dispatch.py` (`dispatch`), `core/tool_rag.py` (`select_tools`, if ever consumed).
+- **Error:** capability gap, not a defect.
+- **Phase:** emit-only, future observability slice; the prior stays rejected until the determinism conflict has an answer.
+- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-178 [LOW · Floating] — `toggle_plan_mode`'s READ_ONLY tier cannot express that it mutates the permission channel
+
+- **Date:** 2026-08-18
+- **Reproduce:** `tools/control_tools.py::TogglePlanModeTool` rewrites `state["session_permission_mode"]` — the channel `evaluate_action` consults to gate every dispatch — yet is registered `ToolPrivilegeTier.READ_ONLY` by deliberate design ("policy-neutral across the matrix", `control_tools.py:13-17`). `ToolPrivilegeTier` models effects on disk/network/processes; it has no vocabulary for "mutates the policy engine itself". 13.0.3 closed the concrete exposure (three dispatch-loop consumers could offer/call it while gaining nothing, since `core/tool_dispatch.py::_STATE_PROMOTERS` never promotes the write and `ToolDispatcher` pins its mode at construction) via a new `core/tool_registry.py::filter_loop_safe` predicate — but that predicate is opt-in per consumer. A future fourth dispatch-loop consumer that forgets to apply it reopens the same "tool that lies" defect.
+- **File(s):** `tools/control_tools.py` (`TogglePlanModeTool`), `core/permissions.py` (`ToolPrivilegeTier`), `core/tool_registry.py` (`filter_loop_safe`, `_NO_AUTONOMOUS_LOOP`).
+- **Error:** capability-model gap, not a live defect — 13.0.3 makes the current three consumers safe.
+- **Blocked by:** a decision on the durable fix: (a) a new tier value the privilege matrix understands (e.g. `POLICY`), gated by `evaluate_action` like any other tier, so the exclusion is structural rather than a maintained list; or (b) move mode-toggling off the tool surface entirely (a dedicated orchestrator-only state-write path, since the orchestrator is its only real consumer and runs no dispatch loop). Both are bigger than a HITL-scoped fix and were out of scope for 13.0.3.
+- **Phase:** future permission-model slice.
+- **Notes:** logged at 13.0.3 ship per CLAUDE.md §11.3.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-194 [LOW · Floating] — No liveness signal exists to distinguish "local model is slow" from "local model is dead"
+
+`ainvoke` makes one non-streaming `await litellm.acompletion(...)` — no incremental feedback exists until the full response or a timeout error returns, so DEBT-191's larger, hardware-scaled timeouts necessarily also mean a genuinely dead/hung local endpoint now takes proportionally longer to surface as an error (there is no way to tell the two apart with a single lump-sum request timeout). A proper fix would need `ainvoke` itself to move onto a streaming call, where each token's arrival could reset a per-chunk gap timeout instead of one whole-request timeout (a much closer proxy for "still working" vs. "hung") — real architectural work, correctly out of scope for DEBT-191's actual purpose.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-199 [LOW · Floating] — `apply_patch`/`apply_commit` assume SWARM (`parallel_tasks`) stays dormant
+
+`brain/apply_gate.py`'s per-step prepare/commit nodes were designed and tested against the RELAY (sequential) dispatch path only, matching `parallel_tasks` being hardcoded to `[]` at the two `agents/planner.py` call sites (`:291`, `:826`) — SWARM dispatch is planned but not live. Nothing in the gate itself enforces this; if SWARM is ever activated, two steps touching the same file could both reach `run_apply_commit_node` concurrently against the same `pending_base_hash`/`applied_files_log` state without any documented concurrency contract. Deliberately out of scope for 13.0.9 (SWARM activation is its own, unstarted body of work) — revisit before ever flipping `parallel_tasks` live.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-200 [MEDIUM · Floating] — No one-click revert for an applied step; VS Code Local History is the only recovery path
+
+13.0.9 fixed the dishonest "use Ctrl+Z to undo" claim (`core/task_service.py::_format_coding_summary` — no editor is ever focused, so Ctrl+Z had nothing to undo) by pointing the user at VS Code's own Local History (Timeline view) instead, which genuinely does capture every `applyEdit`+`save()` this project performs. That is a real, working recovery path, but it is manual and per-file. A proper fix would hold the pre-image already computed for every diff (`brain/apply_gate.py::_prepare_files` already builds a unified diff against the pre-edit content) in a short-lived blob store keyed by `patch_id`, and offer a one-click "revert this step" action from the same card the diff/checklist already render. Not built in 13.0.9 — declared explicitly as an MVP compromise in the approved plan, not an oversight.
+
+- **Reconciliation sweep note (2026-08-25):** relocated to the Capability Backlog section below — re-examined and confirmed as a never-built capability, not a defect in shipped behavior. Content unchanged; see the Reconciliation Report above for the full R4 classification pass.
+
+### DEBT-107 [MEDIUM · Floating] — Autonomous LLM-driven `DispatchPlan` emission is deferred
+
+- **Date:** 2026-07-04 (8.15 planning)
+- **Reproduce:** `brain/dispatch_emitter.py` ships the full mechanism for fanning a turn out into subagent dispatch — an injected `dispatch_plan_fn` hook, an `AILIENANT_DISPATCH_DEBUG` synthetic path, counter resets, and the graph wiring that consumes a `DispatchPlan` once produced — but the production model prompt that decides WHEN and HOW to fan out was never built. Emission fires only via the seam/hook or a directly-seeded `dispatch_plan`, never from the model's own judgment.
+- **File(s):** `ailienant-core/brain/dispatch_emitter.py`.
+- **Error:** capability gap — the mechanism is complete and tested, but nothing populates it autonomously in production.
+- **Phase:** future dispatch-emission slice.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **CAPABILITY** — never-built capability, not a defect in what shipped.
+
+### DEBT-115 [LOW · Floating] — Per-project token-cost bucketing deferred from 11.1
+
+- **Date:** 2026-07-24 (11.4 planning)
+- **Reproduce:** `token_ledger.snapshot()` (`main.py`, exposed via `/api/v1/telemetry/tokens`) is a process-global in-memory aggregate with no `project_id` dimension, so the dashboard's cost cards stay global — honestly badged as such, not silently wrong. A per-project view needs the FinOps ledger to bucket accrual by project (ephemeral across restart unless also persisted).
+- **File(s):** `ailienant-core/main.py`, `ailienant-core/gateway/ledger.py`.
+- **Error:** capability gap — the global aggregate is correct as far as it goes; per-project bucketing was never built.
+- **Phase:** future FinOps slice.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **CAPABILITY** — never-built capability, not a defect in what shipped.
+
+### DEBT-135 [LOW · Floating] — Playwright dashboard fixture bypasses the real indexer
+
+- **Date:** 2026-07-27 (11.9)
+- **Reproduce:** `ailienant-core/tests/e2e/seed_dashboard_fixture.py` writes directly into the catalog SQLite + LanceDB stores via existing low-level helpers (`upsert_indexed_file`/`upsert_dependencies`/`SemanticMemoryManager._write_record`) to seed fixture data fast — it proves the dashboard's READ side renders correctly, but never exercises the indexer→dashboard pipeline end-to-end with a real crawl.
+- **File(s):** `ailienant-core/tests/e2e/seed_dashboard_fixture.py`.
+- **Error:** test-fidelity gap — the covered surface (dashboard rendering) is real; the uncovered surface (indexer-to-dashboard integration) is a genuine hole, not a false-positive risk in what IS tested.
+- **Phase:** future e2e-fidelity slice.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **CAPABILITY** — a coverage gap in test breadth, not a defect in shipped behavior.
+
+### DEBT-136 [LOW · Floating] — Playwright suite is Chromium-only, no cross-browser matrix
+
+- **Date:** 2026-07-27 (11.9)
+- **Reproduce:** `ailienant-extension/playwright.config.ts` configures a single Chromium project — no Firefox or WebKit run of `e2e/dashboard.spec.ts`. Accepted as smoke-gate scope for a locally-served SPA (the dashboard is never rendered inside an actual browser the user chooses; it is always the VS Code webview's own Chromium-based renderer).
+- **File(s):** `ailienant-extension/playwright.config.ts`.
+- **Error:** test-coverage gap, not a defect — the untested browsers are not part of this product's real runtime surface.
+- **Phase:** future cross-browser slice.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **CAPABILITY** — coverage breadth never built, and arguably lower-value than the entry's original framing suggests, since the webview's renderer is always Chromium regardless.
+
+### DEBT-148 [LOW · Floating] — Dashboard vector scatter map surfaces only file-level embeddings
+
+- **Date:** 2026-08-03 (12.13)
+- **Reproduce:** `/api/v1/memory/vectors` (`pca_project_2d`) projects only the file-level embedding per file. 12.13 added per-symbol chunk vectors (`symbol_chunk_embeddings`) for files over the chunking threshold, but the scatter map has no visualization for them — `VectorPoint` would need to become multi-valued per file to show chunk-level points alongside (or instead of) the file centroid.
+- **File(s):** `ailienant-core/api/memory_dashboard.py` (`pca_project_2d`, `VectorPoint`).
+- **Error:** feature gap — the existing file-level scatter map is correct as far as it goes; chunk-level visualization was never built.
+- **Phase:** future dashboard chunk-visibility slice.
+- **Notes:** **Ledger-integrity note (2026-08-25 debt sweep):** this id existed only as a row in the Open Items Dashboard table, with no `###` body entry at all — no reproduce command, no file list, no verification record — so every prior header-based count (including this sweep's own first pass) silently omitted it. Body reconstructed from the dashboard row's text plus direct source verification; see the Reconciliation Report above for the full R1/R2 finding. Verdict: **CAPABILITY** — never-built capability, not a defect in what shipped. Cross-references DEBT-140 (RESOLVED 12.13, the chunking substrate this visualization would sit on top of).
 
 ---
 

@@ -464,9 +464,11 @@ Approximately 40 channels were added incrementally. They are grouped below by fu
 | `syntax_gate_status` | `Literal["pass","fail","pending"]` |
 | `code_under_validation` | `Optional[str]` |
 | `style_gate_status` | `Literal["pass","fail","pending"]` |
-| `is_indexing_complete` | `bool` |
+| `is_indexing_complete` — `Deprecated:` | `bool` |
 | `guardrail_failed` | `bool` |
 | `validation_feedback` | `Optional[str]` |
+
+> **Deprecated:** `is_indexing_complete` was removed (DEBT-146, 13.x debt sweep). Declared "seeded from `lazy_indexer.is_complete` at graph invocation," but its only write site (`core/task_service.py`) always hardcoded `True`, and no node ever read it — `brain/orchestrator.py`, the presumed consumer, was itself deleted as dead code in 12.12. The real, live indexing-status signal is `LazyIndexer.is_complete`, broadcast over WS (`broadcast_indexing_complete`) straight to the frontend's `indexing` store; re-deriving a per-turn graph-state snapshot of it would duplicate that channel, and actually gating turns on it would reverse the deliberately non-blocking "lazy" indexing design — out of scope for a dead-state cleanup.
 
 ### 13.6 Circuit Breaker / Retry
 
