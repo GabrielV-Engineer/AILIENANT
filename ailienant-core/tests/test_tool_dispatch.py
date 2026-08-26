@@ -445,11 +445,11 @@ async def _capture_coder_system_prompt(state_overrides: Dict[str, Any]) -> str:
 
     step = WBSStep(
         step_number=1,
-        target_role="core_dev",  # type: ignore[arg-type]
-        action="edit_file",  # type: ignore[arg-type]
+        target_role="core_dev",
+        action="edit_file",
         target_file="main.py",
         description="Stub step.",
-        status="pending",  # type: ignore[arg-type]
+        status="pending",
     )
     mission = MissionSpecification(
         outcome="o", scope=["main.py"], constraints=["c"],

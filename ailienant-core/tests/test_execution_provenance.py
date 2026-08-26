@@ -29,7 +29,7 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture(autouse=True)
-def _clean_ring():  # type: ignore[no-untyped-def]
+def _clean_ring():
     xl._reset_for_tests()
     yield
     xl._reset_for_tests()

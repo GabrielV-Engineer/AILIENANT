@@ -156,7 +156,7 @@ def _simple_factories() -> Dict[str, ToolFactory]:
         # command, so it must never raise its own HITL card. No session in state
         # (e.g. an unwired caller) preserves the pre-DEBT-086 oracle-only routing.
         tool = CheckTypeIntegrityTool()
-        tool._session_id = _resolve_session_id(state)  # type: ignore[attr-defined]
+        tool._session_id = _resolve_session_id(state)
         return tool
 
     return {

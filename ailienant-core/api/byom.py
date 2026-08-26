@@ -786,6 +786,12 @@ async def ping_model(req: PingRequest) -> PingResponse:
     t0 = time.monotonic()
     try:
         resp = await litellm.acompletion(**kwargs)
+        # pyright (not mypy) correctly flags this: litellm.acompletion's return
+        # type is a Union including CustomStreamWrapper (the streaming variant,
+        # which has no `.choices`) — mypy resolves the non-streaming overload
+        # here and reports this ignore as unused, but pyright doesn't narrow
+        # the same way. Confirmed still required by `npx pyright` (DEBT-014's
+        # scrub, 2026-08-25) — do not remove based on mypy alone.
         reply = (resp.choices[0].message.content or "").strip()  # type: ignore[union-attr,index]
         ms = int((time.monotonic() - t0) * 1000)
         return PingResponse(ok=True, model=target.model, reply=reply[:120], latency_ms=ms)

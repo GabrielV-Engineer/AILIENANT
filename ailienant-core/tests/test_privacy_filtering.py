@@ -19,10 +19,10 @@ def _reset_rule_manager() -> Generator[None, None, None]:
     """Isolate singleton cache between tests."""
     yield
     rule_manager.reset()
-    RuleManager._instance = None  # type: ignore[assignment]
+    RuleManager._instance = None
 
 
-def _write_local_config(root: Path, config: dict) -> None:  # type: ignore[type-arg]
+def _write_local_config(root: Path, config: dict) -> None:
     cfg_dir = root / ".ailienant"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / ".ailienant.json").write_text(json.dumps(config), encoding="utf-8")

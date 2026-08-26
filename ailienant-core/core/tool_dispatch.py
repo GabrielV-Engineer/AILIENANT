@@ -657,7 +657,7 @@ def make_gateway_reasoner(
                 temperature=0.0,
                 session_id=session_id,
             )
-            return response.choices[0].message.content or ""  # type: ignore[union-attr,index]
+            return response.choices[0].message.content or ""
         except Exception as exc:  # noqa: BLE001 — a reasoning failure is a soft stop
             logger.warning("Gateway reasoner failed: %s", exc, exc_info=True)
             return ""

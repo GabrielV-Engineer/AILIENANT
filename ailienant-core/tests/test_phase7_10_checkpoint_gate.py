@@ -85,7 +85,7 @@ def test_identity_clauses_present_on_both_surfaces(tmp_path: Path) -> None:
 
 def test_conversation_namespaces_do_not_cross_contaminate() -> None:
     # Main chat keys on the bare session_id; the analyst keys on natt:{session_id} (7.10.3).
-    ts = TaskService()  # type: ignore[no-untyped-call]  # __init__ untyped (pre-existing debt)
+    ts = TaskService()
     base = "gate_iso_" + uuid.uuid4().hex[:8]
     natt = f"natt:{base}"
     _conversations.pop(base, None)

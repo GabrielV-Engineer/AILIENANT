@@ -190,7 +190,7 @@ def _payload() -> TaskPayload:
 async def test_early_plan_emit_precedes_turn_end_broadcast() -> None:
     """The first snapshot carrying a mission_spec triggers a seed-only plan
     broadcast (empty summary), ahead of the turn-end broadcast (real summary)."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     broadcast_plan = AsyncMock()
     request_human_approval = AsyncMock(
         return_value={"approved": True, "comment": None, "modified_content": None}

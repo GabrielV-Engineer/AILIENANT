@@ -370,7 +370,7 @@ async def test_live_chat_stream_opts_into_free_form_scaffolding(
     monkeypatch.setattr(ts_mod.vfs_manager, "broadcast_thinking_chunk", AsyncMock())
     monkeypatch.setattr(ts_mod.vfs_manager, "broadcast_token", AsyncMock())
 
-    ts = ts_mod.TaskService()  # type: ignore[no-untyped-call]
+    ts = ts_mod.TaskService()
     reply_parts: List[str] = []
     await ts._stream_with_thinking("s1", [{"role": "user", "content": "hi"}], reply_parts, 4096)
     assert captured.get("free_form_answer") is True

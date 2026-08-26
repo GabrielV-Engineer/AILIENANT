@@ -197,7 +197,7 @@ def test_safety_blocks_dangerous_import() -> None:
         async def run_workspace(self, *_: Any, **__: Any) -> Any:  # pragma: no cover
             raise AssertionError("executor must not be called after a safety block")
 
-    oracle = BenchmarkOracle(corpus_root, _NeverCalledExecutor())  # type: ignore[arg-type]
+    oracle = BenchmarkOracle(corpus_root, _NeverCalledExecutor())
     verdict = asyncio.run(oracle.run_oracle(problem, evil_patch))
     assert verdict.passed is False
     assert any("safety_blocked" in f for f in verdict.failures)

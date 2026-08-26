@@ -26,12 +26,12 @@ def _payload() -> TaskPayload:
 
 
 async def test_idle_session_is_not_busy() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     assert ts.is_session_busy("sess-idle") is False
 
 
 async def test_live_runner_is_busy() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     started = asyncio.Event()
 
     async def _slow_runner() -> None:
@@ -55,7 +55,7 @@ async def test_done_task_still_registered_is_not_busy() -> None:
     """A momentary window between task completion and its done-callback popping
     the registry entry must not read as busy — is_session_busy checks
     task.done() directly rather than mere key presence."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
 
     async def _instant() -> None:
         return
@@ -69,7 +69,7 @@ async def test_done_task_still_registered_is_not_busy() -> None:
 
 
 async def test_fresh_pause_is_busy() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     import time
 
     ts._paused_tasks["sess-paused"] = (_payload(), "SEQUENTIAL", time.monotonic())
@@ -84,7 +84,7 @@ async def test_abandoned_pause_past_ttl_is_not_busy_and_is_discarded(
     monkeypatch.setattr(config_module, "PAUSED_INTERRUPT_TTL_S", 0.01)
     monkeypatch.setattr(task_service_module, "PAUSED_INTERRUPT_TTL_S", 0.01)
 
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     import time
 
     ts._paused_tasks["sess-abandoned"] = (
@@ -102,7 +102,7 @@ async def test_register_active_task_replace_semantics_unaffected() -> None:
     idempotent-replace behavior — test_agentic_cell_lifecycle.py's successor-task
     guard depends on a second registration for the same session_id replacing the
     first, not being rejected."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     started_a = asyncio.Event()
     started_b = asyncio.Event()
 

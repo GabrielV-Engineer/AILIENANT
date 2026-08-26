@@ -273,7 +273,7 @@ async def test_check_type_integrity_with_session_routes_through_silent_resolver(
     monkeypatch.setattr(sb, "get_trusted_adapter", _interactive)
 
     tool = CheckTypeIntegrityTool()
-    tool._session_id = "s1"  # type: ignore[attr-defined]
+    tool._session_id = "s1"
     out = await tool._arun(target_dir=str(tmp_path), checker="mypy")
 
     assert calls == ["silent"], "must route through the non-interactive resolver only"
@@ -324,7 +324,7 @@ async def test_check_type_integrity_session_no_bridge_degrades_silently(
     )
 
     tool = CheckTypeIntegrityTool()
-    tool._session_id = "s1"  # type: ignore[attr-defined]
+    tool._session_id = "s1"
     out = await tool._arun(target_dir=str(tmp_path), checker="mypy")
     assert out.startswith("[check_type_integrity:mypy] exit=")
 

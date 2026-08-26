@@ -155,7 +155,7 @@ def test_trust1_trusted_session_routes_to_devcontainer_with_native_fallback() ->
     trusted = _real_get_trusted_adapter()
     assert isinstance(trusted, DevcontainerSandboxAdapter)
     # The fallback is the HITL-gated Native tier — never the untrusted-code cage.
-    assert isinstance(trusted._fallback, NativeHITLSandboxAdapter)  # type: ignore[attr-defined]
+    assert isinstance(trusted._fallback, NativeHITLSandboxAdapter)
     sandbox.reset_trusted_adapter()
 
 

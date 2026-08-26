@@ -50,7 +50,7 @@ def _make_step(
         action=action,  # type: ignore[arg-type]
         target_file=target_file,
         description=description,
-        status="pending",  # type: ignore[arg-type]
+        status="pending",
     )
 
 

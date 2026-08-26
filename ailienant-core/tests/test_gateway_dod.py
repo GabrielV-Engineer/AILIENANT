@@ -47,7 +47,7 @@ def registered() -> Iterator[None]:
 
 def _dispatch(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     result = asyncio.run(server.dispatch_call(name, args))
-    return json.loads(result[0].text)  # type: ignore[no-any-return]
+    return json.loads(result[0].text)
 
 
 _V1_VERBS = {
@@ -116,7 +116,7 @@ def test_dangerous_verb_denied_and_reported_without_hanging(
         result = await asyncio.wait_for(
             server.dispatch_call("dod_danger_verb", {}), timeout=2.0
         )
-        return json.loads(result[0].text)  # type: ignore[no-any-return]
+        return json.loads(result[0].text)
 
     payload = asyncio.run(_call())
     assert payload["status"] == "denied"

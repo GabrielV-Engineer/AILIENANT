@@ -77,7 +77,7 @@ async def test_planner_mode_enters_ideation_and_suspends(_analyst_debug: None) -
     """planner_mode_active=True must route to the ideation loop: the analyst asks
     a batch of questions and the turn suspends on a native interrupt WITHOUT a
     MissionSpecification and without ever reaching the write-tier approval path."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     broadcast_stream_end = AsyncMock()
     request_human_approval = AsyncMock()
     send_personal_message = AsyncMock()
@@ -168,7 +168,7 @@ async def test_non_planner_final_state_produces_the_applied_summary() -> None:
     the final one carrying the real, applied-outcome summary. Only the LAST
     call matters here; the seed's own behavior is exercised in the resume
     test below."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     plan_doc = AsyncMock()
 
     with patch("brain.engine.alienant_app.astream", side_effect=_astream_final(_FINAL_WITH_APPLIED_STEP)), \
@@ -194,7 +194,7 @@ async def test_resume_does_not_re_seed_the_plan_document() -> None:
     turn's real final summary — noisy at best, and on a multi-step WBS,
     proportional to step count. A resumed run must broadcast the plan
     document exactly once: the real final summary, never the seed."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     plan_doc = AsyncMock()
 
     with patch("brain.engine.alienant_app.astream", side_effect=_astream_final(_FINAL_WITH_APPLIED_STEP)), \
@@ -222,7 +222,7 @@ async def test_resume_does_not_re_seed_the_plan_document() -> None:
 async def test_completed_run_emits_checkpoint_id(_l2_checkpoint: Any) -> None:
     """Because the graph now runs on thread_id=session_id, _finalize_stream finds
     the L1 tuple, promotes it, and broadcasts a non-None checkpoint_id."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     broadcast_stream_end = AsyncMock()
 
     with patch("core.task_service.vfs_manager.broadcast_pipeline_step", new=AsyncMock()), \

@@ -31,7 +31,7 @@ def test_restores_a_leaked_aembedding_and_logs_the_offending_test(
         with _litellm_leak_guard():
             # Simulate a test that patches litellm directly and forgets to
             # restore it (the exact leak DEBT-201 could never pin down).
-            litellm.aembedding = lambda *a, **k: None  # type: ignore[assignment]
+            litellm.aembedding = lambda *a, **k: None
 
     assert litellm.aembedding is real
     assert "litellm.aembedding leaked" in caplog.text
@@ -43,7 +43,7 @@ def test_restores_a_leaked_acompletion_and_logs_the_offending_test(
     real = litellm.acompletion
     with caplog.at_level(logging.ERROR, logger="AILIENANT_TEST_ISOLATION"):
         with _litellm_leak_guard():
-            litellm.acompletion = lambda *a, **k: None  # type: ignore[assignment]
+            litellm.acompletion = lambda *a, **k: None
 
     assert litellm.acompletion is real
     assert "litellm.acompletion leaked" in caplog.text

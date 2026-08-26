@@ -76,7 +76,7 @@ def _minimal_payload() -> TaskPayload:
 
 
 async def test_life1_cancelled_task_closes_its_cell() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     session = _register_cell("sess-1")
     started = asyncio.Event()
 
@@ -107,7 +107,7 @@ async def test_life1_cancelled_task_closes_its_cell() -> None:
 
 
 async def test_life2_paused_graph_guard_preserves_the_cell() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     session = _register_cell("sess-2")
 
     # Simulate the native-interrupt pause: the runner completes normally (no
@@ -132,7 +132,7 @@ async def test_life2_paused_graph_guard_preserves_the_cell() -> None:
 
 
 async def test_life3_successor_task_protects_the_cell() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     session = _register_cell("sess-3")
 
     predecessor_done = asyncio.Event()
@@ -170,7 +170,7 @@ async def test_life3_successor_task_protects_the_cell() -> None:
 
 
 async def test_life4_disconnect_sweep_reaps_only_the_orphan() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     orphan_session = _register_cell("sess-orphan")
     live_session = _register_cell("sess-live")
     paused_session = _register_cell("sess-paused")
@@ -204,7 +204,7 @@ async def test_life4_disconnect_sweep_reaps_only_the_orphan() -> None:
 
 
 async def test_life5_teardown_task_set_drains_to_empty() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     _register_cell("sess-5")
 
     async def _runner() -> None:
@@ -223,7 +223,7 @@ async def test_life5_teardown_task_set_drains_to_empty() -> None:
 
 
 async def test_life6_teardown_paths_are_idempotent() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
 
     # No cell registered at all for this session — must not raise.
     await ac.close_cell_session("never-existed")

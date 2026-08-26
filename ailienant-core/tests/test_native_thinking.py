@@ -225,7 +225,7 @@ async def test_thinking_stream_records_usage() -> None:
 
 
 async def test_stream_chat_answer_demuxes_channels() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
 
     order: List[str] = []
     broadcast_thinking = AsyncMock(side_effect=lambda *a, **k: order.append("thinking"))

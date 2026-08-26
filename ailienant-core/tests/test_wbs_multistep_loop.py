@@ -31,7 +31,7 @@ def anyio_backend() -> str:
 def _step(n: int, status: str = "pending", action: str = "edit_file",
           target_file: str = "f.py", depends_on: "List[int] | None" = None) -> WBSStep:
     return WBSStep(
-        step_number=n, target_role="core_dev",  # type: ignore[arg-type]
+        step_number=n, target_role="core_dev",
         action=action,  # type: ignore[arg-type]
         target_file=target_file, description=f"step {n}",
         status=status,  # type: ignore[arg-type]

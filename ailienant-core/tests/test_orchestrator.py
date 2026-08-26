@@ -225,4 +225,4 @@ async def test_orchestrator_red_alert_works_with_dict_shaped_context_metrics() -
 
 
 # ── Silence unused-import lint when MagicMock isn't referenced ───────────────
-_ = MagicMock  # type: ignore[truthy-function]
+_ = MagicMock

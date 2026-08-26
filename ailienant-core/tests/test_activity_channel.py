@@ -227,8 +227,8 @@ async def test_understanding_then_plan_markers_fire_in_order() -> None:
         outcome="Bump the increment.", scope=["calc.py"], constraints=["none"],
         decisions=["go"],
         tasks=[WBSStep(
-            step_number=1, target_role="core_dev", action="edit_file",  # type: ignore[arg-type]
-            target_file="calc.py", description="bump", status="pending",  # type: ignore[arg-type]
+            step_number=1, target_role="core_dev", action="edit_file",
+            target_file="calc.py", description="bump", status="pending",
         )],
         checks=["ok"],
     )
@@ -323,7 +323,7 @@ async def test_apply_commit_diff_marker_shape() -> None:
     with patch("brain.apply_gate.request_graph_approval"), \
          patch("core.write_pipeline.apply_patch_set", new=AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})), \
          patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
-        await run_apply_commit_node(state, {"configurable": {"push_activity": _capture_activity}})  # type: ignore[arg-type]
+        await run_apply_commit_node(state, {"configurable": {"push_activity": _capture_activity}})
 
     diff_evt = next(c for c in captured if c["kind"] == "diff")
     assert diff_evt["target"] == "calc.py"

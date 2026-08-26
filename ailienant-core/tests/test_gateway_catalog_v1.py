@@ -63,7 +63,7 @@ def registered() -> Iterator[None]:
 
 def _dispatch(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     result = asyncio.run(server.dispatch_call(name, args))
-    return json.loads(result[0].text)  # type: ignore[no-any-return]
+    return json.loads(result[0].text)
 
 
 _WS = "/abs/workspace"

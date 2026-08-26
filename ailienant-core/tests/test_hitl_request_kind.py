@@ -128,4 +128,4 @@ async def test_request_human_approval_threads_kind_into_emit() -> None:
     assert emitted_event.data.request_kind == "DRIFT_DETECTED"
     assert emitted_event.data.session_id == "sess-C"
     # Pending registry was cleaned up in the finally branch.
-    assert emitted_event.data.approval_id not in manager._hitl_pending  # type: ignore[operator]
+    assert emitted_event.data.approval_id not in manager._hitl_pending

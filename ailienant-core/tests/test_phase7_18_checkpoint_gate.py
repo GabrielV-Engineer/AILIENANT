@@ -302,11 +302,11 @@ def _run_command_state(command: str, **overrides: Any) -> Dict[str, Any]:
     # For a run_command step the WBS schema overloads target_file to hold the command.
     step = WBSStep(
         step_number=1,
-        target_role="core_dev",  # type: ignore[arg-type]
-        action="run_command",  # type: ignore[arg-type]
+        target_role="core_dev",
+        action="run_command",
         target_file=command,
         description="Run the project verification.",
-        status="pending",  # type: ignore[arg-type]
+        status="pending",
     )
     mission = MissionSpecification(
         outcome="Gate.",
@@ -337,9 +337,9 @@ def _run_command_apply_state(command: str, **overrides: Any) -> Dict[str, Any]:
     """A state that already reached the apply gate with this step's command
     staged and ALLOW-decided — mirrors what run_apply_prepare_node commits."""
     step = WBSStep(
-        step_number=1, target_role="core_dev", action="run_command",  # type: ignore[arg-type]
+        step_number=1, target_role="core_dev", action="run_command",
         target_file=command, description="Run the project verification.",
-        status="pending",  # type: ignore[arg-type]
+        status="pending",
     )
     mission = MissionSpecification(
         outcome="Gate.", scope=["main.py"], constraints=["-"], decisions=["-"],

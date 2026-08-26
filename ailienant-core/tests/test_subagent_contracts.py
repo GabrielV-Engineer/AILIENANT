@@ -100,7 +100,7 @@ def test_response_schema_fields_bounds() -> None:
 
 def test_response_field_type_closed_vocab() -> None:
     for t in ("str", "int", "float", "bool", "list_str"):
-        assert SubagentResponseField(name="x", type=t, description="d").type == t  # type: ignore[arg-type]
+        assert SubagentResponseField(name="x", type=t, description="d").type == t
     with pytest.raises(ValidationError):
         SubagentResponseField(name="x", type="dict", description="d")  # type: ignore[arg-type]
 
@@ -142,7 +142,7 @@ def test_raw_digest_capped_at_shared_constant() -> None:
 
 def test_result_status_closed_vocab() -> None:
     for s in ("ok", "error", "budget_exhausted", "denied"):
-        assert SubagentResultEnvelope(task_id="t", status=s, raw_digest="").status == s  # type: ignore[arg-type]
+        assert SubagentResultEnvelope(task_id="t", status=s, raw_digest="").status == s
     with pytest.raises(ValidationError):
         SubagentResultEnvelope(task_id="t", status="timeout", raw_digest="")  # type: ignore[arg-type]
 

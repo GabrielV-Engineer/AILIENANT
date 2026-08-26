@@ -26,11 +26,11 @@ from brain.state import MissionSpecification, WBSStep
 def _make_step(action: str, n: int = 1) -> WBSStep:
     return WBSStep(
         step_number=n,
-        target_role="core_dev",  # type: ignore[arg-type]
+        target_role="core_dev",
         action=action,  # type: ignore[arg-type]
         target_file="main.py",
         description="Stub step.",
-        status="pending",  # type: ignore[arg-type]
+        status="pending",
     )
 
 

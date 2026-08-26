@@ -194,7 +194,7 @@ def _reset_ledger() -> Any:
 @pytest.fixture(autouse=True)
 def _reset_ram_vfs() -> Any:
     """The VFSMiddleware._ram_vfs is a process-singleton — keep tests isolated."""
-    vfs = VFSMiddleware()  # type: ignore[no-untyped-call]
+    vfs = VFSMiddleware()
     vfs._ram_vfs.clear()
     yield
     vfs._ram_vfs.clear()
@@ -476,7 +476,7 @@ def test_v3_tracemalloc_50_node_lifecycle_returns_to_baseline() -> None:
     bound, while one-time churn is absorbed by the calibration — which a fixed ceiling
     could not distinguish.
     """
-    vfs = VFSMiddleware()  # type: ignore[no-untyped-call]
+    vfs = VFSMiddleware()
 
     def _lifecycle_delta() -> int:
         """Run one full allocate→destroy cycle; return its net traced-heap delta."""

@@ -380,7 +380,7 @@ class SemanticMemoryManager:
                 arrow_tbl = ds.to_table(columns=columns, filter=expr)
             except (TypeError, AttributeError):
                 arrow_tbl = ds.scanner(columns=columns, filter=expr).to_table()
-            return arrow_tbl.to_pylist()  # type: ignore[no-any-return]
+            return arrow_tbl.to_pylist()
         except Exception as err:  # noqa: BLE001 — pushdown is an optimisation, not a correctness gate
             logger.debug("chunk-table pushdown unavailable (%s) — bounded fallback.", err)
             rows = tbl.to_arrow().to_pylist()

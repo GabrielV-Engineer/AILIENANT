@@ -73,11 +73,11 @@ def _make_step(command: str = "pytest -q", n: int = 1) -> WBSStep:
     # command to execute ("ruta ... o comando a ejecutar").
     return WBSStep(
         step_number=n,
-        target_role="core_dev",  # type: ignore[arg-type]
-        action="run_command",  # type: ignore[arg-type]
+        target_role="core_dev",
+        action="run_command",
         target_file=command,
         description="Run the project verification.",
-        status="pending",  # type: ignore[arg-type]
+        status="pending",
     )
 
 

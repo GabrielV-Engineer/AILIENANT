@@ -51,8 +51,8 @@ def _mission() -> MissionSpecification:
         outcome="Test outcome.", scope=["calc.py"], constraints=["none"],
         decisions=["go"],
         tasks=[WBSStep(
-            step_number=1, target_role="core_dev", action="edit_file",  # type: ignore[arg-type]
-            target_file="calc.py", description="bump", status="pending",  # type: ignore[arg-type]
+            step_number=1, target_role="core_dev", action="edit_file",
+            target_file="calc.py", description="bump", status="pending",
         )],
         checks=["ok"],
     )

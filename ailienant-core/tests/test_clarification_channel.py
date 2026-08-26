@@ -296,7 +296,7 @@ async def test_grounding_loop_excludes_ask_user_question(
 async def test_emit_interrupt_card_surfaces_question_and_falls_back_correlation_id() -> None:
     from core.task_service import TaskService
 
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     sent: List[Any] = []
 
     async def _capture(session_id: str, event: Any) -> None:
@@ -331,7 +331,7 @@ async def test_emit_interrupt_card_surfaces_questions_batch_with_synthesized_des
     sensible action_description fallback, and `questions` rides through."""
     from core.task_service import TaskService
 
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     sent: List[Any] = []
 
     async def _capture(session_id: str, event: Any) -> None:
@@ -367,7 +367,7 @@ async def test_emit_interrupt_card_surfaces_questions_batch_with_synthesized_des
 async def test_emit_interrupt_card_approval_shape_is_unaffected() -> None:
     from core.task_service import TaskService
 
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     sent: List[Any] = []
 
     async def _capture(session_id: str, event: Any) -> None:

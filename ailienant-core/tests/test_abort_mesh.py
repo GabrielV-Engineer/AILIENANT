@@ -39,7 +39,7 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_register_and_abort_session() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     started = asyncio.Event()
 
     async def _slow_runner() -> None:
@@ -68,7 +68,7 @@ async def test_register_and_abort_session() -> None:
 
 
 async def test_run_coding_task_aborts_cleanly_on_cancel() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     started = asyncio.Event()
 
     def _slow_astream(*_a: Any, **_k: Any) -> AsyncIterator[dict[str, Any]]:
@@ -129,7 +129,7 @@ async def test_run_coding_task_aborts_cleanly_on_cancel() -> None:
 
 
 async def test_stream_analyst_reply_aborts_cleanly_on_cancel() -> None:
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     started = asyncio.Event()
 
     async def _slow_analyst(*_a: Any, **_k: Any) -> AsyncIterator[str]:
@@ -271,7 +271,7 @@ async def test_broadcast_abort_ack_sends_signalled_flag() -> None:
     from api.websocket_manager import ConnectionManager
     from api.ws_contracts import ServerAbortAckEvent
 
-    mgr = ConnectionManager()  # type: ignore[no-untyped-call]
+    mgr = ConnectionManager()
     sent = AsyncMock()
     with patch.object(mgr, "send_personal_message", sent):
         await mgr.broadcast_abort_ack("sess-X", signalled=False)

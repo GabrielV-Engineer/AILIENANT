@@ -307,7 +307,7 @@ async def test_ts1_thinking_streamer_coalesces_and_isolates_narration() -> None:
 def _make_step(target_file: str = "calc.py", action: str = "edit_file") -> WBSStep:
     return WBSStep(
         step_number=1, target_role="core_dev", action=action,  # type: ignore[arg-type]
-        target_file=target_file, description="Bump increment.", status="pending",  # type: ignore[arg-type]
+        target_file=target_file, description="Bump increment.", status="pending",
     )
 
 
@@ -393,7 +393,7 @@ async def test_n3_planner_forwards_seam_and_validates() -> None:
 
     gw = AsyncMock(return_value=MissionSpecification(
         outcome="Out.", scope=["s.py"], constraints=["c"], decisions=["d"],
-        tasks=[WBSStep(step_number=1, target_role="architect_refactor",  # type: ignore[arg-type]
+        tasks=[WBSStep(step_number=1, target_role="architect_refactor",
                        action="read_file", target_file="s.py", description="t.")],
         checks=["ok"],
     ).model_dump_json())

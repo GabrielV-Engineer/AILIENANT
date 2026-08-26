@@ -149,7 +149,7 @@ async def test_emit_interrupt_card_forwards_proposed_files() -> None:
     card with no diff at all."""
     from core.task_service import TaskService
 
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     sent: List[Any] = []
 
     async def _capture(session_id: str, event: Any) -> None:
@@ -183,7 +183,7 @@ async def test_emit_interrupt_card_proposed_files_none_when_absent() -> None:
     None, not raise, when the payload never carried proposed_files."""
     from core.task_service import TaskService
 
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     sent: List[Any] = []
 
     async def _capture(session_id: str, event: Any) -> None:

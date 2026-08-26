@@ -197,9 +197,9 @@ async def test_node1_coder_forwards_stream_thinking_to_gateway_and_parses_edits(
         return None
 
     step = WBSStep(
-        step_number=1, target_role="core_dev",   # type: ignore[arg-type]
-        action="edit_file", target_file="f.py",  # type: ignore[arg-type]
-        description="bump", status="pending",    # type: ignore[arg-type]
+        step_number=1, target_role="core_dev",
+        action="edit_file", target_file="f.py",
+        description="bump", status="pending",
     )
     mission = MissionSpecification(
         outcome="T", scope=["f.py"], constraints=["c"],

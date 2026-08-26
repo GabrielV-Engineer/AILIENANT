@@ -33,7 +33,7 @@ from brain.state import MissionSpecification, WBSStep
 
 
 def _reset_binding() -> None:
-    storage_paths._bound_project_id = None  # type: ignore[attr-defined]
+    storage_paths._bound_project_id = None
 
 
 def _spec() -> MissionSpecification:

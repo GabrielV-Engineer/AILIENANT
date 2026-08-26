@@ -140,14 +140,14 @@ def test_relay_skips_step_blocked_on_unmet_depends_on() -> None:
     import types
 
     blocked = WBSStep(
-        step_number=1, target_role="core_dev", action="edit_file",  # type: ignore[arg-type]
+        step_number=1, target_role="core_dev", action="edit_file",
         target_file="a.py", description="depends on a rejected step",
-        status="pending", depends_on=[0],  # type: ignore[arg-type]
+        status="pending", depends_on=[0],
     )
     fallback = WBSStep(
-        step_number=2, target_role="qa_tester", action="edit_file",  # type: ignore[arg-type]
+        step_number=2, target_role="qa_tester", action="edit_file",
         target_file="b.py", description="independent, no dependency",
-        status="pending",  # type: ignore[arg-type]
+        status="pending",
     )
     mission = types.SimpleNamespace(tasks=[blocked, fallback])
     state = {

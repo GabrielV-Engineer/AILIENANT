@@ -50,7 +50,7 @@ async def test_two_sessions_sharing_one_connection_resume_independently() -> Non
     chat sessions (a retried prompt in a fresh session) share one WS
     connection's client_id. Answering session B's clarification must resume
     B — and must NOT be satisfied by, or disturb, A's still-paused entry."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     connection_client_id = "e9d17a46-ad64-414f-b057-44f98d3a4a6f"
     session_a = "58321ab3-e689-423f-8056-7c88a99ac5a7"
     session_b = "c7cde11e-1c78-4cf8-90d1-d7ab3ecd0024"
@@ -72,7 +72,7 @@ async def test_pre_fix_behavior_would_have_missed_both_sessions() -> None:
     (the pre-fix behavior) finds neither session's pause, since a real
     connection id never equals either session's own id once more than one
     session shares the connection — reproducing the silent no-resume."""
-    ts = TaskService()  # type: ignore[no-untyped-call]
+    ts = TaskService()
     connection_client_id = "e9d17a46-ad64-414f-b057-44f98d3a4a6f"
     session_b = "c7cde11e-1c78-4cf8-90d1-d7ab3ecd0024"
 

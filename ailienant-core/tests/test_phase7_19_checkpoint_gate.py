@@ -254,7 +254,7 @@ def test_pty1_stdin_and_interrupt() -> None:
         async def write_stdin(self, data: bytes) -> None:
             received.append(data)
 
-        async def interrupt(self) -> None:  # type: ignore[override]
+        async def interrupt(self) -> None:
             self.interrupted_count += 1
 
     async def body() -> None:

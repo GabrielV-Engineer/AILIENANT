@@ -210,7 +210,7 @@ def _max_depth(node: ast.AST, current: int = 0) -> int:
     return max(child_depths, default=current)
 
 
-def _per_function_cc(tree: ast.AST) -> List[dict]:  # type: ignore[type-arg]
+def _per_function_cc(tree: ast.AST) -> List[dict]:
     """Per-function McCabe CC breakdown."""
     results = []
     for node in ast.walk(tree):
@@ -516,7 +516,7 @@ class DependencyAuditTool(BaseTool):
             manifests.append({"file": mp, "deps": deps})
 
         # Optional CVE lookup (brave-search MCP compatible)
-        cve_results: List[dict] = []  # type: ignore[type-arg]
+        cve_results: List[dict] = []
         cve_checked = False
         if self._search_fn is not None:
             cve_checked = True

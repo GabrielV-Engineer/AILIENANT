@@ -103,7 +103,7 @@ async def test_execute_tracked_tool_registers_and_broadcasts_in_order() -> None:
     assert spec.exit_code == 0
     assert spec.duration_ms is not None
     # Registry was populated with the (session_id, tool_call_id) key.
-    assert (("sess-1", spec.tool_call_id)) in ts._tool_call_registry  # type: ignore[operator]
+    assert (("sess-1", spec.tool_call_id)) in ts._tool_call_registry
 
     # Broadcast ORDER: start → stream_chunk → result. We assert on call_count and
     # the relative ordering by inspecting `mock_vfs.method_calls`.
@@ -177,7 +177,7 @@ def test_cleanup_session_purges_only_matching_entries() -> None:
         ("sess-A", "id-1"), ("sess-A", "id-2"),
         ("sess-B", "id-3"),
     ]:
-        ts._tool_call_registry[(sid, tcid)] = ToolCallSpec(  # type: ignore[index]
+        ts._tool_call_registry[(sid, tcid)] = ToolCallSpec(
             tool_call_id=tcid,
             tool_name="sandbox_bash",
             args={"command": "x"},
@@ -188,7 +188,7 @@ def test_cleanup_session_purges_only_matching_entries() -> None:
     purged = ts.cleanup_session("sess-A")
     assert purged == 2
     # Only sess-B's entry survives.
-    remaining = list(ts._tool_call_registry.keys())  # type: ignore[arg-type]
+    remaining = list(ts._tool_call_registry.keys())
     assert remaining == [("sess-B", "id-3")]
 
 
@@ -263,7 +263,7 @@ async def test_side_effect_free_flag_is_recorded_on_the_spec() -> None:
     assert spec_dangerous.side_effect_free is False
     assert spec_safe.side_effect_free is True
     # The registry entries reflect the flag exactly.
-    stored_d = ts._tool_call_registry[("s", spec_dangerous.tool_call_id)]  # type: ignore[index]
-    stored_s = ts._tool_call_registry[("s", spec_safe.tool_call_id)]      # type: ignore[index]
+    stored_d = ts._tool_call_registry[("s", spec_dangerous.tool_call_id)]
+    stored_s = ts._tool_call_registry[("s", spec_safe.tool_call_id)]
     assert stored_d.side_effect_free is False
     assert stored_s.side_effect_free is True
