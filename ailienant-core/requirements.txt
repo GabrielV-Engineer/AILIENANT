@@ -90,7 +90,6 @@ tree-sitter-powershell
 tree-sitter-zig
 tree-sitter-php==0.24.1
 tree-sitter-dart==0.1.0
-ruff>=0.7
 pypdf==5.4.0
 markdownify==1.1.0
 docker>=7.0.0
@@ -100,8 +99,3 @@ psutil>=5.9.0
 nvidia-ml-py>=12.535.108
 pywinpty>=2.0.0; sys_platform == "win32"
 filelock>=3.13.0
-pytest>=9.0.0
-pytest-cov>=7.1.0
-hypothesis>=6.165.0
-mypy>=2.1.0
-pre-commit>=4.6.1

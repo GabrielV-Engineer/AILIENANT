@@ -27,7 +27,7 @@ You'll need **Python 3.10+** (3.13 recommended), **Node.js 20+**, and **VS Code 
 cd ailienant-core
 python -m venv venv
 .\venv\Scripts\activate          # Unix/macOS: source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime deps + ruff/mypy/pytest for §4-5 below
 copy ..\.env.example ..\.env     # Unix/macOS: cp ../.env.example ../.env
 
 # Extension

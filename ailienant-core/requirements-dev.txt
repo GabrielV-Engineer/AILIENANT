@@ -1,0 +1,11 @@
+-r requirements.txt
+
+# Dev/lint/test tooling only — never shipped in the app-runtime image
+# (root Dockerfile installs requirements.txt alone). Split out to keep the
+# production image to its actual runtime footprint (DEBT-179).
+ruff>=0.7
+pytest>=9.0.0
+pytest-cov>=7.1.0
+hypothesis>=6.165.0
+mypy>=2.1.0
+pre-commit>=4.6.1

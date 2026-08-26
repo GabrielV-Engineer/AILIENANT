@@ -19,14 +19,13 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CORE_DIR = REPO_ROOT / "ailienant-core"
 _BIN_DIRS = (CORE_DIR / "venv", CORE_DIR / ".venv")
 
 
-def _resolve(tool: str) -> Optional[Path]:
+def _resolve(tool: str) -> Path | None:
     for base in _BIN_DIRS:
         for candidate in (base / "Scripts" / f"{tool}.exe", base / "bin" / tool):
             if candidate.exists():
@@ -34,7 +33,7 @@ def _resolve(tool: str) -> Optional[Path]:
     return None
 
 
-def main(argv: List[str]) -> int:
+def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print("usage: pre_commit_backend_gate.py <ruff|mypy> <file>...", file=sys.stderr)
         return 1
@@ -53,13 +52,14 @@ def main(argv: List[str]) -> int:
     if binary is None:
         print(
             f"[pre-commit] No {tool} found under ailienant-core/venv or .venv — "
-            "create the venv and install requirements.txt first. Skipping.",
+            "create the venv and install requirements.txt AND requirements-dev.txt "
+            "first (ruff/mypy/pytest live in the latter). Skipping.",
             file=sys.stderr,
         )
         return 0
 
     args = [str(binary), "check", *changed] if tool == "ruff" else [str(binary), *changed]
-    result = subprocess.run(args, cwd=CORE_DIR)
+    result = subprocess.run(args, cwd=CORE_DIR, check=False)
     return result.returncode
 
 
