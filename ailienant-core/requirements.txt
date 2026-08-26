@@ -29,7 +29,7 @@ langgraph-checkpoint==4.1.0
 langgraph-prebuilt==1.1.0
 langgraph-sdk==0.4.2
 langsmith==0.7.25
-mcp==1.27.0
+mcp==2.0.0
 networkx==3.6.1
 numpy==2.4.4
 orjson==3.11.8
