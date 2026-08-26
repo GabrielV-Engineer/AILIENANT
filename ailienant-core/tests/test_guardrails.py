@@ -6,6 +6,7 @@ import asyncio
 from typing import List, Tuple
 
 import pytest
+from langgraph.graph import END
 
 from brain.guardrails import MAX_RETRIES, run_validate_output_node, route_after_validation
 from core.io_coalescer import IOCoalescer, _MASS_THRESHOLD, _UNLINK_SENTINEL
@@ -175,8 +176,19 @@ def test_route_after_validation_routes_to_coder_on_failure() -> None:
     assert route_after_validation(state) == "coder_agent"
 
 
-def test_route_after_validation_routes_to_end_on_success() -> None:
-    """route_after_validation returns END when guardrail_failed=False."""
-    from langgraph.graph import END
-    state = {"guardrail_failed": False}
-    assert route_after_validation(state) == END
+def test_route_after_validation_routes_to_run_checks_on_success() -> None:
+    """route_after_validation routes to run_checks (brain/checks_gate.py) when
+    guardrail_failed=False, nothing more is dispatchable, and the turn's
+    Effort Budget is 'deep' — the plan's own acceptance criteria run before
+    the graph reaches END on run_checks's own edge, rather than ending
+    directly here."""
+    state = {"guardrail_failed": False, "effort_level": "deep"}
+    assert route_after_validation(state) == "run_checks"
+
+
+def test_route_after_validation_ends_directly_on_light_and_balanced_effort() -> None:
+    """Only 'deep' pays for running the plan's own checks — light/balanced
+    (and no effort_level set at all) end the turn here instead."""
+    for effort_level in ("light", "balanced", None):
+        state = {"guardrail_failed": False, "effort_level": effort_level}
+        assert route_after_validation(state) == END

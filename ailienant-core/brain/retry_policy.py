@@ -13,6 +13,8 @@ intentionally out of scope here and is consolidated separately.
 """
 from __future__ import annotations
 
+from typing import Dict, Optional
+
 # Output validation self-correction loop (validate_output → coder_agent).
 GUARDRAIL_MAX_RETRIES: int = 2
 
@@ -54,3 +56,45 @@ WAL_CHECKPOINT_MAX_RETRIES: int = 3
 # indefinitely — LangGraph's own recursion_limit would eventually stop it, but
 # that surfaces as an opaque graph error, not an honest step-failure message.
 APPLY_REJECT_MAX_ATTEMPTS: int = 2
+
+# ── Effort Budget ────────────────────────────────────────────────────────────
+# Replaces the old SEQUENTIAL/MICRO_SWARM/FULL_SWARM execution-mode selector,
+# which never controlled anything the main graph actually runs — the topology
+# channel it wrote was persisted and read back on resume, but no routing
+# decision in brain/engine.py ever branched on it. Effort genuinely controls
+# three things a turn on slow local hardware can meaningfully trade off:
+# whether the lint/LSP gate runs on top of the always-on syntax gate (that one
+# is a correctness floor in every tier, never a tier feature), how many
+# self-heal attempts a failure gets, and whether the plan's own acceptance
+# checks execute at turn end.
+EffortLevel = str  # "light" | "balanced" | "deep" — see brain/state.py's Literal
+
+_EFFORT_LEVELS: frozenset[str] = frozenset({"light", "balanced", "deep"})
+DEFAULT_EFFORT_LEVEL: str = "balanced"
+
+# Light: a syntax/exec failure fails the step outright rather than paying a
+# local self-heal round-trip — the fast, cheap path exists precisely so a
+# trivial turn does not pay CORRECTION_MAX_ATTEMPTS's full cost on hardware
+# where each attempt is expensive. Balanced/Deep keep the existing ceiling.
+_EFFORT_CORRECTION_CEILING: Dict[str, int] = {
+    "light": 0,
+    "balanced": CORRECTION_MAX_ATTEMPTS,
+    "deep": CORRECTION_MAX_ATTEMPTS,
+}
+
+
+def resolve_correction_ceiling(effort_level: Optional[str]) -> int:
+    """Self-heal attempt ceiling for ``effort_level``.
+
+    An unrecognized or absent value falls back to the flat
+    ``CORRECTION_MAX_ATTEMPTS`` ceiling — today's exact behaviour — so an older
+    checkpoint or a caller that never set the field is unaffected.
+    """
+    return _EFFORT_CORRECTION_CEILING.get(effort_level or "", CORRECTION_MAX_ATTEMPTS)
+
+
+def normalize_effort_level(value: Optional[str]) -> str:
+    """Coerce an arbitrary ``effort_level`` value to a known level, defaulting
+    to :data:`DEFAULT_EFFORT_LEVEL` for anything unrecognized (never raises)."""
+    lowered = (value or "").lower()
+    return lowered if lowered in _EFFORT_LEVELS else DEFAULT_EFFORT_LEVEL

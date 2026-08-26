@@ -2869,3 +2869,86 @@ double-delivered resume is enforced by checking `applied_step_ids` before anythi
 checkpoint already implicitly has (`.get(...) or <empty>` everywhere it's read). The three new
 `WBSStep.status` values and `agent_notes` are additive Pydantic fields — an older persisted
 plan missing them deserializes with the new field(s) absent/`None`.
+
+## §57 — Effort Budget, Acceptance-Check Execution, and Routing-Matrix Consumption (Manifest 13.1.3)
+
+`docs/OUTPUT_BUDGET_BRIEF.md`'s investigation found a corrective-work family: a marginal
+context-window failure, a completion-integrity gap (a syntactically invalid file shipped as a
+reported success), and three independent instances of a computed decision that was persisted,
+rendered, and never consumed. This section covers every contract touched closing them.
+
+**`AIlienantGraphState.execution_mode` → `effort_level` (`brain/state.py`) — a rename, not an
+additive widening; stated honestly rather than mischaracterized.** The old channel was a
+topology selector (`Literal["SEQUENTIAL", "MICRO_SWARM", "FULL_SWARM"]`) choosing between three
+separate LangGraph apps (`brain/swarms.py`, `brain/fast_path.py`, dispatched from
+`brain/intent_router.py::process_user_intent`) — confirmed to have **no production caller**
+(`core/task_service.py` invokes the main `alienant_app` graph directly); the three modules and
+their topology-only tests are deleted (`DEBT-208`, decision record). The new
+`effort_level: Literal["light", "balanced", "deep"]` channel is the Effort Budget — a
+verification-DEPTH axis on the one graph every turn already ran, never a which-agents-run axis.
+**Checkpoint tolerance:** `core/task_service.py::rehydrate_paused_interrupt` reads
+`snapshot.values.get("effort_level") or "balanced"` — a checkpoint predating this rename (which
+carries the old `execution_mode` key, if anything) deserializes with `effort_level` absent and
+falls back to the default rather than raising, per the context-tolerant reading charter §10
+requires of every consumer. `TaskPayload.execution_mode` (the UNRELATED permission axis:
+AUTO/ASK/PLAN, `api/task_router.py`) is untouched — same name, different field, on a different
+model; this rename only ever touched the graph-state channel.
+
+**New `AIlienantGraphState` channel, additive:**
+
+| Channel | Type | Reducer | Safe default |
+|---|---|---|---|
+| `check_results` | `List[Dict[str, Any]]` | `operator.add` | `[]` |
+
+Populated by the new `run_checks` node (`brain/checks_gate.py`), a terminal graph node reached
+from `route_after_validation` (`brain/guardrails.py`) only when every WBS step has reached a
+terminal status AND `effort_level == "deep"` — the plan's own `MissionSpecification.checks` are
+executed via the existing guarded-command path (`tools/execution_tools.py::run_guarded_command`)
+for the mechanically-executable subset (pytest/mypy/ruff/npm-shaped commands); a non-command
+check is excluded from `check_results`, not silently marked passed (`DEBT-205`). A failing
+result folds into `errors` and blocks a "success" report — closing the gap where a plan's own
+acceptance criteria could name the exact bug that shipped anyway.
+
+**`ContextMeter.routing_decision` pattern (`brain/state.py`) widened:**
+`"^(LOCAL_SMALL|LOCAL_BIG|CLOUD)$"` → `"^(LOCAL_SMALL|LOCAL_MEDIUM|LOCAL_BIG|CLOUD)$"`. A new
+`LOCAL_MEDIUM` band sits between `LOCAL_SMALL` and `LOCAL_BIG` in
+`core/memory/context_auditor.py::derive_routing_decision`'s TCI thresholds (split point chosen
+to preserve the pinned `(50.0, 80.0, "LOCAL_BIG")` regression test). Additive to the pattern; a
+checkpoint from before this change never carries `LOCAL_MEDIUM` as a value, so it still matches
+the old pattern and needs no migration.
+
+**Routing decision now actually consumed.** `core/memory/context_auditor.py::derive_routing_decision`
+computed a correct decision, persisted it to `routing_decision`, and rendered it on the Context
+Meter widget — but no agent read it: the planner/coder/researcher requested a hardcoded model
+tier regardless. New `resolve_model_alias_for_routing(routing_decision, default)` maps
+`LOCAL_SMALL`/`LOCAL_MEDIUM`/`LOCAL_BIG`/`CLOUD` → `MODEL_SMALL`/`MODEL_MEDIUM`/`MODEL_BIG`/
+`MODEL_BIG`; planner and coder now resolve their tier through it, falling back to their prior
+hardcoded constant only when no decision is present in state (a cache-hit turn, a benchmark
+stub) — never a behavior change on a turn that never computed a routing decision to begin with.
+`brain/routing_engine.py::select_best_agent`/`get_optimal_provider`/`resolve_provider` (a second,
+divergent implementation of the same CSS × TCI matrix, confirmed zero production callers) are
+deleted; `derive_routing_decision` is the one implementation. `get_keep_alive` (routing_engine.py's
+only live export) is untouched.
+
+**`shared.hardware.HardwareProfile.suggested_mode` — removed, not additive; stated honestly.**
+This field was the hardware-lock half of the same dead topology selector (a VRAM-threshold
+recommendation among SEQUENTIAL/MICRO_SWARM/FULL_SWARM), surfaced only by
+`HardwarePanel.tsx`'s Execution Mode card. `HardwareProfile` is a live, computed-per-request API
+response (`GET /api/v1/hardware/profile`), never persisted or checkpointed, with exactly one
+consumer — updated in the same change. Charter §10's additive-only rule targets contracts that
+must tolerate independently-versioned readers/writers across time (persisted state, WS envelopes,
+MCP schemas); a live snapshot with a single first-party consumer patched in lockstep is not that
+case, so removal here is a normal API edit, not a rule exception. `VRAM_MICRO_SWARM_GB`/
+`VRAM_FULL_SWARM_GB` (`shared/config.py`) are removed with it — `VRAM_CLOUD_FLOOR_GB` and
+`effective_vram_gb()` (the live LOCAL-to-CLOUD reroute gate, `core/memory/context_auditor.py`)
+are untouched.
+
+**`GET`/`POST /api/v1/hardware/mode` — response shape changed, not additive; stated honestly.**
+This is a live preference endpoint, never persisted: `mode`'s domain changed from
+`"AUTO" | "SEQUENTIAL" | "MICRO_SWARM" | "FULL_SWARM"` to `"light" | "balanced" | "deep"`, and a
+new `cost_estimates` field was added (`Dict[EffortLevel, {extra_calls, seconds_per_extra_call,
+calibrated}]`, from `tools/llm_gateway.py::estimate_effort_costs`) replacing the old
+hardware-VRAM lock with a stated time cost — no Effort Budget level is ever hardware-locked, so
+none needed a reason to reject a selection. Both `HardwarePanel.tsx` (dashboard) and
+`ModelsMenu.tsx`'s orchestration view (workspace webview, via a new `GET_EFFORT_MODE`/
+`SET_EFFORT_MODE` host-bridge round trip) were updated in the same change.

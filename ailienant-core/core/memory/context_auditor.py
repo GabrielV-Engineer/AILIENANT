@@ -180,14 +180,23 @@ def is_underspecified(
 def derive_routing_decision(
     tci: float, css: float, fast_track: bool = False, corpus_empty: bool = False
 ) -> str:
-    """Map TCI + CSS to ContextMeter routing_decision tier string.
+    """Map TCI + CSS to a ContextMeter routing_decision tier string — the
+    single function deciding which model size actually fits a turn's
+    real context sufficiency and task complexity.
 
-    Thresholds align with RoutingEngine CSS/TCI matrix (brain/routing_engine.py):
-        fast_track        → LOCAL_SMALL (trivial query, pre-RAG privacy-first path)
-        css < 40          → CLOUD       (red-alert: maximum context needed)
-        tci < 30          → LOCAL_SMALL (simple task, privacy-first)
-        30 ≤ tci < 75     → LOCAL_BIG   (medium complexity)
-        tci ≥ 75          → CLOUD       (cognitively demanding)
+        fast_track        → LOCAL_SMALL  (trivial query, pre-RAG privacy-first path)
+        css < 40           → CLOUD       (red-alert: maximum context needed)
+        tci < 30           → LOCAL_SMALL (simple task, privacy-first)
+        30 ≤ tci < 50      → LOCAL_MEDIUM (moderate complexity)
+        50 ≤ tci < 75      → LOCAL_BIG    (substantial complexity)
+        tci ≥ 75           → CLOUD        (cognitively demanding)
+
+    LOCAL_MEDIUM's band was carved out of the middle of the old, single
+    30-75 LOCAL_BIG band rather than added on top of it — every existing
+    boundary (30, 75) and every existing verdict at those boundaries is
+    unchanged; only the interior of that range now has a genuine middle
+    destination instead of jumping straight from a simple task's model to
+    its most capable local one.
 
     A fast-track query short-circuits to LOCAL_SMALL before the CSS floor: its
     context is sufficient by decree (nothing to retrieve), so the red-alert gate
@@ -205,9 +214,45 @@ def derive_routing_decision(
         return "CLOUD"
     if tci < 30.0:
         return "LOCAL_SMALL"
+    if tci < 50.0:
+        return "LOCAL_MEDIUM"
     if tci < 75.0:
         return "LOCAL_BIG"
     return "CLOUD"
+
+
+# Maps a computed routing_decision onto the litellm proxy alias
+# (agents/*.py's actual call target) that decision is meant to reach.
+# "CLOUD" maps to MODEL_BIG, not a dedicated cloud alias, matching the
+# existing precedent in core/resource_manager.py's own SWITCH_TO_CLOUD branch
+# (which constructs its escalation LLMProfile around MODEL_BIG too) — the
+# `ailienant/*` proxy alias space has never had a fourth "cloud" alias
+# distinct from "big"; introducing one is a larger contract change than this
+# fix takes on. The other three map onto the tier they name directly,
+# including LOCAL_MEDIUM now that derive_routing_decision genuinely selects
+# it for moderate-complexity turns rather than jumping straight from SMALL
+# to BIG — a caller with no computed decision yet (a cache-hit turn, a
+# benchmark stub, or the Researcher's own deliberately-fixed grounding call)
+# keeps using its own ``default``.
+def resolve_model_alias_for_routing(routing_decision: Optional[str], default: str) -> str:
+    """Resolve the litellm proxy alias a computed routing decision should
+    reach, falling back to ``default`` when the decision is absent or not one
+    ``derive_routing_decision`` ever actually returns.
+
+    This is what makes the routing decision — computed, persisted, and
+    rendered in the Context Meter widget — actually influence which model
+    tier an agent requests, instead of every agent hardcoding a fixed alias
+    regardless of what the decision said (N9).
+    """
+    from shared.config import MODEL_BIG, MODEL_MEDIUM, MODEL_SMALL
+
+    mapping = {
+        "LOCAL_SMALL": MODEL_SMALL,
+        "LOCAL_MEDIUM": MODEL_MEDIUM,
+        "LOCAL_BIG": MODEL_BIG,
+        "CLOUD": MODEL_BIG,
+    }
+    return mapping.get(routing_decision or "", default)
 
 
 def hardware_reroute(

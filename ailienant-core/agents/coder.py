@@ -24,6 +24,8 @@ from brain.agent_context import (
     AMNESIA_ALERT,
     build_agent_context,
     resolve_context_budget,
+    resolve_output_budget,
+    resolve_real_window,
 )
 from brain.context_pipeline import ContextBudgetError
 
@@ -55,17 +57,19 @@ def content_hash(s: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-# Coder generation output ceiling. The gateway default (4096, applied whenever no
-# max_tokens is passed) budgets the ENTIRE SEARCH/REPLACE output for one WBS step —
-# a write_file step producing a whole new module, or an edit_file step touching a
-# large existing file, truncates mid-file at that flat ceiling (audited 2026-07-28
-# live-test sweep: stub-sized generated game files). Scale by two cheap, independent
-# complexity signals instead of bumping the default globally — a global bump raises
-# cost/latency on every trivial rename: the size of the file being touched (a bigger
-# file needs more room to both anchor SEARCH blocks and emit REPLACE content) and the
-# step's description length (a longer, more detailed instruction usually asks for
-# more code). Bounded by half the resolved model's real context window so the
-# ceiling can never exceed what the active BYOM target can actually return.
+# Coder generation output ceiling. Scale by two cheap, independent complexity
+# signals instead of a flat constant — a global bump raises cost/latency on every
+# trivial rename: the size of the file being touched (a bigger file needs more
+# room to both anchor SEARCH blocks and emit REPLACE content) and the step's
+# description length (a longer, more detailed instruction usually asks for more
+# code). This is the DECLARED ceiling only — what the coder would LIKE to have
+# room for. The actual max_tokens sent to the model is
+# `resolve_output_budget`'s result (brain/agent_context.py), which reconciles
+# this ceiling against the model's REAL served window and the REAL measured
+# prompt. A flat `min(ceiling, budget // 2)` shape used to collapse onto its own
+# floor at the only budget the system ever actually resolved, handing every step
+# the identical max_tokens regardless of its own complexity or the model's real
+# capacity — see resolve_output_budget's docstring.
 _CODER_MIN_MAX_TOKENS: int = 4096
 _CODER_MAX_MAX_TOKENS: int = 16384
 
@@ -77,11 +81,12 @@ _CODER_MAX_MAX_TOKENS: int = 16384
 _CODER_REASONING_MAX_TOKENS: int = 512
 
 
-def _resolve_coder_max_tokens(target_step: WBSStep, current_content: Optional[str], budget: int) -> int:
-    """Derive the coder's output-token ceiling from step complexity.
+def _coder_declared_ceiling(target_step: WBSStep, current_content: Optional[str]) -> int:
+    """The coder's own complexity-scaled ceiling, before reconciling it against
+    the real window (see `resolve_output_budget`).
 
-    See the constants above for rationale. Never raises — any unexpected input
-    (e.g. a malformed step) degrades to the historical flat default.
+    Never raises — any unexpected input (e.g. a malformed step) degrades to the
+    flat minimum.
     """
     try:
         is_new_file = target_step.action == "write_file" or current_content is None
@@ -93,15 +98,9 @@ def _resolve_coder_max_tokens(target_step: WBSStep, current_content: Optional[st
             # An edit's output is bounded by how much of the existing file it
             # must reproduce/touch; the file's total size is the cheapest proxy.
             scaled = _CODER_MIN_MAX_TOKENS + len(current_content or "") // 2
-        # The real context window is the HARD ceiling — it must win even over the
-        # historical flat floor, or a small-window local model would be asked for
-        # more completion tokens than its window has room for. Only within that
-        # hard ceiling do we prefer at least the flat floor.
-        hard_ceiling = min(_CODER_MAX_MAX_TOKENS, budget // 2)
-        floor = min(_CODER_MIN_MAX_TOKENS, hard_ceiling)
-        return int(max(floor, min(scaled, hard_ceiling)))
-    except Exception:  # noqa: BLE001 — a budget-derivation fault must not block generation
-        logger.debug("coder: max_tokens scaling failed; falling back to flat default", exc_info=True)
+        return int(min(_CODER_MAX_MAX_TOKENS, max(_CODER_MIN_MAX_TOKENS, scaled)))
+    except Exception:  # noqa: BLE001 — a ceiling-derivation fault must not block generation
+        logger.debug("coder: declared-ceiling scaling failed; falling back to flat minimum", exc_info=True)
         return _CODER_MIN_MAX_TOKENS
 
 
@@ -149,12 +148,33 @@ def _clean_block(lines: list[str]) -> str:
     return text
 
 
+def _split_glued_terminator(line: str) -> Optional[str]:
+    """Return the code part of a line whose tail is a REPLACE terminator, else ``None``.
+
+    A model intermittently emits the closing marker without the newline that should
+    precede it (``export default App;>>>>>>> REPLACE``). A strict line-equality scan
+    never matches such a line, so the terminator — and everything after it — is
+    swallowed into the replacement body and written to disk verbatim, producing a
+    source file containing a literal conflict marker. Recognising the glued form
+    recovers the real content instead of discarding a whole valid edit.
+    """
+    stripped = line.rstrip()
+    if stripped != _SR_REPLACE and stripped.endswith(_SR_REPLACE):
+        return stripped[: -len(_SR_REPLACE)]
+    return None
+
+
 def _parse_search_replace_blocks(text: str) -> list[dict[str, str]]:
     """Parse SEARCH/REPLACE edit blocks into {file_path, search_block, replace_block}.
 
     Code between the markers is taken verbatim — never JSON-escaped — so it may
     contain any quote, newline, or backslash. Tolerant of prose or markdown fences
     before/after/between blocks: only the four marker lines are structural.
+
+    A block is emitted ONLY once its closing terminator is seen. An unterminated
+    block means the generation was cut short mid-edit; committing what arrived
+    would write a silently partial file that every downstream gate accepts as
+    complete. Such a block is dropped, and blocks parsed before it are unaffected.
     """
     edits: list[dict[str, str]] = []
     lines = text.splitlines()
@@ -176,9 +196,28 @@ def _parse_search_replace_blocks(text: str) -> list[dict[str, str]]:
                 break
             i += 1
             replace: list[str] = []
-            while i < n and lines[i].strip() != _SR_REPLACE:
+            terminated = False
+            while i < n:
+                if lines[i].strip() == _SR_REPLACE:
+                    terminated = True
+                    break
+                glued = _split_glued_terminator(lines[i])
+                if glued is not None:
+                    replace.append(glued)
+                    terminated = True
+                    break
                 replace.append(lines[i])
                 i += 1
+            if not terminated:
+                # Ran off the end of the response: the model never closed this block.
+                # Drop it rather than applying a truncated edit as if it were whole.
+                logger.warning(
+                    "Coder: dropping an unterminated SEARCH/REPLACE block for %r "
+                    "(no '%s' marker before end of response — the generation was cut "
+                    "short). %d earlier edit(s) in this response are unaffected.",
+                    file_path, _SR_REPLACE, len(edits),
+                )
+                break
             if file_path:
                 edits.append({
                     "file_path": file_path,
@@ -818,6 +857,18 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     from tools.llm_gateway import LLMGateway
     from shared.config import MODEL_BIG
     from core.response_cache import response_cache
+    from core.memory.context_auditor import resolve_model_alias_for_routing
+
+    # The Researcher's CSS/TCI routing cascade already computed a real decision
+    # (LOCAL_SMALL/LOCAL_MEDIUM/LOCAL_BIG/CLOUD) before the coder ever runs —
+    # this is what makes that decision actually select a model tier for
+    # generation, instead of every step hardcoding BIG regardless of what the
+    # router said (N9). BIG remains the fallback when no decision has been
+    # computed yet, matching today's behaviour exactly in that case.
+    _routing_decision = getattr(state.get("context_metrics"), "routing_decision", None)
+    _coder_model = resolve_model_alias_for_routing(_routing_decision, default=MODEL_BIG)
+    _coder_tier = _coder_model.split("/", 1)[1] if _coder_model.startswith("ailienant/") else "big"
+    _coder_tier = _coder_tier if _coder_tier in ("small", "medium", "big") else "big"
 
     cache_context = [(target_file, current_content or "")] + [
         (p, s) for p, s in rag_snippets if s
@@ -841,7 +892,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
         intent=f"{target_step.action}|{target_file}|{target_step.description}",
         context=cache_context,
         project_id=project_id,
-        model=MODEL_BIG,
+        model=_coder_model,
     )
     cache_paths = [target_file] + [p for p, _ in rag_snippets]
     try:
@@ -867,10 +918,10 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
             # the actual edit; only a real abort propagates.
             if _on_thinking is not None and _thinking_on:
                 from core.config.model_resolver import get_chat_target  # deferred — load order
-                from tools.llm_gateway import _supports_native_thinking
+                from tools.llm_gateway import supports_native_thinking
 
-                _r_target = get_chat_target("big")
-                _r_native = _r_target is not None and _supports_native_thinking(_r_target.model)
+                _r_target = get_chat_target(_coder_tier)
+                _r_native = _r_target is not None and await supports_native_thinking(_r_target)
                 if not _r_native:
                     _reasoning_messages = [
                         {"role": "system", "content": _system_content},
@@ -886,7 +937,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
                     try:
                         async for _d in LLMGateway.astream_reasoning(
                             _reasoning_messages,
-                            tier="big",
+                            tier=_coder_tier,
                             temperature=0.0,
                             max_tokens=_CODER_REASONING_MAX_TOKENS,
                             session_id=session_id,
@@ -909,15 +960,36 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
                     except Exception:  # noqa: BLE001 — reasoning is best-effort; never block the edit
                         logger.debug("coder reasoning pass failed (non-fatal)", exc_info=True)
 
+            # Joint-budget pre-flight check: measure the REAL prompt against the
+            # REAL served window and refuse honestly BEFORE the call rather than
+            # discovering the shortfall as a silently truncated file several
+            # minutes later — the same mechanism agents/planner.py applies to its
+            # own structured draft. Raised as a plain exception so it flows
+            # through this block's own except-clause below, producing the exact
+            # established failure contract for this node (mission marked
+            # "failed", the reason surfaced in `errors`) rather than a new shape.
+            from tools.token_counter import PrecisionTokenCounter  # deferred — see file header note
+
+            _real_window = await resolve_real_window(state, _coder_tier)
+            _prompt_text = "\n".join(m.get("content", "") for m in messages)
+            _prompt_tokens = PrecisionTokenCounter.estimate_with_buffer(_prompt_text, _coder_model)
+            _budget_decision = resolve_output_budget(
+                prompt_tokens=_prompt_tokens,
+                real_window=_real_window,
+                declared_ceiling=_coder_declared_ceiling(target_step, current_content),
+            )
+            if not _budget_decision.ok:
+                raise ValueError(_budget_decision.reason)
+
             # Streams native reasoning to the Thought Box while generating; the
             # structured JSON answer is buffered and returned exactly as before.
             # On a non-reasoning model (or thinking off) this is a plain JSON-mode
             # ainvoke with zero behaviour change.
             content = await LLMGateway.acomplete_with_thinking(
                 messages=messages,
-                model=MODEL_BIG,
+                model=_coder_model,
                 temperature=0.0,
-                max_tokens=_resolve_coder_max_tokens(target_step, current_content, _budget),
+                max_tokens=_budget_decision.max_tokens,
                 session_id=session_id,
                 state=state,
                 on_thinking=_on_thinking,

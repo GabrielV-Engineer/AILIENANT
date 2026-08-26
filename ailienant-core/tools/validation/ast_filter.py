@@ -1,36 +1,58 @@
 # tools/validation/ast_filter.py
 """Phase 3.4.4 — Layer 1 structural validation (RAM-only, ~O(1) per file).
 
-Python uses stdlib `ast.parse()` for richer SyntaxError diagnostics.
-TS/TSX delegates to the existing tree-sitter ASTEngine in core/ast_engine.py.
-Unsupported extensions pass through (is_valid=True).
+Python uses stdlib `ast.parse()` for richer SyntaxError diagnostics. Every other
+language delegates to the tree-sitter ASTEngine in core/ast_engine.py.
+
+Language coverage is DERIVED, never hand-listed here: the extension → languageId
+mapping comes from `shared.contracts.detect_language` (the same map the indexer
+uses) and the languageId → grammar mapping from `core.ast_engine._LANG_MAP`. A
+local copy would drift from the engine, and a validator that silently believes it
+covers a language it does not is worse than no validator at all.
+
+A file type no grammar covers still passes through, but says so in the log — an
+unqualified `is_valid=True` reads as "checked and clean" when it means "not
+checked", which is precisely the confusion this module exists to remove.
 """
 from __future__ import annotations
 
 import ast
 import logging
 import os
-from typing import Dict, FrozenSet, Optional
+from typing import FrozenSet, Optional
 
 from tools.validation.result import ValidationError, ValidationResult
 
 logger = logging.getLogger("AST_FILTER")
 
 _PY_EXTS: FrozenSet[str] = frozenset({".py"})
-# ext -> language_id used by core.ast_engine._LANG_MAP.
-_TS_LANG_BY_EXT: Dict[str, str] = {
-    ".ts": "typescript",
-    ".tsx": "typescriptreact",
-}
+
+
+def resolve_grammar_language(file_path: str) -> Optional[str]:
+    """Return the tree-sitter-backed languageId for *file_path*, or ``None``.
+
+    ``None`` means no grammar covers this file type — the caller must treat that
+    as "unverified", not as "valid".
+    """
+    from core.ast_engine import _LANG_MAP  # deferred — heavy module, lazy grammars
+    from shared.contracts import detect_language
+
+    language_id = detect_language(file_path)
+    return language_id if language_id in _LANG_MAP else None
 
 
 def validate_ast(content: str, file_path: str) -> ValidationResult:
-    """Return ValidationResult for one file. Unsupported extensions pass through."""
+    """Return ValidationResult for one file. Unsupported file types pass through."""
     ext: str = os.path.splitext(file_path)[1].lower()
     if ext in _PY_EXTS:
         return _validate_python(content, file_path)
-    if ext in _TS_LANG_BY_EXT:
-        return _validate_ts(content, file_path, _TS_LANG_BY_EXT[ext])
+    language_id = resolve_grammar_language(file_path)
+    if language_id is not None:
+        return _validate_ts(content, file_path, language_id)
+    logger.debug(
+        "AST: %s has no grammar coverage — passing through UNVERIFIED, not validated.",
+        file_path,
+    )
     return ValidationResult(is_valid=True)
 
 

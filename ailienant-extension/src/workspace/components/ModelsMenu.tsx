@@ -34,6 +34,29 @@ interface BYOMConfigMsg {
     active_preset_id: string | null;
 }
 
+// The Effort Budget — verification depth for the NEXT turn (mirrors
+// GET/POST /api/v1/hardware/mode). Every level runs the same agents; the
+// axis is how many verification layers a turn pays for, never which agents
+// run, so no level is ever locked — cost_estimates states what it costs in
+// local generation time instead.
+type EffortLevel = 'light' | 'balanced' | 'deep';
+interface EffortCostEstimate {
+    extra_calls: string;
+    seconds_per_extra_call: number;
+    calibrated: boolean;
+}
+interface EffortModeMsg {
+    mode: EffortLevel;
+    cost_estimates: Record<EffortLevel, EffortCostEstimate>;
+}
+
+const EFFORT_LEVELS: EffortLevel[] = ['light', 'balanced', 'deep'];
+const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = {
+    light:    'Generate + syntax check only. No lint, no self-heal, no acceptance checks.',
+    balanced: 'Adds a lint/type gate and up to 2 self-heal retries on failure.',
+    deep:     'Adds running the plan\'s own acceptance checks before reporting done.',
+};
+
 interface Props {
     view: ModelsView;
     config: AilienantConfig | null;
@@ -50,6 +73,8 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
     const [usage, setUsage] = useState<TokenUsage | null | 'loading'>('loading');
     const [byomConfig, setByomConfig] = useState<BYOMConfigMsg | null>(null);
     const [activating, setActivating] = useState<string | null>(null);
+    const [effortMode, setEffortMode] = useState<EffortModeMsg | null>(null);
+    const [effortSaving, setEffortSaving] = useState(false);
     // Phase 9 (ADR-707) — Native Thinking toggle is sourced from the persisted
     // workspace store (survives panel reload) and injected into SUBMIT_TASK.
     const nativeThinking = useWorkspaceStore(s => s.nativeThinking);
@@ -59,23 +84,43 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
 
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
-            const msg = event.data as { type: string; models?: ModelInfo[]; usage?: TokenUsage | null; data?: BYOMConfigMsg };
+            const msg = event.data as {
+                type: string; models?: ModelInfo[]; usage?: TokenUsage | null;
+                data?: BYOMConfigMsg | EffortModeMsg | null;
+            };
             if (msg.type === 'MODELS_LIST') { setModels(msg.models ?? []); }
             else if (msg.type === 'USAGE_SNAPSHOT') { setUsage(msg.usage ?? null); }
             else if (msg.type === 'BYOM_CONFIG') {
-                if (msg.data) { setByomConfig(msg.data); setActivating(null); }
+                if (msg.data) { setByomConfig(msg.data as BYOMConfigMsg); setActivating(null); }
+            } else if (msg.type === 'EFFORT_MODE') {
+                if (msg.data) { setEffortMode(msg.data as EffortModeMsg); }
+                setEffortSaving(false);
             }
         };
         window.addEventListener('message', handler);
         if (view === 'switch') { vscode.postMessage({ type: 'GET_MODELS' }); }
         if (view === 'usage') { vscode.postMessage({ type: 'GET_USAGE' }); }
         if (view === 'preset') { vscode.postMessage({ type: 'GET_BYOM_CONFIG' }); }
+        if (view === 'orchestration') { vscode.postMessage({ type: 'GET_EFFORT_MODE' }); }
         return () => window.removeEventListener('message', handler);
     }, [view]);
 
     const handleActivatePreset = (presetId: string): void => {
         setActivating(presetId);
         vscode.postMessage({ type: 'ACTIVATE_PRESET', presetId });
+    };
+
+    const handleEffortChange = (mode: EffortLevel): void => {
+        setEffortSaving(true);
+        vscode.postMessage({ type: 'SET_EFFORT_MODE', mode });
+    };
+
+    const effortCostLabel = (level: EffortLevel): string => {
+        const est = effortMode?.cost_estimates?.[level];
+        if (!est) return '';
+        if (est.extra_calls === '0') return 'No extra calls';
+        const approx = est.calibrated ? '' : '~';
+        return `+${est.extra_calls} call(s), ${approx}${est.seconds_per_extra_call}s each`;
     };
 
     if (view === 'switch') {
@@ -155,6 +200,29 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
                     </div>
                 )}
                 <p className="ws-models-note">Tier → model mapping is configured in the dashboard BYOM panel.</p>
+
+                <div className="ws-models-section-title">Effort Budget</div>
+                <p className="ws-models-note">
+                    Verification depth for the next turn — not which agents run; every
+                    level costs local generation time, never VRAM, so nothing here is locked.
+                </p>
+                {EFFORT_LEVELS.map(level => (
+                    <button
+                        key={level}
+                        className="ws-mode-row"
+                        data-active={effortMode?.mode === level ? 'true' : 'false'}
+                        disabled={effortSaving}
+                        onClick={() => handleEffortChange(level)}
+                    >
+                        <div className="ws-mode-row-text">
+                            <span className="ws-mode-row-title" style={{ textTransform: 'capitalize' }}>{level}</span>
+                            <span className="ws-mode-row-desc">
+                                {EFFORT_DESCRIPTIONS[level]}
+                                {effortMode ? ` — ${effortCostLabel(level)}` : ''}
+                            </span>
+                        </div>
+                    </button>
+                ))}
             </div>
         );
     }

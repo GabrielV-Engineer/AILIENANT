@@ -21,13 +21,17 @@ from __future__ import annotations
 
 import functools
 from typing import List, Tuple
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from brain.agent_context import (
     DEFAULT_CONTEXT_BUDGET,
+    OUTPUT_BUDGET_MARGIN_TOKENS,
     build_agent_context,
     resolve_context_budget,
+    resolve_output_budget,
+    resolve_real_window,
 )
 from brain.context_pipeline import (
     ContextBudgetError,
@@ -281,3 +285,113 @@ def test_resolve_context_budget_profile_and_fallback() -> None:
         context_window = 0
 
     assert resolve_context_budget({"active_llm_profile": _ZeroProfile()}) == DEFAULT_CONTEXT_BUDGET
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# resolve_output_budget — the joint input+output arithmetic every structured
+# caller needs. Regression coverage for N8: the historical
+# `min(declared_ceiling, budget // 2)` shape collapsed onto its own floor at
+# the only budget the system ever actually resolved (8192 // 2 = 4096), so
+# every caller received exactly 4096 no matter what it asked for. These pin
+# that the REPLACEMENT arithmetic genuinely varies with the real prompt and
+# the real window, not a declared constant.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_resolve_output_budget_grants_the_declared_ceiling_when_room_is_ample() -> None:
+    decision = resolve_output_budget(
+        prompt_tokens=3000, real_window=131_072, declared_ceiling=16_384,
+    )
+    assert decision.ok is True
+    assert decision.max_tokens == 16_384
+
+
+def test_resolve_output_budget_shrinks_to_the_real_remaining_room() -> None:
+    """This is the exact shape of the incident this task investigated: a real
+    prompt of ~3000 tokens against a real 4096-token window leaves only ~840
+    tokens of usable output — nowhere near the 4096 every caller used to get
+    regardless of the real window."""
+    decision = resolve_output_budget(
+        prompt_tokens=3000, real_window=4096, declared_ceiling=16_384,
+    )
+    assert decision.ok is True
+    assert decision.max_tokens == 4096 - 3000 - OUTPUT_BUDGET_MARGIN_TOKENS
+    assert decision.max_tokens < 4096  # strictly less than the old flat result
+
+
+def test_resolve_output_budget_scales_with_the_real_prompt_not_a_constant() -> None:
+    """N8: two different prompt sizes against the same window must yield two
+    different ceilings — the historical bug returned the identical 4096 for
+    every input because the input size never entered the calculation."""
+    short = resolve_output_budget(prompt_tokens=500, real_window=8192, declared_ceiling=16_384)
+    long = resolve_output_budget(prompt_tokens=5000, real_window=8192, declared_ceiling=16_384)
+    assert short.max_tokens != long.max_tokens
+    assert short.max_tokens > long.max_tokens
+
+
+def test_resolve_output_budget_refuses_before_the_call_when_room_is_insufficient() -> None:
+    """The pre-flight refusal (§4.c/OQ-1): when the prompt alone leaves no
+    usable room, this must refuse honestly rather than hand back a tiny
+    max_tokens that would just truncate silently downstream."""
+    decision = resolve_output_budget(
+        prompt_tokens=4000, real_window=4096, declared_ceiling=16_384,
+    )
+    assert decision.ok is False
+    assert decision.max_tokens == 0
+    assert decision.reason is not None
+    assert "4096" in decision.reason  # names the real window, not a guess
+
+
+def test_resolve_output_budget_honors_reserved_tokens() -> None:
+    baseline = resolve_output_budget(prompt_tokens=1000, real_window=8192, declared_ceiling=16_384)
+    reserved = resolve_output_budget(
+        prompt_tokens=1000, real_window=8192, declared_ceiling=16_384, reserved_tokens=2000,
+    )
+    assert reserved.max_tokens == baseline.max_tokens - 2000
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# resolve_real_window — probes the runtime via model_resolver, falling back
+# to resolve_context_budget only when the tier can't be resolved or the probe
+# returns unknown.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def test_resolve_real_window_uses_the_probed_context_length() -> None:
+    from core.config.model_resolver import RuntimeCapabilities
+
+    fake_target = object()
+    with patch("core.config.model_resolver.get_chat_target", return_value=fake_target), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=131_072, supports_thinking=True)),
+         ):
+        window = await resolve_real_window({}, tier="big")
+    assert window == 131_072
+
+
+async def test_resolve_real_window_falls_back_when_probe_is_unknown() -> None:
+    from core.config.model_resolver import RuntimeCapabilities
+
+    fake_target = object()
+    with patch("core.config.model_resolver.get_chat_target", return_value=fake_target), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=None, supports_thinking=False)),
+         ):
+        window = await resolve_real_window({}, tier="big")
+    assert window == DEFAULT_CONTEXT_BUDGET
+
+
+async def test_resolve_real_window_falls_back_when_no_target_resolves() -> None:
+    with patch("core.config.model_resolver.get_chat_target", return_value=None):
+        window = await resolve_real_window({}, tier="big")
+    assert window == DEFAULT_CONTEXT_BUDGET
+
+
+async def test_resolve_real_window_falls_back_on_resolver_import_or_probe_error() -> None:
+    """A probe fault must degrade to the existing conservative behaviour, never
+    raise out of a caller that is mid-way through drafting a plan."""
+    with patch("core.config.model_resolver.get_chat_target", side_effect=RuntimeError("boom")):
+        window = await resolve_real_window({}, tier="big")
+    assert window == DEFAULT_CONTEXT_BUDGET

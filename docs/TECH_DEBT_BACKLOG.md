@@ -76,6 +76,10 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-192 | Local-model calibration is recorded only from `ainvoke`, not the direct-BYOM streaming paths — deliberate, confirmed with the user | LOW | Declared tradeoff | revisit if chat streaming on slow hardware needs it | Floating |
 | DEBT-193 | A local-model timeout (`litellm.exceptions.Timeout`) never triggers the connection-drop failover path — only a genuine connection drop or CUDA OOM does | LOW | Correctness gap | future local-timeout-failover slice | Floating |
 | DEBT-195 | Other flat, hardware-blind timeout constants surveyed during DEBT-191's audit — mostly a different subsystem (benchmark harness); one latent unscaled path off the primary route | LOW | Robustness | future timeout-audit follow-up | Floating |
+| DEBT-203 | No adaptive execution-depth decision exists — every coding turn runs researcher+planner+full WBS regardless of task triviality | MEDIUM | Architecture | future triviality-classifier slice | Floating |
+| DEBT-204 | Output-budget-brief candidate directions deferred by measurement (§8.1 incremental plan materialization, §8.3 GBNF, §8.5 slim schema, §8.9 streaming+incremental parse) | LOW | Declared tradeoff | revisit if measurements change | Floating |
+| DEBT-205 | `run_checks` (deep effort) executes only the mechanically-executable subset of a plan's own `checks`; non-command criteria are excluded, not silently passed | LOW | Correctness gap (declared MVP) | future checks-verification slice | Floating |
+| DEBT-206 | Zero `server_activity_event` fired during an entire 12-minute planner window (OQ-6) — narration wiring gap, not yet investigated | LOW | Observability | short separate investigation | Floating |
 
 ---
 
@@ -95,6 +99,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-167 | OpenSpec CLI installed at repo-root `package.json`, not `ailienant-extension/package.json` (decision record) | DECISION |
 | DEBT-177 | Three declared conservatisms in the tool-selection path | DECISION |
 | DEBT-198 | `pre_patch` hooks now run once per WBS step, not once per turn | DECISION |
+| DEBT-208 | Deleting the dead topology-selector modules is a permanent test-coverage reduction, not a gap to backfill | DECISION |
 
 ---
 
@@ -1444,6 +1449,40 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 - **File(s):** `tests/conftest.py`, `tests/test_mcp_handshake.py`, `tests/test_command_menu_config.py`.
 - **Verified:** new `tests/test_mcp_autoconnect_isolation.py` (2 cases, one per call site, spying on `core.db.list_mcp_servers` to prove neither reaches the real catalog); `tests/test_memory_dashboard.py` and `tests/e2e/test_ssot_apply_patch_e2e.py` re-run clean; `DEBT-201`'s own litellm-mock-leak hardening (`tests/conftest.py::_guard_litellm_patch_leakage`) stays — unrelated but harmless, independent test-isolation hygiene.
 
+### DEBT-203 [MEDIUM · Floating] — No adaptive execution-depth decision exists; every coding turn runs the full researcher+planner+WBS pipeline regardless of task triviality
+
+- **Date:** 2026-08-26
+- **Context:** `docs/OUTPUT_BUDGET_BRIEF.md`'s investigation (13.1.3) added the Effort Budget (`light`/`balanced`/`deep`, `core/execution_mode.py`) as a manual verification-depth preference — it controls the lint gate, self-heal retry ceiling, and whether `run_checks` executes the plan's own acceptance checks. It does not touch which agents run or how much context gathering happens beforehand.
+- **The gap:** `route_after_summarize` (`brain/engine.py`) branches only on the frontend's `planner_mode_active` flag — every non-ideation coding turn runs researcher (retrieval + routing cascade) + planner (full `MissionSpecification` draft) + the complete WBS loop, whether the request is "rename this variable" or "build a complete landing page." A one-line typo fix pays the same architect-pipeline cost as a multi-file feature.
+- **Why not fixed here:** the Effort Budget gives the user *manual* control over verification depth; building a real triviality classifier that adaptively skips researcher/planner for small edits is a materially larger, separate design (needs a principled trigger, likely TCI-adjacent, and a fast-path graph shape to route into) — out of this batch's scope per the brief's own framing.
+- **File(s):** `ailienant-core/brain/engine.py::route_after_summarize`, `ailienant-core/agents/researcher.py`, `ailienant-core/agents/planner.py`.
+
+### DEBT-204 [LOW · Floating] — Output-budget-brief candidate directions deferred by measurement, not built
+
+`docs/OUTPUT_BUDGET_BRIEF.md` §8 ranked several candidate fixes; three were measured and ruled out for this batch rather than implemented:
+- **§8.1 (incremental/lazy plan materialization):** the brief's own M4 measurement showed a complete, valid `MissionSpecification` costs 764–1550 tokens — the monolithic plan shape is marginal at a 4096-token window, not structurally non-viable, and N1 (explicit, runtime-probed `num_ctx`) restores 4–30× headroom on the same hardware. The blast radius (`MissionSpecification` contract, `immutable_wbs` baseline, `ValidateWBSDependenciesTool`, `PlanDocumentPayload`, `ExecutionChecklist.tsx`) is not justified by the evidence as it stands. Revisit if a much larger plan (dozens of steps) or a much smaller window makes the monolithic cost binding again.
+- **§8.3 (grammar-constrained decoding / GBNF):** treats a symptom (invalid-shaped output) of a cause N1 (the real context window) removes more directly; also backend-specific and adds its own capability-detection surface.
+- **§8.5 (slim the output schema — terser wire keys, no prose the coder re-derives, expanded locally after parse):** a real token-hygiene improvement, but touches the `MissionSpecification`/`WBSStep` wire contract (additive-only per charter §10) for a marginal saving now that N1 has restored real headroom. Revisit if the window pressure returns.
+- **§8.9 (streaming + incremental structured parse — know at token N that the budget will run out, degrade deliberately):** the brief explicitly flagged this as "the same architectural move DEBT-194 flagged for liveness detection" — the two should land together rather than as two separate streaming-introspection layers. See DEBT-194.
+
+### DEBT-205 [LOW · Floating] — `run_checks` (deep Effort Budget) executes only the mechanically-executable subset of a plan's own `checks`
+
+`brain/checks_gate.py::match_executable_command` pattern-matches a check string against pytest/mypy/ruff/npm-shaped commands and runs only those via the existing guarded-command path (`tools/execution_tools.py::run_guarded_command`). A `checks` entry that names a non-command criterion (e.g. "verify FeatureCard receives its props correctly") is not executed — it is silently excluded from `check_results` rather than run. This is declared MVP scope, not a silent gap: a failing executed check now correctly blocks a "success" report (closes §8.7/M9's actual failure mode), and nothing claims the unexecuted checks passed. A fuller fix would need either an LLM-judged verification pass per unexecuted check, or a stricter authoring contract requiring every `checks` entry to be a real, mechanically runnable command.
+- **File(s):** `ailienant-core/brain/checks_gate.py`.
+
+### DEBT-206 [LOW · Floating] — Zero `server_activity_event` fired during an entire 12-minute planner window (OQ-6, out of scope)
+
+Discovered incidentally in `docs/OUTPUT_BUDGET_BRIEF.md`'s forensic log review (unrelated to the two failures the brief investigated) and deliberately not investigated per the brief's own §10.9 instruction ("do not let it absorb this task"). The planner emits `critic_review`/`unwrapping_schema` narration per attempt, but none reached the WS `server_activity_event` channel for the whole window — either `narrate` was absent from `config.configurable` on the resume path, or events were dropped. Needs its own short, separate investigation.
+- **File(s):** `ailienant-core/agents/planner.py`, `ailienant-core/brain/agent_context.py` (narration wiring).
+
+### DEBT-207 [LOW · RESOLVED 2026-08-26, 13.1.3] — Native-thinking capability was guessed from a hardcoded substring list instead of asked from the runtime (third occurrence of DEBT-013's failure class)
+
+- **Date:** 2026-08-26 · **Resolved:** 2026-08-26 (13.1.3)
+- **Was:** `_NATIVE_THINKING_MODEL_HINTS` (`tools/llm_gateway.py`) matched a model name against a hardcoded substring list (`claude-3-7`, `deepseek-r1`, `qwq`, `o1`, `o3`) to decide whether to request native reasoning tokens. A model actually capable of it but absent from the list (confirmed live: Ollama's `/api/show` reports `capabilities: ["completion","tools","thinking"]` for `gemma4:e4b`, which the list did not cover) silently took the non-native branch — a separate, simulated prose narration pass substituted for the model's own reasoning channel.
+- **Resolved:** `supports_native_thinking(target)` now probes the runtime's own declared capabilities first (`core/config/model_resolver.py::probe_runtime_capabilities`), falling back to the substring hint list only when no live probe is available (a remote/cloud target, or the runtime is unreachable).
+- **Notes:** this is the same failure class DEBT-013 (resolved 2026-06-19) named — guessing a model's capability from its name instead of asking the runtime — recurring in a different code path (native-thinking detection, not `response_format` support). Logged with its history so a fourth occurrence is easier to recognize.
+- **File(s):** `ailienant-core/tools/llm_gateway.py`, `ailienant-core/core/config/model_resolver.py`.
+
 ---
 
 **DECISION RECORDS**
@@ -1568,6 +1607,10 @@ Found running the final full-suite verification for 13.0.9 (3115/3116 otherwise 
 
 Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over the whole accumulated patch set. The new per-step apply gate (`brain/apply_gate.py::_prepare_files`/`_commit_files`) necessarily runs them once per step instead, so a hook with real cost (a lint pass, a policy check) now pays N× on an N-step turn instead of once. This is the correct tradeoff for the gate's own purpose — a step's write must not land before ITS OWN pre_patch veto is known, and by the time step 4 runs, steps 1-3 are already on disk, so a single turn-end pre_patch could no longer gate them anyway — but the added cost is real and undeclared in the hook API itself. No fix planned; revisit if a hook's per-invocation cost becomes measurable in practice.
 
+
+### DEBT-208 [DECISION] — Deleting the dead topology-selector modules (13.1.3) is a permanent test-coverage reduction, not a gap to backfill
+
+`docs/OUTPUT_BUDGET_BRIEF.md`'s M6 measurement confirmed `brain/intent_router.py`/`brain/swarms.py`/`brain/fast_path.py`/`validators/gates.py` had no production caller — the main graph (`brain/engine.py` → `alienant_app`) never dispatched into the SEQUENTIAL/MICRO_SWARM/FULL_SWARM topology they implemented. Deleting them alongside their dedicated test files (`tests/test_intent_router.py`, `tests/test_fast_path.py`, `tests/test_micro_swarm.py`, `tests/test_full_swarm.py`, plus the dead-module test functions inside `tests/chaos/test_global_crucible.py` and `tests/test_deterministic_gates.py`) removed real, passing test coverage — but coverage of code that no longer exists has nothing left to backfill. `shared/hardware.py`'s `suggested_mode` field (the same dead concept's hardware-lock half, surfaced only by the now-rewritten `HardwarePanel.tsx`) and the now-unused `VRAM_MICRO_SWARM_GB`/`VRAM_FULL_SWARM_GB` constants were removed in the same pass for the same reason. No fix planned — this is accepted as final, not a pending item.
 
 ### DEBT-109 [DECISION] — Context-utilization telemetry is flat pipe-delimited text, not typed JSONL
 

@@ -257,6 +257,32 @@ def _isolate_telemetry_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(main_module, "TELEMETRY_DB_PATH", str(tmp_path / "telemetry_test.sqlite"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_byom_config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the BYOM config file at a per-test temp path that never exists.
+
+    The same class of leak `_isolate_telemetry_db_path` above fixes: without this,
+    any code path that reaches `core.config.byom_config.load_byom_config()` (e.g.
+    `resolve_real_window` / `core.config.model_resolver.get_chat_target`, added for
+    the output-budget work) reads the developer's REAL `~/.ailienant/byom_config.json`
+    during a "unit" test. On a machine with a live local preset configured, that
+    resolves a real Ollama target and `probe_runtime_capabilities` then issues a
+    genuine HTTP call to the real local Ollama server — turning a hermetic unit
+    test into a flaky integration test whose outcome depends on which machine (and
+    which services) happen to be running it. Pointing the path at a nonexistent
+    temp file makes `load_byom_config()` return its empty default (`chat_models={}`)
+    everywhere by default, so `get_chat_target` resolves `None` and the network
+    layer is never reached unless a test explicitly opts in with its own
+    ``patch("core.config.model_resolver.load_byom_config", ...)`` (which fully
+    overrides this fixture for its own scope, exactly as `test_model_resolver.py`
+    already does).
+    """
+    from core.config import byom_config, model_resolver
+
+    monkeypatch.setattr(byom_config, "BYOM_CONFIG_PATH", tmp_path / "byom_config_test.json")
+    model_resolver.refresh()
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Write CHECKPOINT_REPORT.md with metrics collected during the test session."""
     # Module may be keyed as "test_parser_stress" or "tests.test_parser_stress"

@@ -34,6 +34,7 @@ from agents.researcher import run_researcher_node  # noqa: E402
 from agents.coder import run_coder_node      # noqa: E402
 from brain.summarizer import run_summarize_node  # noqa: E402
 from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
+from brain.checks_gate import run_checks_node  # noqa: E402
 from brain.drift_monitor import run_drift_compute_node, run_drift_gate_node  # noqa: E402
 from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
@@ -292,6 +293,7 @@ workflow.add_node("error_correction", _instrument_node("error_correction", dead_
 workflow.add_node("apply_patch", _instrument_node("apply_patch", dead_letter_decorator("apply_patch")(run_apply_prepare_node)))  # pyright: ignore[reportArgumentType]
 workflow.add_node("apply_commit", _instrument_node("apply_commit", dead_letter_decorator("apply_commit")(run_apply_commit_node)))  # pyright: ignore[reportArgumentType]
 workflow.add_node("validate_output", _instrument_node("validate_output", dead_letter_decorator("validate_output")(run_validate_output_node)))  # pyright: ignore[reportArgumentType]
+workflow.add_node("run_checks", _instrument_node("run_checks", dead_letter_decorator("run_checks")(run_checks_node)))  # pyright: ignore[reportArgumentType]
 workflow.add_node("finops_gate", _instrument_node("finops_gate", run_finops_node))  # pyright: ignore[reportArgumentType]
 workflow.add_node("ideation_loop", ideation_graph)  # pyright: ignore[reportArgumentType]
 workflow.add_node("session_delta_aggregator", _instrument_node("session_delta_aggregator", run_session_delta_aggregator_node))  # pyright: ignore[reportArgumentType]
@@ -580,11 +582,14 @@ workflow.add_edge("apply_commit", "validate_output")
 # validate_output → retry the same step (coder_agent) · advance to the next pending
 # WBS step (drift_gate re-runs route_to_coders and re-checks finops/budget) ·
 # self-heal a run_command failure surfaced downstream in the apply gate
-# (error_correction, 13.0.9) · END.
+# (error_correction) · run_checks once every step has reached a terminal
+# status (the plan's own acceptance criteria, executed before the turn is
+# reported complete — brain/checks_gate.py).
 workflow.add_conditional_edges(
     "validate_output", route_after_validation,
-    ["coder_agent", "drift_gate", "error_correction", END],
+    ["coder_agent", "drift_gate", "error_correction", "run_checks", END],
 )
+workflow.add_edge("run_checks", END)
 
 # =====================================================================
 # 5. COMPILATION WITH PERSISTENCE (CheckpointManager)
@@ -633,11 +638,3 @@ def resolve_explicit_mentions(
             logger.warning("explicit_mention not found in VFS or disk: %s", path)
     return "\n\n".join(parts)
 
-
-# =====================================================================
-# 7. TOP-LEVEL ROUTING ENTRY POINT
-# =====================================================================
-# Re-exported from brain.intent_router so existing import sites
-# (`from brain.engine import process_user_intent`) keep working unchanged.
-# All three execution modes (SEQUENTIAL / MICRO_SWARM / FULL_SWARM) live there.
-from brain.intent_router import process_user_intent  # noqa: E402,F401

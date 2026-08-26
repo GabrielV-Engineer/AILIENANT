@@ -1,12 +1,21 @@
 """
-brain/guardrails.py — Output Validation & Self-Correction Loop (Phase 2.1.14).
+brain/guardrails.py — State-shape check + trajectory persistence.
 
-Sits between coder_agent and END in the LangGraph topology. Validates state
-against the CoderOutput Pydantic schema.
+IMPORTANT: despite the module's position at the end of the main graph, this node
+does NOT inspect the generated code in any way — it only confirms that three
+state fields (`vfs_buffer`, `current_step_id`, `target_role`) have the right
+Python types. It cannot catch a syntax error, a broken import, or a file that
+never parses; `vfs_buffer: Dict[str, Any]` accepts an empty dict just as happily
+as a real one. The actual structural check on generated content runs earlier,
+on the write overlay in `brain/apply_gate.py`, before anything reaches disk —
+see `_validate_generated_files` there. Do not describe this node as validating
+code; a prior version of this docstring did, which is exactly the kind of claim
+that let a syntactically invalid file ship as a reported success.
 
-On failure:  increments retry_count, sets validation_feedback for CoderAgent re-try.
-On success:  clears guardrail_failed and validation_feedback.
-At max retries (MAX_RETRIES=2): clears guardrail_failed and routes to END gracefully.
+On success this node also fires the fire-and-forget trajectory-memory write.
+On schema failure it retries the step (bounded by MAX_RETRIES) with a
+field-level correction; past the bound it clears the failure flag and lets the
+graph reach END gracefully rather than looping forever.
 """
 from __future__ import annotations
 
@@ -92,7 +101,8 @@ async def run_validate_output_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def route_after_validation(state: Dict[str, Any]) -> str:
-    """Conditional edge: retry the step, advance to the next WBS step, or END.
+    """Conditional edge: retry the step, advance to the next WBS step, run the
+    plan's own acceptance checks, or END.
 
     - ``guardrail_failed`` → retry the SAME step (bounded by the guardrail node's
       MAX_RETRIES, which clears the flag on exhaustion).
@@ -100,19 +110,25 @@ def route_after_validation(state: Dict[str, Any]) -> str:
       which re-runs ``route_to_coders`` to dispatch the next step (and re-traverses
       ``finops_gate``/``supervisor_node`` so the budget ceiling is re-checked each
       iteration). This is the RELAY multi-step loop.
-    - else → END (all steps reached a terminal status).
+    - else, once all steps reached a terminal status: ``run_checks`` ONLY for
+      the ``deep`` Effort Budget level — executing ``MissionSpecification.checks``
+      (``brain/checks_gate.py``) before the turn is reported complete is the
+      distinguishing feature that tier pays for. ``light``/``balanced`` END the
+      turn directly here instead. ``run_checks`` always advances to END itself.
 
     Uses the SAME ``is_dispatchable`` predicate ``route_to_coders`` selects on
     (``brain/state.py``), so routing and dispatch never disagree — widened
-    alongside it for 13.0.9's incremental apply gate (``revision_requested`` is
-    dispatchable-again, not a stall). A stall guard ends the graph if the step
-    just executed reached neither a terminal status NOR ``revision_requested``
-    (a durable-write failure, an early-return step, or — new in 13.0.9 — a step
-    that reached ``apply_patch`` still ``in_progress`` with no artifact to
-    apply, since orphaning it there would otherwise defeat this exact guard)
-    so a non-advancing loop can never spin.
+    alongside the incremental apply gate (``revision_requested`` is
+    dispatchable-again, not a stall). A stall guard ends the graph DIRECTLY at
+    END, bypassing ``run_checks``, if the step just executed reached neither a
+    terminal status NOR ``revision_requested`` (a durable-write failure, an
+    early-return step, or a step that reached ``apply_patch`` still
+    ``in_progress`` with no artifact to apply, since orphaning it there would
+    otherwise defeat this exact guard) — there is nothing to verify on a
+    stalled turn, so a non-advancing loop can never spin and never risks
+    running checks against an incomplete mission.
 
-    Also routes ``healing_required`` to ``error_correction`` (13.0.9): once
+    Also routes ``healing_required`` to ``error_correction``: once
     ``run_command`` execution moves downstream of the coder into the apply
     gate, a non-zero-exit self-heal signal has nowhere else to route from.
     """
@@ -164,8 +180,24 @@ def route_after_validation(state: Dict[str, Any]) -> str:
         )
         return "drift_gate"
 
-    _log_end(state, "wbs_all_steps_terminal")
-    return END
+    # Effort Budget: executing the plan's own acceptance checks is the
+    # "deep" tier's distinguishing feature (brain/checks_gate.py) — light and
+    # balanced end the turn here instead, matching the honest DoD table
+    # (§8.7's checks execution is what "deep" pays for that the other two
+    # levels do not).
+    from brain.retry_policy import normalize_effort_level
+
+    if normalize_effort_level(state.get("effort_level")) != "deep":
+        _log_end(state, "wbs_all_steps_terminal_effort_skips_checks")
+        return END
+
+    log_routing_decision(
+        session_id=state.get("task_id", ""),
+        source="validate_output",
+        target="run_checks",
+        reason="wbs_all_steps_terminal",
+    )
+    return "run_checks"
 
 
 def _log_end(state: Dict[str, Any], reason: str) -> None:

@@ -19,22 +19,33 @@ interface HardwareProfile {
     cpu_cores:        number;
     cpu_freq_mhz:     number;
     is_apple_silicon: boolean;
-    suggested_mode:   ExecutionMode;
 }
 
-type ExecutionMode       = 'SEQUENTIAL' | 'MICRO_SWARM' | 'FULL_SWARM';
-type ExecutionModeChoice = 'AUTO' | ExecutionMode;
+// The Effort Budget — how many verification layers a turn pays for (lint gate,
+// self-heal retries, running the plan's own acceptance checks). Every level
+// runs the same agents; none of them is gated on hardware, so none is ever
+// locked — a level only ever costs local generation TIME, never VRAM.
+type EffortLevel = 'light' | 'balanced' | 'deep';
+
+interface EffortCostEstimate {
+    extra_calls:            string;
+    seconds_per_extra_call: number;
+    calibrated:             boolean;
+}
+type EffortCostEstimates = Record<EffortLevel, EffortCostEstimate>;
+
+const EFFORT_LEVELS: EffortLevel[] = ['light', 'balanced', 'deep'];
+const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = {
+    light:    'Generate + syntax check only. No lint, no self-heal, no acceptance checks.',
+    balanced: 'Adds a lint/type gate and up to 2 self-heal retries on failure.',
+    deep:     'Adds running the plan\'s own acceptance checks before reporting done.',
+};
 
 interface Band { warn: number; crit: number; }
 interface Thresholds { ram: Band; vram: Band; }
 
-const MICRO_SWARM_MIN_GB = 4.0;
-const FULL_SWARM_MIN_GB  = 12.0;
-const PROFILE_POLL_MS    = 3_000;
-const VRAM_HISTORY_LEN   = 20; // ~60 s at the 3 s poll cadence
-
-const SEMAPHORE_COLORS = { green: '#63a583', yellow: '#E3B341', red: '#F85149' } as const;
-type SemaphoreLevel = keyof typeof SEMAPHORE_COLORS;
+const PROFILE_POLL_MS  = 3_000;
+const VRAM_HISTORY_LEN = 20; // ~60 s at the 3 s poll cadence
 
 const THRESH_KEY = 'ailienant.dashboard.hwThresholds';
 const DEFAULT_THRESH: Thresholds = { ram: { warn: 70, crit: 90 }, vram: { warn: 70, crit: 90 } };
@@ -126,8 +137,8 @@ function ThresholdMenu({ thresholds, onChange }: { thresholds: Thresholds; onCha
 function ModeSkeleton(): JSX.Element {
     return (
         <div className="db-row" style={{ gap: 6 }}>
-            {[0, 1, 2, 3].map(i => (
-                <div key={i} style={{
+            {EFFORT_LEVELS.map(level => (
+                <div key={level} style={{
                     flex: 1, height: 30, borderRadius: 4,
                     background: 'var(--bg-surface)', opacity: 0.3,
                     border: '1px solid var(--border-subtle)',
@@ -145,8 +156,10 @@ export function HardwarePanel(): JSX.Element {
     const [profile, setProfile]           = useState<HardwareProfile | null>(null);
     const [profileReady, setProfileReady] = useState(false);
     const [updatedAt, setUpdatedAt]       = useState<number | null>(null);
-    const [modeChoice, setModeChoice]     = useState<ExecutionModeChoice>('AUTO');
+    const [modeChoice, setModeChoice]     = useState<EffortLevel>('balanced');
+    const [modeReady, setModeReady]       = useState(false);
     const [modeSaving, setModeSaving]     = useState(false);
+    const [costEstimates, setCostEstimates] = useState<EffortCostEstimates | null>(null);
     const [thresholds, setThresholds]     = useState<Thresholds>(() => loadThresholds());
     const vramHistory = useRingBuffer<number>(VRAM_HISTORY_LEN);
 
@@ -155,11 +168,15 @@ export function HardwarePanel(): JSX.Element {
         try { localStorage.setItem(THRESH_KEY, JSON.stringify(t)); } catch { /* storage unavailable */ }
     };
 
-    // Fetch stored mode preference once on mount
+    // Fetch the stored Effort Budget preference + its cost estimates once on mount.
     useEffect(() => {
         fetch('/api/v1/hardware/mode')
             .then(r => r.ok ? r.json() : null)
-            .then(d => { if (d?.mode) setModeChoice(d.mode as ExecutionModeChoice); })
+            .then(d => {
+                if (d?.mode) setModeChoice(d.mode as EffortLevel);
+                if (d?.cost_estimates) setCostEstimates(d.cost_estimates as EffortCostEstimates);
+                setModeReady(true);
+            })
             .catch(() => { /* backend offline */ });
     }, []);
 
@@ -182,15 +199,19 @@ export function HardwarePanel(): JSX.Element {
         })();
     }, PROFILE_POLL_MS);
 
-    const changeMode = async (m: ExecutionModeChoice): Promise<void> => {
+    const changeMode = async (m: EffortLevel): Promise<void> => {
         setModeChoice(m);
         setModeSaving(true);
         try {
-            await fetch('/api/v1/hardware/mode', {
+            const r = await fetch('/api/v1/hardware/mode', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ mode: m }),
             });
+            if (r.ok) {
+                const d = await r.json();
+                if (d?.cost_estimates) setCostEstimates(d.cost_estimates as EffortCostEstimates);
+            }
         } catch { /* no-op */ } finally {
             setModeSaving(false);
         }
@@ -204,43 +225,13 @@ export function HardwarePanel(): JSX.Element {
     const vramTotal = profile?.vram_gb ?? 0;
     const hasGpu    = !isUnified && vramTotal > 0;
 
-    const effectiveAvailable = profileReady
-        ? (isUnified ? (profile?.ram_available_gb ?? 0) : Math.max(0, vramTotal - vramUsed))
-        : 0;
-
-    const modeAvailable = (m: ExecutionMode): boolean => {
-        if (!profileReady) return false;
-        if (m === 'SEQUENTIAL') return true;
-        if (m === 'MICRO_SWARM') return effectiveAvailable >= MICRO_SWARM_MIN_GB;
-        return effectiveAvailable >= FULL_SWARM_MIN_GB;
+    const costLabel = (level: EffortLevel): string => {
+        const est = costEstimates?.[level];
+        if (!est) return '';
+        if (est.extra_calls === '0') return 'No extra calls';
+        const approx = est.calibrated ? '' : '~';
+        return `+${est.extra_calls} call(s), ${approx}${est.seconds_per_extra_call}s each`;
     };
-
-    const lockReason = (m: ExecutionMode): string | null => {
-        if (!profileReady || modeAvailable(m)) return null;
-        const needed = m === 'MICRO_SWARM' ? MICRO_SWARM_MIN_GB : FULL_SWARM_MIN_GB;
-        const label  = isUnified ? 'unified RAM' : 'VRAM';
-        return `Requires ${needed} GB ${label} available (current: ${effectiveAvailable.toFixed(1)} GB)`;
-    };
-
-    // Semaphore maps to suggested_mode
-    const semLevel: SemaphoreLevel =
-        profile?.suggested_mode === 'FULL_SWARM'  ? 'green'  :
-        profile?.suggested_mode === 'MICRO_SWARM' ? 'yellow' : 'red';
-    const semLabel =
-        semLevel === 'green'  ? 'Sufficient — Full Swarm available' :
-        semLevel === 'yellow' ? 'Limited — Micro Swarm available' :
-                                'Constrained — Sequential only';
-
-    // Detect if manually chosen mode is now unsupported (hardware degraded)
-    const chosenModeUnsupported =
-        modeChoice !== 'AUTO' &&
-        profileReady &&
-        !modeAvailable(modeChoice as ExecutionMode);
-
-    // Resolved auto label
-    const autoLabel = profileReady && profile
-        ? `Auto (${profile.suggested_mode.replace('_', ' ')})`
-        : 'Auto';
 
     // CPU frequency label
     const freqLabel = profile && profile.cpu_freq_mhz > 0
@@ -336,68 +327,45 @@ export function HardwarePanel(): JSX.Element {
                 </div>
             </div>
 
-            {/* ── Execution Mode Card (full-width) ── */}
+            {/* ── Effort Budget Card (full-width) ── */}
             <div className="db-card">
-                <div className="db-card-title">Execution Mode</div>
-
-                {/* Semaphore */}
-                <div className="db-traffic-light" style={{ marginBottom: 14 }}>
-                    <div
-                        className="db-tl-dot"
-                        style={{ background: SEMAPHORE_COLORS[semLevel] }}
-                    />
-                    <span>{semLabel}</span>
+                <div className="db-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div className="db-card-title">Effort Budget</div>
+                    <Badge status="neutral">Applies to the next turn</Badge>
+                </div>
+                <div className="db-muted" style={{ fontSize: 11, marginBottom: 12 }}>
+                    Controls how much verification a turn pays for — not which agents run.
+                    Every level costs local generation time, never VRAM, so nothing here is locked.
                 </div>
 
-                {/* Hardware degradation warning */}
-                {chosenModeUnsupported && (
-                    <div style={{
-                        fontSize: 11, color: '#F85149', marginBottom: 10,
-                        padding: '6px 10px', background: 'rgba(248,81,73,0.08)',
-                        borderRadius: 4, border: '1px solid rgba(248,81,73,0.25)',
-                    }}>
-                        Hardware no longer meets {modeChoice.replace('_', ' ')} requirements.
-                        Falling back to AUTO.
-                    </div>
-                )}
-
-                {/* Mode buttons */}
-                {profileReady ? (
-                    <div className="db-row" style={{ gap: 6 }}>
-                        {/* Auto */}
-                        <button
-                            className={`db-btn ${modeChoice === 'AUTO' ? 'db-btn-primary' : 'db-btn-secondary'}`}
-                            style={{ flex: 1, fontSize: 11 }}
-                            disabled={modeSaving}
-                            onClick={() => changeMode('AUTO')}
-                        >
-                            {autoLabel}
-                        </button>
-
-                        {/* Manual modes */}
-                        {(['SEQUENTIAL', 'MICRO_SWARM', 'FULL_SWARM'] as ExecutionMode[]).map(m => {
-                            const locked  = !modeAvailable(m);
-                            const reason  = lockReason(m);
-                            const isActive = modeChoice === m && !chosenModeUnsupported;
+                {/* Effort level buttons */}
+                {modeReady ? (
+                    <div className="db-row" style={{ gap: 6, alignItems: 'stretch' }}>
+                        {EFFORT_LEVELS.map(level => {
+                            const isActive = modeChoice === level;
                             return (
                                 <button
-                                    key={m}
+                                    key={level}
                                     className={`db-btn ${isActive ? 'db-btn-primary' : 'db-btn-secondary'}`}
-                                    style={{
-                                        flex: 1, fontSize: 11,
-                                        ...(locked ? { opacity: 0.45, cursor: 'not-allowed' } : {}),
-                                    }}
-                                    disabled={locked || modeSaving}
-                                    title={reason ?? undefined}
-                                    onClick={() => !locked && changeMode(m)}
+                                    style={{ flex: 1, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px', textAlign: 'left', height: 'auto' }}
+                                    disabled={modeSaving}
+                                    title={EFFORT_DESCRIPTIONS[level]}
+                                    onClick={() => changeMode(level)}
                                 >
-                                    {m.replace('_', ' ')}
+                                    <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{level}</span>
+                                    <span className="db-muted" style={{ fontSize: 10 }}>{costLabel(level)}</span>
                                 </button>
                             );
                         })}
                     </div>
                 ) : (
                     <ModeSkeleton />
+                )}
+
+                {modeReady && (
+                    <div className="db-muted" style={{ fontSize: 11, marginTop: 10 }}>
+                        {EFFORT_DESCRIPTIONS[modeChoice]}
+                    </div>
                 )}
             </div>
         </div>

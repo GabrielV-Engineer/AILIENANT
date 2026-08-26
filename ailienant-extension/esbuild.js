@@ -176,9 +176,12 @@ function assertGrammarEngineOffWebview() {
 // fields, message-scoped append storage replacing the old single-payload store,
 // a rewritten multi-entry CoderCompanionCard, and purely-frontend work-loop
 // phase grouping in AgentTimeline — organic, reviewed feature code, not a
-// dependency regression). Bump again only with the same justification, never to
-// silently absorb an unreviewed size increase.
-const WEBVIEW_BUNDLE_CEILING_BYTES = 557 * 1024;
+// dependency regression); raised 557→559 KB for the Effort Budget selector
+// added to ModelsMenu.tsx's orchestration view (light/balanced/deep rows with
+// live per-level cost estimates fetched from the backend) — organic, reviewed
+// feature code, not a dependency regression. Bump again only with the same
+// justification, never to silently absorb an unreviewed size increase.
+const WEBVIEW_BUNDLE_CEILING_BYTES = 559 * 1024;
 function assertWebviewBundleUnderCeiling() {
 	if (!production) { return; }
 	const bundle = 'dist/workspace.js';

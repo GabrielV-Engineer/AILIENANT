@@ -2,8 +2,10 @@
 
 Regression coverage for the orchestration gap where the production graph executed
 only the first WBS step then terminated. Covers the three moving parts:
-  - ``route_after_validation`` advances to the next pending step, ends when all are
-    terminal, retries a failed step, and stall-guards a non-advancing loop.
+  - ``route_after_validation`` advances to the next pending step, routes to
+    ``run_checks`` (which itself always advances to END) once all steps are
+    terminal, retries a failed step, and stall-guards a non-advancing loop
+    straight to END (no checks to run against an incomplete mission).
   - ``run_coder_node`` writes step status as a DURABLE, immutable ``mission_spec``
     delta (never in-place) so the checkpointed state advances reliably.
   - sequential same-file edits compose across steps while ``base_hash`` stays
@@ -58,10 +60,26 @@ def test_advances_to_next_pending_step() -> None:
     assert target == "drift_gate"
 
 
-def test_ends_when_all_steps_terminal() -> None:
+def test_routes_to_run_checks_when_all_steps_terminal_on_deep_effort() -> None:
+    """Once every step is terminal, 'deep' effort routes to run_checks
+    (brain/checks_gate.py) instead of ending directly — executing the plan's
+    own acceptance criteria is that level's distinguishing feature."""
     mission = _mission([_step(1, "completed"), _step(2, "failed")])
     target = route_after_validation(
-        {"mission_spec": mission, "current_step_id": 2, "guardrail_failed": False}
+        {"mission_spec": mission, "current_step_id": 2, "guardrail_failed": False,
+         "effort_level": "deep"}
+    )
+    assert target == "run_checks"
+
+
+@pytest.mark.parametrize("effort_level", ["light", "balanced", None])
+def test_light_and_balanced_effort_end_directly_skipping_checks(effort_level) -> None:  # type: ignore[no-untyped-def]
+    """Only 'deep' pays for checks execution — light/balanced (and the
+    default when effort_level was never set) end the turn here instead."""
+    mission = _mission([_step(1, "completed"), _step(2, "failed")])
+    target = route_after_validation(
+        {"mission_spec": mission, "current_step_id": 2, "guardrail_failed": False,
+         "effort_level": effort_level}
     )
     assert target == END
 
@@ -85,22 +103,29 @@ def test_stall_guard_ends_when_just_ran_step_still_pending() -> None:
     assert target == END
 
 
-def test_no_mission_ends_gracefully() -> None:
-    assert route_after_validation({"guardrail_failed": False}) == END
+def test_no_mission_routes_to_run_checks_which_no_ops_gracefully() -> None:
+    """No mission_spec at all still routes to run_checks on 'deep' effort (not
+    a stall — there was simply nothing dispatchable), which itself no-ops
+    safely on a missing mission and advances to END via its own edge."""
+    assert route_after_validation(
+        {"guardrail_failed": False, "effort_level": "deep"}
+    ) == "run_checks"
 
 
 def test_dependent_step_skipped_when_prerequisite_rejected() -> None:
     """DEBT-197: a step's depends_on names a REJECTED prerequisite — it must
-    not be treated as dispatchable, so the loop ends instead of sending it to
-    a coder against a prerequisite that never landed."""
+    not be treated as dispatchable, so on 'deep' effort the loop routes to
+    run_checks instead of sending it to a coder against a prerequisite that
+    never landed."""
     mission = _mission([
         _step(1, "rejected"),
         _step(2, "pending", depends_on=[1]),
     ])
     target = route_after_validation(
-        {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False}
+        {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False,
+         "effort_level": "deep"}
     )
-    assert target == END
+    assert target == "run_checks"
 
 
 def test_dependent_step_dispatches_once_prerequisite_completes() -> None:

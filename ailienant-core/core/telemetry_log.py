@@ -214,3 +214,42 @@ def log_context_utilization(
             }
         )
     _emit("CONTEXT", fields)
+
+
+def log_generation_utilization(
+    session_id: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    finish_reason: Optional[str],
+    num_ctx: Optional[int] = None,
+) -> None:
+    """Record one OUTPUT-side generation sample — the twin the CONTEXT record
+    above never had.
+
+    Every existing CONTEXT record above measures the INPUT side (five-layer
+    assembly, the summarizer's raw-token gate). None of them say anything about
+    what the model actually generated: how many tokens it produced, whether the
+    provider's own ``finish_reason`` says the completion was cut short
+    (``"length"``, distinct from a clean ``"stop"``), or what context window the
+    call was actually served under. A live planner failure whose root cause was
+    exactly this — a truncated, unparseable draft — took a full log-forensics
+    pass to diagnose because none of these three facts were ever recorded
+    anywhere. This closes that gap so the next occurrence is one grep away.
+
+    ``num_ctx`` is ``None`` whenever the call did not resolve a value for it
+    (a cloud/non-Ollama target, or an unresolvable local one) — recorded as
+    such rather than omitted, so a reader can tell "not applicable" apart from
+    "forgot to look."
+    """
+    _emit(
+        "GENERATION",
+        {
+            "session": session_id,
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "finish_reason": finish_reason if finish_reason is not None else "unknown",
+            "num_ctx": num_ctx if num_ctx is not None else "n/a",
+        },
+    )

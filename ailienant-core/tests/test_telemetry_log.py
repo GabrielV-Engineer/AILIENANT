@@ -96,3 +96,71 @@ def test_node_transition_mirrors(tmp_path: Path) -> None:
     assert "NODE" in content
     assert "to=planner_agent" in content
     assert "from=summarize_history" in content
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# log_generation_utilization (13.1.3) — the output-side twin of CONTEXT.
+# Every prior record here measures the INPUT side; none said anything about
+# what the model actually generated. This closes that gap.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_generation_utilization_records_all_fields(tmp_path: Path) -> None:
+    tlog.configure_telemetry_log(str(tmp_path))
+    tlog.log_generation_utilization(
+        session_id="sess-1",
+        model="ollama_chat/gemma4:e4b",
+        prompt_tokens=3000,
+        completion_tokens=1550,
+        finish_reason="length",
+        num_ctx=16384,
+    )
+    tlog.shutdown_telemetry_log()
+
+    content = _read_log(tmp_path)
+    assert "GENERATION" in content
+    assert "model=ollama_chat/gemma4:e4b" in content
+    assert "prompt_tokens=3000" in content
+    assert "completion_tokens=1550" in content
+    assert "finish_reason=length" in content
+    assert "num_ctx=16384" in content
+
+
+def test_generation_utilization_marks_missing_num_ctx_explicitly() -> None:
+    """A cloud/non-Ollama call never resolves num_ctx — recorded as an explicit
+    'n/a', not silently omitted, so a reader can tell "not applicable" apart
+    from "the field was forgotten."."""
+    calls = []
+    import core.telemetry_log as _tlog_module
+
+    original_emit = _tlog_module._emit
+    try:
+        _tlog_module._emit = lambda category, fields: calls.append((category, fields))
+        tlog.log_generation_utilization(
+            session_id="sess-1", model="gpt-4o", prompt_tokens=100,
+            completion_tokens=50, finish_reason="stop", num_ctx=None,
+        )
+    finally:
+        _tlog_module._emit = original_emit
+
+    assert len(calls) == 1
+    category, fields = calls[0]
+    assert category == "GENERATION"
+    assert fields["num_ctx"] == "n/a"
+
+
+def test_generation_utilization_marks_unknown_finish_reason_explicitly() -> None:
+    calls = []
+    import core.telemetry_log as _tlog_module
+
+    original_emit = _tlog_module._emit
+    try:
+        _tlog_module._emit = lambda category, fields: calls.append((category, fields))
+        tlog.log_generation_utilization(
+            session_id="sess-1", model="ollama_chat/x", prompt_tokens=10,
+            completion_tokens=0, finish_reason=None,
+        )
+    finally:
+        _tlog_module._emit = original_emit
+
+    assert calls[0][1]["finish_reason"] == "unknown"

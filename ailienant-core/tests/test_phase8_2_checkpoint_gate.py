@@ -89,6 +89,23 @@ def test_derive_matrix_preserved(tci: float, css: float, expected: str) -> None:
     assert derive_routing_decision(tci, css) == expected
 
 
+@pytest.mark.parametrize("tci,css,expected", [
+    (29.999, 80.0, "LOCAL_SMALL"),   # just below the SMALL/MEDIUM boundary
+    (30.0, 80.0, "LOCAL_MEDIUM"),    # boundary itself is MEDIUM's floor
+    (40.0, 80.0, "LOCAL_MEDIUM"),    # squarely inside the new band
+    (49.999, 80.0, "LOCAL_MEDIUM"),  # just below the MEDIUM/BIG boundary
+    (50.0, 80.0, "LOCAL_BIG"),       # boundary itself is BIG's floor — unchanged
+    (74.999, 80.0, "LOCAL_BIG"),     # just below the BIG/CLOUD boundary
+])
+def test_derive_local_medium_band(tci: float, css: float, expected: str) -> None:
+    """LOCAL_MEDIUM was carved out of the interior of the old single 30-75
+    LOCAL_BIG band; every pre-existing boundary (30, 75) and the historically
+    pinned tci=50→LOCAL_BIG verdict above must survive unchanged — this is
+    what makes a genuinely useless routing tier (nothing ever selected it)
+    into a real destination for moderate-complexity turns."""
+    assert derive_routing_decision(tci, css) == expected
+
+
 # ── C. hardware_reroute ──────────────────────────────────────────────────────
 
 def test_reroute_vram_floor_to_cloud() -> None:

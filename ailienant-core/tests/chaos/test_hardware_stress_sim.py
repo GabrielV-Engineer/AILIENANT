@@ -18,7 +18,8 @@ import pytest
 from brain.state import ContextMeter, LLMProfile, MissionSpecification, WBSStep
 from core.memory.context_auditor import RiskLevel
 from core.telemetry import init_telemetry_db, shutdown_telemetry_db
-from shared.hardware import HardwareDetector, HardwareProfile
+from shared.config import VRAM_CLOUD_FLOOR_GB
+from shared.hardware import HardwareDetector, HardwareProfile, effective_vram_gb
 
 pytestmark = pytest.mark.anyio
 
@@ -72,7 +73,9 @@ async def test_synthetic_vram_pressure_triggers_observable_fallback(tmp_path: An
         # Synthetic pressure: the detector now reports a starved host.
         with patch.object(HardwareDetector, "detect", return_value=_starved_profile()):
             starved = HardwareDetector.detect()
-            assert starved.suggested_mode != "FULL_SWARM"  # pressure is real to the detector
+            # Pressure is real to the detector: effective headroom sits below the
+            # exact floor the live LOCAL-to-CLOUD reroute decision gates on.
+            assert effective_vram_gb(starved) < VRAM_CLOUD_FLOOR_GB
 
         search = AsyncMock(return_value=(0.9, ["a.py"], [""]))
         deep = AsyncMock(return_value=MagicMock(

@@ -234,10 +234,95 @@ async def test_coder_produces_unified_diff_for_valid_edit() -> None:
     diff = result["pending_patches"]["calc.py"]
     assert "return x + 2" in diff and "return x + 1" in diff
 
-    # Phase 7.9.B.18 — the coder also emits the full new content + a pre-edit hash.
+    # The coder also emits the full new content + a pre-edit hash.
     from agents.coder import content_hash
     assert result["pending_contents"]["calc.py"] == "def calculate(x):\n    return x + 2\n"
     assert result["pending_base_hash"]["calc.py"] == content_hash(content)
+
+
+@pytest.mark.anyio
+async def test_coder_requests_the_tier_the_routing_decision_names() -> None:
+    """The Researcher's CSS/TCI cascade already computed a real decision before
+    the coder runs — it must actually select which model tier the coder
+    requests for generation, instead of hardcoding BIG regardless of what the
+    router said (13.1.3, N9)."""
+    from brain.state import ContextMeter
+    from core.vfs_middleware import VFSReadResult
+    from agents.coder import run_coder_node
+    from shared.config import MODEL_SMALL
+
+    step = _make_step(action="edit_file", target_file="calc.py", description="Tiny fix.")
+    state = _make_state(
+        _make_mission([step]),
+        context_metrics=ContextMeter(
+            semantic_similarity=0.5, graph_coverage=0.5, recency_score=0.5,
+            css_total=80.0, task_complexity_index=10.0,
+            routing_decision="LOCAL_SMALL", is_red_alert=False,
+        ),
+    )
+    mock_ainvoke = AsyncMock(return_value=_fake_llm_response(""))
+
+    with patch(
+        "core.vfs_middleware.VFSMiddleware.read_safe",
+        return_value=VFSReadResult(content="def calculate(x):\n    return x + 1\n"),
+    ), patch("tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke):
+        await run_coder_node(state)
+
+    mock_ainvoke.assert_awaited_once()
+    assert mock_ainvoke.await_args is not None
+    assert mock_ainvoke.await_args.kwargs.get("model") == MODEL_SMALL
+
+
+@pytest.mark.anyio
+async def test_coder_falls_back_to_big_when_no_routing_decision_exists() -> None:
+    """No context_metrics on state (a cache-hit turn, a benchmark stub) —
+    today's exact behaviour (request BIG) must be preserved unchanged."""
+    from core.vfs_middleware import VFSReadResult
+    from agents.coder import run_coder_node
+    from shared.config import MODEL_BIG
+
+    step = _make_step(action="edit_file", target_file="calc.py", description="Tiny fix.")
+    state = _make_state(_make_mission([step]))  # no context_metrics override
+    mock_ainvoke = AsyncMock(return_value=_fake_llm_response(""))
+
+    with patch(
+        "core.vfs_middleware.VFSMiddleware.read_safe",
+        return_value=VFSReadResult(content="def calculate(x):\n    return x + 1\n"),
+    ), patch("tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke):
+        await run_coder_node(state)
+
+    assert mock_ainvoke.await_args is not None
+    assert mock_ainvoke.await_args.kwargs.get("model") == MODEL_BIG
+
+
+@pytest.mark.anyio
+async def test_coder_refuses_before_the_call_when_the_real_window_cannot_hold_it() -> None:
+    """Joint-budget pre-flight check (13.1.3, N8), coder side. A genuinely small
+    served window must produce an honest, named refusal BEFORE the LLM is ever
+    called — never a silently truncated generation discovered downstream."""
+    from core.vfs_middleware import VFSReadResult
+    from agents.coder import run_coder_node
+
+    step = _make_step(action="edit_file", target_file="calc.py", description="Bump increment.")
+    state = _make_state(_make_mission([step]))
+
+    mock_ainvoke = AsyncMock()
+    with patch(
+        "core.vfs_middleware.VFSMiddleware.read_safe",
+        return_value=VFSReadResult(content="def calculate(x):\n    return x + 1\n"),
+    ), patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke,
+    ), patch(
+        # Small enough that the coder's own system/mission/file context exceeds
+        # it on its own — the refusal must not depend on a huge target file.
+        "agents.coder.resolve_real_window", AsyncMock(return_value=256),
+    ):
+        result = await run_coder_node(state)
+
+    mock_ainvoke.assert_not_called()
+    assert "errors" in result and result["errors"]
+    assert "256" in result["errors"][0]
+    assert result["mission_spec"].tasks[0].status == "failed"
 
 
 def test_content_hash_is_crlf_stable() -> None:
@@ -269,67 +354,61 @@ def test_content_hash_is_bom_stable() -> None:
 # \u2500\u2500 Item C \u2014 complexity-scaled coder output ceiling \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 
-class TestResolveCoderMaxTokens:
-    """`_resolve_coder_max_tokens` scales the SEARCH/REPLACE output ceiling by
-    step complexity instead of the flat 4096 default that produced stub files
-    on a write_file step for a whole new module (audited 2026-07-28 live-test
-    sweep)."""
+class TestCoderDeclaredCeiling:
+    """`_coder_declared_ceiling` scales the SEARCH/REPLACE output ceiling by
+    step complexity instead of a flat constant that produced stub files on a
+    write_file step for a whole new module.
 
-    def test_never_below_flat_default(self) -> None:
-        from agents.coder import _resolve_coder_max_tokens, _CODER_MIN_MAX_TOKENS
+    This is the DECLARED ceiling only — reconciling it against the model's real
+    served window and the real measured prompt is `resolve_output_budget`'s job
+    (brain/agent_context.py, see tests/test_context_pipeline.py), which replaced
+    this function's own former `budget // 2` clamp — a bug (N8) that made every
+    step receive the identical max_tokens regardless of complexity or the real
+    window, since the only budget the system ever actually resolved collapsed
+    the floor and the ceiling onto the same value.
+    """
+
+    def test_never_below_flat_minimum(self) -> None:
+        from agents.coder import _coder_declared_ceiling, _CODER_MIN_MAX_TOKENS
 
         step = _make_step(action="edit_file", description="Tiny fix.")
-        assert _resolve_coder_max_tokens(step, "x", budget=200_000) >= _CODER_MIN_MAX_TOKENS
+        assert _coder_declared_ceiling(step, "x") >= _CODER_MIN_MAX_TOKENS
 
     def test_new_file_scales_with_description_length(self) -> None:
         """A write_file step's ceiling grows with how much the task describes,
         since a new file IS the entire REPLACE-side output."""
-        from agents.coder import _resolve_coder_max_tokens
+        from agents.coder import _coder_declared_ceiling
 
         short_step = _make_step(action="write_file", description="A tiny script.")
         long_step = _make_step(action="write_file", description="Implement " * 500)
-        short_ceiling = _resolve_coder_max_tokens(short_step, None, budget=200_000)
-        long_ceiling = _resolve_coder_max_tokens(long_step, None, budget=200_000)
+        short_ceiling = _coder_declared_ceiling(short_step, None)
+        long_ceiling = _coder_declared_ceiling(long_step, None)
         assert long_ceiling > short_ceiling
 
     def test_edit_scales_with_existing_file_size(self) -> None:
-        """An edit_file step's ceiling grows with the target file's own size \u2014
+        """An edit_file step's ceiling grows with the target file's own size —
         more file to anchor SEARCH blocks against and reproduce."""
-        from agents.coder import _resolve_coder_max_tokens
+        from agents.coder import _coder_declared_ceiling
 
         step = _make_step(action="edit_file", description="Refactor it.")
-        small_ceiling = _resolve_coder_max_tokens(step, "x" * 100, budget=200_000)
-        large_ceiling = _resolve_coder_max_tokens(step, "x" * 50_000, budget=200_000)
+        small_ceiling = _coder_declared_ceiling(step, "x" * 100)
+        large_ceiling = _coder_declared_ceiling(step, "x" * 50_000)
         assert large_ceiling > small_ceiling
 
-    def test_bounded_by_half_the_resolved_budget(self) -> None:
-        """Never exceeds half the resolved model's real context window, even for
-        a huge file/description \u2014 the prompt itself needs the other half."""
-        from agents.coder import _resolve_coder_max_tokens
+    def test_capped_at_the_max_ceiling(self) -> None:
+        from agents.coder import _coder_declared_ceiling, _CODER_MAX_MAX_TOKENS
 
         step = _make_step(action="write_file", description="Implement " * 5000)
-        ceiling = _resolve_coder_max_tokens(step, None, budget=200_000)
-        assert ceiling <= 100_000
+        ceiling = _coder_declared_ceiling(step, None)
+        assert ceiling <= _CODER_MAX_MAX_TOKENS
 
-    def test_real_context_window_wins_over_the_flat_floor(self) -> None:
-        """A genuinely tiny context window (small local model) must cap max_tokens
-        at half its real budget even when that dips below the historical 4096
-        floor \u2014 asking for more completion tokens than the window has room for
-        is a real correctness bug, not a safe default."""
-        from agents.coder import _resolve_coder_max_tokens
-
-        step = _make_step(action="write_file", description="Implement " * 5000)
-        ceiling = _resolve_coder_max_tokens(step, None, budget=2048)
-        assert ceiling <= 1024
-
-    def test_malformed_input_degrades_to_flat_default(self) -> None:
-        """Any unexpected input (e.g. a step missing an attribute) never raises \u2014
-        it degrades to the historical flat default."""
-        from agents.coder import _resolve_coder_max_tokens, _CODER_MIN_MAX_TOKENS
+    def test_malformed_input_degrades_to_flat_minimum(self) -> None:
+        """Any unexpected input (e.g. a step missing an attribute) never raises —
+        it degrades to the flat minimum."""
+        from agents.coder import _coder_declared_ceiling, _CODER_MIN_MAX_TOKENS
 
         broken_step = cast(WBSStep, object())  # deliberately wrong shape — no .action/.description
-        assert _resolve_coder_max_tokens(broken_step, "x", budget=200_000) == _CODER_MIN_MAX_TOKENS
-
+        assert _coder_declared_ceiling(broken_step, "x") == _CODER_MIN_MAX_TOKENS
 
 # \u2500\u2500 Item B \u2014 cross-project RAG relevance filtering \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
@@ -724,6 +803,59 @@ def test_parse_keeps_internal_backticks() -> None:
     edits = _parse_search_replace_blocks(text)
     assert "```" in edits[0]["replace_block"]
     assert edits[0]["replace_block"].startswith('README = """')
+
+
+def test_parse_drops_unterminated_block() -> None:
+    """A generation cut short mid-edit must be DISCARDED, not committed as complete.
+
+    Regression for a live incident: a model's output ended without a REPLACE
+    terminator, and the missing `if i >= n: break` guard (present in both sibling
+    scan loops) let the loop fall through and append the edit anyway — writing a
+    silently truncated file that every downstream gate accepted as finished.
+    """
+    from agents.coder import _parse_search_replace_blocks
+
+    text = (
+        "### EDIT main.py\n"
+        "<<<<<<< SEARCH\n"
+        "old\n"
+        "=======\n"
+        "new content that never gets a terminator\n"
+    )
+    edits = _parse_search_replace_blocks(text)
+    assert edits == []
+
+
+def test_parse_drops_unterminated_block_but_keeps_earlier_ones() -> None:
+    from agents.coder import _parse_search_replace_blocks
+
+    text = (
+        "### EDIT a.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n"
+        "### EDIT b.py\n<<<<<<< SEARCH\ny = 3\n=======\ny = 4\n"  # never terminated
+    )
+    edits = _parse_search_replace_blocks(text)
+    assert len(edits) == 1
+    assert edits[0]["file_path"] == "a.py"
+
+
+def test_parse_recovers_terminator_glued_to_trailing_code() -> None:
+    """Exact shape of the live incident: the model emitted the terminator on the
+    same line as trailing code with no newline in between, so a strict
+    line-equality scan never matched it and the marker plus everything after it
+    were swallowed into the file content that got written to disk."""
+    from agents.coder import _parse_search_replace_blocks
+
+    text = (
+        "### EDIT App.jsx\n"
+        "<<<<<<< SEARCH\n"
+        "old\n"
+        "=======\n"
+        "export default App;>>>>>>> REPLACE"
+    )
+    edits = _parse_search_replace_blocks(text)
+    assert len(edits) == 1
+    assert edits[0]["replace_block"] == "export default App;"
+    assert ">>>>>>> REPLACE" not in edits[0]["replace_block"]
 
 
 @pytest.mark.anyio

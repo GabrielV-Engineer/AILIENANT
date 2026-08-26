@@ -3,48 +3,18 @@
 # DoD: pytest tests/test_routing.py -v must pass with 0 failures.
 
 import math
-import pytest
 
 from brain.routing_engine import RoutingEngine
-
-
-# ---------------------------------------------------------------------------
-# get_optimal_provider — 2D routing matrix
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("tci,css,expected", [
-    (20.0,  75.0, "LOCAL"),           # Low TCI, healthy CSS → privacy-first local
-    (85.0,  75.0, "CLOUD"),           # High TCI, healthy CSS → cloud cognitive power
-    (50.0,  30.0, "HUMAN_REQUIRED"),  # Low CSS → graceful degradation gate
-    (29.9,  60.0, "LOCAL"),           # Boundary: just below 30 → local
-    (30.0,  60.0, "CLOUD"),           # Boundary: exactly 30 → cloud
-    (90.0,  39.9, "HUMAN_REQUIRED"),  # CSS < 40 takes priority even over High-TCI
-    (0.0,    0.0, "HUMAN_REQUIRED"),  # Zero everything → human required
-    (100.0, 100.0, "CLOUD"),          # Max TCI, max CSS → cloud
-])
-def test_get_optimal_provider(tci: float, css: float, expected: str) -> None:
-    assert RoutingEngine.get_optimal_provider(tci, css) == expected
-
-
-def test_local_threshold_is_exclusive() -> None:
-    """TCI=30 must route CLOUD, not LOCAL — the boundary belongs to CLOUD."""
-    assert RoutingEngine.get_optimal_provider(tci=30.0, css=50.0) == "CLOUD"
-
-
-def test_css_gate_overrides_high_tci() -> None:
-    """Even TCI=100 must not reach CLOUD when CSS is below the red-alert threshold."""
-    assert RoutingEngine.get_optimal_provider(tci=100.0, css=39.99) == "HUMAN_REQUIRED"
-
-
-def test_css_boundary_at_40() -> None:
-    """CSS=40.0 is the minimum acceptable; anything below triggers HUMAN_REQUIRED."""
-    assert RoutingEngine.get_optimal_provider(tci=50.0, css=40.0) != "HUMAN_REQUIRED"
-    assert RoutingEngine.get_optimal_provider(tci=50.0, css=39.99) == "HUMAN_REQUIRED"
-
 
 # ---------------------------------------------------------------------------
 # derive_routing_decision — empty-corpus discrimination
 # ---------------------------------------------------------------------------
+#
+# get_optimal_provider/resolve_provider (RoutingEngine's own duplicate CSS/TCI
+# matrices) and their tests were removed with them (13.1.3, N10) — neither had
+# a production caller. derive_routing_decision below is the single live
+# implementation every agent actually consumes.
+
 
 def test_empty_corpus_skips_red_alert_floor() -> None:
     """An empty corpus + simple task routes LOCAL_SMALL despite a low CSS.
@@ -74,63 +44,38 @@ def test_empty_corpus_does_not_override_high_tci_band() -> None:
 
 
 # ---------------------------------------------------------------------------
-# resolve_provider — Vision Bypass
+# resolve_model_alias_for_routing — the routing decision actually selecting
+# a model tier (13.1.3, N9). Full 4-way coverage including the LOCAL_MEDIUM
+# band carved out of the old single LOCAL_BIG range.
 # ---------------------------------------------------------------------------
 
-def test_vision_bypass_routes_cloud() -> None:
-    """Images present + cloud available → CLOUD regardless of low TCI."""
-    provider, warning = RoutingEngine.resolve_provider(
-        tci=10.0, css=80.0, has_images=True, cloud_available=True
-    )
-    assert provider == "CLOUD"
-    assert warning is None
+
+def test_resolve_model_alias_maps_each_routing_decision() -> None:
+    from core.memory.context_auditor import resolve_model_alias_for_routing
+    from shared.config import MODEL_BIG, MODEL_MEDIUM, MODEL_SMALL
+
+    assert resolve_model_alias_for_routing("LOCAL_SMALL", default=MODEL_BIG) == MODEL_SMALL
+    assert resolve_model_alias_for_routing("LOCAL_MEDIUM", default=MODEL_BIG) == MODEL_MEDIUM
+    assert resolve_model_alias_for_routing("LOCAL_BIG", default=MODEL_SMALL) == MODEL_BIG
+    # CLOUD maps to MODEL_BIG, not a dedicated cloud alias — matches the
+    # existing core/resource_manager.py SWITCH_TO_CLOUD precedent.
+    assert resolve_model_alias_for_routing("CLOUD", default=MODEL_SMALL) == MODEL_BIG
 
 
-def test_vision_bypass_no_cloud_requires_human() -> None:
-    """Images present but cloud unavailable → HUMAN_REQUIRED (cannot process locally)."""
-    provider, warning = RoutingEngine.resolve_provider(
-        tci=10.0, css=80.0, has_images=True, cloud_available=False
-    )
-    assert provider == "HUMAN_REQUIRED"
+def test_resolve_model_alias_falls_back_when_decision_is_absent() -> None:
+    """A cache-hit turn or a benchmark stub has no computed decision yet —
+    the caller's own default must win, unchanged from today's behaviour."""
+    from core.memory.context_auditor import resolve_model_alias_for_routing
+    from shared.config import MODEL_MEDIUM
+
+    assert resolve_model_alias_for_routing(None, default=MODEL_MEDIUM) == MODEL_MEDIUM
 
 
-# ---------------------------------------------------------------------------
-# resolve_provider — Cloud Guard / Graceful Degradation
-# ---------------------------------------------------------------------------
+def test_resolve_model_alias_falls_back_on_an_unrecognized_value() -> None:
+    from core.memory.context_auditor import resolve_model_alias_for_routing
+    from shared.config import MODEL_BIG
 
-def test_no_cloud_high_tci_falls_back_to_local_with_warning() -> None:
-    """High-TCI, cloud unavailable, no images → LOCAL with a non-empty routing_warning."""
-    provider, warning = RoutingEngine.resolve_provider(
-        tci=80.0, css=70.0, has_images=False, cloud_available=False
-    )
-    assert provider == "LOCAL"
-    assert warning is not None and len(warning) > 0
-
-
-def test_no_cloud_low_tci_returns_local_no_warning() -> None:
-    """Low-TCI never needed CLOUD — no warning when cloud is unavailable."""
-    provider, warning = RoutingEngine.resolve_provider(
-        tci=20.0, css=70.0, has_images=False, cloud_available=False
-    )
-    assert provider == "LOCAL"
-    assert warning is None
-
-
-def test_css_gate_overrides_cloud_fallback() -> None:
-    """CSS < 40 must return HUMAN_REQUIRED even if cloud is unavailable (no leaking to LOCAL)."""
-    provider, _ = RoutingEngine.resolve_provider(
-        tci=50.0, css=35.0, cloud_available=False
-    )
-    assert provider == "HUMAN_REQUIRED"
-
-
-def test_resolve_provider_cloud_available_high_tci() -> None:
-    """Sanity: high-TCI + healthy CSS + cloud → CLOUD, no warning."""
-    provider, warning = RoutingEngine.resolve_provider(
-        tci=85.0, css=75.0, cloud_available=True
-    )
-    assert provider == "CLOUD"
-    assert warning is None
+    assert resolve_model_alias_for_routing("HUMAN_REQUIRED", default=MODEL_BIG) == MODEL_BIG
 
 
 # ---------------------------------------------------------------------------

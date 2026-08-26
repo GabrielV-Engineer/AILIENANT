@@ -6,11 +6,11 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from shared.config import VRAM_FULL_SWARM_GB, VRAM_MICRO_SWARM_GB
-
 
 def effective_vram_gb(profile: "HardwareProfile") -> float:
-    """Memory budget that gates swarm mode and cloud-reroute decisions.
+    """Memory budget that gates the LOCAL-to-CLOUD reroute decision
+    (core/memory/context_auditor.py) when local headroom drops below
+    VRAM_CLOUD_FLOOR_GB.
 
     Apple-Silicon unified memory exposes no discrete VRAM, so the available RAM
     is the working budget; a discrete GPU contributes its free VRAM (total used).
@@ -34,7 +34,6 @@ class HardwareProfile(BaseModel):
     cpu_name: str = Field(default="", description="Human-readable CPU model string.")
     cpu_cores: int = Field(default=0, description="Physical (non-hyperthreaded) CPU core count.")
     cpu_freq_mhz: float = Field(default=0.0, description="Maximum CPU frequency in MHz.")
-    suggested_mode: str = Field(default="SEQUENTIAL", description="Hardware-derived recommended execution mode.")
 
 
 class HardwareDetector:
@@ -55,7 +54,7 @@ class HardwareDetector:
         vram_gb, vram_used_gb, gpu_name = HardwareDetector._detect_vram()
         cpu_name, cpu_cores, cpu_freq_mhz = HardwareDetector._detect_cpu()
 
-        profile = HardwareProfile(
+        return HardwareProfile(
             os_type=os_type,
             is_apple_silicon=is_apple_silicon,
             vram_gb=vram_gb,
@@ -67,17 +66,6 @@ class HardwareDetector:
             cpu_cores=cpu_cores,
             cpu_freq_mhz=cpu_freq_mhz,
         )
-
-        # Swarm-mode gate from the configurable effective-memory thresholds.
-        effective_gb = effective_vram_gb(profile)
-        if effective_gb >= VRAM_FULL_SWARM_GB:
-            profile.suggested_mode = "FULL_SWARM"
-        elif effective_gb >= VRAM_MICRO_SWARM_GB:
-            profile.suggested_mode = "MICRO_SWARM"
-        else:
-            profile.suggested_mode = "SEQUENTIAL"
-
-        return profile
 
     @staticmethod
     def _detect_ram() -> tuple[float, float]:

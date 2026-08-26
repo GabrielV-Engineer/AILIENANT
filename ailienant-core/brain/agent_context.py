@@ -19,6 +19,7 @@ foundation-up: ``brain/`` ← ``agents/``, never the reverse.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
 
@@ -28,6 +29,8 @@ from brain.context_pipeline import (
     ContextLayer,
     ContextPipeline,
 )
+
+logger = logging.getLogger("AGENT_CONTEXT")
 
 # Fallback per-turn token budget used only when the ResourceBroker has not yet
 # resolved an active LLM profile (a cache-hit turn or a benchmark stub). Kept
@@ -51,11 +54,114 @@ def resolve_context_budget(state: Mapping[str, Any]) -> int:
     """Resolve the per-turn token budget from the active LLM profile.
 
     Mirrors the researcher's defensive read; falls back to a conservative constant
-    when no profile is bound so the guard never assumes an unbounded window.
+    when no profile is bound so the guard never assumes an unbounded window. This
+    is the LAST-RESORT fallback layer — prefer :func:`resolve_real_window` when a
+    concrete tier is known, since ``active_llm_profile`` is almost never bound in
+    practice (see brain/agent_context.py's own callers) and this constant is a
+    declared default, not a measurement of what the model actually serves.
     """
     profile = state.get("active_llm_profile")
     ctx_window = int(getattr(profile, "context_window", 0) or 0)
     return ctx_window if ctx_window > 0 else DEFAULT_CONTEXT_BUDGET
+
+
+async def resolve_real_window(state: Mapping[str, Any], tier: str = "big") -> int:
+    """Resolve the ACTUAL served context window for ``tier``, probed from the
+    runtime rather than trusted from a declared profile.
+
+    Falls back to :func:`resolve_context_budget` when the tier cannot be
+    resolved to a concrete target, or when the runtime probe returns unknown
+    (a non-Ollama provider, or a transient probe failure) — never raises, and
+    never returns a number the caller could mistake for "definitely wrong":
+    an unresolved probe simply defers to the existing conservative behaviour.
+    """
+    try:
+        from core.config.model_resolver import get_chat_target, probe_runtime_capabilities
+
+        target = get_chat_target(tier)
+        if target is not None:
+            caps = await probe_runtime_capabilities(target)
+            if caps.context_length is not None and caps.context_length > 0:
+                return caps.context_length
+    except Exception:  # noqa: BLE001 — a probe fault must degrade, never block the caller
+        logger.debug("resolve_real_window: probe failed for tier=%s", tier, exc_info=True)
+    return resolve_context_budget(state)
+
+
+# Headroom reserved on every output-budget call for chat-template overhead,
+# special tokens, and the safety margin `PrecisionTokenCounter.estimate_with_buffer`
+# does not itself cover on the OUTPUT side (it inflates the INPUT measurement).
+OUTPUT_BUDGET_MARGIN_TOKENS: int = 256
+
+# Below this many remaining tokens, refusing the call outright is more honest
+# than attempting a completion that cannot hold a usable response — the exact
+# case that used to surface as a silently truncated, unparseable draft several
+# minutes later instead of an immediate, actionable refusal.
+OUTPUT_BUDGET_MIN_USABLE_TOKENS: int = 256
+
+
+@dataclass(frozen=True)
+class OutputBudgetDecision:
+    """Result of reconciling a requested output ceiling against the real window.
+
+    ``max_tokens`` is meaningful only when ``ok`` is True. When ``ok`` is False
+    the caller MUST refuse the LLM call and surface ``reason`` to the user —
+    issuing the call anyway relocates the failure from here (an immediate,
+    named refusal) to a truncated response discovered minutes later.
+    """
+    ok: bool
+    max_tokens: int
+    real_window: int
+    prompt_tokens: int
+    reason: Optional[str] = None
+
+
+def resolve_output_budget(
+    *,
+    prompt_tokens: int,
+    real_window: int,
+    declared_ceiling: int,
+    reserved_tokens: int = 0,
+    margin_tokens: int = OUTPUT_BUDGET_MARGIN_TOKENS,
+    min_usable_tokens: int = OUTPUT_BUDGET_MIN_USABLE_TOKENS,
+) -> OutputBudgetDecision:
+    """The one joint-budget calculation every structured-output caller needs.
+
+    ``max_tokens = min(declared_ceiling, real_window - prompt_tokens - reserved - margin)``.
+
+    This replaces the historical ``min(ceiling, budget // 2)`` shape
+    (``agents/planner.py::_resolve_planner_draft_max_tokens``,
+    ``agents/coder.py::_resolve_coder_max_tokens``): that arithmetic measured
+    neither the real prompt nor the real window, so at the ONLY budget the
+    system ever actually resolved (``DEFAULT_CONTEXT_BUDGET // 2`` = 4096) the
+    floor and the ceiling collapsed onto the same value — every caller received
+    exactly 4096 regardless of what it asked for. ``prompt_tokens`` and
+    ``real_window`` must be REAL measurements (see
+    ``PrecisionTokenCounter.estimate_with_buffer`` and ``resolve_real_window``),
+    not declared constants, or this function reproduces the exact bug it exists
+    to fix.
+    """
+    available = real_window - prompt_tokens - reserved_tokens - margin_tokens
+    if available < min_usable_tokens:
+        return OutputBudgetDecision(
+            ok=False,
+            max_tokens=0,
+            real_window=real_window,
+            prompt_tokens=prompt_tokens,
+            reason=(
+                f"the prompt ({prompt_tokens} tokens) leaves only {available} of the "
+                f"model's real {real_window}-token window after reserving "
+                f"{reserved_tokens + margin_tokens} tokens for overhead — below the "
+                f"{min_usable_tokens}-token floor needed for a usable response. "
+                "Shorten the request, free up context, or use a larger-window model."
+            ),
+        )
+    return OutputBudgetDecision(
+        ok=True,
+        max_tokens=int(min(declared_ceiling, available)),
+        real_window=real_window,
+        prompt_tokens=prompt_tokens,
+    )
 
 # Joins chunk bodies with the same blank-line separator the agents already use
 # when they append rule/instruction blocks (``system_prompt += f"\n\n{...}"``),

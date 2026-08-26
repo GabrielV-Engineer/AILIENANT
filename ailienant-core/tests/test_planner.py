@@ -18,7 +18,7 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 
 from agents.recency import session_heatmap
-from brain.state import MissionSpecification, WBSStep
+from brain.state import ContextMeter, MissionSpecification, WBSStep
 from core.response_cache import response_cache
 
 
@@ -147,13 +147,18 @@ async def test_planner_retries_on_malformed_json_then_succeeds() -> None:
     assert mock_ainvoke.call_count == 2
 
     # The second call's user message must contain the corrective banner.
-    # Phase 7.10.4 (ADR-704) — corrective now names the envelope failure mode + feeds errors.
+    # 13.0.9: this fixture's first response ("{ this is not valid json ") parses
+    # to NOTHING, so it takes the unusable-draft branch — which asks for a
+    # smaller plan rather than telling the model to "fix" field errors that were
+    # never reported. See test_planner_wrong_shape_json_gets_the_schema_corrective
+    # for the other branch, which still carries the original wording.
     second_call_messages: List[Dict[str, str]] = mock_ainvoke.call_args_list[1].kwargs[
         "messages"
     ]
     corrective = second_call_messages[-1]["content"]
-    assert "failed schema validation with these errors" in corrective
-    assert "DO NOT wrap it in any top-level key" in corrective
+    assert "produced NO usable JSON object" in corrective
+    assert "MINIMAL but COMPLETE" in corrective
+    assert "no prose, no markdown fences" in corrective
 
 
 # ── Test 1b: Actor-Critic narration surfaces on the ideation→planner handoff ───
@@ -242,6 +247,122 @@ async def test_planner_returns_errors_when_retries_exhausted() -> None:
     assert "schema validation exhausted" in result["errors"][0]
     assert mock_ainvoke.call_count == 3
     assert result.get("planner_retry_count") == 3
+
+
+# ── Test 2c: the routing decision selects the model tier (13.1.3, N9) ──────────
+
+
+@pytest.mark.anyio
+async def test_planner_requests_the_tier_the_routing_decision_names() -> None:
+    """The Researcher's CSS/TCI cascade already computed a real decision before
+    the Planner runs — it must actually select which model tier the Planner
+    requests, instead of the Planner hardcoding BIG regardless of what the
+    router said."""
+    from shared.config import MODEL_SMALL
+
+    mock_ainvoke = AsyncMock(return_value=_make_response(_valid_mission_json()))
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    state = _base_state(context_metrics=ContextMeter(
+        semantic_similarity=0.5, graph_coverage=0.5, recency_score=0.5,
+        css_total=78.5, task_complexity_index=20.0,
+        routing_decision="LOCAL_SMALL", is_red_alert=False,
+    ))
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        await run_planner_node(state)
+
+    mock_acquire.assert_awaited_once()
+    assert mock_acquire.await_args is not None
+    assert mock_acquire.await_args.kwargs.get("model") == MODEL_SMALL
+
+
+@pytest.mark.anyio
+async def test_planner_falls_back_to_big_when_no_routing_decision_exists() -> None:
+    """A cache-hit turn or a benchmark stub has no computed decision yet —
+    today's exact behaviour (request BIG) must be preserved unchanged."""
+    from shared.config import MODEL_BIG
+
+    mock_ainvoke = AsyncMock(return_value=_make_response(_valid_mission_json()))
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    state = _base_state()  # context_metrics=None, per _base_state's own default
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        await run_planner_node(state)
+
+    assert mock_acquire.await_args is not None
+    assert mock_acquire.await_args.kwargs.get("model") == MODEL_BIG
+
+
+# ── Test 2b: joint-budget pre-flight refusal (13.1.3, N8) ──────────────────────
+
+
+@pytest.mark.anyio
+async def test_planner_refuses_before_the_call_when_the_real_window_cannot_hold_it() -> None:
+    """This is Discovery A's actual mechanism reproduced end-to-end: a real
+    prompt against a genuinely small served window (e.g. an unconfigured local
+    model defaulting to 4096) must be refused HONESTLY before the LLM is ever
+    called — never discovered as a silently truncated, unparseable response
+    several minutes later. `resolve_real_window` is mocked to the exact value a
+    live Ollama instance was measured serving by default."""
+    mock_ainvoke = AsyncMock()
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    state = _base_state()
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ), patch(
+        # Small enough that even the planner's own static directives (SCOPE
+        # DISCIPLINE, STACK CHOICE, STRICT TYPE RULES, ...) exceed it on their
+        # own — the refusal must not depend on a large user_input to trigger.
+        "agents.planner.resolve_real_window", AsyncMock(return_value=256),
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        result = await run_planner_node(state)
+
+    mock_ainvoke.assert_not_called()
+    assert result.get("mission_spec") is None
+    assert "errors" in result and result["errors"]
+    assert "256" in result["errors"][0]
+    assert "Planner Error" in result["errors"][0]
 
 
 # ── Test 3: researcher_skeleton consumption ───────────────────────────────────
@@ -468,6 +589,95 @@ def _step(target_file: str, description: str = "bump") -> WBSStep:
         step_number=1, target_role="core_dev", action="edit_file",
         target_file=target_file, description=description,
     )
+
+
+@pytest.mark.anyio
+async def test_planner_reports_an_unparseable_draft_honestly_not_as_a_schema_error() -> None:
+    """The live regression this closes: a local model that returns nothing (or
+    prose) made `_extract_nested_schema_target` yield {}, which Pydantic then
+    reported as six 'Field required' errors against input_value={} — naming the
+    schema as the fault when the schema was never reached. The surfaced error
+    must describe what actually came back instead."""
+    mock_ainvoke = AsyncMock(return_value=_make_response(""))
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        result = await run_planner_node(_base_state())
+
+    assert result.get("mission_spec") is None
+    [err] = result["errors"]
+    assert "EMPTY response" in err
+    # The misleading Pydantic framing must NOT be what the operator reads.
+    assert "Field required" not in err
+    assert "input_value={}" not in err
+
+
+@pytest.mark.anyio
+async def test_planner_wrong_shape_json_gets_the_schema_corrective() -> None:
+    """The other branch: a well-formed object with the WRONG fields is a real
+    schema failure, so it must still receive the original field-level corrective
+    (and Pydantic's own error text), not the truncation advice."""
+    wrong_shape = _make_response('{"plan": "do the thing", "steps": []}')
+    good_response = _make_response(_valid_mission_json())
+    mock_ainvoke = AsyncMock(side_effect=[wrong_shape, good_response])
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        result = await run_planner_node(_base_state())
+
+    assert result.get("mission_spec") is not None
+    corrective = mock_ainvoke.call_args_list[1].kwargs["messages"][-1]["content"]
+    assert "failed schema validation with these errors" in corrective
+    assert "produced NO usable JSON object" not in corrective
+
+
+def test_describe_unusable_draft_distinguishes_empty_from_prose() -> None:
+    from agents.planner import _describe_unusable_draft
+
+    assert "EMPTY response" in _describe_unusable_draft("")
+    assert "EMPTY response" in _describe_unusable_draft("   \n  ")
+
+    prose = _describe_unusable_draft("Sure! Here is the plan for your site.")
+    assert "no usable MissionSpecification object" in prose
+    # The raw text is quoted back — the whole point is that the next reader can
+    # tell truncation from prose from silence without re-running the turn.
+    assert "Sure! Here is the plan" in prose
+
+
+def test_describe_unusable_draft_truncates_a_long_body() -> None:
+    from agents.planner import _RAW_PREVIEW_CHARS, _describe_unusable_draft
+
+    described = _describe_unusable_draft("x" * 5000)
+    assert "5000 characters" in described
+    assert f"+{5000 - _RAW_PREVIEW_CHARS} more characters" in described
+    # Bounded: the preview never dumps the whole body into the log/transcript.
+    assert len(described) < _RAW_PREVIEW_CHARS + 400
 
 
 def test_polyglot_directive_attaches_to_agent_notes_not_description() -> None:

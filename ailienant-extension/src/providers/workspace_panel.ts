@@ -14,6 +14,7 @@ import { StreamingCodeTokenizer } from '../core/StreamingCodeTokenizer';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
 import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS } from '../shared/config';
 import { APIClient } from '../api/api_client';
+import type { EffortLevel } from '../api/api_client';
 import type { AilienantConfig, Session } from '../shared/types';
 import { DEFAULT_ANALYST_NAME } from '../shared/types';
 import { ConfigLoader } from '../shared/config_loader';
@@ -1345,6 +1346,17 @@ export class WorkspacePanelManager {
                     const presetId = (data.presetId as string | undefined) ?? '';
                     const result = await APIClient.getInstance().saveBYOMConfig({ active_preset_id: presetId });
                     panel.webview.postMessage({ type: 'BYOM_CONFIG', data: result });
+                    break;
+                }
+                case 'GET_EFFORT_MODE': {
+                    const effort = await APIClient.getInstance().fetchEffortMode();
+                    panel.webview.postMessage({ type: 'EFFORT_MODE', data: effort });
+                    break;
+                }
+                case 'SET_EFFORT_MODE': {
+                    const mode = (data.mode as EffortLevel | undefined) ?? 'balanced';
+                    const effort = await APIClient.getInstance().saveEffortMode(mode);
+                    panel.webview.postMessage({ type: 'EFFORT_MODE', data: effort });
                     break;
                 }
                 case 'SET_MODEL_PREFERENCE': {

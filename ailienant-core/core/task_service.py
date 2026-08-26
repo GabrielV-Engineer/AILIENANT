@@ -595,7 +595,7 @@ class TaskService:
         # in flight.
         self._cell_teardown_tasks: Set["asyncio.Task[None]"] = set()
         # Native HITL Suspend & Resume — sessions whose graph paused on an interrupt(),
-        # keyed by session_id → (payload, execution_mode, paused_at). resume_graph
+        # keyed by session_id → (payload, effort_level, paused_at). resume_graph
         # re-enters the same thread with Command(resume=…). One pending interrupt per
         # session at a time. paused_at (time.monotonic()) backs is_session_busy's
         # abandoned-pause reclamation (DEBT-170) — a card nobody answers must not wedge
@@ -612,7 +612,7 @@ class TaskService:
         self._tool_call_registry: Dict[Tuple[str, str], ToolCallSpec] = {}
 
     async def process_task(
-        self, session_id: str, payload: TaskPayload, execution_mode: str = "SEQUENTIAL"
+        self, session_id: str, payload: TaskPayload, effort_level: str = "balanced"
     ) -> Dict[str, Any]:
         """Route a chat turn: an edit/coding task runs the agents (plan → code →
         propose diffs); a question uses the direct chat completion (memory + RAG)."""
@@ -644,7 +644,7 @@ class TaskService:
         logger.info("[Session: %s] routed intent=%s", session_id, intent)
 
         if intent == "edit":
-            await self._run_coding_task(session_id, payload, execution_mode, risk_hint=risk_hint)
+            await self._run_coding_task(session_id, payload, effort_level, risk_hint=risk_hint)
         else:
             await self._stream_chat_answer(
                 session_id,
@@ -660,7 +660,7 @@ class TaskService:
         return {"status": "success", "message": "Task completed.", "session_id": session_id}
 
     def _build_initial_state(
-        self, session_id: str, payload: TaskPayload, execution_mode: str,
+        self, session_id: str, payload: TaskPayload, effort_level: str,
         risk_hint: Optional[str] = None,
     ) -> dict[str, Any]:
         """Construct the AIlienantGraphState seed consumed by run_planner_node."""
@@ -704,7 +704,7 @@ class TaskService:
             "has_images": any(a.type == "image" for a in payload.attachments),
             "routing_warning": None,
             "hardware_profile": None,
-            "execution_mode": execution_mode,
+            "effort_level": effort_level,
             "provider": "CLOUD",
             "generated_code": {},
             "errors": [],
@@ -932,7 +932,7 @@ class TaskService:
         return True
 
     async def _run_coding_task(
-        self, session_id: str, payload: TaskPayload, execution_mode: str,
+        self, session_id: str, payload: TaskPayload, effort_level: str,
         resume_value: Optional[Dict[str, Any]] = None,
         risk_hint: Optional[str] = None,
     ) -> None:
@@ -967,7 +967,7 @@ class TaskService:
 
         if resume_value is None:
             state = self._build_initial_state(
-                session_id, payload, execution_mode, risk_hint=risk_hint
+                session_id, payload, effort_level, risk_hint=risk_hint
             )
             state["session_start_time"] = self._resolve_session_start_time(session_id)
 
@@ -1017,9 +1017,9 @@ class TaskService:
                 _posture = _snap.values.get("session_permission_mode")
                 if _posture:
                     state["session_permission_mode"] = _posture
-                _exec = _snap.values.get("execution_mode")
-                if _exec:
-                    state["execution_mode"] = _exec
+                _effort = _snap.values.get("effort_level")
+                if _effort:
+                    state["effort_level"] = _effort
 
         # The `_narrate` emitter itself rides on the run config
         # (RunnableConfig.configurable), NOT graph state: a callable is not
@@ -1236,7 +1236,7 @@ class TaskService:
             pending_interrupt = await extract_pending_interrupt(cfg)
             if pending_interrupt is not None:
                 _latency_outcome = "interrupted"
-                self._paused_tasks[session_id] = (payload, execution_mode, time.monotonic())
+                self._paused_tasks[session_id] = (payload, effort_level, time.monotonic())
                 await self._emit_interrupt_card(session_id, pending_interrupt)
                 try:
                     await hybrid_checkpointer.apromote(session_id)  # offloaded — never block the loop
@@ -1300,8 +1300,9 @@ class TaskService:
             # the time this code runs, is no longer pending.
             applied_log: List[Dict[str, Any]] = list(final_state.get("applied_files_log") or [])
             errors: List[str] = list(final_state.get("errors") or [])
+            check_results: List[Dict[str, Any]] = list(final_state.get("check_results") or [])
 
-            summary = self._format_coding_summary(mission, applied_log, errors)
+            summary = self._format_coding_summary(mission, applied_log, errors, check_results)
             await vfs_manager.broadcast_plan_document(
                 session_id, self._build_plan_payload(mission, summary)
             )
@@ -1486,7 +1487,7 @@ class TaskService:
         # ride the checkpoint for free; dirty_buffers/attachments stay unpersisted — the
         # durable work-in-progress already lives in the recovered vfs_buffer, and
         # serializing them to L2 would be a §6.3 secrets-hygiene risk for no benefit.
-        recovered_exec = str(snapshot.values.get("execution_mode") or "SEQUENTIAL")
+        recovered_effort = str(snapshot.values.get("effort_level") or "balanced")
         recovered_prompt = str(snapshot.values.get("user_input") or "")
         _recovered_thinking_on = snapshot.values.get("enable_native_thinking")
         recovered_thinking_on = True if _recovered_thinking_on is None else bool(_recovered_thinking_on)
@@ -1498,7 +1499,7 @@ class TaskService:
                 enable_native_thinking=recovered_thinking_on,
                 thinking_budget_tokens=recovered_thinking_budget,
             ),
-            recovered_exec,
+            recovered_effort,
             time.monotonic(),
         )
         interrupt_value = snapshot.interrupts[0].value
@@ -1522,9 +1523,9 @@ class TaskService:
                 session_id,
             )
             return
-        payload, execution_mode, _paused_at = entry
+        payload, effort_level, _paused_at = entry
         await self._run_coding_task(
-            session_id, payload, execution_mode, resume_value=approval
+            session_id, payload, effort_level, resume_value=approval
         )
 
     async def _run_patch_hooks(
@@ -1541,27 +1542,41 @@ class TaskService:
         mission: Any,
         applied_log: List[Dict[str, Any]],
         errors: List[str],
+        check_results: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Render the turn-end chat summary from what actually happened.
 
-        13.0.9 — this used to predict a gate outcome BEFORE any approval had
-        happened ("Proposed N file change(s) — review the diff below and
-        authorize"), because the whole WBS ran to completion inside the graph
-        before the first approval card ever appeared. Approval is now
-        per-step and in-graph, so by the time this runs every step has
-        already been generated, decided, and (if approved) applied — this
-        reports the outcome, sourced from ``applied_files_log``, instead of
-        a promise. Also drops the old "use Ctrl+Z to undo" claim: no editor
-        is ever opened for these files (PatchActuator.ts never calls
+        This used to predict a gate outcome BEFORE any approval had happened
+        ("Proposed N file change(s) — review the diff below and authorize"),
+        because the whole WBS ran to completion inside the graph before the
+        first approval card ever appeared. Approval is now per-step and
+        in-graph, so by the time this runs every step has already been
+        generated, decided, and (if approved) applied — this reports the
+        outcome, sourced from ``applied_files_log``, instead of a promise.
+        Also drops the old "use Ctrl+Z to undo" claim: no editor is ever
+        opened for these files (PatchActuator.ts never calls
         showTextDocument) and the actuator saves immediately after applying,
         so there is no undo stack for the keystroke to reach — VS Code's own
         Local History is the honest affordance for reverting a specific file.
+
+        ``check_results`` (brain/checks_gate.py) folds the plan's OWN
+        acceptance criteria into this same honesty discipline: applying every
+        file successfully is not the same claim as the work being verified
+        correct, and a failed check must read as a failure in the FIRST line
+        a user sees here, never buried only in the notes below — "N files
+        applied" standing alone would itself be the silent-success failure
+        this node exists to prevent.
         """
         completed_files = [e for e in applied_log if e.get("status") == "completed" and e.get("file_path")]
         completed_cmds = [e for e in applied_log if e.get("status") == "completed" and e.get("command")]
         rejected = [e for e in applied_log if e.get("status") == "rejected"]
         revised = [e for e in applied_log if e.get("status") == "revision_requested"]
         failed = [e for e in applied_log if e.get("status") == "failed"]
+
+        checks = check_results or []
+        checks_passed = [c for c in checks if c.get("status") == "passed"]
+        checks_failed = [c for c in checks if c.get("status") == "failed"]
+        checks_unverified = [c for c in checks if c.get("status") == "unverified"]
 
         if not applied_log:
             return "Drafted a plan but produced no concrete edits for this request. See the Plan panel."
@@ -1581,6 +1596,29 @@ class TaskService:
             parts.append(f"{len(revised)} still under revision")
 
         summary = (", ".join(parts) if parts else "No changes were applied") + "."
+
+        # A failed acceptance check is the single most important fact about
+        # this turn — it goes first, ahead of the Local History note, so a
+        # user scanning only the opening line cannot mistake this for a clean
+        # success. Never merged into the "not applied"/"declined" counts above:
+        # those describe the APPLY gate; this describes whether the applied
+        # work actually satisfies the plan's own definition of done.
+        if checks_failed:
+            n = len(checks_failed)
+            summary = (
+                f"{n} acceptance check{'s' if n != 1 else ''} FAILED — the work above "
+                f"is NOT verified complete. {summary}"
+            )
+        elif checks_passed or checks_unverified:
+            bits = []
+            if checks_passed:
+                bits.append(f"{len(checks_passed)} acceptance check{'s' if len(checks_passed) != 1 else ''} passed")
+            if checks_unverified:
+                bits.append(
+                    f"{len(checks_unverified)} could not be automatically verified"
+                )
+            summary = summary + " " + (", ".join(bits) + ".")
+
         if completed_files:
             summary += " Previous versions are recoverable via VS Code's Local History (Timeline view)."
 

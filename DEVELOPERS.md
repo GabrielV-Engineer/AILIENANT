@@ -55,16 +55,7 @@ The extension is intentionally thin: it captures editor state, renders the agent
 
 ## The execution graph
 
-The entry point is `process_user_intent(prompt, mode)` in [ailienant-core/brain/intent_router.py](ailienant-core/brain/intent_router.py), which dispatches one of three execution shapes:
-
-```
-process_user_intent(prompt, mode)
-  SEQUENTIAL  → fast_path.execute_sequential_bypass()      # zero-graph, 1–3 s
-  MICRO_SWARM → swarms._MICRO_SWARM_APP.ainvoke()          # Coder ↔ SyntaxGate ↔ StyleGate ↔ CircuitBreaker
-  FULL_SWARM  → swarms.build_full_swarm(checkpointer).ainvoke()
-```
-
-The full graph is compiled in [ailienant-core/brain/engine.py](ailienant-core/brain/engine.py) over a strictly-typed `AIlienantGraphState` ([brain/state.py](ailienant-core/brain/state.py)):
+The single entry point is `alienant_app.astream(...)` ([core/task_service.py](ailienant-core/core/task_service.py)), the compiled LangGraph app from [ailienant-core/brain/engine.py](ailienant-core/brain/engine.py), running over a strictly-typed `AIlienantGraphState` ([brain/state.py](ailienant-core/brain/state.py)). Every task — from a one-line edit to a full mission — traverses this one graph; there is no separate topology selected by task size. What varies per-turn is the **Effort Budget** (`effort_level: light | balanced | deep`), which controls verification depth (lint gate, self-heal retry ceiling, whether the plan's own acceptance `checks` run) rather than which nodes execute.
 
 ```
 START
@@ -81,11 +72,12 @@ START
                        → finops_gate        (cost < ceiling?)
                          → supervisor_node   (FinOps hard-kill or proposal)
                            → apply_patch     (PREPARE: diff/risk/verdict, no interrupt)
-                             → apply_commit  (GATE: interrupt-first HITL approval, then the actual write/exec)
-                               → validate_output (AST + LSP)
-                               → [retry / advance / heal?]
+                             → apply_commit  (GATE: interrupt-first HITL approval; AST syntax gate on the overlay, then the actual write/exec)
+                               → validate_output (state-shape check + trajectory persistence — not a code gate)
+                               → [retry / advance / heal / verify?]
                                    → coder_agent       (retry the same step)
                                    → drift_gate        (advance: next pending WBS step — the RELAY multi-step loop)
+                                   → run_checks        (all steps terminal AND effort_level=deep: execute the plan's own acceptance checks)
                                    → error_correction | agentic_cell | END
 ```
 
@@ -123,10 +115,8 @@ Turns intent into a schema-valid `MissionSpecification` (outcome, scope, constra
 
 ### Coder — [agents/coder.py](ailienant-core/agents/coder.py)
 
-Takes one WBS step and emits a patch as git-conflict-style SEARCH/REPLACE blocks (never JSON-escaped). Validation happens on a virtual overlay before anything hits disk:
+Takes one WBS step and emits a patch as git-conflict-style SEARCH/REPLACE blocks (never JSON-escaped). The apply gate ([brain/apply_gate.py](ailienant-core/brain/apply_gate.py)) runs an **AST parse** (Tree-sitter, 20+ grammars, derived from the same language map the indexer uses) on the virtual overlay before anything hits disk — the coder's own output is never trusted unchecked. A file that fails to parse never reaches disk; it re-dispatches through the self-heal loop bounded by `CORRECTION_MAX_ATTEMPTS`, and a step that still does not parse past that bound is reported failed, not silently accepted. LSP-level lint (ruff/eslint/mypy/…) exists in [tools/validation/lsp_filter.py](ailienant-core/tools/validation/lsp_filter.py) but is not yet wired into this path — see the [honest list](#honest-list-of-what-is-not-implemented).
 
-- **AST parse** (Tree-sitter, 20+ grammars) → fast, language-agnostic syntax gate.
-- **LSP lint** (subprocess to ruff/eslint/mypy/…) → catches undefined refs and lints.
 - Bounded local retries; on the configured strike count it escalates to a cloud "surgeon."
 - `run_command` steps dispatch into the resolved sandbox tier and read a **structured** verdict — see [the closed-loop executor](#closed-loop-execution).
 - When the current file + GraphRAG context is thin (new file, empty RAG hit, or a retry after failed validation), a bounded READ_ONLY tool-grounding pre-pass runs first — the same `core/tool_registry.py` → `core/tool_dispatch.py` substrate the agentic cell and dispatched subagents use, tier-filtered to READ_ONLY so mutation stays on the cell's surface. The SEARCH/REPLACE generation call itself never gains tool-calling of its own; grounding observations are folded into its context as ordinary (trimmable) prompt content.
@@ -302,23 +292,22 @@ Proyect_Ailienant/
 │   │                            #     workspace_context, analyst_context, recency
 │   ├── brain/                   #   State machine + routing + checkpointing
 │   │   ├── engine.py            #     graph assembly + reflexion/self-heal + agentic-cell wiring
-│   │   ├── intent_router.py     #     process_user_intent() dispatch
-│   │   ├── swarms.py            #     micro / full swarm builders
-│   │   ├── fast_path.py         #     SEQUENTIAL bypass
+│   │   ├── checks_gate.py       #     run_checks node: executes the plan's own acceptance checks (deep effort only)
+│   │   ├── guardrails.py        #     output state-shape check + WBS-advance/run_checks/END routing
 │   │   ├── state.py             #     AIlienantGraphState, MissionSpecification, reducers
 │   │   ├── subagent_contracts.py #    dispatch schema: SubagentTask / DispatchPlan / result envelopes
 │   │   ├── dispatch.py          #     build_dispatch_sends fan-out + wave-split routers
 │   │   ├── dispatch_ledger.py   #     budget admission: reserve/commit/refund over current_cost_usd
 │   │   ├── dispatch_emitter.py  #     optional planner/researcher DispatchPlan emission (hook + synthetic)
 │   │   ├── nodes/               #     subagent_worker + dispatch_synthesize dispatch nodes
-│   │   ├── routing_engine.py    #     CSS × TCI matrix
+│   │   ├── routing_engine.py    #     model keep-alive policy (the CSS × TCI matrix itself lives in core/memory/context_auditor.py)
 │   │   ├── context_pipeline.py  #     5-layer context assembler (ContextChunk, ContextPipeline)
 │   │   ├── agent_context.py     #     budget-guard over ContextPipeline (build_agent_context)
 │   │   ├── agentic_cell.py      #     bounded ReAct cell (re-exports run_tournament as select_candidate_via_mcts)
 │   │   ├── subagent_tournament.py #   transactional UCB1 candidate tournament + run_tournament_from_dispatch adapter
 │   │   ├── coder_companion.py    #     fire-and-forget structured post-turn explanation (best-effort WS side channel)
 │   │   ├── iteration_governor.py #    multi-axis circuit breaker
-│   │   ├── retry_policy.py      #     centralized retry/correction budgets
+│   │   ├── retry_policy.py      #     centralized retry/correction budgets + Effort Budget (light/balanced/deep) ceiling resolution
 │   │   ├── apply_gate.py        #     incremental per-step approval: apply_patch (PREPARE) + apply_commit (interrupt-first GATE)
 │   │   └── mcts/ · episodic/    #     tree + UCB1 + audit checkpointer
 │   ├── core/                    #   Infrastructure
@@ -394,7 +383,9 @@ Proyect_Ailienant/
 │   │   └── ledger.py            #     durable per-caller token-bucket + budget DoS guard (filelock, fail-closed)
 │   ├── transport/               #   outbound WS stream (throttler, token batcher, narration gate)
 │   ├── shared/                  #   config, RBAC, contracts, hardware probe, persona, log filters
-│   ├── validators/              #   syntax/style gates (ast.parse + ruff --stdin), env probe
+│   ├── validators/              #   environment.py: interpreter + typing-config probe (its former syntax/style
+│   │                            #     gates module had no production caller and was retired — the live syntax
+│   │                            #     gate is tools/validation/ast_filter.py, wired at brain/apply_gate.py)
 │   ├── scripts/                 #   standalone, opt-in operator scripts — never pytest-collected
 │   │   └── hardware_stress_sim.py # env-gated (AILIENANT_ENABLE_HW_STRESS=1) REAL RAM/VRAM pressure;
 │   │                            #     complements tests/chaos/test_hardware_stress_sim.py's synthetic injection
@@ -570,6 +561,7 @@ Documentation should never oversell. As of this writing:
 - **Provider-native prompt caching is not wired — deliberately deferred, after measurement, not overlooked.** Today's caching is a *semantic/response* cache (short-circuits near-identical requests); it is **not** the same as Anthropic/OpenAI **prompt caching** (`cache_control` / ephemeral breakpoints), which gives a ~90 % discount on *input* tokens re-sent unchanged. The prerequisite shipped: the system message is split into a byte-identical HEAD (`agents/prompts.py::build_static_identity_prompt`) and a small per-turn TAIL declaring the sandbox nonce, so the prefix no longer changes on every call — guarded by `tests/test_prompt_prefix_stability.py`. Applying `cache_control` on top of it is what's deferred, because measuring the prefix disproved the assumption behind the idea: it is only **~281-450 tokens**, below every current provider's 512-4096 minimum-cacheable floor, and two of the three components originally assumed to be in it aren't — tool/MCP schemas live in a separate reasoning call rather than the stable HEAD, and GraphRAG context is assembled per-`target_file`, genuinely volatile. Tagging a sub-floor prefix would pay the 1.25× cache-write premium on every call for zero reads, a net loss. Tracked as DEBT-137 with an explicit re-evaluation trigger (a future change that folds tool schemas into the HEAD itself, or bringing the genuinely-growing multi-turn chat history into scope). Honest sizing even once unblocked: caching saves nothing on a local model, and on a cloud model the volatile per-step payload dwarfs the cacheable prefix by roughly an order of magnitude.
 - **Specialized agent classes** (RefactorAgent, SecOpsAgent, …) are **roles** on `WBSStep.target_role`, not standalone modules.
 - **Auth / multi-user / cloud deployment** is roadmap, not shipped.
+- **The main graph's code gate is AST-only, not AST+LSP.** `brain/apply_gate.py` rejects a generated file that fails to parse before it reaches disk, but it does not lint or type-check it — no undefined-reference detection, no ruff/eslint/mypy pass. `tools/validation/lsp_filter.py` implements that layer; wiring it into this path is tracked as backlog, not silently assumed to exist. Do not read the topology diagram's `apply_commit` step as "fully linted" — it is "confirmed to parse."
 
 If you want one of these, it's a great place to start — see [CONTRIBUTING.md](CONTRIBUTING.md) and the manifest.
 

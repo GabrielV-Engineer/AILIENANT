@@ -1,8 +1,9 @@
 """Opt-in, CI-skipped real-memory hardware stress script (DEBT-067).
 
 Applies REAL memory pressure and observes `shared.hardware.HardwareDetector`'s
-actual probing path degrade `suggested_mode` under genuine load. This is
-deliberately distinct from `tests/chaos/test_hardware_stress_sim.py`, which
+actual probing path degrade `effective_vram_gb` under genuine load, past the
+`VRAM_CLOUD_FLOOR_GB` threshold the live LOCAL-to-CLOUD reroute decision gates
+on. This is deliberately distinct from `tests/chaos/test_hardware_stress_sim.py`, which
 injects a synthetic starved `HardwareProfile` instead of allocating anything —
 that test is the CI-safe, deterministic contract check for the graceful-
 degradation *routing* logic; this script is the opt-in complement that
@@ -157,10 +158,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    from shared.hardware import HardwareDetector
+    from shared.config import VRAM_CLOUD_FLOOR_GB
+    from shared.hardware import HardwareDetector, effective_vram_gb
 
     baseline = HardwareDetector.detect()
-    print(f"[hardware_stress_sim] baseline suggested_mode={baseline.suggested_mode}")
+    baseline_eff = effective_vram_gb(baseline)
+    print(f"[hardware_stress_sim] baseline effective_vram_gb={baseline_eff:.2f} "
+          f"(cloud floor={VRAM_CLOUD_FLOOR_GB:.2f})")
 
     chunks: List[bytearray] = []
     try:
@@ -172,38 +176,42 @@ def main() -> None:
                 print(f"[hardware_stress_sim] VRAM stress skipped: {skip_reason}")
 
         under_pressure = HardwareDetector.detect()
+        under_pressure_eff = effective_vram_gb(under_pressure)
         print(
-            f"[hardware_stress_sim] under pressure suggested_mode="
-            f"{under_pressure.suggested_mode} (was {baseline.suggested_mode})"
+            f"[hardware_stress_sim] under pressure effective_vram_gb="
+            f"{under_pressure_eff:.2f} (was {baseline_eff:.2f})"
         )
-        if under_pressure.suggested_mode == baseline.suggested_mode:
-            # shared.hardware.effective_vram_gb gates suggested_mode on GPU VRAM
-            # headroom for every platform EXCEPT Apple Silicon, where system RAM
-            # is the direct gate. Diagnose which case this is rather than print a
-            # one-size-fits-all "try a lower target" that would be misleading on
-            # a non-Apple host with no GPU (RAM pressure cannot move the gate at
-            # all there — it isn't in the formula).
+        crossed_floor = (
+            baseline_eff >= VRAM_CLOUD_FLOOR_GB > under_pressure_eff
+        )
+        if not crossed_floor:
+            # effective_vram_gb gates on GPU VRAM headroom for every platform
+            # EXCEPT Apple Silicon, where system RAM is the direct gate.
+            # Diagnose which case this is rather than print a one-size-fits-all
+            # "try a lower target" that would be misleading on a non-Apple host
+            # with no GPU (RAM pressure cannot move the gate at all there — it
+            # isn't in the formula).
             if baseline.is_apple_silicon:
                 print(
-                    "[hardware_stress_sim] WARNING: suggested_mode did not degrade "
-                    "— on Apple Silicon, RAM IS the direct gate; try a lower "
-                    "--target-free-gb."
+                    "[hardware_stress_sim] WARNING: effective_vram_gb did not cross "
+                    "the cloud floor — on Apple Silicon, RAM IS the direct gate; "
+                    "try a lower --target-free-gb."
                 )
             elif baseline.vram_gb <= 0.0:
                 print(
-                    "[hardware_stress_sim] NOTE: suggested_mode cannot degrade via RAM "
-                    "pressure on this host — no GPU was detected, and on a non-Apple "
-                    "platform suggested_mode is gated by GPU VRAM headroom "
-                    "(shared.hardware.effective_vram_gb), not system RAM. This is a "
-                    "structural limitation of RAM-only pressure, not a sizing issue "
-                    "with --target-free-gb."
+                    "[hardware_stress_sim] NOTE: effective_vram_gb cannot degrade via "
+                    "RAM pressure on this host — no GPU was detected, and on a "
+                    "non-Apple platform it is gated by GPU VRAM headroom, not system "
+                    "RAM. This is a structural limitation of RAM-only pressure, not a "
+                    "sizing issue with --target-free-gb."
                 )
             else:
                 print(
-                    "[hardware_stress_sim] NOTE: suggested_mode is gated by GPU VRAM "
-                    "headroom on this platform, not system RAM — RAM pressure alone "
-                    "cannot move it. Retry with --vram (best-effort; needs a compute "
-                    "framework this project doesn't depend on — see module docstring)."
+                    "[hardware_stress_sim] NOTE: effective_vram_gb is gated by GPU "
+                    "VRAM headroom on this platform, not system RAM — RAM pressure "
+                    "alone cannot move it. Retry with --vram (best-effort; needs a "
+                    "compute framework this project doesn't depend on — see module "
+                    "docstring)."
                 )
     finally:
         # Always release, even on an exception or Ctrl-C, so the script never
@@ -211,7 +219,8 @@ def main() -> None:
         chunks.clear()
         gc.collect()
         released = HardwareDetector.detect()
-        print(f"[hardware_stress_sim] after release suggested_mode={released.suggested_mode}")
+        print(f"[hardware_stress_sim] after release effective_vram_gb="
+              f"{effective_vram_gb(released):.2f}")
 
 
 if __name__ == "__main__":

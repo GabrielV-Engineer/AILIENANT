@@ -1001,6 +1001,7 @@
 - [x] **13.1. Full Dockerization.** `Dockerfile` + `docker-compose.yml` to launch the full architecture (LanceDB + Backend) with a single command.
 - [x] **13.1.1. Technical-Debt Sweep to Sub-30 Before v1.**
 - [x] **13.1.2. Technical-Debt Sweep — Second Pass.**
+- [x] **13.1.3. Output Capacity, Completion Integrity & Live Routing.**
 - [ ] **13.2. Binary Packaging (Zero-Friction Install).** **PyInstaller / Nuitka:** compile `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) into a per-OS binary (`.exe` / macOS / Linux). **VS Code Extension Bundling:** the TS extension unpacks and executes the local binary in background on install. The user needs no Python, Docker, or Node installed.
 - [ ] **13.3. Visual Documentation.** `README.md` final with real architecture diagrams.
 - [ ] **13.4. Autonomous Demo.** Recording where TestAgent + LogicAgent + AnalystAgent solve a cyclic bug unattended.

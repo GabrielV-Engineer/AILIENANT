@@ -68,7 +68,7 @@ async def test_debt079_rehydrate_recovers_prompt_and_thinking_config() -> None:
     checkpointed reasoning-mode config — not the pre-fix hardcoded
     task_prompt="" / defaults regardless of what was actually running."""
     svc = await _run_rehydrate({
-        "execution_mode": "MICRO_SWARM",
+        "effort_level": "deep",
         "user_input": "refactor the auth module",
         "enable_native_thinking": False,
         "thinking_budget_tokens": 8192,
@@ -78,22 +78,27 @@ async def test_debt079_rehydrate_recovers_prompt_and_thinking_config() -> None:
     assert payload.task_prompt == "refactor the auth module"
     assert payload.enable_native_thinking is False
     assert payload.thinking_budget_tokens == 8192
-    assert exec_mode == "MICRO_SWARM"
+    assert exec_mode == "deep"
 
 
 async def test_debt079_legacy_checkpoint_falls_back_to_defaults() -> None:
-    """A checkpoint written before the two new channels existed deserializes
-    them as absent — the recovered payload must fall back to the exact
-    pre-fix literal defaults (True / 4096), never crash or silently zero out."""
+    """A checkpoint written before the reasoning-mode channels existed — and
+    before the topology selector was replaced by the Effort Budget — carries
+    the old `execution_mode` field and none of the newer ones. The recovered
+    payload must fall back to the exact literal defaults (True / 4096 /
+    "balanced"), never crash or silently zero out."""
     svc = await _run_rehydrate({
         "execution_mode": "SEQUENTIAL",
         "user_input": "some earlier prompt",
-        # enable_native_thinking / thinking_budget_tokens deliberately absent.
+        # enable_native_thinking / thinking_budget_tokens / effort_level
+        # deliberately absent — this is what a genuinely pre-rename checkpoint
+        # looks like.
     })
-    payload, _exec_mode, _paused_at = svc._paused_tasks["sess-1"]
+    payload, exec_mode, _paused_at = svc._paused_tasks["sess-1"]
     assert payload.task_prompt == "some earlier prompt"
     assert payload.enable_native_thinking is True
     assert payload.thinking_budget_tokens == 4096
+    assert exec_mode == "balanced"
 
 
 async def test_debt079_append_history_no_longer_writes_empty_user_message() -> None:

@@ -323,7 +323,8 @@ class ContextMeter(BaseModel):
         ge=0.0, le=100.0, description="Computed complexity index of the task."
     )
     routing_decision: str = Field(
-        pattern="^(LOCAL_SMALL|LOCAL_BIG|CLOUD)$", description="The router's decision."
+        pattern="^(LOCAL_SMALL|LOCAL_MEDIUM|LOCAL_BIG|CLOUD)$",
+        description="The router's decision (core.memory.context_auditor.derive_routing_decision).",
     )
     is_red_alert: bool = Field(
         description="True when the CSS is critically low (<40%)."
@@ -579,7 +580,9 @@ class AIlienantGraphState(TypedDict):
     # --- Routing & Hardware (Phase 2.1) ---
     # True when at least one attachment is type="image" → forces CLOUD via Vision Bypass.
     has_images: bool
-    # Set by resolve_provider() when CLOUD is optimal but unavailable; None otherwise.
+    # Set by core.memory.context_auditor.hardware_reroute() when a LOCAL
+    # decision is downgraded/rerouted (insufficient VRAM, predicted context
+    # overflow); None otherwise.
     routing_warning: Optional[str]
     # Populated by orchestrator node on first invocation; cached in checkpoint state.
     hardware_profile: Optional[HardwareProfile]
@@ -681,14 +684,20 @@ class AIlienantGraphState(TypedDict):
     # a double-delivered resume can never re-apply the same step's write twice.
     applied_step_ids: Annotated[List[int], operator.add]
     # Turn-scoped, human-readable ledger of what happened to each step's apply —
-    # sourced for the honest (13.0.9 W3) turn-end summary in place of predicting
-    # a gate outcome before any approval happened.
+    # sourced for the honest turn-end summary in place of predicting a gate
+    # outcome before any approval happened.
     applied_files_log: Annotated[List[Dict[str, Any]], operator.add]
     # Mirrors TaskPayload.auto_accept_low_risk onto graph state (same DEBT-079
     # rationale as enable_native_thinking above) — the apply gate's prepare node
     # needs it and only has state/config, never the original TaskPayload. Scalar,
     # no reducer: set once at turn start, read-only for the rest of the turn.
     auto_accept_low_risk: bool
+    # Verdict per MissionSpecification.checks entry ({check, command, status,
+    # detail?}, status one of passed/failed/unverified) — written once by
+    # brain/checks_gate.py::run_checks_node at turn end. Additive per charter
+    # §10: a persisted checkpoint from before this channel existed simply
+    # rehydrates it as empty, never breaking.
+    check_results: Annotated[List[Dict[str, Any]], operator.add]
 
     # --- FinOps Budget Gate (Phase 2.18) ---
     # operator.add reducer required: parallel Send() fan-out means multiple CoderAgent
@@ -728,10 +737,16 @@ class AIlienantGraphState(TypedDict):
     # node invocation. Scalar overwrite — no reducer.
     user_resource_resolution: Optional[Literal["WAIT", "SWITCH_TO_CLOUD", "CANCEL"]]
 
-    # --- Phase 4.3 — Execution Tier Selector ---
-    # Written once by process_user_intent() at the routing entry; locked for the
-    # lifetime of the run (mode-locked topology per blueprint §2).
-    execution_mode: Literal["SEQUENTIAL", "MICRO_SWARM", "FULL_SWARM"]
+    # --- Effort Budget ---
+    # Written once at turn start; controls verification depth on the main graph
+    # (lint/LSP gate, self-heal attempt ceiling, whether the plan's own
+    # acceptance checks run — see brain/retry_policy.py and
+    # brain/checks_gate.py). Replaces the old SEQUENTIAL/MICRO_SWARM/FULL_SWARM
+    # execution_mode selector, which named a topology no routing decision in
+    # brain/engine.py ever actually consulted — a different, unrelated axis
+    # from TaskPayload.execution_mode (the AUTO/ASK/PLAN permission mode,
+    # unaffected by this rename).
+    effort_level: Literal["light", "balanced", "deep"]
 
     # --- Phase 4.3 stage-2 — MICRO_SWARM / FULL_SWARM channels ---
     # active_role: written by Orchestrator (1:1 copy of WBSStep.target_role for the

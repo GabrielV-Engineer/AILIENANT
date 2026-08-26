@@ -80,3 +80,54 @@ def test_unsupported_extension_passes() -> None:
 def test_unsupported_extension_passes_even_for_known_garbage() -> None:
     result = validate_ast("def foo() pass", "config.yaml")
     assert result.is_valid is True
+
+
+# ---------- JavaScript / JSX (derived coverage — regression for a real incident) ----------
+#
+# Before this fix, `.js`/`.jsx` had no entry in the validator's own extension map even
+# though the underlying tree-sitter engine (core/ast_engine._LANG_MAP) already supported
+# them, so any JSX file passed Layer 1 unconditionally. A live coding turn wrote a React
+# component whose content ended in a literal, unclosed `>>>>>>> REPLACE` conflict marker
+# — invalid JavaScript — and it was accepted as valid. These cases are the exact shape of
+# that incident, not a synthetic one.
+
+def test_javascript_valid_passes() -> None:
+    result = validate_ast("function add(a, b) {\n  return a + b;\n}\n", "a.js")
+    if result.prune_reason and "parser unavailable" in result.prune_reason:
+        return
+    assert result.is_valid is True
+
+
+def test_jsx_conflict_marker_fails() -> None:
+    """The exact defect: a REPLACE marker left in committed JSX must fail Layer 1."""
+    content = (
+        "import React from 'react';\n\n"
+        "function App() {\n  return <div>Hello</div>;\n}\n\n"
+        "export default App;>>>>>>> REPLACE"
+    )
+    result = validate_ast(content, "App.jsx")
+    if result.prune_reason and "parser unavailable" in result.prune_reason:
+        return
+    assert result.is_valid is False
+    assert result.errors[0].layer == "AST"
+
+
+def test_jsx_valid_passes() -> None:
+    content = "function App() {\n  return <div>Hello</div>;\n}\n\nexport default App;\n"
+    result = validate_ast(content, "App.jsx")
+    if result.prune_reason and "parser unavailable" in result.prune_reason:
+        return
+    assert result.is_valid is True
+
+
+def test_resolve_grammar_language_matches_the_shared_detector() -> None:
+    """The validator's coverage must be DERIVED from shared.contracts.detect_language
+    and core.ast_engine._LANG_MAP, never a hand-maintained third list that can drift
+    from either."""
+    from tools.validation.ast_filter import resolve_grammar_language
+
+    assert resolve_grammar_language("a.jsx") == "javascriptreact"
+    assert resolve_grammar_language("a.js") == "javascript"
+    assert resolve_grammar_language("a.ts") == "typescript"
+    assert resolve_grammar_language("a.tsx") == "typescriptreact"
+    assert resolve_grammar_language("notes.txt") is None

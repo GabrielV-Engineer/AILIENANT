@@ -15,6 +15,7 @@ from langchain_core.runnables import RunnableConfig
 # "keep module import light" convention, so a cold process boot never pays
 # this cost until a real planner turn actually runs.
 from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
+from core.memory.context_auditor import resolve_model_alias_for_routing
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
 from agents.prompts import build_boundary_declaration, build_static_identity_prompt
@@ -22,6 +23,8 @@ from brain.agent_context import (
     AMNESIA_ALERT,
     build_agent_context,
     resolve_context_budget,
+    resolve_output_budget,
+    resolve_real_window,
 )
 from brain.context_pipeline import ContextBudgetError
 from agents.workspace_context import build_workspace_overview
@@ -44,34 +47,49 @@ _PLANNER_REASONING_MAX_TOKENS: int = 512
 
 # Output ceiling for the strict WBS draft itself (the MissionSpecification JSON —
 # outcome/scope/constraints/decisions/tasks/checks). Distinct from the reasoning
-# ceiling above. The gateway default (4096, applied whenever no max_tokens is passed)
-# budgets a narrow, single-file request comfortably, but a broad "build an MVP"
-# request needs a WBS with many tasks and correspondingly more JSON — a flat ceiling
-# there produces exactly the shallow/truncated plans this phase corrects (audited
-# 2026-07-28 live-test sweep). Scale by the request's length (a longer, more detailed
-# ask usually specifies a broader build) rather than bumping the default globally,
-# bounded by half the resolved model's real context window.
-_PLANNER_DRAFT_MIN_MAX_TOKENS: int = 4096
+# ceiling above. This is the DECLARED ceiling only — the actual max_tokens sent
+# to the model is `resolve_output_budget`'s result (brain/agent_context.py),
+# which reconciles this ceiling against the model's REAL served window and the
+# REAL measured prompt. A flat `min(ceiling, budget // 2)` shape used to collapse
+# onto its own floor at the only budget the system ever actually resolved,
+# handing every request the identical max_tokens regardless of its own length or
+# the model's real capacity — see resolve_output_budget's docstring.
 _PLANNER_DRAFT_MAX_MAX_TOKENS: int = 16384
 
+# How much of an unusable raw draft to quote back in the error/log. Enough to
+# recognise the failure shape (empty, prose, a truncated object) without dumping
+# a whole completion into the transcript or the log (charter §5.5).
+_RAW_PREVIEW_CHARS: int = 400
 
-def _resolve_planner_draft_max_tokens(user_input: str, budget: int) -> int:
-    """Derive the WBS draft's output-token ceiling from request breadth.
 
-    Never raises — any unexpected input degrades to the historical flat default.
+def _describe_unusable_draft(raw: str) -> str:
+    """Describe a draft the envelope unwrapper could not turn into an object.
+
+    ``_extract_nested_schema_target`` collapses BOTH "the model said nothing"
+    and "the model emitted prose / a truncated object" into the same empty
+    dict, which Pydantic then reports as six separate "Field required" errors
+    against ``input_value={}``. That message names the schema as the problem
+    when the schema was never reached — it cost a 12-minute live run and a full
+    log forensics pass to establish that the real fault was an unparseable
+    response. This turns the same condition into a statement of what actually
+    came back, so the next occurrence is one read instead of an investigation.
     """
-    try:
-        scaled = _PLANNER_DRAFT_MIN_MAX_TOKENS + len(user_input or "") * 6
-        # The real context window is the HARD ceiling — it must win even over the
-        # historical flat floor, or a small-window local model would be asked for
-        # more completion tokens than its window has room for. Only within that
-        # hard ceiling do we prefer at least the flat floor.
-        hard_ceiling = min(_PLANNER_DRAFT_MAX_MAX_TOKENS, budget // 2)
-        floor = min(_PLANNER_DRAFT_MIN_MAX_TOKENS, hard_ceiling)
-        return int(max(floor, min(scaled, hard_ceiling)))
-    except Exception:  # noqa: BLE001 — a budget-derivation fault must not block planning
-        logger.debug("planner: max_tokens scaling failed; falling back to flat default", exc_info=True)
-        return _PLANNER_DRAFT_MIN_MAX_TOKENS
+    stripped = (raw or "").strip()
+    if not stripped:
+        return (
+            "the model returned an EMPTY response (0 characters) — no draft was "
+            "produced at all. On a local model this is almost always the generation "
+            "being cut short (the request timed out, or the model's real context "
+            "window left no room for the completion), not a schema mistake."
+        )
+    head = stripped[:_RAW_PREVIEW_CHARS]
+    more = len(stripped) - len(head)
+    suffix = f" …(+{more} more characters)" if more > 0 else ""
+    return (
+        f"the model returned {len(stripped)} characters containing no usable "
+        f"MissionSpecification object. Raw response starts: {head!r}{suffix}"
+    )
+
 
 # Scope discipline injected into the planner instruction. Without it the model
 # treats every file it sees in the injected context as a backlog to edit and
@@ -609,11 +627,27 @@ async def run_planner_node(
     _bud: Optional[dict] = None
 
     if mission_plan is None:
-        # mandates Big/cloud model for the Planner.
-        # ResourceBroker still arbitrates the VRAM lock; we just request BIG by default.
-        decision = await ResourceBroker.acquire_or_resolve(state, model=MODEL_BIG)
+        # The Researcher's CSS/TCI routing cascade already computed a real
+        # decision (LOCAL_SMALL/LOCAL_BIG/CLOUD) before the Planner ever runs —
+        # resolve_model_alias_for_routing is what makes that decision actually
+        # select a model tier, instead of every call hardcoding BIG regardless
+        # of what the router said (N9). BIG remains the fallback when no
+        # decision has been computed yet (a cache-hit turn, a benchmark stub) —
+        # zero behaviour change from before in that case. ResourceBroker still
+        # arbitrates the VRAM lock for whichever tier this resolves to.
+        _context_meter = state.get("context_metrics")
+        _routing_decision = getattr(_context_meter, "routing_decision", None)
+        _planner_model = resolve_model_alias_for_routing(_routing_decision, default=MODEL_BIG)
+        decision = await ResourceBroker.acquire_or_resolve(state, model=_planner_model)
         if decision.cancelled:
             return {"errors": ["Planner cancelled by user during VRAM contention."]}
+
+        # Tier extraction hoisted out of the reasoning-pass branch below: the
+        # output-budget check a few lines down needs the real served window for
+        # THIS model regardless of whether the reasoning narration fires.
+        _r_model = decision.effective_model
+        _r_tier = _r_model.split("/", 1)[1] if _r_model.startswith("ailienant/") else "big"
+        _r_tier = _r_tier if _r_tier in ("small", "medium", "big") else "big"
 
         # Live plan-of-attack reasoning, streamed to the Thought Box while the user
         # waits — ONLY for non-native models. A native model already surfaces its own
@@ -623,14 +657,11 @@ async def run_planner_node(
         # so the reasoning runs here as a separate, free-form completion. Best-effort: a
         # sink or generation fault never blocks planning; a real abort propagates.
         if _on_thinking is not None and _thinking_on:
-            _r_model = decision.effective_model
-            _r_tier = _r_model.split("/", 1)[1] if _r_model.startswith("ailienant/") else "big"
-            _r_tier = _r_tier if _r_tier in ("small", "medium", "big") else "big"
             from core.config.model_resolver import get_chat_target  # deferred — load order
-            from tools.llm_gateway import _supports_native_thinking
+            from tools.llm_gateway import supports_native_thinking
 
             _r_target = get_chat_target(_r_tier)
-            _r_native = _r_target is not None and _supports_native_thinking(_r_target.model)
+            _r_native = _r_target is not None and await supports_native_thinking(_r_target)
             if not _r_native:
                 _reasoning_user = (
                     f"User requirement: '{user_input}'.\n\n"
@@ -675,6 +706,13 @@ async def run_planner_node(
                 except Exception:  # noqa: BLE001 — reasoning is best-effort; never block the draft
                     logger.debug("planner reasoning pass failed (non-fatal)", exc_info=True)
 
+        # Real served window for the resolved tier — probed from the runtime, not
+        # trusted from a declared LLMProfile (almost never bound in practice; see
+        # resolve_context_budget's own docstring). Resolved once per planner call
+        # since it does not change across retries, only the prompt being measured
+        # against it does (correctives grow it on every retry).
+        _real_window = await resolve_real_window(state, _r_tier)
+
         # Actor-Critic reflection loop: the Pydantic schema IS the critic. Each draft is
         # validated against MissionSpecification; on rejection the exact errors are fed
         # back and the actor re-drafts. Bounded by MAX_PLANNER_RETRIES, this drives the
@@ -682,23 +720,71 @@ async def run_planner_node(
         # cycle (review → rejected → replanning → validated) so it is legible in the log.
         await _emit("critic_review")
         last_validation_err: str = ""
+        # True when the PREVIOUS attempt produced nothing parseable (as opposed
+        # to a well-formed object with wrong fields). The two failures need
+        # opposite correctives — see the branch below — and retrying an
+        # unusable draft with "fix these field errors" is what turned one
+        # truncated response into three identical wasted attempts.
+        _last_draft_unusable: bool = False
 
         try:
             while retry_count <= MAX_PLANNER_RETRIES:
                 if retry_count > 0 and last_validation_err:
                     # The critic rejected the prior draft — narrate the re-plan attempt.
                     await _emit(f"critic_rejected → replanning ({retry_count}/{MAX_PLANNER_RETRIES})")
-                    corrective: str = (
-                        f"\n\nYour previous attempt failed schema validation with these errors:\n"
-                        f"{last_validation_err}\n"
-                        f"Fix them and emit ONLY the raw JSON object for MissionSpecification. "
-                        f"DO NOT wrap it in any top-level key (e.g. 'response', 'mission', "
-                        f"'MissionSpecification'), do not add prose or markdown fences, and do "
-                        f"not omit required fields."
-                    )
+                    if _last_draft_unusable:
+                        # Nothing came back to "fix". The dominant cause of an
+                        # unparseable local-model draft is the completion being
+                        # cut short, so ask for a smaller one rather than
+                        # re-issuing the identical request that just failed.
+                        corrective: str = (
+                            f"\n\nYour previous attempt produced NO usable JSON object: "
+                            f"{last_validation_err}\n"
+                            f"Assume the response was cut short before it finished. Emit a "
+                            f"MINIMAL but COMPLETE MissionSpecification this time: 'outcome' in "
+                            f"one short sentence, at most 4 tasks, one-line descriptions, and "
+                            f"short single-sentence entries in every list. Close every brace. "
+                            f"Return ONLY the raw JSON object — no prose, no markdown fences."
+                        )
+                    else:
+                        corrective = (
+                            f"\n\nYour previous attempt failed schema validation with these errors:\n"
+                            f"{last_validation_err}\n"
+                            f"Fix them and emit ONLY the raw JSON object for MissionSpecification. "
+                            f"DO NOT wrap it in any top-level key (e.g. 'response', 'mission', "
+                            f"'MissionSpecification'), do not add prose or markdown fences, and do "
+                            f"not omit required fields."
+                        )
                     messages[-1] = {
                         **messages[-1],
                         "content": messages[-1]["content"] + corrective,
+                    }
+
+                # Joint-budget pre-flight check: measure the REAL prompt (which grows
+                # on every retry as correctives are appended) against the REAL served
+                # window, and refuse honestly BEFORE the call rather than discovering
+                # the shortfall as a silently truncated, unparseable response several
+                # minutes later. A retry cannot fix this — correctives only add text —
+                # so this returns immediately instead of burning the remaining attempts.
+                from tools.token_counter import PrecisionTokenCounter  # deferred — see file header note
+
+                _prompt_text = "\n".join(m.get("content", "") for m in messages)
+                _prompt_tokens = PrecisionTokenCounter.estimate_with_buffer(
+                    _prompt_text, decision.effective_model
+                )
+                _budget_decision = resolve_output_budget(
+                    prompt_tokens=_prompt_tokens,
+                    real_window=_real_window,
+                    declared_ceiling=_PLANNER_DRAFT_MAX_MAX_TOKENS,
+                )
+                if not _budget_decision.ok:
+                    logger.error(
+                        "Planner: pre-flight budget refusal (attempt %d) — %s",
+                        retry_count + 1, _budget_decision.reason,
+                    )
+                    return {
+                        "errors": [f"Planner Error - {_budget_decision.reason}"],
+                        "planner_retry_count": retry_count,
                     }
 
                 try:
@@ -711,7 +797,7 @@ async def run_planner_node(
                         model=decision.effective_model,
                         temperature=0.0,
                         response_format={"type": "json_object"},
-                        max_tokens=_resolve_planner_draft_max_tokens(user_input, _budget),
+                        max_tokens=_budget_decision.max_tokens,
                         session_id=session_id,
                         on_thinking=_on_thinking,
                         enable_thinking=_thinking_on,
@@ -724,6 +810,16 @@ async def run_planner_node(
                     extracted = LLMGateway._extract_nested_schema_target(
                         raw_content, MissionSpecification
                     )
+                    # An empty dict here is NOT a schema problem — it is the
+                    # unwrapper reporting that nothing parseable came back at
+                    # all (see _describe_unusable_draft). Letting it fall
+                    # through to model_validate would report six bogus "Field
+                    # required" errors against input_value={} and send the
+                    # reader hunting a contract bug that does not exist.
+                    if not extracted:
+                        _last_draft_unusable = True
+                        raise ValueError(_describe_unusable_draft(raw_content))
+                    _last_draft_unusable = False
                     mission_plan = MissionSpecification.model_validate(extracted)
                     mission_plan = mission_plan.model_copy(update={
                         "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))

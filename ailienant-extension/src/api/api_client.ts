@@ -77,6 +77,22 @@ export interface ContextOccupancy {
     context_pct: number;
 }
 
+// The Effort Budget — verification depth for the NEXT turn (mirrors
+// GET/POST /api/v1/hardware/mode). Every level runs the same agents; the
+// axis is how many verification layers a turn pays for, never which agents
+// run, and no level is ever hardware-locked — cost_estimates states what it
+// costs in local generation time instead.
+export type EffortLevel = 'light' | 'balanced' | 'deep';
+export interface EffortCostEstimate {
+    extra_calls: string;
+    seconds_per_extra_call: number;
+    calibrated: boolean;
+}
+export interface EffortModeResponse {
+    mode: EffortLevel;
+    cost_estimates: Record<EffortLevel, EffortCostEstimate>;
+}
+
 // Phase 3.4.5 — MCTS Mirror response schema (mirrors FastAPI MergeReport).
 export interface MergeReport {
     success: boolean;
@@ -290,6 +306,35 @@ export class APIClient {
             });
             if (!response.ok) { return null; }
             return response.json() as Promise<{ presets: unknown[]; active_preset_id: string | null }>;
+        } catch {
+            return null;
+        }
+    }
+
+    public async fetchEffortMode(): Promise<EffortModeResponse | null> {
+        try {
+            const response = await fetch(`${this._baseUrl}/hardware/mode`, {
+                method: 'GET',
+                headers: { ...this._authHeaders() },
+                signal: AbortSignal.timeout(3000),
+            });
+            if (!response.ok) { return null; }
+            return response.json() as Promise<EffortModeResponse>;
+        } catch {
+            return null;
+        }
+    }
+
+    public async saveEffortMode(mode: EffortLevel): Promise<EffortModeResponse | null> {
+        try {
+            const response = await fetch(`${this._baseUrl}/hardware/mode`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
+                body: JSON.stringify({ mode }),
+                signal: AbortSignal.timeout(5000),
+            });
+            if (!response.ok) { return null; }
+            return response.json() as Promise<EffortModeResponse>;
         } catch {
             return null;
         }

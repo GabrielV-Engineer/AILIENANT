@@ -12,9 +12,6 @@ from __future__ import annotations
 from agents.planner import (
     _SCOPE_DISCIPLINE_DIRECTIVE,
     _STACK_GUIDANCE_DIRECTIVE,
-    _PLANNER_DRAFT_MIN_MAX_TOKENS,
-    _PLANNER_DRAFT_MAX_MAX_TOKENS,
-    _resolve_planner_draft_max_tokens,
 )
 from agents.researcher import _DEEP_CONTEXT_MIN_SIM
 
@@ -94,33 +91,10 @@ def test_deep_context_floor_is_a_sane_similarity_threshold() -> None:
     # or the gate is either a no-op (<=0) or suppresses everything (>=1).
     assert 0.0 < _DEEP_CONTEXT_MIN_SIM < 1.0
 
-
-# ── Item C — complexity-scaled WBS draft output ceiling ───────────────────────
-
-
-def test_planner_draft_tokens_never_below_flat_default_under_ample_budget() -> None:
-    assert _resolve_planner_draft_max_tokens("fix the typo", 200_000) >= _PLANNER_DRAFT_MIN_MAX_TOKENS
-
-
-def test_planner_draft_tokens_scale_with_request_length() -> None:
-    short_ceiling = _resolve_planner_draft_max_tokens("fix the typo", 200_000)
-    long_ceiling = _resolve_planner_draft_max_tokens("build an MVP " * 500, 200_000)
-    assert long_ceiling > short_ceiling
-
-
-def test_planner_draft_tokens_bounded_by_half_the_resolved_budget() -> None:
-    ceiling = _resolve_planner_draft_max_tokens("build an MVP " * 5000, 200_000)
-    assert ceiling <= 100_000
-
-
-def test_planner_draft_tokens_real_context_window_wins_over_flat_floor() -> None:
-    """A tiny context window must cap max_tokens at half its real budget even
-    when that dips below the historical floor — see the matching coder-side
-    test (test_coder_agent.py) for the same invariant on the generation call."""
-    ceiling = _resolve_planner_draft_max_tokens("build an MVP " * 5000, 2048)
-    assert ceiling <= 1024
-
-
-def test_planner_draft_tokens_capped_at_max_ceiling() -> None:
-    ceiling = _resolve_planner_draft_max_tokens("x" * 1_000_000, 10_000_000)
-    assert ceiling <= _PLANNER_DRAFT_MAX_MAX_TOKENS
+# The WBS draft's output-token ceiling used to be a planner-local function
+# (`_resolve_planner_draft_max_tokens`) scaled against the whole-turn context
+# budget. It has been replaced by `brain.agent_context.resolve_output_budget`,
+# a joint input+output calculation shared with the coder — see
+# tests/test_context_pipeline.py for its coverage, including the regression
+# proving the old shape collapsed onto a single flat value regardless of the
+# request's real length or the model's real window.

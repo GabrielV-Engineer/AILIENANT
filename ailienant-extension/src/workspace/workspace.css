@@ -796,6 +796,14 @@ html, body, #root { height: 100%; }
 .ws-models-tier { display: flex; justify-content: space-between; gap: 8px; padding: 3px 5px; font-size: 11px; }
 .ws-models-tier-name { text-transform: capitalize; color: var(--text-secondary); }
 .ws-models-tier-model { font-family: monospace; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-models-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  padding: 10px 9px 2px;
+}
 
 /* Account & Usage grid */
 .ws-usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 2px; }

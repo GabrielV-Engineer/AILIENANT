@@ -24,6 +24,7 @@ from langchain_core.runnables import RunnableConfig
 from tools.token_counter import PrecisionTokenCounter
 from shared.config import MODEL_SMALL
 from core.resource_manager import ResourceBroker
+from brain.agent_context import resolve_context_budget
 
 logger = logging.getLogger("STATE_SUMMARIZER")
 
@@ -95,8 +96,13 @@ async def _run_summarize_node_core(
     if len(messages) <= KEEP_LAST_N:
         return {}
 
+    # `resolve_context_budget` is the ONE place that decides "the profile's
+    # declared window, else the conservative fallback" — a hand-duplicated
+    # `8192` here used to drift from that constant's own value silently. Any
+    # future change to the fallback (or to what counts as a bound profile)
+    # now takes effect here for free.
     profile = state.get("active_llm_profile")
-    context_window: int = profile.context_window if profile else 8192
+    context_window: int = resolve_context_budget(state)
     model_name: str = profile.model_name if profile else "gpt-4"
     threshold = int(context_window * THRESHOLD_RATIO)
 

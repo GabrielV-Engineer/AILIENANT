@@ -117,6 +117,67 @@ def test_supports_native_thinking_gate() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 1b. supports_native_thinking (13.1.3) — the runtime-probed check every call
+# site now actually uses. `_supports_native_thinking` above is retained only
+# as its offline fallback. Regression coverage for N2: a model absent from the
+# hint list but reporting real thinking capability at the runtime (`gemma4`,
+# live-verified: capabilities=["completion","tools","thinking"]) must now be
+# recognised — before this fix it silently ran the free-form narration pass
+# in place of its own real reasoning, on every single call, forever.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_supports_native_thinking_trusts_a_positive_probe_even_off_the_hint_list() -> None:
+    from core.config.model_resolver import RuntimeCapabilities
+    from tools.llm_gateway import supports_native_thinking
+
+    target = AsyncMock()
+    target.model = "ollama_chat/gemma4:e4b"  # NOT in _NATIVE_THINKING_MODEL_HINTS
+    with patch(
+        "core.config.model_resolver.probe_runtime_capabilities",
+        new=AsyncMock(return_value=RuntimeCapabilities(context_length=131_072, supports_thinking=True)),
+    ):
+        assert await supports_native_thinking(target) is True
+
+
+async def test_supports_native_thinking_trusts_a_genuine_negative_probe() -> None:
+    """A model the runtime successfully queried and which reports NO thinking
+    capability must be trusted as a real negative, not retried against the
+    offline substring list."""
+    from core.config.model_resolver import RuntimeCapabilities
+    from tools.llm_gateway import supports_native_thinking
+
+    target = AsyncMock()
+    target.model = "ollama_chat/qwq:32b"  # IS on the hint list, but the probe wins
+    with patch(
+        "core.config.model_resolver.probe_runtime_capabilities",
+        new=AsyncMock(return_value=RuntimeCapabilities(context_length=32_768, supports_thinking=False)),
+    ):
+        assert await supports_native_thinking(target) is False
+
+
+async def test_supports_native_thinking_falls_back_to_the_hint_list_when_the_probe_is_unknown() -> None:
+    """A non-Ollama provider (or an unreachable one) has no equivalent probe —
+    the offline substring heuristic is the correct fallback, not a hard False."""
+    from core.config.model_resolver import RuntimeCapabilities
+    from tools.llm_gateway import supports_native_thinking
+
+    target = AsyncMock()
+    target.model = "anthropic/claude-3-7-sonnet"
+    with patch(
+        "core.config.model_resolver.probe_runtime_capabilities",
+        new=AsyncMock(return_value=RuntimeCapabilities(context_length=None, supports_thinking=False)),
+    ):
+        assert await supports_native_thinking(target) is True
+
+
+async def test_supports_native_thinking_none_target_is_false() -> None:
+    from tools.llm_gateway import supports_native_thinking
+
+    assert await supports_native_thinking(None) is False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 2. Gateway bifurcation — ordered thinking → text deltas (NT1)
 # ──────────────────────────────────────────────────────────────────────────────
 

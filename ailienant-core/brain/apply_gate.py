@@ -408,19 +408,20 @@ async def _commit_command(
     # — only the trigger moved (from a raw record_execution call to the
     # apply-gate's own guarded execution).
     from brain.failure_breaker import normalize_signature
-    from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
+    from brain.retry_policy import resolve_correction_ceiling
     from tools.validation.diagnostics import format_diagnostics, select_parser
 
     parser = select_parser(env["command"])
     diagnostics = format_diagnostics(parser(result.stdout, result.stderr))
     attempts = int(state.get("correction_attempts", 0))
+    correction_ceiling = resolve_correction_ceiling(state.get("effort_level"))
     failed_mission = _mark_step_status(state["mission_spec"], step_number, "failed")
     log_entry = {
         "file_path": None, "command": env["command"], "status": "failed",
         "exit_code": result.exit_code, "step_number": step_number,
     }
 
-    if attempts >= CORRECTION_MAX_ATTEMPTS:
+    if attempts >= correction_ceiling:
         return {
             "mission_spec": failed_mission,
             "current_step_id": step_number,
@@ -452,6 +453,72 @@ async def _commit_command(
     }
 
 
+def _validate_generated_files(contents: Dict[str, str]) -> Optional[str]:
+    """Structurally validate pending file content. Returns a diagnostic, or ``None``.
+
+    Runs on the in-memory overlay, BEFORE `apply_patch_set` touches the disk, so a
+    file that does not parse is never written. Files whose type no grammar covers
+    pass through — `validate_ast` reports that as unverified rather than clean.
+
+    Never raises: a fault in the validator itself must not block an otherwise valid
+    apply, or a broken parser would take the whole product down with it.
+    """
+    from tools.validation.ast_filter import validate_ast
+
+    problems: list[str] = []
+    for path, content in contents.items():
+        if not content:
+            continue
+        try:
+            result = validate_ast(content, path)
+        except Exception:  # noqa: BLE001 — a validator fault must never block a valid apply
+            logger.warning("apply_commit: AST validation errored for %s; skipping", path, exc_info=True)
+            continue
+        if not result.is_valid:
+            detail = result.prune_reason or "structural error"
+            first = result.errors[0] if result.errors else None
+            where = f":{first.line}" if first is not None and first.line else ""
+            problems.append(f"{path}{where}: {detail}")
+    if not problems:
+        return None
+    return "The generated code does not parse:\n" + "\n".join(f"- {p}" for p in problems)
+
+
+async def _lint_generated_files(contents: Dict[str, str]) -> Optional[str]:
+    """Lint pending file content (ruff for Python, eslint for TS/TSX). Returns
+    a diagnostic, or ``None``.
+
+    Only reached for the ``balanced``/``deep`` Effort Budget levels — the
+    syntax gate above is the unconditional correctness floor; this is the
+    tier-scaled depth on top of it (charter §11: an MVP scoped to the two
+    languages `tools/validation/lsp_filter.py` already covers, not every
+    language `validate_ast` accepts — declared, not silent).
+
+    Never raises: a linter/subprocess fault must degrade to passing, not block
+    an otherwise-valid apply — the same graceful-degradation contract
+    `validate_lsp` itself already documents for a missing linter or timeout.
+    """
+    from tools.validation.lsp_filter import validate_lsp
+
+    problems: list[str] = []
+    for path, content in contents.items():
+        if not content:
+            continue
+        try:
+            result = await validate_lsp(content, path)
+        except Exception:  # noqa: BLE001 — a linter fault must never block a valid apply
+            logger.warning("apply_commit: lint validation errored for %s; skipping", path, exc_info=True)
+            continue
+        if not result.is_valid:
+            detail = result.prune_reason or "lint error"
+            first = result.errors[0] if result.errors else None
+            where = f":{first.line}" if first is not None and first.line else ""
+            problems.append(f"{path}{where}: {detail}")
+    if not problems:
+        return None
+    return "The generated code has lint errors:\n" + "\n".join(f"- {p}" for p in problems)
+
+
 async def _commit_files(
     state: Dict[str, Any], step_number: int, env: Dict[str, Any], session_id: str,
     verdict: Dict[str, Any], mission: Any, config: Optional[RunnableConfig],
@@ -468,6 +535,82 @@ async def _commit_files(
         for f in files
     }
     base_hashes = {f["file_path"]: f["base_hash"] for f in files if f["base_hash"]}
+
+    # Structural gate on the overlay, before anything reaches disk. Routes a
+    # non-parsing patch into the SAME self-heal contract a failing command uses
+    # below, so the coder gets the parser's own diagnostic and re-drafts, bounded
+    # by the effort-resolved correction ceiling. Without this the main graph
+    # never inspected generated code at all and a file containing a literal
+    # conflict marker committed cleanly.
+    # The GATE itself (whether the code parses) is unconditional — a
+    # correctness floor, never an effort tier. What effort actually scales is
+    # whether a failure gets a self-heal RETRY at all: Light fails a syntax
+    # error outright (ceiling 0), Balanced/Deep get the full correction budget.
+    syntax_error = _validate_generated_files(contents)
+    if syntax_error is not None:
+        from brain.failure_breaker import normalize_signature
+        from brain.retry_policy import resolve_correction_ceiling
+
+        attempts = int(state.get("correction_attempts", 0))
+        correction_ceiling = resolve_correction_ceiling(state.get("effort_level"))
+        logger.warning(
+            "apply_commit: step #%d rejected by the syntax gate (attempt %d/%d): %s",
+            step_number, attempts + 1, correction_ceiling, syntax_error,
+        )
+        if attempts >= correction_ceiling:
+            return _terminal_result(state, step_number, "failed", [
+                f"CoderAgent step #{step_number}: the generated code still does not "
+                f"parse after {attempts} correction attempts — nothing was written.\n"
+                f"{syntax_error}"
+            ])
+        return {
+            "mission_spec": _mark_step_status(mission, step_number, "failed"),
+            "healing_required": True,
+            "correction_attempts": attempts + 1,
+            "last_error_trace": syntax_error,
+            "failed_node": "apply_commit",
+            "failure_signature": normalize_signature(
+                "apply_commit", "SyntaxError", ",".join(sorted(contents)),
+            ),
+            "current_step_id": step_number,
+            "pending_apply": None,
+        }
+
+    # Effort Budget: lint/LSP depth on top of the always-on syntax floor.
+    # Light skips this entirely (0 self-heal attempts makes the check moot
+    # anyway); Balanced/Deep run it and share the same self-heal ceiling a
+    # syntax failure uses above.
+    from brain.retry_policy import normalize_effort_level
+
+    if normalize_effort_level(state.get("effort_level")) in ("balanced", "deep"):
+        lint_error = await _lint_generated_files(contents)
+        if lint_error is not None:
+            from brain.failure_breaker import normalize_signature
+            from brain.retry_policy import resolve_correction_ceiling
+
+            attempts = int(state.get("correction_attempts", 0))
+            correction_ceiling = resolve_correction_ceiling(state.get("effort_level"))
+            logger.warning(
+                "apply_commit: step #%d rejected by the lint gate (attempt %d/%d): %s",
+                step_number, attempts + 1, correction_ceiling, lint_error,
+            )
+            if attempts >= correction_ceiling:
+                return _terminal_result(state, step_number, "failed", [
+                    f"CoderAgent step #{step_number}: the generated code still has "
+                    f"lint errors after {attempts} correction attempts.\n{lint_error}"
+                ])
+            return {
+                "mission_spec": _mark_step_status(mission, step_number, "failed"),
+                "healing_required": True,
+                "correction_attempts": attempts + 1,
+                "last_error_trace": lint_error,
+                "failed_node": "apply_commit",
+                "failure_signature": normalize_signature(
+                    "apply_commit", "LintError", ",".join(sorted(contents)),
+                ),
+                "current_step_id": step_number,
+                "pending_apply": None,
+            }
 
     if env["decision"] == PermissionDecision.HITL.value and not env.get("auto_accept"):
         # A human-approved HITL write hasn't run pre_patch yet — prepare only

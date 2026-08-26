@@ -207,14 +207,13 @@ async def test_submit_plan_mode_forces_planner_flag() -> None:
 
     captured: Dict[str, Any] = {}
 
-    async def _capture(*, session_id: str, payload: TaskPayload, execution_mode: str) -> Dict[str, Any]:
+    async def _capture(*, session_id: str, payload: TaskPayload, effort_level: str) -> Dict[str, Any]:
         captured["planner_mode_active"] = payload.planner_mode_active
         return {"status": "success"}
 
     body = TaskPayload(task_prompt="x", dirty_buffers=[], workspace_root="/ws", execution_mode="plan_mode")
     with patch.object(main.task_service, "process_task", side_effect=_capture), \
-         patch("main._get_hw_profile", new=AsyncMock(return_value=type("H", (), {"suggested_mode": "SEQUENTIAL"})())), \
-         patch("main.get_execution_mode_pref", return_value="SEQUENTIAL"):
+         patch("main.get_effort_level", return_value="balanced"):
         await main.submit_task(body, x_task_id="sess-plan-mode")
         for _ in range(50):
             if "planner_mode_active" in captured:
@@ -232,14 +231,13 @@ async def test_submit_auto_mode_leaves_planner_flag_false() -> None:
 
     captured: Dict[str, Any] = {}
 
-    async def _capture(*, session_id: str, payload: TaskPayload, execution_mode: str) -> Dict[str, Any]:
+    async def _capture(*, session_id: str, payload: TaskPayload, effort_level: str) -> Dict[str, Any]:
         captured["planner_mode_active"] = payload.planner_mode_active
         return {"status": "success"}
 
     body = TaskPayload(task_prompt="x", dirty_buffers=[], workspace_root="/ws", execution_mode="automatic")
     with patch.object(main.task_service, "process_task", side_effect=_capture), \
-         patch("main._get_hw_profile", new=AsyncMock(return_value=type("H", (), {"suggested_mode": "SEQUENTIAL"})())), \
-         patch("main.get_execution_mode_pref", return_value="SEQUENTIAL"):
+         patch("main.get_effort_level", return_value="balanced"):
         await main.submit_task(body, x_task_id="sess-auto-mode")
         for _ in range(50):
             if "planner_mode_active" in captured:

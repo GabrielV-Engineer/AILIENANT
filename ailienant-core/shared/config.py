@@ -82,8 +82,6 @@ def session_budget_usd() -> float:
     return _env_float("AILIENANT_MAX_SESSION_BUDGET_USD", 5.00)
 
 
-VRAM_MICRO_SWARM_GB: float = _env_float("AILIENANT_VRAM_MICRO_SWARM_GB", 4.0)
-VRAM_FULL_SWARM_GB: float = _env_float("AILIENANT_VRAM_FULL_SWARM_GB", 12.0)
 VRAM_CLOUD_FLOOR_GB: float = _env_float("AILIENANT_VRAM_CLOUD_FLOOR_GB", 4.0)
 
 # ---------------------------------------------------------------------------

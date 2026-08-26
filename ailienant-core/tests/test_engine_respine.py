@@ -284,7 +284,7 @@ async def test_submit_reads_planner_mode_registry() -> None:
 
     captured: Dict[str, Any] = {}
 
-    async def _capture(*, session_id: str, payload: TaskPayload, execution_mode: str) -> Dict[str, Any]:
+    async def _capture(*, session_id: str, payload: TaskPayload, effort_level: str) -> Dict[str, Any]:
         captured["planner_mode_active"] = payload.planner_mode_active
         return {"status": "success"}
 
@@ -292,8 +292,7 @@ async def test_submit_reads_planner_mode_registry() -> None:
     body = TaskPayload(task_prompt="x", dirty_buffers=[], workspace_root="/ws")
     try:
         with patch.object(main.task_service, "process_task", side_effect=_capture), \
-             patch("main._get_hw_profile", new=AsyncMock(return_value=type("H", (), {"suggested_mode": "SEQUENTIAL"})())), \
-             patch("main.get_execution_mode_pref", return_value="SEQUENTIAL"):
+             patch("main.get_effort_level", return_value="balanced"):
             await main.submit_task(body, x_task_id="sess-toggle")
             # submit_task schedules the runner as a background task; drain it.
             for _ in range(50):

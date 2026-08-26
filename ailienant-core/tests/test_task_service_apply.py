@@ -368,17 +368,23 @@ async def test_commit_approved_writes_this_steps_content_and_reanchors_hash() ->
 
 
 async def test_commit_modified_content_from_the_cards_edit_mode_is_honored() -> None:
+    # Real, lint-clean Python — not just syntactically valid. The Effort
+    # Budget's lint gate (13.1.3, balanced by default) runs ruff on the
+    # committed content, and a bare marker string like the literal identifier
+    # `EDITED` is genuinely invalid Python (an undefined name) — this fixture
+    # must look like real edited content, not a placeholder token.
     state = _base_state(pending_contents={"calc.py": "def f():\n    return 2\n"})
     state["pending_apply"] = _file_write_env()
     apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
-    with patch("brain.apply_gate.request_graph_approval", return_value={"approved": True, "comment": None, "modified_content": "EDITED\n"}), \
+    edited_content = "def f():\n    return 3\n"
+    with patch("brain.apply_gate.request_graph_approval", return_value={"approved": True, "comment": None, "modified_content": edited_content}), \
          patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
          patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
         await run_apply_commit_node(state)
 
     assert apply_mock.await_args is not None
     _sid, contents, _bh = apply_mock.await_args.args[:3]
-    assert contents == {"calc.py": "EDITED\n"}
+    assert contents == {"calc.py": edited_content}
 
 
 async def test_commit_hitl_approved_runs_pre_patch_after_the_interrupt() -> None:
@@ -449,6 +455,178 @@ async def test_commit_apply_stale_files_fails_with_the_re_run_message() -> None:
     mock_interrupt.assert_not_called()
     assert result["mission_spec"].tasks[0].status == "failed"
     assert "changed since the proposal" in result["errors"][0]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# run_apply_commit_node — the syntax gate (13.1.3): the main graph previously
+# never inspected generated code at all. A file containing a literal, unclosed
+# `>>>>>>> REPLACE` conflict marker — invalid JavaScript — committed to disk
+# and every gate reported success. These reproduce that incident directly
+# against the gate that used to let it through.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def test_commit_rejects_content_that_does_not_parse() -> None:
+    """The exact regression: a file ending in an unclosed conflict marker must
+    be rejected BEFORE apply_patch_set is ever called."""
+    broken_jsx = (
+        "import React from 'react';\n\n"
+        "function App() {\n  return <div>Hi</div>;\n}\n\n"
+        "export default App;>>>>>>> REPLACE"
+    )
+    state = _base_state(
+        mission=_mission(action="write_file", target_file="App.jsx"),
+        pending_contents={"App.jsx": broken_jsx},
+    )
+    state["pending_apply"] = _file_write_env(
+        decision="allow",
+        files=[{"file_path": "App.jsx", "unified_diff": "@@ -0,0 +1 @@\n+broken\n", "base_hash": ""}],
+    )
+    apply_mock = AsyncMock()
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_not_awaited()
+    assert result["healing_required"] is True
+    assert result["mission_spec"].tasks[0].status == "failed"
+    assert "App.jsx" in result["last_error_trace"]
+
+
+async def test_commit_syntax_failure_degrades_to_terminal_past_attempt_ceiling() -> None:
+    from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
+
+    state = _base_state(
+        mission=_mission(action="write_file", target_file="App.jsx"),
+        pending_contents={"App.jsx": "export default App;>>>>>>> REPLACE"},
+        apply_attempts={"1": CORRECTION_MAX_ATTEMPTS},
+    )
+    state["correction_attempts"] = CORRECTION_MAX_ATTEMPTS
+    state["pending_apply"] = _file_write_env(
+        decision="allow",
+        files=[{"file_path": "App.jsx", "unified_diff": "@@ -0,0 +1 @@\n+broken\n", "base_hash": ""}],
+    )
+    apply_mock = AsyncMock()
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_not_awaited()
+    assert result["mission_spec"].tasks[0].status == "failed"
+    assert "still does not parse" in result["errors"][0]
+
+
+async def test_commit_accepts_valid_content_unaffected_by_the_syntax_gate() -> None:
+    """The gate must not become a false-positive tax on ordinary valid writes."""
+    state = _base_state(pending_contents={"calc.py": "def f():\n    return 2\n"})
+    state["pending_apply"] = _file_write_env(decision="allow")
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_awaited_once()
+    assert result["mission_spec"].tasks[0].status == "completed"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# run_apply_commit_node — the Effort Budget's lint gate (13.1.3, Track D).
+# Only balanced/deep run it; light skips it entirely (its 0-attempt self-heal
+# ceiling would make a lint failure unrecoverable anyway). The syntax gate
+# above is unconditional in every level — this is the depth ON TOP of it.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def test_commit_light_effort_skips_the_lint_gate() -> None:
+    """Lint-dirty but syntactically valid code (an unused import — ruff flags
+    it, ast.parse does not) must NOT be rejected under light effort."""
+    state = _base_state(
+        pending_contents={"calc.py": "import os\ndef f():\n    return 2\n"},
+    )
+    state["effort_level"] = "light"
+    state["pending_apply"] = _file_write_env(decision="allow")
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_awaited_once()
+    assert result["mission_spec"].tasks[0].status == "completed"
+
+
+async def test_commit_balanced_effort_rejects_lint_dirty_content() -> None:
+    state = _base_state(
+        pending_contents={"calc.py": "import os\ndef f():\n    return 2\n"},
+    )
+    state["effort_level"] = "balanced"
+    state["pending_apply"] = _file_write_env(decision="allow")
+    apply_mock = AsyncMock()
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_not_awaited()
+    assert result["healing_required"] is True
+    assert "lint errors" in result["last_error_trace"]
+
+
+async def test_commit_deep_effort_also_rejects_lint_dirty_content() -> None:
+    state = _base_state(
+        pending_contents={"calc.py": "import os\ndef f():\n    return 2\n"},
+    )
+    state["effort_level"] = "deep"
+    state["pending_apply"] = _file_write_env(decision="allow")
+    apply_mock = AsyncMock()
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_not_awaited()
+    assert result["healing_required"] is True
+
+
+async def test_commit_lint_failure_degrades_to_terminal_past_attempt_ceiling() -> None:
+    from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
+
+    state = _base_state(
+        pending_contents={"calc.py": "import os\ndef f():\n    return 2\n"},
+    )
+    state["effort_level"] = "balanced"
+    state["correction_attempts"] = CORRECTION_MAX_ATTEMPTS
+    state["pending_apply"] = _file_write_env(decision="allow")
+    apply_mock = AsyncMock()
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_not_awaited()
+    assert result["mission_spec"].tasks[0].status == "failed"
+    assert "lint errors" in result["errors"][0]
+
+
+async def test_commit_balanced_effort_accepts_lint_clean_content() -> None:
+    """The gate must not become a false-positive tax on ordinary clean writes."""
+    state = _base_state(pending_contents={"calc.py": "def f():\n    return 2\n"})
+    state["effort_level"] = "balanced"
+    state["pending_apply"] = _file_write_env(decision="allow")
+    apply_mock = AsyncMock(return_value={"ok": True, "applied_files": ["calc.py"]})
+    with patch("brain.apply_gate.request_graph_approval") as mock_interrupt, \
+         patch("core.write_pipeline.apply_patch_set", new=apply_mock), \
+         patch("core.task_service.run_patch_hooks", new=AsyncMock(return_value=(True, []))):
+        result = await run_apply_commit_node(state)
+
+    mock_interrupt.assert_not_called()
+    apply_mock.assert_awaited_once()
+    assert result["mission_spec"].tasks[0].status == "completed"
 
 
 async def test_commit_diff_activity_marker_fires_per_applied_file() -> None:

@@ -136,3 +136,64 @@ def test_summary_hides_internal_self_heal_diagnostics_from_notes() -> None:
         _mission(), [_completed("a.py")], ["self-heal could not correct coder_agent: no readable offending file"],
     )
     assert "self-heal could not correct" not in summary
+
+
+# ── Acceptance checks (13.1.3, §8.7/C2) ─────────────────────────────────────
+#
+# `check_results` (brain/checks_gate.py) folds the plan's OWN acceptance
+# criteria into this same honesty discipline: "N files applied" standing
+# alone, when a check has since proven the work incomplete, is exactly the
+# silent-success failure this whole function exists to prevent.
+
+
+def _check(status: str, text: str = "Pytest exits 0.") -> dict:
+    return {"check": text, "command": "pytest", "status": status}
+
+
+def test_summary_defaults_to_unchanged_when_no_checks_ran() -> None:
+    """Backward compatibility: a plan with no checks, or a turn that never
+    reached run_checks_node, must render exactly as before."""
+    summary = TaskService._format_coding_summary(_mission(), [_completed("a.py")], [])
+    assert "acceptance check" not in summary.lower()
+
+
+def test_summary_leads_with_a_failed_check_ahead_of_the_apply_summary() -> None:
+    """The single most important fact about a turn — a failed acceptance
+    check — must be the FIRST thing a user reads, never buried after 'Applied
+    N file changes to disk.' where a skim would read it as a clean success."""
+    summary = TaskService._format_coding_summary(
+        _mission(), [_completed("a.py")], [], [_check("failed")],
+    )
+    assert summary.startswith("1 acceptance check FAILED")
+    assert "NOT verified complete" in summary
+    assert "Applied 1 file change" in summary  # still reports what happened, just not first
+
+
+def test_summary_reports_all_checks_passed() -> None:
+    summary = TaskService._format_coding_summary(
+        _mission(), [_completed("a.py")], [], [_check("passed"), _check("passed", "npm run build succeeds")],
+    )
+    assert "2 acceptance checks passed" in summary
+    assert "FAILED" not in summary
+
+
+def test_summary_reports_unverified_checks_honestly() -> None:
+    summary = TaskService._format_coding_summary(
+        _mission(), [_completed("a.py")], [],
+        [_check("passed"), _check("unverified", "Verify props are wired correctly.")],
+    )
+    assert "1 acceptance check passed" in summary
+    assert "1 could not be automatically verified" in summary
+
+
+def test_summary_a_failed_check_still_reaches_the_notes_via_errors() -> None:
+    """The failed-check headline and the detailed error note are complementary,
+    not exclusive — the headline for a skim, the note for the detail."""
+    summary = TaskService._format_coding_summary(
+        _mission(), [_completed("a.py")],
+        ["Acceptance check failed — 'Pytest exits 0.' (pytest): 2 failed, 1 passed"],
+        [_check("failed")],
+    )
+    assert "acceptance check FAILED" in summary
+    assert "_Notes:_" in summary
+    assert "2 failed, 1 passed" in summary

@@ -173,6 +173,11 @@ _LOCAL_LLM_SECONDS_PER_TOKEN: float = _env_timeout_s("AILIENANT_LOCAL_LLM_SECOND
 _LOCAL_LLM_TIMEOUT_CUSHION_S: float = _env_timeout_s("AILIENANT_LOCAL_LLM_TIMEOUT_CUSHION_S", 60.0)
 _LOCAL_LLM_TIMEOUT_FLOOR_S: float = _env_timeout_s("AILIENANT_LOCAL_LLM_TIMEOUT_FLOOR_S", 300.0)
 
+# Extra headroom folded into the `num_ctx` a local Ollama call requests, beyond
+# the measured prompt + declared max_tokens — chat-template overhead and special
+# tokens are real but not counted by `PrecisionTokenCounter`'s own estimate.
+_NUM_CTX_CALL_MARGIN: int = int(os.getenv("AILIENANT_NUM_CTX_CALL_MARGIN", "256"))
+
 # Adaptive calibration on top of the static formula above. The assumed
 # 0.5s/token rate is still a guess — a smaller one than a flat 300s ceiling,
 # but a guess nonetheless. Once a model has actually completed a few local
@@ -261,6 +266,53 @@ def resolve_local_timeout(max_tokens: int, model: Optional[str] = None) -> float
         measured * _LOCAL_RATE_SAFETY_MARGIN if measured is not None else _LOCAL_LLM_SECONDS_PER_TOKEN
     )
     return max(_LOCAL_LLM_TIMEOUT_FLOOR_S, max_tokens * seconds_per_token + _LOCAL_LLM_TIMEOUT_CUSHION_S)
+
+
+# A representative generation size for the Effort Budget's cost estimate — not
+# a real ceiling, just the token count used to convert a seconds-per-token
+# rate into a human-readable "how long does one extra call cost" figure. Set
+# to _CODER_MIN_MAX_TOKENS-scale (a typical single-file generation), since
+# both the self-heal retry and a `checks` command re-run are themselves
+# roughly one-file-sized local calls.
+_EFFORT_COST_REPRESENTATIVE_TOKENS: int = 4096
+
+# How many EXTRA local calls each level typically costs beyond the generation
+# every level already pays for — the same "typical extra calls" framing this
+# codebase already uses for a coarse UI estimate (compare DEVELOPERS.md's own
+# "~4 extra local calls" language for a deeper pipeline). Deliberately a
+# labeled range, not a false-precision single number: a self-heal round or a
+# `checks` command may or may not actually fire on a given turn.
+_EFFORT_EXTRA_CALLS: Dict[str, str] = {
+    "light": "0",
+    "balanced": "0-1",
+    "deep": "1-3",
+}
+
+
+def estimate_effort_costs(model: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """Rough, honestly-labeled per-effort-level cost estimate for the UI.
+
+    Replaces the old hardware-VRAM lock (a tier was simply unselectable below
+    a VRAM floor) with a stated cost instead — Effort Budget levels cost local
+    generation TIME, not VRAM headroom, so nothing here should ever be locked;
+    the caller just gets told what a level is likely to cost before choosing it.
+
+    Uses this model's own calibrated generation rate once enough completed
+    calls exist (see `_measured_local_seconds_per_token`), falling back to the
+    same conservative static assumption `resolve_local_timeout` itself uses —
+    never a separate, second guess at the model's speed.
+    """
+    measured = _measured_local_seconds_per_token(model) if model else None
+    seconds_per_token = measured if measured is not None else _LOCAL_LLM_SECONDS_PER_TOKEN
+    seconds_per_extra_call = seconds_per_token * _EFFORT_COST_REPRESENTATIVE_TOKENS
+    return {
+        level: {
+            "extra_calls": extra_calls,
+            "seconds_per_extra_call": round(seconds_per_extra_call, 1),
+            "calibrated": measured is not None,
+        }
+        for level, extra_calls in _EFFORT_EXTRA_CALLS.items()
+    }
 
 
 # Local-target transport retries (DEBT-191 follow-up). `LLM_MAX_TRANSPORT_RETRIES`
@@ -397,7 +449,10 @@ class NoAvailableProviderError(RuntimeError):
 
 
 class TaskPriority(str, Enum):
-    """Routing outcome from RoutingEngine.get_optimal_provider(), used to select model tier."""
+    """Local/cloud/human-required classification used for ledger accounting
+    and tier selection — an internal gateway concept, not a wire copy of
+    core.memory.context_auditor.derive_routing_decision's four-value tier
+    decision (LOCAL_SMALL/LOCAL_MEDIUM/LOCAL_BIG/CLOUD)."""
     LOCAL = "LOCAL"
     CLOUD = "CLOUD"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
@@ -464,14 +519,46 @@ _NATIVE_THINKING_MODEL_HINTS: tuple[str, ...] = (
 def _supports_native_thinking(model_name: str) -> bool:
     """True when the model id looks like it emits native reasoning tokens.
 
-    Best-effort, substring-based (see ``_NATIVE_THINKING_MODEL_HINTS``). A false
-    negative is harmless — the stream simply never emits thinking deltas and the
-    frontend shows no Thought Box. A false positive is also harmless: providers
-    that reject the ``thinking`` param raise, and the orchestration layer falls
-    back to the flat-text path.
+    OFFLINE FALLBACK ONLY — see :func:`supports_native_thinking` for the
+    runtime-probed check every call site should actually use. This substring
+    guess is what let a model that genuinely supports reasoning (e.g. Ollama's
+    own `gemma4`, which reports `capabilities: ["thinking"]` at `/api/show`)
+    go unrecognised for good just because its name was never added to the hint
+    list below — the model's own free-form "think out loud" pass ran in its
+    place, silently, for every call. Kept only for providers a capability probe
+    cannot reach (no `/api/show`-equivalent, or the probe itself fails).
+
+    Best-effort, substring-based. A false negative here just means the offline
+    fallback triggers unnecessarily (the stream shows no Thought Box); a false
+    positive is also harmless — a provider that rejects the ``thinking`` param
+    raises, and the orchestration layer falls back to the flat-text path.
     """
     lowered = (model_name or "").lower()
     return any(hint in lowered for hint in _NATIVE_THINKING_MODEL_HINTS)
+
+
+async def supports_native_thinking(target: Optional[Any]) -> bool:
+    """Whether ``target`` emits native reasoning tokens — ASKED of the runtime,
+    not guessed from the model's name.
+
+    Probes :func:`core.config.model_resolver.probe_runtime_capabilities`,
+    which reports a real ``capabilities`` list for a reachable Ollama target.
+    When that probe genuinely resolved the target's real context length (i.e.
+    it actually got an answer), its ``supports_thinking`` verdict is trusted
+    outright — a positive OR a negative, both real. The substring heuristic
+    above is used ONLY when the probe could not determine anything at all
+    (a non-Ollama provider with no equivalent endpoint, an unreachable local
+    engine, or a malformed response) — an offline fallback, not the primary
+    signal.
+    """
+    if target is None:
+        return False
+    from core.config.model_resolver import probe_runtime_capabilities
+
+    caps = await probe_runtime_capabilities(target)
+    if caps.context_length is not None:
+        return caps.supports_thinking
+    return _supports_native_thinking(getattr(target, "model", "") or "")
 
 
 # Streaming structured-output capability gate.
@@ -789,6 +876,9 @@ class LLMGateway:
                     byom_kwargs["api_base"] = _target.api_base
                 if _target.api_key:
                     byom_kwargs["api_key"] = _target.api_key
+                byom_kwargs.update(
+                    await LLMGateway._resolve_local_num_ctx_kwarg(_target, messages, max_tokens)
+                )
 
         if byom_kwargs is not None:
             logger.debug(
@@ -921,6 +1011,42 @@ class LLMGateway:
         except Exception as exc:
             logger.debug("Token accounting failed (non-fatal): %s", exc)
 
+        # `finish_reason == "length"` is the provider's own unambiguous statement
+        # that it stopped because it hit the output ceiling, not because the
+        # answer was finished — the single most diagnostic signal for a truncated
+        # structured response, and until now it was discarded unread along with
+        # the rest of the response envelope. A strict-JSON caller downstream just
+        # sees an unparseable fragment with no way to tell "cut short" apart from
+        # "model ignored the contract", which is exactly the ambiguity that made a
+        # live planner failure take a full log-forensics pass to explain.
+        try:
+            _finish = getattr(response.choices[0], "finish_reason", None)
+            if _finish == "length":
+                logger.warning(
+                    "LLM response TRUNCATED at the output ceiling (finish_reason=length) "
+                    "— model=%s max_tokens=%d trace=%s. A structured/JSON caller will "
+                    "receive an unparseable fragment; lower the request's scope or raise "
+                    "the model's context window.",
+                    kwargs.get("model"), max_tokens, trace_id,
+                )
+            # Output-side telemetry (13.1.3): every existing CONTEXT record
+            # measures the input side only — nothing previously recorded what
+            # the model actually generated, whether the provider itself says the
+            # completion was cut short, or what window it was served under. See
+            # log_generation_utilization's own docstring for why this exists.
+            from core.telemetry_log import log_generation_utilization
+            _usage = getattr(response, "usage", None)
+            log_generation_utilization(
+                session_id=trace_id,
+                model=str(kwargs.get("model", effective_model)),
+                prompt_tokens=int(getattr(_usage, "prompt_tokens", 0) or 0) if _usage else 0,
+                completion_tokens=int(getattr(_usage, "completion_tokens", 0) or 0) if _usage else 0,
+                finish_reason=_finish,
+                num_ctx=kwargs.get("num_ctx"),
+            )
+        except Exception:  # noqa: BLE001 — a diagnostic must never sink a good call
+            logger.debug("finish_reason/telemetry probe failed (non-fatal)", exc_info=True)
+
         return response
 
     @staticmethod
@@ -1050,8 +1176,8 @@ class LLMGateway:
         Resolves the active BYOM tier and yields :class:`StreamDelta` values tagged
         ``kind`` (``thinking``/``text``) and ``source`` (``native``/``simulated``):
 
-        - **Native** (model recognised by ``_supports_native_thinking``): delegate
-          to :meth:`astream_byom_thinking`, which surfaces the model's own
+        - **Native** (runtime confirms the target via ``supports_native_thinking``):
+          delegate to :meth:`astream_byom_thinking`, which surfaces the model's own
           ``reasoning_content`` — behaviour identical to before. Reasoning is a
           genuinely separate channel here, so it never competes with the answer.
         - **Simulated, strict output** (non-native model, ``response_format`` set):
@@ -1094,7 +1220,7 @@ class LLMGateway:
         from core.config.model_resolver import get_chat_target  # deferred — load order
 
         target = get_chat_target(tier)
-        native = target is not None and _supports_native_thinking(target.model)
+        native = target is not None and await supports_native_thinking(target)
         # See acomplete_with_thinking's identical comment: omitted entirely when
         # untagged so a fixed-signature test double never breaks on this kwarg.
         _extra_action: _ActionKwarg = {"action": action} if action else {}
@@ -1281,6 +1407,42 @@ class LLMGateway:
         return kwargs
 
     @staticmethod
+    async def _resolve_local_num_ctx_kwarg(
+        target: Any, messages: list[dict[str, Any]], max_tokens: int,
+    ) -> dict[str, int]:
+        """``{"num_ctx": N}`` for a local Ollama target, or ``{}`` otherwise.
+
+        Every local call used to be served at Ollama's own silent 4096-token
+        default regardless of the model's real capacity or what this specific
+        call actually needs — the direct physical cause of a live planner
+        failure whose forensics took a full log investigation to explain (a
+        prompt plus its requested completion exceeded 4096, Ollama silently
+        context-shifted the prompt to make room, and the model drifted off the
+        JSON contract it could no longer fully see). Sizing this explicitly
+        closes that hole for every BYOM call site, not just the one it was
+        first found on.
+
+        Never raises: a probe/resolution fault must degrade to omitting the
+        kwarg entirely (today's behaviour), never block or corrupt the call it
+        is trying to improve.
+        """
+        if not getattr(target, "is_local", False):
+            return {}
+        try:
+            from core.config.model_resolver import resolve_num_ctx
+            from tools.token_counter import PrecisionTokenCounter
+
+            prompt_text = "\n".join(str(m.get("content", "")) for m in messages)
+            prompt_tokens = PrecisionTokenCounter.estimate_with_buffer(prompt_text, target.model)
+            num_ctx = await resolve_num_ctx(
+                target, min_required=prompt_tokens + max_tokens + _NUM_CTX_CALL_MARGIN,
+            )
+            return {"num_ctx": num_ctx} if num_ctx is not None else {}
+        except Exception:  # noqa: BLE001 — degrade to omitting the kwarg, never block the call
+            logger.debug("num_ctx resolution failed (non-fatal)", exc_info=True)
+            return {}
+
+    @staticmethod
     async def acomplete_byom(
         messages: list[dict[str, Any]],
         tier: str = "medium",
@@ -1313,6 +1475,7 @@ class LLMGateway:
                 kwargs = LLMGateway._byom_kwargs(
                     target, messages, temperature=temperature, max_tokens=max_tokens,
                     timeout=_effective_timeout, max_retries=_effective_max_retries,
+                    **await LLMGateway._resolve_local_num_ctx_kwarg(target, messages, max_tokens),
                 )
                 logger.debug("BYOM acomplete — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
                 try:
@@ -1384,6 +1547,7 @@ class LLMGateway:
                     kwargs = LLMGateway._byom_kwargs(
                         target, messages, temperature=temperature, max_tokens=max_tokens,
                         timeout=_effective_timeout, stream=True, max_retries=_effective_max_retries,
+                        **await LLMGateway._resolve_local_num_ctx_kwarg(target, messages, max_tokens),
                     )
                     kwargs.setdefault("stream_options", {"include_usage": True})
                     logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
@@ -1458,12 +1622,14 @@ class LLMGateway:
         ``"thinking"`` (native reasoning tokens) or ``"text"`` (answer tokens).
         The legacy ``astream_byom`` is deliberately left untouched and remains
         the flat-text fallback path; callers select this method only when the
-        user has Native Thinking enabled (Phase 9 plan §1C).
+        user has Native Thinking enabled.
 
         ``thinking`` config is appended ONLY when ``enable_thinking`` is true AND
-        ``_supports_native_thinking`` recognises the active model. Otherwise the
-        param is omitted entirely → the provider streams plain text and this
-        generator simply never yields a ``"thinking"`` delta (zero regression).
+        ``supports_native_thinking`` confirms the active model via the runtime
+        probe (falling back to the offline substring guess only when the probe
+        itself cannot resolve anything). Otherwise the param is omitted entirely
+        → the provider streams plain text and this generator simply never
+        yields a ``"thinking"`` delta (zero regression).
 
         The ``finally`` token-accounting block mirrors ``astream_byom`` verbatim:
         thinking tokens are billed inside ``usage.completion_tokens`` on the
@@ -1479,12 +1645,17 @@ class LLMGateway:
         trace_id = session_id or str(uuid.uuid4())
         _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
         _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
+        thinking_on = bool(enable_thinking) and await supports_native_thinking(target)
+        # A native reasoning turn generates thinking_content ON TOP OF the answer,
+        # so the window must hold both — sizing num_ctx off max_tokens alone would
+        # reproduce this exact bug's shape for the one case this parameter exists.
+        _num_ctx_max_tokens = max_tokens + thinking_budget_tokens if thinking_on else max_tokens
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
             timeout=_effective_timeout, stream=True, max_retries=_effective_max_retries,
+            **await LLMGateway._resolve_local_num_ctx_kwarg(target, messages, _num_ctx_max_tokens),
         )
         kwargs.setdefault("stream_options", {"include_usage": True})
-        thinking_on = bool(enable_thinking) and _supports_native_thinking(target.model)
         if thinking_on:
             # LiteLLM normalises Anthropic's ``thinking`` blocks (and open
             # reasoning models' equivalents) into ``delta.reasoning_content``.
