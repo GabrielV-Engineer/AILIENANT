@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS oom_fallback_events (
 -- Per-request end-to-end latency. One row per _run_coding_task invocation,
 -- written from its finally block. Percentiles are computed over a bounded
 -- most-recent window at read time, so the read never scans the whole ledger.
--- TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+-- Retention-pruned by purge_old_telemetry(), called from core/janitor.py.
 CREATE TABLE IF NOT EXISTS request_latency (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS request_latency (
 
 -- Docker container lifecycle events (started/stopped/removed). Machine-global
 -- (no project dimension), emitted from core/sandbox.py's async wrappers.
--- TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+-- Retention-pruned by purge_old_telemetry(), called from core/janitor.py.
 CREATE TABLE IF NOT EXISTS container_lifecycle (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp    DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS container_lifecycle (
 -- calibration (DEBT-045) so its base-token constants are backed by observed
 -- history instead of a fixed heuristic. Percentiles computed over a bounded
 -- most-recent window at read time, same shape as request_latency.
--- TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+-- Retention-pruned by purge_old_telemetry(), called from core/janitor.py.
 CREATE TABLE IF NOT EXISTS action_token_usage (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp    DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -120,6 +120,15 @@ _LATENCY_RECENT_CAP: int = 60
 # a noisy small-N median.
 _ACTION_TOKEN_WINDOW: int = 500
 _ACTION_MIN_SAMPLES: int = 5
+
+# Retention window for purge_old_telemetry (DEBT-120) — the three append-only
+# tables below. Mirrors core/janitor.py::_DEFAULT_RETENTION_DAYS (the MCTS
+# graph-GC retention), kept as a separate constant since the two GC targets
+# are unrelated stores with no reason to share a single knob.
+_TELEMETRY_RETENTION_DAYS: int = 30
+_RETENTION_TABLES: Tuple[str, ...] = (
+    "request_latency", "container_lifecycle", "action_token_usage",
+)
 
 
 def init_telemetry_db(db_path: Union[str, Path] = _DEFAULT_DB_PATH) -> None:
@@ -472,7 +481,7 @@ def log_container_event(event: str, container_id: str, image: str, tier: str) ->
     Machine-global (no project dimension). Best-effort: never raises, so an emit
     from the sandbox lifecycle path can never affect the cage.
 
-    TODO(retention): DEBT-120 — append-only; wire GC into core/janitor.py.
+    Retention-pruned by purge_old_telemetry(), called from core/janitor.py.
     """
     if _conn is None:
         return
@@ -512,6 +521,39 @@ def recent_container_events(limit: int = 100) -> List[Dict[str, Any]]:
          "container_id": r[3], "image": r[4], "tier": r[5]}
         for r in rows
     ]
+
+
+def purge_old_telemetry(retention_days: int = _TELEMETRY_RETENTION_DAYS) -> Dict[str, int]:
+    """Delete rows older than ``retention_days`` from the append-only telemetry
+    tables (DEBT-120): ``request_latency``, ``container_lifecycle``,
+    ``action_token_usage``. Called from ``core/janitor.py::run_janitor``.
+
+    No-ops (returns all-zero) if the DB is not initialized. Best-effort per
+    table: one table's delete failure is logged and does not block the others,
+    matching every other write/read in this module.
+    """
+    deleted: Dict[str, int] = {table: 0 for table in _RETENTION_TABLES}
+    if _conn is None:
+        return deleted
+    cutoff_offset = f"-{int(retention_days)} days"
+    with _lock:
+        for table in _RETENTION_TABLES:
+            try:
+                cursor = _conn.execute(
+                    f"DELETE FROM {table} WHERE timestamp < datetime('now', ?)",
+                    (cutoff_offset,),
+                )
+                _conn.commit()
+                deleted[table] = cursor.rowcount if cursor.rowcount is not None else 0
+            except sqlite3.Error as exc:
+                logger.warning("Telemetry retention purge failed for %s: %s", table, exc)
+    logger.info(
+        "Telemetry retention: purged request_latency=%d container_lifecycle=%d "
+        "action_token_usage=%d (retention=%dd).",
+        deleted["request_latency"], deleted["container_lifecycle"],
+        deleted["action_token_usage"], retention_days,
+    )
+    return deleted
 
 
 def shutdown_telemetry_db() -> None:

@@ -9,6 +9,7 @@ import datetime
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Dict, Iterator, Optional
 
 import pytest
@@ -200,6 +201,60 @@ def _guard_litellm_patch_leakage() -> Iterator[None]:
     """
     with _litellm_leak_guard():
         yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mcp_autoconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from autoconnecting to the real, non-isolated MCP catalog (DEBT-202).
+
+    Any test that builds ``TestClient(main.app)`` runs the real FastAPI lifespan, which
+    calls ``autoconnect_enabled_mcp_servers()`` against ``DB_CATALOG_PATH`` — which
+    defaults to the real ``~/.ailienant/catalog.sqlite``, not a per-test temp DB. On a
+    machine whose real catalog has an ``enabled`` MCP server row that needs network
+    access this environment doesn't have (e.g. a ``uvx``-launched server fetching from
+    PyPI), the connection attempt fails mid-flight and the ``mcp`` SDK's own
+    ``stdio_client`` task-group teardown has a genuine bug on that abort path —
+    surfacing as ``RuntimeError: Attempted to exit a cancel scope...`` (anyio).
+    Reproduced twice under two different test names before this fixture existed.
+
+    Patched at BOTH call sites, which are NOT the same attribute:
+    - ``main.py`` imports the name at module load time (``from tools.mcp_adapter import
+      autoconnect_enabled_mcp_servers``), so it holds its own independent binding —
+      patching ``tools.mcp_adapter``'s attribute alone would never touch it.
+    - ``core/task_service.py`` re-imports the name fresh inside its own function body
+      on every call (a deferred import, not a module-level one), so patching the
+      shared ``tools.mcp_adapter`` attribute IS what reaches that call site.
+
+    ``tests/test_mcp_handshake.py`` and ``tests/test_command_menu_config.py`` call
+    ``mcp_adapter.autoconnect_enabled_mcp_servers`` directly to test its own real
+    behavior — they override this fixture locally (same name, file-local definition)
+    to restore the unpatched function for their own tests only.
+    """
+    import main as main_module
+    import tools.mcp_adapter as mcp_adapter
+
+    async def _noop_autoconnect(state: Optional[object] = None) -> int:
+        return 0
+
+    monkeypatch.setattr(main_module, "autoconnect_enabled_mcp_servers", _noop_autoconnect)
+    monkeypatch.setattr(mcp_adapter, "autoconnect_enabled_mcp_servers", _noop_autoconnect)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_telemetry_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the DEBT-120 telemetry DB at a per-test temp path.
+
+    `main.py`'s lifespan now calls `init_telemetry_db(TELEMETRY_DB_PATH)` at startup
+    (previously missing entirely — the defect DEBT-120 uncovered). Without this,
+    every `TestClient(main.app)`-based test would open and write to the real
+    `~/.ailienant/telemetry.sqlite`, the same class of test/production leak DEBT-202
+    fixed for the MCP catalog. `main.py` imports `TELEMETRY_DB_PATH` at module load
+    time (its own binding, independent of `shared.config`'s), so it — not
+    `shared.config.TELEMETRY_DB_PATH` — is what must be patched.
+    """
+    import main as main_module
+
+    monkeypatch.setattr(main_module, "TELEMETRY_DB_PATH", str(tmp_path / "telemetry_test.sqlite"))
 
 
 def pytest_sessionfinish(session, exitstatus):

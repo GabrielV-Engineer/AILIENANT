@@ -49,7 +49,7 @@ from fastapi.responses import JSONResponse as _JSONResponse, PlainTextResponse
 from starlette.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL
+from shared.config import LITELLM_PROXY_API_KEY, LITELLM_PROXY_BASE_URL, TELEMETRY_DB_PATH
 
 # --- IMPORTS (Persistence and Maintenance) ---
 from brain.checkpoint import checkpoint_manager
@@ -74,7 +74,13 @@ from core.rules import rule_manager
 
 # --- imports (Hybrid Cognitive Architecture) ---
 from core.token_ledger import token_ledger
-from core.telemetry import latency_percentiles, recent_oom_events, recent_routing_decisions
+from core.telemetry import (
+    init_telemetry_db,
+    latency_percentiles,
+    recent_oom_events,
+    recent_routing_decisions,
+    shutdown_telemetry_db,
+)
 from core.telemetry_log import configure_telemetry_log, shutdown_telemetry_log
 from core.observability import configure_langsmith
 
@@ -238,7 +244,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_dlq_table()                   # — dead_letter_tasks table
     await init_audit_table()                 # — hitl_audit_log ledger
     init_registry()                          # curated regulated-server tier overrides
-    logger.info("[startup] catalog/DLQ/audit DB init done (elapsed %.1fs)", time.monotonic() - _t0)
+    # DEBT-120: init_telemetry_db() sets the module-global connection every write in
+    # core/telemetry.py no-ops without. This call was missing entirely, so the three
+    # REST endpoints it backs (/telemetry/routing, /telemetry/oom, /telemetry/latency)
+    # were permanently empty and DEBT-045's per-action calibration substrate could
+    # never accumulate a sample.
+    init_telemetry_db(TELEMETRY_DB_PATH)
+    logger.info("[startup] catalog/DLQ/audit/telemetry DB init done (elapsed %.1fs)", time.monotonic() - _t0)
     await autoconnect_enabled_mcp_servers()  # connect enabled MCP servers once per host lifecycle
     logger.info("[startup] MCP autoconnect done (elapsed %.1fs)", time.monotonic() - _t0)
     await populate_tool_catalog(tool_rag_store)  #— populate the tool RAG catalog
@@ -304,6 +316,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     clear_run_state()  # remove the host-discovery file so a crash leaves a detectable stale one
     shutdown_telemetry_log()  # drain the queue, join the listener thread, close the file
+    shutdown_telemetry_db()  # close the DEBT-120 telemetry connection opened at startup
 
 
 # =====================================================================

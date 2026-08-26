@@ -20,6 +20,14 @@ from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore
 
 
+@pytest.fixture(autouse=True)
+def _isolate_mcp_autoconnect() -> None:
+    """Override `tests/conftest.py`'s same-named DEBT-202 guard — this file's own
+    tests call `mcp_adapter.autoconnect_enabled_mcp_servers` directly to test its
+    real behavior, so the root fixture's no-op patch must not apply here."""
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Helpers reused from test_tool_rag_selection.py
 # ---------------------------------------------------------------------------

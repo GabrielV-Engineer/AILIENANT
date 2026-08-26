@@ -270,6 +270,13 @@ LANCEDB_PATH: str = os.getenv("AILIENANT_LANCEDB_PATH", str(AILIENANT_HOME / "la
 
 # MCTS episodic audit DB — global, retention-pruned by the janitor.
 MCTS_DB_PATH: str = os.getenv("AILIENANT_MCTS_DB", str(AILIENANT_HOME / "mcts.sqlite"))
+
+# Telemetry DB (routing decisions, OOM events, request latency, container
+# lifecycle, per-action token usage) — global, retention-pruned by the janitor
+# (DEBT-120). core/telemetry.py's own default was a RELATIVE "data/telemetry.sqlite"
+# (wherever the process happened to launch from); this is the one production
+# code actually initializes with.
+TELEMETRY_DB_PATH: str = os.getenv("AILIENANT_TELEMETRY_DB", str(AILIENANT_HOME / "telemetry.sqlite"))
 # Phase 7.9.B.12 — advanced override ONLY. When unset, the embedding backend is
 # resolved per-provider from the active BYOM preset (core/config/embedding_resolver.py).
 # Setting this env var forces a fixed embedding model regardless of the preset.

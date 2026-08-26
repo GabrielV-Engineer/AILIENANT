@@ -1,10 +1,11 @@
 # core/janitor.py
 """Memory Janitor & GC.
 
-Two cleanup targets:
+Three cleanup targets:
     run_vector_gc          — delete LanceDB vectors whose source files no longer exist on disk
     purge_obsolete_graphs  — delete old pruned MCTS episodes from the MCTS audit DB
-    run_janitor            — orchestrator that calls both and returns a combined JanitorReport
+    purge_old_telemetry    — delete old rows from the append-only telemetry tables (DEBT-120)
+    run_janitor            — orchestrator that calls all three and returns a combined JanitorReport
 """
 from __future__ import annotations
 
@@ -42,9 +43,16 @@ class GraphGCReport(BaseModel):
     purged_count: int
 
 
+class TelemetryGCReport(BaseModel):
+    request_latency_purged: int
+    container_lifecycle_purged: int
+    action_token_usage_purged: int
+
+
 class JanitorReport(BaseModel):
     vector_gc: VectorGCReport
     graph_gc: GraphGCReport
+    telemetry_gc: TelemetryGCReport
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -127,18 +135,40 @@ async def purge_obsolete_graphs(
     return GraphGCReport(purged_count=purged)
 
 
+async def purge_old_telemetry(retention_days: int = _DEFAULT_RETENTION_DAYS) -> TelemetryGCReport:
+    """Delete old rows from the three append-only telemetry tables (DEBT-120).
+
+    ``core.telemetry`` owns the actual DB handle and its ``threading.Lock`` (a
+    plain ``sqlite3.Connection``, not aiosqlite), so the delete runs there and
+    is offloaded to a worker thread here — the same pattern ``run_vector_gc``
+    uses for LanceDB's synchronous API.
+    """
+    from core.telemetry import purge_old_telemetry as _purge_sync
+
+    deleted = await asyncio.to_thread(_purge_sync, retention_days)
+    return TelemetryGCReport(
+        request_latency_purged=deleted["request_latency"],
+        container_lifecycle_purged=deleted["container_lifecycle"],
+        action_token_usage_purged=deleted["action_token_usage"],
+    )
+
+
 async def run_janitor(
     workspace_root: str,
     lancedb_path: Optional[str] = None,
     mcts_db_path: str = MCTS_DB_PATH,
     retention_days: int = _DEFAULT_RETENTION_DAYS,
 ) -> JanitorReport:
-    """Orchestrate both GC passes and return a combined JanitorReport."""
+    """Orchestrate all three GC passes and return a combined JanitorReport."""
     vector_report = await run_vector_gc(workspace_root, lancedb_path)
     graph_report = await purge_obsolete_graphs(mcts_db_path, retention_days)
+    telemetry_report = await purge_old_telemetry(retention_days)
     logger.info(
-        "Janitor run complete: vectors_deleted=%d graphs_purged=%d",
+        "Janitor run complete: vectors_deleted=%d graphs_purged=%d telemetry_purged=%d",
         vector_report.deleted_count,
         graph_report.purged_count,
+        telemetry_report.request_latency_purged
+        + telemetry_report.container_lifecycle_purged
+        + telemetry_report.action_token_usage_purged,
     )
-    return JanitorReport(vector_gc=vector_report, graph_gc=graph_report)
+    return JanitorReport(vector_gc=vector_report, graph_gc=graph_report, telemetry_gc=telemetry_report)
