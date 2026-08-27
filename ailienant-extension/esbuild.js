@@ -123,6 +123,7 @@ async function main() {
 		assertGrammarEngineOffWebview();
 		assertWebviewBundleUnderCeiling();
 		await dashboardCtx.rebuild(); await dashboardCtx.dispose();
+		assertStylesheetsParseCleanly();
 	}
 }
 
@@ -192,6 +193,80 @@ function assertWebviewBundleUnderCeiling() {
 			`Webview bundle ${bundle} is ${(bytes / 1024).toFixed(1)} KB, over the ` +
 			`${(WEBVIEW_BUNDLE_CEILING_BYTES / 1024).toFixed(0)} KB ceiling.`,
 		);
+	}
+}
+
+// Hard build-time guard: a stylesheet the browser cannot parse fails the build
+// instead of shipping silently. Neither tsc nor eslint reads CSS and esbuild
+// passes malformed rule text straight through, so nothing else catches it — the
+// browser then discards rules with no error, which reads as an inexplicable
+// layout regression rather than a build failure. The usual cause is a comment
+// closed early by a stray terminator, spilling prose into the stylesheet where
+// an apostrophe or paren then unbalances everything below it. Both assertions
+// hold for any well-formed stylesheet, so a failure is never a false positive.
+function assertStylesheetsParseCleanly() {
+	const sheets = ['dist/workspace.css', 'dist/sidebar.css', 'dist/dashboard/index.css'];
+	for (const sheet of sheets) {
+		if (!fs.existsSync(sheet)) { continue; }
+		const src = fs.readFileSync(sheet, 'utf8');
+		const stack = [];
+		const closers = { '{': '}', '(': ')', '[': ']' };
+		let line = 1;
+
+		for (let i = 0; i < src.length; i++) {
+			const ch = src[i];
+			if (ch === '\n') { line++; continue; }
+
+			// Comments: skip to the NEXT `*/`, exactly as a CSS parser does.
+			if (ch === '/' && src[i + 1] === '*') {
+				const end = src.indexOf('*/', i + 2);
+				if (end === -1) {
+					throw new Error(`${sheet}:${line} — unterminated CSS comment.`);
+				}
+				for (let j = i; j < end; j++) { if (src[j] === '\n') { line++; } }
+				i = end + 1;
+				continue;
+			}
+
+			// Strings: a raw newline before the closing quote is a bad-string token.
+			if (ch === '"' || ch === '\'') {
+				let j = i + 1;
+				while (j < src.length && src[j] !== ch) {
+					if (src[j] === '\\') { j++; }
+					else if (src[j] === '\n') {
+						throw new Error(
+							`${sheet}:${line} — string opened with ${ch} is not closed before the ` +
+							`end of the line. The browser treats this as a bad-string token and ` +
+							`discards rules. Most often this means a comment ended early on a ` +
+							`stray "*/" and its prose is being parsed as CSS.`,
+						);
+					}
+					j++;
+				}
+				i = j;
+				continue;
+			}
+
+			if (closers[ch]) { stack.push({ ch, line }); continue; }
+			if (ch === '}' || ch === ')' || ch === ']') {
+				const open = stack.pop();
+				if (!open || closers[open.ch] !== ch) {
+					throw new Error(
+						`${sheet}:${line} — unbalanced "${ch}"` +
+						(open ? ` (does not close the "${open.ch}" opened on line ${open.line})` : '') +
+						`. The browser would discard rules from here on.`,
+					);
+				}
+			}
+		}
+
+		if (stack.length > 0) {
+			const { ch, line: openLine } = stack[0];
+			throw new Error(
+				`${sheet} — "${ch}" opened on line ${openLine} is never closed. The browser ` +
+				`consumes every following rule into it and drops them all.`,
+			);
+		}
 	}
 }
 

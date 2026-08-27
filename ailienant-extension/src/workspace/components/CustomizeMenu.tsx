@@ -137,7 +137,7 @@ export function CustomizeMenu({ view, onClose }: Props): JSX.Element {
                             <div key={r.role} className="ws-models-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
                                 <button
                                     className="ws-mode-row"
-                                    style={{ background: 'none', border: 'none', padding: 0, textAlign: 'left' }}
+                                    style={{ border: 'none', padding: 0, textAlign: 'left' }}
                                     onClick={() => {
                                         setActiveRole(isOpen ? null : r.role);
                                         setRoleDraft(r.override ?? r.base_prompt);

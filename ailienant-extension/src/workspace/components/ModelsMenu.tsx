@@ -100,7 +100,7 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
         window.addEventListener('message', handler);
         if (view === 'switch') { vscode.postMessage({ type: 'GET_MODELS' }); }
         if (view === 'usage') { vscode.postMessage({ type: 'GET_USAGE' }); }
-        if (view === 'preset') { vscode.postMessage({ type: 'GET_BYOM_CONFIG' }); }
+        if (view === 'preset' || view === 'orchestration') { vscode.postMessage({ type: 'GET_BYOM_CONFIG' }); }
         if (view === 'orchestration') { vscode.postMessage({ type: 'GET_EFFORT_MODE' }); }
         return () => window.removeEventListener('message', handler);
     }, [view]);
@@ -122,6 +122,13 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
         const approx = est.calibrated ? '' : '~';
         return `+${est.extra_calls} call(s), ${approx}${est.seconds_per_extra_call}s each`;
     };
+
+    // The active BYOM preset's real tier→model mapping — the same data the
+    // 'preset' view above already fetches correctly via GET_BYOM_CONFIG.
+    // `config.tiers` (the AilienantConfig prop) is sourced from a local
+    // ailienant-config.json file that is never written anywhere in this
+    // project, so it is always empty; kept only as a last-resort fallback.
+    const activePresetTiers = byomConfig?.presets.find(p => p.id === byomConfig.active_preset_id)?.tiers;
 
     if (view === 'switch') {
         return (
@@ -194,7 +201,7 @@ export function ModelsMenu({ view, config, activeModelId, orchestrationMode, onP
                         {TIERS.map(t => (
                             <div key={t} className="ws-models-tier">
                                 <span className="ws-models-tier-name">{t}</span>
-                                <span className="ws-models-tier-model">{config?.tiers?.[t] ?? '—'}</span>
+                                <span className="ws-models-tier-model">{activePresetTiers?.[t] ?? config?.tiers?.[t] ?? '—'}</span>
                             </div>
                         ))}
                     </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { DreamingProfile } from '../../shared/config';
 import type { AilienantConfig } from '../../shared/types';
@@ -13,6 +13,20 @@ interface Props {
     onToggle: (next: boolean, profile: DreamingProfile) => void;
     /** Locks only the on-demand "Run now" triggers while a turn is streaming. */
     disabled?: boolean;
+}
+
+// The active BYOM preset's real tier→model mapping (mirrors ModelsMenu.tsx's
+// identical fetch for its Orchestration view). `config.tiers` (the
+// AilienantConfig prop above) is sourced from a local ailienant-config.json
+// file that is never written anywhere in this project, so it is always
+// empty — kept only as a last-resort fallback below.
+interface BYOMPresetTiers {
+    id: string;
+    tiers: Record<string, string>;
+}
+interface BYOMConfigMsg {
+    presets: BYOMPresetTiers[];
+    active_preset_id: string | null;
 }
 
 interface ProfileMeta {
@@ -36,12 +50,15 @@ const FOCUS_PRESETS: string[] = [
     'Bug Fixes',
 ];
 
-function modelForProfile(p: DreamingProfile, config: AilienantConfig | null): string {
-    if (!config) { return '—'; }
+function modelForProfile(
+    p: DreamingProfile,
+    activePresetTiers: Record<string, string> | undefined,
+    config: AilienantConfig | null,
+): string {
     switch (p) {
-        case 'Medium': return config.tiers.medium ?? '—';
-        case 'Big':    return config.tiers.big ?? '—';
-        case 'Cloud':  return config.tiers.cloud ?? '—';
+        case 'Medium': return activePresetTiers?.medium ?? config?.tiers.medium ?? '—';
+        case 'Big':    return activePresetTiers?.big ?? config?.tiers.big ?? '—';
+        case 'Cloud':  return activePresetTiers?.cloud ?? config?.tiers.cloud ?? '—';
         case 'Hybrid': return '—';
     }
 }
@@ -51,6 +68,20 @@ export function DreamingMode({ active, profile, config, onToggle, disabled }: Pr
     const [currentProfile, setCurrentProfile] = useState<DreamingProfile>(profile);
     const [otherMode, setOtherMode] = useState(false);
     const [customText, setCustomText] = useState('');
+    const [byomConfig, setByomConfig] = useState<BYOMConfigMsg | null>(null);
+
+    useEffect(() => {
+        if (!open) { return; }
+        const handler = (event: MessageEvent): void => {
+            const msg = event.data as { type: string; data?: BYOMConfigMsg | null };
+            if (msg.type === 'BYOM_CONFIG' && msg.data) { setByomConfig(msg.data); }
+        };
+        window.addEventListener('message', handler);
+        vscode.postMessage({ type: 'GET_BYOM_CONFIG' });
+        return () => window.removeEventListener('message', handler);
+    }, [open]);
+
+    const activePresetTiers = byomConfig?.presets.find(p => p.id === byomConfig.active_preset_id)?.tiers;
 
     const handleToggle = (): void => {
         const next = !active;
@@ -139,7 +170,7 @@ export function DreamingMode({ active, profile, config, onToggle, disabled }: Pr
                                 <div className="ws-dream-row-text">
                                     <div className="ws-dream-row-top">
                                         <span className="ws-dream-row-label">{p.label}</span>
-                                        <span className="ws-dream-row-model">{modelForProfile(p.value, config)}</span>
+                                        <span className="ws-dream-row-model">{modelForProfile(p.value, activePresetTiers, config)}</span>
                                     </div>
                                     <div className="ws-dream-row-limits">{p.limits}</div>
                                 </div>

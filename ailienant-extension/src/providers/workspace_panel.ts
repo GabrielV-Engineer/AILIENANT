@@ -314,6 +314,12 @@ export class WorkspacePanelManager {
     // avoid a startup-time `findFiles` on workspaces the user never queries.
     private _pathIndex: WorkspacePathIndex | null = null;
     private _pathIndexBootstrap: Promise<void> | null = null;
+    // Cache-busts the webview's script/style/logo URIs so a browser-level cache
+    // of a `vscode-webview://` resource can never outlive one activation of this
+    // extension — a live-edit-and-reload dev cycle (or a real installed-version
+    // update) always gets fresh assets, while stays stable across every panel
+    // reveal within the same activation (no unnecessary refetching).
+    private readonly _assetCacheBust: string = String(Date.now());
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -1594,6 +1600,7 @@ export class WorkspacePanelManager {
     }
 
     private _renderHtml(webview: vscode.Webview, session: Session): string {
+        const v = this._assetCacheBust;
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'dist', 'workspace.js')
         );
@@ -1609,7 +1616,7 @@ export class WorkspacePanelManager {
             sessionId:    session.id,
             sessionTitle: session.title.trim() || 'AILIENANT',
             config:       this._configLoader.current as AilienantConfig | null,
-            logoUri:      logoUri.toString(),
+            logoUri:      `${logoUri}?v=${v}`,
             budgetLimitMode:  this._workspaceState.get<BudgetLimitMode>(WORKSPACE_STATE_KEYS.budgetLimitMode, 'none'),
             budgetWeeklyUsd:  this._workspaceState.get<number>(WORKSPACE_STATE_KEYS.budgetWeeklyUsd, 20),
             budgetMonthlyUsd: this._workspaceState.get<number>(WORKSPACE_STATE_KEYS.budgetMonthlyUsd, 50),
@@ -1632,11 +1639,11 @@ export class WorkspacePanelManager {
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; img-src ${webview.cspSource}; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';" />
 <title>${session.title.trim() || 'AILIENANT'}</title>
-<link rel="stylesheet" href="${styleUri}" />
+<link rel="stylesheet" href="${styleUri}?v=${v}" />
 </head>
 <body>
-<div id="root" data-initial='${initialAttr}' data-logo='${logoUri}'></div>
-<script src="${scriptUri}"></script>
+<div id="root" data-initial='${initialAttr}' data-logo='${logoUri}?v=${v}'></div>
+<script src="${scriptUri}?v=${v}"></script>
 </body>
 </html>`;
     }

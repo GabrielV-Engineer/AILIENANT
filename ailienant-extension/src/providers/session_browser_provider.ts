@@ -6,6 +6,11 @@ const SESSIONS_KEY = 'ailienant.sessions';
 export class SessionBrowserProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'ailienant.sessionBrowser';
     private _view?: vscode.WebviewView;
+    // Cache-busts the webview's script/style/logo URIs so a browser-level cache
+    // of a `vscode-webview://` resource can never outlive one activation of this
+    // extension — see the identical field in workspace_panel.ts for the full
+    // rationale.
+    private readonly _assetCacheBust: string = String(Date.now());
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -110,6 +115,7 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
     }
 
     private _renderHtml(webview: vscode.Webview): string {
+        const v = this._assetCacheBust;
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'dist', 'sidebar.js')
         );
@@ -126,11 +132,11 @@ export class SessionBrowserProvider implements vscode.WebviewViewProvider {
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; img-src ${webview.cspSource}; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';" />
 <title>AILIENANT Sessions</title>
-<link rel="stylesheet" href="${styleUri}" />
+<link rel="stylesheet" href="${styleUri}?v=${v}" />
 </head>
 <body>
-<div id="root" data-logo="${logoUri}"></div>
-<script src="${scriptUri}"></script>
+<div id="root" data-logo="${logoUri}?v=${v}"></div>
+<script src="${scriptUri}?v=${v}"></script>
 </body>
 </html>`;
     }

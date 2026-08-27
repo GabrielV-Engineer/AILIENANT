@@ -137,6 +137,7 @@ Every time you modify or create code:
 1. **Reference Eradication:** When you encounter comments or strings referencing a specific phase, sub-phase, ADR, or blueprint, actively delete or scrub those project-management references to keep the codebase clean.
 2. **Zero-Reference Creation:** Do not mention any phase, sub-phase, or blueprint in new comments or strings. Code documentation must be timeless — explain the "why" and "how" of the implementation, deliberately omitting historical project-management metadata.
 3. **Strict English Standardization:** The codebase maintains a single language. Translate any Spanish comments, docstrings, or string literals you encounter into professional technical English. All newly created documentation and strings MUST be written exclusively in English.
+4. **Proportionality & Brevity:** A comment earns its length from the non-obviousness of what it explains, not from the effort spent deciding it. Prefer the shortest form that stops a future reader from making the wrong change — typically one to five lines. Never narrate an incident, a debugging session, or a rejected alternative in code. If a mechanical gate now enforces the invariant, the gate is the documentation and the comment must not restate it. Long-form rationale belongs in `docs/SCHEMA_EVOLUTION.MD` or a blueprint, never inline.
 
 ---
 

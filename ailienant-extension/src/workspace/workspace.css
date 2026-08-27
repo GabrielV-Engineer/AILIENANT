@@ -1,9 +1,18 @@
 @import url("../shared/theme.css");
 
-/* Remap bg-main and bg-surface to match the active VS Code theme */
+/* Structural tokens follow the active VS Code theme. Brand accents and the
+   status and chart palettes stay fixed: a brand color should not shift per
+   host theme, and those palettes are contrast-calibrated for a dark surface.
+   The dashboard SPA imports theme.css too but resolves no host variable, so
+   it keeps the fallback hex unchanged. */
 :root {
-  --bg-main:    var(--vscode-editor-background,       #0D1117);
-  --bg-surface: var(--vscode-editorWidget-background, #161B22);
+  --bg-main:        var(--vscode-editor-background,       #0D1117);
+  --bg-surface:     var(--vscode-editorWidget-background, #161B22);
+  --bg-hover:       var(--vscode-list-hoverBackground,    #21262D);
+  --border-subtle:  var(--vscode-panel-border,            #30363D);
+  --text-primary:   var(--vscode-foreground,              #E6EDF3);
+  --text-secondary: var(--vscode-descriptionForeground,   #8B949E);
+  --text-disabled:  var(--vscode-disabledForeground,      #484F58);
 }
 
 html, body, #root { height: 100%; }
@@ -468,6 +477,9 @@ html, body, #root { height: 100%; }
   margin-bottom: 4px;
 }
 .ws-mode-row {
+  appearance: none;
+  background: transparent;
+  color: var(--text-primary);
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -487,6 +499,7 @@ html, body, #root { height: 100%; }
   border-color: var(--accent-primary);
   background: rgba(99, 165, 131, 0.06);
 }
+.ws-mode-row:disabled { opacity: 0.45; cursor: not-allowed; }
 .ws-mode-row input { accent-color: var(--accent-primary); margin-top: 2px; }
 .ws-mode-row-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ws-mode-row-title {
@@ -525,6 +538,9 @@ html, body, #root { height: 100%; }
 .ws-dream-title { font-size: 12px; font-weight: 600; color: var(--text-primary); }
 .ws-dream-list { display: flex; flex-direction: column; gap: 3px; }
 .ws-dream-row {
+  appearance: none;
+  background: transparent;
+  color: var(--text-primary);
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -539,6 +555,7 @@ html, body, #root { height: 100%; }
   border-color: var(--accent-primary);
   background: rgba(99, 165, 131, 0.06);
 }
+.ws-dream-row:disabled { opacity: 0.45; cursor: not-allowed; }
 .ws-dream-row input { accent-color: var(--accent-primary); margin-top: 3px; }
 .ws-dream-row-text { display: flex; flex-direction: column; gap: 0; min-width: 0; flex: 1; }
 .ws-dream-row-top {

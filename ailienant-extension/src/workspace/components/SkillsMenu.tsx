@@ -49,7 +49,7 @@ export function SkillsMenu({ view, onClose, onSwitchView }: Props): JSX.Element 
                             <div key={s.id} className="ws-models-row" style={{ alignItems: 'center', gap: 8 }}>
                                 <button
                                     className="ws-mode-row"
-                                    style={{ flex: 1, background: 'none', border: 'none', padding: 0, textAlign: 'left' }}
+                                    style={{ flex: 1, border: 'none', padding: 0, textAlign: 'left' }}
                                     onClick={() => {
                                         window.postMessage({ type: 'INVOKE_SKILL', id: s.id, name: s.name }, '*');
                                         onClose();

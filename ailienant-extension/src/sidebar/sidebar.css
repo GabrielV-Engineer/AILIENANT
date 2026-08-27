@@ -1,8 +1,15 @@
 @import url("../shared/theme.css");
 
-/* Remap bg-main to match whatever VS Code theme is active */
+/* Structural tokens follow the active VS Code theme; brand accents and the
+   status and chart palettes stay fixed. See workspace.css for the rationale. */
 :root {
-  --bg-main: var(--vscode-sideBar-background, #0D1117);
+  --bg-main:        var(--vscode-sideBar-background,      #0D1117);
+  --bg-surface:     var(--vscode-editorWidget-background, #161B22);
+  --bg-hover:       var(--vscode-list-hoverBackground,    #21262D);
+  --border-subtle:  var(--vscode-panel-border,            #30363D);
+  --text-primary:   var(--vscode-foreground,              #E6EDF3);
+  --text-secondary: var(--vscode-descriptionForeground,   #8B949E);
+  --text-disabled:  var(--vscode-disabledForeground,      #484F58);
 }
 
 html, body, #root { height: 100%; }
