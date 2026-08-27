@@ -57,3 +57,10 @@ jobs:
           name: backend-coverage
           path: ailienant-core/coverage.xml
           retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-results
+          path: ailienant-core/test-results.xml
+          retention-days: 30

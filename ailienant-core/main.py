@@ -81,7 +81,7 @@ from core.telemetry import (
     recent_routing_decisions,
     shutdown_telemetry_db,
 )
-from core.telemetry_log import configure_telemetry_log, shutdown_telemetry_log
+from core.telemetry_log import configure_telemetry_log, log_exception, shutdown_telemetry_log
 from core.observability import configure_langsmith
 
 # --- imports (Memory Janitor) ---
@@ -869,6 +869,12 @@ async def submit_task(
             )
         except Exception as exc:  # noqa: BLE001 — a background failure must reach the UI, not vanish
             logger.error("Critical failure in the cognitive engine: %s", exc, exc_info=True)
+            log_exception(
+                session_id=x_task_id,
+                source="task_service.process_task",
+                message=str(exc),
+                exc=exc,
+            )
             try:
                 await vfs_manager.broadcast_token(
                     x_task_id,

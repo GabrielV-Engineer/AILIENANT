@@ -164,3 +164,41 @@ def test_generation_utilization_marks_unknown_finish_reason_explicitly() -> None
         _tlog_module._emit = original_emit
 
     assert calls[0][1]["finish_reason"] == "unknown"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# log_exception — the ERROR category (13.1.4). None of the five categories
+# above capture *why* a turn actually failed; this closes that gap for the
+# canonical top-level failure boundary (main.py's background-task handler).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_error_category_records_traceback(tmp_path: Path) -> None:
+    tlog.configure_telemetry_log(str(tmp_path))
+    try:
+        raise ValueError("boom")
+    except ValueError as exc:
+        tlog.log_exception("sess-1", "task_service.process_task", "turn failed", exc)
+    tlog.shutdown_telemetry_log()
+
+    content = _read_log(tmp_path)
+    assert "ERROR" in content
+    assert "session=sess-1" in content
+    assert "source=task_service.process_task" in content
+    assert "ValueError" in content
+    assert "boom" in content
+
+
+def test_error_secrets_scrubbed(tmp_path: Path) -> None:
+    """A secret embedded in an exception message must not reach the file."""
+    tlog.configure_telemetry_log(str(tmp_path))
+    secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+    try:
+        raise RuntimeError(f"gateway call failed with key {secret}")
+    except RuntimeError as exc:
+        tlog.log_exception("sess-1", "tools.llm_gateway", "call failed", exc)
+    tlog.shutdown_telemetry_log()
+
+    content = _read_log(tmp_path)
+    assert secret not in content
+    assert "REDACTED:" in content

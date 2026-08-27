@@ -1,10 +1,12 @@
 """DEBT-120 — telemetry retention GC.
 
 Covers `core.telemetry.purge_old_telemetry`: deletes rows older than the
-retention window from the three append-only tables and leaves recent rows
-untouched, no-ops cleanly when the DB isn't initialized, and is safe to call
-concurrently from `core.janitor.run_janitor`/`purge_old_telemetry` (the async
-wrapper offloading to a thread).
+retention window from the four append-only tables (request_latency,
+container_lifecycle, action_token_usage, tool_invocations — DEBT-176 added the
+fourth) and leaves recent rows untouched, no-ops cleanly when the DB isn't
+initialized, and is safe to call concurrently from
+`core.janitor.run_janitor`/`purge_old_telemetry` (the async wrapper offloading
+to a thread).
 """
 from __future__ import annotations
 
@@ -44,6 +46,15 @@ def _seed_row(table: str, timestamp: str, **extra: object) -> None:
             (timestamp, extra.get("action", "write_file"), extra.get("total_tokens", 500),
              extra.get("project_id")),
         )
+    elif table == "tool_invocations":
+        tele._conn.execute(
+            "INSERT INTO tool_invocations "
+            "(timestamp, task_id, role, tool_name, decision, executed, duration_ms, error, project_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (timestamp, extra.get("task_id", "t1"), extra.get("role", "coder"),
+             extra.get("tool_name", "read_file"), extra.get("decision", "ALLOW"),
+             1, extra.get("duration_ms", 12.0), None, extra.get("project_id")),
+        )
     else:
         raise ValueError(table)
     tele._conn.commit()
@@ -59,7 +70,7 @@ def isolated_db(tmp_path: Path) -> Iterator[None]:
 def test_purge_deletes_old_rows_keeps_recent(isolated_db: None) -> None:
     old = "2020-01-01 00:00:00"  # far past any retention window
     recent = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    for table in ("request_latency", "container_lifecycle", "action_token_usage"):
+    for table in ("request_latency", "container_lifecycle", "action_token_usage", "tool_invocations"):
         _seed_row(table, old)
         _seed_row(table, recent)
 
@@ -69,9 +80,10 @@ def test_purge_deletes_old_rows_keeps_recent(isolated_db: None) -> None:
         "request_latency": 1,
         "container_lifecycle": 1,
         "action_token_usage": 1,
+        "tool_invocations": 1,
     }
     assert tele._conn is not None
-    for table in ("request_latency", "container_lifecycle", "action_token_usage"):
+    for table in ("request_latency", "container_lifecycle", "action_token_usage", "tool_invocations"):
         remaining = tele._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         assert remaining == 1, f"{table} should retain exactly its recent row"
 
@@ -85,6 +97,7 @@ def test_purge_is_a_noop_when_db_not_initialized(monkeypatch: pytest.MonkeyPatch
         "request_latency": 0,
         "container_lifecycle": 0,
         "action_token_usage": 0,
+        "tool_invocations": 0,
     }
 
 
@@ -101,6 +114,7 @@ async def test_janitor_purge_old_telemetry_wraps_the_sync_call(isolated_db: None
     assert report.request_latency_purged == 1
     assert report.container_lifecycle_purged == 0
     assert report.action_token_usage_purged == 0
+    assert report.tool_invocations_purged == 0
 
 
 @pytest.fixture()

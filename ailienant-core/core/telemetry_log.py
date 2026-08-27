@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import traceback
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -252,4 +253,22 @@ def log_generation_utilization(
             "finish_reason": finish_reason if finish_reason is not None else "unknown",
             "num_ctx": num_ctx if num_ctx is not None else "n/a",
         },
+    )
+
+
+def log_exception(session_id: str, source: str, message: str, exc: BaseException) -> None:
+    """Record one unhandled/handled exception with its full traceback.
+
+    The developer/agent-facing twin of the five categories above: none of them
+    capture *why* a turn actually failed — only routing, indexing, context and
+    generation shape. This closes that gap for the canonical top-level failure
+    boundary so a crash is one grep of ``.ailienant_telemetry.log`` away instead
+    of scrollback archaeology. Formatted with ``traceback.format_exception`` and
+    routed through the same ``_emit``/``SecretsScrubberFilter`` path as every
+    other category — no new scrubbing logic.
+    """
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    _emit(
+        "ERROR",
+        {"session": session_id, "source": source, "message": message, "traceback": tb},
     )

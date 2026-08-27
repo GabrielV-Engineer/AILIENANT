@@ -201,6 +201,53 @@ async def test_dispatch_bad_args_is_caught() -> None:
     assert "argument error" in result.observation
 
 
+# ── 1b. DEBT-176 — tool_invocations emit-only ledger ────────────────────────────
+
+
+async def test_dispatch_records_tool_invocation_on_success(tmp_path) -> None:
+    """A successful dispatch() writes one executed=True row (task_id from state)."""
+    import core.telemetry as tel
+
+    tel.init_telemetry_db(db_path=tmp_path / "telemetry.sqlite")
+    try:
+        d = ToolDispatcher(
+            {"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"analyst"})},
+            active_role="analyst",
+            session_mode=SessionPermissionMode.DEFAULT,
+            state={"task_id": "task-xyz"},
+            agent_permission=PermissionMode.READ_ONLY,
+        )
+        result = await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+        assert result.executed is True
+
+        assert tel._conn is not None
+        row = tel._conn.execute(
+            "SELECT task_id, role, tool_name, executed FROM tool_invocations"
+        ).fetchone()
+        assert row == ("task-xyz", "analyst", "echo", 1)
+    finally:
+        tel.shutdown_telemetry_db()
+
+
+async def test_dispatch_records_tool_invocation_on_denial(tmp_path) -> None:
+    """A DENIED dispatch() still writes a row, with executed=False."""
+    import core.telemetry as tel
+
+    tel.init_telemetry_db(db_path=tmp_path / "telemetry.sqlite")
+    try:
+        d = _dispatcher({"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"coder"})})
+        result = await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+        assert result.executed is False
+
+        assert tel._conn is not None
+        row = tel._conn.execute(
+            "SELECT tool_name, executed FROM tool_invocations"
+        ).fetchone()
+        assert row == ("echo", 0)
+    finally:
+        tel.shutdown_telemetry_db()
+
+
 # ── 2b. classify() seam (DEBT-129) — the pure verdict dispatch() acts on ────────
 
 

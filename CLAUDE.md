@@ -91,6 +91,7 @@ These invariants govern the application's runtime behavior, not just your edits.
 1. **Zero-Degradation (Stop the bleeding):** After modifying any Python code, you MUST run `npx pyright` and `mypy .`. Your specific changes MUST NOT introduce a single new type error, syntax issue, or Pylance warning. `mypy .` is the enforced gate — not `mypy --strict`, which drags transitive debt unrelated to your change.
 2. **The Boy Scout Rule (Gradual Healing):** If a file you modify already contains Pylance/Pyright or syntax errors, opportunistically fix them alongside your change. Leave the file cleaner than you found it.
 3. **Test Taxonomy (mock vs. integration):** Use hermetic stubs/mocks to seal off a heavy engine at a boundary (the Gateway pattern, which avoids spinning the full cognitive engine in a unit test). Use real integration tests for contract-critical paths where a stub would hide a real break. Phase gates follow the sibling convention — a `test_phaseX_checkpoint_gate.py` living next to the phase's code, test-only, asserting the phase's invariants.
+4. **Structured Triage Output:** Every `pytest` run (local or CI) emits `test-results.xml` (pytest's built-in `--junitxml`, wired via `pytest.ini`'s `addopts`) so a failure can be read from that file directly. Coverage is available on demand (`pytest --cov=. --cov-report=term-missing`) — observability only, never a hard minimum-% gate (see `DEVELOPERS.md`'s Testing & quality gates section).
 
 ---
 
@@ -125,6 +126,7 @@ Every change defaults to an uncompromising Enterprise-grade standard. If a tacti
 - Failures are logged with their root cause and `exc_info=True`, never swallowed (reinforces Section 5.2).
 - Use explicit, appropriate log levels. Do not use bare `print()` in runtime paths — route through the module logger.
 - A log line should let a future reader reconstruct what happened without re-running the code.
+- `core/telemetry_log.py` is the canonical dev-facing audit sink — extend it, never create a parallel one (`docs/PROJECT_MANIFEST.md`'s absorption rule binds this the same way). Its category set (`WS`/`NODE`/`INDEX`/`CONTEXT`/`GENERATION`/`ERROR`) is the reference for what belongs there, mirroring `core/benchmark_service.py`'s role as the canonical single-flight precedent in Section 5.1.
 
 ---
 

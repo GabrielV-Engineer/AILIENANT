@@ -51,6 +51,7 @@ from core.permissions import (
     evaluate_action,
 )
 from core.redaction import mask_secrets, truncate_middle
+from core.telemetry import log_tool_invocation
 from shared.config import MAX_JSON_PARSE_CHARS, MAX_OBSERVATION_CHARS
 from shared.rbac import PermissionMode
 
@@ -440,6 +441,25 @@ class ToolDispatcher:
           row can never hang on "running…" through an approval round-trip.
         """
         sink = current_activity_sink()
+        task_id = self._state.get("task_id")
+
+        def _record_invocation(
+            *, executed: bool, error: Optional[str], duration_ms: Optional[float],
+        ) -> None:
+            # DEBT-176 emit-only ledger — best-effort, mirrors log_routing_decision's
+            # own never-raise contract, so a telemetry write can never break dispatch.
+            try:
+                log_tool_invocation(
+                    task_id=task_id,
+                    role=self._active_role,
+                    tool_name=call.name,
+                    decision=str(decision),
+                    executed=executed,
+                    duration_ms=duration_ms,
+                    error=error,
+                )
+            except Exception:  # noqa: BLE001 — observability must never break dispatch
+                logger.debug("tool-invocation telemetry skipped (%s)", call.name, exc_info=True)
 
         async def _emit_blocked() -> None:
             if sink is None:
@@ -476,6 +496,7 @@ class ToolDispatcher:
                 logger.debug("tool-dispatch detail emit skipped (%s)", call.name, exc_info=True)
 
         async def _not_executed(observation: Optional[str], error: Optional[str] = None) -> None:
+            _record_invocation(executed=False, error=error, duration_ms=None)
             # A caller-supplied ref already has an open span (emitted before an
             # interrupt()) that MUST be resolved — a fresh emit_blocked would
             # orphan it as a second, never-resolving row. No ref means nothing
@@ -541,10 +562,12 @@ class ToolDispatcher:
             # a state-channel write. promote_tool_state applies its own, larger
             # size ceiling first, so this ordering never feeds an unbounded parse.
             state_delta = promote_tool_state(call.name, text)
+            duration_ms = (time.perf_counter() - t0) * 1000.0
+            _record_invocation(executed=True, error=None, duration_ms=duration_ms)
             if exec_ref is not None:
                 await _emit_detail(
                     exec_ref, executed=True, observation=text, error=None,
-                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                    duration_ms=duration_ms,
                 )
             if len(text) > _MAX_OBSERVATION_CHARS:
                 text = text[:_MAX_OBSERVATION_CHARS] + "\n…[truncated]"
@@ -554,10 +577,12 @@ class ToolDispatcher:
             logger.warning(
                 "Tool '%s' rejected args: %s", call.name, exc, exc_info=True
             )
+            duration_ms = (time.perf_counter() - t0) * 1000.0
+            _record_invocation(executed=False, error=str(exc), duration_ms=duration_ms)
             if exec_ref is not None:
                 await _emit_detail(
                     exec_ref, executed=False, observation=None, error=str(exc),
-                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                    duration_ms=duration_ms,
                 )
             return DispatchResult(
                 observation=f"[dispatch] '{call.name}' argument error: {exc}",
@@ -567,10 +592,12 @@ class ToolDispatcher:
             logger.warning(
                 "Tool '%s' raised during dispatch: %s", call.name, exc, exc_info=True
             )
+            duration_ms = (time.perf_counter() - t0) * 1000.0
+            _record_invocation(executed=False, error=str(exc), duration_ms=duration_ms)
             if exec_ref is not None:
                 await _emit_detail(
                     exec_ref, executed=False, observation=None, error=str(exc),
-                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                    duration_ms=duration_ms,
                 )
             return DispatchResult(
                 observation=f"[dispatch] '{call.name}' failed: {exc}",

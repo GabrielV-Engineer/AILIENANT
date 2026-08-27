@@ -54,6 +54,7 @@ env/
 .coverage
 .coverage.*
 coverage.xml
+test-results.xml
 htmlcov/
 
 # ==========================================

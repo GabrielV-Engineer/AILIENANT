@@ -326,10 +326,12 @@ Proyect_Ailienant/
 │   │   ├── state_manager.py     #     AGENTS.md fast-boot serializer + navigable plans/ export
 │   │   ├── storage_paths.py     #     app-home resolver; per-project GraphRAG partition + legacy CWD migration
 │   │   ├── project_instructions.py # freeform AILIENANT.md project-instructions reader (token-capped)
-│   │   ├── janitor.py           #     orphan-vector GC + MCTS purge
+│   │   ├── janitor.py           #     orphan-vector GC + MCTS purge + telemetry retention purge (4 append-only tables)
 │   │   ├── token_ledger.py      #     LOCAL/CLOUD token accounting
 │   │   ├── graph_weight.py      #     pre-execution context-OOM predictor (state tokens vs candidate window)
 │   │   ├── observability.py     #     env-gated LangSmith tracing bootstrap (no new sink)
+│   │   ├── telemetry.py         #     append-only SQLite audit trail (routing/OOM/latency/tool_invocations); dashboard-read + janitor-pruned
+│   │   ├── telemetry_log.py     #     tail-able rotating file sink (.ailienant_telemetry.log; WS/NODE/INDEX/CONTEXT/GENERATION/ERROR categories)
 │   │   ├── redaction.py         #     shared ReDoS-safe secret masker (mask_secrets; used by telemetry + exec_log)
 │   │   ├── exec_log.py          #     bounded in-memory per-exec command-output ring (non-persistent, source-tagged, seq-cursor); sole emitter of the Glass-Box Timeline execution-detail channel
 │   │   ├── activity_context.py  #     turn-scoped ActivitySink Protocol + ContextVar (Glass-Box Timeline execution-detail correlation, no tool-signature changes)
@@ -536,13 +538,15 @@ npm run lint                       # ESLint, 0 errors
 
 The suite is large (latest gate: **2,858 passing / 2 skipped**, 91% line coverage, `mypy .` clean — see the most recent [DEV_JOURNAL.md](docs/DEV_JOURNAL.md) entry for the current numbers). Coverage is observability only, no hard minimum-% gate — and it measures lines executed, not integration depth: the suite mocks the LLM/vector-store boundary uniformly, so it does not mean the agent/LLM interaction surface is tested against a real model. Each phase ships a sibling **checkpoint-gate** test file (`test_phase*_checkpoint_gate.py`) that re-certifies that phase's contract.
 
+**Structured triage tooling (13.1.3):** every `pytest` run — local or CI — emits `ailienant-core/test-results.xml` (pytest's built-in `--junitxml`, wired via `pytest.ini`'s `addopts`, no plugin dependency), so a failure can be read from that file directly instead of re-parsing scrollback or re-running the suite. Coverage is not on by default locally (instrumenting all ~2,900 tests on every run would slow the inner loop); run it on demand with `pytest --cov=. --cov-report=term-missing` (same invocation CI uses) when you need to see what a change left untested before touching that code. For CPU/latency investigations, `py-spy` is available (`requirements-dev.txt`, dev-only): `py-spy record -- python -m pytest tests/some_slow_test.py` profiles your own child process with no elevation needed; attaching to an already-running foreign PID does need admin rights on Windows.
+
 **Zero-degradation rule:** your change must not introduce a single new type error or lint warning. **Boy-Scout rule:** if a file you touch already has errors, fix them while you're there.
 
 **Zero-flake policy:** a test that needs a "pre-existing unrelated flake" footnote at phase-closure is a same-sub-phase fix from now on, never a footnote. This formalizes the precedent set by DEBT-108 (`tests/benchmark/test_retention.py`, a genuine cross-thread `FileLock` defect that was waved through as a footnoted flake across at least 6 phase-closure gates before being fixed for real in 12.14) and DEBT-153 (`response_cache` cross-test contamination, closed the same sub-phase). If a test is flaking, stop and fix the root cause or the assertion's contract before moving on — do not re-verify it green in isolation and footnote it as unrelated.
 
 ### CI
 
-`.github/workflows/backend-gate.yml` and `.github/workflows/frontend-gate.yml` run the same gates above automatically on every push/PR touching their respective directories — see [DEV_JOURNAL.md](docs/DEV_JOURNAL.md)'s 12.15 entry for what each covers. A backend-coverage artifact publishes on every backend-gate run (observability only, no hard threshold yet). The Playwright e2e suite (`ailienant-extension/e2e/`) runs on a nightly schedule, not on every push, since it boots a real backend subprocess and is comparatively slow.
+`.github/workflows/backend-gate.yml` and `.github/workflows/frontend-gate.yml` run the same gates above automatically on every push/PR touching their respective directories — see [DEV_JOURNAL.md](docs/DEV_JOURNAL.md)'s 12.15 entry for what each covers. A `backend-coverage` artifact (observability only, no hard threshold yet) and a `backend-test-results` artifact (the `test-results.xml` JUnit file) both publish on every backend-gate run. The Playwright e2e suite (`ailienant-extension/e2e/`) runs on a nightly schedule, not on every push, since it boots a real backend subprocess and is comparatively slow.
 
 **One manual step CI cannot self-configure:** branch protection is a GitHub repo setting, not a committable file. To actually block merges on a red gate, go to **Settings → Rules → Rulesets**, create (or edit) a ruleset targeting `main`, enable "Require status checks to pass," and add both `backend-gate` and `frontend-gate` (the job names). This only takes effect after each workflow has run at least once on the repo (GitHub only lists status checks it has seen before) — and note both jobs must have distinct names for the checks picker to disambiguate them; a shared generic job name like `gate` shows up ambiguously.
 

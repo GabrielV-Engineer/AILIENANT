@@ -69,6 +69,35 @@ def test_log_skips_when_not_initialized():
     )
 
 
+def test_log_tool_invocation_writes_record(tmp_path):
+    """log_tool_invocation (DEBT-176) must INSERT a row queryable back by tool_name."""
+    db = tmp_path / "telemetry.sqlite"
+    tel.init_telemetry_db(db_path=db)
+    tel.log_tool_invocation(
+        task_id="task-1",
+        role="coder",
+        tool_name="read_file",
+        decision="ALLOW",
+        executed=True,
+        duration_ms=42.5,
+        error=None,
+    )
+    conn = sqlite3.connect(str(db))
+    row = conn.execute(
+        "SELECT task_id, role, tool_name, decision, executed, duration_ms, error "
+        "FROM tool_invocations"
+    ).fetchone()
+    conn.close()
+    assert row == ("task-1", "coder", "read_file", "ALLOW", 1, 42.5, None)
+
+
+def test_log_tool_invocation_skips_when_not_initialized():
+    """log_tool_invocation must not raise when DB has not been initialized."""
+    tel.log_tool_invocation(
+        task_id=None, role=None, tool_name="read_file", decision="ALLOW", executed=True,
+    )
+
+
 def test_integration_route_after_finops_logs(tmp_path):
     """route_after_finops must write a routing_decisions row when DB is live."""
     db = tmp_path / "telemetry.sqlite"

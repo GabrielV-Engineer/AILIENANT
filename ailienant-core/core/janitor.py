@@ -47,6 +47,7 @@ class TelemetryGCReport(BaseModel):
     request_latency_purged: int
     container_lifecycle_purged: int
     action_token_usage_purged: int
+    tool_invocations_purged: int
 
 
 class JanitorReport(BaseModel):
@@ -150,6 +151,7 @@ async def purge_old_telemetry(retention_days: int = _DEFAULT_RETENTION_DAYS) -> 
         request_latency_purged=deleted["request_latency"],
         container_lifecycle_purged=deleted["container_lifecycle"],
         action_token_usage_purged=deleted["action_token_usage"],
+        tool_invocations_purged=deleted["tool_invocations"],
     )
 
 
@@ -169,6 +171,7 @@ async def run_janitor(
         graph_report.purged_count,
         telemetry_report.request_latency_purged
         + telemetry_report.container_lifecycle_purged
-        + telemetry_report.action_token_usage_purged,
+        + telemetry_report.action_token_usage_purged
+        + telemetry_report.tool_invocations_purged,
     )
     return JanitorReport(vector_gc=vector_report, graph_gc=graph_report, telemetry_gc=telemetry_report)

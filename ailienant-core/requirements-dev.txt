@@ -9,3 +9,9 @@ pytest-cov>=7.1.0
 hypothesis>=6.165.0
 mypy>=2.1.0
 pre-commit>=4.6.1
+
+# On-demand CPU/latency profiling (13.1.3) — never invoked by pytest/CI, standalone
+# CLI only (`py-spy record -- ...` / `py-spy top --pid ...`). No AILIENANT_ENABLE_*
+# gate needed: unlike scripts/hardware_stress_sim.py, it only inspects a process
+# already under the invoker's control, not a shared/destructive resource.
+py-spy>=0.4

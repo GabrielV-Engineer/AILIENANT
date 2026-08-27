@@ -99,6 +99,26 @@ CREATE TABLE IF NOT EXISTS action_token_usage (
     total_tokens INTEGER NOT NULL,
     project_id   TEXT
 );
+
+-- Emit-only per-tool-call ledger (DEBT-176). One row per core/tool_dispatch.py
+-- ToolDispatcher.dispatch() outcome — resolved-or-not, executed-or-not — so tool
+-- usage has a real signal beyond cosine similarity to the composed intent.
+-- Deliberately NOT consumed as a select_tools ranking prior: doing so would make
+-- tool selection non-deterministic across runs, contradicting the reproducibility
+-- guarantee LangGraph checkpoint replay/Rewind depend on (rejected, not deferred —
+-- see docs/TECH_DEBT_BACKLOG.md DEBT-176). Emit-only, full stop.
+CREATE TABLE IF NOT EXISTS tool_invocations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    task_id     TEXT,
+    role        TEXT,
+    tool_name   TEXT NOT NULL,
+    decision    TEXT,
+    executed    INTEGER NOT NULL,
+    duration_ms REAL,
+    error       TEXT,
+    project_id  TEXT
+);
 """
 
 # Additive project_id migration + filter indexes. CREATE TABLE IF NOT EXISTS leaves
@@ -107,6 +127,7 @@ CREATE TABLE IF NOT EXISTS action_token_usage (
 # per-project ``WHERE project_id = ?`` read off an O(N) scan of the growing ledger.
 _PROJECT_MIGRATIONS: Tuple[str, ...] = (
     "routing_decisions", "oom_fallback_events", "request_latency", "action_token_usage",
+    "tool_invocations",
 )
 
 # Latency read window: percentiles are computed over at most this many most-recent
@@ -127,7 +148,7 @@ _ACTION_MIN_SAMPLES: int = 5
 # are unrelated stores with no reason to share a single knob.
 _TELEMETRY_RETENTION_DAYS: int = 30
 _RETENTION_TABLES: Tuple[str, ...] = (
-    "request_latency", "container_lifecycle", "action_token_usage",
+    "request_latency", "container_lifecycle", "action_token_usage", "tool_invocations",
 )
 
 
@@ -472,6 +493,40 @@ def action_token_stats(action: str, window: int = _ACTION_TOKEN_WINDOW) -> Dict[
     return {"count": len(ordered), "median_tokens": round(_percentile(ordered, 50), 2)}
 
 
+def log_tool_invocation(
+    *,
+    task_id: Optional[str],
+    role: Optional[str],
+    tool_name: str,
+    decision: Optional[str],
+    executed: bool,
+    duration_ms: Optional[float] = None,
+    error: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> None:
+    """Insert one emit-only tool-call row (DEBT-176). No-ops if DB not
+    initialized. Best-effort: a write failure is logged, never raised — called
+    from every outcome branch of ToolDispatcher.dispatch(), which must never be
+    able to fail because observability failed.
+    """
+    if _conn is None:
+        return
+    with _lock:
+        try:
+            _conn.execute(
+                "INSERT INTO tool_invocations "
+                "(task_id, role, tool_name, decision, executed, duration_ms, error, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_id or None, role or None, tool_name, decision or None,
+                    1 if executed else 0, duration_ms, error, project_id or None,
+                ),
+            )
+            _conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("Tool-invocation telemetry write failed: %s", exc)
+
+
 # --- Docker container lifecycle (machine-global) -------------------------------
 
 
@@ -526,7 +581,8 @@ def recent_container_events(limit: int = 100) -> List[Dict[str, Any]]:
 def purge_old_telemetry(retention_days: int = _TELEMETRY_RETENTION_DAYS) -> Dict[str, int]:
     """Delete rows older than ``retention_days`` from the append-only telemetry
     tables (DEBT-120): ``request_latency``, ``container_lifecycle``,
-    ``action_token_usage``. Called from ``core/janitor.py::run_janitor``.
+    ``action_token_usage``, ``tool_invocations``. Called from
+    ``core/janitor.py::run_janitor``.
 
     No-ops (returns all-zero) if the DB is not initialized. Best-effort per
     table: one table's delete failure is logged and does not block the others,
@@ -549,9 +605,9 @@ def purge_old_telemetry(retention_days: int = _TELEMETRY_RETENTION_DAYS) -> Dict
                 logger.warning("Telemetry retention purge failed for %s: %s", table, exc)
     logger.info(
         "Telemetry retention: purged request_latency=%d container_lifecycle=%d "
-        "action_token_usage=%d (retention=%dd).",
+        "action_token_usage=%d tool_invocations=%d (retention=%dd).",
         deleted["request_latency"], deleted["container_lifecycle"],
-        deleted["action_token_usage"], retention_days,
+        deleted["action_token_usage"], deleted["tool_invocations"], retention_days,
     )
     return deleted
 
