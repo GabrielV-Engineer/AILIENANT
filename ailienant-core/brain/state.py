@@ -546,6 +546,24 @@ class AIlienantGraphState(TypedDict):
     #   (non-deterministically) on replay, misaligning the ids the operator
     #   actually answered. None once the ask phase resolves and clears it.
     pending_grill_batch: Optional[List[Dict[str, Any]]]
+    # pending_brief: the distilled planner brief awaiting the operator's review,
+    #   committed by synthesis_node's draft phase before the self-loop revisits the
+    #   node for its review phase — the same defer-then-interrupt-first invariant
+    #   pending_grill_batch enforces above, and for a costlier reason: the draft is
+    #   a MODEL_BIG call, so a brief generated in the same invocation that calls
+    #   interrupt() would be regenerated on every replay, silently charging for a
+    #   brief the operator never saw and swapping out the text under review.
+    #   Carries the composed brief ("composed" — rendered verbatim for review, since
+    #   _compose_planner_brief already emits the settled constraints and scope as
+    #   their own labelled blocks, which is what makes an OMITTED one noticeable)
+    #   plus the glossary, which becomes ideation_glossary only once accepted.
+    #   None once the review resolves. Scalar overwrite.
+    pending_brief: Optional[Dict[str, Any]]
+    # brief_revision_note: the operator's steering instruction when they send a brief
+    #   back to be rewritten. Consumed by the next draft phase (appended to the
+    #   distillation's user payload, never to its system prompt) and cleared there.
+    #   Scalar overwrite.
+    brief_revision_note: Optional[str]
     # Agentic-cell exec-approval deferral: the command awaiting human approval, set when
     # the cell defers a HITL-gated run_terminal so the interrupt happens in a clean,
     # side-effect-free re-entry rather than mid-iteration.

@@ -186,9 +186,12 @@ function assertGrammarEngineOffWebview() {
 // recoverable diff/cell/execution bodies and is budget-trimmed, and the shared
 // setState envelope no longer loses every slot when one write throws) — three
 // pure functions and two named budgets, organic reviewed feature code, not a
-// dependency regression. Bump again only with the same
+// dependency regression; raised 560→563 KB for the brief-review step that closes
+// the Socratic grill (a new in-chat card rendering the distilled brief for
+// accept/edit/rewrite, plus its pure decision module) — organic reviewed feature
+// code, not a dependency regression. Bump again only with the same
 // justification, never to silently absorb an unreviewed size increase.
-const WEBVIEW_BUNDLE_CEILING_BYTES = 560 * 1024;
+const WEBVIEW_BUNDLE_CEILING_BYTES = 563 * 1024;
 function assertWebviewBundleUnderCeiling() {
 	if (!production) { return; }
 	const bundle = 'dist/workspace.js';

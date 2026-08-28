@@ -3057,3 +3057,65 @@ completions are written into Phoenix's local SQLite store, outside `SecretsScrub
 the one sink in this project that does not route through that filter. Local-only and opt-in, but a
 real departure from the project's usual "secrets never round-trip through a sink" posture
 (`DEVELOPERS.md`'s Testing & quality gates section states this to anyone about to turn it on).
+
+---
+
+## §58 — Reviewable Distillation Brief: `pending_brief` / `brief_revision_note` (Manifest 13.1.8)
+
+**Additive.** Two new channels on `AIlienantGraphState` and one new `request_kind` value. No
+existing field changes shape, and no consumer that ignores them behaves differently.
+
+### Channels
+
+```python
+pending_brief: Optional[Dict[str, Any]]     # {"composed": str, "glossary": Dict[str, str]}
+brief_revision_note: Optional[str]
+```
+
+Both are scalar-overwrite (last-value) channels, cleared once the review resolves.
+
+`pending_brief` exists for the same reason `pending_grill_batch` does (§53), and the cost of
+omitting it is higher. `run_synthesis_node` now spans two graph super-steps driven by a
+`synthesis_node` self-loop:
+
+- **Draft phase** (`pending_brief` empty): distils, composes, commits to `pending_brief`,
+  returns — no `interrupt()` in this invocation.
+- **Review phase** (`pending_brief` set): suspends on the STATE-SOURCED brief as the node's
+  first action.
+
+LangGraph replays a node from the top on every resume. Drafting and interrupting in one
+invocation would therefore re-run the `MODEL_BIG` distillation on every review round — charging
+for it again and non-deterministically replacing the exact text the operator was looking at with
+one they never saw. `pending_grill_batch` guards the same hazard for a cheaper call.
+
+`brief_revision_note` carries the operator's correction into the next draft. It is appended to
+the distillation's **user payload**, never to `_DISTILL_SYSTEM_PROMPT`, so the system message
+stays byte-identical across drafts.
+
+### `request_kind = "BRIEF_REVIEW"`
+
+`HITLApprovalRequestPayload.request_kind` is an open `Optional[str]`, not a closed `Literal`, so a
+new value is additive by construction. The review reuses `core/hitl.py::request_graph_approval`
+unchanged — it already returns `{"approved", "comment", "modified_content"}`, which is exactly the
+accept / rewrite-with-note / cancel shape this needs — so there is no new wire message, no new
+resume path, and no change to `useHitlResponder`.
+
+A client that does not recognise the kind falls through to the generic intervention card and can
+still answer, because the payload is a plain approval.
+
+### Why the brief is reviewed at all
+
+The distillation replaces `user_input` and is the only stage in the pipeline nothing checks: the
+coder has `validate_output` plus acceptance checks, the planner has its Actor-Critic loop, the
+grill has a human on every round, and the Actor-Critic validates the resulting plan against a
+*schema* rather than against the dialogue. The transcript itself survives in `messages` (an
+accumulating channel) but no downstream node reads it, so an omission introduced here is neither
+detected nor recoverable — and it surfaces as an absence, which no view can render.
+
+### Rendering constraint
+
+The review surface renders the composed brief **verbatim and uncapped**. `_compose_planner_brief`
+already emits the settled constraints and scope as labelled blocks, so the structure the reviewer
+needs is in the text itself — deriving separate UI sections would risk displaying something the
+planner does not receive, and truncating (as the generic card does at 800 chars) would hide part
+of what is under review.

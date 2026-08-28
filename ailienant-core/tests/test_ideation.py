@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 
 import agents.analyst as analyst_mod
@@ -228,6 +229,32 @@ def _llm_json(payload: Dict[str, Any]) -> Any:
     )
 
 
+def _accept(_brief: str) -> Any:
+    """A brief_review_fn double that accepts the draft unchanged."""
+    async def _fn(brief_text: str) -> Dict[str, Any]:
+        return {"approved": True, "comment": None, "modified_content": None}
+    return _fn
+
+
+async def _drive_synthesis(
+    state: Dict[str, Any], review: Any = None, max_visits: int = 6
+) -> Dict[str, Any]:
+    """Run synthesis_node to a terminal decision, applying each delta to `state`.
+
+    The node is two super-steps (draft, then review) driven by a self-loop, so a
+    single call only ever produces the draft. `review` is the brief_review_fn seam;
+    it defaults to accepting, which is what the pre-review tests asserted.
+    """
+    config: RunnableConfig = {"configurable": {"brief_review_fn": review or _accept("")}}
+    result: Dict[str, Any] = {}
+    for _ in range(max_visits):
+        result = await run_synthesis_node(state, config)
+        state.update(result)
+        if not (state.get("pending_brief") or state.get("brief_revision_note")):
+            break
+    return result
+
+
 @pytest.mark.anyio
 async def test_synthesis_hands_off_brief_and_flags_planner(_force_debug: None) -> None:
     """DEBUG path: synthesis sets the handoff flags and never drafts a plan."""
@@ -238,7 +265,7 @@ async def test_synthesis_hands_off_brief_and_flags_planner(_force_debug: None) -
         ],
         "user_input": "looks good",
     }
-    result = await run_synthesis_node(state)
+    result = await _drive_synthesis(state)
     assert result.get("ideation_synthesized") is True
     assert result.get("planner_mode_active") is False
     assert result.get("shared_understanding_reached") is True
@@ -267,7 +294,7 @@ async def test_synthesis_distills_brief_into_planner_input() -> None:
         "tools.llm_gateway.LLMGateway.ainvoke",
         new=AsyncMock(return_value=_llm_json(brief_json)),
     ):
-        result = await run_synthesis_node(state)
+        result = await _drive_synthesis(state)
 
     assert result.get("ideation_synthesized") is True
     assert "mission_spec" not in result
@@ -288,7 +315,7 @@ async def test_synthesis_degrades_to_raw_intent_on_bad_llm_output() -> None:
         "tools.llm_gateway.LLMGateway.ainvoke",
         new=AsyncMock(side_effect=RuntimeError("model down")),
     ):
-        result = await run_synthesis_node(state)
+        result = await _drive_synthesis(state)
     assert result.get("ideation_synthesized") is True
     assert "mission_spec" not in result
     assert "Build a thing." in result["user_input"]   # raw intent survived
@@ -356,3 +383,177 @@ def test_grill_llm_messages_fold_the_summary_into_the_system_prompt() -> None:
     # The prior Q&A is still replayed so the analyst never repeats itself.
     assert {"role": "assistant", "content": "What auth scheme?"} in sent
     assert {"role": "user", "content": "JWT."} in sent
+
+
+# ---------------------------------------------------------------------------
+# Brief review — the distillation is the one lossy step nothing else checked.
+# The node is two super-steps so a resume never re-runs the MODEL_BIG draft.
+# ---------------------------------------------------------------------------
+
+
+def _brief_json() -> Dict[str, Any]:
+    return {
+        "intent": "Build a JWT auth service in src/auth/service.py.",
+        "constraints": ["No new external deps.", "p99 under 50ms."],
+        "scope_hints": ["src/auth/service.py"],
+        "ubiquitous_language": {"token": "a signed JWT"},
+    }
+
+
+def _review_state() -> Dict[str, Any]:
+    return {
+        "task_id": "brief-sess",
+        "messages": [
+            {"role": "assistant", "content": "What auth scheme?"},
+            {"role": "user", "content": "JWT, in src/auth/service.py."},
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_draft_phase_commits_the_brief_without_suspending() -> None:
+    """The first super-step must NOT interrupt: it only stages the brief.
+
+    No brief_review_fn is injected, so reaching the review path would raise
+    (native interrupt() outside a runnable context) — the absence of that error
+    is the assertion.
+    """
+    with patch(
+        "tools.llm_gateway.LLMGateway.ainvoke",
+        new=AsyncMock(return_value=_llm_json(_brief_json())),
+    ):
+        result = await run_synthesis_node(_review_state())
+
+    pending = result.get("pending_brief")
+    assert pending, "the draft phase must stage the brief for review"
+    assert "ideation_synthesized" not in result, "nothing may hand off before review"
+    assert "user_input" not in result
+    # The composed brief carries the settled constraints as their own labelled
+    # block, so rendering it verbatim shows them as a list — an omitted one is
+    # invisible inside a paragraph, which is the whole point of the review.
+    assert "No new external deps." in pending["composed"]
+    assert "p99 under 50ms." in pending["composed"]
+    assert pending["glossary"] == {"token": "a signed JWT"}
+
+
+@pytest.mark.anyio
+async def test_review_cycle_distils_exactly_once() -> None:
+    """Draft -> review -> accept must cost ONE distillation, not one per replay.
+
+    LangGraph replays a node from the top on every resume, so a single-phase
+    implementation would re-run the MODEL_BIG call here — charging again and
+    swapping out the very text the operator just read. A one-shot test cannot
+    see that; driving both super-steps can.
+    """
+    invoke = AsyncMock(return_value=_llm_json(_brief_json()))
+    state = _review_state()
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new=invoke):
+        result = await _drive_synthesis(state)
+
+    assert invoke.await_count == 1, "the distillation ran more than once"
+    assert result.get("ideation_synthesized") is True
+    assert "No new external deps." in result["user_input"]
+    assert result.get("pending_brief") is None
+
+
+@pytest.mark.anyio
+async def test_accepting_an_edited_brief_hands_off_the_edit() -> None:
+    """What the operator read and corrected is what the planner must receive."""
+    async def _edit(_brief_text: str) -> Dict[str, Any]:
+        return {"approved": True, "comment": None, "modified_content": "Rewritten by hand."}
+
+    state = _review_state()
+    with patch(
+        "tools.llm_gateway.LLMGateway.ainvoke",
+        new=AsyncMock(return_value=_llm_json(_brief_json())),
+    ):
+        result = await _drive_synthesis(state, review=_edit)
+
+    assert result["user_input"] == "Rewritten by hand."
+    assert result.get("ideation_synthesized") is True
+
+
+@pytest.mark.anyio
+async def test_rewrite_resteers_the_same_dialogue_without_touching_the_system_prompt() -> None:
+    """A rejection carries the note into the NEXT draft's user payload only.
+
+    The system message must stay byte-identical across drafts, and the rewrite
+    must re-distil the same dialogue rather than re-entering the grill.
+    """
+    calls: list[Dict[str, Any]] = []
+
+    async def _capture(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return _llm_json(_brief_json())
+
+    decisions: Any = iter([
+        {"approved": False, "comment": "You dropped the latency constraint.", "modified_content": None},
+        {"approved": True, "comment": None, "modified_content": None},
+    ])
+
+    async def _review(_brief_text: str) -> Dict[str, Any]:
+        return next(decisions)
+
+    state = _review_state()
+    with patch("tools.llm_gateway.LLMGateway.ainvoke", new=_capture):
+        result = await _drive_synthesis(state, review=_review)
+
+    assert len(calls) == 2, "the rewrite must re-distil, not reuse the first draft"
+    first_system = calls[0]["messages"][0]["content"]
+    second_system = calls[1]["messages"][0]["content"]
+    assert first_system == second_system, "the system prompt must stay byte-identical"
+    assert "You dropped the latency constraint." in calls[1]["messages"][1]["content"]
+    assert "You dropped the latency constraint." not in calls[0]["messages"][1]["content"]
+    assert result.get("ideation_synthesized") is True
+    assert result.get("brief_revision_note") is None, "the note is consumed, not carried"
+
+
+@pytest.mark.anyio
+async def test_cancelling_the_review_suspends_instead_of_faking_a_planner_failure() -> None:
+    """Cancel must reach END through the suspend path, not the no-op dead end.
+
+    route_after_ideation checks hitl_pending FIRST; without it the turn would be
+    reported to the user as a planner failure the planner never had.
+    """
+    async def _cancel(_brief_text: str) -> Dict[str, Any]:
+        return {"approved": False, "comment": None, "modified_content": None}
+
+    state = _review_state()
+    with patch(
+        "tools.llm_gateway.LLMGateway.ainvoke",
+        new=AsyncMock(return_value=_llm_json(_brief_json())),
+    ):
+        result = await _drive_synthesis(state, review=_cancel)
+
+    assert result.get("hitl_pending") is True
+    assert result.get("ideation_synthesized") is not True
+    assert state["messages"], "the dialogue survives so the next turn continues it"
+
+    from brain.engine import route_after_ideation
+    assert route_after_ideation(state) == END
+
+
+# ---------------------------------------------------------------------------
+# route_after_synthesis — the self-loop that drives the two phases
+# ---------------------------------------------------------------------------
+
+
+def test_route_after_synthesis_revisits_for_the_review_phase() -> None:
+    from brain.ideation import route_after_synthesis
+    assert route_after_synthesis({"pending_brief": {"composed": "x"}}) == "synthesis_node"
+
+
+def test_route_after_synthesis_revisits_for_a_rewrite() -> None:
+    from brain.ideation import route_after_synthesis
+    assert route_after_synthesis({"brief_revision_note": "add latency"}) == "synthesis_node"
+
+
+def test_route_after_synthesis_ends_once_accepted() -> None:
+    from brain.ideation import route_after_synthesis
+    assert route_after_synthesis({"ideation_synthesized": True}) == END
+
+
+def test_route_after_synthesis_checks_suspend_before_the_self_loop() -> None:
+    """Load-bearing ordering: a suspend with a brief still staged must not spin."""
+    from brain.ideation import route_after_synthesis
+    assert route_after_synthesis({"hitl_pending": True, "pending_brief": {"composed": "x"}}) == END

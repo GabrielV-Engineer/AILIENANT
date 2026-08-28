@@ -1100,6 +1100,27 @@ html, body, #root { height: 100%; }
 }
 .ws-hitl-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 
+/* Brief review — the grill's closing step. Accent is the normal one, not the
+   warning used for authorizations: this is a handoff to review, not a risk to
+   approve. The body is a tall, resizable editor rather than a capped preview
+   because the whole point is reading all of it. */
+.ws-brief-review { display: flex; flex-direction: column; gap: 10px; }
+.ws-brief-review-head { display: flex; align-items: center; gap: 8px; }
+.ws-brief-review-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ws-brief-review-sub { margin: 0; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.ws-brief-review-body {
+  min-height: 180px;
+  max-height: 420px;
+  resize: vertical;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.ws-brief-review-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.ws-brief-review-note { display: flex; flex-direction: column; gap: 6px; }
+.ws-brief-review-note textarea { min-height: 64px; resize: vertical; }
+
 /* ── Clarification Grill Card (DEBT-172) ──────────────────── */
 .ws-clarify-card { gap: 8px; }
 .ws-clarify-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; }

@@ -36,6 +36,21 @@ def _force_debug(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _accepting_review() -> Dict[str, Any]:
+    """Config whose brief_review_fn accepts the drafted brief unchanged.
+
+    The synthesis node now shows the brief to the operator before handing off, so
+    a real graph run suspends there. Injecting the seam (mirroring
+    `analyst_clarification_fn`) lets these cases still drive the handoff end to
+    end — and now they certify BOTH super-steps through the compiled graph, not
+    just the write boundary.
+    """
+    async def _fn(_brief_text: str) -> Dict[str, Any]:
+        return {"approved": True, "comment": None, "modified_content": None}
+
+    return {"configurable": {"brief_review_fn": _fn}}
+
+
 @pytest.mark.anyio
 async def test_agreement_turn_survives_the_compiled_graph_boundary(
     _force_debug: None,
@@ -53,7 +68,7 @@ async def test_agreement_turn_survives_the_compiled_graph_boundary(
         "messages": [{"role": "assistant", "content": "Does this plan look solid?"}],
     }
 
-    result = await ideation_graph.ainvoke(initial_state)  # type: ignore[call-overload]  # pyright: ignore[reportArgumentType] — dict test double for the AIlienantGraphState TypedDict
+    result = await ideation_graph.ainvoke(initial_state, _accepting_review())  # type: ignore[call-overload]  # pyright: ignore[reportArgumentType] — dict test double for the AIlienantGraphState TypedDict
 
     assert result.get("ideation_synthesized") is True
     assert route_after_ideation(result) == "planner_agent"
@@ -88,7 +103,7 @@ async def test_ideation_glossary_survives_the_compiled_graph_boundary() -> None:
         "tools.llm_gateway.LLMGateway.ainvoke",
         new=AsyncMock(return_value=llm_response),
     ):
-        result = await ideation_graph.ainvoke(initial_state)  # type: ignore[call-overload]  # pyright: ignore[reportArgumentType] — dict test double for the AIlienantGraphState TypedDict
+        result = await ideation_graph.ainvoke(initial_state, _accepting_review())  # type: ignore[call-overload]  # pyright: ignore[reportArgumentType] — dict test double for the AIlienantGraphState TypedDict
 
     assert result.get("ideation_synthesized") is True
     assert result.get("ideation_glossary") == {"token": "a signed JWT"}

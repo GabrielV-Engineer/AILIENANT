@@ -28,6 +28,7 @@ import { PlanAcceptancePanel } from './components/PlanAcceptancePanel';
 import { ActionLog } from './components/ActionLog';
 import { HITLInterventionCard } from './components/HITLInterventionCard';
 import { ClarificationGrillCard } from './components/ClarificationGrillCard';
+import { BriefReviewCard, BRIEF_REVIEW_KIND } from './components/BriefReviewCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -760,21 +761,30 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 authorization card lives in the main chat, not the
                                 analyst pane. FILE_WRITE uses the inline diff row above. */}
                             {hitlPending && !hitlHasDiff && (
-                                (hitlPending.questions?.length || hitlPending.question)
+                                hitlPending.request_kind === BRIEF_REVIEW_KIND
                                     ? (
-                                        <ClarificationGrillCard
+                                        // The last step of the grill: the distilled brief,
+                                        // shown before it becomes the planner's input.
+                                        <BriefReviewCard
                                             intervention={hitlPending}
-                                            nattName={nattName}
                                             onResolved={handleResolveHitl}
                                         />
                                     )
-                                    : (
-                                        <HITLInterventionCard
-                                            intervention={hitlPending}
-                                            nattName={nattName}
-                                            onResolved={handleResolveHitl}
-                                        />
-                                    )
+                                    : (hitlPending.questions?.length || hitlPending.question)
+                                        ? (
+                                            <ClarificationGrillCard
+                                                intervention={hitlPending}
+                                                nattName={nattName}
+                                                onResolved={handleResolveHitl}
+                                            />
+                                        )
+                                        : (
+                                            <HITLInterventionCard
+                                                intervention={hitlPending}
+                                                nattName={nattName}
+                                                onResolved={handleResolveHitl}
+                                            />
+                                        )
                             )}
                             <div ref={messagesEndRef} />
                         </div>
