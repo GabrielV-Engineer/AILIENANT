@@ -109,6 +109,9 @@ Decision    Not a defect — see [DECISION] tier.
 |---|---|---|
 | DEBT-025 | Docker persistent-PTY backend has no daemon integration test | LOW · Blocked |
 | DEBT-209 | No way to change the LLM while a task is already running | MEDIUM · Floating |
+| DEBT-210 | No automatic subsystem/community detection in internal GraphRAG | MEDIUM · Floating |
+| DEBT-211 | Internal GraphRAG has no git/PR-history awareness | LOW · Floating |
+| DEBT-212 | GraphRAG and project docs are separate context sources, never nodes in one graph | MEDIUM · Floating |
 | DEBT-035 | MultiPL-E TypeScript execution needs a Node-capable sandbox runtime | MEDIUM · Floating |
 | DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM · Blocked |
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW · Unscheduled |
@@ -1645,6 +1648,42 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Why it is not a defect:** nothing shipped claims otherwise. `InferenceTier` (`LOCAL_ONLY`/`HYBRID`/`SOLO_CLOUD`) looks like a live control but is a **frontend-only type with no backend consumer at all** (verified) — a pre-submit policy hint, not a model pin.
 - **What it would take:** a live control channel into a running graph. Either a mutable per-session channel that a per-node model resolver reads at each node entry (cheap, but a mid-turn tier swap changes the semantic-cache key and the resolved output budget, so both need re-deriving at the boundary), or cancel + re-dispatch onto the existing checkpoint (reuses the abort mesh and Rewind, at the cost of losing the in-flight node's work). The first is the better product; the second is the smaller change.
 - **Phase:** unscheduled — a real feature slice, sized after v1.
+
+---
+
+### DEBT-210 [MEDIUM · Floating] — No automatic subsystem/community detection in internal GraphRAG
+
+- **Date:** 2026-08-28
+- **Files:** `ailienant-core/core/memory/graphrag_extractor.py`, `ailienant-core/core/memory/semantic_memory.py`, `ailienant-core/api/memory_dashboard.py` (Nebula — see DEBT-111/113/114).
+- **Capability (not built):** the internal GraphRAG ranks neighbors by PPR/`degree_centrality` and renders `file`/`external-dep` nodes in the dashboard Nebula, but never partitions the graph into subsystems. "What are this codebase's natural boundaries" has no computed answer — it is inferred by a human reading `docs/PROJECT_MANIFEST.md`'s phase divisions, not derived from the graph itself.
+- **Why it is not a defect:** nothing shipped claims otherwise; 8.14.5's architecture-overview digest tool is a file-tree/PPR summary, not a clustering result.
+- **External validation:** the `graphify` dev-tool (installed 2026-08-28, Claude Code tooling only — not wired into the product) runs Leiden clustering via `networkx` deterministically over its own AST-only graph, `Token cost: 0 input · 0 output` per its own `GRAPH_REPORT.md` — 400 communities over 12,756 nodes on this exact repo. Confirms the technique is cheap and local, not the heavier LLM-based community-summarization Microsoft's GraphRAG uses (the same class of finding as the GraphRAG-MCP precedent already recorded in `docs/SCHEMA_EVOLUTION.MD`).
+- **What it would take:** a `networkx`-based Leiden or Louvain pass (Louvain already precedented — `degree_centrality` was hand-rolled at 7.13 specifically to avoid a `scipy` dependency, CLAUDE.md §9) over the existing `dependency_graph` SQLite edges, surfaced as a new node attribute (`community_id`) consumable by `get_architecture` and the Nebula's `nodeThreeObject`. No new indexer or storage engine — reuses edges that already exist.
+- **Phase:** unscheduled — candidate for a future graph-intelligence follow-on division.
+
+---
+
+### DEBT-211 [LOW · Floating] — Internal GraphRAG has no git/PR-history awareness
+
+- **Date:** 2026-08-28
+- **Files:** `ailienant-core/core/memory/graphrag_extractor.py`; the 8.14.1 blast-radius mapper.
+- **Capability (not built):** blast-radius mapping (8.14.1) is a pre-apply, working-tree-diff validator — it answers "what does *this uncommitted change* touch," not "what did PR #N touch" or "which files change together across history" (the latter is already logged separately as DEBT-091).
+- **Why it is not a defect:** blast-radius was scoped at 8.14.1 specifically as a pre-apply gate; nothing shipped claims PR-level analysis.
+- **External validation:** `graphify`'s MCP surface ships `list_prs`/`get_pr_impact` as first-class tools — external confirmation this is a buildable, bounded capability, not a wish-list item.
+- **What it would take:** a `git log --numstat`-driven co-change edge (the same shape DEBT-091 already wants) plus a PR-scoped diff-to-blast-radius entry point (`git diff <base>...<head>` fed into the existing `_bfs_k_hop` machinery instead of the working tree) — no new graph engine, a new entry point onto the one that exists.
+- **Phase:** unscheduled; naturally sequenced after DEBT-091 (same git-history data source).
+
+---
+
+### DEBT-212 [MEDIUM · Floating] — GraphRAG and project docs are separate context sources, never nodes in one graph
+
+- **Date:** 2026-08-28
+- **Files:** `ailienant-core/agents/analyst_context.py` (`build_agent_context`, Project tier = README digest + GraphRAG project summary + rules, per `docs/SCHEMA_EVOLUTION.MD`'s context-source table); `core/memory/semantic_memory.py`.
+- **Capability (not built):** `docs/SCHEMA_EVOLUTION.MD`'s context-source table treats `graphrag`/`docs`/`readme` as three parallel, independently-budgeted sources (§ context-source table, `brain` field). A question spanning both — "which module implements the decision recorded in `PHASE_8_15_BLUEPRINT.md`" — has no graph traversal connecting them; it relies on the LLM independently recalling both slices within budget and connecting them itself.
+- **Why it is not a defect:** the tiered-source design (8.7.0) was a deliberate, working architecture for a different problem (graduated context sources for a token-budgeted single turn) — it was never meant to be a unified graph.
+- **External validation:** `graphify`'s cross-artifact graph (code + docs + configs in one `graph.json`) demonstrates the alternative shape — evaluated here only as an architectural reference, not adopted, mirroring the GraphRAG-MCP precedent already recorded at 8.14 planning: confirms the goal is reachable without adopting the reference implementation itself.
+- **What it would take:** a bounded `documents_in`/`references` edge type from a doc-derived node (chunked by heading, not whole-file) to the code symbols/files it names. Genuinely non-trivial: doc→code linking needs either explicit markup or a cheap heuristic (path/symbol-name string matching within doc text), since the deterministic-only constraint (CLAUDE.md §5.7, no `scipy`-class dependency, no unjustified LLM pass) rules out an LLM-entity-linking pass by default.
+- **Phase:** unscheduled; needs its own design spike before a build ticket (same caution 8.14.4's "ADR-as-graph" spike used).
 
 ---
 

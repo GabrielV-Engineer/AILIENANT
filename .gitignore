@@ -85,6 +85,8 @@ config.yaml
 !openspec/config.yaml
 # Local agent tooling (Claude Code)
 .claude/
+# graphify local knowledge graph (regenerated via `graphify update .`, dev-tool only)
+graphify-out/
 # Live telemetry sink (audit surface with snippets/prompts) — runtime, never versioned
 .ailienant_telemetry.log
 **/.ailienant_telemetry.log

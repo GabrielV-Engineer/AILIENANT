@@ -206,3 +206,13 @@ Git execution is **strictly non-autonomous**: do NOT run Git commands yourself. 
 3. **Advisory, not blocking.** `npm run openspec:validate` (`openspec validate --all --strict --json --no-interactive`) runs in CI (`.github/workflows/openspec-gate.yml`) with `continue-on-error: true`. Promoting it to a blocking gate is a separate, explicitly logged decision (DEBT-166), not automatic.
 4. **`openspec/` structure.** `openspec/config.yaml` holds project context shown to the authoring assistant; `openspec/changes/<slug>/` holds in-flight change proposals (`proposal.md`, `specs/`, optionally `design.md`, `tasks.md`); `openspec archive` promotes an implemented change's spec deltas into `openspec/specs/` as the accumulated baseline. Use `openspec status --change <slug>` to check artifact completion and `openspec validate <slug> --strict` before considering a change's planning artifacts done.
 5. **`AGENTS.md`** is a thin pointer to this file for cross-tool agent compatibility (OpenSpec and any other assistant that reads `AGENTS.md` by convention) — it is not a second copy of this charter and must not become one again.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
