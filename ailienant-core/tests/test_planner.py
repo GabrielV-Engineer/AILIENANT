@@ -630,6 +630,44 @@ async def test_planner_reports_an_unparseable_draft_honestly_not_as_a_schema_err
 
 
 @pytest.mark.anyio
+async def test_planner_fails_fast_on_a_transport_error_instead_of_retrying_it() -> None:
+    """The live regression this closes: a litellm transport/param rejection
+    (e.g. `UnsupportedParamsError` from a provider that doesn't support the
+    `thinking` kwarg) is not a schema problem — a corrective re-prompt can never
+    fix it. It must propagate immediately instead of being mislabeled 'schema
+    validation failed' and retried MAX_PLANNER_RETRIES times against an
+    identical, doomed request."""
+    from litellm.exceptions import UnsupportedParamsError
+
+    transport_err = UnsupportedParamsError(
+        "ollama_chat does not support parameters: ['thinking']",
+        llm_provider="ollama_chat", model="ollama_chat/gemma4:e4b",
+    )
+    mock_ainvoke = AsyncMock(side_effect=transport_err)
+    mock_acquire = AsyncMock(return_value=_broker_decision())
+    mock_release = AsyncMock(return_value=None)
+
+    with patch("agents.planner.DEBUG_MODE", False), patch(
+        "core.memory.trajectory_memory.TrajectoryMemoryManager"
+    ) as mock_traj_cls, patch(
+        "tools.llm_gateway.LLMGateway.ainvoke", mock_ainvoke
+    ), patch(
+        "agents.planner.ResourceBroker.acquire_or_resolve", mock_acquire
+    ), patch(
+        "agents.planner.ResourceBroker.release", mock_release
+    ):
+        mock_traj_cls.return_value.search = AsyncMock(return_value=[])
+
+        from agents.planner import run_planner_node
+
+        with pytest.raises(UnsupportedParamsError):
+            await run_planner_node(_base_state())
+
+    # Propagated on the FIRST attempt — no retries burned on an unfixable fault.
+    assert mock_ainvoke.await_count == 1
+
+
+@pytest.mark.anyio
 async def test_planner_wrong_shape_json_gets_the_schema_corrective() -> None:
     """The other branch: a well-formed object with the WRONG fields is a real
     schema failure, so it must still receive the original field-level corrective

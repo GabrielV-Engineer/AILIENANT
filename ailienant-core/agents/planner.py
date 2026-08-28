@@ -8,6 +8,7 @@ import uuid
 from typing import Optional, Any, cast
 
 from langchain_core.runnables import RunnableConfig
+from pydantic import ValidationError
 
 # tools.llm_gateway (and core.memory.trajectory_memory, below) both pull in
 # litellm's provider-registry surface (~2.6s to import) — deferred into
@@ -15,6 +16,7 @@ from langchain_core.runnables import RunnableConfig
 # "keep module import light" convention, so a cold process boot never pays
 # this cost until a real planner turn actually runs.
 from shared.config import MODEL_MEDIUM, MODEL_BIG  # noqa: F401 — MEDIUM retained for backward refs
+from core.activity_context import bind_model_tier
 from core.memory.context_auditor import resolve_model_alias_for_routing
 from brain.state import MissionSpecification, WBSStep, ContextMeter
 from shared.rbac import PLANNER_IDENTITY
@@ -668,6 +670,12 @@ async def run_planner_node(
         _r_model = decision.effective_model
         _r_tier = _r_model.split("/", 1)[1] if _r_model.startswith("ailienant/") else "big"
         _r_tier = _r_tier if _r_tier in ("small", "medium", "big", "cloud") else "big"
+        # Bind-and-forget (§5.1's cleanup obligation is discharged by the
+        # enclosing graph node wrapper — `brain/engine.py::_instrument_node`'s
+        # `finally` — not here; see `core/activity_context.py`'s docstring).
+        # The Glass-Box Timeline lane badge reads this for every marker this
+        # node pushes from here on, reasoning pass included.
+        bind_model_tier(_r_tier)
 
         # Live plan-of-attack reasoning, streamed to the Thought Box while the user
         # waits — ONLY for non-native models. A native model already surfaces its own
@@ -927,7 +935,12 @@ async def run_planner_node(
                             planner_cache_key, raw_content, planner_cache_paths
                         )
                     break
-                except Exception as parse_err:  # noqa: BLE001 — Pydantic ValidationError + sanitiser errors
+                except (ValidationError, ValueError) as parse_err:
+                    # A transport/infrastructure fault (litellm param rejection,
+                    # NoAvailableProviderError, a connection error, ...) is not a
+                    # schema problem a corrective re-prompt can fix — let it propagate
+                    # to the graph's own dead-letter + "graph failure" handling
+                    # instead of burning every retry on an identical doomed request.
                     last_validation_err = str(parse_err)
                     logger.warning(
                         "Planner retry %d/%d — schema validation failed: %s",

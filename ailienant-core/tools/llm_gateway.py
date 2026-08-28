@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 import httpx
 import litellm
 from litellm import CustomStreamWrapper, ModelResponse
-from litellm.exceptions import APIConnectionError, ContextWindowExceededError
+from litellm.exceptions import APIConnectionError, ContextWindowExceededError, UnsupportedParamsError
 from pydantic import BaseModel
 
 from brain.retry_policy import LLM_MAX_TRANSPORT_RETRIES
@@ -127,6 +127,24 @@ def _remember_rf_unsupported(model: str) -> None:
     """Memo a model that rejected response_format (bounded; skip add when full)."""
     if model and len(_RESPONSE_FORMAT_UNSUPPORTED) < _RESPONSE_FORMAT_MEMO_CAP:
         _RESPONSE_FORMAT_UNSUPPORTED.add(model)
+
+
+# ── native-thinking param graceful degradation ──────────────────────────────
+# A runtime capability probe (core.config.model_resolver) can correctly report that
+# a MODEL supports reasoning while litellm's transport for that provider still
+# rejects the `thinking` kwarg outright — observed with Ollama's own `/api/show`
+# listing `thinking` in gemma4's capabilities while litellm's `ollama_chat` custom
+# provider does not forward an OpenAI/Anthropic-shaped `thinking` param at all.
+# Same self-heal contract as _RESPONSE_FORMAT_UNSUPPORTED: memoed per model, the
+# failed round-trip is paid at most once per session.
+_THINKING_PARAM_UNSUPPORTED: set[str] = set()
+_THINKING_PARAM_MEMO_CAP: int = 128
+
+
+def _remember_thinking_unsupported(model: str) -> None:
+    """Memo a model whose provider transport rejected the `thinking` kwarg."""
+    if model and len(_THINKING_PARAM_UNSUPPORTED) < _THINKING_PARAM_MEMO_CAP:
+        _THINKING_PARAM_UNSUPPORTED.add(model)
 
 
 # ─ OOM Cascade & Inference Resilience ──────────────────────────
@@ -1645,7 +1663,11 @@ class LLMGateway:
         trace_id = session_id or str(uuid.uuid4())
         _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
         _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
-        thinking_on = bool(enable_thinking) and await supports_native_thinking(target)
+        thinking_on = (
+            bool(enable_thinking)
+            and await supports_native_thinking(target)
+            and target.model not in _THINKING_PARAM_UNSUPPORTED
+        )
         # A native reasoning turn generates thinking_content ON TOP OF the answer,
         # so the window must hold both — sizing num_ctx off max_tokens alone would
         # reproduce this exact bug's shape for the one case this parameter exists.
@@ -1691,6 +1713,17 @@ class LLMGateway:
                         )
                         _remember_rf_unsupported(kwargs["model"])
                         kwargs.pop("response_format", None)
+                        response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
+                    elif "thinking" in kwargs and isinstance(exc, UnsupportedParamsError):
+                        # A capability probe saying the MODEL can reason is not the
+                        # same fact as this litellm provider transport accepting a
+                        # `thinking=` kwarg — memo and retry flat, same shape as above.
+                        logger.warning(
+                            "Backend rejected native `thinking` param; stripping + retrying once [trace=%s]",
+                            trace_id,
+                        )
+                        _remember_thinking_unsupported(kwargs["model"])
+                        kwargs.pop("thinking", None)
                         response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
                     else:
                         raise

@@ -242,6 +242,71 @@ async def test_thinking_kwarg_capability_and_budget() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 3b. thinking kwarg self-heals when the transport rejects it — regression for a
+#     model whose capability probe says "can reason" while litellm's provider
+#     transport still 400s on the kwarg (observed: Ollama's own /api/show lists
+#     `thinking` for gemma4:e4b, but litellm's `ollama_chat` custom provider does
+#     not forward an OpenAI/Anthropic-shaped `thinking` param at all).
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def _clear_thinking_memo() -> Any:
+    from tools.llm_gateway import _THINKING_PARAM_UNSUPPORTED
+    _THINKING_PARAM_UNSUPPORTED.clear()
+    yield
+    _THINKING_PARAM_UNSUPPORTED.clear()
+
+
+def _thinking_rejecting(**kwargs: Any) -> Any:
+    """Stub: 400 (UnsupportedParamsError) while `thinking` is present, succeed once it's stripped."""
+    if "thinking" in kwargs:
+        from litellm.exceptions import UnsupportedParamsError
+        raise UnsupportedParamsError(
+            "ollama_chat does not support parameters: ['thinking']",
+            llm_provider="ollama_chat", model=kwargs.get("model"),
+        )
+    return _thinking_then_text_stream(**kwargs)
+
+
+async def test_thinking_param_self_heals_on_transport_rejection(_clear_thinking_memo: Any) -> None:
+    from tools.llm_gateway import _THINKING_PARAM_UNSUPPORTED
+
+    call_kwargs: List[dict[str, Any]] = []
+
+    def _capture_then_reject(**kwargs: Any) -> Any:
+        call_kwargs.append(dict(kwargs))
+        return _thinking_rejecting(**kwargs)
+
+    # First call: transport rejects `thinking` → gateway strips it, retries once
+    # within the same call, and remembers the model.
+    with patch("core.config.model_resolver.get_chat_target", return_value=_anthropic_target()), \
+         patch("litellm.acompletion", new=AsyncMock(side_effect=_capture_then_reject)):
+        deltas: List[StreamDelta] = []
+        async for d in LLMGateway.astream_byom_thinking(
+            [{"role": "user", "content": "x"}], session_id="s1", enable_thinking=True,
+        ):
+            deltas.append(d)
+
+    assert len(call_kwargs) == 2                # failed attempt + one retry
+    assert "thinking" in call_kwargs[0]          # sent...
+    assert "thinking" not in call_kwargs[1]      # ...then stripped
+    assert [d.text for d in deltas if d.kind == "text"] == ["Hello ", "world"]
+    assert "anthropic/claude-3-7-sonnet" in _THINKING_PARAM_UNSUPPORTED
+
+    # Second, independent call for the same model: never pays the failed round-trip again.
+    call_kwargs.clear()
+    with patch("core.config.model_resolver.get_chat_target", return_value=_anthropic_target()), \
+         patch("litellm.acompletion", new=AsyncMock(side_effect=_capture_then_reject)):
+        async for _ in LLMGateway.astream_byom_thinking(
+            [{"role": "user", "content": "x"}], session_id="s1", enable_thinking=True,
+        ):
+            pass
+    assert len(call_kwargs) == 1                 # no failed attempt this time
+    assert "thinking" not in call_kwargs[0]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 4. Fallback — no reasoning_content → zero thinking deltas (NT2)
 # ──────────────────────────────────────────────────────────────────────────────
 
