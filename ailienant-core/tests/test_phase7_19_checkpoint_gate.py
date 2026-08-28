@@ -38,6 +38,8 @@ Frontend rows (npm run compile + smoke; no pytest functions):
 """
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableConfig
+
 import ast
 import asyncio
 import json
@@ -160,7 +162,7 @@ def _reasoner_from(scripts: List[List[ToolCall]]) -> ac.CellReasoner:
 
 def _config(
     adapter: _StubAdapter, reasoner: ac.CellReasoner, **extra: Any
-) -> Dict[str, Any]:
+) -> RunnableConfig:
     configurable: Dict[str, Any] = {"cell_adapter": adapter, "cell_reasoner": reasoner}
     configurable.update(extra)
     return {"configurable": configurable}

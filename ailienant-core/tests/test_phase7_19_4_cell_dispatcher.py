@@ -15,6 +15,8 @@ Async cases use asyncio.run() — no pytest-asyncio dependency.
 """
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableConfig
+
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -143,7 +145,7 @@ def _reasoner_from(scripts: List[List[ToolCall]]) -> ac.CellReasoner:
     return _reason
 
 
-def _config(adapter: _StubAdapter, reasoner: ac.CellReasoner, **extra: Any) -> Dict[str, Any]:
+def _config(adapter: _StubAdapter, reasoner: ac.CellReasoner, **extra: Any) -> RunnableConfig:
     configurable: Dict[str, Any] = {"cell_adapter": adapter, "cell_reasoner": reasoner}
     configurable.update(extra)
     return {"configurable": configurable}

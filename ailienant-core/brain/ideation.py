@@ -30,7 +30,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar, cast
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 
-from brain.state import AIlienantGraphState, assert_declared_channels
+from brain.state import AIlienantGraphState, accepts_config, assert_declared_channels
 
 logger = logging.getLogger("IDEATION_GRAPH")
 
@@ -259,10 +259,20 @@ def _guarded(name: str, fn: _NodeFn) -> _NodeFn:
     ``assert_declared_channels`` only (no parent-graph telemetry to duplicate).
     This exact gap is what let ``ideation_synthesized`` go undeclared for the
     life of the feature: the handoff silently dropped on every run.
-    """
 
-    async def _wrapped(state: Any, *args: Any, **kwargs: Any) -> Any:
-        result = await fn(state, *args, **kwargs)
+    Declares ``config`` explicitly, by name and annotation, for the same reason
+    ``_instrument_node`` does: LangGraph inspects THIS callable to decide what to
+    inject, and a variadic wrapper advertises no injectable parameter — which is
+    what left the Socratic grill unable to narrate or stream its reasoning.
+    """
+    forwards_config = accepts_config(fn)
+
+    async def _wrapped(
+        state: Any, config: Optional[RunnableConfig] = None, **kwargs: Any
+    ) -> Any:
+        if forwards_config:
+            kwargs["config"] = config
+        result = await fn(state, **kwargs)
         assert_declared_channels(name, result)
         return result
 

@@ -47,7 +47,11 @@ export interface ConversationMessage {
     is_abort_savepoint?: boolean;
     // Frozen at ingestion; the row component is pure and never reads reactive config.
     authorLabel?: string;
-    // Reasoning trace — raw reasoning. Display-only; NEVER persisted.
+    // Message-scoped mirror of the turn's reasoning stream — the SAME
+    // server_thinking_chunk data the timeline's 'reasoning' entries carry per
+    // span, kept as AgentTimeline's fallback for a marker with no delta yet.
+    // The entry-scoped copy is the one that persists; only the small
+    // chronometry fields below ride along in the in-flight snapshot.
     thinking?: string;
     thinkingTokens?: number;
     thinkingStartedAt?: number;
@@ -58,16 +62,18 @@ export interface ConversationMessage {
     liveTokens?: number;
     // Glass-Box Timeline (11.5.C) — the seq-ordered agent-activity trace for this
     // turn, built from server_activity_event + correlated existing streams
-    // (reasoning/diff bodies) and rendered by AgentTimeline. PERSIST_TRANSCRIPT
-    // strips 'reasoning' entries (display-only, matching `thinking`'s own
-    // exclusion); every other kind persists as the durable audit record.
+    // (reasoning/diff bodies) and rendered by AgentTimeline. Persists whole as
+    // the durable audit record — reasoning included, bounded per entry and with
+    // its clock settled (timelineBuilder's prepareReasoningForPersist).
     timeline?: TimelineEntry[];
     // Agent Companion explanations for THIS turn's own decision points (13.0.7),
     // in arrival order. Message-scoped (not session-wide) — mirrors toolCalls'
     // attach-to-last-assistant-turn shape via attachOrUpdateCompanion, so a
-    // companion for turn N never bleeds onto turn N-1's row. Display-only,
-    // fire-and-forget, best-effort — excluded from PERSIST_TRANSCRIPT (a stale
-    // explanation after reload would pair with a turn no longer on screen).
+    // companion for turn N never bleeds onto turn N-1's row. Fire-and-forget and
+    // best-effort while live, but durable once it lands: being message-scoped and
+    // keyed by emission_id is exactly what makes it safe to restore onto the turn
+    // it explains, so it persists alongside the timeline rather than leaving a
+    // reloaded transcript showing what changed without why.
     companions?: CoderCompanionPayload[];
     // Wall-clock turn duration (DEBT-126a) — mirrors thinkingStartedAt/
     // thinkingElapsedMs's set-at-creation/freeze-at-settle shape, but spans the

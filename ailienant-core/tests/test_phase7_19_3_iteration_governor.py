@@ -9,6 +9,8 @@ Async cases use asyncio.run so the stub session lives on one event loop across i
 """
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableConfig
+
 import asyncio
 from typing import Any, Dict, List, Optional
 
@@ -101,7 +103,7 @@ def _reasoner_from(scripts: List[List[ToolCall]]) -> ac.CellReasoner:
     return _reason
 
 
-def _config(adapter: StubAdapter, reasoner: ac.CellReasoner, **extra: Any) -> Dict[str, Any]:
+def _config(adapter: StubAdapter, reasoner: ac.CellReasoner, **extra: Any) -> RunnableConfig:
     configurable: Dict[str, Any] = {"cell_adapter": adapter, "cell_reasoner": reasoner}
     configurable.update(extra)
     return {"configurable": configurable}
@@ -139,7 +141,7 @@ def _apply(state: Dict[str, Any], delta: Dict[str, Any]) -> None:
             state[key] = value
 
 
-async def _drive(state: Dict[str, Any], config: Dict[str, Any], max_visits: int = 30) -> int:
+async def _drive(state: Dict[str, Any], config: RunnableConfig, max_visits: int = 30) -> int:
     visits = 0
     while True:
         delta = await run_agentic_cell_node(state, config)

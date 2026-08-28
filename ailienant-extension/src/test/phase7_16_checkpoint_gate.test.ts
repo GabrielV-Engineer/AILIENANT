@@ -48,10 +48,16 @@ import type { ASTToken, DiffBlockShape } from '../shared/config';
 const EXTENSION_ROOT = path.resolve(__dirname, '..', '..');
 const WEBVIEW_BUNDLE = path.join(EXTENSION_ROOT, 'dist', 'workspace.js');
 const HOST_BUNDLE = path.join(EXTENSION_ROOT, 'dist', 'extension.js');
-// Mirrors esbuild.js::WEBVIEW_BUNDLE_CEILING_BYTES — duplicated here (not
-// imported) since esbuild.js is a CommonJS build script outside this test's
-// TS module graph. Keep the two literals in sync on any future ceiling change.
-const CEILING_BYTES = 559 * 1024;
+// Read out of esbuild.js rather than restated here. The build script is
+// CommonJS and outside this test's TS module graph, so it cannot be imported —
+// but a second literal that merely has to agree with the first is how a gate
+// keeps passing against a ceiling that has already moved.
+const CEILING_BYTES = ((): number => {
+    const src = fs.readFileSync(path.join(EXTENSION_ROOT, 'esbuild.js'), 'utf8');
+    const m = /WEBVIEW_BUNDLE_CEILING_BYTES\s*=\s*(\d+)\s*\*\s*1024/.exec(src);
+    if (!m) { throw new Error('WEBVIEW_BUNDLE_CEILING_BYTES not found in esbuild.js'); }
+    return Number(m[1]) * 1024;
+})();
 const GRAMMAR_LEAK_MARKERS = ['@shikijs', 'createHighlighterCore', 'engine-javascript'];
 
 suite('Phase 7.16 — Checkpoint Gate (host-delegated tokenization)', function () {

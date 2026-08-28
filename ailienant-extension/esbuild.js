@@ -180,9 +180,15 @@ function assertGrammarEngineOffWebview() {
 // dependency regression); raised 557→559 KB for the Effort Budget selector
 // added to ModelsMenu.tsx's orchestration view (light/balanced/deep rows with
 // live per-level cost estimates fetched from the backend) — organic, reviewed
-// feature code, not a dependency regression. Bump again only with the same
+// feature code, not a dependency regression; raised 559→560 KB for the
+// transparency-persistence policy change (reasoning now survives a reload
+// bounded rather than being dropped, the in-flight snapshot sheds its
+// recoverable diff/cell/execution bodies and is budget-trimmed, and the shared
+// setState envelope no longer loses every slot when one write throws) — three
+// pure functions and two named budgets, organic reviewed feature code, not a
+// dependency regression. Bump again only with the same
 // justification, never to silently absorb an unreviewed size increase.
-const WEBVIEW_BUNDLE_CEILING_BYTES = 559 * 1024;
+const WEBVIEW_BUNDLE_CEILING_BYTES = 560 * 1024;
 function assertWebviewBundleUnderCeiling() {
 	if (!production) { return; }
 	const bundle = 'dist/workspace.js';

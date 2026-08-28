@@ -1,9 +1,10 @@
 # ailienant-core/brain/state.py
 
+import inspect
 import logging
 import operator
 import os
-from typing import Any, TypedDict, List, Dict, Optional, Annotated, Literal
+from typing import Any, Callable, TypedDict, List, Dict, Optional, Annotated, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from shared.hardware import HardwareProfile  # noqa: E402 — imported for type annotation
@@ -953,6 +954,29 @@ class AIlienantGraphState(TypedDict):
 logger = logging.getLogger("GRAPH_STATE")
 
 _DECLARED_CHANNELS: frozenset[str] = frozenset(AIlienantGraphState.__annotations__)
+
+
+def accepts_config(fn: Callable[..., Any]) -> bool:
+    """Whether ``fn`` declares a ``config`` parameter LangGraph would inject into.
+
+    Mirrors the runtime's own admission rule (``langgraph._internal._runnable``):
+    a parameter literally named ``config``, of a kind that can be passed by
+    keyword. ``inspect.signature`` follows ``__wrapped__``, so a ``functools.wraps``
+    decorator chain (the DLQ and reflexion guards) resolves to the real node
+    underneath rather than to the wrapper.
+
+    Lives here, beside ``assert_declared_channels``, because both node-wrapping
+    helpers — the parent graph's and the ideation subgraph's — need it, and those
+    two modules import each other.
+    """
+    try:
+        param = inspect.signature(fn).parameters.get("config")
+    except (TypeError, ValueError):  # builtins / C callables expose no signature
+        return False
+    return param is not None and param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
 
 
 def assert_declared_channels(node_name: str, delta: Any) -> None:

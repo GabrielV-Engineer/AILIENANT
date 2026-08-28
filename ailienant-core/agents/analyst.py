@@ -34,6 +34,8 @@ from tools.control_tools import (
 # (planner, coder, orchestrator, researcher) MUST NEVER import this module —
 # Test D audits the four logic-agent files for foreign imports on every CI run.
 from brain.personality import soul_manager
+from core.config.model_resolver import _TIER_ORDER
+from shared.config import MODEL_MEDIUM
 
 logger = logging.getLogger("ANALYST_AGENT")
 
@@ -41,6 +43,24 @@ logger = logging.getLogger("ANALYST_AGENT")
 # escape hatch retained for deterministic CI/UI smoke tests. Mirrors planner.py:
 # set AILIENANT_ANALYST_DEBUG=1 to force the stub.
 DEBUG_MODE: bool = _os.getenv("AILIENANT_ANALYST_DEBUG", "0") != "0"
+
+# The model the whole grill runs on. The alias is the source: the question draft
+# invokes it directly, while the target probe and the pre-draft reasoning pass
+# take the bare tier, derived from it here rather than restated. Keeping one
+# source is what makes an operator's AILIENANT_MODEL_MEDIUM override move all
+# three together — split, the user would read reasoning from one model and get
+# questions written by another. Validated against the resolver's own tier
+# vocabulary; an alias in some other shape degrades to the default tier, which is
+# the same fallback agents/planner.py applies to its own routed alias.
+_GRILL_MODEL: str = MODEL_MEDIUM
+_GRILL_TIER: str = next(
+    (t for t in _TIER_ORDER if _GRILL_MODEL == f"ailienant/{t}"), "medium"
+)
+
+# Token ceiling for the pre-draft reasoning pass. Small on purpose, mirroring the
+# planner's own ceiling: this is the conceptual narrative shown while the user
+# waits, not the question batch, which carries its own budget.
+_GRILL_REASONING_MAX_TOKENS: int = 512
 
 _AGREEMENT_SIGNALS = frozenset([
     # English
@@ -328,6 +348,14 @@ async def run_analyst_node(
     # was the only thing on screen until the first question card appeared,
     # regardless of how many grounding/generation rounds ran in between.
     _narrate = (config or {}).get("configurable", {}).get("narrate")
+    # Reasoning sink + native-thinking prefs — the same off-state seam the planner
+    # and coder read (agents/planner.py). Without these the interview was the one
+    # phase that showed the user nothing at all while it worked.
+    _on_thinking = (config or {}).get("configurable", {}).get("stream_thinking")
+    _thinking_on = bool((config or {}).get("configurable", {}).get("enable_native_thinking"))
+    _thinking_budget = int(
+        (config or {}).get("configurable", {}).get("thinking_budget_tokens") or 4096
+    )
 
     async def _emit(node_name: str) -> None:
         if _narrate is not None:
@@ -441,6 +469,15 @@ async def run_analyst_node(
             context_block = (
                 f"{context_block}\n\n{grounding}" if context_block else grounding
             )
+        await _stream_grill_reasoning(
+            user_input=user_input,
+            context_block=context_block,
+            soul_prompt=soul_prompt,
+            session_id=task_id,
+            on_thinking=_on_thinking,
+            thinking_on=_thinking_on,
+            thinking_budget=_thinking_budget,
+        )
         await _emit("grill_composing_questions")
         batch = await _generate_grill_questions_llm(
             messages + new_messages, soul_prompt, context_block, task_id
@@ -628,6 +665,79 @@ def _build_grill_llm_messages(
     return llm_messages
 
 
+async def _stream_grill_reasoning(
+    *,
+    user_input: str,
+    context_block: str,
+    soul_prompt: str,
+    session_id: str,
+    on_thinking: Optional[Callable[[str, str], Awaitable[None]]],
+    thinking_on: bool,
+    thinking_budget: int,
+) -> None:
+    """Stream the analyst's thinking to the Thought Box before it drafts questions.
+
+    A separate free-form completion rather than reasoning attached to the batch
+    call: that call is a strict ``json_object`` contract, and a reasoning preamble
+    corrupts a machine-parsed output. Mirrors the planner's pre-draft pass.
+
+    Unlike the planner's, this runs for native models too. The planner can skip
+    them because its draft is *streamed*, so a native model's own reasoning
+    channel already reaches the user; the question batch is drafted with a
+    non-streaming ``ainvoke``, where nothing surfaces on its own. Do not
+    "restore" the native short-circuit here — it would silence the interview
+    again on exactly the best models.
+
+    Best-effort throughout: a sink or generation fault leaves the interview
+    unchanged. A real abort still propagates.
+    """
+    if on_thinking is None or not thinking_on:
+        return
+
+    from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
+
+    prompt = (
+        f"The developer asked: '{user_input}'.\n\n"
+        f"What is already known about their workspace:\n{context_block}\n\n"
+        "Before writing any clarifying questions, think out loud about what is "
+        "still genuinely ambiguous: what you already know, what you would have to "
+        "assume to proceed, and which unknown would change the approach most. "
+        "Write concise, conceptual prose — no questions yet, no code, no JSON."
+    )
+    messages = [
+        {"role": "system", "content": soul_prompt},
+        {"role": "user", "content": prompt},
+    ]
+
+    sink_live = True
+    try:
+        async for delta in LLMGateway.astream_reasoning(
+            messages,
+            tier=_GRILL_TIER,
+            temperature=0.0,
+            max_tokens=_GRILL_REASONING_MAX_TOKENS,
+            session_id=session_id,
+            thinking_budget_tokens=thinking_budget,
+            free_form_answer=True,
+        ):
+            # The whole free-form output is reasoning, so both 'thinking' and
+            # 'text' deltas belong in the Thought Box.
+            if sink_live and delta.text:
+                try:
+                    await on_thinking(delta.text, delta.source)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as sink_exc:  # noqa: BLE001 — best-effort stream
+                    logger.debug(
+                        "grill reasoning sink failed; latching off: %s", sink_exc
+                    )
+                    sink_live = False
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — reasoning never blocks the interview
+        logger.debug("grill reasoning pass failed (non-fatal)", exc_info=True)
+
+
 async def _generate_grill_questions_llm(
     messages: List[Dict[str, Any]],
     soul_prompt: str,
@@ -652,11 +762,11 @@ async def _generate_grill_questions_llm(
     from tools.llm_gateway import LLMGateway  # deferred — avoids circular import
     from core.config.model_resolver import get_chat_target
 
-    # Resolve the BYOM target up front. Without this, `ainvoke("ailienant/medium")`
-    # silently falls back to the litellm proxy when no preset is active and burns
-    # the full transport-retry budget before failing — the streaming path this
-    # replaced raised NoAvailableProviderError immediately instead.
-    if get_chat_target("medium") is None:
+    # Resolve the BYOM target up front. Without this, the invoke below silently
+    # falls back to the litellm proxy when no preset is active and burns the full
+    # transport-retry budget before failing — the streaming path this replaced
+    # raised NoAvailableProviderError immediately instead.
+    if get_chat_target(_GRILL_TIER) is None:
         logger.warning("AnalystAgent: no active BYOM chat model — cannot run the grill.")
         return None
 
@@ -666,7 +776,7 @@ async def _generate_grill_questions_llm(
         try:
             response = await LLMGateway.ainvoke(
                 messages=llm_messages,
-                model="ailienant/medium",
+                model=_GRILL_MODEL,
                 temperature=0.2,
                 response_format={"type": "json_object"},
                 session_id=session_id,

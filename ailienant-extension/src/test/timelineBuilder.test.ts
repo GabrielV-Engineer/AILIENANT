@@ -10,7 +10,8 @@ import type { ActivityEventPayload } from '../api/contracts';
 import type { CellIterationShape, DiffBlockShape, ExecutionDetailShape, TimelineEntry } from '../shared/config';
 import {
     upsertActivityMarker, upsertReasoningDelta, freezeActiveReasoningEntries, upsertDiffBody, upsertCellBody,
-    upsertExecutionBody, upsertExecutionChunk, stripReasoningForPersist,
+    upsertExecutionBody, upsertExecutionChunk,
+    prepareReasoningForPersist, dropHeavyBodiesForSnapshot, fitSnapshotBudget,
 } from '../workspace/utils/timelineBuilder';
 
 function marker(over: Partial<ActivityEventPayload> & { seq: number; kind: ActivityEventPayload['kind'] }): ActivityEventPayload {
@@ -373,16 +374,89 @@ suite('11.5.C.1 — timelineBuilder', () => {
         assert.strictEqual(before.length, 0);
     });
 
-    // ── Persistence — reasoning dropped, everything else survives ───────────
+    // ── Persistence — every kind survives, reasoning bounded and clock-settled ──
 
-    test('stripReasoningForPersist drops reasoning entries, keeps everything else', () => {
-        const entries: TimelineEntry[] = [
+    function persistFixture(): TimelineEntry[] {
+        return [
             { id: 'seq:0', seq: 0, ts: 100, kind: 'understanding', status: 'done' },
-            { id: 'r1', seq: 1, ts: 101, kind: 'reasoning', status: 'active', thinking: 'secret chain of thought' },
+            {
+                id: 'r1', seq: 1, ts: 101, kind: 'reasoning', status: 'active',
+                thinking: 'chain of thought', thinkingStartedAt: 5_000,
+            },
             { id: 'a.py', seq: 2, ts: 102, kind: 'diff', status: 'done', target: 'a.py' },
         ];
-        const persisted = stripReasoningForPersist(entries);
-        assert.deepStrictEqual(persisted.map(e => e.kind), ['understanding', 'diff']);
-        assert.ok(!persisted.some(e => 'thinking' in e && e.thinking));
+    }
+
+    test('prepareReasoningForPersist keeps every kind, reasoning included', () => {
+        const persisted = prepareReasoningForPersist(persistFixture(), 1_000, 8_000);
+        assert.deepStrictEqual(
+            persisted.map(e => e.kind), ['understanding', 'reasoning', 'diff'],
+        );
+        const reasoning = persisted.find(e => e.kind === 'reasoning');
+        assert.strictEqual(reasoning?.thinking, 'chain of thought');
+    });
+
+    test('prepareReasoningForPersist settles the clock and drops its unusable origin', () => {
+        // thinkingStartedAt is a performance.now() reading whose epoch dies with
+        // the document, so a restored span must carry a resolved elapsed instead.
+        const persisted = prepareReasoningForPersist(persistFixture(), 1_000, 8_000);
+        const reasoning = persisted.find(e => e.kind === 'reasoning');
+        assert.strictEqual(reasoning?.thinkingStartedAt, undefined);
+        assert.strictEqual(reasoning?.thinkingElapsedMs, 3_000);
+    });
+
+    test('prepareReasoningForPersist middle-truncates an oversized reasoning body', () => {
+        const entries: TimelineEntry[] = [{
+            id: 'r1', seq: 0, ts: 100, kind: 'reasoning', status: 'done',
+            thinking: `${'A'.repeat(500)}${'B'.repeat(500)}`, thinkingElapsedMs: 10,
+        }];
+        const persisted = prepareReasoningForPersist(entries, 100, 0);
+        const body = persisted[0].thinking ?? '';
+        assert.ok(body.length < 1_000, 'body should be clamped');
+        assert.ok(body.startsWith('A'), 'head is preserved');
+        assert.ok(body.endsWith('B'), 'tail is preserved');
+        assert.ok(body.includes('truncated'), 'truncation is disclosed, not silent');
+    });
+
+    test('dropHeavyBodiesForSnapshot keeps the spine and drops the recoverable bodies', () => {
+        const entries: TimelineEntry[] = [
+            {
+                id: 'a.py', seq: 0, ts: 100, kind: 'diff', status: 'done', target: 'a.py',
+                diff: { patch_id: 'p1', file_path: 'a.py', status: 'edit', old_content: 'x', new_content: 'y' } as DiffBlockShape,
+            },
+            {
+                id: 'e1', seq: 1, ts: 101, kind: 'command', status: 'done', target: 'pytest',
+                execution: { source: 'devcontainer', stdout: 'lots of output' } as ExecutionDetailShape,
+            },
+            {
+                id: 'r1', seq: 2, ts: 102, kind: 'reasoning', status: 'done',
+                thinking: 'kept — nothing else carries it', thinkingElapsedMs: 5,
+            },
+        ];
+        const snap = dropHeavyBodiesForSnapshot(entries);
+        assert.deepStrictEqual(snap.map(e => e.kind), ['diff', 'command', 'reasoning']);
+        assert.strictEqual(snap[0].diff, undefined);
+        assert.strictEqual(snap[0].target, 'a.py', 'the spine survives');
+        assert.strictEqual(snap[1].execution, undefined);
+        assert.strictEqual(snap[2].thinking, 'kept — nothing else carries it');
+    });
+
+    test('fitSnapshotBudget trims from the head, keeping the turn tail', () => {
+        const entries: TimelineEntry[] = Array.from({ length: 50 }, (_, i) => ({
+            id: `seq:${i}`, seq: i, ts: 100 + i, kind: 'read' as const,
+            status: 'done' as const, target: `file-${i}.py`,
+        }));
+        const trimmed = fitSnapshotBudget(entries, 500);
+        assert.ok(trimmed.length < entries.length, 'oversized input is trimmed');
+        assert.ok(JSON.stringify(trimmed).length <= 500, 'result fits the budget');
+        assert.strictEqual(
+            trimmed[trimmed.length - 1].seq, 49,
+            'the newest row is the one that must survive',
+        );
+    });
+
+    test('fitSnapshotBudget returns the input untouched when it already fits', () => {
+        const entries = persistFixture();
+        assert.strictEqual(fitSnapshotBudget(entries, 100_000), entries);
     });
 });

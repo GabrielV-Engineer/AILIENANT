@@ -303,6 +303,22 @@ export const MAX_IPC_CODE_CHARS = 50_000;
 // here, so this only bounds the WHILE-RUNNING view, never the settled record.
 export const MAX_LIVE_EXEC_FIELD_CHARS = 4_000;
 
+// Per-entry retention clamp for a persisted 'reasoning' body. Reasoning is the
+// largest text payload a turn produces and exists nowhere else (unlike a diff,
+// which RENDER_DIFF re-posts, or execution I/O, which the backend exec log keeps
+// durably), so it is truncated rather than dropped: a bounded trace is still an
+// audit trail, an absent one is not. Sized to keep a long multi-span turn's
+// transcript in the same order of magnitude as the diff bodies beside it.
+export const MAX_PERSISTED_REASONING_CHARS = 8_000;
+
+// Whole-blob ceiling for the in-flight turn snapshot written to
+// `vscode.setState()`. That slot is shared by every persisted store field
+// (drafts, mode, scroll position), and an oversized write loses ALL of them —
+// so the timeline spine is trimmed from the head until the snapshot fits.
+// Deliberately well under any plausible host limit: the snapshot only has to
+// survive a tab switch, and the durable transcript carries the full record.
+export const MAX_INFLIGHT_SNAPSHOT_CHARS = 256_000;
+
 export const WORKSPACE_STATE_KEYS = {
     masterEnabled:   "ailienant.masterEnabled",
     profile:         "ailienant.intelligenceProfile",

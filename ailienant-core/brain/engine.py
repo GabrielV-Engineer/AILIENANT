@@ -6,11 +6,14 @@ import logging
 import traceback as _tb
 from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
-from langgraph.constants import Send
+from langgraph.types import Send
 from langgraph.errors import GraphBubbleUp
 
-from brain.state import AIlienantGraphState, assert_declared_channels, is_dispatchable
+from brain.state import (
+    AIlienantGraphState, accepts_config, assert_declared_channels, is_dispatchable,
+)
 from brain.checkpoint import checkpoint_manager
 from brain.failure_breaker import failure_breaker, normalize_signature
 from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
@@ -199,17 +202,39 @@ def _instrument_node(name: str, fn: _NodeFn) -> _NodeFn:
     routers to the sink. Best-effort and off-loop — a sink failure never blocks the
     node, and the enqueue is O(1). The original callable type is preserved so the
     ``add_node`` overloads still resolve.
+
+    The ``config`` parameter is declared explicitly, by that exact name and with
+    that exact annotation, because LangGraph decides what to inject by inspecting
+    THIS callable's signature: it looks for a parameter named ``config`` whose kind
+    is positional-or-keyword and whose annotation is one of a small accepted set.
+    A variadic ``*args, **kwargs`` wrapper advertises no such parameter, so the
+    runtime concludes the node wants nothing and silently passes nothing — taking
+    every DI seam on ``config.configurable`` (narration, the reasoning sink, the
+    activity channel, the cell dispatcher) down with it. Do not widen this to
+    ``RunnableConfig | None``: the annotation check is membership in a literal
+    tuple, and the PEP 604 form is not in it.
     """
-    async def _wrapped(state: Any, *args: Any, **kwargs: Any) -> Any:
+    # Resolved once, at decoration time. Deliberately NOT `functools.wraps`-ed:
+    # that would set `__wrapped__`, `inspect.signature` follows it, and LangGraph
+    # would then read the INNER node's signature instead of this one — putting
+    # delivery back at the mercy of each node annotating `config` exactly right.
+    # Keeping the wrapper opaque makes it the single place that guarantees the
+    # seam, so a mis-annotated node still gets its config.
+    forwards_config = accepts_config(fn)
+
+    async def _wrapped(
+        state: Any, config: Optional[RunnableConfig] = None, **kwargs: Any
+    ) -> Any:
         try:
             session_id = str(state.get("task_id", "")) if isinstance(state, dict) else ""
             log_node_transition(session_id=session_id, source="graph", target=name, reason="node_enter")
         except Exception:  # noqa: BLE001 — telemetry is best-effort
             pass
-        # Forward the runtime-supplied RunnableConfig (and any positional extras)
-        # so nodes that declare a `config` parameter receive it — LangGraph inspects
-        # the outermost callable's signature, so the wrapper must be variadic.
-        result = await fn(state, *args, **kwargs)
+        # Forwarded only to a node that declares it: passing `config` to one that
+        # takes state alone would be a TypeError at every graph run.
+        if forwards_config:
+            kwargs["config"] = config
+        result = await fn(state, **kwargs)
         assert_declared_channels(name, result)
         return result
 

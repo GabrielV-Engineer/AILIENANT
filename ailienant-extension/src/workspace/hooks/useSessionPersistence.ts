@@ -4,9 +4,9 @@
  *  1. Debounced PERSIST_TRANSCRIPT — mirror the completed transcript to the host
  *     so closing VS Code doesn't empty the session. Transient stream flags and the
  *     large `parserState` object are stripped; system chips are display-only and
- *     never persisted; `timeline`'s 'reasoning' entries are dropped (display-only,
- *     matching `thinking`'s own exclusion) while every other kind survives as the
- *     durable audit trail AgentTimeline renders on rehydrate.
+ *     never persisted. The whole `timeline` survives as the durable audit trail
+ *     AgentTimeline renders on rehydrate — reasoning included, bounded per entry
+ *     (see `prepareReasoningForPersist`).
  *  2. In-flight resilience — throttled snapshot of the active streaming turn into
  *     the panel-survivable store, so a partial reasoning trace AND its plan
  *     checklist / companion explanation / activity trace survive a teardown/
@@ -14,13 +14,22 @@
  *     on server_stream_end).
  *  3. Mount rehydrate — restore a persisted in-flight turn once, merged by id so it
  *     never duplicates a turn already present in the restored transcript.
+ *
+ * The two routes bound themselves differently because their storage does. The
+ * host transcript is an on-disk memento with room for the full record; the
+ * in-flight snapshot shares one `vscode.setState()` blob with the user's draft,
+ * so it keeps only what cannot be rebuilt — the reasoning and the marker spine —
+ * and drops the diff/cell/execution bodies that other channels re-deliver.
  */
 import { useEffect } from 'react';
 import { vscode } from '../vscode_bridge';
 import { useChatStore } from '../chatStore';
 import { useWorkspaceStore } from '../workspaceStore';
 import type { ConversationMessage, Message } from '../types';
-import { stripReasoningForPersist } from '../utils/timelineBuilder';
+import { MAX_INFLIGHT_SNAPSHOT_CHARS } from '../../shared/config';
+import {
+    prepareReasoningForPersist, dropHeavyBodiesForSnapshot, fitSnapshotBudget,
+} from '../utils/timelineBuilder';
 
 export function useSessionPersistence(): void {
     const messages = useChatStore((s) => s.messages);
@@ -56,16 +65,20 @@ export function useSessionPersistence(): void {
                     .map(({
                         id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                         checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
-                        timeline, turnStartedAt, turnElapsedMs,
+                        companions, timeline, turnStartedAt, turnElapsedMs,
                     }) => ({
                         id, role, content, steps, stepsDone, toolCalls, diffBlocks,
                         checkpoint_id, is_abort_savepoint, authorLabel, liveTokens, checklist,
-                        // 'reasoning' entries are display-only (matching thinking*'s
-                        // pre-existing exclusion above) — everything else (plan/diff/
-                        // read/edit/command/…) is durable audit evidence, same as
-                        // checklist/diffBlocks were before AgentTimeline took over
-                        // rendering them, so a rehydrated turn still shows its trace.
-                        timeline: timeline ? stripReasoningForPersist(timeline) : timeline,
+                        // Message-scoped and keyed by emission_id, so a restored
+                        // explanation lands back on the turn that produced it — the
+                        // pairing hazard that once justified excluding it no longer
+                        // exists, while losing it on restart left the transcript
+                        // showing what changed and not why.
+                        companions,
+                        // Every kind persists, reasoning included — bounded per entry
+                        // and with its clock settled, so a reloaded turn shows the
+                        // same trace it showed live rather than an amputated one.
+                        timeline: timeline ? prepareReasoningForPersist(timeline) : timeline,
                         // Whole-turn duration (DEBT-126a) — unlike thinking*, this is
                         // durable audit evidence (not display-only reasoning), so it
                         // persists like checklist/diffBlocks.
@@ -82,15 +95,25 @@ export function useSessionPersistence(): void {
         return () => clearTimeout(handle);
     }, [messages, nattMessages]);
 
-    // Snapshot the active streaming turn (id + content + thinking slice + the
-    // plan checklist / companion explanation / activity trace, NO parserState/
-    // toolCalls) into the panel-survivable store, throttled. This is the ONLY
-    // thing that survives a teardown landing inside the first effect's 400ms
-    // debounce window — omitting checklist/companions/timeline here (as this
-    // used to) meant a mid-stream tab switch could restore the prose while
-    // silently dropping the plan checkmarks and the Planning Explanation card.
-    // `timeline` is stripped of its display-only 'reasoning' entries first,
-    // matching stripReasoningForPersist's use in the first effect above.
+    // Snapshot the active streaming turn (id + content + the plan checklist /
+    // companion explanation / activity trace, NO parserState/toolCalls) into the
+    // panel-survivable store, throttled. This is the ONLY thing that survives a
+    // teardown landing inside the first effect's 400ms debounce window —
+    // omitting checklist/companions/timeline here (as this used to) meant a
+    // mid-stream tab switch could restore the prose while silently dropping the
+    // plan checkmarks and the Planning Explanation card.
+    //
+    // The reasoning text rides in the timeline entries, not in the message-scoped
+    // `thinking` field: they are the same stream at two scopes, and AgentTimeline
+    // reads the entry-scoped copy, so persisting both stored it twice — once
+    // unreachably, since the entries used to be stripped here. `thinkingTokens`
+    // stays because the per-turn token footer sums it; `thinkingStartedAt` is
+    // deliberately absent (a performance.now() origin does not survive the
+    // teardown this snapshot exists for — see prepareReasoningForPersist).
+    //
+    // Bodies are dropped and the spine is budget-trimmed because this blob shares
+    // one setState slot with every other persisted field, the user's draft
+    // included.
     useEffect(() => {
         const inflight = messages.find((m): m is ConversationMessage => m.role === 'assistant' && !!(m as ConversationMessage).streaming);
         const handle = setTimeout(() => {
@@ -100,16 +123,19 @@ export function useSessionPersistence(): void {
                     role: inflight.role,
                     content: inflight.content,
                     streaming: true,
-                    thinking: inflight.thinking,
                     thinkingTokens: inflight.thinkingTokens,
-                    thinkingStartedAt: inflight.thinkingStartedAt,
                     thinkingElapsedMs: inflight.thinkingElapsedMs,
                     thinkingOpen: inflight.thinkingOpen,
                     steps: inflight.steps,
                     stepsDone: inflight.stepsDone,
                     checklist: inflight.checklist,
                     companions: inflight.companions,
-                    timeline: inflight.timeline ? stripReasoningForPersist(inflight.timeline) : inflight.timeline,
+                    timeline: inflight.timeline
+                        ? fitSnapshotBudget(
+                            dropHeavyBodiesForSnapshot(prepareReasoningForPersist(inflight.timeline)),
+                            MAX_INFLIGHT_SNAPSHOT_CHARS,
+                        )
+                        : inflight.timeline,
                 }
                 : null);
         }, 200);

@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 from brain.cell_dispatcher import CellEventDispatcher, NullCellDispatcher
@@ -393,7 +394,7 @@ def _concede(state: Dict[str, Any], iteration: int, reason: str) -> Dict[str, An
 
 
 async def run_agentic_cell_node(
-    state: Dict[str, Any], config: Optional[Dict[str, Any]] = None
+    state: Dict[str, Any], config: Optional[RunnableConfig] = None
 ) -> Dict[str, Any]:
     """One ReAct iteration. See module docstring for the loop contract."""
     from brain.agent_context import resolve_context_budget

@@ -51,35 +51,34 @@ function _todosEqual(a: AgentTodoItemPayload[], b: AgentTodoItemPayload[]): bool
 export type AnalystTier = 'small' | 'medium' | 'big' | 'cloud';
 
 /**
- * Phase 7.12 — minimal snapshot of the active streaming assistant turn, kept so
- * an in-flight Native-Thinking trace (display-only, ADR-707) survives a panel
- * teardown/reconnect (retainContextWhenHidden:false). Defined structurally (not
- * imported from Workspace.tsx) to avoid a circular type import; a `Message` is
- * assignable to it. `parserState`/`toolCalls` are intentionally omitted to keep
- * the persisted blob small.
+ * Snapshot of the active streaming assistant turn, kept so an in-flight turn
+ * survives a panel teardown/reconnect (`retainContextWhenHidden:false`). A tab
+ * switch destroys the webview before the debounced host-side
+ * `PERSIST_TRANSCRIPT` can flush, and this `setState`-backed copy is the only
+ * thing that survives that race — so whatever it omits is simply lost.
  *
- * 13.0.9: widened to also carry `checklist`/`companions`/`timeline` — the
- * confirmed root cause of a live bug report ("switching tabs once removes the
- * plan checkmarks and the Planning Explanation text; switching repeatedly
- * removes the whole plan step list"). A mid-stream tab switch tears down the
- * webview before the debounced host-side `PERSIST_TRANSCRIPT` (which DOES
- * carry these fields) can flush; this `setState`-backed snapshot is the only
- * thing that survives that exact race, but it never carried these newer
- * (post-Phase-7.12) fields — so a fast-enough teardown restored prose and
- * thinking while silently dropping the plan/explanation/trace. `timeline` is
- * stripped of its 'reasoning' entries first (`stripReasoningForPersist`,
- * display-only, same exclusion PERSIST_TRANSCRIPT already applies) to keep
- * this blob small — checklist and companions are small by construction (a
- * handful of WBS steps / one structured explanation), unlike toolCalls.
+ * Defined structurally (not imported from Workspace.tsx) to avoid a circular
+ * type import; a `Message` is assignable to it.
+ *
+ * What it carries is decided by one rule: keep what nothing else can rebuild.
+ * The reasoning text rides inside `timeline`'s own entries (the same stream the
+ * message-scoped `thinking` field mirrors, which is why that field is absent
+ * here rather than storing it twice), while the diff/cell/execution bodies are
+ * stripped before the write — those other channels re-deliver. `parserState`
+ * and `toolCalls` are omitted for the same reason: large, and reconstructible.
+ * `thinkingStartedAt` is omitted because it cannot be honoured — it is a
+ * `performance.now()` origin, and the teardown this snapshot exists for resets
+ * that clock.
+ *
+ * The whole envelope is one `setState` slot shared with the user's draft, so
+ * the spine is budget-trimmed on the way in (see `useSessionPersistence`).
  */
 export interface InflightSnapshot {
     id?: string;
     role: 'user' | 'assistant';
     content: string;
     streaming?: boolean;
-    thinking?: string;
     thinkingTokens?: number;
-    thinkingStartedAt?: number;
     thinkingElapsedMs?: number;
     thinkingOpen?: boolean;
     steps?: string[];

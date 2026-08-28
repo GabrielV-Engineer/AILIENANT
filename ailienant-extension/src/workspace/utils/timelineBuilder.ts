@@ -19,7 +19,9 @@ import type {
     CellIterationShape, DiffBlockShape, ExecutionDetailShape,
     TimelineEntry, TimelineEntryStatus,
 } from '../../shared/config';
-import { MAX_LIVE_EXEC_FIELD_CHARS } from '../../shared/config';
+import {
+    MAX_LIVE_EXEC_FIELD_CHARS, MAX_PERSISTED_REASONING_CHARS,
+} from '../../shared/config';
 
 /** Head+tail clamp for a live-accumulating exec field (DEBT-134) — mirrors the
  *  backend's own middle-truncation shape (core/redaction.py::truncate_middle)
@@ -323,12 +325,78 @@ export function upsertExecutionChunk(
 }
 
 /**
- * The persisted view of a turn's timeline: 'reasoning' entries dropped entirely
- * (display-only, matching the pre-existing `thinking`/`thinkingTokens`/etc. fields'
- * exclusion from PERSIST_TRANSCRIPT — reasoning has never survived a reload). Every
- * other kind (plan/diff/read/edit/command/…) is durable audit evidence and persists
- * unchanged, taking over the role `checklist`/`diffBlocks` played before AgentTimeline.
+ * The persisted view of a turn's timeline. Every kind survives, reasoning included:
+ * a trace that evaporates on reload is not an audit trail, and reasoning is the one
+ * body that exists nowhere else (a diff is re-posted by RENDER_DIFF, execution I/O
+ * is durable in the backend exec log).
+ *
+ * Two normalizations make a reasoning entry safe to store:
+ *
+ *  - **Bounded.** Each `thinking` body is middle-truncated to `maxChars` via the
+ *    same `clampLiveField` the live exec fields use, so both ends stay readable.
+ *  - **Clock frozen.** `thinkingStartedAt` is a `performance.now()` reading, and
+ *    that origin is per-document: a webview teardown resets it, so a restored
+ *    still-open span would measure its elapsed time against a foreign epoch. Any
+ *    open span is settled first and the origin is dropped, leaving the already
+ *    resolved `thinkingElapsedMs` as the only duration the renderer can read.
  */
-export function stripReasoningForPersist(entries: TimelineEntry[]): TimelineEntry[] {
-    return entries.filter(e => e.kind !== 'reasoning');
+export function prepareReasoningForPersist(
+    entries: TimelineEntry[],
+    maxChars: number = MAX_PERSISTED_REASONING_CHARS,
+    now: number = performance.now(),
+): TimelineEntry[] {
+    return freezeActiveReasoningEntries(entries, now).map(e => {
+        if (e.kind !== 'reasoning') { return e; }
+        const next: TimelineEntry = { ...e };
+        delete next.thinkingStartedAt;
+        if (next.thinking !== undefined) {
+            next.thinking = clampLiveField(next.thinking, maxChars);
+        }
+        return next;
+    });
+}
+
+/**
+ * Strip the heavy correlated bodies (`diff`/`cell`/`execution`) while keeping the
+ * marker spine. For the in-flight `vscode.setState()` snapshot ONLY — the durable
+ * transcript keeps them as audit evidence.
+ *
+ * The asymmetry is deliberate: that slot is size-critical and shared with the
+ * user's draft, and each of these bodies is recoverable (RENDER_DIFF re-posts a
+ * diff; execution detail lives in the exec log) whereas the reasoning kept beside
+ * them is not. So bodies are what gets dropped there, never the reasoning.
+ */
+export function dropHeavyBodiesForSnapshot(entries: TimelineEntry[]): TimelineEntry[] {
+    return entries.map(e => {
+        if (e.diff === undefined && e.cell === undefined && e.execution === undefined) {
+            return e;
+        }
+        const next: TimelineEntry = { ...e };
+        delete next.diff;
+        delete next.cell;
+        delete next.execution;
+        return next;
+    });
+}
+
+/**
+ * Trim a timeline from the HEAD until its serialized size fits `maxChars` — the
+ * end of a turn is what the user is looking at when they switch back, so the
+ * oldest rows are the ones to lose.
+ *
+ * Sizes are measured once per entry rather than re-serializing the whole array
+ * inside a shrink loop, which would be O(n²) on a capped-out 500-entry turn.
+ */
+export function fitSnapshotBudget(
+    entries: TimelineEntry[],
+    maxChars: number,
+): TimelineEntry[] {
+    const sizes = entries.map(e => JSON.stringify(e).length + 1);  // +1 for the comma
+    let total = sizes.reduce((sum, n) => sum + n, 2);              // 2 for the brackets
+    let start = 0;
+    while (start < entries.length && total > maxChars) {
+        total -= sizes[start];
+        start++;
+    }
+    return start === 0 ? entries : entries.slice(start);
 }

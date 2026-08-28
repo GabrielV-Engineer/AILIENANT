@@ -269,6 +269,107 @@ async def test_generate_phase_narrates_grounding_and_composing() -> None:
     assert narrated == ["grill_grounding", "grill_composing_questions"]
 
 
+# ── Test C1c — grill reasoning reaches the Thought Box ───────────────────────
+
+
+@pytest.mark.anyio
+async def test_generate_phase_streams_reasoning_without_touching_the_json_contract() -> None:
+    """The interview is the one phase whose model work was entirely invisible.
+
+    Two things must hold together: the reasoning reaches the sink, AND the
+    question batch is still drafted under its strict json_object contract — a
+    reasoning preamble folded into that call would corrupt the parsed output,
+    which is why the pass is a separate free-form completion.
+    """
+    streamed: List[str] = []
+    batch_kwargs: Dict[str, Any] = {}
+
+    async def _on_thinking(text: str, _source: str) -> None:
+        streamed.append(text)
+
+    class _Delta:
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.source = "simulated"
+
+    async def _fake_astream_reasoning(*_a: Any, **_k: Any) -> Any:
+        for chunk in ("The endpoint's ", "auth story is unstated."):
+            yield _Delta(chunk)
+
+    async def _spy_generate(*_a: Any, **k: Any) -> Any:
+        batch_kwargs.update(k)
+        return _batch_of_one()
+
+    state: Dict[str, Any] = {
+        "task_id": "analyst-test", "user_input": "Add an endpoint.",
+        "messages": [], "hitl_pending": False, "shared_understanding_reached": False,
+    }
+
+    with patch(
+        "agents.analyst.soul_manager.get_prompt", return_value=_SOUL_SENTINEL
+    ), patch(
+        "agents.analyst._generate_grill_questions_llm", new=_spy_generate
+    ), patch(
+        "agents.analyst._assemble_socratic_context", new=AsyncMock(return_value="ctx")
+    ), patch(
+        "agents.analyst._gather_tool_grounding", new=AsyncMock(return_value=("", []))
+    ), patch(
+        "tools.llm_gateway.LLMGateway.astream_reasoning", new=_fake_astream_reasoning
+    ):
+        from agents.analyst import run_analyst_node
+
+        await run_analyst_node(state, {"configurable": {
+            "stream_thinking": _on_thinking,
+            "enable_native_thinking": True,
+        }})
+
+    assert "".join(streamed) == "The endpoint's auth story is unstated."
+    assert "response_format" not in batch_kwargs, (
+        "the reasoning pass must not have altered the batch call's contract"
+    )
+
+
+@pytest.mark.anyio
+async def test_grill_reasoning_is_silent_when_the_seam_is_absent() -> None:
+    """No sink wired (a benchmark run, or thinking switched off) must degrade to
+    the previous behaviour, never to a crash — reasoning is best-effort."""
+
+    async def _fake_generate(*_a: Any, **_k: Any) -> Any:
+        return _batch_of_one()
+
+    state: Dict[str, Any] = {
+        "task_id": "analyst-test", "user_input": "Add an endpoint.",
+        "messages": [], "hitl_pending": False, "shared_understanding_reached": False,
+    }
+
+    with patch(
+        "agents.analyst.soul_manager.get_prompt", return_value=_SOUL_SENTINEL
+    ), patch(
+        "agents.analyst._generate_grill_questions_llm", new=_fake_generate
+    ), patch(
+        "agents.analyst._assemble_socratic_context", new=AsyncMock(return_value="")
+    ), patch(
+        "agents.analyst._gather_tool_grounding", new=AsyncMock(return_value=("", []))
+    ):
+        from agents.analyst import run_analyst_node
+
+        result = await run_analyst_node(state, {"configurable": {}})
+
+    assert result.get("pending_grill_batch"), "the interview still produced its batch"
+
+
+def test_grill_reasoning_and_draft_resolve_to_the_same_model() -> None:
+    """The reasoning shown to the user must come from the model that then writes
+    the questions. The draft invokes an alias, the probe and the reasoning pass
+    take a bare tier — three call sites that must not be able to drift apart."""
+    from agents.analyst import _GRILL_MODEL, _GRILL_TIER
+
+    assert _GRILL_MODEL == f"ailienant/{_GRILL_TIER}", (
+        "the grill's alias and tier have diverged — reasoning and questions would "
+        "be produced by different models"
+    )
+
+
 # ── Test C2 — batched grill rounds ───────────────────────────────────────────
 
 

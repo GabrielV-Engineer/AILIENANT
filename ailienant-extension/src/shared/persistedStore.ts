@@ -86,7 +86,17 @@ export function createPersistedStore<T extends object>(
         const slice = options.pick(cur);
         const next = readEnvelope(api);
         next.slots[options.key] = { __v: version, data: slice };
-        writeEnvelope(api, next);
+        // One envelope carries every slot, so an unhandled throw here (an
+        // oversized or non-cloneable slice) loses ALL of them — including the
+        // draft the user is mid-sentence on — and does it from inside a
+        // requestAnimationFrame callback, where nothing is watching. Contain it
+        // to this write and report the root cause; the previous envelope stays
+        // on the host, so the next successful flush recovers.
+        try {
+            writeEnvelope(api, next);
+        } catch (err) {
+            console.error(`[persistedStore] setState failed for slot "${options.key}"`, err);
+        }
     };
     const schedule = (): void => {
         if (scheduled) { return; }

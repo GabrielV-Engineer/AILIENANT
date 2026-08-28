@@ -153,11 +153,10 @@ function AgentTimelineImpl({
         el.scrollTop = el.scrollHeight;
     }, [entries.length, streaming]);
 
-    // A checklist can outlive its own 'plan'-kind marker: stripReasoningForPersist
-    // only strips 'reasoning' entries, but a turn whose entries were reasoning-only
-    // to begin with (or whose 'plan' marker landed on a different message via a WS-
-    // ordering race) round-trips through persistence as `entries:[]` while
-    // `checklist` survives — bail only when there is truly nothing to show.
+    // A checklist can outlive its own 'plan'-kind marker: a turn whose marker
+    // landed on a different message via a WS-ordering race round-trips through
+    // persistence as `entries:[]` while `checklist` survives — bail only when
+    // there is truly nothing to show.
     if (entries.length === 0 && !(checklist && checklist.length > 0)) { return null; }
 
     const label = done ? summarize(entries, turnElapsedMs) : 'Working…';
