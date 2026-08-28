@@ -83,6 +83,24 @@ Decision    Not a defect — see [DECISION] tier.
 
 ---
 
+## Debt Ratio
+
+Derived, not asserted — recomputed at each phase closure that meaningfully changes the Open Items
+Dashboard, using the counts from that table (HIGH/MEDIUM/LOW only, per the exclusion rule above)
+and `radon raw -s` SLOC over `ailienant-core` excluding `venv/` and `tests/`.
+
+```
+Debt Ratio = (HIGH×3 + MEDIUM×2 + LOW×1) / KLOC(production)
+```
+
+**Baseline (2026-08-28, ailienant-core only):** 0 HIGH, 3 MEDIUM, 13 LOW → weighted 19 · SLOC 40,446
+(radon raw) → **Debt Ratio ≈ 0.47 / KLOC**. `ailienant-extension/src` is not yet included (no
+`radon`-equivalent SLOC pass wired for TypeScript) — extending the ratio there is itself
+DEBT-166-shaped (advisory, not blocking) and not worth a dedicated ticket until the number is
+tracked over more than one data point.
+
+---
+
 ## Decision Records Dashboard
 
 | ID | Title | Tier |
@@ -112,6 +130,9 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-210 | No automatic subsystem/community detection in internal GraphRAG | MEDIUM · Floating |
 | DEBT-211 | Internal GraphRAG has no git/PR-history awareness | LOW · Floating |
 | DEBT-212 | GraphRAG and project docs are separate context sources, never nodes in one graph | MEDIUM · Floating |
+| DEBT-213 | `web_fetch` destination guard is open to DNS rebinding (double resolution) | MEDIUM · Floating |
+| DEBT-214 | DuckDuckGo search fallback parses an unversioned public HTML page | LOW · Floating |
+| DEBT-215 | `ROLE_REGISTRY.allowed_tools` is vestigial but frozen by a test snapshot | LOW · Floating |
 | DEBT-035 | MultiPL-E TypeScript execution needs a Node-capable sandbox runtime | MEDIUM · Floating |
 | DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM · Blocked |
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW · Unscheduled |
@@ -130,6 +151,7 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-111 | GraphRAG nebula limited to file/external node types | MEDIUM · Floating |
 | DEBT-113 | Nebula picking + layout not yet scaled to 100k nodes | LOW · Floating |
 | DEBT-114 | Search pulse is not a real GraphRAG reasoning-path replay | LOW · Floating |
+| DEBT-216 | No rolled-up agentic product metrics (task completion, tool-call accuracy, cost/task, self-correction rate) | MEDIUM · Floating |
 | DEBT-115 | Per-project token-cost bucketing deferred from 11.1 | LOW · Floating |
 | DEBT-135 | Playwright dashboard fixture bypasses the real indexer | LOW · Floating |
 | DEBT-136 | Playwright suite is Chromium-only, no cross-browser matrix | LOW · Floating |
@@ -1684,6 +1706,51 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **External validation:** `graphify`'s cross-artifact graph (code + docs + configs in one `graph.json`) demonstrates the alternative shape — evaluated here only as an architectural reference, not adopted, mirroring the GraphRAG-MCP precedent already recorded at 8.14 planning: confirms the goal is reachable without adopting the reference implementation itself.
 - **What it would take:** a bounded `documents_in`/`references` edge type from a doc-derived node (chunked by heading, not whole-file) to the code symbols/files it names. Genuinely non-trivial: doc→code linking needs either explicit markup or a cheap heuristic (path/symbol-name string matching within doc text), since the deterministic-only constraint (CLAUDE.md §5.7, no `scipy`-class dependency, no unjustified LLM pass) rules out an LLM-entity-linking pass by default.
 - **Phase:** unscheduled; needs its own design spike before a build ticket (same caution 8.14.4's "ADR-as-graph" spike used).
+
+---
+
+### DEBT-216 [MEDIUM · Floating] — No rolled-up agentic product metrics (task completion, tool-call accuracy, cost/task, self-correction rate)
+
+- **Date:** 2026-08-28
+- **Files:** `ailienant-core/core/observability.py` (Phoenix spans), `ailienant-core/core/telemetry.py` (`tool_invocations`), `ailienant-core/gateway/ledger.py` (reserve/commit cost), `ailienant-core/brain/engine.py`/`brain/state.py` (`reflexion_guard`), `ailienant-core/core/task_service.py`.
+- **Capability (not built):** the agent's own behavioral success has no computed rate anywhere. The event-level substrate already exists — Phoenix (13.1.5) traces every node/LLM span with cost and latency, `tool_invocations` logs every tool-call outcome, the ledger meters cost per turn, `reflexion_guard` drives self-healing — but none of it is aggregated into the four standard agent-eval KPIs (Task/Goal Completion Rate, Trajectory/Step Efficiency, Tool Call Accuracy, Cost per Task, Self-Correction Rate). In particular, no `goal_achieved` boolean is ever recorded per task; there is no way to answer "what % of tasks actually succeed" without reading transcripts by hand.
+- **Why it is not a defect:** nothing shipped claims this rollup exists. Phoenix and the telemetry sinks were built as raw observability, not as a KPI layer on top of it.
+- **External validation:** this is the standard framework production LLM-agent systems (LangSmith, Arize's own agent evals, Galileo) ship as their core value proposition — not a speculative addition. Since Phoenix is already self-hosted here, its own `phoenix.evals` module (LLM-as-judge grading) is the first thing to evaluate for `goal_achieved` scoring before reaching for a new dependency like DeepEval/Ragas (CLAUDE.md §9 — lightest viable option).
+- **What it would take:** a `goal_achieved`/`steps_taken` field emitted once per task from `core/task_service.py`'s terminal state, joined against the existing `tool_invocations` and ledger cost rows by `task_id` for the rollup. Touches `core/`/`brain/` (CLAUDE.md §3 — deterministic engine, higher blast radius) so it needs its own blueprint before a build ticket, not an ad-hoc patch.
+- **Phase:** unscheduled — candidate for a future observability-rollup division, if/when agent-behavior debugging (not code-quality debugging) becomes the bottleneck.
+
+---
+
+### DEBT-213 [MEDIUM · Floating] — `web_fetch` destination guard is open to DNS rebinding
+
+- **Date:** 2026-08-28
+- **Files:** `ailienant-core/core/url_guard.py` (`validate_fetch_url`), `ailienant-core/tools/perception_tools.py` (`WebFetchTool._fetch`).
+- **Gap:** the guard resolves the hostname to classify it, then `httpx` resolves the same name again when it opens the connection. A name server the attacker controls can answer the two lookups differently — a routable address for the check, a private one for the connect — so a validated URL still reaches an internal host. Every literal-address and single-resolution attempt is blocked, which is the whole class an untrusted page or file can express without also controlling DNS.
+- **Why it is not a defect of this design:** validate-then-connect is inherently a TOC-TOU (CLAUDE.md §6.2); no amount of pre-flight checking closes it. The fix is architectural, not a stricter predicate.
+- **What it would take:** pin the validated address for the connection — a custom `httpx` transport that dials the checked IP while preserving the original `Host` header and TLS SNI so certificate validation still matches the hostname. Non-trivial: it must not weaken certificate checking, and it interacts with the manual redirect walk.
+- **Phase:** unscheduled; warranted before any deployment where an untrusted party can influence a fetched URL and also control DNS.
+
+---
+
+### DEBT-214 [LOW · Floating] — DuckDuckGo search fallback parses an unversioned public HTML page
+
+- **Date:** 2026-08-28
+- **Files:** `ailienant-core/tools/mcp_adapter.py` (`make_duckduckgo_fallback_search_fn`).
+- **Gap:** the fallback leg of `web_search` regex-parses DuckDuckGo's public results markup. It carries no contract and can drift silently to zero results on any markup change; its own docstring already declares this. Now that `web_search` reaches more roles, a silent degradation is felt in more places.
+- **Why it is not a defect:** it is deliberately the fallback, never the default — the Brave MCP provider is primary, and the fallback degrades to the standard "unavailable" string rather than raising.
+- **What it would take:** either a scheduled canary asserting the parse still yields results, or a second keyless provider so a single markup change cannot zero the capability.
+- **Phase:** unscheduled.
+
+---
+
+### DEBT-215 [LOW · Floating] — `ROLE_REGISTRY.allowed_tools` is vestigial but frozen by a test snapshot
+
+- **Date:** 2026-08-28
+- **Files:** `ailienant-core/agents/roles.py` (`RoleConfig.allowed_tools`), `ailienant-core/tests/test_phase8_8_tool_parity_gate.py` (`_FROZEN_ROLE_TOOLS`).
+- **Gap:** `allowed_tools` is consulted by no dispatch path (`ToolSchema.allowed_roles` is the live gate, per `core/tool_registry.py`), yet a frozen per-role snapshot in the parity gate keeps it alive and must be edited in lockstep with it. Dead data held in place by a test is a maintenance tax that also invites a future reader to treat it as authoritative.
+- **Why it was left:** the snapshot is a deliberate lock against silent role-contract erosion; removing it is a decision about what that gate protects, not a cleanup.
+- **What it would take:** decide whether the gate should freeze the live `allowed_roles` surface instead, then delete the vestigial field and its snapshot together.
+- **Phase:** unscheduled.
 
 ---
 

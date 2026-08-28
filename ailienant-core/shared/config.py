@@ -310,6 +310,24 @@ MODEL_EMBEDDING: str = os.getenv("AILIENANT_MODEL_EMBEDDING", "ailienant/embeddi
 # floor for a call that is capped at a handful of output tokens anyway.
 MINI_JUDGE_MODEL: str = os.getenv("AILIENANT_MINI_JUDGE_MODEL", MODEL_MEDIUM)
 
+# ---------------------------------------------------------------------------
+# Outbound web-fetch bounds. The timeout keeps an unresponsive host from parking
+# an agent turn; the character cap is what stops a large page from consuming the
+# context window (it applies to decoded text, not raw bytes, because that is the
+# unit the model is charged in). Both are operator-tunable: a slow documentation
+# host or an unusually long spec page is a legitimate reason to raise them.
+# Loopback is refused by default — see core/url_guard.py for why the other
+# private ranges get no equivalent switch.
+# ---------------------------------------------------------------------------
+WEB_FETCH_TIMEOUT_S: float = max(1.0, _env_float("AILIENANT_WEB_FETCH_TIMEOUT_S", 5.0))
+WEB_FETCH_MAX_CHARS: int = max(1_000, _env_int("AILIENANT_WEB_FETCH_MAX_CHARS", 50_000))
+WEB_FETCH_ALLOW_LOOPBACK: bool = os.getenv("AILIENANT_WEB_FETCH_ALLOW_LOOPBACK", "0") != "0"
+
+# Per-tool-instance call ceiling. `WebFetchTool` is constructed once per
+# `build_perception_tools(state)` call, i.e. once per node invocation, so an
+# instance counter bounds fetches per agent turn without any lifecycle to leak.
+WEB_FETCH_MAX_CALLS_PER_TURN: int = max(1, _env_int("AILIENANT_WEB_FETCH_MAX_CALLS_PER_TURN", 10))
+
 # Phase 5.2 — MCP transport URI (None → local-only fallback, no MCP session).
 # Format expected: "stdio:///absolute/path/to/server[?arg=...]" (only stdio
 # supported in 5.2; websocket/http transports deferred).

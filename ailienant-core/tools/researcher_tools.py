@@ -708,10 +708,13 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
     from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
     from core.tool_dispatch import RegisteredTool
     from core.vfs_middleware import make_safe_reader
+    from tools.analyst_tools import WEB_SEARCH_ROLES, make_web_search_tool
     from tools.perception_tools import (
+        WEB_FETCH_ROLES,
         ArchitectureDigestTool,
         FindSymbolCallersTool,
         TraceCrossBoundaryTool,
+        WebFetchTool,
     )
 
     workspace_root = str(state.get("workspace_root") or "")
@@ -780,5 +783,20 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
             ),
             ToolPrivilegeTier.READ_ONLY,
             _RESEARCHER_ROLES,
+        ),
+        # External retrieval. Cross-listed from the analyst/perception families
+        # rather than re-registered: agents/researcher.py builds its grounding loop
+        # from this map alone (it never consults the RAG store), so an entry here is
+        # what actually makes the tool reachable for the Researcher. Roles are
+        # unioned by core.tool_registry._merge_registered when the families merge.
+        "web_search": RegisteredTool(
+            make_web_search_tool(),
+            ToolPrivilegeTier.READ_ONLY,
+            WEB_SEARCH_ROLES,
+        ),
+        "web_fetch": RegisteredTool(
+            WebFetchTool(),
+            ToolPrivilegeTier.READ_ONLY,
+            WEB_FETCH_ROLES,
         ),
     }

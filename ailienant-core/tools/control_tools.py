@@ -36,6 +36,11 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
+# ALL_ROLES is re-exported (redundant-alias form): shared.rbac owns the role
+# universe now, but this module has been its import site since the universal
+# tools were written, and rewriting those call sites would be churn for no gain.
+from shared.rbac import ALL_ROLES as ALL_ROLES
+from shared.rbac import DEV_ROLES
 
 logger = logging.getLogger("CONTROL_TOOLS")
 
@@ -44,33 +49,15 @@ logger = logging.getLogger("CONTROL_TOOLS")
 # Shared constants & helpers
 # =====================================================================
 
-_CONTROL_ROLES: FrozenSet[str] = frozenset(
-    {
-        "core_dev",
-        "architect_refactor",
-        "qa_tester",
-        "secops",
-        "doc_manager",
-        "data_ml_engineer",
-        "devops_infra",
-        "vcs_manager",
-    }
-)
-"""All 8 canonical roles. Any agent may request HITL or self-mode its session."""
+_CONTROL_ROLES: FrozenSet[str] = DEV_ROLES
+"""All 8 canonical developer roles. Any agent may request HITL or self-mode its
+session. Aliased rather than restated so a new dev role reaches these CONTROL tools
+the moment it is added to the canonical set."""
 
 
 _CONTROL_ROLES_WITH_ORCHESTRATOR: FrozenSet[str] = _CONTROL_ROLES | frozenset({"orchestrator"})
 """The 8 canonical roles plus the orchestrator — the orchestrator may also self-mode
 its session and surface questions to the operator through these CONTROL tools."""
-
-
-ALL_ROLES: FrozenSet[str] = _CONTROL_ROLES | frozenset(
-    {"researcher", "analyst", "planner", "orchestrator"}
-)
-"""The authoritative role universe: the 8 canonical coder roles plus the four cognitive
-graph-node roles (researcher, analyst, planner, orchestrator). Universal tools — tool
-discovery and the TODO scratchpad — are visible to every one of them, so this is the
-`allowed_roles` they register with."""
 
 
 DANGEROUS_COMMANDS_REGEX: List[re.Pattern[str]] = [

@@ -1,19 +1,19 @@
-"""Phase 5.3 — ReadOnly perception-tool bundle.
+"""ReadOnly perception-tool bundle.
 
-Five new LangChain BaseTool subclasses + a schema-registration helper:
+LangChain BaseTool subclasses + a schema-registration helper:
 
     DocumentParserTool       — Parse PDF / CSV / DOCX payloads in RAM.
     InspectASTNodeTool       — Extract a class/function source by name via tree-sitter.
     GetSymbolReferencesTool  — File-level inbound dependents (1-hop reverse import).
     TraceDataFlowTool        — Forward + backward k-hop reachability over the graph.
-    WebFetchTool             — HTTP fetch + HTML→Markdown conversion (5 s timeout).
+    WebFetchTool             — Guarded HTTP fetch + HTML→Markdown conversion.
 
 Every tool wraps untrusted output in <{boundary_id}>...</{boundary_id}> (the
-Phase 5.1.1 Cognitive Quarantine tag). `register_perception_tools(store)` pushes
-all five schemas into the Tool RAG store with privilege_tier=READ_ONLY.
+Cognitive Quarantine tag). `register_perception_tools(store)` pushes the schemas
+into the Tool RAG store with privilege_tier=READ_ONLY.
 
 Heavy dependencies (pypdf, markdownify, httpx) are imported lazily inside the
-tool body so module load stays fast (mentor's audit constraint).
+tool body so module load stays fast.
 """
 
 from __future__ import annotations
@@ -46,6 +46,12 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
+from shared.config import (
+    WEB_FETCH_MAX_CALLS_PER_TURN,
+    WEB_FETCH_MAX_CHARS,
+    WEB_FETCH_TIMEOUT_S,
+)
+from shared.rbac import DEV_ROLES
 from tools.quarantine import wrap_boundary
 
 if TYPE_CHECKING:
@@ -59,16 +65,10 @@ logger = logging.getLogger("PERCEPTION_TOOLS")
 # =====================================================================
 
 
-_ALLOWED_PERCEPTION_ROLES = frozenset(
-    {
-        "core_dev",
-        "architect_refactor",
-        "qa_tester",
-        "secops",
-        "doc_manager",
-        "data_ml_engineer",
-    }
-)
+# Derived, not restated: this set predated the canonical role universe and had
+# drifted to 6 of the 8 dev roles, silently withholding perception tools from
+# devops_infra and vcs_manager.
+_ALLOWED_PERCEPTION_ROLES: FrozenSet[str] = DEV_ROLES
 
 
 # Canonical Cognitive-Quarantine wrapper lives in tools.quarantine; this alias
@@ -425,10 +425,6 @@ class TraceDataFlowTool(BaseTool):
 # =====================================================================
 
 
-_WEB_FETCH_TIMEOUT_SEC = 5.0
-_WEB_FETCH_MAX_BYTES = 50_000  # cap raw text returned to model
-
-
 class WebFetchInput(BaseModel):
     url: str = Field(description="HTTP/HTTPS URL of the documentation to fetch.")
 
@@ -436,38 +432,68 @@ class WebFetchInput(BaseModel):
 class WebFetchTool(BaseTool):
     """Fetch a remote URL and convert HTML to clean Markdown.
 
-    Hard 5 s timeout. Non-HTML responses returned as raw text (truncated).
-    Network errors and non-2xx statuses degrade gracefully — never raise.
+    Every destination — including each redirect hop — is validated by
+    ``core.url_guard`` before a connection is made, so a redirect cannot launder a
+    public URL into an internal one. The body is streamed and stopped at the
+    character cap rather than materialized whole. Network errors, denied
+    destinations, and non-2xx statuses all degrade gracefully — never raise.
     """
 
     name: str = "web_fetch"
     description: str = (
-        "Fetch a remote URL (HTTP/HTTPS). HTML responses are converted to "
-        "clean Markdown; other content types returned as truncated raw text. "
-        "Hard 5-second timeout."
+        "Fetch a remote URL (HTTP/HTTPS) and read its content. HTML is converted "
+        "to clean Markdown; oversized pages are truncated. Public destinations "
+        "only — private, loopback, and cloud-metadata addresses are refused. For "
+        "a PDF, CSV, or DOCX, use document_parser instead."
     )
     args_schema: Type[BaseModel] = WebFetchInput  # pyright: ignore[reportIncompatibleVariableOverride]
 
     _boundary_provider: Optional[Callable[[], str]] = PrivateAttr(default=None)
+    _calls_made: int = PrivateAttr(default=0)
 
     def __init__(self, *, boundary_provider: Optional[Callable[[], str]] = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._boundary_provider = boundary_provider
+        self._calls_made = 0
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("WebFetchTool is async-only — use _arun().")
 
     async def _arun(self, url: str) -> str:
+        from core.url_guard import redact_url, validate_fetch_url
+
+        safe_url = redact_url(url)
+
+        if self._calls_made >= WEB_FETCH_MAX_CALLS_PER_TURN:
+            return _wrap_boundary(
+                f"[web_fetch] ERROR: fetch budget exhausted "
+                f"({WEB_FETCH_MAX_CALLS_PER_TURN} per turn). Work with what you have.",
+                self._boundary_provider,
+            )
+        self._calls_made += 1
+
+        denial = validate_fetch_url(url)
+        if denial is not None:
+            from core.telemetry_log import log_network_denial
+
+            logger.warning("web_fetch denied %s: %s", safe_url, denial)
+            log_network_denial(safe_url, denial)
+            return _wrap_boundary(
+                f"[web_fetch] DENIED for {safe_url}: {denial}.",
+                self._boundary_provider,
+            )
+
         try:
-            text = await asyncio.wait_for(self._fetch(url), timeout=_WEB_FETCH_TIMEOUT_SEC)
+            text = await asyncio.wait_for(self._fetch(url), timeout=WEB_FETCH_TIMEOUT_S)
         except asyncio.TimeoutError:
             return _wrap_boundary(
-                f"[web_fetch] ERROR: timeout (>{_WEB_FETCH_TIMEOUT_SEC}s) for {url!r}.",
+                f"[web_fetch] ERROR: timeout (>{WEB_FETCH_TIMEOUT_S}s) for {safe_url}.",
                 self._boundary_provider,
             )
         except Exception as exc:  # noqa: BLE001 — network failures degrade gracefully
+            logger.warning("web_fetch failed for %s: %s", safe_url, exc, exc_info=True)
             return _wrap_boundary(
-                f"[web_fetch] ERROR fetching {url!r}: {exc}",
+                f"[web_fetch] ERROR fetching {safe_url}: {exc}",
                 self._boundary_provider,
             )
         return _wrap_boundary(text, self._boundary_provider)
@@ -476,23 +502,83 @@ class WebFetchTool(BaseTool):
     async def _fetch(url: str) -> str:
         import httpx  # lazy: skip cost when WebFetchTool isn't used
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(_WEB_FETCH_TIMEOUT_SEC)) as client:
-            resp = await client.get(url, follow_redirects=True)
+        from core.url_guard import MAX_REDIRECT_HOPS, redact_url, validate_fetch_url
 
-        if resp.status_code >= 400:
-            return f"[web_fetch] HTTP {resp.status_code} for {url!r}."
+        async with httpx.AsyncClient(timeout=httpx.Timeout(WEB_FETCH_TIMEOUT_S)) as client:
+            current = url
+            for _ in range(MAX_REDIRECT_HOPS):
+                # Redirects are walked manually so every hop passes the same guard
+                # as the first; httpx's follow_redirects would validate only the
+                # URL the model supplied.
+                async with client.stream("GET", current, follow_redirects=False) as resp:
+                    if resp.is_redirect:
+                        location = resp.headers.get("location")
+                        if not location:
+                            return f"[web_fetch] HTTP {resp.status_code} with no redirect target."
+                        current = str(httpx.URL(current).join(location))
+                        denial = validate_fetch_url(current)
+                        if denial is not None:
+                            from core.telemetry_log import log_network_denial
 
-        content_type = resp.headers.get("content-type", "").lower()
-        body = resp.text[:_WEB_FETCH_MAX_BYTES]
-        if "text/html" in content_type:
-            try:
-                import markdownify  # type: ignore[import-untyped]  # lazy
+                            safe_hop = redact_url(current)
+                            log_network_denial(safe_hop, f"redirect: {denial}")
+                            return f"[web_fetch] DENIED redirect to {safe_hop}: {denial}."
+                        continue
 
-                return str(markdownify.markdownify(body, heading_style="ATX"))
-            except Exception as exc:  # noqa: BLE001 — fall back to raw on conversion failure
-                logger.warning("markdownify failed for %s: %s", url, exc)
-                return body
+                    if resp.status_code >= 400:
+                        return f"[web_fetch] HTTP {resp.status_code} for {redact_url(current)}."
+
+                    content_type = resp.headers.get("content-type", "").lower()
+                    if not any(kind in content_type for kind in _TEXTUAL_CONTENT_TYPES):
+                        return (
+                            f"[web_fetch] Unsupported content-type {content_type or 'unknown'!r}. "
+                            "Use document_parser for PDF, CSV, or DOCX payloads."
+                        )
+
+                    body = await _read_capped(resp, WEB_FETCH_MAX_CHARS)
+                    if "html" in content_type:
+                        return _to_markdown(body, redact_url(current))
+                    return body
+
+            return f"[web_fetch] ERROR: exceeded {MAX_REDIRECT_HOPS} redirects."
+
+
+# Content types worth handing to a language model as text. Anything else (PDF,
+# images, archives) decodes to noise and has a dedicated tool.
+_TEXTUAL_CONTENT_TYPES: Tuple[str, ...] = ("text/", "json", "xml", "javascript")
+
+
+async def _read_capped(resp: Any, max_chars: int) -> str:
+    """Accumulate a streamed response, stopping once the character cap is reached.
+
+    Streaming rather than reading `resp.text` is what makes the cap a real memory
+    bound: the previous form downloaded and decoded the entire body before slicing
+    it, so a multi-gigabyte response was fully materialized to return 50k of it.
+    """
+    chunks: List[str] = []
+    total = 0
+    async for chunk in resp.aiter_text():
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= max_chars:
+            break
+    return "".join(chunks)[:max_chars]
+
+
+def _to_markdown(body: str, safe_url: str) -> str:
+    """Convert HTML to Markdown, re-capping afterwards.
+
+    Conversion is not guaranteed to shrink its input — link- and table-heavy pages
+    can expand — so the cap is re-applied to the result, not only to the source.
+    """
+    try:
+        import markdownify  # type: ignore[import-untyped]  # lazy
+
+        converted = str(markdownify.markdownify(body, heading_style="ATX"))
+    except Exception as exc:  # noqa: BLE001 — fall back to raw on conversion failure
+        logger.warning("markdownify failed for %s: %s", safe_url, exc, exc_info=True)
         return body
+    return converted[:WEB_FETCH_MAX_CHARS]
 
 
 # =====================================================================
@@ -860,10 +946,12 @@ def _tool_schema(
 
 
 # File-inspection tools are shared between the Researcher and Analyst roles.
-# web_fetch is assigned to the Analyst only (not the Researcher).
 _RESEARCHER_ROLE: FrozenSet[str] = frozenset({"researcher"})
 _ANALYST_ROLE: FrozenSet[str] = frozenset({"analyst"})
 _RESEARCHER_AND_ANALYST: FrozenSet[str] = frozenset({"researcher", "analyst"})
+# Public because researcher_tools cross-lists web_fetch into its own builder — the
+# Researcher's grounding loop reads that map directly and never the RAG store.
+WEB_FETCH_ROLES: FrozenSet[str] = _ALLOWED_PERCEPTION_ROLES | _RESEARCHER_AND_ANALYST
 # inspect_ast_node is shared with the planner role so the Planner can inspect
 # symbol definitions during pre-commit verification.
 _RESEARCHER_AND_ANALYST_AND_PLANNER: FrozenSet[str] = _RESEARCHER_AND_ANALYST | frozenset({"planner"})
@@ -902,9 +990,9 @@ async def register_perception_tools(store: ToolRAGStore) -> int:
         ),
         _tool_schema(
             "web_fetch",
-            "Fetch a URL and convert HTML to clean Markdown (5 s timeout).",
+            "Fetch a URL and convert HTML to clean Markdown. Public destinations only.",
             WebFetchInput,
-            extra_roles=_ANALYST_ROLE,
+            extra_roles=_RESEARCHER_AND_ANALYST,
         ),
     ]
     for schema in schemas:
@@ -961,6 +1049,6 @@ def build_perception_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
         "web_fetch": RegisteredTool(
             WebFetchTool(),
             ToolPrivilegeTier.READ_ONLY,
-            _ALLOWED_PERCEPTION_ROLES | _ANALYST_ROLE,
+            WEB_FETCH_ROLES,
         ),
     }

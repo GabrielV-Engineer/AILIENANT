@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, TypedDict
 
+from shared.rbac import assert_role_registry_parity
+
 
 # Defined here, in the pure-data leaf, so both prompt-assembly skeletons can
 # share one source of truth: the coder builder below appends it locally (no
@@ -165,6 +167,12 @@ ROLE_REGISTRY: Dict[str, RoleConfig] = {
         "hitl_triggers": [],
     },
 }
+
+
+# Import-time parity check: ROLE_REGISTRY owns each role's behaviour and stays
+# hand-written, but its key set must equal the canonical DEV_ROLES or a role would
+# ship with prompts and no permissions (or the reverse).
+assert_role_registry_parity(ROLE_REGISTRY)
 
 
 def get_role_config(role: Optional[str]) -> RoleConfig:

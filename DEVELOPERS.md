@@ -331,7 +331,8 @@ Proyect_Ailienant/
 │   │   ├── graph_weight.py      #     pre-execution context-OOM predictor (state tokens vs candidate window)
 │   │   ├── observability.py     #     env-gated LangSmith tracing bootstrap (no new sink)
 │   │   ├── telemetry.py         #     append-only SQLite audit trail (routing/OOM/latency/tool_invocations); dashboard-read + janitor-pruned
-│   │   ├── telemetry_log.py     #     tail-able rotating file sink (.ailienant_telemetry.log; WS/NODE/INDEX/CONTEXT/GENERATION/ERROR categories)
+│   │   ├── telemetry_log.py     #     tail-able rotating file sink (.ailienant_telemetry.log; WS/NODE/INDEX/CONTEXT/GENERATION/NETWORK/ERROR categories)
+│   │   ├── url_guard.py         #     outbound-fetch destination validation (scheme allowlist; loopback/RFC1918/link-local/metadata refused) + log-safe URL redaction
 │   │   ├── redaction.py         #     shared ReDoS-safe secret masker (mask_secrets; used by telemetry + exec_log)
 │   │   ├── exec_log.py          #     bounded in-memory per-exec command-output ring (non-persistent, source-tagged, seq-cursor); sole emitter of the Glass-Box Timeline execution-detail channel
 │   │   ├── activity_context.py  #     turn-scoped ActivitySink Protocol + ContextVar (Glass-Box Timeline execution-detail correlation, no tool-signature changes)
@@ -543,7 +544,9 @@ The suite is large (latest gate: **2,858 passing / 2 skipped**, 91% line coverag
 
 **Span tracing (opt-in, self-hosted):** `docker compose --profile tracing up -d` starts a local Arize Phoenix instance on `:6006`; the backend picks it up when both `AILIENANT_ENABLE_PHOENIX_TRACING=1` and a reachable `PHOENIX_COLLECTOR_ENDPOINT` are set (off by default — a bare `docker compose up` never starts Phoenix or touches this path). Instruments both LangGraph nodes and every raw `litellm.acompletion` call, giving a real span waterfall per turn instead of the flat `telemetry_log.py` event stream. **Prompts and completions are written into Phoenix's local store when this is on** — local-only and opt-in, but outside `SecretsScrubberFilter`'s reach, unlike every other sink in this project.
 
-**Zero-degradation rule:** your change must not introduce a single new type error or lint warning. **Boy-Scout rule:** if a file you touch already has errors, fix them while you're there.
+**Zero-degradation rule:** your change must not introduce a single new type error or lint warning. **Boy-Scout rule:** if a file you touch already has errors, fix them while you're there. The two advisory ESLint rules added for code-quality metrics (`complexity`, `max-lines-per-function` — see [CLAUDE.md](CLAUDE.md) §16) are exempt from this policy; every other rule stays under it.
+
+**Code-quality metrics (advisory, non-blocking):** `.github/workflows/code-metrics-gate.yml` runs `radon cc`/`radon mi` over `ailienant-core` and `npm run metrics:duplication` (`jscpd`, config in `.jscpd.json`) over both zones, with `continue-on-error: true` — same pattern as the OpenSpec gate. Locally: `cd ailienant-core && .\venv\Scripts\radon.exe cc . -a -s` / `.\venv\Scripts\radon.exe mi . -s` (both exclude `venv/`/`tests/`), and `npm run metrics:duplication` from the repo root. See [CLAUDE.md](CLAUDE.md) §16 and `docs/TECH_DEBT_BACKLOG.md`'s Debt Ratio section for how these roll up.
 
 **Zero-flake policy:** a test that needs a "pre-existing unrelated flake" footnote at phase-closure is a same-sub-phase fix from now on, never a footnote. This formalizes the precedent set by DEBT-108 (`tests/benchmark/test_retention.py`, a genuine cross-thread `FileLock` defect that was waved through as a footnoted flake across at least 6 phase-closure gates before being fixed for real in 12.14) and DEBT-153 (`response_cache` cross-test contamination, closed the same sub-phase). If a test is flaking, stop and fix the root cause or the assertion's contract before moving on — do not re-verify it green in isolation and footnote it as unrelated.
 

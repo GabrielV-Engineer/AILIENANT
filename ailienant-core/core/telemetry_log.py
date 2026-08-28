@@ -256,6 +256,18 @@ def log_generation_utilization(
     )
 
 
+def log_network_denial(url: str, reason: str) -> None:
+    """Record one refused outbound fetch.
+
+    A blocked destination is a security-relevant event, not a routine failure: an
+    agent repeatedly steered at loopback or the cloud metadata endpoint is a signal
+    an operator needs to see, and a refusal that only ever reached a WARNING line
+    left no auditable trail. ``url`` must already be redacted by the caller — this
+    sink formats, it does not sanitize.
+    """
+    _emit("NETWORK", {"url": url, "reason": reason})
+
+
 def log_exception(session_id: str, source: str, message: str, exc: BaseException) -> None:
     """Record one exception with its full traceback via the same ``_emit``/
     ``SecretsScrubberFilter`` path as every other category — no new scrubbing.

@@ -45,8 +45,10 @@ DEBUG_MODE: bool = os.getenv("AILIENANT_RESEARCHER_DEBUG", "0") != "0"
 _DEEP_CONTEXT_MIN_SIM: float = 0.20
 
 # Upper bound on reason→call→observe cycles the grounding loop spends before it must
-# commit to the skeleton. Bounded so a chatty model cannot stall the node.
-_RESEARCHER_TOOL_MAX_ITERS: int = 3
+# commit to the skeleton. Bounded so a chatty model cannot stall the node. Sized so a
+# web search followed by a fetch of one of its results still leaves cycles for the
+# codebase lookups that ground the skeleton — at 3 that pair consumed the whole budget.
+_RESEARCHER_TOOL_MAX_ITERS: int = 5
 
 # Hard ceiling (chars) on the skeleton handed to the Planner — a defensive cap above
 # the ~2048-token generation bound, so an oversized buffer can never saturate the
@@ -122,10 +124,14 @@ async def _gather_tool_grounding(
         reasoner = configurable.get("researcher_tool_reasoner") or make_gateway_reasoner(
             tools, session_id=task_id
         )
+        # Derived from the resolved map, never restated: a hand-written list drifts
+        # the moment the arsenal changes, and advertising a tool the dispatcher does
+        # not hold (or omitting one it does) misleads the model either way.
         seed = (
             "Before composing the Skeleton Map, you MAY call READ_ONLY retrieval tools "
-            "(glob, grep, workspace_structure, query_graphrag, get_dependents) to ground "
-            "it in the user's real code. Call only what helps; emit {} to skip."
+            f"({', '.join(sorted(tools))}) to ground it in the user's real code. "
+            "Prefer workspace tools; reach for the web only when the answer is not in "
+            "the codebase. Call only what helps; emit {} to skip."
         )
         loop_messages: List[Dict[str, Any]] = [{"role": "user", "content": seed}]
         trace: List[ToolCall] = []

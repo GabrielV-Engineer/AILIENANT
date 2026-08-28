@@ -2,7 +2,7 @@
 
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Dict, List
+from typing import Dict, FrozenSet, Iterable, List
 
 
 class PermissionMode(str, Enum):
@@ -70,20 +70,63 @@ RESEARCHER_IDENTITY = AgentIdentity(
 # every session mode — it must never mutate what it judges. An unknown role resolves to
 # the READ_ONLY floor (fail-safe: a subagent can never escalate past its map entry).
 # ---------------------------------------------------------------------------
-_DEV_ROLES = (
-    "core_dev",
-    "architect_refactor",
-    "devops_infra",
-    "secops",
-    "qa_tester",
-    "doc_manager",
-    "vcs_manager",
-    "data_ml_engineer",
+DEV_ROLES: FrozenSet[str] = frozenset(
+    {
+        "core_dev",
+        "architect_refactor",
+        "devops_infra",
+        "secops",
+        "qa_tester",
+        "doc_manager",
+        "vcs_manager",
+        "data_ml_engineer",
+    }
 )
+"""The 8 canonical developer roles — the single source every other role set derives
+its dev half from. ``agents.roles.ROLE_REGISTRY`` owns each role's prompt and gates;
+its keys must equal this set, which ``assert_role_registry_parity`` mechanizes."""
+
+
+CRITIC_ROLE: str = "analyst_readonly"
+"""The adversarial review identity a dispatched critic runs under. Not a developer
+role: it is floor-locked to READ_ONLY below and must never reach a mutating tool."""
+
+
+COGNITIVE_ROLES: FrozenSet[str] = frozenset(
+    {"researcher", "analyst", "planner", "orchestrator"}
+)
+"""The graph-node roles. Distinct from the dev roles: each is one node in the
+cognitive pipeline rather than a mode the CoderAgent runs in."""
+
+
+ALL_ROLES: FrozenSet[str] = DEV_ROLES | COGNITIVE_ROLES | {CRITIC_ROLE}
+"""The complete role universe — every identity that can appear as a dispatcher's
+``active_role``. Tools visible to everyone (tool discovery, the TODO scratchpad)
+register with this set."""
+
+
 DISPATCH_ROLE_PERMISSIONS: Dict[str, PermissionMode] = {
-    **{role: PermissionMode.EDIT_EXECUTE_RBW for role in _DEV_ROLES},
-    "analyst_readonly": PermissionMode.READ_ONLY,
+    **{role: PermissionMode.EDIT_EXECUTE_RBW for role in DEV_ROLES},
+    CRITIC_ROLE: PermissionMode.READ_ONLY,
 }
+
+
+def assert_role_registry_parity(registry_roles: Iterable[str]) -> None:
+    """Fail loudly when ``ROLE_REGISTRY`` and ``DEV_ROLES`` disagree.
+
+    The registry owns behaviour (prompts, forbidden phrases, HITL triggers) and is
+    deliberately not derived from this module; only the agreement between the two
+    is mechanized, so a role added to one and forgotten in the other cannot ship as
+    a silently tool-less or permission-less identity.
+    """
+    registry = frozenset(registry_roles)
+    if registry != DEV_ROLES:
+        missing = sorted(DEV_ROLES - registry)
+        extra = sorted(registry - DEV_ROLES)
+        raise RuntimeError(
+            f"role registry drift: missing from ROLE_REGISTRY={missing}, "
+            f"missing from DEV_ROLES={extra}"
+        )
 
 
 def resolve_dispatch_permission(role: str) -> PermissionMode:

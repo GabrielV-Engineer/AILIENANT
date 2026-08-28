@@ -53,6 +53,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from core.permissions import ToolPrivilegeTier
 from core.token_ledger import TokenLedger
 from core.tool_rag import ToolRAGStore, ToolSchema
+from shared.rbac import CRITIC_ROLE
 from tools.quarantine import wrap_boundary
 
 if TYPE_CHECKING:
@@ -67,10 +68,20 @@ _DIFF_MAX_LINES: int = 300
 _CVE_MAX_DEPS: int = 20
 
 # ── Role assignment ────────────────────────────────────────────────────────────
-_ANALYST_ROLES: FrozenSet[str] = frozenset({"analyst"})
+# The adversarial critic shares the analyst arsenal: subagent_worker_node hands it
+# exactly this tool map, so without the role here every call it makes is denied at
+# dispatch. Safe because every tool in this module is READ_ONLY and the critic's
+# permission floor (resolve_dispatch_permission) denies it anything mutating.
+_ANALYST_ROLES: FrozenSet[str] = frozenset({"analyst", CRITIC_ROLE})
 # read_token_ledger is shared with the orchestrator (its live token-spend view doubles
 # as the orchestrator's budget telemetry — no second tool needed).
 _ANALYST_AND_ORCHESTRATOR: FrozenSet[str] = _ANALYST_ROLES | frozenset({"orchestrator"})
+# web_search reaches beyond the Analyst: the Researcher owns retrieval, secops must
+# look up the CVE IDs its directive requires, and devops_infra needs external infra
+# documentation. Deliberately not every role — open-ended search is agent-initiated.
+WEB_SEARCH_ROLES: FrozenSet[str] = _ANALYST_ROLES | frozenset(
+    {"researcher", "secops", "devops_infra"}
+)
 
 # ── Manifest filename allowlist ────────────────────────────────────────────────
 _MANIFEST_NAMES: FrozenSet[str] = frozenset(
@@ -749,6 +760,7 @@ async def register_analyst_tools(store: ToolRAGStore) -> int:
             "web_search",
             "Search the web for CVEs, release notes, or API documentation.",
             WebSearchInput,
+            roles=WEB_SEARCH_ROLES,
         ),
         _tool_schema(
             "read_token_ledger",
@@ -918,7 +930,7 @@ def build_analyst_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredTool"]
         "web_search": RegisteredTool(
             make_web_search_tool(),
             ToolPrivilegeTier.READ_ONLY,
-            _ANALYST_ROLES,
+            WEB_SEARCH_ROLES,
         ),
         "read_token_ledger": RegisteredTool(
             TokenLedgerReadTool(ledger=token_ledger),

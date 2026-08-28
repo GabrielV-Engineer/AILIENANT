@@ -861,6 +861,21 @@
 
 ---
 
+### Division 8.19 — Web Research Capability Parity & Outbound-Fetch Hardening ✅
+
+> `web_search` reached only the Analyst and `web_fetch` only 6 of the 8 dev roles, while the Researcher — the node that owns retrieval — held neither, leaving PLAN mode with no path to read a URL before planning. The same window hardens the fetch path (it validated no destination at all) and collapses the drifted role sets onto one derived source.
+
+- [x] **8.19.0 — `core/url_guard.py`: outbound destination validation.**
+  Scheme allowlist, literal-IP and resolved-address classification (loopback, RFC1918, link-local/cloud-metadata, reserved), internal-suffix rejection, and `redact_url` for log-safe URLs. Loopback alone is operator-opt-in (`AILIENANT_WEB_FETCH_ALLOW_LOOPBACK`). **DoD:** every non-public class denied; pure apart from name resolution.
+- [x] **8.19.1 — Harden `WebFetchTool`.**
+  Per-hop validation across a manual redirect walk (a redirect can no longer launder a public URL inward), streamed body capped before materialization, re-cap after Markdown conversion, non-textual content types routed to `document_parser`, per-turn call budget, redacted logging, and a `NETWORK` audit line on every denial. **DoD:** existing degradation contract preserved — never raises into the node.
+- [x] **8.19.2 — Role parity.** `web_fetch` to all 8 dev roles + Researcher; `web_search` to Researcher, secops, and devops_infra. Applied on both the schema and builder sides, and cross-listed into `build_researcher_tools` because the Researcher's grounding loop reads that map directly rather than the RAG store.
+- [x] **8.19.2b — `analyst_readonly` reachability repair.** The dispatched critic was handed the analyst tool map while holding no role that could call any of it, so every call it made was denied. READ_ONLY throughout; its permission floor is unchanged.
+- [x] **8.19.3 — Single-source role vocabulary.** `shared/rbac.py` becomes the role-vocabulary home (`DEV_ROLES`, `COGNITIVE_ROLES`, `CRITIC_ROLE`, `ALL_ROLES`); the drifted 6-role perception set is derived from it, `ROLE_REGISTRY` parity is asserted at import, the Researcher's seed prompt is derived from its resolved tool map, and fetch bounds move to `shared/config.py`.
+- [x] **8.19.4 — Division 8.19 Checkpoint Gate.** `tests/test_phase8_19_checkpoint_gate.py` — SSRF matrix, redirect laundering, opt-in scoping, secret redaction, output/call bounds, quarantine containment, per-role admission asserted at `ToolDispatcher.classify`, and the role-source invariants.
+
+---
+
 ## PHASE 9 — Native Thinking (Real-Time Reasoning Stream) ✅
 
 > Real-time native model reasoning exposed in a collapsible Thought Box (Claude Extended Thinking / open reasoning models via `reasoning_content`). Strictly transport/orchestration/UI layers — `agents/` untouched.

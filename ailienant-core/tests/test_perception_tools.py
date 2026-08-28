@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import io
+import ipaddress
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -335,23 +337,60 @@ async def test_trace_data_flow_minimum_depth() -> None:
 # =====================================================================
 
 
-def _make_response_mock(status_code: int, body: str, content_type: str) -> MagicMock:
+def _make_response_mock(
+    status_code: int, body: str, content_type: str, *, location: str = ""
+) -> MagicMock:
+    """A streamed httpx response: `aiter_text` is the read path, not `.text`."""
     resp = MagicMock()
     resp.status_code = status_code
-    resp.text = body
+    resp.is_redirect = bool(location)
     resp.headers = {"content-type": content_type}
+    if location:
+        resp.headers["location"] = location
+
+    async def _aiter_text() -> Any:
+        yield body
+
+    resp.aiter_text = _aiter_text
     return resp
 
 
-def _patch_async_client(get_return: Any) -> Any:
-    """Build the chain that httpx.AsyncClient() needs inside an `async with`."""
+def _patch_async_client(stream_return: Any) -> Any:
+    """Build the chain httpx.AsyncClient() needs for `async with client.stream(...)`.
+
+    Accepts one response, a list consumed one per hop (redirect chains), or an
+    exception to raise instead.
+    """
+    responses = stream_return if isinstance(stream_return, list) else [stream_return]
+
+    def _stream(*_args: Any, **_kwargs: Any) -> Any:
+        if isinstance(responses[0], Exception):
+            raise responses[0]
+        resp = responses.pop(0) if len(responses) > 1 else responses[0]
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=resp)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
     client_instance = MagicMock()
-    client_instance.get = AsyncMock(return_value=get_return) if not isinstance(
-        get_return, Exception
-    ) else AsyncMock(side_effect=get_return)
+    client_instance.stream = _stream
     client_instance.__aenter__ = AsyncMock(return_value=client_instance)
     client_instance.__aexit__ = AsyncMock(return_value=False)
     return client_instance
+
+
+@contextmanager
+def _public_dns() -> Any:
+    """Make every hostname resolve to a routable address.
+
+    The URL guard resolves names to classify the destination; stubbing resolution
+    keeps these tests hermetic (no DNS) while still exercising the guard itself.
+    """
+    with patch(
+        "core.url_guard._resolve_all",
+        return_value=[ipaddress.ip_address("93.184.216.34")],
+    ):
+        yield
 
 
 @pytest.mark.anyio
@@ -359,7 +398,7 @@ async def test_web_fetch_html_to_markdown() -> None:
     resp = _make_response_mock(200, "<h1>Hello</h1><p>World</p>", "text/html; charset=utf-8")
     client = _patch_async_client(resp)
     tool = WebFetchTool(boundary_provider=_boundary_provider)
-    with patch("httpx.AsyncClient", return_value=client):
+    with _public_dns(), patch("httpx.AsyncClient", return_value=client):
         out = await tool._arun(url="https://example.com/")
     # markdownify turns <h1> into "Hello\n=====" or "# Hello" depending on heading_style
     assert "Hello" in out
@@ -372,7 +411,7 @@ async def test_web_fetch_non_html_returns_raw() -> None:
     resp = _make_response_mock(200, '{"k":"v"}', "application/json")
     client = _patch_async_client(resp)
     tool = WebFetchTool(boundary_provider=_boundary_provider)
-    with patch("httpx.AsyncClient", return_value=client):
+    with _public_dns(), patch("httpx.AsyncClient", return_value=client):
         out = await tool._arun(url="https://example.com/data.json")
     assert '"k":"v"' in out
 
@@ -382,7 +421,7 @@ async def test_web_fetch_4xx_status() -> None:
     resp = _make_response_mock(404, "Not Found", "text/html")
     client = _patch_async_client(resp)
     tool = WebFetchTool(boundary_provider=_boundary_provider)
-    with patch("httpx.AsyncClient", return_value=client):
+    with _public_dns(), patch("httpx.AsyncClient", return_value=client):
         out = await tool._arun(url="https://example.com/missing")
     assert "HTTP 404" in out
 
@@ -391,7 +430,7 @@ async def test_web_fetch_4xx_status() -> None:
 async def test_web_fetch_network_exception() -> None:
     client = _patch_async_client(ConnectionError("dns boom"))
     tool = WebFetchTool(boundary_provider=_boundary_provider)
-    with patch("httpx.AsyncClient", return_value=client):
+    with _public_dns(), patch("httpx.AsyncClient", return_value=client):
         out = await tool._arun(url="https://example.com/")
     assert "ERROR" in out
     assert "dns boom" in out
