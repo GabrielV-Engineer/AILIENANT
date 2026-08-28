@@ -2952,3 +2952,59 @@ hardware-VRAM lock with a stated time cost — no Effort Budget level is ever ha
 none needed a reason to reject a selection. Both `HardwarePanel.tsx` (dashboard) and
 `ModelsMenu.tsx`'s orchestration view (workspace webview, via a new `GET_EFFORT_MODE`/
 `SET_EFFORT_MODE` host-bridge round trip) were updated in the same change.
+
+---
+
+## Design Decision — Phoenix Distributed Tracing Dependency Footprint (GO — client/server split)
+
+> Not a wire contract (no state channel, WS event, REST field, or table in AILIENANT's own DBs —
+> Phoenix owns its own store), so this record carries no `§N` number, matching the precedent set by
+> the manifest 13.1.4 telemetry additions, which also got none. Answers CLAUDE.md §9's demand for an
+> explicit dependency-governance justification before `core/observability.py::configure_phoenix_tracing`
+> shipped, and records the real footprint after two initial assumptions were checked against the
+> installed packages and corrected.
+
+**Decision: GO, split into a light client (Python) and a heavy server (Docker), not one `pip install`.**
+The manifest's original sketch named `arize-phoenix` — the whole platform (~40-60 transitive
+packages: strawberry-graphql, pandas, uvicorn, sqlean…) — against the standing §9 precedent
+(`scipy` rejected for a narrow need in favor of a hand-rolled `degree_centrality`). Arize ships the
+server as a separate `arizephoenix/phoenix:latest` image and a lightweight client package
+(`arize-phoenix-otel`), so only the client enters `requirements-dev.txt`; the server runs as a
+`profiles: ["tracing"]` compose service, never started by a bare `docker compose up`.
+
+**Honest footprint (verified by an actual install, not a metadata read):** `arize-phoenix-otel`
+depends on the `opentelemetry-exporter-otlp` *meta-package*, which pulls **both** the gRPC and HTTP
+OTLP exporters — meaning `grpcio` (a ~5MB compiled wheel) installs regardless of which protocol is
+actually used at runtime (`http/protobuf`, chosen here — see `core/observability.py`). An earlier
+draft of this decision assumed choosing HTTP would avoid `grpcio`; it does not. The split still
+avoids the platform package's much larger surface (strawberry-graphql, pandas, uvicorn, sqlean), so
+the decision stands, but on the real number: 15 packages installed
+(`arize-phoenix-otel==0.17.1`, `openinference-instrumentation-langchain==0.1.72`,
+`openinference-instrumentation-litellm==0.1.39`, and their transitive OTel/protobuf/grpcio tree),
+all dev-only per the DEBT-179 split (never in the runtime image).
+
+**Scope: both LangChain and litellm instrumentors, not just the graph.** No agent in this codebase
+uses a LangChain chat model — every LLM call is a raw `litellm.acompletion()`
+(`tools/llm_gateway.py`, 11 call sites). `LangChainInstrumentor` alone would produce graph-node spans
+with empty interiors — timings with no prompt, completion, token, or model detail, the exact
+information a debugging session usually needs first. `openinference-instrumentation-litellm` closes
+that gap. Verified directly against the installed package source (not assumed from its own docs,
+which warn instrumentation "must run before `import litellm`" — a warning describing a narrower
+failure mode, an aliased `from litellm import acompletion` import, which does not occur anywhere in
+this repo): `LiteLLMInstrumentor._instrument()` patches via plain `setattr(litellm, "acompletion", …)`,
+an attribute resolved at call time. Every one of the 11 call sites uses `litellm.acompletion(...)`
+module-attribute access, so late patching from `main.py`'s `lifespan()` — long after
+`tools/llm_gateway.py`'s own `import litellm` — still wraps the same callable it calls. Proven by a
+live test (`tests/test_observability.py::test_litellm_acompletion_is_wrapped_and_produces_a_span`),
+not assumed.
+
+**Cost when off is structurally zero**, not merely small: `configure_phoenix_tracing()` checks the
+env flag and returns before importing anything from the tracing tree. **Cost when on** was not yet
+measured against a real workload at the time this was recorded — a traced-vs-untraced turn
+comparison is a follow-up measurement, not a blocker to shipping the opt-in path itself.
+
+**Known trade-off, stated plainly rather than left implicit:** when tracing is on, prompts and
+completions are written into Phoenix's local SQLite store, outside `SecretsScrubberFilter`'s reach —
+the one sink in this project that does not route through that filter. Local-only and opt-in, but a
+real departure from the project's usual "secrets never round-trip through a sink" posture
+(`DEVELOPERS.md`'s Testing & quality gates section states this to anyone about to turn it on).

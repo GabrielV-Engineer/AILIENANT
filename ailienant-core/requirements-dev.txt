@@ -10,8 +10,14 @@ hypothesis>=6.165.0
 mypy>=2.1.0
 pre-commit>=4.6.1
 
-# On-demand CPU/latency profiling (13.1.3) — never invoked by pytest/CI, standalone
-# CLI only (`py-spy record -- ...` / `py-spy top --pid ...`). No AILIENANT_ENABLE_*
-# gate needed: unlike scripts/hardware_stress_sim.py, it only inspects a process
-# already under the invoker's control, not a shared/destructive resource.
+# On-demand CPU/latency profiling — never invoked by pytest/CI, standalone CLI
+# only (`py-spy record -- ...` / `py-spy top --pid ...`). No env gate needed:
+# it only inspects a process already under the invoker's control.
 py-spy>=0.4
+
+# Phoenix span tracing client (core/observability.py::configure_phoenix_tracing) —
+# client half only; the collector runs as docker-compose's profile-gated
+# `phoenix` service, never installed in the runtime image.
+arize-phoenix-otel==0.17.1
+openinference-instrumentation-langchain==0.1.72
+openinference-instrumentation-litellm==0.1.39

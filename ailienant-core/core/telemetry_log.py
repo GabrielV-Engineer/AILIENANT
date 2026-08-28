@@ -257,15 +257,8 @@ def log_generation_utilization(
 
 
 def log_exception(session_id: str, source: str, message: str, exc: BaseException) -> None:
-    """Record one unhandled/handled exception with its full traceback.
-
-    The developer/agent-facing twin of the five categories above: none of them
-    capture *why* a turn actually failed — only routing, indexing, context and
-    generation shape. This closes that gap for the canonical top-level failure
-    boundary so a crash is one grep of ``.ailienant_telemetry.log`` away instead
-    of scrollback archaeology. Formatted with ``traceback.format_exception`` and
-    routed through the same ``_emit``/``SecretsScrubberFilter`` path as every
-    other category — no new scrubbing logic.
+    """Record one exception with its full traceback via the same ``_emit``/
+    ``SecretsScrubberFilter`` path as every other category — no new scrubbing.
     """
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     _emit(

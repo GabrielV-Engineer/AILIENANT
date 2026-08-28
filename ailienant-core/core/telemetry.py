@@ -100,13 +100,8 @@ CREATE TABLE IF NOT EXISTS action_token_usage (
     project_id   TEXT
 );
 
--- Emit-only per-tool-call ledger (DEBT-176). One row per core/tool_dispatch.py
--- ToolDispatcher.dispatch() outcome — resolved-or-not, executed-or-not — so tool
--- usage has a real signal beyond cosine similarity to the composed intent.
--- Deliberately NOT consumed as a select_tools ranking prior: doing so would make
--- tool selection non-deterministic across runs, contradicting the reproducibility
--- guarantee LangGraph checkpoint replay/Rewind depend on (rejected, not deferred —
--- see docs/TECH_DEBT_BACKLOG.md DEBT-176). Emit-only, full stop.
+-- Emit-only per-tool-call ledger (DEBT-176). One row per ToolDispatcher.dispatch()
+-- outcome. Never consumed as a select_tools ranking prior — see DEBT-176 for why.
 CREATE TABLE IF NOT EXISTS tool_invocations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,

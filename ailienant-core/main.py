@@ -82,7 +82,7 @@ from core.telemetry import (
     shutdown_telemetry_db,
 )
 from core.telemetry_log import configure_telemetry_log, log_exception, shutdown_telemetry_log
-from core.observability import configure_langsmith
+from core.observability import configure_langsmith, configure_phoenix_tracing, shutdown_phoenix_tracing
 
 # --- imports (Memory Janitor) ---
 from core.janitor import JanitorReport, run_janitor
@@ -264,6 +264,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     overnight_daemon.start()                 # on-demand memory consolidation (no timer)
     _publish_host_discovery()                # advertise loopback coords for the gateway
     configure_langsmith()                    # opt-in tracing; no-op unless env-configured
+    configure_phoenix_tracing()              # opt-in span tracing; no-op unless env-configured
     logger.info(
         "🟢 AILIENANT startup complete (WAL mode active). [elapsed %.1fs]",
         time.monotonic() - _t0,
@@ -317,6 +318,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     clear_run_state()  # remove the host-discovery file so a crash leaves a detectable stale one
     shutdown_telemetry_log()  # drain the queue, join the listener thread, close the file
     shutdown_telemetry_db()  # close the DEBT-120 telemetry connection opened at startup
+    shutdown_phoenix_tracing()  # flush any in-flight batched spans
 
 
 # =====================================================================

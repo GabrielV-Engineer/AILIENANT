@@ -2,8 +2,13 @@
 #
 # LanceDB is embedded (file-based tables under ~/.ailienant, see
 # ailienant-core/core/storage_paths.py and shared/config.py) rather than a
-# standalone server process, so there is one service here, not two — its
-# persistence is the named volume below, not a second container.
+# standalone server process, so `backend` needs no sibling database container —
+# its persistence is the named volume below.
+#
+# `phoenix` (opt-in span tracing, core/observability.py) is a second, profile-
+# gated service: `docker compose up` alone never starts it, so the default
+# zero-friction path is unchanged. Start it explicitly with
+# `docker compose --profile tracing up`.
 #
 # Usage: `docker compose up` from the repo root. No .env file is required to
 # reach a healthy backend; if one exists (copy .env.example to .env), the
@@ -21,6 +26,11 @@ services:
       AILIENANT_API_PORT: "8000"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Inert unless AILIENANT_ENABLE_PHOENIX_TRACING is also set — points at
+      # the phoenix service's Docker DNS name, only reachable when that
+      # profile is running (the reachability probe skips cleanly otherwise).
+      AILIENANT_ENABLE_PHOENIX_TRACING: ${AILIENANT_ENABLE_PHOENIX_TRACING:-}
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006
     volumes:
       - ailienant_home:/home/ailienant/.ailienant
     healthcheck:
@@ -31,5 +41,17 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    profiles: ["tracing"]
+    ports:
+      - "6006:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - phoenix_data:/mnt/data
+    restart: unless-stopped
+
 volumes:
   ailienant_home:
+  phoenix_data:

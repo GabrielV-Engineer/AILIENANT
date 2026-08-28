@@ -127,6 +127,7 @@ Every change defaults to an uncompromising Enterprise-grade standard. If a tacti
 - Use explicit, appropriate log levels. Do not use bare `print()` in runtime paths — route through the module logger.
 - A log line should let a future reader reconstruct what happened without re-running the code.
 - `core/telemetry_log.py` is the canonical dev-facing audit sink — extend it, never create a parallel one (`docs/PROJECT_MANIFEST.md`'s absorption rule binds this the same way). Its category set (`WS`/`NODE`/`INDEX`/`CONTEXT`/`GENERATION`/`ERROR`) is the reference for what belongs there, mirroring `core/benchmark_service.py`'s role as the canonical single-flight precedent in Section 5.1.
+- Opt-in OTel span tracing (`core/observability.py::configure_phoenix_tracing`) is not a competing sink: nested, timed spans are a distinct artifact class from the flat event log above, not a second record of the same data.
 
 ---
 
