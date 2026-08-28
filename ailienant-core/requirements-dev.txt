@@ -15,6 +15,12 @@ pre-commit>=4.6.1
 # it only inspects a process already under the invoker's control.
 py-spy>=0.4
 
+# Code-quality metrics (cyclomatic complexity, maintainability index) — advisory
+# CI job only (.github/workflows/code-metrics-gate.yml), never blocks a merge.
+# See CLAUDE.md §16 and docs/TECH_DEBT_BACKLOG.md's Debt Ratio section.
+radon>=6.0
+xenon>=0.9
+
 # Phoenix span tracing client (core/observability.py::configure_phoenix_tracing) —
 # client half only; the collector runs as docker-compose's profile-gated
 # `phoenix` service, never installed in the runtime image.

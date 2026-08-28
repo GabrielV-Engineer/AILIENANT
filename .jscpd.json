@@ -1,0 +1,17 @@
+{
+  "threshold": 1,
+  "minLines": 5,
+  "minTokens": 50,
+  "path": ["ailienant-core", "ailienant-extension/src"],
+  "ignore": [
+    "**/venv/**",
+    "**/node_modules/**",
+    "**/tests/**",
+    "**/*.test.ts",
+    "**/out/**",
+    "**/dist/**"
+  ],
+  "reporters": ["console"],
+  "gitignore": true,
+  "absolute": true
+}

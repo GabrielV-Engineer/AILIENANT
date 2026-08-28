@@ -30,6 +30,7 @@ You are an autonomous contributor to **Project AILIENANT**. Your prime directive
 | Frontend build | `npm run compile` |
 | Frontend lint | `npm run lint` |
 | Spec-drift check (ADVISORY) | `npm run openspec:validate` (see §15 — non-blocking until promoted, DEBT-166) |
+| Code-quality metrics (ADVISORY) | `radon cc`/`radon mi` (backend) + `npm run metrics:duplication` (both zones) — see §16, never blocking |
 
 ---
 
@@ -206,6 +207,24 @@ Git execution is **strictly non-autonomous**: do NOT run Git commands yourself. 
 3. **Advisory, not blocking.** `npm run openspec:validate` (`openspec validate --all --strict --json --no-interactive`) runs in CI (`.github/workflows/openspec-gate.yml`) with `continue-on-error: true`. Promoting it to a blocking gate is a separate, explicitly logged decision (DEBT-166), not automatic.
 4. **`openspec/` structure.** `openspec/config.yaml` holds project context shown to the authoring assistant; `openspec/changes/<slug>/` holds in-flight change proposals (`proposal.md`, `specs/`, optionally `design.md`, `tasks.md`); `openspec archive` promotes an implemented change's spec deltas into `openspec/specs/` as the accumulated baseline. Use `openspec status --change <slug>` to check artifact completion and `openspec validate <slug> --strict` before considering a change's planning artifacts done.
 5. **`AGENTS.md`** is a thin pointer to this file for cross-tool agent compatibility (OpenSpec and any other assistant that reads `AGENTS.md` by convention) — it is not a second copy of this charter and must not become one again.
+
+---
+
+## 16. Code Quality Metrics & Engineering Health (Advisory)
+
+This project is solo-developer, `main`-only, and local-first — it ships no customer-facing service
+with contractual uptime. The metrics below are scoped to what that reality actually supports:
+signal for prioritizing refactors and tracking maintainability trend, never a second blocking gate
+stacked on top of §2's table, and never enterprise-team ceremony (full DORA, customer SLAs, product
+analytics) borrowed wholesale from a context this project doesn't have.
+
+1. **Complexity, duplication, maintainability index — advisory only.** `.github/workflows/code-metrics-gate.yml` runs `radon cc`/`radon mi` (backend, `ailienant-core/requirements-dev.txt`) and `npm run metrics:duplication` (`jscpd`, both zones, config in `.jscpd.json`) with `continue-on-error: true`, same pattern as `openspec-gate.yml`. `eslint.config.mjs` also carries `complexity`/`max-lines-per-function` at `"warn"` severity. **These are explicitly exempt from §8's zero-degradation/zero-new-warning policy** — that policy still applies in full to every other lint rule (a new `curly`/`eqeqeq`/etc. warning on a line you touched is still a rejected mutation). A pre-existing function these two rules flag is not required to be fixed as a side effect of an unrelated change; treat a high reading as a signal to consider scoping a dedicated refactor, not as a mandate to refactor in-place.
+2. **Debt Ratio.** Defined and computed in `docs/TECH_DEBT_BACKLOG.md`'s Debt Ratio section — `(HIGH×3 + MEDIUM×2 + LOW×1) / KLOC(production)`, recomputed at each phase closure that meaningfully changes the Open Items Dashboard. Never hand-wave a number here; if the dashboard or the SLOC count changed, recompute before citing it.
+3. **DORA-lite (on-demand, not tracked inline).** `docs/DEV_JOURNAL.md`'s strict per-entry template (§14) is deliberately not amended to carry per-entry DORA fields — this project ships multiple phases per day, so a per-entry "lead time in days" would be noise, not signal. When a trend read is actually wanted, compute it from git history on demand: lead time ≈ time between a phase's first touching commit and its `DEV_JOURNAL.md` closure entry; change failure rate ≈ fraction of closure entries whose title or body names a prior entry as the thing being repaired (`git log --grep`, or scan `DEV_JOURNAL.md` for "Fix:"/"Repair" titles). Do not build a dashboard for this until it has been computed by hand more than once and shown to be worth automating.
+4. **Internal SLO/SLI (engineering targets, not customer SLAs).** Two targets, both already measurable from existing gates — no new instrumentation:
+   - Backend test suite runtime stays fast enough for the inner loop; if `pytest` (full backend suite) materially regresses, treat it as a signal to look for a slow/redundant test, not something to silently tolerate.
+   - Zero-flake policy (`DEVELOPERS.md`'s Testing & quality gates section) *is* this project's CI reliability SLO already — a flaking test is a same-sub-phase fix, never a footnote. Nothing new to add here; this section exists so the SLO is named as one, not just enforced as an ad-hoc rule.
+5. **What this section deliberately excludes:** full-team DORA (deployment frequency across multiple engineers, MTTR with on-call rotation), contractual SLAs, and end-user product/feature-flag analytics. These measure things this project does not have (a customer base, a multi-person deploy cadence, a production incident process). If that ever changes — a hosted multi-tenant deployment, external users — revisit this section rather than backfilling the ceremony now.
 
 ## graphify
 
