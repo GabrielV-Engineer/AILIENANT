@@ -945,6 +945,9 @@ export class WorkspacePanelManager {
                             auto_accept_low_risk: data.auto_accept_low_risk as boolean | undefined,
                             // Explicit skill the user invoked for this turn (snake_case).
                             invoked_skill_id: data.invoked_skill_id as string | undefined,
+                            // Set by the plan-acceptance buttons: execute the plan the
+                            // user approved instead of drafting a new one.
+                            accepted_plan: data.accepted_plan as boolean | undefined,
                         });
                         // Backend-governed stream-stall timeout (longer for slow local
                         // engines). The webview arms its watchdog from this — never a

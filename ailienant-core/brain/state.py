@@ -545,10 +545,6 @@ class AIlienantGraphState(TypedDict):
     #   (non-deterministically) on replay, misaligning the ids the operator
     #   actually answered. None once the ask phase resolves and clears it.
     pending_grill_batch: Optional[List[Dict[str, Any]]]
-    # Drift gate decision committed by drift_compute and read by the interrupt-bearing
-    # drift_gate (split so the gate decides on already-committed, replay-stable state).
-    drift_gate_open: Optional[bool]
-    drift_similarity: Optional[float]
     # Agentic-cell exec-approval deferral: the command awaiting human approval, set when
     # the cell defers a HITL-gated run_terminal so the interrupt happens in a clean,
     # side-effect-free re-entry rather than mid-iteration.
@@ -561,7 +557,6 @@ class AIlienantGraphState(TypedDict):
     pending_tool_call: Optional[Dict[str, Any]]
 
     # --- Immutable Planning (SDD) ---
-    # Replaces 'immutable_wbs' and 'completed_steps'.
     # The whole plan lives inside this single object so the two halves can never drift apart.
     mission_spec: Optional[MissionSpecification]
 
@@ -638,11 +633,6 @@ class AIlienantGraphState(TypedDict):
     # --- Guardrail State (Phase 2.1.14) ---
     guardrail_failed: bool              # True if validate_output detected a schema violation
     validation_feedback: Optional[str]  # Corrective message prepended to CoderAgent on retry
-
-    # --- Shadow Planner (Phase 2.2.C) ---
-    # Frozen on the first planner turn; never updated by agents.
-    # DriftMonitor compares mission_spec against this baseline to detect semantic drift.
-    immutable_wbs: Optional[MissionSpecification]
 
     # --- Shallow State / Patch Queue (Phase 2.2.D) ---
     # CoderAgent (Phase 4) writes unified diffs here; apply_patch_node consumes them.
@@ -904,9 +894,9 @@ class AIlienantGraphState(TypedDict):
     # fan-in barrier by dispatch_gate; single-writer, so no reducer. Default 0.
     dispatch_wave_count: int
     # Downstream node the dispatch subgraph returns to after synthesis. Set on
-    # dispatch entry by the emitting agent (planner → "drift_compute",
+    # dispatch entry by the emitting agent (planner → "step_dispatch",
     # researcher → "planner_agent") so a single shared synthesize node routes back
-    # to the correct successor. Scalar-overwrite; default None → "drift_compute".
+    # to the correct successor. Scalar-overwrite; default None → "step_dispatch".
     dispatch_return_node: Optional[str]
     # Pattern loop-back counter (adversarial critic wave, loop-until-done
     # continuation). Distinct from dispatch_wave_count (which slices one fixed task

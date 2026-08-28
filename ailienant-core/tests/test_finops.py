@@ -87,16 +87,16 @@ def test_route_none_goes_to_apply_patch() -> None:
     assert route_after_finops({"hitl_response": None}) == "apply_patch"
 
 
-def test_route_does_not_collide_with_drift_monitor_values() -> None:
-    """Regression guard: drift_monitor values must NOT trigger finops END routing.
+def test_route_does_not_collide_with_legacy_gate_values() -> None:
+    """Regression guard: legacy gate values must NOT trigger finops END routing.
 
-    drift_monitor sets hitl_response to "rejected", "timeout", or "approved".
+    Other gates set hitl_response to "rejected", "timeout", or "approved".
     None of these should be confused with the finops-namespaced "budget_rejected"
     / "budget_timeout" — this test would fail if someone accidentally uses
     plain "rejected" instead of "budget_rejected" in run_finops_node.
     """
-    for drift_val in ("rejected", "timeout", "approved"):
-        result = route_after_finops({"hitl_response": drift_val})
+    for legacy_val in ("rejected", "timeout", "approved"):
+        result = route_after_finops({"hitl_response": legacy_val})
         assert result == "apply_patch", (
-            f"drift_monitor value '{drift_val}' must not trigger finops END. Got: {result!r}"
+            f"legacy gate value '{legacy_val}' must not trigger finops END. Got: {result!r}"
         )

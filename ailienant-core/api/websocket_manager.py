@@ -522,7 +522,7 @@ class ConnectionManager:
         session_id: str,
         model_name: str,
         is_local: bool,
-        tier: Literal["small", "medium", "big"],
+        tier: Literal["small", "medium", "big", "cloud"],
     ) -> None:
         """Signal the IDE that a model is being loaded/warmed up before inference."""
         await self.send_personal_message(

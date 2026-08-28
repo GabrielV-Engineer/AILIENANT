@@ -868,7 +868,7 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     _routing_decision = getattr(state.get("context_metrics"), "routing_decision", None)
     _coder_model = resolve_model_alias_for_routing(_routing_decision, default=MODEL_BIG)
     _coder_tier = _coder_model.split("/", 1)[1] if _coder_model.startswith("ailienant/") else "big"
-    _coder_tier = _coder_tier if _coder_tier in ("small", "medium", "big") else "big"
+    _coder_tier = _coder_tier if _coder_tier in ("small", "medium", "big", "cloud") else "big"
 
     cache_context = [(target_file, current_content or "")] + [
         (p, s) for p, s in rag_snippets if s

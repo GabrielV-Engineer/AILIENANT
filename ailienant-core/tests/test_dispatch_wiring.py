@@ -63,7 +63,7 @@ def _build_harness() -> Any:
     g.add_edge("dispatch_advance", "dispatch_origin")
     g.add_conditional_edges(
         "dispatch_synthesize", route_after_synthesis,
-        {"drift_compute": END, "planner_agent": END},
+        {"step_dispatch": END, "planner_agent": END},
     )
     return g.compile()
 

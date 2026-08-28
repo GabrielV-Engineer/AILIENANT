@@ -5,7 +5,7 @@
 LLM invocations across concurrent AILIENANT sessions. `ResourceBroker` wraps
 the gateway path: on contention it pauses the calling node via the project's
 established HitL convention (vfs_manager.request_human_approval — same as
-brain/drift_monitor.py and brain/finops.py) and resumes along the user's
+brain/finops.py) and resumes along the user's
 chosen branch (WAIT, SWITCH_TO_CLOUD, CANCEL).
 """
 

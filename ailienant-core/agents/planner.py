@@ -32,7 +32,7 @@ from core.utils import is_polyglot_file
 from core.rules import rule_manager
 from core.project_instructions import get_project_instructions
 from core.resource_manager import ResourceBroker
-from brain.retry_policy import PLANNER_MAX_RETRIES
+from brain.retry_policy import PLANNER_EMPTY_WBS_MAX_RETRIES, PLANNER_MAX_RETRIES
 from tools.planner_tools import BudgetEstimatorTool, ValidateWBSDependenciesTool
 
 # Bounded planner retry budget on Pydantic ValidationError. Distinct from the
@@ -60,6 +60,19 @@ _PLANNER_DRAFT_MAX_MAX_TOKENS: int = 16384
 # recognise the failure shape (empty, prose, a truncated object) without dumping
 # a whole completion into the transcript or the log (charter §5.5).
 _RAW_PREVIEW_CHARS: int = 400
+
+# Least capable tier the planner may be routed to. The router still owns the
+# escalation above this line; it simply cannot select the smallest model here.
+# The asymmetry with the coder is deliberate: a plan's SHAPE gates the whole
+# turn — an empty or malformed WBS costs every downstream node — whereas a coder
+# step is per-file and has validate_output and the acceptance checks behind it.
+# Env-overridable so a deployment on stronger hardware can raise the floor
+# without a code change.
+_PLANNER_TIER_FLOOR: str = os.getenv("AILIENANT_PLANNER_TIER_FLOOR", "LOCAL_MEDIUM")
+
+# Sourced from the central retry policy, like MAX_PLANNER_RETRIES above, so the
+# resilience envelope stays auditable in one place.
+_EMPTY_WBS_MAX_RETRIES: int = PLANNER_EMPTY_WBS_MAX_RETRIES
 
 
 def _describe_unusable_draft(raw: str) -> str:
@@ -315,11 +328,6 @@ async def run_planner_node(
             "css": css,
             "context_metrics": updated_context_metrics,
         }
-        # Freeze the baseline on the first turn (immutable_wbs absent or None).
-        # DriftMonitor will compare future re-plans against this anchor.
-        if state.get("immutable_wbs") is None:
-            result["immutable_wbs"] = mock_mission
-            logger.info("PlannerAgent: immutable_wbs frozen (first turn, DEBUG mode).")
         return result
 
     # =====================================================================
@@ -581,11 +589,21 @@ async def run_planner_node(
         # different budget-trimmed prompt under a different context window (local↔cloud
         # reroute), so a budget-blind key could serve a stale trim.
         cache_ctx.append(("<budget>", str(_budget)))
+        # Key on the tier this turn will actually request, not a fixed alias.
+        # Since the routing decision began selecting the planner's model, a
+        # constant here let a draft produced by one tier be served back to a turn
+        # routed to a different one. Resolved from the pure alias mapping (no
+        # ResourceBroker, no VRAM lock) so the probe below still costs nothing on
+        # a hit — that pre-lock ordering is deliberate, see the probe comment.
         planner_cache_key = response_cache.build_key(
             intent=user_input,
             context=cache_ctx,
             project_id=state.get("project_id") or "",
-            model=MODEL_BIG,
+            model=resolve_model_alias_for_routing(
+                getattr(updated_context_metrics, "routing_decision", None),
+                default=MODEL_BIG,
+                floor=_PLANNER_TIER_FLOOR,
+            ),
         )
         planner_cache_paths = [_active_path] if _active_path else []
 
@@ -637,7 +655,9 @@ async def run_planner_node(
         # arbitrates the VRAM lock for whichever tier this resolves to.
         _context_meter = state.get("context_metrics")
         _routing_decision = getattr(_context_meter, "routing_decision", None)
-        _planner_model = resolve_model_alias_for_routing(_routing_decision, default=MODEL_BIG)
+        _planner_model = resolve_model_alias_for_routing(
+            _routing_decision, default=MODEL_BIG, floor=_PLANNER_TIER_FLOOR
+        )
         decision = await ResourceBroker.acquire_or_resolve(state, model=_planner_model)
         if decision.cancelled:
             return {"errors": ["Planner cancelled by user during VRAM contention."]}
@@ -647,7 +667,7 @@ async def run_planner_node(
         # THIS model regardless of whether the reasoning narration fires.
         _r_model = decision.effective_model
         _r_tier = _r_model.split("/", 1)[1] if _r_model.startswith("ailienant/") else "big"
-        _r_tier = _r_tier if _r_tier in ("small", "medium", "big") else "big"
+        _r_tier = _r_tier if _r_tier in ("small", "medium", "big", "cloud") else "big"
 
         # Live plan-of-attack reasoning, streamed to the Thought Box while the user
         # waits — ONLY for non-native models. A native model already surfaces its own
@@ -726,18 +746,35 @@ async def run_planner_node(
         # unusable draft with "fix these field errors" is what turned one
         # truncated response into three identical wasted attempts.
         _last_draft_unusable: bool = False
+        # True when the PREVIOUS attempt parsed and validated cleanly but carried
+        # no WBS steps. A third failure shape needing a third corrective: telling
+        # the model to "fix these schema errors" would be false — nothing failed
+        # validation — and telling it the response was truncated would be false
+        # too. Also bounds its own retries; see _EMPTY_WBS_MAX_RETRIES.
+        _last_draft_stepless: bool = False
+        _stepless_attempts: int = 0
 
         try:
             while retry_count <= MAX_PLANNER_RETRIES:
                 if retry_count > 0 and last_validation_err:
                     # The critic rejected the prior draft — narrate the re-plan attempt.
                     await _emit(f"critic_rejected → replanning ({retry_count}/{MAX_PLANNER_RETRIES})")
-                    if _last_draft_unusable:
+                    if _last_draft_stepless:
+                        corrective: str = (
+                            "\n\nYour previous attempt returned a plan with ZERO steps. "
+                            "A MissionSpecification whose 'tasks' array is empty is not a "
+                            "plan — nothing can be executed from it. Decompose the request "
+                            "into at least one concrete, actionable WBS step, each naming a "
+                            "real 'target_file' and a specific 'description'. If the request "
+                            "genuinely needs no code change, say so in 'outcome' AND still "
+                            "emit the step that verifies it. Return ONLY the raw JSON object."
+                        )
+                    elif _last_draft_unusable:
                         # Nothing came back to "fix". The dominant cause of an
                         # unparseable local-model draft is the completion being
                         # cut short, so ask for a smaller one rather than
                         # re-issuing the identical request that just failed.
-                        corrective: str = (
+                        corrective = (
                             f"\n\nYour previous attempt produced NO usable JSON object: "
                             f"{last_validation_err}\n"
                             f"Assume the response was cut short before it finished. Emit a "
@@ -821,6 +858,32 @@ async def run_planner_node(
                         raise ValueError(_describe_unusable_draft(raw_content))
                     _last_draft_unusable = False
                     mission_plan = MissionSpecification.model_validate(extracted)
+                    # A stepless plan is schema-VALID — `tasks` carries no minimum
+                    # length, and tightening the model would reject specs already
+                    # persisted in checkpoints. So the emptiness gate lives here, in
+                    # the Actor-Critic loop, where a corrective can actually fix it.
+                    # Without it the loop accepts `"tasks": []` on the first attempt
+                    # and the whole turn proceeds with nothing to execute.
+                    if not mission_plan.tasks:
+                        _stepless_attempts += 1
+                        _last_draft_stepless = True
+                        mission_plan = None
+                        if _stepless_attempts > _EMPTY_WBS_MAX_RETRIES:
+                            logger.error(
+                                "Planner: %d consecutive stepless drafts — conceding.",
+                                _stepless_attempts,
+                            )
+                            return {
+                                "errors": [
+                                    "the planner returned a plan with no steps "
+                                    f"({_stepless_attempts} attempts) — the request may be "
+                                    "too broad to decompose, or the routed model too small "
+                                    "for it"
+                                ],
+                                "planner_retry_count": retry_count,
+                            }
+                        raise ValueError("plan contained zero WBS steps")
+                    _last_draft_stepless = False
                     mission_plan = mission_plan.model_copy(update={
                         "tasks": _inject_polyglot_constraints(list(mission_plan.tasks))
                     })
@@ -935,9 +998,6 @@ async def run_planner_node(
         # coder / agentic-cell super-step checkpoint. A new turn re-runs the Researcher.
         "researcher_skeleton": None,
     }
-    if state.get("immutable_wbs") is None:
-        result["immutable_wbs"] = mission_plan
-        logger.info("PlannerAgent: immutable_wbs frozen (first turn, LLM mode).")
 
     # Export a navigable plan the user can open in the editor preview. The cognitive
     # fast-boot snapshot (dump_state_to_markdown) is owned by the Researcher node.
@@ -962,8 +1022,8 @@ async def run_planner_node(
 
     # Optionally open a dynamic-dispatch fan-out (no-op unless the feature is enabled
     # and a plan is emitted). On emission the graph routes planner → dispatch subgraph
-    # and returns to drift_compute; otherwise the pre-existing edge is taken unchanged.
+    # and returns to step_dispatch; otherwise the pre-existing edge is taken unchanged.
     from brain.dispatch_emitter import maybe_emit_dispatch
-    result.update(await maybe_emit_dispatch(state, config, return_node="drift_compute"))
+    result.update(await maybe_emit_dispatch(state, config, return_node="step_dispatch"))
 
     return result

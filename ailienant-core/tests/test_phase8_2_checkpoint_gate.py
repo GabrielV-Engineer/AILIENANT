@@ -24,9 +24,9 @@ import pytest
 from brain.state import ContextMeter, LLMProfile, MissionSpecification, WBSStep
 from core.graph_weight import estimate_graph_weight
 from core.memory.context_auditor import (
+    compute_task_complexity_index,
     derive_routing_decision,
     hardware_reroute,
-    is_fast_track_eligible,
     RiskLevel,
 )
 from core.observability import configure_langsmith
@@ -46,38 +46,51 @@ def _profile(vram_gb: float = 24.0, *, used: float = 0.0, apple: bool = False,
     )
 
 
-# ── A. Fast Track lexical probe ──────────────────────────────────────────────
-
-@pytest.mark.parametrize("text", [
-    "hello there",
-    "what is recursion?",
-    "explain dependency injection",
-    "thanks!",
-])
-def test_fast_track_accepts_trivial_queries(text: str) -> None:
-    assert is_fast_track_eligible(text) is True
+# ── A. Structural task-complexity score ──────────────────────────────────────
+# Replaces the Fast Track lexical probe, which was deleted: its only caller was
+# the researcher node, which runs exclusively on coding turns, so the "is this a
+# trivial self-contained question?" test it performed was structurally never true
+# where it was asked. TCI is what actually differentiates a turn now.
 
 
-@pytest.mark.parametrize("text", [
-    "",                                  # empty
-    "refactor the auth module",          # action verb
-    "what does this function do",        # deictic + context noun
-    "re-analyze stale workspace",        # action verb + context noun
-    "fix the bug in main.py",            # code signal (path)
-    "update config = {a: 1}",            # code signal (braces/equals)
-    "x" * 200,                           # too long
-    "please walk me through the entire architecture and history of the system in detail now",  # too many words
-])
-def test_fast_track_rejects_nontrivial_queries(text: str) -> None:
-    assert is_fast_track_eligible(text) is False
+def test_tci_scores_a_broad_greenfield_request_above_the_small_band() -> None:
+    """The reported incident: a whole-stack build on an empty workspace was
+    scored 0.0 and routed to the smallest model."""
+    tci = compute_task_complexity_index(
+        user_input=(
+            "prepare our ecosystem first, our stack, for a landing page. i want to "
+            "use javascript, next.js and react, also create the instructions file "
+            "with a list of tasks and restrictions, then plan the full wbs taking "
+            "in account frontend, backend, SEO and security"
+        ),
+        corpus_empty=True,
+    )
+    assert tci >= 30.0
+    assert derive_routing_decision(tci, 100.0, corpus_empty=True) != "LOCAL_SMALL"
+
+
+def test_tci_keeps_a_trivial_edit_on_the_cheap_path() -> None:
+    tci = compute_task_complexity_index(user_input="fix the typo", retrieved_files=1)
+    assert tci < 30.0
+    assert derive_routing_decision(tci, 100.0) == "LOCAL_SMALL"
+
+
+def test_tci_is_bounded_and_never_raises_on_hostile_input() -> None:
+    """user_input is untrusted (§6.2) and this runs on every turn, so a
+    pasted megabyte or a pathological punctuation run must stay bounded."""
+    hostile = [
+        "",
+        "x" * 200_000,
+        chr(0) + chr(0xFEFF) + "  ",
+        "(" * 50_000,
+        "and " * 50_000,
+    ]
+    for text in hostile:
+        score = compute_task_complexity_index(user_input=text)
+        assert 0.0 <= score <= 100.0
 
 
 # ── B. derive_routing_decision ───────────────────────────────────────────────
-
-def test_derive_fast_track_short_circuits_before_css_floor() -> None:
-    # css=0 would normally be CLOUD (red alert); fast_track wins → LOCAL_SMALL.
-    assert derive_routing_decision(tci=10.0, css=0.0, fast_track=True) == "LOCAL_SMALL"
-
 
 @pytest.mark.parametrize("tci,css,expected", [
     (10.0, 80.0, "LOCAL_SMALL"),
@@ -228,7 +241,6 @@ def _state(user_input: str, **extra: Any) -> Dict[str, Any]:
         "project_id": "proj82",
         "context_metrics": _ctx(),
         "mission_spec": None,
-        "immutable_wbs": None,
         "errors": [],
         "retry_count": 0,
         "current_cost_usd": 0.0,
@@ -271,7 +283,11 @@ from langchain_core.runnables import RunnableConfig  # noqa: E402
 _RCFG: RunnableConfig = {"configurable": {"researcher_tool_reasoner": _noop_reasoner}}
 
 
-async def test_planner_fast_track_skips_graphrag_and_routes_local_small() -> None:
+async def test_researcher_runs_retrieval_and_the_judge_on_every_coding_turn() -> None:
+    """Replaces the Fast Track row. The researcher node only ever runs on coding
+    turns, so the "trivial self-contained question" short-circuit could never be
+    correct there — and when it did fire (on a plan-acceptance phrase) it skipped
+    GraphRAG, bypassed the Mini-Judge and pinned the cheapest tier."""
     search, deep, audit, llm = _planner_mocks()
     state = _state("hello, what is recursion?")
 
@@ -286,14 +302,13 @@ async def test_planner_fast_track_skips_graphrag_and_routes_local_small() -> Non
         sem_cls.return_value.search_with_paths = search
 
         from agents.researcher import run_researcher_node
-        result = await run_researcher_node(state)  # fast_track skips the grounding loop
+        result = await run_researcher_node(state)
 
-    search.assert_not_called()
-    deep.assert_not_called()
-    audit.assert_not_called()  # Mini-Judge bypassed on the fast path
+    search.assert_called()
+    deep.assert_called()
+    audit.assert_called()  # the Mini-Judge is no longer bypassable
     ctx: ContextMeter = result["context_metrics"]
-    assert ctx.routing_decision == "LOCAL_SMALL"
-    assert ctx.is_red_alert is False
+    assert ctx.routing_decision in {"LOCAL_SMALL", "LOCAL_MEDIUM", "LOCAL_BIG", "CLOUD"}
 
 
 async def test_planner_low_vram_reroutes_local_to_cloud() -> None:

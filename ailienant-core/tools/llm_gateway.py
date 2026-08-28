@@ -861,7 +861,7 @@ class LLMGateway:
             from core.config.model_resolver import get_chat_target
             _alias_tier = effective_model.split("/", 1)[1]
             _target = get_chat_target(
-                _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
+                _alias_tier if _alias_tier in ("small", "medium", "big", "cloud") else "medium"
             )
             if _target is not None:
                 resolved_is_local = _target.is_local
@@ -1096,7 +1096,7 @@ class LLMGateway:
         """
         # Derive the BYOM tier from the alias, mirroring ainvoke's resolution.
         _alias_tier = model.split("/", 1)[1] if model.startswith("ailienant/") else "medium"
-        tier = _alias_tier if _alias_tier in ("small", "medium", "big") else "medium"
+        tier = _alias_tier if _alias_tier in ("small", "medium", "big", "cloud") else "medium"
 
         # Forwarded only when the caller actually tagged the call — omitted
         # entirely (not even as action=None) so a test double mocking one of

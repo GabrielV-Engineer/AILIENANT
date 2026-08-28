@@ -217,7 +217,9 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // the same handler (plan acceptance) submit under the NEW mode immediately,
     // instead of racing React's asynchronous state update (which would resubmit
     // under the stale mode and re-deny the writes).
-    const submitWithMode = useCallback((text: string, executionMode: ExecutionMode) => {
+    const submitWithMode = useCallback((
+        text: string, executionMode: ExecutionMode, acceptedPlan = false,
+    ) => {
         const presetConfig = getPresetConfig(preset);
         setMessages(prev => [...prev, { id: mkId(), role: 'user', content: text, authorLabel: authorLabelFor('user', nattName) }]);
         // Preserve the submitted prompt in the sticky Active Task Header. The
@@ -253,6 +255,10 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             auto_accept_low_risk: storeState.autoAcceptLowRisk,
             // Explicit skill chip selected by the user (snake_case, undefined if none).
             invoked_skill_id: storeState.activeSkills?.[initial.sessionId]?.id ?? undefined,
+            // The user approved the drafted plan: execute THAT plan rather than
+            // re-drafting one they never saw. An explicit flag, never inferred from
+            // the agreement phrase — that string coupling has broken before.
+            accepted_plan: acceptedPlan,
         });
     }, [preset, tier, initial.sessionId]);
 
@@ -275,7 +281,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // patches actually land on disk. Clearing the plan collapses the split panel
     // back to the chat composer as the agreement turn streams.
     const handlePlanAutoAccept = useCallback(() => {
-        submitWithMode(AGREEMENT_SIGNAL, 'automatic');
+        submitWithMode(AGREEMENT_SIGNAL, 'automatic', true);
         setMode('automatic');
         setPlan(null);
     }, [submitWithMode, setMode]);
@@ -283,7 +289,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // Plan decision: accept the plan but route every file write through the
     // HITL approval card (Ask). Same agreement hand-off, stricter write gate.
     const handlePlanManualApprove = useCallback(() => {
-        submitWithMode(AGREEMENT_SIGNAL, 'ask_before_edits');
+        submitWithMode(AGREEMENT_SIGNAL, 'ask_before_edits', true);
         setMode('ask_before_edits');
         setPlan(null);
     }, [submitWithMode, setMode]);

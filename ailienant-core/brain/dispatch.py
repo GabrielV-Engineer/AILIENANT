@@ -50,7 +50,7 @@ DISPATCH_SYNTHESIZE_NODE = "dispatch_synthesize"
 
 # Fallback downstream target if a dispatch was entered without setting the return
 # node — the subgraph must never dangle with nowhere to rejoin.
-_DEFAULT_RETURN_NODE = "drift_compute"
+_DEFAULT_RETURN_NODE = "step_dispatch"
 
 # Patterns whose orchestration may introduce a second task set (a new round) rather
 # than merely splitting one fixed task list into waves.

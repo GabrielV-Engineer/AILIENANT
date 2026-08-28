@@ -246,7 +246,6 @@ async def test_researcher_skips_lancedb_when_cache_fresh() -> None:
     ]
 
     with patch("agents.researcher.DEBUG_MODE", False), \
-         patch("agents.researcher.is_fast_track_eligible", return_value=False), \
          patch("agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)), \
          patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
          patch("core.state_manager.load_state_from_markdown", return_value=cached), \

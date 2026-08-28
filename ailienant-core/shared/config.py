@@ -1,7 +1,10 @@
 # shared/config.py
 
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger("SHARED_CONFIG")
 
 # ---------------------------------------------------------------------------
 # Application home — the stable per-user root for all global runtime stores.
@@ -31,6 +34,11 @@ LM_STUDIO_API_BASE: str = os.getenv("LM_STUDIO_API_BASE", "http://localhost:1234
 MODEL_SMALL: str = os.getenv("AILIENANT_MODEL_SMALL", "ailienant/small")
 MODEL_MEDIUM: str = os.getenv("AILIENANT_MODEL_MEDIUM", "ailienant/medium")
 MODEL_BIG: str = os.getenv("AILIENANT_MODEL_BIG", "ailienant/big")
+# The BYOM preset has always carried a fourth, distinct `cloud` tier and
+# core/config/model_resolver.py has always resolved it; the alias space simply
+# had no name for it, so every routing escalation to CLOUD silently landed on
+# big instead.
+MODEL_CLOUD: str = os.getenv("AILIENANT_MODEL_CLOUD", "ailienant/cloud")
 
 
 def get_litellm_config() -> dict[str, str]:
@@ -249,8 +257,25 @@ CLOUD_PROVIDER_KEYS = [
 
 
 def check_cloud_availability() -> bool:
-    """Returns True if at least one cloud provider key is configured."""
-    return any(os.getenv(key) for key in CLOUD_PROVIDER_KEYS)
+    """True when a cloud model is actually reachable for this install.
+
+    Checks BOTH credential stores. The environment keys below predate BYOM; since
+    presets became the primary way to configure a provider, an env-only probe
+    reports False on a fully cloud-capable machine, and `hardware_reroute` then
+    degrades a too-heavy local turn down to LOCAL_SMALL instead of moving it off
+    the box. The BYOM lookup is import-deferred (this is a foundational module)
+    and fail-soft — an unreadable preset simply falls back to the env answer.
+    """
+    if any(os.getenv(key) for key in CLOUD_PROVIDER_KEYS):
+        return True
+    try:
+        from core.config.model_resolver import get_chat_target
+
+        target = get_chat_target("cloud")
+        return target is not None and not target.is_local
+    except Exception:  # noqa: BLE001 — a config-read fault must not block routing
+        logger.debug("BYOM cloud-availability probe failed; using env result", exc_info=True)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +304,11 @@ TELEMETRY_DB_PATH: str = os.getenv("AILIENANT_TELEMETRY_DB", str(AILIENANT_HOME 
 # resolved per-provider from the active BYOM preset (core/config/embedding_resolver.py).
 # Setting this env var forces a fixed embedding model regardless of the preset.
 MODEL_EMBEDDING: str = os.getenv("AILIENANT_MODEL_EMBEDDING", "ailienant/embedding")
-MINI_JUDGE_MODEL: str = os.getenv("AILIENANT_MINI_JUDGE_MODEL", MODEL_SMALL)
+# The Mini-Judge is the only semantic escalation gate in the routing spine — it
+# decides whether a turn needs a more capable model. Running it on the smallest
+# tier made the weakest model the arbiter of its own sufficiency; MEDIUM is the
+# floor for a call that is capped at a handful of output tokens anyway.
+MINI_JUDGE_MODEL: str = os.getenv("AILIENANT_MINI_JUDGE_MODEL", MODEL_MEDIUM)
 
 # Phase 5.2 — MCP transport URI (None → local-only fallback, no MCP session).
 # Format expected: "stdio:///absolute/path/to/server[?arg=...]" (only stdio

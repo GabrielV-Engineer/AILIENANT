@@ -7,8 +7,7 @@ pre-flight gate and its Plan-mode suggestion:
 
 The wiring into run_researcher_node (the actual pause/resume + prompt
 enrichment behavior) is covered in tests/test_phase4_researcher.py, mirroring
-how drift_monitor splits _plan_similarity's pure-function tests from
-run_drift_gate_node's node-level tests in tests/test_drift_monitor.py.
+how the apply gate splits its pure-function tests from its node-level ones.
 """
 from __future__ import annotations
 

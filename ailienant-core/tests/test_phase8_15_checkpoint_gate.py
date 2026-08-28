@@ -367,7 +367,7 @@ def test_deserial1_pre_8_15_checkpoint_resolves_safe_defaults() -> None:
         assert channel not in legacy_state
 
     # Return router → the documented drift_compute fallback (channel absent → None → default).
-    assert route_after_synthesis(legacy_state) == _DEFAULT_RETURN_NODE == "drift_compute"
+    assert route_after_synthesis(legacy_state) == _DEFAULT_RETURN_NODE == "step_dispatch"
 
     # Fan-in router → no waves, no round, no pattern ⇒ proceed to synthesis (no KeyError).
     assert route_after_workers(legacy_state) == DISPATCH_SYNTHESIZE_NODE

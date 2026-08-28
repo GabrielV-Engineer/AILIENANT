@@ -117,7 +117,6 @@ def _planner_state(
         "project_id": project_id,
         "context_metrics": ctx,
         "mission_spec": None,
-        "immutable_wbs": None,
         "errors": [],
         "retry_count": 0,
         "current_cost_usd": 0.0,

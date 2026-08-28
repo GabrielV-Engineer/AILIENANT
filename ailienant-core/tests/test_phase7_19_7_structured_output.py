@@ -77,7 +77,6 @@ def _planner_state(user_input: str) -> Dict[str, Any]:
         "project_id": "abc123",
         "context_metrics": None,
         "mission_spec": None,
-        "immutable_wbs": None,
         "errors": [],
         "retry_count": 0,
         "current_cost_usd": 0.0,

@@ -198,7 +198,7 @@ All three are scalar overwrite (no reducer) — the broker runs serially from it
 
 **WebSocket transport (no changes to `ws_contracts.py`):**
 
-The broker reuses `vfs_manager.request_human_approval(...)` (same pattern as `drift_monitor` and `finops_gate`). Distinguished via sentinel:
+The broker reuses `vfs_manager.request_human_approval(...)` (same pattern as `finops_gate`). Distinguished via sentinel:
 - `action_description == "RESOURCE_CONTENTION"` → the extension deserializes `proposed_content` as JSON to obtain the rich payload.
 - User response in `client_hitl_response` with `comment ∈ {"WAIT","SWITCH_TO_CLOUD","CANCEL"}`. The `approved` field is ignored for this action.
 
@@ -728,7 +728,7 @@ The following event types were added to `api/ws_contracts.py`. The full union no
 ## §20 — HITL Transport: In-Graph Approvals via LangGraph Suspend & Resume
 
 **Change:** in-graph human approvals now ride LangGraph's native `interrupt()` / `Command(resume=…)` channel instead of an inline `asyncio.Event` (`request_human_approval`).
-**Location:** `ailienant-core/core/hitl.py` (`request_graph_approval`, `extract_pending_interrupt`); consumed by `brain/finops.py`, `brain/drift_monitor.py` (`drift_gate`), `brain/agentic_cell.py`; resumed by `core/task_service.py::resume_graph` + the `main.py` WS handler.
+**Location:** `ailienant-core/core/hitl.py` (`request_graph_approval`, `extract_pending_interrupt`); consumed by `brain/finops.py`, `brain/apply_gate.py`, `brain/agentic_cell.py`; resumed by `core/task_service.py::resume_graph` + the `main.py` WS handler.
 **Schema version:** additive. The `ServerHITLApprovalRequestEvent` / `client_hitl_response` wire contracts are unchanged; the `approval_id` is cosmetic (card correlation), never the resume key.
 
 **Contract:**
@@ -2922,13 +2922,62 @@ computed a correct decision, persisted it to `routing_decision`, and rendered it
 Meter widget — but no agent read it: the planner/coder/researcher requested a hardcoded model
 tier regardless. New `resolve_model_alias_for_routing(routing_decision, default)` maps
 `LOCAL_SMALL`/`LOCAL_MEDIUM`/`LOCAL_BIG`/`CLOUD` → `MODEL_SMALL`/`MODEL_MEDIUM`/`MODEL_BIG`/
-`MODEL_BIG`; planner and coder now resolve their tier through it, falling back to their prior
+`MODEL_CLOUD`; planner and coder now resolve their tier through it, falling back to their prior
 hardcoded constant only when no decision is present in state (a cache-hit turn, a benchmark
 stub) — never a behavior change on a turn that never computed a routing decision to begin with.
 `brain/routing_engine.py::select_best_agent`/`get_optimal_provider`/`resolve_provider` (a second,
 divergent implementation of the same CSS × TCI matrix, confirmed zero production callers) are
 deleted; `derive_routing_decision` is the one implementation. `get_keep_alive` (routing_engine.py's
 only live export) is untouched.
+
+
+---
+
+## Task Complexity Index — how the score is built (13.1.6)
+
+`routing_decision` is only as good as the TCI feeding it, and `task_complexity_index` was never
+computed anywhere in production: it was seeded `0.0` and only ever overwritten by the Mini-Judge's
+own verdict (`MEDIUM → 75.0`, `HIGH → 100.0`). The whole CSS × TCI matrix therefore collapsed into
+a 3-state function of one classifier, and since that classifier fails toward "no risk", the common
+path always scored `0.0` and routed `LOCAL_SMALL` — including a from-scratch, multi-domain project
+build, which is what produced a stepless plan from a 3-billion-parameter model in a live session.
+
+`core/memory/context_auditor.py::compute_task_complexity_index` is a pure, bounded, LLM-free score
+on the same 0-100 scale, deliberately shaped like the sibling CSS formula in `agents/researcher.py`:
+
+| Sub-signal | Weight | Observable | Saturation |
+|---|---|---|---|
+| breadth | 0.45 | `retrieved_files + explicit_mentions + dirty_buffers` | 8 files |
+| instruction load | 0.35 | distinct action verbs + conjunction markers (0.7), prompt length (0.3) | 6 requirements / 120 words |
+| greenfield premium | derived | empty corpus **and** an action verb present | binary |
+
+**Why these saturation points.** A request already touching ~8 distinct files is broad enough that
+no larger number should route differently — past that the model's problem is context capacity, which
+CSS measures, not complexity. ~6 separate requirements is past the point where a small model reliably
+holds the whole contract in a single structured draft. Both are anchored to observable shape, not
+tuned until one example produced a desired verdict.
+
+**The greenfield premium exists because the previous behaviour was inverted.** An empty corpus makes
+retrieval return nothing, which read as "small task" — so *creating an entire project from scratch*,
+the single most demanding thing a user can ask, routed to the cheapest model. `derive_routing_decision`
+already skips the red-alert CSS floor when `corpus_empty` (a cold workspace is not a coverage gap), so
+without this term nothing else would have raised the score either.
+
+**Weights are derived, not restated.** The last weight in each group is computed from the others
+(`_TCI_W_GREENFIELD = 1.0 - _TCI_W_BREADTH - _TCI_W_LOAD`) so the set cannot stop summing to 1.0 and
+silently rescale the score off the range the bands are calibrated against (CLAUDE.md §5.7).
+
+**Band boundaries are out of scope for this score.** `derive_routing_decision`'s 30/50/75 cut-offs are
+the committed contract; TCI places a turn *within* them and must never redefine them. The Mini-Judge
+verdict remains authoritative *above* the structural score, applied as a floor by the researcher's
+cascade (`MEDIUM → max(tci, 75.0)`, `HIGH → 100.0`) — one implementation of the escalation rule, not
+two. Consequently the score is an ordering signal, not a calibrated metric; making it continuous is
+precisely what lets the Phase 8.3 harness stratify by TCI bucket (`[0,40)/[40,75)/[75,100]`) for the
+first time, since all three buckets previously collapsed onto `0/75/100`.
+
+**Untrusted input.** `user_input` is hostile (CLAUDE.md §6.2) and this runs on every turn, so the scan
+is capped at `_TCI_SCAN_CAP` characters and uses only literal character classes and `str.split()` —
+no nested quantifiers that could backtrack.
 
 **`shared.hardware.HardwareProfile.suggested_mode` — removed, not additive; stated honestly.**
 This field was the hardware-lock half of the same dead topology selector (a VRAM-threshold

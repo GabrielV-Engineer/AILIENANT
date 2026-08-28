@@ -20,9 +20,14 @@ from types import SimpleNamespace
 from core.task_service import TaskService
 
 
-def _mission() -> SimpleNamespace:
-    # The formatter only reads ``.outcome`` via getattr; a namespace suffices.
-    return SimpleNamespace(outcome="Refactor the parser.")
+def _mission(step_count: int = 2) -> SimpleNamespace:
+    # The formatter reads ``.outcome`` and ``.tasks`` via getattr; a namespace
+    # suffices. ``tasks`` is load-bearing: a plan with zero steps is reported
+    # differently from one that simply applied nothing.
+    return SimpleNamespace(
+        outcome="Refactor the parser.",
+        tasks=[object()] * step_count,
+    )
 
 
 def _completed(path: str) -> dict:
@@ -110,11 +115,38 @@ def test_summary_combines_multiple_outcomes_in_one_turn() -> None:
 
 
 def test_summary_empty_log_reports_no_concrete_edits() -> None:
-    """No applied_files_log entries at all (e.g. a read_file-only plan, or a
-    PLAN_ONLY turn that never reached the apply gate) — same wording as
-    before, still points to the Plan panel."""
+    """A real plan that produced no applied entries (e.g. a read_file-only plan)
+    still points to the Plan panel."""
     summary = TaskService._format_coding_summary(_mission(), [], [])
     assert "no concrete edits" in summary
+    assert "Plan panel" in summary
+
+
+def test_summary_names_a_stepless_plan_instead_of_blaming_the_edits() -> None:
+    """The reported incident: the planner returned zero steps, and the turn said
+    only that it "produced no concrete edits" — describing the symptom while
+    hiding the cause."""
+    summary = TaskService._format_coding_summary(_mission(step_count=0), [], [])
+    assert "no steps" in summary
+
+
+def test_summary_reports_a_plan_mode_turn_as_a_success() -> None:
+    """Stopping after the plan IS the correct outcome of a read-only turn;
+    reporting it as an absence of edits describes success in failure language."""
+    summary = TaskService._format_coding_summary(
+        _mission(step_count=3), [], [], plan_only=True
+    )
+    assert "Plan ready" in summary and "3 steps" in summary
+    assert "no concrete edits" not in summary
+
+
+def test_summary_never_swallows_errors_when_nothing_was_applied() -> None:
+    """The empty-log branch used to return BEFORE the notes were appended, so the
+    one path with nothing to show was also the only one that withheld why."""
+    summary = TaskService._format_coding_summary(
+        _mission(), [], ["Orchestrator: missing mission_spec or empty tasks."]
+    )
+    assert "Orchestrator: missing mission_spec or empty tasks." in summary
     assert "Plan panel" in summary
 
 

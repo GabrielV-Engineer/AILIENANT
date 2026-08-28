@@ -106,7 +106,7 @@ def route_after_validation(state: Dict[str, Any]) -> str:
 
     - ``guardrail_failed`` → retry the SAME step (bounded by the guardrail node's
       MAX_RETRIES, which clears the flag on exhaustion).
-    - else, if the WBS still has a ``pending`` step → loop back to ``drift_gate``,
+    - else, if the WBS still has a ``pending`` step → loop back to ``step_dispatch``,
       which re-runs ``route_to_coders`` to dispatch the next step (and re-traverses
       ``finops_gate``/``supervisor_node`` so the budget ceiling is re-checked each
       iteration). This is the RELAY multi-step loop.
@@ -175,10 +175,10 @@ def route_after_validation(state: Dict[str, Any]) -> str:
         log_routing_decision(
             session_id=state.get("task_id", ""),
             source="validate_output",
-            target="drift_gate",
+            target="step_dispatch",
             reason="wbs_advance_next_pending_step",
         )
-        return "drift_gate"
+        return "step_dispatch"
 
     # Effort Budget: executing the plan's own acceptance checks is the
     # "deep" tier's distinguishing feature (brain/checks_gate.py) — light and

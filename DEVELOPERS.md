@@ -65,7 +65,7 @@ START
        yes → ideation_loop  (Socratic clarification)         → END (suspend on HITL)
        no  → researcher_agent  (owns retrieval + routing cascade; emits skeleton + context_metrics)
                → planner_agent  (pure WBS engine; consumes the routing signal)
-               → drift_compute → drift_gate (compare to immutable_wbs; HITL via native interrupt/resume)
+               → step_dispatch  (fan-out anchor; validate_output loops back here to advance a step)
                  → route_to_coders          (SWARM if cloud, RELAY if local)
                    → coder_agent (×N parallel in cloud)
                      → contract_guard       (assert workspace state before write)
@@ -109,7 +109,7 @@ A **first-class graph node** (`researcher_agent`, spliced before `planner_agent`
 Turns intent into a schema-valid `MissionSpecification` (outcome, scope, constraints, decisions, WBS steps, acceptance checks). It **never executes code**: zero tool-use, just an LLM call plus JSON parsing.
 
 - Consumes GraphRAG context and a bounded workspace overview ([agents/workspace_context.py](ailienant-core/agents/workspace_context.py)).
-- Freezes an `immutable_wbs` on the first plan; the **drift monitor** flags semantic divergence on any re-plan and escalates to HITL.
+- Its tier is floored at `LOCAL_MEDIUM`: the router still owns escalation, but a plan's SHAPE gates the whole turn, so the smallest model is never an option here (the coder keeps the full four-tier range).
 - Routes via the CSS × TCI matrix + Mini-Judge veto (see [Hybrid routing](#hybrid-routing)).
 - Its system prompt enforces scope discipline (touch only named/necessary files) and polyglot-file safety (SEARCH/REPLACE only on mixed-syntax files).
 
@@ -201,7 +201,7 @@ If no adapter resolved (checked earlier, in `agents/coder.py`), the step is hone
 
 ### State management
 
-`AIlienantGraphState` ([brain/state.py](ailienant-core/brain/state.py)) is a strict `TypedDict` with custom reducers for parallel fan-out keys (`vfs_buffer`, `generated_code`, `current_cost_usd`). The first planner turn freezes `immutable_wbs`; the drift monitor diffs every later plan against it.
+`AIlienantGraphState` ([brain/state.py](ailienant-core/brain/state.py)) is a strict `TypedDict` with custom reducers for parallel fan-out keys (`vfs_buffer`, `generated_code`, `current_cost_usd`). Turn-scoped accumulators (`applied_files_log`, `applied_step_ids`, `check_results`, `errors`) are explicitly re-seeded empty each turn — an omitted key keeps its checkpointed value, which for an `operator.add` channel means it accumulates across the whole session.
 
 ---
 

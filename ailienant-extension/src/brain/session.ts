@@ -86,7 +86,7 @@ export class SessionManager {
      */
     public async startAITask(
         taskPrompt: string,
-        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string; invoked_skill_id?: string; auto_accept_low_risk?: boolean },
+        opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string; invoked_skill_id?: string; auto_accept_low_risk?: boolean; accepted_plan?: boolean },
     ): Promise<number | undefined> {
         try {
             // 1. Ensure the listening channel (WebSockets) is open BEFORE speaking.
@@ -154,6 +154,8 @@ export class SessionManager {
                 auto_accept_low_risk: opts?.auto_accept_low_risk,
                 // Snake_case end-to-end — must not be camelCased at the call site.
                 invoked_skill_id: opts?.invoked_skill_id,
+                // Plan acceptance: execute the approved plan rather than re-planning.
+                accepted_plan: opts?.accepted_plan,
             };
 
             // 5. Emit the mission to the API Gateway.

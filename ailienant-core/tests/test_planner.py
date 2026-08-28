@@ -90,7 +90,6 @@ def _base_state(**overrides: Any) -> Dict[str, Any]:
         "project_id": "abc123",
         "context_metrics": None,
         "mission_spec": None,
-        "immutable_wbs": None,
         "errors": [],
         "retry_count": 0,
         "current_cost_usd": 0.0,
@@ -257,8 +256,13 @@ async def test_planner_requests_the_tier_the_routing_decision_names() -> None:
     """The Researcher's CSS/TCI cascade already computed a real decision before
     the Planner runs — it must actually select which model tier the Planner
     requests, instead of the Planner hardcoding BIG regardless of what the
-    router said."""
-    from shared.config import MODEL_SMALL
+    router said.
+
+    Subject to the planner's tier FLOOR: a plan's shape gates the whole turn, so
+    a LOCAL_SMALL verdict is raised to MEDIUM here (the coder keeps the full
+    four-tier range). This is exactly the regression that let a 3B model return a
+    stepless plan for a whole-project build."""
+    from shared.config import MODEL_MEDIUM
 
     mock_ainvoke = AsyncMock(return_value=_make_response(_valid_mission_json()))
     mock_acquire = AsyncMock(return_value=_broker_decision())
@@ -287,7 +291,7 @@ async def test_planner_requests_the_tier_the_routing_decision_names() -> None:
 
     mock_acquire.assert_awaited_once()
     assert mock_acquire.await_args is not None
-    assert mock_acquire.await_args.kwargs.get("model") == MODEL_SMALL
+    assert mock_acquire.await_args.kwargs.get("model") == MODEL_MEDIUM
 
 
 @pytest.mark.anyio

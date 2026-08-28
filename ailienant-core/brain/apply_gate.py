@@ -19,8 +19,8 @@ to ``pending_apply``. It never interrupts.
 either a native ``interrupt()`` (via ``core.hitl.request_graph_approval``, for
 a HITL-tier decision) or nothing at all (ALLOW/auto-accept). Everything before
 that first action is pure, idempotent, checkpoint-committed-already logic, so
-a resume replays byte-identically — the same invariant ``brain/drift_monitor.py``
-established for ``drift_compute``/``drift_gate`` and ``brain/finops.py`` for its
+a resume replays byte-identically — the same invariant
+established for ``apply_patch``/``apply_commit`` and ``brain/finops.py`` for its
 own budget interrupt. See DEBT-185 (docs/TECH_DEBT_BACKLOG.md) for why this
 split is not optional: interrupting mid-generation would re-run the LLM on
 resume and apply the operator's decision to different bytes than the ones

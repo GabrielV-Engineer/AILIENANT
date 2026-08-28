@@ -53,6 +53,36 @@ WS_CAP: int = 1024
 README_CAP: int = 3072
 DOCS_CAP: int = 2048
 
+# How many GraphRAG hits back an intent-scoped lookup.
+RAG_TOP_K: int = 5
+
+
+async def fetch_intent_snippets(
+    text: str, project_id: Optional[str], project_root: str = "",
+) -> List[Tuple[str, str]]:
+    """Raw (path, snippet) GraphRAG hits for a free-text intent.
+
+    Lives here rather than on TaskService so the graph nodes that assemble this
+    same context block can retrieve without importing the transport layer — the
+    Socratic grill and the ideation synthesis both build an analyst context block
+    and were passing no snippets at all, leaving the GraphRAG layer of that block
+    empty while the chat path filled it.
+
+    Best-effort and never raises: callers treat retrieval as an enrichment, and a
+    vector-store fault must degrade the block, not fail the turn.
+    """
+    if not project_id:
+        return []
+    try:
+        from core.memory.semantic_memory import SemanticMemoryManager
+        return await SemanticMemoryManager().search_snippets(
+            text, workspace_hash=project_id, k=RAG_TOP_K,
+            project_root=project_root or None,
+        )
+    except Exception as exc:  # noqa: BLE001 — RAG fetch is non-fatal
+        logger.debug("Intent RAG snippets fetch failed (non-fatal): %s", exc)
+        return []
+
 # Total context-block token budget per analyst answer tier, sized to fit the
 # smallest model that tier maps to. A faster/smaller model gets a tighter block —
 # retrieval fidelity is unchanged.

@@ -245,7 +245,7 @@ async def test_planner_dirty_buffer_bypass_and_clean_cache_hit() -> None:
     dirty_state: dict[str, Any] = {
         "task_id": "plan-dirty", "user_input": "Add a feature.",
         "workspace_root": "/ws", "project_id": "ptest",
-        "context_metrics": None, "mission_spec": None, "immutable_wbs": None,
+        "context_metrics": None, "mission_spec": None,
         "errors": [], "retry_count": 0, "current_cost_usd": 0.0,
         "max_budget_usd": 10.0, "vfs_buffer": {}, "terminal_output": "",
         "parallel_tasks": [], "tci": 45.0, "css": 78.5, "provider": "LOCAL",

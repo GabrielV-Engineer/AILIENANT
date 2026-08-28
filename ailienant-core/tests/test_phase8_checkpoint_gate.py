@@ -36,9 +36,9 @@ from core.benchmark.report import (
 )
 from core.graph_weight import estimate_graph_weight
 from core.memory.context_auditor import (
+    compute_task_complexity_index,
     derive_routing_decision,
     hardware_reroute,
-    is_fast_track_eligible,
 )
 from core.observability import configure_langsmith
 from core.permissions import (
@@ -70,10 +70,21 @@ def _profile(vram_gb: float) -> HardwareProfile:
     return HardwareProfile(os_type="windows", is_apple_silicon=False, vram_gb=vram_gb, vram_used_gb=0.0)
 
 
-def test_A_fast_track_skips_rag_and_routes_local_small() -> None:
-    assert is_fast_track_eligible("what is recursion?") is True
-    assert is_fast_track_eligible("refactor the auth module in main.py") is False
-    assert derive_routing_decision(tci=10.0, css=0.0, fast_track=True) == "LOCAL_SMALL"
+def test_A_task_complexity_drives_the_routing_tier() -> None:
+    """Replaces the deleted Fast Track row. The routing matrix is only as good as
+    the TCI feeding it — which was never computed, so every band collapsed onto
+    LOCAL_SMALL regardless of how large the request was."""
+    broad = compute_task_complexity_index(
+        user_input=(
+            "build the whole landing page: create the pages, wire the routing, add "
+            "the styles and then configure the deployment"
+        ),
+        corpus_empty=True,
+    )
+    trivial = compute_task_complexity_index(user_input="fix the typo", retrieved_files=1)
+    assert broad > trivial
+    assert derive_routing_decision(trivial, 100.0) == "LOCAL_SMALL"
+    assert derive_routing_decision(broad, 100.0, corpus_empty=True) != "LOCAL_SMALL"
 
 
 def test_A_hardware_reroute_degrades_local_under_vram_floor() -> None:

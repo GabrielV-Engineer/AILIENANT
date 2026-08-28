@@ -400,7 +400,7 @@ async def test_n3_planner_forwards_seam_and_validates() -> None:
 
     state: Dict[str, Any] = {
         "task_id": "planner-test", "user_input": "Add a feature.", "workspace_root": "/ws",
-        "project_id": "abc", "context_metrics": None, "mission_spec": None, "immutable_wbs": None,
+        "project_id": "abc", "context_metrics": None, "mission_spec": None,
         "errors": [], "retry_count": 0, "current_cost_usd": 0.0, "max_budget_usd": 10.0,
         "vfs_buffer": {}, "terminal_output": "", "parallel_tasks": [], "tci": 45.0, "css": 78.5,
         "provider": "LOCAL", "current_step_id": None, "dirty_buffers": [], "ide_context": "",

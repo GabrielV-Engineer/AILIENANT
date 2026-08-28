@@ -11,7 +11,7 @@
 #   - timeout   → route to END as fail-safe, hitl_response="budget_timeout"
 #
 # hitl_response values are namespaced ("budget_rejected", "budget_timeout") to
-# avoid collision with drift_monitor's ("rejected", "timeout") values on the
+# avoid collision with the legacy ("rejected", "timeout") values on the
 # shared state field. See route_after_finops docstring for the full mapping.
 
 from __future__ import annotations
@@ -105,12 +105,12 @@ def route_after_finops(state: Dict[str, Any]) -> str:
     Routes to "apply_patch" for all other values, including:
         None            — budget was OK, run_finops_node returned {}
         "approved"      — user approved the budget overrun
-        "rejected"      — drift_monitor's value (must NOT trigger finops END)
-        "timeout"       — drift_monitor's value (must NOT trigger finops END)
+        "rejected"      — a legacy gate value (must NOT trigger finops END)
+        "timeout"       — a legacy gate value (must NOT trigger finops END)
 
     Namespace isolation: "budget_rejected" / "budget_timeout" (finops) are
-    distinct from "rejected" / "timeout" (drift_monitor) to prevent false END
-    routing when this edge reads drift_monitor's prior hitl_response value.
+    distinct from the legacy "rejected" / "timeout" values to prevent false END
+    routing when this edge reads a prior hitl_response value.
     """
     from core.telemetry import log_routing_decision
     hitl_response: Optional[str] = state.get("hitl_response")

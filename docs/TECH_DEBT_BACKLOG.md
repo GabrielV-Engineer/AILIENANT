@@ -108,6 +108,7 @@ Decision    Not a defect — see [DECISION] tier.
 | ID | Title | Tier |
 |---|---|---|
 | DEBT-025 | Docker persistent-PTY backend has no daemon integration test | LOW · Blocked |
+| DEBT-209 | No way to change the LLM while a task is already running | MEDIUM · Floating |
 | DEBT-035 | MultiPL-E TypeScript execution needs a Node-capable sandbox runtime | MEDIUM · Floating |
 | DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM · Blocked |
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW · Unscheduled |
@@ -1633,6 +1634,17 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 ## Capability Backlog (not defects — roadmap)
 
 *Entries here describe a capability that was never built, not a defect in what shipped — the backlog's own tier legend (above) excludes them from the open-defect count, the same way a `[DECISION]` record is excluded.*
+
+---
+
+### DEBT-209 [MEDIUM · Floating] — No way to change the LLM while a task is already running
+
+- **Date:** 2026-08-28
+- **Files:** `core/task_service.py` (`TaskPayload`, `_build_initial_state`), `agents/planner.py` / `agents/coder.py` (the two `resolve_model_alias_for_routing` consumers), `ailienant-extension/src/shared/config.ts` (`InferenceTier`).
+- **Capability (not built):** the user asked to be able to switch the model whenever they want, *including mid-task*. Today the tier is captured in the submit payload and the routing decision is frozen onto `context_metrics` for the whole turn; both agents read that same frozen value, so a long local generation cannot be moved to a faster or stronger model once it has started — the only recourse is abort and resubmit.
+- **Why it is not a defect:** nothing shipped claims otherwise. `InferenceTier` (`LOCAL_ONLY`/`HYBRID`/`SOLO_CLOUD`) looks like a live control but is a **frontend-only type with no backend consumer at all** (verified) — a pre-submit policy hint, not a model pin.
+- **What it would take:** a live control channel into a running graph. Either a mutable per-session channel that a per-node model resolver reads at each node entry (cheap, but a mid-turn tier swap changes the semantic-cache key and the resolved output budget, so both need re-deriving at the boundary), or cancel + re-dispatch onto the existing checkpoint (reuses the abort mesh and Rewind, at the cost of losing the in-flight node's work). The first is the better product; the second is the smaller change.
+- **Phase:** unscheduled — a real feature slice, sized after v1.
 
 ---
 

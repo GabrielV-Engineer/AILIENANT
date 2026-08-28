@@ -502,7 +502,9 @@ async def _assemble_socratic_context(state: Dict[str, Any]) -> str:
     """Build the read-only workspace context block for a Socratic question.
 
     Reuses the analyst context assembler (active file + workspace tree + GraphRAG)
-    so the grilling references the user's real code. Never raises — a context
+    so the grilling references the user's real code. The snippets must be passed
+    in explicitly — the assembler retrieves nothing on its own, so omitting them
+    silently empties the GraphRAG layer of the block. Never raises — a context
     failure degrades to an empty block, never crashes the graph node.
     """
     active_path: str = state.get("active_file_path") or ""
@@ -513,9 +515,16 @@ async def _assemble_socratic_context(state: Dict[str, Any]) -> str:
     if not paths and not project_root:
         return ""
     try:
-        from agents.analyst_context import assemble_analyst_context
+        from agents.analyst_context import assemble_analyst_context, fetch_intent_snippets
+        # Per-round retrieval is affordable here: this node already pays a full
+        # LLM tool-grounding loop each round, and a vector lookup is cheaper than
+        # what it already spends.
+        rag_snippets = await fetch_intent_snippets(
+            state.get("user_input") or "", project_id, project_root
+        )
         return await assemble_analyst_context(
-            paths, project_id, session_id, project_root=project_root,
+            paths, project_id, session_id,
+            rag_snippets=rag_snippets, project_root=project_root,
         )
     except Exception as exc:  # noqa: BLE001 — context assembly is best-effort
         logger.debug("Socratic context assembly failed (degrading): %s", exc)

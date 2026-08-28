@@ -70,7 +70,6 @@ def _swarm_state(session_id: str, tasks: list) -> dict:
         "session_delta": "",
         "guardrail_failed": False,
         "validation_feedback": None,
-        "immutable_wbs": None,
         "pending_patches": {},
         "current_cost_usd": 0.0,
         "max_budget_usd": float("inf"),

@@ -57,7 +57,7 @@ def test_advances_to_next_pending_step() -> None:
     target = route_after_validation(
         {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False}
     )
-    assert target == "drift_gate"
+    assert target == "step_dispatch"
 
 
 def test_routes_to_run_checks_when_all_steps_terminal_on_deep_effort() -> None:
@@ -138,7 +138,7 @@ def test_dependent_step_dispatches_once_prerequisite_completes() -> None:
     target = route_after_validation(
         {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False}
     )
-    assert target == "drift_gate"
+    assert target == "step_dispatch"
 
 
 def test_unrelated_pending_step_still_dispatches_despite_blocked_sibling() -> None:
@@ -152,7 +152,7 @@ def test_unrelated_pending_step_still_dispatches_despite_blocked_sibling() -> No
     target = route_after_validation(
         {"mission_spec": mission, "current_step_id": 1, "guardrail_failed": False}
     )
-    assert target == "drift_gate"
+    assert target == "step_dispatch"
 
 
 # ── run_coder_node: durable status delta (read_file path) ────────────────────

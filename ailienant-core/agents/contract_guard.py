@@ -94,7 +94,7 @@ class ContractGuardNode:
 
     async def _default_llm_invoker(self, system: str, user_payload: Dict[str, Any]) -> str:
         """Default LLM call using the project's LLMGateway. Deferred import avoids
-        circular dependencies at module load (same idiom as drift_monitor/finops)."""
+        circular dependencies at module load (same idiom as finops)."""
         import json
 
         from tools.llm_gateway import LLMGateway

@@ -21,6 +21,13 @@ GUARDRAIL_MAX_RETRIES: int = 2
 # Planner structured-output validation retries before conceding a malformed plan.
 PLANNER_MAX_RETRIES: int = 2
 
+# Retries specifically for a plan that PARSED and VALIDATED cleanly but carried no
+# WBS steps. Deliberately tighter than PLANNER_MAX_RETRIES: a schema error names a
+# concrete thing a corrective can fix, whereas a model that has already emitted a
+# stepless plan twice is unlikely to decompose the request on a third attempt — and
+# on local hardware each attempt costs the user minutes of wall-clock.
+PLANNER_EMPTY_WBS_MAX_RETRIES: int = 1
+
 # Consecutive local-model failures that escalate a step to the Cloud Surgeon.
 CIRCUIT_BREAKER_THRESHOLD: int = 3
 

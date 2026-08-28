@@ -8,7 +8,7 @@ Bounded Failure ceiling (MAX_RETRIES = 2 per blueprint §4.1).
 OWNERSHIP CONTRACT (load-bearing — do NOT change without amending Phase 4.1.3 DoD):
     * The Orchestrator is the JUDGE of retry_count, NOT its incrementer.
       ``retry_count += 1`` is the strict responsibility of the DOWNSTREAM failure
-      evaluator (validate_output on validation failure, drift_monitor on drift,
+      evaluator (validate_output on validation failure,
       future AnalystAgent on QA rejection). If those nodes do not increment,
       the Bounded Failure branch never fires and a wired graph self-loops
       indefinitely. The standalone unit tests inject retry_count directly to
@@ -117,7 +117,7 @@ async def run_orchestrator_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- Bounded Failure ceiling ---
     # NOTE: retry_count is READ ONLY here. Increment is downstream's job
-    # (validate_output / drift_monitor / future AnalystAgent). See module docstring.
+    # (validate_output / future AnalystAgent). See module docstring.
     retry_count: int = int(state.get("retry_count", 0))
     if retry_count > MAX_RETRIES:
         logger.warning(

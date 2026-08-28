@@ -193,17 +193,26 @@ async def _distill_brief_llm(state: Dict[str, Any], messages: List[Dict[str, Any
 
 
 async def _assemble_synthesis_context(state: Dict[str, Any]) -> str:
-    """Best-effort workspace context block to ground the distilled brief."""
+    """Best-effort workspace context block to ground the distilled brief.
+
+    The snippets are passed explicitly: the assembler retrieves nothing itself, so
+    omitting them empties the GraphRAG layer of the block that becomes the
+    planner's brief — the highest-leverage context in a plan session.
+    """
     active_path: str = state.get("active_file_path") or ""
     paths: List[str] = [active_path] if active_path else []
     project_root: str = state.get("workspace_root") or ""
+    project_id = state.get("project_id") or None
     if not paths and not project_root:
         return ""
     try:
-        from agents.analyst_context import assemble_analyst_context
+        from agents.analyst_context import assemble_analyst_context, fetch_intent_snippets
+        rag_snippets = await fetch_intent_snippets(
+            state.get("user_input") or "", project_id, project_root
+        )
         return await assemble_analyst_context(
-            paths, state.get("project_id") or None, state.get("task_id", ""),
-            project_root=project_root,
+            paths, project_id, state.get("task_id", ""),
+            rag_snippets=rag_snippets, project_root=project_root,
         )
     except Exception as exc:  # noqa: BLE001 — context is best-effort
         logger.debug("Synthesis context assembly failed (degrading): %s", exc)

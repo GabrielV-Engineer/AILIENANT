@@ -447,7 +447,7 @@ def _resolve_judge_tier() -> str:
     """
     if MINI_JUDGE_MODEL.startswith("ailienant/"):
         _alias_tier = MINI_JUDGE_MODEL.split("/", 1)[1]
-        if _alias_tier in ("small", "medium", "big"):
+        if _alias_tier in ("small", "medium", "big", "cloud"):
             return _alias_tier
     return "medium"
 

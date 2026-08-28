@@ -48,8 +48,6 @@ def _run_researcher(content: str) -> Dict[str, Any]:
     # fast_track True → grounding loop + retrieval are skipped; the skeleton ainvoke
     # is the only LLM call, so its content is what the ceiling guard sees.
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=True
-    ), patch(
         "core.state_manager.dump_state_to_markdown", return_value=None
     ), patch(
         "tools.llm_gateway.LLMGateway.ainvoke", return_value=_llm(content)
@@ -116,7 +114,6 @@ def _planner_state(**overrides: Any) -> Dict[str, Any]:
         "project_id": "p1",
         "context_metrics": None,
         "mission_spec": None,
-        "immutable_wbs": None,
         "errors": [],
         "tci": 45.0,
         "css": 78.5,

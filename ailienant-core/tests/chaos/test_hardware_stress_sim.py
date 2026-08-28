@@ -54,7 +54,7 @@ def _state(profile: HardwareProfile) -> Dict[str, Any]:
         "workspace_root": "/tmp/ws_chaos",
         "project_id": "chaos",
         "context_metrics": ctx,
-        "mission_spec": None, "immutable_wbs": None, "errors": [],
+        "mission_spec": None, "errors": [],
         "retry_count": 0, "current_cost_usd": 0.0, "max_budget_usd": 10.0,
         "vfs_buffer": {}, "terminal_output": "", "parallel_tasks": [],
         "tci": 10.0, "css": 100.0, "provider": "LOCAL",
@@ -91,7 +91,6 @@ async def test_synthetic_vram_pressure_triggers_observable_fallback(tmp_path: An
         # The VRAM-floor reroute now lives in the Researcher node (it owns the routing
         # cascade + hardware degradation); the Planner is a pure consumer.
         with patch("agents.researcher.DEBUG_MODE", False), \
-             patch("agents.researcher.is_fast_track_eligible", return_value=False), \
              patch("core.state_manager.load_state_from_markdown", return_value=None), \
              patch("core.state_manager.dump_state_to_markdown", return_value=True), \
              patch("agents.researcher.audit_task_complexity", new=audit), \

@@ -127,7 +127,7 @@ class ErrorCorrectionAgent:
         self, system: str, user_payload: Dict[str, Any]
     ) -> str:
         """Default call via the project LLMGateway. Deferred import avoids a circular
-        dependency at module load (same idiom as contract_guard/drift_monitor)."""
+        dependency at module load (same idiom as contract_guard)."""
         from tools.llm_gateway import LLMGateway
         from shared.config import MODEL_MEDIUM
 

@@ -166,7 +166,24 @@ def test_hon1_summary_does_not_claim_apply_disabled() -> None:
     assert "Ctrl+Z" not in summary                # no editor is ever opened for these writes
     assert "```diff" not in summary               # diffs live in the panel, not chat
 
-    empty_summary = TaskService._format_coding_summary(mission, [], [])
+    # A mission with real steps that applied nothing still points at the panel;
+    # a STEPLESS plan names its own cause instead (see test_coding_summary_honesty).
+    empty_summary = TaskService._format_coding_summary(
+        _mission(
+            outcome="ship it",
+            tasks=[
+                WBSStep(
+                    step_number=1,
+                    target_role="core_dev",
+                    action="edit_file",
+                    target_file="src/x.py",
+                    description="edit it",
+                )
+            ],
+        ),
+        [],
+        [],
+    )
     assert "Plan panel" in empty_summary          # a no-edits turn still points to the rich surface
 
 

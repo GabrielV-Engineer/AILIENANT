@@ -35,7 +35,6 @@ from agents.coder import run_coder_node      # noqa: E402
 from brain.summarizer import run_summarize_node  # noqa: E402
 from brain.guardrails import run_validate_output_node, route_after_validation  # noqa: E402
 from brain.checks_gate import run_checks_node  # noqa: E402
-from brain.drift_monitor import run_drift_compute_node, run_drift_gate_node  # noqa: E402
 from brain.finops import run_finops_node, route_after_finops  # noqa: E402
 from brain.nodes.aggregator_node import run_session_delta_aggregator_node  # noqa: E402
 from agents.contract_guard import run_contract_guard_node  # noqa: E402
@@ -55,13 +54,40 @@ from brain.apply_gate import run_apply_commit_node, run_apply_prepare_node  # no
 from brain.ideation import ideation_graph  # noqa: E402 — deferred to avoid circular import
 
 
-def route_after_summarize(state: Dict[str, Any]) -> str:
-    """Conditional edge: autonomous planner vs interactive ideation loop.
+async def step_dispatch(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Fan-out anchor for WBS step execution. Deliberately empty.
 
-    planner_mode_active=True  → ideation_loop (Phase 2.21 interactive HITL)
+    A conditional edge needs a node to hang off, and two edges point here: the
+    planner's exit, and validate_output looping back to advance to the next step.
+    The node itself decides nothing — ``route_to_coders`` owns the selection.
+    """
+    return {}
+
+
+def route_after_summarize(state: Dict[str, Any]) -> str:
+    """Conditional edge: execute an approved plan, or plan first.
+
+    accepted_plan carried a mission_spec → step_dispatch (execute what the user
+        approved, rather than re-drafting a plan they never saw)
+    planner_mode_active=True  → ideation_loop (interactive Socratic HITL)
     planner_mode_active=False → planner_agent (autonomous LLM planning)
     """
     from core.telemetry import log_routing_decision
+    if state.get("mission_spec") is not None:
+        # task_service only preserves the checkpointed plan when the client asked
+        # to execute an approved one AND a plan really existed, so reaching here
+        # with a mission already on state means exactly that.
+        target = "step_dispatch"
+        reason = "accepted_plan — executing the approved mission_spec"
+        log_routing_decision(
+            session_id=state.get("task_id", ""),
+            project_id=state.get("project_id", ""),
+            source="summarize_history",
+            target=target,
+            reason=reason,
+        )
+        logger.info("route_after_summarize: %s.", reason)
+        return target
     if state.get("planner_mode_active"):
         target = "ideation_loop"
         reason = "planner_mode_active=True"
@@ -125,7 +151,7 @@ def route_after_ideation(state: Dict[str, Any]) -> str:
 
 def route_after_planner(state: Dict[str, Any]) -> str:
     """Conditional edge: a PLAN_ONLY session stops the turn the instant the plan
-    is produced, instead of falling through into drift_compute -> route_to_coders
+    is produced, instead of falling through into step_dispatch -> route_to_coders
     -> CoderAgent execution.
 
     agents/coder.py's RBAC gate (session_mode_from_channel + evaluate_action)
@@ -148,8 +174,8 @@ def route_after_planner(state: Dict[str, Any]) -> str:
         target = END
         reason = f"session_permission_mode={mode.value} — plan broadcast; turn stops before execution"
     else:
-        target = "drift_compute"
-        reason = f"session_permission_mode={mode.value} — continuing to drift_compute"
+        target = "step_dispatch"
+        reason = f"session_permission_mode={mode.value} — continuing to step_dispatch"
     log_routing_decision(
         session_id=state.get("task_id", ""),
         project_id=state.get("project_id", ""),
@@ -274,11 +300,7 @@ workflow.add_node("summarize_history", _instrument_node("summarize_history", run
 # pyright: ignore[reportArgumentType] on each call is the accepted trade-off.
 workflow.add_node("researcher_agent", _instrument_node("researcher_agent", dead_letter_decorator("researcher_agent")(run_researcher_node)))  # pyright: ignore[reportArgumentType]
 workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))  # pyright: ignore[reportArgumentType]
-# DriftMonitor is split: drift_compute commits the (non-deterministic) similarity gate
-# decision; drift_gate reads that committed decision and is the interrupt-bearing node
-# (interrupt-first → replay-safe). See brain/drift_monitor.py.
-workflow.add_node("drift_compute", _instrument_node("drift_compute", run_drift_compute_node))  # pyright: ignore[reportArgumentType]
-workflow.add_node("drift_gate", _instrument_node("drift_gate", run_drift_gate_node))  # pyright: ignore[reportArgumentType]
+workflow.add_node("step_dispatch", _instrument_node("step_dispatch", step_dispatch))  # pyright: ignore[reportArgumentType]
 # coder_agent is also wrapped by reflexion_guard (INSIDE the DLQ decorator): a fresh,
 # in-budget failure becomes a healing signal routed to error_correction; an exhausted
 # budget re-raises into the DLQ.
@@ -350,7 +372,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
         log_routing_decision(
             session_id=state.get("task_id", ""),
             project_id=state.get("project_id", ""),
-            source="drift_monitor",
+            source="step_dispatch",
             target="coder_agent",
             reason=f"SWARM: provider=CLOUD, {len(parallel_tasks)} tasks in parallel",
             css=state.get("css"),
@@ -391,7 +413,7 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
     log_routing_decision(
         session_id=state.get("task_id", ""),
         project_id=state.get("project_id", ""),
-        source="drift_monitor",
+        source="step_dispatch",
         target=target,
         reason=f"RELAY: provider={provider}, sequential execution",
         css=state.get("css"),
@@ -433,12 +455,12 @@ def route_to_coders(state: AIlienantGraphState) -> list[Send]:
 def _route_planner_dispatch(state: Dict[str, Any]) -> str:
     """Planner exit: a PLAN_ONLY session stops the turn (mirrors route_after_planner
     below, which owns the non-dispatch path); otherwise fan out to the dispatch
-    subgraph when a plan was emitted, else the normal successor (drift_compute)."""
+    subgraph when a plan was emitted, else the normal successor (step_dispatch)."""
     from core.permissions import SessionPermissionMode, normalize_session_mode, session_mode_from_channel
     mode = normalize_session_mode(session_mode_from_channel(state.get("session_permission_mode")))
     if mode is SessionPermissionMode.PLAN_ONLY:
         return END
-    return "dispatch_origin" if state.get("dispatch_plan") else "drift_compute"
+    return "dispatch_origin" if state.get("dispatch_plan") else "step_dispatch"
 
 
 def _route_researcher_dispatch(state: Dict[str, Any]) -> str:
@@ -494,7 +516,7 @@ def _wire_dynamic_dispatch(wf: "StateGraph") -> None:
     # Terminal: rejoin the spine at whichever node the emitting agent recorded.
     wf.add_conditional_edges(
         "dispatch_synthesize", route_after_synthesis,
-        {"drift_compute": "drift_compute", "planner_agent": "planner_agent"},
+        {"step_dispatch": "step_dispatch", "planner_agent": "planner_agent"},
     )
 
 
@@ -528,16 +550,15 @@ if ENABLE_DYNAMIC_DISPATCH:
     )
     workflow.add_conditional_edges(
         "planner_agent", _route_planner_dispatch,
-        {"dispatch_origin": "dispatch_origin", "drift_compute": "drift_compute", END: END},
+        {"dispatch_origin": "dispatch_origin", "step_dispatch": "step_dispatch", END: END},
     )
     _wire_dynamic_dispatch(workflow)
 else:
     workflow.add_edge("researcher_agent", "planner_agent")
     workflow.add_conditional_edges(
-        "planner_agent", route_after_planner, {"drift_compute": "drift_compute", END: END},
+        "planner_agent", route_after_planner, {"step_dispatch": "step_dispatch", END: END},
     )
-workflow.add_edge("drift_compute", "drift_gate")
-workflow.add_conditional_edges("drift_gate", route_to_coders, ["coder_agent", "agentic_cell"])
+workflow.add_conditional_edges("step_dispatch", route_to_coders, ["coder_agent", "agentic_cell"])
 # The ReAct cell loops back onto itself while its latest verdict says "continue" (each
 # loop-back is a graph super-step → a Rewind-able checkpoint), and rejoins the normal
 # downstream at contract_guard once it goes green or the iteration budget is spent.
@@ -576,18 +597,18 @@ workflow.add_conditional_edges(
 # apply_patch (PREPARE, no interrupt) -> apply_commit (GATE, interrupt-first).
 # Unconditional edge — apply_commit's own first statement
 # (`if not state.get("pending_apply"): return {}`) is the routing, mirroring
-# drift_compute -> drift_gate's identical shape.
+# step_dispatch's own identical shape.
 workflow.add_edge("apply_patch", "apply_commit")
 workflow.add_edge("apply_commit", "validate_output")
 # validate_output → retry the same step (coder_agent) · advance to the next pending
-# WBS step (drift_gate re-runs route_to_coders and re-checks finops/budget) ·
+# WBS step (step_dispatch re-runs route_to_coders and re-checks finops/budget) ·
 # self-heal a run_command failure surfaced downstream in the apply gate
 # (error_correction) · run_checks once every step has reached a terminal
 # status (the plan's own acceptance criteria, executed before the turn is
 # reported complete — brain/checks_gate.py).
 workflow.add_conditional_edges(
     "validate_output", route_after_validation,
-    ["coder_agent", "drift_gate", "error_correction", "run_checks", END],
+    ["coder_agent", "step_dispatch", "error_correction", "run_checks", END],
 )
 workflow.add_edge("run_checks", END)
 

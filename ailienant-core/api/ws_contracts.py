@@ -332,7 +332,10 @@ class ModelWarmupPayload(BaseModel):
 
     model_name: str
     is_local: bool
-    tier: Literal["small", "medium", "big"]
+    # Widening a Literal ACCEPTS more values, so this stays additive (§10): an
+    # older client that never sees "cloud" is unaffected, and the preset has
+    # always had a cloud tier the router could select.
+    tier: Literal["small", "medium", "big", "cloud"]
 
 
 class ServerModelWarmupEvent(BaseModel):

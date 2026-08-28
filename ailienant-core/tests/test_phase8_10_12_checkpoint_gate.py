@@ -2,7 +2,7 @@
 
 Group 1 (DEBT-069): the Researcher drives a bounded READ_ONLY dispatch loop.
 Group 2: the Researcher emits the routing signal (context_metrics / css / provider /
-  routing_decision); fast_track pins css=100 and skips the loop.
+  routing_decision) and computes a real task-complexity index.
 Group 3: the compiled graph reaches researcher_agent before planner_agent, and the
   router verdicts are unchanged.
 """
@@ -81,13 +81,11 @@ def _base_state(**overrides: Any) -> Dict[str, Any]:
 
 @contextlib.contextmanager
 def _researcher_env(
-    *, fast_track: bool, risk: RiskLevel = RiskLevel.NONE
+    *, risk: RiskLevel = RiskLevel.NONE
 ) -> Iterator[Dict[str, Any]]:
     """Seal the researcher's heavy boundaries: DEBUG off, tools faked, LLM + mini-judge mocked."""
     mocks: Dict[str, Any] = {}
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=fast_track
-    ), patch(
         "tools.researcher_tools.build_researcher_tools", return_value=_fake_tool_map()
     ), patch(
         "agents.researcher.audit_task_complexity",
@@ -116,7 +114,7 @@ def _run(state: Dict[str, Any], configurable: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def test_researcher_drives_dispatch_loop() -> None:
-    with _researcher_env(fast_track=False):
+    with _researcher_env():
         result = _run(
             _base_state(),
             {"researcher_tool_reasoner": _glob_then_stop()},
@@ -126,13 +124,14 @@ def test_researcher_drives_dispatch_loop() -> None:
     assert result["researcher_skeleton"].startswith("## Skeleton")
 
 
-def test_researcher_loop_skipped_on_fast_track() -> None:
-    with _researcher_env(fast_track=True):
+def test_researcher_loop_skipped_on_explicit_mentions() -> None:
+    """The @-mention bypass is now the only path that skips grounding: the user
+    named the files, so there is nothing left to discover."""
+    with _researcher_env():
         result = _run(
-            _base_state(),
+            _base_state(explicit_mentions=["src/a.py"]),
             {"researcher_tool_reasoner": _glob_then_stop()},
         )
-    # fast_track short-circuits the grounding loop entirely.
     assert "tool_dispatch_trace" not in result
 
 
@@ -151,7 +150,7 @@ def test_researcher_emits_routing_signal() -> None:
             target_files=["src/a.py"],
         )
     )
-    with _researcher_env(fast_track=False):
+    with _researcher_env():
         result = _run(
             # Seed a non-None context_metrics so the retrieval block runs.
             _base_state(
@@ -173,29 +172,35 @@ def test_researcher_emits_routing_signal() -> None:
         )
     cm = result["context_metrics"]
     assert isinstance(cm, ContextMeter)
-    assert cm.routing_decision in {"LOCAL_SMALL", "LOCAL_BIG", "CLOUD"}
+    assert cm.routing_decision in {"LOCAL_SMALL", "LOCAL_MEDIUM", "LOCAL_BIG", "CLOUD"}
     assert result["provider"] in {"LOCAL", "CLOUD"}
     assert "css" in result and "tci" in result
     fake_search.assert_awaited_once()
     fake_deep.assert_awaited_once()
 
 
-def test_researcher_fast_track_pins_css() -> None:
-    with _researcher_env(fast_track=True):
-        result = _run(_base_state(), {})
+def test_researcher_emits_a_computed_task_complexity_index() -> None:
+    """TCI must be a real number derived from the request, not the 0.0 seed that
+    made every routing band collapse onto LOCAL_SMALL."""
+    with _researcher_env():
+        result = _run(
+            _base_state(
+                user_input=(
+                    "build the whole landing page: create the pages, wire the "
+                    "routing, add the styles and then configure the deployment"
+                )
+            ),
+            {},
+        )
     cm = result["context_metrics"]
     assert isinstance(cm, ContextMeter)
-    assert result["css"] == 100.0
-    assert cm.css_total == 100.0
-    assert cm.is_red_alert is False
-    assert result["provider"] == "LOCAL"
+    assert result["tci"] > 0.0
+    assert cm.task_complexity_index == result["tci"]
 
 
 def test_researcher_always_emits_context_metrics_on_llm_failure() -> None:
     # Even when the skeleton LLM call fails, a non-None routing signal must surface.
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=True
-    ), patch(
         "tools.llm_gateway.LLMGateway.ainvoke", side_effect=RuntimeError("byom down")
     ):
         result = _run(_base_state(), {})

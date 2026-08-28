@@ -75,8 +75,6 @@ async def test_researcher_standard_retrieval() -> None:
     state = _base_state()
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
     ), patch(
         "tools.researcher_tools.build_researcher_tools", return_value={}
@@ -134,8 +132,6 @@ async def test_researcher_explicit_override() -> None:
     state = _base_state(explicit_mentions=["app/auth.py", "app/models.py"])
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
     ), patch(
         "core.state_manager.dump_state_to_markdown", return_value=None
@@ -195,8 +191,6 @@ async def test_researcher_ambiguity_gate_enriches_prompt_via_clarification() -> 
     state = _base_state(user_input="fix this")
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.is_underspecified", return_value=True
     ), patch(
         "core.hitl.request_graph_clarification",
@@ -249,8 +243,6 @@ async def test_researcher_high_risk_suggests_plan_mode() -> None:
     )
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.is_underspecified", return_value=False
     ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.HIGH)
@@ -297,8 +289,6 @@ async def test_researcher_high_risk_skips_suggestion_when_already_plan_mode() ->
     )
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.is_underspecified", return_value=False
     ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.HIGH)
@@ -348,8 +338,6 @@ async def test_researcher_reuses_preclassified_risk_skips_mini_judge() -> None:
     mock_audit = AsyncMock(return_value=RiskLevel.NONE)
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.is_underspecified", return_value=False
     ), patch(
         "agents.researcher.audit_task_complexity", new=mock_audit

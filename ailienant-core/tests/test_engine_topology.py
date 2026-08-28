@@ -1,8 +1,8 @@
 # ailienant-core/tests/test_engine_topology.py
 #
 # Regression guard for a PLAN_ONLY session's turn continuing past planner_agent
-# into drift_compute/CoderAgent execution instead of stopping at END. The bug:
-# engine.py's planner_agent -> drift_compute edge was a static, unconditional
+# into step_dispatch/CoderAgent execution instead of stopping at END. The bug:
+# engine.py's planner_agent -> step_dispatch edge was a static, unconditional
 # edge -- there was no gate reading session_permission_mode at all. CoderAgent's
 # own RBAC check (agents/coder.py) denies each individual write/execute action
 # under PLAN_ONLY, but that never stopped the graph from running and narrating
@@ -31,9 +31,9 @@ def test_route_after_planner_stops_at_end_for_the_deprecated_plan_alias() -> Non
     assert route_after_planner(_state("PLAN")) == END
 
 
-def test_route_after_planner_continues_to_drift_compute_for_standard_mode() -> None:
-    assert route_after_planner(_state("DEFAULT")) == "drift_compute"
+def test_route_after_planner_continues_to_step_dispatch_for_standard_mode() -> None:
+    assert route_after_planner(_state("DEFAULT")) == "step_dispatch"
 
 
-def test_route_after_planner_continues_to_drift_compute_when_mode_is_missing() -> None:
-    assert route_after_planner(_state(None)) == "drift_compute"
+def test_route_after_planner_continues_to_step_dispatch_when_mode_is_missing() -> None:
+    assert route_after_planner(_state(None)) == "step_dispatch"

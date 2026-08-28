@@ -440,6 +440,18 @@ def _resolve_chat_system_prompt(task_prompt: str) -> str:
 
 
 # Mirrors the frontend contract (api_client.ts).
+def _format_notes(errors: List[str]) -> str:
+    """Render the user-facing note tail for a turn summary, or "" when there is
+    nothing worth showing.
+
+    Internal self-heal plumbing ("self-heal could not correct …") is a diagnostic
+    event, not actionable user feedback — it stays in the errors list for
+    logs/audit but never reaches the chat.
+    """
+    user_notes = [e for e in errors if not e.startswith("self-heal could not correct")]
+    return "\n\n_Notes:_ " + "; ".join(user_notes[:5]) if user_notes else ""
+
+
 class TaskPayload(BaseModel):
     task_prompt: str
     dirty_buffers: List[DirtyBuffer]
@@ -463,6 +475,14 @@ class TaskPayload(BaseModel):
     # still forces the manual card. Optional/default-False keeps the prior wire
     # shape (an omitting client always sees the card).
     auto_accept_low_risk: bool = False
+    # Set by the plan-acceptance handlers when the user approves a drafted plan.
+    # The turn then EXECUTES the checkpointed mission_spec instead of re-drafting
+    # it, so what runs is what the user actually read and approved. An explicit
+    # flag, never a match on the agreement phrase — that string coupling has
+    # broken before. Untrusted like any client field: it is honored only when a
+    # mission_spec really exists on the thread, and it never affects permissions.
+    # Optional/default-False keeps the prior wire shape.
+    accepted_plan: bool = False
     workspace_root: Optional[str] = None  # Passed from _workspace_registry at HTTP layer
     # The id of a saved skill the user explicitly chose for this turn. When present
     # the skill is injected unconditionally (still subject to its enabled flag); the
@@ -697,7 +717,6 @@ class TaskService:
             "ideation_synthesized": False,
             "target_role": None,
             "current_step_id": None,
-            "mission_spec": None,
             "parallel_tasks": [],
             "read_files_state": {},
             "vfs_buffer": {},
@@ -708,13 +727,21 @@ class TaskService:
             "provider": "CLOUD",
             "generated_code": {},
             "errors": [],
+            # These three are turn-scoped ledgers, and applied_files_log is an
+            # operator.add accumulator — a key omitted from this seed keeps its
+            # checkpointed value, so without an explicit reset they carry across
+            # every turn of a session. That inflates the turn-end summary's counts
+            # and makes the apply gate's cumulative blast-radius check trip earlier
+            # and earlier, raising approval cards the current turn never warranted.
+            "applied_files_log": [],
+            "applied_step_ids": [],
+            "check_results": [],
             "retry_count": 0,
             "security_flags": [],
             "terminal_output": "",
             "session_delta": "",
             "guardrail_failed": False,
             "validation_feedback": None,
-            "immutable_wbs": None,
             "pending_patches": {},
             "current_cost_usd": 0.0,
             "max_budget_usd": float(os.getenv("AILIENANT_MAX_BUDGET_USD", "inf")),
@@ -729,6 +756,14 @@ class TaskService:
             # the original payload).
             "auto_accept_low_risk": payload.auto_accept_low_risk,
         }
+        # LangGraph channels are last-value: writing None CLOBBERS the checkpointed
+        # plan, while omitting the key preserves it. That distinction is the entire
+        # mechanism behind executing an approved plan — do not "tidy" this back into
+        # an unconditional None. Fail-safe (§6.2): accepted_plan is a client-supplied
+        # field, so it only takes effect when a plan genuinely exists on this thread;
+        # otherwise the turn plans normally rather than executing nothing.
+        if not (payload.accepted_plan and self._checkpoint_has_mission(session_id)):
+            initial_state["mission_spec"] = None
         # The per-task execution-mode selector takes precedence over the global
         # settings-file preference: the selector reflects the user's intent for
         # THIS turn, while the settings file is only a session-wide default. The
@@ -753,6 +788,29 @@ class TaskService:
             except Exception:  # noqa: BLE001 — preference seeding must never block a task
                 pass
         return initial_state
+
+    @staticmethod
+    def _checkpoint_has_mission(session_id: str) -> bool:
+        """True when this thread's checkpoint already carries a drafted plan.
+
+        Gates the accepted-plan carry-forward: a client asking to execute an
+        approved plan must not be able to skip planning on a thread that has no
+        plan, which would leave the turn with nothing to run. Never raises — any
+        checkpointer fault answers False, so the turn plans normally.
+        """
+        try:
+            from brain.checkpoint import hybrid_checkpointer
+            from langchain_core.runnables import RunnableConfig
+            cfg: RunnableConfig = {"configurable": {"thread_id": session_id}}
+            tup = hybrid_checkpointer.get_tuple(cfg)  # L1 MemorySaver read — zero IOPS
+            if tup is None:
+                return False
+            checkpoint = cast(Dict[str, Any], tup.checkpoint)
+            values = checkpoint.get("channel_values", {}) if isinstance(checkpoint, dict) else {}
+            return bool(isinstance(values, dict) and values.get("mission_spec"))
+        except Exception:  # noqa: BLE001 — never block a turn over a bookkeeping read
+            logger.debug("accepted-plan checkpoint probe failed for %s", session_id, exc_info=True)
+            return False
 
     @staticmethod
     def _resolve_session_start_time(session_id: str) -> float:
@@ -1302,7 +1360,19 @@ class TaskService:
             errors: List[str] = list(final_state.get("errors") or [])
             check_results: List[Dict[str, Any]] = list(final_state.get("check_results") or [])
 
-            summary = self._format_coding_summary(mission, applied_log, errors, check_results)
+            # A PLAN_ONLY turn stops at END by design (route_after_planner), so an
+            # empty apply ledger there is the expected outcome, not a shortfall.
+            from core.permissions import (
+                SessionPermissionMode,
+                normalize_session_mode,
+                session_mode_from_channel,
+            )
+            _plan_only = normalize_session_mode(
+                session_mode_from_channel(final_state.get("session_permission_mode"))
+            ) is SessionPermissionMode.PLAN_ONLY
+            summary = self._format_coding_summary(
+                mission, applied_log, errors, check_results, plan_only=_plan_only
+            )
             await vfs_manager.broadcast_plan_document(
                 session_id, self._build_plan_payload(mission, summary)
             )
@@ -1543,6 +1613,7 @@ class TaskService:
         applied_log: List[Dict[str, Any]],
         errors: List[str],
         check_results: Optional[List[Dict[str, Any]]] = None,
+        plan_only: bool = False,
     ) -> str:
         """Render the turn-end chat summary from what actually happened.
 
@@ -1579,7 +1650,29 @@ class TaskService:
         checks_unverified = [c for c in checks if c.get("status") == "unverified"]
 
         if not applied_log:
-            return "Drafted a plan but produced no concrete edits for this request. See the Plan panel."
+            step_count = len(getattr(mission, "tasks", None) or [])
+            if step_count == 0:
+                headline = (
+                    "The planner returned a plan with no steps, so there was nothing "
+                    "to execute."
+                )
+            elif plan_only:
+                # Producing a plan and stopping IS the successful outcome of a
+                # read-only turn. Reporting it as an absence of edits describes a
+                # correct result in the language of a failure.
+                headline = (
+                    f"Plan ready — {step_count} step{'s' if step_count != 1 else ''}. "
+                    "Plan mode is read-only; accept under Ask or Auto to apply it."
+                )
+            else:
+                headline = (
+                    f"Drafted a {step_count}-step plan but produced no concrete edits "
+                    "for this request. See the Plan panel."
+                )
+            # The early return used to stop here, discarding `errors` entirely — so
+            # the one path with nothing to show for itself was also the only path
+            # that withheld the reason why.
+            return headline + _format_notes(errors)
 
         parts: List[str] = []
         if completed_files:
@@ -1622,13 +1715,7 @@ class TaskService:
         if completed_files:
             summary += " Previous versions are recoverable via VS Code's Local History (Timeline view)."
 
-        # Internal self-heal plumbing ("self-heal could not correct …") is a
-        # diagnostic event, not actionable user feedback — keep it in the errors
-        # list for logs/audit but never surface it as a chat note.
-        user_notes = [e for e in errors if not e.startswith("self-heal could not correct")]
-        if user_notes:
-            summary += "\n\n_Notes:_ " + "; ".join(user_notes[:5])
-        return summary
+        return summary + _format_notes(errors)
 
     @staticmethod
     def _build_plan_payload(mission: Any, summary: str) -> "PlanDocumentPayload":
@@ -1925,17 +2012,8 @@ class TaskService:
         The analyst packs these as individual chunks so the budget manager can
         drop low-rank snippets under pressure rather than the whole code brain.
         """
-        if not project_id:
-            return []
-        try:
-            from core.memory.semantic_memory import SemanticMemoryManager
-            return await SemanticMemoryManager().search_snippets(
-                text, workspace_hash=project_id, k=_RAG_TOP_K,
-                project_root=project_root or None,
-            )
-        except Exception as exc:  # noqa: BLE001 — RAG fetch is non-fatal
-            logger.debug("Analyst RAG snippets fetch failed (non-fatal): %s", exc)
-            return []
+        from agents.analyst_context import fetch_intent_snippets
+        return await fetch_intent_snippets(text, project_id, project_root)
 
     def warm_readme_digest(
         self, project_id: Optional[str], project_root: str, session_id: str

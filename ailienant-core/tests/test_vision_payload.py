@@ -155,8 +155,6 @@ async def test_has_images_forces_cloud_routing(monkeypatch: pytest.MonkeyPatch) 
     state = _base_state()
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
     ), patch(
         "tools.researcher_tools.build_researcher_tools", return_value={}
@@ -200,8 +198,6 @@ async def test_has_images_without_cloud_warns_and_stays_local_provider(
     state = _base_state()
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
     ), patch(
         "tools.researcher_tools.build_researcher_tools", return_value={}
@@ -256,8 +252,6 @@ async def test_researcher_forwards_attachment_data_to_gateway(
 
     mock_ainvoke = AsyncMock(return_value=_skeleton_response())
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
     ), patch(
         "tools.researcher_tools.build_researcher_tools", return_value={}

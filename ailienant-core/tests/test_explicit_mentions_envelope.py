@@ -60,8 +60,6 @@ async def test_researcher_emits_hard_context_envelope_for_each_mention() -> None
     state = _base_state(explicit_mentions=["src/alpha.ts", "src/beta.ts"])
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
     ), patch(
         "core.state_manager.dump_state_to_markdown", return_value=None
@@ -107,8 +105,6 @@ async def test_researcher_skips_missing_mentions_without_raising() -> None:
     state = _base_state(explicit_mentions=["src/ghost.ts", "src/real.ts"])
 
     with patch("agents.researcher.DEBUG_MODE", False), patch(
-        "agents.researcher.is_fast_track_eligible", return_value=False
-    ), patch(
         "agents.researcher.audit_task_complexity", new=AsyncMock(return_value=RiskLevel.NONE)
     ), patch(
         "core.state_manager.dump_state_to_markdown", return_value=None

@@ -26,9 +26,9 @@ from core.graph_weight import estimate_graph_weight
 from core.memory.context_auditor import (
     RiskLevel,
     audit_task_complexity,
+    compute_task_complexity_index,
     derive_routing_decision,
     hardware_reroute,
-    is_fast_track_eligible,
     is_underspecified,
 )
 from shared.config import MODEL_MEDIUM, check_cloud_availability
@@ -197,7 +197,7 @@ async def run_researcher_node(
     """Read-only retrieval + routing node — produces the skeleton and the routing signal.
 
     Pipeline:
-        1. Bounded READ_ONLY tool-grounding loop (skipped on fast_track / @-mention).
+        1. Bounded READ_ONLY tool-grounding loop (skipped on the @-mention bypass).
         2. Retrieval: @-mention bypass OR fast-boot + GraphRAG deep-context + recency.
         3. Context Meter Cascade (CSS → red-alert → mini-judge → routing) + hardware reroute.
         4. ONE LLM call compressing the gathered context into a dense Skeleton Map.
@@ -229,17 +229,16 @@ async def run_researcher_node(
         if _narrate is not None:
             await _narrate(node_name, metric=metric)
 
-    # Read TCI and CSS from state; fall back to the carried ContextMeter fields.
-    tci: float = state.get("tci", 0.0)
+    # CSS is carried forward from the ContextMeter when this turn has not
+    # recomputed it yet. TCI is NOT read back: this node is its sole producer and
+    # always recomputes it below, and a `tci == 0.0` sentinel would in any case be
+    # ambiguous now that 0.0 is a legitimate score for a genuinely trivial turn.
+    tci: float = 0.0
     css: float = state.get("css", 100.0)
     metrics = state.get("context_metrics")
-    if metrics is not None and tci == 0.0:
-        tci = getattr(metrics, "task_complexity_index", 0.0)
     if metrics is not None and css == 100.0:
         css = getattr(metrics, "css_total", 100.0)
     updated_context_metrics = metrics  # default: pass through unchanged
-
-    _fast_track: bool = is_fast_track_eligible(user_input)
 
     # IDE buffers feed the recency term during retrieval.
     ide_context = state.get("ide_context", {})
@@ -266,10 +265,9 @@ async def run_researcher_node(
         }
 
     # ── Ambiguity pre-flight gate — pause before spending the retrieval budget
-    # on a prompt with no concrete anchor to act on. Skipped whenever fast_track
-    # already judged the query self-contained; is_underspecified itself no-ops
-    # once an @-mention or an active file gives the turn a target.
-    if not _fast_track and is_underspecified(
+    # on a prompt with no concrete anchor to act on. is_underspecified itself
+    # no-ops once an @-mention or an active file gives the turn a target.
+    if is_underspecified(
         user_input, explicit_mentions=explicit_mentions, active_file_path=_active_path
     ):
         from core.hitl import request_graph_clarification
@@ -309,10 +307,10 @@ async def run_researcher_node(
                 f"[HARD CONTEXT: SOURCE FILE {path}]\n```\n{content}\n```"
             )
 
-    # ── Bounded READ_ONLY tool grounding (skip on fast_track / @-mention bypass) ──
+    # ── Bounded READ_ONLY tool grounding (skipped on the @-mention bypass) ──
     grounding_block: str = ""
     dispatch_trace: List[Dict[str, Any]] = []
-    if not _fast_track and not explicit_mentions:
+    if not explicit_mentions:
         grounding_block, dispatch_trace = await _gather_tool_grounding(
             state, config, session_id
         )
@@ -332,10 +330,10 @@ async def run_researcher_node(
     _top_k_files: list[str] = []
     # Distinguishes a cold/empty workspace (nothing to retrieve) from a rich-but-low-
     # coverage one: an empty corpus must not trip the red-alert CLOUD floor. Defaults
-    # to False (treat as non-empty) so the fast-track / @-mention paths — which skip
-    # retrieval — and any probe failure keep the conservative escalation behavior.
+    # to False (treat as non-empty) so the @-mention path — which skips retrieval —
+    # and any probe failure keep the conservative escalation behavior.
     _corpus_empty: bool = False
-    if not _fast_track and not explicit_mentions:
+    if not explicit_mentions:
         try:
             from core.memory.graphrag_extractor import GraphRAGDynamicExtractor
             from core.memory.semantic_memory import SemanticMemoryManager
@@ -432,39 +430,32 @@ async def run_researcher_node(
             logger.warning("Researcher: context extraction failed (non-fatal): %s", _ctx_err)
     # ────────────────────────────────────────────────────────────────────────────────────
 
+    # Structural complexity. Deliberately OUTSIDE the retrieval block above: that
+    # block is exception-guarded, and scoring inside it would silently yield 0 —
+    # "trivial" — on exactly the degraded turns that most need a capable model.
+    # `retrieved_files` is 0 when retrieval was skipped or failed, which is honest:
+    # breadth is one of three signals, not the whole score.
+    _structural_tci: float = compute_task_complexity_index(
+        user_input=user_input,
+        explicit_mentions=len(explicit_mentions),
+        dirty_buffers=len(dirty_buffers),
+        retrieved_files=len(_top_k_files),
+        corpus_empty=_corpus_empty,
+    )
+
     # ── Context Meter Cascade (Early Exit + Mini-Judge) ──────────────────
     _cascade_routing: str = "LOCAL_SMALL"   # conservative safe default
     _cascade_provider: str = "LOCAL"        # safe default
     _routing_warning: Optional[str] = None  # set only when hardware degrades routing
     _plan_mode_override: Optional[str] = None  # set only when HIGH-risk suggests Plan mode
 
+    tci = _structural_tci
     try:
-        if _fast_track:
-            # Trivial query: GraphRAG was skipped, so CSS was never recomputed. Pin it
-            # high by decree — a self-contained query has sufficient context — so the
-            # uncomputed CSS=0 cannot trip the red-alert gate and abort the turn.
-            css = 100.0
-            if updated_context_metrics is not None:
-                updated_context_metrics = updated_context_metrics.model_copy(
-                    update={"css_total": 100.0, "is_red_alert": False}
-                )
-
         # Initialize ContextMeter on first invocation (context_metrics absent from state).
         if updated_context_metrics is None:
             updated_context_metrics = _cold_context_meter(state, css, tci)
 
-        if _fast_track:
-            # Pre-RAG fast path: route LOCAL_SMALL and bypass the Mini-Judge LLM call
-            # entirely — a trivial query should not pay a classification round-trip.
-            _cascade_routing = derive_routing_decision(tci, css, fast_track=True)
-            _cascade_provider = "LOCAL"
-            from core.telemetry_log import log_node_transition
-            log_node_transition(session_id, "researcher", "fast_track", "fast_track_pre_rag")
-            logger.info(
-                "Fast Track: trivial query → routing=%s (RAG skipped, Mini-Judge bypassed).",
-                _cascade_routing,
-            )
-        elif updated_context_metrics.is_red_alert:
+        if updated_context_metrics.is_red_alert:
             # O(1) early exit: context gap → bypass Mini-Judge, force CLOUD.
             _cascade_routing = "CLOUD"
             _cascade_provider = "CLOUD"
@@ -552,8 +543,13 @@ async def run_researcher_node(
                     _cascade_routing,
                 )
 
+        # Persist the resolved TCI alongside the decision it produced. The
+        # per-branch copies above only fire on a MEDIUM/HIGH verdict, so without
+        # this the common NONE path would ship a meter still carrying 0.0 —
+        # leaving the dashboard, the fast-boot snapshot and the benchmark's
+        # TCI-bucket stratification reading the old dead value.
         updated_context_metrics = updated_context_metrics.model_copy(
-            update={"routing_decision": _cascade_routing}
+            update={"routing_decision": _cascade_routing, "task_complexity_index": tci}
         )
         logger.info(
             "Cascade done — routing=%s provider=%s css=%.1f tci=%.1f",

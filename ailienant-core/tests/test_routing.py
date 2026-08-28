@@ -52,14 +52,16 @@ def test_empty_corpus_does_not_override_high_tci_band() -> None:
 
 def test_resolve_model_alias_maps_each_routing_decision() -> None:
     from core.memory.context_auditor import resolve_model_alias_for_routing
-    from shared.config import MODEL_BIG, MODEL_MEDIUM, MODEL_SMALL
+    from shared.config import MODEL_BIG, MODEL_CLOUD, MODEL_MEDIUM, MODEL_SMALL
 
     assert resolve_model_alias_for_routing("LOCAL_SMALL", default=MODEL_BIG) == MODEL_SMALL
     assert resolve_model_alias_for_routing("LOCAL_MEDIUM", default=MODEL_BIG) == MODEL_MEDIUM
     assert resolve_model_alias_for_routing("LOCAL_BIG", default=MODEL_SMALL) == MODEL_BIG
     # CLOUD maps to MODEL_BIG, not a dedicated cloud alias — matches the
     # existing core/resource_manager.py SWITCH_TO_CLOUD precedent.
-    assert resolve_model_alias_for_routing("CLOUD", default=MODEL_SMALL) == MODEL_BIG
+    # CLOUD reaches the preset's own cloud tier; collapsing it onto MODEL_BIG
+    # made the top of the escalation ladder unreachable from every agent path.
+    assert resolve_model_alias_for_routing("CLOUD", default=MODEL_SMALL) == MODEL_CLOUD
 
 
 def test_resolve_model_alias_falls_back_when_decision_is_absent() -> None:

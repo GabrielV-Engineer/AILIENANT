@@ -49,6 +49,9 @@ export interface TaskPayload {
     // Id of a saved skill the user explicitly chose for this turn. Wire field is
     // snake_case end-to-end — do NOT send camelCase invokedSkillId.
     invoked_skill_id?: string;
+    // The user approved a drafted plan: the backend executes that checkpointed
+    // plan instead of re-drafting one. Optional so every other turn plans as before.
+    accepted_plan?: boolean;
 }
 
 // Phase 1.6.3 — Model discovery response schema (mirrors FastAPI ModelInfo).
