@@ -65,8 +65,9 @@ export function upsertActivityMarker(
     const key = payload.ref ?? `seq:${payload.seq}`;
     const idx = entries.findIndex(e => e.id === key);
     if (idx === -1) {
+        const isRefCarryingSpan = payload.kind === 'command' || payload.kind === 'tool';
         const isOpenSpan = payload.kind === 'reasoning' || payload.kind === 'cell'
-            || (payload.kind === 'command' && payload.ref !== undefined && payload.ref !== null);
+            || (isRefCarryingSpan && payload.ref !== undefined && payload.ref !== null);
         const entry: TimelineEntry = {
             id: key,
             seq: payload.seq,
@@ -75,6 +76,8 @@ export function upsertActivityMarker(
             target: payload.target ?? undefined,
             metric: payload.metric ?? undefined,
             ref: payload.ref ?? undefined,
+            role: payload.role ?? undefined,
+            modelTier: payload.model_tier ?? undefined,
             status: isOpenSpan ? 'active' : 'done',
         };
         return insertSorted(entries, entry);
@@ -88,6 +91,8 @@ export function upsertActivityMarker(
         target: payload.target ?? prev.target,
         metric: payload.metric ?? prev.metric,
         ref: payload.ref ?? prev.ref,
+        role: payload.role ?? prev.role,
+        modelTier: payload.model_tier ?? prev.modelTier,
     };
     return insertSorted(entries.filter((_, i) => i !== idx), merged);
 }

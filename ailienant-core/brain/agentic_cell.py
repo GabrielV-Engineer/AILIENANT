@@ -947,7 +947,7 @@ async def run_agentic_cell_node(
                     _sink = current_activity_sink()
                     if _sink is not None:
                         try:
-                            await _sink.emit_marker(ref=_activity_ref, target=call.name)
+                            await _sink.emit_marker(ref=_activity_ref, target=call.name, kind="tool")
                         except Exception:  # noqa: BLE001 — observability must never break the node
                             logger.debug(
                                 "agentic_cell: pending-tool marker emit skipped", exc_info=True,

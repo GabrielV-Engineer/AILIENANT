@@ -30,7 +30,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar, cast
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 
-from brain.state import AIlienantGraphState, accepts_config, assert_declared_channels
+from brain.state import (
+    AIlienantGraphState, accepts_config, assert_declared_channels, derive_node_role,
+)
+from core.activity_context import bind_agent_role, bind_model_tier, reset_agent_role, reset_model_tier
 
 logger = logging.getLogger("IDEATION_GRAPH")
 
@@ -38,6 +41,17 @@ logger = logging.getLogger("IDEATION_GRAPH")
 # escape hatch for CI/UI smoke tests. Mirrors planner/analyst:
 # set AILIENANT_IDEATION_DEBUG=1 to force the stub.
 DEBUG_MODE: bool = _os.getenv("AILIENANT_IDEATION_DEBUG", "0") != "0"
+
+# `_distill_brief_llm` pins its call to MODEL_BIG (compressing the whole
+# dialogue into the planner's brief is a high-blast-radius single-shot — see
+# that function's own rationale). Derived from the alias against the
+# resolver's tier vocabulary, mirroring `agents/analyst.py::_GRILL_TIER`,
+# rather than restating "big" as a second literal (§5.7).
+from core.config.model_resolver import _TIER_ORDER  # noqa: E402
+from shared.config import MODEL_BIG as _SYNTHESIS_MODEL  # noqa: E402
+_SYNTHESIS_TIER: str = next(
+    (t for t in _TIER_ORDER if _SYNTHESIS_MODEL == f"ailienant/{t}"), "big"
+)
 
 # Distill the Socratic dialogue into a SOFT brief — intent + hard constraints +
 # domain glossary. Deliberately NOT the rigid MissionSpecification: a missing field
@@ -221,6 +235,9 @@ async def run_synthesis_node(
         return {"pending_brief": None, "brief_revision_note": None, "hitl_pending": True}
 
     # ── Draft phase ───────────────────────────────────────────────────────
+    # Bind-and-forget — `_guarded`'s `finally` owns cleanup, same contract as
+    # `agents/analyst.py`'s `_GRILL_TIER` bind.
+    bind_model_tier(_SYNTHESIS_TIER)
     await _emit("synthesizing_intent")
 
     revision_note = state.get("brief_revision_note")
@@ -402,17 +419,30 @@ def _guarded(name: str, fn: _NodeFn) -> _NodeFn:
     ``_instrument_node`` does: LangGraph inspects THIS callable to decide what to
     inject, and a variadic wrapper advertises no injectable parameter — which is
     what left the Socratic grill unable to narrate or stream its reasoning.
+
+    Also the ideation subgraph's counterpart to `_instrument_node`'s agent-role/
+    model-tier contextvar cleanup (`core/activity_context.py`) — without this,
+    the grill and synthesis nodes would run under whatever the PARENT graph's
+    node last bound, since this subgraph's nodes never pass through
+    `_instrument_node` at all.
     """
     forwards_config = accepts_config(fn)
+    derived_role = derive_node_role(name)
 
     async def _wrapped(
         state: Any, config: Optional[RunnableConfig] = None, **kwargs: Any
     ) -> Any:
         if forwards_config:
             kwargs["config"] = config
-        result = await fn(state, **kwargs)
-        assert_declared_channels(name, result)
-        return result
+        role_token = bind_agent_role(derived_role)
+        tier_token = bind_model_tier(None)
+        try:
+            result = await fn(state, **kwargs)
+            assert_declared_channels(name, result)
+            return result
+        finally:
+            reset_agent_role(role_token)
+            reset_model_tier(tier_token)
 
     return cast(_NodeFn, _wrapped)
 

@@ -30,19 +30,27 @@ class ActivitySink(Protocol):
     needs this narrow surface.
     """
 
-    async def emit_marker(self, *, ref: str, target: Optional[str]) -> None:
-        """Push the pre-execution "command" marker (kind="command", ref=ref)."""
+    async def emit_marker(
+        self, *, ref: str, target: Optional[str], kind: str = "command"
+    ) -> None:
+        """Push the pre-execution marker (ref=ref). ``kind`` defaults to
+        "command" (a real shell/adapter execution, `core/exec_log.py`'s
+        caller) — `core/tool_dispatch.py::ToolDispatcher` passes "tool" so a
+        registry/MCP tool call renders as itself on the Glass-Box Timeline
+        instead of reading as an indistinguishable shell command.
+        """
         ...
 
-    async def emit_blocked(self, *, target: str) -> None:
-        """Push a ref-less "command" marker for an attempt that never reached
-        an adapter — a permission-gate denial or a dangerous-pattern intercept.
+    async def emit_blocked(self, *, target: str, kind: str = "command") -> None:
+        """Push a ref-less marker for an attempt that never reached an
+        adapter — a permission-gate denial or a dangerous-pattern intercept.
         No `emit_detail` ever follows (nothing executed), so the frontend
         resolves this node immediately rather than waiting on a body that will
         never arrive. Exists so a caller with no `_narrate` closure in scope
         (a leaf ``BaseTool`` several call-stack layers below the coding turn,
         e.g. ``tools.execution_tools.SandboxBashTool``) can still surface a
-        blocked command on the timeline.
+        blocked command on the timeline. ``kind`` follows `emit_marker`'s
+        default and override.
         """
         ...
 
@@ -131,3 +139,76 @@ def current_exec_ref() -> Optional[str]:
     ``None`` as "nothing to correlate against", never as an error.
     """
     return _current_exec_ref.get()
+
+
+# Who is acting (the agent role) and on what model tier — read by
+# `core/task_service.py::_push_activity` as the default source for the
+# Glass-Box Timeline's `role`/`model_tier` fields when a caller does not pass
+# them explicitly. Two independent lifetimes, both scoped narrower than the
+# turn itself:
+#
+# - `agent_role` is bound at TWO precedences. `brain/engine.py::_instrument_node`
+#   binds the OUTER default (derived from the node's own name) for the whole
+#   node call and is the sole party that resets it — its `finally` fires
+#   whether the node returns or raises, which is what makes it safe for an
+#   inner call site (below) to bind-and-forget. `core/tool_dispatch.py`'s
+#   `ToolDispatcher.dispatch` binds a NARROWER override for the duration of one
+#   tool call (`self._active_role` is more precise than the node's own name for
+#   a dispatched subagent, where the node is `subagent_worker` but the role is
+#   e.g. `core_dev`) and resets it itself, so attribution reverts to the node's
+#   own role once the call completes rather than leaking into whatever the node
+#   narrates afterward.
+# - `model_tier` is bound once a routing decision resolves to a concrete tier
+#   (`agents/planner.py`, `agents/coder.py`, the grill's pinned tier in
+#   `agents/analyst.py`). Set-and-forget is deliberate here too: the tier
+#   cannot change mid-node, and `_instrument_node`'s `finally` is the single
+#   place that ever needs to guarantee it does not survive past the node call
+#   that set it.
+_current_agent_role: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "ailienant_activity_agent_role", default=None
+)
+_current_model_tier: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "ailienant_activity_model_tier", default=None
+)
+
+
+def bind_agent_role(role: Optional[str]) -> contextvars.Token:
+    """Bind the acting agent's role for the current async context. The caller
+    MUST reset the returned token in a ``finally`` (charter §5.1) unless it is
+    `_instrument_node` itself relying on the node wrapper's own outer reset —
+    see the module-level note above for which binder owns which lifetime.
+    """
+    return _current_agent_role.set(role)
+
+
+def reset_agent_role(token: contextvars.Token) -> None:
+    """Undo `bind_agent_role`. Idempotent-safe only with the matching token."""
+    _current_agent_role.reset(token)
+
+
+def current_agent_role() -> Optional[str]:
+    """The bound agent role for this async context, or ``None`` when nothing
+    has attributed the current activity yet. Callers MUST treat ``None`` as
+    "omit the field", never as an error.
+    """
+    return _current_agent_role.get()
+
+
+def bind_model_tier(tier: Optional[str]) -> contextvars.Token:
+    """Bind the resolved model tier for the current async context. See
+    `bind_agent_role`'s docstring for the same reset-ownership contract.
+    """
+    return _current_model_tier.set(tier)
+
+
+def reset_model_tier(token: contextvars.Token) -> None:
+    """Undo `bind_model_tier`. Idempotent-safe only with the matching token."""
+    _current_model_tier.reset(token)
+
+
+def current_model_tier() -> Optional[str]:
+    """The bound model tier for this async context, or ``None`` when no
+    routing decision has resolved yet. Callers MUST treat ``None`` as "omit
+    the field", never as an error.
+    """
+    return _current_model_tier.get()

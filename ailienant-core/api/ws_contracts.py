@@ -726,7 +726,10 @@ ActivityKind = Literal[
     "reviewing",      # validating the plan (was critic_review / plan_validated / unwrapping_schema)
     "read",           # reading a file (target = path)
     "edit",           # writing/editing a file (target = path)
-    "command",        # running a command / tool (target = command, ref = tool_call_id)
+    "command",        # running a shell/adapter command (target = command, ref = tool_call_id)
+    "tool",           # a registry/MCP tool call, distinct from a shell command (13.1.9;
+                       # target = tool name, ref = tool_call_id) — ToolDispatcher.dispatch's
+                       # own instrumentation, previously mislabeled "command"
     "retrieval",      # GraphRAG / context retrieval
     "heal",           # self-healing a failed node (target = node)
     "reasoning",      # a reasoning span (ref = thinking correlation id; body streams on server_thinking_chunk)
@@ -756,6 +759,14 @@ class ActivityEventPayload(BaseModel):
     target: Optional[str] = None
     metric: Optional[str] = None
     ref: Optional[str] = None
+    # 13.1.9 — the acting agent (e.g. "researcher", "coder", "core_dev" for a
+    # dispatched subagent) and the model tier it resolved to ("small"/"medium"/
+    # "big"/"cloud"). Additive and optional (§10): an older client renders the
+    # row unattributed exactly as it did before either field existed. Sourced
+    # from `core/activity_context.py`'s contextvars — see that module's
+    # docstring for which binder owns which precedence.
+    role: Optional[str] = None
+    model_tier: Optional[str] = None
 
 
 class ServerActivityEvent(BaseModel):

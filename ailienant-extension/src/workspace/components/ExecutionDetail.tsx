@@ -10,6 +10,13 @@
  * single masking site (core/exec_log.py::record_exec) — rendered verbatim,
  * never re-processed. `execution.error` (set only when the adapter raised
  * before a verdict existed) takes the place of stdout/stderr entirely.
+ *
+ * 13.1.9 — `execution.initiator` no longer renders here: the row's own
+ * AgentTimeline lane header now names the acting agent, and for the two
+ * kinds that dispatch through `ToolDispatcher` (research/analyst/subagent
+ * calls) `initiator` was the exact same string, shown a second time
+ * immediately below. The field itself stays on the wire (still useful
+ * telemetry) — only its redundant render here is gone.
  */
 import type { ExecutionDetailShape } from '../../shared/config';
 
@@ -26,7 +33,7 @@ const SOURCE_LABEL: Record<ExecutionDetailShape['source'], string> = {
 };
 
 export function ExecutionDetail({ execution }: ExecutionDetailProps): JSX.Element {
-    const { source, cwd, initiator, stdout, stderr, exit_code, duration_ms, truncated, error } = execution;
+    const { source, cwd, stdout, stderr, exit_code, duration_ms, truncated, error } = execution;
     const failed = error != null || (exit_code != null && exit_code !== 0);
 
     return (
@@ -34,7 +41,6 @@ export function ExecutionDetail({ execution }: ExecutionDetailProps): JSX.Elemen
             <div className="ws-exec-meta">
                 <span className="ws-exec-source">{SOURCE_LABEL[source]}</span>
                 {cwd && <span className="ws-exec-cwd" title={cwd}>{cwd}</span>}
-                {initiator && <span className="ws-exec-initiator">{initiator}</span>}
             </div>
             {error != null ? (
                 <pre className="ws-exec-error">{error}</pre>

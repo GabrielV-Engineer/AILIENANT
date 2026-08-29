@@ -189,9 +189,17 @@ function assertGrammarEngineOffWebview() {
 // dependency regression; raised 560→563 KB for the brief-review step that closes
 // the Socratic grill (a new in-chat card rendering the distilled brief for
 // accept/edit/rewrite, plus its pure decision module) — organic reviewed feature
-// code, not a dependency regression. Bump again only with the same
-// justification, never to silently absorb an unreviewed size increase.
-const WEBVIEW_BUNDLE_CEILING_BYTES = 563 * 1024;
+// code, not a dependency regression; raised 563→566 KB for 13.1.9 (Glass-Box
+// Timeline agent attribution: consecutive agent lanes replacing the 13.0.7 phase
+// grouping, a model-tier badge, and the live loader row with its phrase-pool +
+// lead-character decode transition — three new pure utility modules plus the
+// AgentTimeline/ActiveTaskHeader rewrite) — organic reviewed feature code, not a
+// dependency regression. Bump again only with the same justification, never to
+// silently absorb an unreviewed size increase.
+// 13.1.10 raised the ceiling again, 566->569 KB: a new in-chat card confirming
+// or overriding the router's model pick once per turn, plus its pure decision
+// module — organic reviewed feature code, not a dependency regression.
+const WEBVIEW_BUNDLE_CEILING_BYTES = 569 * 1024;
 function assertWebviewBundleUnderCeiling() {
 	if (!production) { return; }
 	const bundle = 'dist/workspace.js';

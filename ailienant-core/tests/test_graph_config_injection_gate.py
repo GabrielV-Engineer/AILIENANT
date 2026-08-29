@@ -45,7 +45,8 @@ from langgraph.graph import StateGraph, START, END
 
 from brain.engine import _instrument_node, alienant_app
 from brain.ideation import _guarded, ideation_graph
-from brain.state import AIlienantGraphState, accepts_config
+from brain.state import AIlienantGraphState, accepts_config, derive_node_role
+from core.activity_context import current_agent_role
 
 pytestmark = pytest.mark.anyio
 
@@ -235,3 +236,70 @@ def test_INJECT5_building_a_graph_emits_no_config_typing_warning() -> None:
             clean.add_node(name, impl)  # type: ignore[type-var]
         clean.add_edge(START, _registered_nodes()[0][0])
         clean.compile()
+
+
+# --------------------------------------------------------------------------- #
+# INJECT6 — 13.1.9: the Glass-Box Timeline's agent-role contextvar is bound by
+# the SAME node wrapper that carries `config`, and reset by it regardless of
+# how the node exits — the two seams share one delivery/cleanup mechanism, so
+# a regression here would be the same class of silent failure INJECT1-5 exist
+# to catch for `config` itself.
+# --------------------------------------------------------------------------- #
+
+
+async def _run_role_probe_through_graph(
+    wrapper: Callable[..., Any], node_name: str,
+) -> Optional[str]:
+    """Compile a one-node graph named ``node_name`` around ``wrapper`` and
+    return the role the node body observed — measured through a real compiled
+    graph, never asserted against a hand-built config.
+    """
+    seen: Dict[str, Optional[str]] = {"role": None}
+
+    async def probe(state: Dict[str, Any], config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
+        seen["role"] = current_agent_role()
+        return {}
+
+    workflow: StateGraph[AIlienantGraphState] = StateGraph(AIlienantGraphState)
+    workflow.add_node(node_name, wrapper(node_name, probe))  # type: ignore[type-var]
+    workflow.add_edge(START, node_name)
+    workflow.add_edge(node_name, END)
+    app = workflow.compile()
+    await app.ainvoke(
+        cast(AIlienantGraphState, {"task_id": "gate-role"}),
+        config={"configurable": {"thread_id": "gate-role"}},
+    )
+    return seen["role"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("wrapper", [_instrument_node, _guarded])
+async def test_INJECT6a_node_wrapper_binds_a_derived_role_before_the_node_body_runs(
+    wrapper: Callable[..., Any],
+) -> None:
+    role = await _run_role_probe_through_graph(wrapper, "coder_agent")
+    assert role == "coder", (
+        "the outer node wrapper must bind a role derived from its own registered "
+        "name BEFORE calling the node body — this is what makes every activity "
+        "row a node pushes attributable without threading a role parameter "
+        "through every narration call site"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("wrapper", [_instrument_node, _guarded])
+async def test_INJECT6b_agent_role_never_leaks_past_the_node_that_bound_it(
+    wrapper: Callable[..., Any],
+) -> None:
+    assert current_agent_role() is None, "test pollution — a prior test left a role bound"
+    await _run_role_probe_through_graph(wrapper, "coder_agent")
+    assert current_agent_role() is None, (
+        "charter §5.1: a critical-section value must have a guaranteed cleanup "
+        "path — a role that survives past its own node would misattribute the "
+        "NEXT node's rows to this one"
+    )
+
+
+def test_INJECT6c_role_derivation_is_total_over_every_shipped_node() -> None:
+    offenders = [name for name, _func_accepts, _impl in _registered_nodes() if not derive_node_role(name)]
+    assert not offenders, f"these node names derive an empty role label: {offenders}"

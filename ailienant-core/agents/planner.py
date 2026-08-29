@@ -602,7 +602,12 @@ async def run_planner_node(
             context=cache_ctx,
             project_id=state.get("project_id") or "",
             model=resolve_model_alias_for_routing(
-                getattr(updated_context_metrics, "routing_decision", None),
+                # 13.1.10 — the operator's confirmed pick takes precedence over
+                # the raw router verdict; falls back to it when the turn never
+                # passed through model_route_gate (a direct node-level test,
+                # a cache probe ahead of the gate having run).
+                state.get("confirmed_routing_decision")
+                or getattr(updated_context_metrics, "routing_decision", None),
                 default=MODEL_BIG,
                 floor=_PLANNER_TIER_FLOOR,
             ),
@@ -656,7 +661,13 @@ async def run_planner_node(
         # zero behaviour change from before in that case. ResourceBroker still
         # arbitrates the VRAM lock for whichever tier this resolves to.
         _context_meter = state.get("context_metrics")
-        _routing_decision = getattr(_context_meter, "routing_decision", None)
+        # 13.1.10 — the operator's confirmed pick (model_route_gate) takes
+        # precedence; falls back to the raw router verdict for a turn that
+        # never passed through the gate (a direct node-level test).
+        _routing_decision = (
+            state.get("confirmed_routing_decision")
+            or getattr(_context_meter, "routing_decision", None)
+        )
         _planner_model = resolve_model_alias_for_routing(
             _routing_decision, default=MODEL_BIG, floor=_PLANNER_TIER_FLOOR
         )

@@ -200,7 +200,7 @@ export interface ExecutionDetailShape {
 // node token never reaches the screen.
 export type TimelineEntryKind =
     | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
-    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell'
+    | 'command' | 'tool' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell'
     | 'subagent';
 
 // 'active' applies to a 'reasoning' or 'cell' entry (both fire their marker at
@@ -225,6 +225,13 @@ export interface TimelineEntry {
     target?: string;
     metric?: string;
     ref?: string;
+    // 13.1.9 — the acting agent and the model tier it resolved to, sourced from
+    // the backend's activity contextvars (SCHEMA_EVOLUTION §60). Undefined for
+    // an entry emitted before either field existed, or for a node the backend
+    // could not attribute (e.g. a graph fan-out anchor) — render unattributed,
+    // never a fabricated label.
+    role?: string;
+    modelTier?: string;
     status: TimelineEntryStatus;
     // Correlated bodies, attached once the corresponding stream arrives — order
     // independent of the marker. Reused renderers consume these directly.
@@ -240,7 +247,7 @@ export interface TimelineEntry {
     thinkingElapsedMs?: number;
     diff?: DiffBlockShape;     // kind: 'diff'
     cell?: CellIterationShape; // kind: 'cell', when ref === cell:{iteration}
-    execution?: ExecutionDetailShape; // kind: 'command', when ref is an execution id
+    execution?: ExecutionDetailShape; // kind: 'command' or 'tool', when ref is an execution id
 }
 
 // Discriminated union of every message the webview can post.

@@ -21,6 +21,7 @@ import pytest
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from core.activity_context import bind_activity_sink, current_agent_role, reset_activity_sink
 from core.permissions import (
     PermissionDecision,
     SessionPermissionMode,
@@ -80,6 +81,7 @@ def _dispatcher(
     active_role: str = "analyst",
     session_mode: SessionPermissionMode = SessionPermissionMode.DEFAULT,
     agent_permission: PermissionMode = PermissionMode.READ_ONLY,
+    activity_role: str | None = None,
 ) -> ToolDispatcher:
     return ToolDispatcher(
         tools,
@@ -87,6 +89,7 @@ def _dispatcher(
         session_mode=session_mode,
         state={},
         agent_permission=agent_permission,
+        activity_role=activity_role,
     )
 
 
@@ -191,6 +194,101 @@ async def test_dispatch_tool_exception_is_caught() -> None:
     result = await d.dispatch(ToolCall(name="boom", args={"value": "x"}))
     assert result.executed is False
     assert "failed" in result.observation
+
+
+# ── 13.1.9 — Glass-Box Timeline attribution ────────────────────────────────
+# D4's fix: a tool call previously reached the frontend as kind="command",
+# indistinguishable from a real shell command, and the acting agent's role
+# never reached the row at all. These drive a REAL dispatch through a bound
+# sink rather than asserting against a hand-built payload — which is exactly
+# what let the mislabeling ship unnoticed the first time.
+
+
+class _CapturingSink:
+    """Records every marker/detail kwarg AND the ambient contextvars visible
+    at the moment each fires — proving both that `dispatch` binds attribution
+    BEFORE emitting (not just that it eventually gets threaded through)."""
+
+    def __init__(self) -> None:
+        self.markers: list[Dict[str, Any]] = []
+        self.details: list[Dict[str, Any]] = []
+
+    async def emit_marker(self, *, ref: str, target: str | None, kind: str = "command") -> None:
+        self.markers.append({"ref": ref, "target": target, "kind": kind, "role": current_agent_role()})
+
+    async def emit_blocked(self, *, target: str, kind: str = "command") -> None:
+        self.markers.append({"target": target, "kind": kind, "role": current_agent_role(), "blocked": True})
+
+    async def emit_detail(self, **kwargs: Any) -> None:
+        self.details.append({**kwargs, "role": current_agent_role()})
+
+
+async def test_dispatch_emits_tool_kind_with_the_dispatchers_own_role() -> None:
+    sink = _CapturingSink()
+    token = bind_activity_sink(sink)
+    try:
+        d = _dispatcher(
+            {"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"researcher"})},
+            active_role="researcher",
+        )
+        result = await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+    finally:
+        reset_activity_sink(token)
+
+    assert result.executed is True
+    assert sink.markers[0]["kind"] == "tool"
+    assert sink.markers[0]["role"] == "researcher"
+    assert sink.details[0]["role"] == "researcher"
+
+
+async def test_dispatch_blocked_call_also_emits_tool_kind() -> None:
+    sink = _CapturingSink()
+    token = bind_activity_sink(sink)
+    try:
+        d = _dispatcher(
+            {"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"coder"})},
+            active_role="analyst",  # mismatched role -> DENY, never reaches an adapter
+        )
+        result = await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+    finally:
+        reset_activity_sink(token)
+
+    assert result.executed is False
+    assert sink.markers[0]["kind"] == "tool"
+    assert sink.markers[0].get("blocked") is True
+
+
+async def test_dispatch_activity_role_overrides_active_role_for_the_lane() -> None:
+    # The coder's own case: active_role is the per-step WBS target_role (RBAC),
+    # activity_role is the stable lane identity — they must diverge cleanly.
+    sink = _CapturingSink()
+    token = bind_activity_sink(sink)
+    try:
+        d = _dispatcher(
+            {"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"core_dev"})},
+            active_role="core_dev",
+            activity_role="coder",
+        )
+        await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+    finally:
+        reset_activity_sink(token)
+
+    assert sink.markers[0]["role"] == "coder"
+
+
+async def test_dispatch_resets_agent_role_after_the_call_completes() -> None:
+    assert current_agent_role() is None
+    d = _dispatcher({"echo": _reg(_EchoTool(), ToolPrivilegeTier.READ_ONLY, {"researcher"})}, active_role="researcher")
+    await d.dispatch(ToolCall(name="echo", args={"value": "hi"}))
+    # The §5.1 guarantee: attribution must not leak past the call that set it.
+    assert current_agent_role() is None
+
+
+async def test_dispatch_resets_agent_role_even_when_the_tool_raises() -> None:
+    assert current_agent_role() is None
+    d = _dispatcher({"boom": _reg(_BoomTool(), ToolPrivilegeTier.READ_ONLY, {"analyst"})}, active_role="analyst")
+    await d.dispatch(ToolCall(name="boom", args={"value": "x"}))
+    assert current_agent_role() is None
 
 
 async def test_dispatch_bad_args_is_caught() -> None:

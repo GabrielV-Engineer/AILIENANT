@@ -29,6 +29,7 @@ import { ActionLog } from './components/ActionLog';
 import { HITLInterventionCard } from './components/HITLInterventionCard';
 import { ClarificationGrillCard } from './components/ClarificationGrillCard';
 import { BriefReviewCard, BRIEF_REVIEW_KIND } from './components/BriefReviewCard';
+import { ModelRouteCard, MODEL_ROUTE_REVIEW_KIND } from './components/ModelRouteCard';
 import { useHitlResponder } from './utils/useHitlResponder';
 import { getPresetConfig } from './hooks/useReasoningPreset';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -40,7 +41,6 @@ import {
     readMergedCellIteration, appendPtyLines,
 } from './utils/messageDispatchHelpers';
 import { upsertCellBody } from './utils/timelineBuilder';
-import { timelineEntryLabel } from './utils/activityLabels';
 import type { Message, ConversationMessage, SystemMessage, InitialState } from './types';
 import { MESSAGE_COMPACTION_THRESHOLD } from './types';
 
@@ -199,19 +199,6 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
             behavior: isStreaming ? 'auto' : 'smooth',
         });
     }, [messages, isStreaming]);
-
-    // The Active Task Header's live status text: the same real narration
-    // AgentTimeline rows already render (server_activity_event → typed
-    // kind → timelineEntryLabel), sourced from the latest turn's own
-    // timeline entries — never a fabricated status verb. Undefined before
-    // the first marker arrives, so the header falls back to "Working…".
-    const activeTaskStatusLabel = useMemo(() => {
-        const last = messages[messages.length - 1];
-        const entries = last && 'timeline' in last ? last.timeline : undefined;
-        if (!entries || entries.length === 0) { return undefined; }
-        const latest = entries.reduce((a, b) => (b.seq > a.seq ? b : a));
-        return timelineEntryLabel(latest);
-    }, [messages]);
 
     // Submit a turn under an explicit execution mode. The mode is passed in
     // rather than read from the `mode` state so callers that flip the mode in
@@ -564,9 +551,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                         {activeTaskPrompt !== undefined && activeTaskStartedAt !== undefined && (
                             <ActiveTaskHeader
                                 prompt={activeTaskPrompt}
-                                startedAt={activeTaskStartedAt}
                                 isTurnActive={isTurnActive}
-                                statusLabel={activeTaskStatusLabel}
                                 onCancel={handleAbort}
                                 onDismiss={() => setActiveTaskPrompt(undefined)}
                             />
@@ -766,6 +751,15 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                         // The last step of the grill: the distilled brief,
                                         // shown before it becomes the planner's input.
                                         <BriefReviewCard
+                                            intervention={hitlPending}
+                                            onResolved={handleResolveHitl}
+                                        />
+                                    )
+                                    : hitlPending.request_kind === MODEL_ROUTE_REVIEW_KIND
+                                    ? (
+                                        // Once per turn, before the planner drafts: confirm
+                                        // or override the router's model pick.
+                                        <ModelRouteCard
                                             intervention={hitlPending}
                                             onResolved={handleResolveHitl}
                                         />

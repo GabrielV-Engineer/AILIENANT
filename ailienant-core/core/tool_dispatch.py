@@ -43,7 +43,7 @@ from typing import (
 
 from langchain_core.tools import BaseTool
 
-from core.activity_context import current_activity_sink
+from core.activity_context import bind_agent_role, current_activity_sink, reset_agent_role
 from core.permissions import (
     PermissionDecision,
     SessionPermissionMode,
@@ -359,6 +359,7 @@ class ToolDispatcher:
         state: Mapping[str, Any],
         agent_permission: PermissionMode,
         approval_fn: Optional[ApprovalFn] = None,
+        activity_role: Optional[str] = None,
     ) -> None:
         self._tools = tools
         self._active_role = active_role
@@ -370,6 +371,17 @@ class ToolDispatcher:
         # default for a non-interactive context). READ_ONLY consumers never reach
         # this branch, so omitting it is the friction-free path.
         self._approval_fn = approval_fn
+        # Glass-Box Timeline lane attribution (13.1.9) — usually the SAME string
+        # as `active_role` (researcher/analyst/a dispatched subagent all want
+        # their RBAC identity to also be their lane identity). The one place it
+        # genuinely diverges is the coder: `active_role` there is the per-WBS-
+        # step target_role ("core_dev", "qa_tester", …) for RBAC, which is real
+        # and meaningful for permissions but would fragment one coding turn
+        # into a new lane every time the step's target_role changes, even
+        # though it is still "the coder" acting throughout. `agents/coder.py`
+        # passes `activity_role="coder"` to keep that turn as one lane while
+        # leaving the RBAC gate untouched.
+        self._activity_role = activity_role if activity_role is not None else active_role
 
     def classify(
         self, call: ToolCall
@@ -411,6 +423,30 @@ class ToolDispatcher:
         return reg, decision, None
 
     async def dispatch(
+        self, call: ToolCall, *, activity_ref: Optional[str] = None,
+    ) -> DispatchResult:
+        """Bind the dispatcher's own lane attribution for the life of this one
+        call, then delegate to ``_dispatch_impl``.
+
+        ``self._activity_role`` is a narrower, more precise attribution than
+        whatever the enclosing graph node bound as its own default (e.g. for a
+        dispatched subagent, the node is ``subagent_worker`` but the role is
+        the subagent's own, like ``core_dev``) — see
+        ``core/activity_context.py``'s module docstring for the two-precedence
+        contract, and this class's ``__init__`` for why it can differ from
+        ``self._active_role`` (the RBAC identity `classify`/`_dispatch_impl`
+        still gate against, untouched here). Reset in ``finally`` (charter
+        §5.1) so attribution reverts to the node's own role once this call
+        completes, rather than leaking into whatever the node narrates
+        afterward.
+        """
+        role_token = bind_agent_role(self._activity_role)
+        try:
+            return await self._dispatch_impl(call, activity_ref=activity_ref)
+        finally:
+            reset_agent_role(role_token)
+
+    async def _dispatch_impl(
         self, call: ToolCall, *, activity_ref: Optional[str] = None,
     ) -> DispatchResult:
         """Resolve, gate, and execute one tool call.
@@ -465,7 +501,7 @@ class ToolDispatcher:
             if sink is None:
                 return
             try:
-                await sink.emit_blocked(target=call.name)
+                await sink.emit_blocked(target=call.name, kind="tool")
             except Exception:  # noqa: BLE001 — observability must never break dispatch
                 logger.debug("tool-dispatch blocked marker skipped (%s)", call.name, exc_info=True)
 
@@ -549,7 +585,7 @@ class ToolDispatcher:
         if exec_ref is None and sink is not None:
             exec_ref = uuid.uuid4().hex
             try:
-                await sink.emit_marker(ref=exec_ref, target=call.name)
+                await sink.emit_marker(ref=exec_ref, target=call.name, kind="tool")
             except Exception:  # noqa: BLE001 — observability must never break dispatch
                 logger.debug("tool-dispatch marker emit skipped (%s)", call.name, exc_info=True)
 

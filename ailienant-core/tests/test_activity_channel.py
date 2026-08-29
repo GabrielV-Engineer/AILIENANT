@@ -245,7 +245,10 @@ async def test_understanding_then_plan_markers_fire_in_order() -> None:
 
     captured: List[dict] = []
 
-    async def _capture_activity(sid: str, *, seq: int, ts: float, kind: str, target=None, metric=None, ref=None) -> None:
+    async def _capture_activity(
+        sid: str, *, seq: int, ts: float, kind: str, target=None, metric=None, ref=None,
+        role=None, model_tier=None,
+    ) -> None:
         captured.append({"seq": seq, "kind": kind, "target": target, "metric": metric, "ref": ref})
 
     payload = TaskPayload(

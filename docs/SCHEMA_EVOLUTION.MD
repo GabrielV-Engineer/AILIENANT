@@ -3119,3 +3119,129 @@ already emits the settled constraints and scope as labelled blocks, so the struc
 needs is in the text itself — deriving separate UI sections would risk displaying something the
 planner does not receive, and truncating (as the generic card does at 800 chars) would hide part
 of what is under review.
+
+## §59 — Glass-Box Timeline Agent Attribution: `role` / `model_tier`, `ActivityKind.tool` (Manifest 13.1.9)
+
+**Additive.** Two new optional fields on `ActivityEventPayload` and one new `ActivityKind` member.
+No existing field changes shape, and an older client that ignores both renders exactly as before.
+
+### Fields
+
+```python
+class ActivityEventPayload(BaseModel):
+    ...
+    role: Optional[str] = None        # the acting agent, e.g. "researcher", "coder", "core_dev"
+    model_tier: Optional[str] = None  # "small" | "medium" | "big" | "cloud"
+```
+
+Sourced from two contextvars on `core/activity_context.py` (`current_agent_role`,
+`current_model_tier`), read by `core/task_service.py::_push_activity` when a caller does not pass
+either explicitly — which is every existing call site, so no narration/diff/reasoning call needed
+to change. Two binders, two precedences, mirroring `bind_activity_sink`'s existing reset-in-finally
+contract (§5.1):
+
+- **Outer default** — `brain/engine.py::_instrument_node` (the parent graph) and
+  `brain/ideation.py::_guarded` (the ideation subgraph) derive a role from the node's own
+  registered name (`brain/state.py::derive_node_role` — strip a `_agent`/`_node` suffix; a one-entry
+  alias table covers "analyst_grill" -> "analyst", the sole case where the node's name and its
+  dispatcher's RBAC identity were never the same string) and bind it for the whole node call,
+  resetting in `finally` regardless of how the node exits.
+- **Narrower override** — `core/tool_dispatch.py::ToolDispatcher.dispatch` binds
+  `self._activity_role` for the duration of one tool call, then resets back to the node's own
+  default. `ToolDispatcher.__init__` gained an optional `activity_role` parameter, defaulting to
+  `active_role` (RBAC identity) when omitted — the two are the same string for researcher/analyst/
+  a dispatched subagent, but the coder's `active_role` is the per-WBS-step `target_role` ("core_dev",
+  "qa_tester", …), which is real and meaningful for permission gating but would fragment one coding
+  turn into a new lane every time the step's role changes. `agents/coder.py` passes
+  `activity_role="coder"` to keep the lane stable while leaving RBAC untouched.
+
+Model tier is bound once per node, immediately after the three
+`resolve_model_alias_for_routing` call sites resolve it (`agents/planner.py` ×2, `agents/coder.py`)
+and at the two pinned constants (`agents/analyst.py::_GRILL_TIER`,
+`brain/ideation.py::_SYNTHESIS_TIER` — both derived from their model alias against the resolver's
+own tier vocabulary, mirroring `_GRILL_TIER`'s existing pattern, never a second hardcoded ladder).
+Bind-and-forget: the owning node wrapper's `finally` is the single guaranteed reset point, so an
+internal call site does not need its own token/reset pair.
+
+### `ActivityKind.tool`
+
+`ToolDispatcher.dispatch` already instrumented every tool call (DEBT-133, 12.8) but hardcoded
+`kind="command"` on the marker it emitted — a registry/MCP tool call (`grep_index`, `read_file`)
+rendered identically to a real shell command, and the role that WAS captured
+(`initiator=self._active_role` on the I/O detail) never reached the row itself. `ActivitySink.
+emit_marker`/`emit_blocked` gained an optional `kind: str = "command"` parameter (default preserves
+`core/exec_log.py::record_execution`'s existing shell-command behavior unchanged); `ToolDispatcher`
+passes `kind="tool"` on both its ref-carrying marker and its blocked-attempt marker, and
+`brain/agentic_cell.py`'s pending-tool-call HITL-defer path (which opens the span before its own
+`interrupt()`) does the same.
+
+### Frontend
+
+`TimelineEntry` gained `role?: string` / `modelTier?: string`, populated by
+`timelineBuilder.ts::upsertActivityMarker` from the new payload fields. `utils/agentLanes.ts` (new,
+pure) folds consecutive same-role entries into `AgentLane[]`, **replacing** the 13.0.7 work-loop
+phase grouping (`activityLabels.ts`'s `timelineEntryPhase`/`workLoopPhaseLabel`, deleted): the agent
+already implies the phase in practice, and a second grouping axis over a handful of rows made a
+short turn look broken rather than short. Each lane header renders the agent's display name
+(`formatRoleLabel`) and, when present, the tier + real model name (`formatModelBadge`, joined
+against `AilienantConfig.tiers` — already a global field on `chatStore`, no new round-trip needed).
+
+## §60 — Reviewable Model Route: `confirmed_routing_decision` (Manifest 13.1.10)
+
+**Additive.** One new channel on `AIlienantGraphState` and one new `request_kind` value. No
+existing field changes shape, and a client that does not recognise the kind falls through to the
+generic HITL card and can still answer, since the payload is a plain approval.
+
+### Channel
+
+```python
+confirmed_routing_decision: Optional[str]  # "LOCAL_SMALL" | "LOCAL_MEDIUM" | "LOCAL_BIG" | "CLOUD"
+```
+
+Scalar overwrite, `None` before the gate runs or after a cancelled review. Read by all three
+`resolve_model_alias_for_routing` call sites (`agents/planner.py` ×2, `agents/coder.py`) in place
+of the raw `context_metrics.routing_decision`, falling back to that raw value when
+`confirmed_routing_decision` is unset (a direct node-level test, or any turn that never passed
+through `model_route_gate`). This is what makes one confirmed choice cover every WBS step of a
+turn — the coder reads a decision already made, never re-gating per step.
+
+### `brain/routing_gate.py::run_model_route_node`
+
+Spliced between `researcher_agent` and `planner_agent` in both graph topologies
+(`ENABLE_DYNAMIC_DISPATCH` on or off) — every path to the planner already runs through the
+researcher first (`route_after_ideation` hands off through `researcher_agent`, not directly to
+`planner_agent`), so this is the single choke point that sees a computed
+`context_metrics.routing_decision` no matter which route got here. The dynamic-dispatch topology's
+conditional-edge path-map is remapped (`"planner_agent": "model_route_gate"`) rather than the
+router function itself touched, the same technique `brain/engine.py` already uses to splice
+`researcher_agent` in front of every planner entry.
+
+**Deliberately single-phase**, unlike `run_synthesis_node`'s defer-then-interrupt-first split
+(§58): that split exists because drafting a brief is an expensive, non-deterministic `MODEL_BIG`
+call that must not silently re-run on every resume. Resolving a routing decision here is a pure
+re-read of `context_metrics`, already sitting in state — replaying the node from the top on resume
+reproduces the exact same value every time, so resolving and interrupting within one invocation
+carries no hazard. `tests/test_routing_gate.py` pins the review function to at most one call per
+invocation as the test that would catch a regression of this assumption.
+
+**Mode-aware.** Only `SessionPermissionMode.CAUTIOUS` and `.PLAN_ONLY` — the two modes the 3-button
+frontend UI's "Ask" and "Plan" buttons actually produce (`core/permissions.py`'s
+`_FRONTEND_MODE_TO_SESSION`) — suspend for a decision. Every other session mode, "Auto" (`STANDARD`)
+foremost, bypasses the gate and writes the router's own pick immediately: the Glass-Box Timeline's
+lane badge (§59) remains the only surface for the model choice in that mode, consistent with what
+Auto is for. Scoped deliberately narrow — a future session mode reachable from the UI needs this
+predicate revisited, not silently assumed to gate correctly.
+
+### `request_kind = "MODEL_ROUTE_REVIEW"`
+
+Reuses `core/hitl.py::request_graph_approval` unchanged, exactly as §58's brief review does — no
+new wire message, no new resume path, no change to `useHitlResponder`. The drafted route (decision
++ TCI + CSS, the justification the operator needs to judge the choice rather than rubber-stamp it)
+travels as a JSON string inside the existing `proposed_content` field
+(`ailienant-extension/src/workspace/utils/modelRouteLogic.ts::parseRoutePayload`, defensive —
+malformed JSON degrades to a minimal accept/cancel render, never crashes the card) rather than as a
+new field, since `request_graph_approval`'s payload has only one `str` content slot. The three
+decisions all use the SAME `approved`/`modified_content` shape §58 already established: accept
+(`approved=true`, no override), pick a different tier (`approved=true`,
+`modified_content=<routing_decision string>`), cancel (`approved=false`, ends the turn — `hitl_pending`
+set, `confirmed_routing_decision` cleared rather than left stale).

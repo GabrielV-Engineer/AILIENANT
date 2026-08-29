@@ -1,55 +1,40 @@
 /**
- * activityLabels.ts — work-loop phase derivation (13.0.7).
+ * activityLabels.ts — human labels for a typed TimelineEntry.
  *
- * Pure function tests, no JSDOM/React needed.
+ * Pure function tests, no JSDOM/React needed. The 13.0.7 work-loop phase
+ * derivation this file used to also cover (`timelineEntryPhase`/
+ * `workLoopPhaseLabel`) was deleted in 13.1.9 in favor of agent lanes
+ * (`utils/agentLanes.ts`) — see that module's own test file.
  */
 import * as assert from 'assert';
-import { timelineEntryLabel, timelineEntryPhase, workLoopPhaseLabel } from '../workspace/utils/activityLabels';
+import { timelineEntryLabel } from '../workspace/utils/activityLabels';
 import type { TimelineEntryKind } from '../shared/config';
 
 function entry(kind: TimelineEntryKind, metric?: string): { kind: TimelineEntryKind; metric?: string } {
     return { kind, metric };
 }
 
-suite('13.0.7 — timelineEntryPhase', () => {
-    test('gather kinds: understanding, retrieval, read', () => {
-        assert.strictEqual(timelineEntryPhase(entry('understanding')), 'gather');
-        assert.strictEqual(timelineEntryPhase(entry('retrieval')), 'gather');
-        assert.strictEqual(timelineEntryPhase(entry('read')), 'gather');
+suite('13.1.9 — timelineEntryLabel: tool kind', () => {
+    test('a tool call reads as itself, not as a shell command', () => {
+        assert.strictEqual(
+            timelineEntryLabel({ kind: 'tool', target: 'grep_index', metric: '14 hits' }),
+            'grep_index · 14 hits',
+        );
     });
 
-    test('act kinds: planning, plan, edit, diff, subagent', () => {
-        assert.strictEqual(timelineEntryPhase(entry('planning')), 'act');
-        assert.strictEqual(timelineEntryPhase(entry('plan')), 'act');
-        assert.strictEqual(timelineEntryPhase(entry('edit')), 'act');
-        assert.strictEqual(timelineEntryPhase(entry('diff')), 'act');
-        assert.strictEqual(timelineEntryPhase(entry('subagent')), 'act');
+    test('a tool call with no metric shows just the name', () => {
+        assert.strictEqual(timelineEntryLabel({ kind: 'tool', target: 'read_file' }), 'read_file');
     });
 
-    test('verify kinds: reviewing, heal', () => {
-        assert.strictEqual(timelineEntryPhase(entry('reviewing')), 'verify');
-        assert.strictEqual(timelineEntryPhase(entry('heal')), 'verify');
+    test('a denied tool call is labeled Blocked, like a denied command', () => {
+        assert.strictEqual(
+            timelineEntryLabel({ kind: 'tool', target: 'run_command', metric: 'denied' }),
+            'Blocked run_command',
+        );
     });
 
-    test('reasoning and cell are excluded — no phase, never grouped under a header', () => {
-        assert.strictEqual(timelineEntryPhase(entry('reasoning')), undefined);
-        assert.strictEqual(timelineEntryPhase(entry('cell')), undefined);
-    });
-
-    test('command disambiguates via metric: a real exec (no metric) is act', () => {
-        assert.strictEqual(timelineEntryPhase(entry('command')), 'act');
-        assert.strictEqual(timelineEntryPhase(entry('command', 'some-other-metric')), 'act');
-    });
-
-    test('command with metric=denied or metric=verify is a verification outcome, not the action', () => {
-        assert.strictEqual(timelineEntryPhase(entry('command', 'denied')), 'verify');
-        assert.strictEqual(timelineEntryPhase(entry('command', 'verify')), 'verify');
-    });
-
-    test('workLoopPhaseLabel gives a human header for each phase', () => {
-        assert.strictEqual(workLoopPhaseLabel('gather'), 'Gathering context');
-        assert.strictEqual(workLoopPhaseLabel('act'), 'Taking action');
-        assert.strictEqual(workLoopPhaseLabel('verify'), 'Verifying results');
+    test('a tool entry with no target at all falls back to a generic label', () => {
+        assert.strictEqual(timelineEntryLabel(entry('tool')), 'Tool call');
     });
 });
 

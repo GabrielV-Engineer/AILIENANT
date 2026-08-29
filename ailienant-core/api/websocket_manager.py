@@ -663,6 +663,8 @@ class ConnectionManager:
         target: Optional[str] = None,
         metric: Optional[str] = None,
         ref: Optional[str] = None,
+        role: Optional[str] = None,
+        model_tier: Optional[str] = None,
     ) -> None:
         """Emit one ordered agent-activity event for the Glass-Box Timeline.
 
@@ -682,6 +684,8 @@ class ConnectionManager:
                     target=target,
                     metric=metric,
                     ref=ref,
+                    role=role,
+                    model_tier=model_tier,
                 )
             ),
         )

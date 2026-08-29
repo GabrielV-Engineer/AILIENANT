@@ -219,9 +219,15 @@ def test_engine_routes_through_researcher_before_planner() -> None:
     graph = alienant_app.get_graph()
     node_ids = set(graph.nodes.keys())
     assert "researcher_agent" in node_ids
+    assert "model_route_gate" in node_ids  # 13.1.10
 
     edges = {(e.source, e.target) for e in graph.edges}
-    assert ("researcher_agent", "planner_agent") in edges
+    # 13.1.10 — model_route_gate is now spliced between the two: every path to
+    # the planner sees a computed context_metrics.routing_decision, and can
+    # confirm/override it, before the planner ever drafts.
+    assert ("researcher_agent", "planner_agent") not in edges
+    assert ("researcher_agent", "model_route_gate") in edges
+    assert ("model_route_gate", "planner_agent") in edges
 
     # Router verdicts are unchanged — the path-map remap reroutes them, the routers
     # themselves still name planner_agent.

@@ -309,6 +309,7 @@ Proyect_Ailienant/
 │   │   ├── iteration_governor.py #    multi-axis circuit breaker
 │   │   ├── retry_policy.py      #     centralized retry/correction budgets + Effort Budget (light/balanced/deep) ceiling resolution
 │   │   ├── apply_gate.py        #     incremental per-step approval: apply_patch (PREPARE) + apply_commit (interrupt-first GATE)
+│   │   ├── routing_gate.py      #     13.1.10: confirm/override the router's model pick once per turn, spliced between researcher_agent and planner_agent (single-phase — resolving is a pure state re-read, not an LLM call)
 │   │   └── mcts/ · episodic/    #     tree + UCB1 + audit checkpointer
 │   ├── core/                    #   Infrastructure
 │   │   ├── sandbox.py           #     SandboxAdapter ABC + Docker/Wasm/NativeHITL + resolver
@@ -335,7 +336,7 @@ Proyect_Ailienant/
 │   │   ├── url_guard.py         #     outbound-fetch destination validation (scheme allowlist; loopback/RFC1918/link-local/metadata refused) + log-safe URL redaction
 │   │   ├── redaction.py         #     shared ReDoS-safe secret masker (mask_secrets; used by telemetry + exec_log)
 │   │   ├── exec_log.py          #     bounded in-memory per-exec command-output ring (non-persistent, source-tagged, seq-cursor); sole emitter of the Glass-Box Timeline execution-detail channel
-│   │   ├── activity_context.py  #     turn-scoped ActivitySink Protocol + ContextVar (Glass-Box Timeline execution-detail correlation, no tool-signature changes)
+│   │   ├── activity_context.py  #     turn-scoped ActivitySink Protocol + ContextVars — execution-detail correlation, PLUS (13.1.9) agent-role/model-tier attribution for the Glass-Box Timeline's lane badges (two precedences: node-derived default, ToolDispatcher-narrowed override) — no tool-signature changes
 │   │   ├── deferred_tool_loader.py # eager-vs-deferred tool injection over ToolRAGStore (~10%-budget gate)
 │   │   ├── tool_dispatch.py     #     runtime tool-dispatch loop (gated, self-correcting; live on Analyst/Researcher, the agentic cell's registry fallback + HITL defer, the coder's grounding pre-pass, and dispatched dev-role subagents)
 │   │   ├── tool_registry.py     #     ToolSchema name -> constructed RegisteredTool bridge (resolve_tools)

@@ -1121,6 +1121,48 @@ html, body, #root { height: 100%; }
 .ws-brief-review-note { display: flex; flex-direction: column; gap: 6px; }
 .ws-brief-review-note textarea { min-height: 64px; resize: vertical; }
 
+/* ── Model Route Review (13.1.10) ─────────────────────────── */
+/* Once-per-turn confirmation of the router's model pick. Compact by design —
+   unlike the brief review, there is no long text to read, just a decision
+   with its justification (TCI/CSS) beside it. */
+.ws-route-review { display: flex; flex-direction: column; gap: 8px; }
+.ws-route-review-head { display: flex; align-items: center; gap: 8px; }
+.ws-route-review-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ws-route-review-title code {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--accent-primary);
+}
+.ws-route-review-sub { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.ws-route-review-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; align-items: flex-start; }
+.ws-route-review-menu-wrap { position: relative; }
+.ws-route-review-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  background: var(--vscode-editor-background, var(--bg-main));
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+.ws-route-review-menu-item {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.ws-route-review-menu-item:hover { background: var(--bg-hover); }
+
 /* ── Clarification Grill Card (DEBT-172) ──────────────────── */
 .ws-clarify-card { gap: 8px; }
 .ws-clarify-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; }
@@ -2155,6 +2197,7 @@ html, body, #root { height: 100%; }
 }
 
 .ws-timeline-rows {
+  position: relative;
   margin: 3px 0 2px 7px;
   padding: 0;
   max-height: 340px;
@@ -2170,36 +2213,78 @@ html, body, #root { height: 100%; }
   overflow-y: visible;
 }
 
+/* 13.1.9 — ONE continuous rail for the whole container, replacing the old
+   per-row `border-left` (which punched a visible gap at every lane-header
+   boundary — a two-row turn under one header looked like a broken line, not
+   a short one). A single absolutely-positioned line can never have a gap a
+   sibling element didn't draw, which is what makes the break structurally
+   impossible rather than merely patched. Fades out over its last 24px while
+   streaming, reading as "more still coming" rather than a hard stop. */
+.ws-timeline-rows::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border-subtle);
+}
+.ws-timeline[data-streaming="true"] .ws-timeline-rows::before {
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 24px), transparent 100%);
+}
+
 .ws-timeline-row {
   position: relative;
   display: flex;
   align-items: flex-start;
   gap: 8px;
   padding: 3px 0 3px 10px;
-  border-left: 2px solid var(--border-subtle);
   color: var(--text-secondary);
   font-size: 11.5px;
   line-height: 1.5;
   animation: ws-timeline-row-in 150ms ease-out;
+  transition: color 150ms ease;
 }
-.ws-timeline-row:last-child { border-left-color: transparent; }
+.ws-timeline-row:hover { color: var(--text-primary); }
 .ws-timeline-row-label { word-break: break-word; }
 .ws-timeline-row-body { flex: 1; min-width: 0; }
 
-/* Work-loop phase group header (13.0.7) — a quiet section label above a run of
-   same-phase rows (Gathering context / Taking action / Verifying results).
-   Deliberately lighter than a row (no dot, no border-left spine continuation)
-   so it reads as a divider, not another event. */
-.ws-timeline-phase-header {
-  padding: 6px 0 2px 10px;
-  font-size: 10.5px;
+/* Agent lane header (13.1.9) — the acting agent's name + the model tier/real
+   name it resolved to, replacing the 13.0.7 work-loop phase header. Sits
+   directly on the continuous rail via its own dot-ring `::before` (a filled
+   disc matching the page background inside a rail-colored ring, reading as a
+   waypoint on the line rather than another activity row). */
+.ws-timeline-lane-header {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 0 4px 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  color: var(--text-primary);
+}
+.ws-timeline-lane-header:first-child { padding-top: 0; }
+.ws-timeline-lane-header::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vscode-editor-background, var(--bg-main));
+  border: 2px solid var(--border-subtle);
+}
+.ws-timeline-lane-name { letter-spacing: 0.01em; }
+.ws-timeline-lane-model {
+  font-weight: 400;
+  font-size: 10px;
   color: var(--text-tertiary, var(--text-secondary));
   opacity: 0.75;
 }
-.ws-timeline-phase-header:first-child { padding-top: 0; }
 .ws-timeline-row-header {
   display: flex;
   align-items: center;
@@ -2215,7 +2300,6 @@ html, body, #root { height: 100%; }
   padding: 0;
 }
 .ws-timeline-row-header .ws-timeline-row-label { flex: 1; }
-.ws-timeline-row[data-active="true"] { color: var(--text-primary); }
 
 /* Status dot — sits on the spine line, one-shot "ping" the moment a row
    arrives. Color transitions (not snaps) across pending → active → done/failed. */
@@ -2237,6 +2321,18 @@ html, body, #root { height: 100%; }
 }
 .ws-timeline-dot[data-status="done"] { background: var(--accent-primary, #63a583); }
 .ws-timeline-dot[data-status="failed"] { background: var(--vscode-errorForeground, #e5534b); }
+
+/* Live loader row (13.1.9) — the ONE row that reads as "happening right now",
+   sitting under the last lane while the turn streams. Every settled row above
+   stays in the muted secondary color; only this one is bright, so liveness is
+   never signaled in two places at once (the defect the old sticky-header
+   status text + this timeline both showing "current status" independently
+   used to have). Reuses the existing active-dot ping — no new dot animation. */
+.ws-timeline-loader-row {
+  margin-top: 2px;
+  color: var(--accent-primary);
+}
+.ws-loader-text { display: inline-block; }
 
 @keyframes ws-timeline-row-in {
   from { opacity: 0; transform: translateX(-6px); }
@@ -2293,7 +2389,6 @@ html, body, #root { height: 100%; }
   flex: 1;
   min-width: 0;
 }
-.ws-exec-initiator { flex-shrink: 0; opacity: 0.75; }
 /* Output is its own horizontal-scroll container — a long line never widens
    the panel or the timeline column it sits in. */
 .ws-exec-stdout,

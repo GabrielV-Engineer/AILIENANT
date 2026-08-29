@@ -5,6 +5,13 @@
  * strings), `TimelineEntry.kind` is already a closed, typed enum — so composing
  * a label here is a direct map, not string-parsing. No raw internal token can
  * ever reach the screen because there is no raw-token code path left to leak.
+ *
+ * 13.1.9 — the work-loop phase grouping this module used to derive
+ * (`timelineEntryPhase`/`workLoopPhaseLabel`, 13.0.7) was deleted rather than
+ * kept alongside agent lanes (`utils/agentLanes.ts`): a turn with two rows
+ * rendered as two single-row phase groups, which read as a broken timeline
+ * rather than a short one, and a second grouping axis over the same handful
+ * of rows was redundant with the lane the agent attribution already implies.
  */
 import type { TimelineEntry, TimelineEntryKind } from '../../shared/config';
 
@@ -15,6 +22,7 @@ const KIND_VERB: Record<TimelineEntryKind, string> = {
     read: 'Reading',
     edit: 'Editing',
     command: 'Running',
+    tool: '',
     retrieval: 'Retrieving context',
     heal: 'Self-healing',
     reasoning: 'Reasoning',
@@ -23,58 +31,6 @@ const KIND_VERB: Record<TimelineEntryKind, string> = {
     cell: 'Agentic cell',
     subagent: 'Dispatched',
 };
-
-/**
- * Work-loop phase (13.0.7) a timeline row belongs to — a purely frontend
- * grouping derived from the existing typed `kind` (+ `metric` for a `command`
- * row), with no backend phase axis and no new wire field. `reasoning` and
- * `cell` are excluded (`undefined`): a reasoning span is cross-cutting, not
- * tied to one phase, and a cell iteration is already its own rich, self-
- * contained block — neither belongs grouped under a phase header.
- *
- * `command` needs its `metric` to disambiguate: the marker itself is emitted
- * either by `core/exec_log.py::record_execution` (a real command — the action)
- * or by `_classify_activity`'s "verified "/"giving up on "/"blocked " prefixes
- * (an OUTCOME of verification, not the action) — `metric` is the only signal
- * that survives to the wire distinguishing the two (`'verify'`/`'denied'` vs
- * unset).
- */
-export type WorkLoopPhase = 'gather' | 'act' | 'verify';
-
-export function timelineEntryPhase(
-    entry: Pick<TimelineEntry, 'kind' | 'metric'>,
-): WorkLoopPhase | undefined {
-    switch (entry.kind) {
-        case 'understanding':
-        case 'retrieval':
-        case 'read':
-            return 'gather';
-        case 'planning':
-        case 'plan':
-        case 'edit':
-        case 'diff':
-        case 'subagent':
-            return 'act';
-        case 'reviewing':
-        case 'heal':
-            return 'verify';
-        case 'command':
-            return (entry.metric === 'denied' || entry.metric === 'verify') ? 'verify' : 'act';
-        default:
-            return undefined; // reasoning, cell — not grouped under a phase
-    }
-}
-
-const PHASE_LABEL: Record<WorkLoopPhase, string> = {
-    gather: 'Gathering context',
-    act: 'Taking action',
-    verify: 'Verifying results',
-};
-
-/** Human header for a work-loop phase group. */
-export function workLoopPhaseLabel(phase: WorkLoopPhase): string {
-    return PHASE_LABEL[phase];
-}
 
 /** One-line label for a timeline row, composed from its typed `kind` (+ `target`/`metric`). */
 export function timelineEntryLabel(entry: Pick<TimelineEntry, 'kind' | 'target' | 'metric'>): string {
@@ -92,6 +48,14 @@ export function timelineEntryLabel(entry: Pick<TimelineEntry, 'kind' | 'target' 
                 return entry.target ? `Blocked ${entry.target}` : 'Blocked';
             }
             return entry.target ? `${verb} ${entry.target}` : verb;
+        case 'tool':
+            // A tool call reads as itself — "grep_index · 14 hits" — not as a
+            // shell command (13.1.9's fix for the two reading identically).
+            if (entry.metric === 'denied') {
+                return entry.target ? `Blocked ${entry.target}` : 'Blocked';
+            }
+            if (!entry.target) { return 'Tool call'; }
+            return entry.metric ? `${entry.target} · ${entry.metric}` : entry.target;
         case 'diff':
             return entry.target
                 ? `${verb} ${entry.target}${entry.metric ? ` · ${entry.metric}` : ''}`

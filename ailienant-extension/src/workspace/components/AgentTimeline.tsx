@@ -12,6 +12,18 @@
  * agent's turn, so there is no turn-scoped activity marker for them to
  * correlate against (see `docs/TECH_DEBT_BACKLOG.md` DEBT-122).
  *
+ * 13.1.9 — rows group into consecutive AGENT LANES (`utils/agentLanes.ts`),
+ * replacing the 13.0.7 work-loop phase headers: the agent already implies the
+ * phase in practice, and a second grouping axis over a handful of rows made a
+ * short turn (two rows, two single-row phase groups) look broken rather than
+ * short. Each lane header carries the acting agent's name and the model tier
+ * + real model name it resolved to. While streaming, a live loader line sits
+ * under the last lane — real streaming reasoning text when one is active,
+ * otherwise the newest row's own label, cycling through equivalent phrasings
+ * for the three "no concrete detail" kinds (understanding/planning/reviewing)
+ * so a slow step doesn't read as frozen. Never a fabricated word, never a
+ * clock: only real data, differently worded.
+ *
  * Reasoning and plan rows render their existing, already-tested components
  * directly. Every 'reasoning' entry gets its own `ReasoningStream` instance and
  * toggle — settle/elapsed chronometry is entry-scoped (`entry.thinking*`),
@@ -24,8 +36,8 @@
  * `entry.cell`), the heaviest elements in the trace; `cell` reuses
  * `CellAuditWidget` fed a synthetic single-iteration run, since it already
  * owns its own expand/collapse and live-follow logic per iteration. Self-
- * contained kinds (read/edit/command/understanding/planning/reviewing/heal/
- * retrieval) render one line.
+ * contained kinds (read/edit/command/tool/understanding/planning/reviewing/
+ * heal/retrieval) render one line.
  *
  * While streaming: expanded by default, auto-follows new rows unless the user
  * has scrolled up to inspect history. Unlike the five widgets it replaced, it
@@ -39,10 +51,14 @@
  */
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../../shared/Icon';
-import type { PlanWBSStep, TimelineEntry } from '../../shared/config';
+import type { PlanWBSStep, TimelineEntry, TimelineEntryKind } from '../../shared/config';
 import type { HitlRespond } from '../utils/useHitlResponder';
 import type { ReasoningSource } from '../utils/thinkingReducer';
-import { timelineEntryLabel, timelineEntryPhase, workLoopPhaseLabel, type WorkLoopPhase } from '../utils/activityLabels';
+import { timelineEntryLabel } from '../utils/activityLabels';
+import { buildAgentLanes, formatModelBadge, formatRoleLabel } from '../utils/agentLanes';
+import { hasPhrasePool, poolPhrase } from '../utils/loaderPhrases';
+import { scrambleFrame, SCRAMBLE_TICKS, SCRAMBLE_TICK_MS } from '../utils/scrambleText';
+import { useChatStore } from '../chatStore';
 import { ReasoningGlyph } from './ReasoningGlyph';
 import { ReasoningStream } from './ReasoningStream';
 import { ExecutionChecklist } from './ExecutionChecklist';
@@ -83,6 +99,8 @@ export interface AgentTimelineProps {
 }
 
 const STICK_TOLERANCE_PX = 24;
+const LOADER_POOL_INTERVAL_MS = 3000;
+const LOADER_TAIL_CHARS = 90;
 
 function summarize(entries: TimelineEntry[], turnElapsedMs?: number): string {
     let secs: number;
@@ -101,12 +119,85 @@ function summarize(entries: TimelineEntry[], turnElapsedMs?: number): string {
         + (files > 0 ? ` · ${files} ${files === 1 ? 'file' : 'files'} changed` : '');
 }
 
+/** Trailing slice of `text`, for a one-line live reasoning tail — the
+ *  beginning of a long thought is stale by the time it's this far behind the
+ *  cursor; the end is what the model is saying right now. */
+function tailClamp(text: string, maxChars: number): string {
+    const trimmed = text.trim();
+    if (trimmed.length <= maxChars) { return trimmed; }
+    return `…${trimmed.slice(trimmed.length - maxChars)}`;
+}
+
+function prefersReducedMotion(): boolean {
+    try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
+}
+
+/** Plays the lead-character scramble (`utils/scrambleText.ts`) whenever
+ *  `text` changes to something new; renders it plainly, no transition, when
+ *  `text` merely grows (a live reasoning tail extending token by token) or
+ *  under `prefers-reduced-motion`. */
+function LoaderText({ text }: { text: string }): JSX.Element {
+    const [display, setDisplay] = useState(text);
+    const prevRef = useRef(text);
+
+    useEffect(() => {
+        if (text === prevRef.current) { return; }
+        // A reasoning tail extending in place (new tokens, same trailing
+        // window) reads as natural flow already — only a wholesale swap (a
+        // new row, or a pool rotation) gets the decode transition.
+        const isExtension = text.endsWith(prevRef.current) || prevRef.current.endsWith(text);
+        prevRef.current = text;
+        if (isExtension || prefersReducedMotion()) { setDisplay(text); return; }
+        let tick = 0;
+        setDisplay(scrambleFrame(text, tick));
+        const id = window.setInterval(() => {
+            tick += 1;
+            if (tick >= SCRAMBLE_TICKS) {
+                setDisplay(text);
+                window.clearInterval(id);
+                return;
+            }
+            setDisplay(scrambleFrame(text, tick));
+        }, SCRAMBLE_TICK_MS);
+        return () => window.clearInterval(id);
+    }, [text]);
+
+    return <span className="ws-loader-text">{display}</span>;
+}
+
+/** What the live loader line should say right now: a live reasoning tail when
+ *  one is streaming, otherwise the newest row's label — cycling through an
+ *  equivalent-phrasing pool for kinds with no concrete detail to show,
+ *  advancing on a fixed interval while that SAME row stays the newest. */
+function useLoaderDisplay(entries: TimelineEntry[], thinkingTail: string): string {
+    const latest = entries.length > 0 ? entries[entries.length - 1] : undefined;
+    const latestId = latest?.id;
+    const poolable = !thinkingTail && latest !== undefined && hasPhrasePool(latest.kind);
+    const [poolIndex, setPoolIndex] = useState(0);
+
+    useEffect(() => {
+        setPoolIndex(0);
+        if (!poolable) { return; }
+        const id = window.setInterval(() => setPoolIndex(i => i + 1), LOADER_POOL_INTERVAL_MS);
+        return () => window.clearInterval(id);
+    }, [latestId, poolable]);
+
+    if (thinkingTail) { return thinkingTail; }
+    if (!latest) { return ''; }
+    if (poolable) {
+        const phrase = poolPhrase(latest.kind as TimelineEntryKind, poolIndex);
+        if (phrase) { return phrase; }
+    }
+    return timelineEntryLabel(latest);
+}
+
 function AgentTimelineImpl({
     entries, streaming, isLatestTurn,
     thinking, thinkingTokens, thinkingStartedAt, thinkingElapsedMs, thinkingOpen,
     checklist, hitlApprovalId, onRespondDiff, onRequestChangesDiff, onCellStdin, turnElapsedMs,
 }: AgentTimelineProps): JSX.Element | null {
     const done = !streaming;
+    const config = useChatStore((s) => s.config);
     // Initial state is derived from isLatestTurn, not hardcoded true: a
     // rehydrated past turn mounts already-collapsed (no expand-then-collapse
     // flash); the current turn mounts open. The effect below only ever
@@ -128,22 +219,16 @@ function AgentTimelineImpl({
         for (const e of entries) { if (e.kind === 'cell') { id = e.id; } }
         return id;
     }, [entries]);
-    // Work-loop phase headers (13.0.7): entry.id → the phase header to render
-    // immediately before it. A phase-less entry (reasoning/cell) doesn't break
-    // a run of the same phase around it, but a genuine phase change — even a
-    // brief one, e.g. a single retrieval interrupting an act run — always gets
-    // its own header rather than being silently folded into its neighbours.
-    const phaseHeaderBefore = useMemo(() => {
-        const map: Record<string, WorkLoopPhase> = {};
-        let current: WorkLoopPhase | undefined;
-        for (const e of entries) {
-            const phase = timelineEntryPhase(e);
-            if (phase === undefined) { continue; }
-            if (phase !== current) { map[e.id] = phase; }
-            current = phase;
-        }
-        return map;
-    }, [entries]);
+    const lanes = useMemo(() => buildAgentLanes(entries), [entries]);
+
+    // The live loader's reasoning tail: only when the NEWEST row is an
+    // open 'reasoning' span — a settled one is stale by definition (the next
+    // real row simply hasn't landed yet), so it must not linger as if live.
+    const latestEntry = entries.length > 0 ? entries[entries.length - 1] : undefined;
+    const isLiveReasoning = latestEntry?.kind === 'reasoning' && latestEntry.status === 'active';
+    const rawTail = isLiveReasoning ? (latestEntry?.thinking ?? thinking ?? '') : '';
+    const thinkingTail = rawTail ? tailClamp(rawTail, LOADER_TAIL_CHARS) : '';
+    const loaderText = useLoaderDisplay(entries, thinkingTail);
 
     const rowsRef = useRef<HTMLDivElement>(null);
     const stuckRef = useRef(true);
@@ -162,13 +247,12 @@ function AgentTimelineImpl({
     const label = done ? summarize(entries, turnElapsedMs) : 'Working…';
     const anyActive = entries.some(e => e.status === 'active');
 
-    // Extracted (not inlined in the .map() below) so the phase-header wrapper
-    // can call it uniformly regardless of which kind-specific branch an entry
-    // takes — every branch still returns its own `key`-carrying row exactly as
-    // before; only its caller changed.
-    function renderRow(entry: TimelineEntry, idx: number): JSX.Element {
-        const isLast = idx === entries.length - 1;
-
+    // Extracted (not inlined in the .map() below) so the lane-header wrapper
+    // can call it uniformly — every branch still returns its own `key`-carrying
+    // row exactly as before; only its caller changed. `idx` is unused now that
+    // liveness lives solely in the loader row below (kept as a parameter for
+    // the lane-header wrapper's existing call shape).
+    function renderRow(entry: TimelineEntry, _idx: number): JSX.Element {
         if (entry.kind === 'reasoning') {
             // Every reasoning entry gets its own independent
             // ReasoningStream + toggle — several spans in one turn
@@ -275,18 +359,22 @@ function AgentTimelineImpl({
             );
         }
 
-        if (entry.kind === 'command' && entry.execution) {
-            // A command that actually reached an adapter: expandable,
-            // showing the execution envelope + I/O. A 'command' entry
-            // with NO `execution` (e.g. a "blocked" outcome that never
-            // reached one — no I/O body ever exists for it) falls
-            // through to the plain single-line render below instead.
+        if ((entry.kind === 'command' || entry.kind === 'tool') && entry.execution) {
+            // A call that actually reached an adapter: expandable, showing
+            // the execution envelope + I/O. A 'command'/'tool' entry with NO
+            // `execution` (e.g. a "blocked" outcome that never reached one —
+            // no I/O body ever exists for it) falls through to the plain
+            // single-line render below instead.
             // Default expanded (not click-per-row) — this IS the record of
             // what actually ran, not a pending decision to hide by default.
             const isOpen = entry.id in manualExecOpen ? manualExecOpen[entry.id] : true;
             return (
-                <div key={entry.id} className="ws-timeline-row" data-kind="command">
-                    <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
+                <div key={entry.id} className="ws-timeline-row" data-kind={entry.kind}>
+                    <span
+                        className="ws-timeline-dot"
+                        data-status={entry.status}
+                        aria-hidden="true"
+                    />
                     <div className="ws-timeline-row-body">
                         <button
                             type="button"
@@ -307,17 +395,19 @@ function AgentTimelineImpl({
             );
         }
 
-        // Self-contained kinds: understanding/planning/reviewing/read/
-        // edit/command/retrieval/heal — a single line, no expand affordance.
+        // Self-contained one-liner: understanding/planning/reviewing/read/
+        // edit/heal/retrieval/plan/subagent, and a ref-less command/tool
+        // (blocked, or one with no detail yet).
         return (
-            <div
-                key={entry.id}
-                className="ws-timeline-row"
-                data-kind={entry.kind}
-                data-active={isLast && streaming ? 'true' : 'false'}
-            >
-                <span className="ws-timeline-dot" data-status={entry.status} aria-hidden="true" />
-                <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
+            <div key={entry.id} className="ws-timeline-row" data-kind={entry.kind}>
+                <span
+                    className="ws-timeline-dot"
+                    data-status={entry.status}
+                    aria-hidden="true"
+                />
+                <div className="ws-timeline-row-body">
+                    <span className="ws-timeline-row-label">{timelineEntryLabel(entry)}</span>
+                </div>
             </div>
         );
     }
@@ -357,18 +447,32 @@ function AgentTimelineImpl({
                             </div>
                         </div>
                     )}
-                    {entries.map((entry, idx) => {
-                        const headerPhase = phaseHeaderBefore[entry.id];
-                        if (!headerPhase) { return renderRow(entry, idx); }
+                    {lanes.map((lane) => {
+                        let idx = entries.indexOf(lane.entries[0]);
                         return (
-                            <Fragment key={`group:${entry.id}`}>
-                                <div className="ws-timeline-phase-header">
-                                    <span className="ws-timeline-phase-label">{workLoopPhaseLabel(headerPhase)}</span>
-                                </div>
-                                {renderRow(entry, idx)}
+                            <Fragment key={lane.id}>
+                                {lane.role !== undefined && (
+                                    <div className="ws-timeline-lane-header">
+                                        <span className="ws-timeline-lane-name">{formatRoleLabel(lane.role)}</span>
+                                        {lane.modelTier !== undefined && (
+                                            <span className="ws-timeline-lane-model">
+                                                {formatModelBadge(lane.modelTier, config)}
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
+                                {lane.entries.map((entry) => renderRow(entry, idx++))}
                             </Fragment>
                         );
                     })}
+                    {streaming && (
+                        <div className="ws-timeline-row ws-timeline-loader-row" data-kind="loader">
+                            <span className="ws-timeline-dot" data-status="active" aria-hidden="true" />
+                            <div className="ws-timeline-row-body">
+                                <LoaderText text={loaderText} />
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

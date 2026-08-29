@@ -12,11 +12,13 @@ from langgraph.types import Send
 from langgraph.errors import GraphBubbleUp
 
 from brain.state import (
-    AIlienantGraphState, accepts_config, assert_declared_channels, is_dispatchable,
+    AIlienantGraphState, accepts_config, assert_declared_channels, derive_node_role,
+    is_dispatchable,
 )
 from brain.checkpoint import checkpoint_manager
 from brain.failure_breaker import failure_breaker, normalize_signature
 from brain.retry_policy import CORRECTION_MAX_ATTEMPTS
+from core.activity_context import bind_agent_role, bind_model_tier, reset_agent_role, reset_model_tier
 from core.dead_letter import dead_letter_decorator  # DLQ node wrapper
 from core.telemetry_log import log_node_transition
 from shared.config import ENABLE_DYNAMIC_DISPATCH  # graph-construction-time topology gate
@@ -52,6 +54,7 @@ from brain.agentic_cell import run_agentic_cell_node, route_after_cell  # noqa: 
 # apply_patch stub (a permanent `return {}` — the actual write lived entirely
 # in core/task_service.py's post-graph replay) with two real nodes.
 from brain.apply_gate import run_apply_commit_node, run_apply_prepare_node  # noqa: E402
+from brain.routing_gate import route_after_model_route, run_model_route_node  # noqa: E402
 
 
 from brain.ideation import ideation_graph  # noqa: E402 — deferred to avoid circular import
@@ -221,6 +224,7 @@ def _instrument_node(name: str, fn: _NodeFn) -> _NodeFn:
     # Keeping the wrapper opaque makes it the single place that guarantees the
     # seam, so a mis-annotated node still gets its config.
     forwards_config = accepts_config(fn)
+    derived_role = derive_node_role(name)
 
     async def _wrapped(
         state: Any, config: Optional[RunnableConfig] = None, **kwargs: Any
@@ -234,9 +238,23 @@ def _instrument_node(name: str, fn: _NodeFn) -> _NodeFn:
         # takes state alone would be a TypeError at every graph run.
         if forwards_config:
             kwargs["config"] = config
-        result = await fn(state, **kwargs)
-        assert_declared_channels(name, result)
-        return result
+        # This wrapper is the single guaranteed cleanup point (§5.1) for the
+        # Glass-Box Timeline's agent-role/model-tier contextvars: it sets the
+        # node-derived default before `fn` runs and resets both, via `finally`,
+        # to whatever they were before this node — regardless of how `fn`
+        # exits. An inner call site (ToolDispatcher.dispatch's narrower role
+        # override, or planner.py/coder.py binding the resolved model tier)
+        # can therefore bind-and-forget: this `finally` is what guarantees
+        # neither value survives past the node call that set it.
+        role_token = bind_agent_role(derived_role)
+        tier_token = bind_model_tier(None)
+        try:
+            result = await fn(state, **kwargs)
+            assert_declared_channels(name, result)
+            return result
+        finally:
+            reset_agent_role(role_token)
+            reset_model_tier(tier_token)
 
     return cast(_NodeFn, _wrapped)
 
@@ -324,6 +342,14 @@ workflow.add_node("summarize_history", _instrument_node("summarize_history", run
 # reflexion_guard) all use cast() or functools.wraps, which erases Generic precision;
 # pyright: ignore[reportArgumentType] on each call is the accepted trade-off.
 workflow.add_node("researcher_agent", _instrument_node("researcher_agent", dead_letter_decorator("researcher_agent")(run_researcher_node)))  # pyright: ignore[reportArgumentType]
+# 13.1.10 — spliced between researcher_agent and planner_agent: every path to
+# the planner already runs through the researcher first (route_after_ideation
+# hands off through researcher_agent, not directly), so this is the single
+# choke point that sees a computed context_metrics.routing_decision no matter
+# which route got here. Deliberately NOT reflexion_guard/dead_letter wrapped —
+# a native interrupt() raised inside it must reach LangGraph's own
+# suspend/resume machinery untouched, mirroring apply_commit's own contract.
+workflow.add_node("model_route_gate", _instrument_node("model_route_gate", run_model_route_node))  # pyright: ignore[reportArgumentType]
 workflow.add_node("planner_agent", _instrument_node("planner_agent", dead_letter_decorator("planner_agent")(run_planner_node)))  # pyright: ignore[reportArgumentType]
 workflow.add_node("step_dispatch", _instrument_node("step_dispatch", step_dispatch))  # pyright: ignore[reportArgumentType]
 # coder_agent is also wrapped by reflexion_guard (INSIDE the DLQ decorator): a fresh,
@@ -571,7 +597,10 @@ if ENABLE_DYNAMIC_DISPATCH:
     # pre-8.15 target. The subgraph rejoins the spine via route_after_synthesis.
     workflow.add_conditional_edges(
         "researcher_agent", _route_researcher_dispatch,
-        {"dispatch_origin": "dispatch_origin", "planner_agent": "planner_agent"},
+        # 13.1.10 — the router's verdict is unchanged ("planner_agent"); the
+        # path-map reroutes it through model_route_gate first, mirroring the
+        # researcher_agent splice comment above this if-block.
+        {"dispatch_origin": "dispatch_origin", "planner_agent": "model_route_gate"},
     )
     workflow.add_conditional_edges(
         "planner_agent", _route_planner_dispatch,
@@ -579,10 +608,16 @@ if ENABLE_DYNAMIC_DISPATCH:
     )
     _wire_dynamic_dispatch(workflow)
 else:
-    workflow.add_edge("researcher_agent", "planner_agent")
+    workflow.add_edge("researcher_agent", "model_route_gate")
     workflow.add_conditional_edges(
         "planner_agent", route_after_planner, {"step_dispatch": "step_dispatch", END: END},
     )
+# 13.1.10 — both topology branches above now route researcher_agent's normal
+# exit through model_route_gate rather than straight to planner_agent; wired
+# once here since the node (and its edge) is identical in either topology.
+workflow.add_conditional_edges(
+    "model_route_gate", route_after_model_route, {"planner_agent": "planner_agent", END: END},
+)
 workflow.add_conditional_edges("step_dispatch", route_to_coders, ["coder_agent", "agentic_cell"])
 # The ReAct cell loops back onto itself while its latest verdict says "continue" (each
 # loop-back is a graph super-step → a Rewind-able checkpoint), and rejoins the normal

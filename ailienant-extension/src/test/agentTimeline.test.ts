@@ -347,32 +347,44 @@ suite('11.5.C.2 — AgentTimeline', function () {
         container.remove();
     });
 
-    test('13.0.7: consecutive same-phase rows share one header; a phase change gets a new one, even repeating', () => {
+    test('13.1.9: consecutive same-role rows share one lane header; a role change gets a new one, even repeating', () => {
         const entries: TimelineEntry[] = [
-            entry({ id: 'a', kind: 'read', seq: 0, target: 'a.py' }),          // gather
-            entry({ id: 'b', kind: 'retrieval', seq: 1 }),                     // gather (same run)
-            entry({ id: 'c', kind: 'edit', seq: 2, target: 'a.py' }),          // act
-            entry({ id: 'd', kind: 'retrieval', seq: 3 }),                     // gather — interrupts the act run
-            entry({ id: 'e', kind: 'edit', seq: 4, target: 'b.py' }),          // act again — header repeats
+            entry({ id: 'a', kind: 'retrieval', seq: 0, role: 'researcher' }),
+            entry({ id: 'b', kind: 'read', seq: 1, target: 'a.py', role: 'researcher' }),
+            entry({ id: 'c', kind: 'edit', seq: 2, target: 'a.py', role: 'coder' }),
+            entry({ id: 'd', kind: 'retrieval', seq: 3, role: 'researcher' }),
+            entry({ id: 'e', kind: 'edit', seq: 4, target: 'b.py', role: 'coder' }),
         ];
-        const { container, root } = render({ entries, streaming: true });
-        const headers = Array.from(container.querySelectorAll('.ws-timeline-phase-label')).map(h => h.textContent);
-        assert.deepStrictEqual(headers, [
-            'Gathering context', 'Taking action', 'Gathering context', 'Taking action',
-        ], 'one header per phase RUN, repeating when a phase is revisited — not deduped across the whole trace');
+        const { container, root } = render({ entries, streaming: false });
+        const names = Array.from(container.querySelectorAll('.ws-timeline-lane-name')).map(h => h.textContent);
+        assert.deepStrictEqual(names, ['Researcher', 'Coder', 'Researcher', 'Coder'],
+            'one header per agent RUN, repeating when the same agent acts again — never merged across a turn');
         act(() => root.unmount());
         container.remove();
     });
 
-    test('13.0.7: a reasoning entry in the middle of an act run does not fragment it into two headers', () => {
+    test('13.1.9: an unattributed row does not get a lane chip, but does not merge into a neighbouring agent\'s lane', () => {
         const entries: TimelineEntry[] = [
-            entry({ id: 'a', kind: 'edit', seq: 0, target: 'a.py' }),          // act
-            entry({ id: 'r1', kind: 'reasoning', ref: 'r1', seq: 1, status: 'active' }), // no phase
-            entry({ id: 'b', kind: 'edit', seq: 2, target: 'b.py' }),          // still act — no new header
+            entry({ id: 'a', kind: 'edit', seq: 0, target: 'a.py', role: 'coder' }),
+            entry({ id: 'p', kind: 'plan', seq: 1 }),                          // no role — a fan-out anchor, say
+            entry({ id: 'b', kind: 'edit', seq: 2, target: 'b.py', role: 'coder' }),
         ];
-        const { container, root } = render({ entries, streaming: true });
-        const headers = Array.from(container.querySelectorAll('.ws-timeline-phase-label')).map(h => h.textContent);
-        assert.deepStrictEqual(headers, ['Taking action']);
+        const { container, root } = render({ entries, streaming: false });
+        const names = Array.from(container.querySelectorAll('.ws-timeline-lane-name')).map(h => h.textContent);
+        assert.deepStrictEqual(names, ['Coder', 'Coder'], 'the role-less row breaks the run into two Coder lanes, not one merged lane');
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('13.1.9: a lane header carries the model tier + real name when the entry has one', () => {
+        const entries: TimelineEntry[] = [
+            entry({ id: 'a', kind: 'edit', seq: 0, target: 'a.py', role: 'coder', modelTier: 'big' }),
+        ];
+        const { container, root } = render({ entries, streaming: false });
+        const badge = container.querySelector('.ws-timeline-lane-model');
+        // No BYOM config in this test's store, so it degrades to the bare tier —
+        // still proves the field reaches the chip, not the real-name join.
+        assert.strictEqual(badge?.textContent, 'big');
         act(() => root.unmount());
         container.remove();
     });

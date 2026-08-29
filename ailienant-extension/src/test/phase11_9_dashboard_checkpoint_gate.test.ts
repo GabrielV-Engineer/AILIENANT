@@ -84,32 +84,22 @@ suite('Phase 11.9 — Dashboard Checkpoint Gate (webview)', function () {
     // ── A ──────────────────────────────────────────────────────────────────
 
     suite('A — ActiveTaskHeader appears on submit, clears on completion', () => {
-        test('active, no narration yet: shows the generic working indicator', () => {
+        // 13.1.9 — the loader glyph, live status text and elapsed clock moved to
+        // AgentTimeline's own live loader row (one source of truth for "what's
+        // happening now" instead of two surfaces kept in sync by convention).
+        // This header now renders only the prompt + Stop/Dismiss.
+        test('active: shows the prompt and a Cancel control', () => {
             const { container, root } = mount(
                 React.createElement(ActiveTaskHeader, {
-                    prompt: 'do X', startedAt: Date.now(), isTurnActive: true,
+                    prompt: 'do X', isTurnActive: true,
                     onCancel: () => undefined, onDismiss: () => undefined,
                 }),
             );
             const header = container.querySelector('.ws-active-task');
             assert.ok(header, 'header must render while the turn is active');
             assert.strictEqual(header?.getAttribute('data-done'), 'false');
-            assert.strictEqual(container.querySelector('.ws-active-task-status')?.textContent, 'Working…');
-            assert.ok(container.querySelector('.ws-active-task-elapsed'), 'elapsed clock must render');
-            unmount(container, root);
-        });
-
-        test('active, real narration arrived: shows it instead of the generic fallback', () => {
-            const { container, root } = mount(
-                React.createElement(ActiveTaskHeader, {
-                    prompt: 'do X', startedAt: Date.now(), isTurnActive: true,
-                    statusLabel: 'Reading foo.py',
-                    onCancel: () => undefined, onDismiss: () => undefined,
-                }),
-            );
-            assert.strictEqual(
-                container.querySelector('.ws-active-task-status')?.textContent, 'Reading foo.py',
-            );
+            assert.strictEqual(container.querySelector('.ws-active-task-prompt')?.textContent, 'do X');
+            assert.ok(container.querySelector('.ws-active-task-cancel'), 'cancel control must render');
             unmount(container, root);
         });
 
@@ -117,7 +107,7 @@ suite('Phase 11.9 — Dashboard Checkpoint Gate (webview)', function () {
             let dismissed = false;
             const { container, root } = mount(
                 React.createElement(ActiveTaskHeader, {
-                    prompt: 'do X', startedAt: Date.now(), isTurnActive: false,
+                    prompt: 'do X', isTurnActive: false,
                     onCancel: () => undefined, onDismiss: () => { dismissed = true; },
                 }),
             );

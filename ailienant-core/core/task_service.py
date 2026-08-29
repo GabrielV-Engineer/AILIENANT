@@ -20,7 +20,9 @@ import logging
 
 if TYPE_CHECKING:
     from api.ws_contracts import PlanDocumentPayload
-from core.activity_context import bind_activity_sink, reset_activity_sink
+from core.activity_context import (
+    bind_activity_sink, current_agent_role, current_model_tier, reset_activity_sink,
+)
 from shared.config import GRAPH_RECURSION_LIMIT, PAUSED_INTERRUPT_TTL_S
 from shared.persona import compose
 from transport.token_batcher import batch_tokens
@@ -1098,12 +1100,22 @@ class TaskService:
             target: Optional[str] = None,
             metric: Optional[str] = None,
             ref: Optional[str] = None,
+            *,
+            role: Optional[str] = None,
+            model_tier: Optional[str] = None,
         ) -> None:
+            # `role`/`model_tier` default to the ambient contextvars
+            # (`core/activity_context.py`) so the vast majority of call sites —
+            # `_narrate`, the tool-dispatch sink below, the reasoning-span
+            # opener — need not thread either through explicitly. A caller with
+            # a more precise value in hand (none currently) may still override.
             seq = next(_activity_seq)
             if seq < ACTIVITY_CAP:
                 await vfs_manager.broadcast_activity_event(
                     session_id, seq=seq, ts=time.time(),
                     kind=kind, target=target, metric=metric, ref=ref,
+                    role=role if role is not None else current_agent_role(),
+                    model_tier=model_tier if model_tier is not None else current_model_tier(),
                 )
             elif seq == ACTIVITY_CAP:
                 await vfs_manager.broadcast_activity_event(
@@ -1153,12 +1165,12 @@ class TaskService:
         # the next (charter §5.1).
         class _TurnActivitySink:
             async def emit_marker(
-                self, *, ref: str, target: Optional[str]
+                self, *, ref: str, target: Optional[str], kind: str = "command"
             ) -> None:
-                await _push_activity("command", target, ref=ref)
+                await _push_activity(kind, target, ref=ref)
 
-            async def emit_blocked(self, *, target: str) -> None:
-                await _push_activity("command", target, metric="denied")
+            async def emit_blocked(self, *, target: str, kind: str = "command") -> None:
+                await _push_activity(kind, target, metric="denied")
 
             async def emit_detail(
                 self, *, ref: str, source: str, cwd: Optional[str],

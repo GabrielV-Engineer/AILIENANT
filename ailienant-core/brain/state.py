@@ -564,6 +564,17 @@ class AIlienantGraphState(TypedDict):
     #   distillation's user payload, never to its system prompt) and cleared there.
     #   Scalar overwrite.
     brief_revision_note: Optional[str]
+    # confirmed_routing_decision (13.1.9/13.1.10): the routing_decision the operator
+    #   actually confirmed for this turn — "LOCAL_SMALL" | "LOCAL_MEDIUM" | "LOCAL_BIG"
+    #   | "CLOUD", or the raw router pick verbatim in AUTO mode / when the review is
+    #   bypassed. `agents/planner.py` (x2) and `agents/coder.py` read this in place of
+    #   the raw `context_metrics.routing_decision`, which is what makes a confirmed
+    #   choice cover every WBS step of one turn rather than re-gating per step. Unlike
+    #   `pending_brief`, this node needs no defer-then-interrupt-first split: resolving
+    #   the decision is a pure re-read of `context_metrics`, already in state, not an
+    #   LLM call — safe to redo on every replay. Scalar overwrite; None before the gate
+    #   runs or after a cancelled review.
+    confirmed_routing_decision: Optional[str]
     # Agentic-cell exec-approval deferral: the command awaiting human approval, set when
     # the cell defers a HITL-gated run_terminal so the interrupt happens in a clean,
     # side-effect-free re-entry rather than mid-iteration.
@@ -995,6 +1006,51 @@ def accepts_config(fn: Callable[..., Any]) -> bool:
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
         inspect.Parameter.KEYWORD_ONLY,
     )
+
+
+# Suffixes stripped when deriving a Glass-Box Timeline agent-lane label from a
+# node's registered name (e.g. "coder_agent" -> "coder", "synthesis_node" ->
+# "synthesis"). Order matters: a name carries at most one of these. Derived
+# from the node's own registered name rather than a hand-maintained map (§5.7)
+# — a node added later is covered automatically, and a name carrying neither
+# suffix (e.g. "agentic_cell", "analyst_grill") passes through unchanged,
+# which is still an honest label, never a silent gap.
+_NODE_ROLE_SUFFIXES: tuple[str, ...] = ("_agent", "_node")
+
+# The graph node name and the RBAC `active_role` string an in-node
+# `ToolDispatcher` binds are usually the same identity under the suffix-
+# stripping above ("researcher_agent" node -> "researcher" role, matching
+# `agents/researcher.py`'s own `active_role="researcher"`). "analyst_grill" is
+# the one place they were never the same: the node was named for the grill
+# mechanic, while `agents/analyst.py`'s dispatcher has always used the RBAC
+# identity "analyst" (also its `allowed_roles` / permission-log identity
+# elsewhere). Left un-aliased, a grill turn would split into two lanes —
+# "Analyst_grill" for its own narration, "Analyst" for its tool calls — for
+# what is one agent. A one-entry exception table, not a growing map: any
+# FUTURE divergence between an agent's own tool-dispatch role and its display
+# identity belongs in `ToolDispatcher`'s `activity_role` parameter instead
+# (`core/tool_dispatch.py` — see `agents/coder.py`'s use of it, where the
+# divergence is per-step WBS routing, not a fixed rename).
+_NODE_ROLE_ALIASES: Dict[str, str] = {"analyst_grill": "analyst"}
+
+
+def derive_node_role(name: str) -> str:
+    """Best-effort agent-lane label for a graph node's registered ``name``.
+
+    Total: always returns a non-empty string, never raises. Shared by both
+    node-wrapping helpers (`brain/engine.py::_instrument_node` for the parent
+    graph, `brain/ideation.py::_guarded` for the ideation subgraph — the same
+    import-cycle reason `accepts_config` lives here) as the OUTER default for
+    the `core/activity_context.py` agent-role contextvar. Precision belongs to
+    the narrower `ToolDispatcher.dispatch` binding, which overrides this
+    default for the duration of one tool call.
+    """
+    if name in _NODE_ROLE_ALIASES:
+        return _NODE_ROLE_ALIASES[name]
+    for suffix in _NODE_ROLE_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 def assert_declared_channels(node_name: str, delta: Any) -> None:

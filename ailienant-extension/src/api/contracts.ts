@@ -310,8 +310,12 @@ export interface ServerPipelineStepEvent {
 // human-readable label from `kind` (+ `target`), so a raw internal node token
 // never reaches the screen. Mirrors the backend ActivityKind Literal (SCHEMA_EVOLUTION §38).
 export type ActivityKind =
+    // 'subagent' and 'tool' (13.1.9) were previously missing from this local
+    // mirror of the backend's ActivityKind Literal (SCHEMA_EVOLUTION §38) — a
+    // pre-existing drift, not a behavior change; added while touching this type.
     | 'understanding' | 'planning' | 'reviewing' | 'read' | 'edit'
-    | 'command' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell';
+    | 'command' | 'tool' | 'retrieval' | 'heal' | 'reasoning' | 'plan' | 'diff' | 'cell'
+    | 'subagent';
 
 export interface ActivityEventPayload {
     session_id: string;
@@ -323,6 +327,10 @@ export interface ActivityEventPayload {
     // Correlates this marker to its heavy body on an existing channel (reasoning
     // delta / diff block / tool call), when one exists.
     ref?: string | null;
+    // 13.1.9 — the acting agent and the model tier it resolved to. Additive and
+    // optional (SCHEMA_EVOLUTION §60); an older payload simply omits both.
+    role?: string | null;
+    model_tier?: string | null;
 }
 export interface ServerActivityEvent {
     event_type: 'server_activity_event';

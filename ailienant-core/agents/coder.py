@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Optional, Set
 from langchain_core.runnables import RunnableConfig
 
 from brain.state import WBSStep
+from core.activity_context import bind_model_tier
 # role registry lives in agents/roles.py (flat-module import via conftest).
 from agents.roles import build_coder_system_prompt, get_role_config
 from agents.prompts import build_boundary_declaration
@@ -417,6 +418,11 @@ async def _run_grounding_loop(
             state=state,
             agent_permission=PermissionMode.EDIT_EXECUTE_RBW,
             approval_fn=None,
+            # `active_role` here is the per-WBS-step target_role (RBAC identity,
+            # varies per step). The Glass-Box Timeline lane should stay "Coder"
+            # across every step of one coding turn, not fragment on every
+            # target_role change — see ToolDispatcher.__init__'s docstring.
+            activity_role="coder",
         )
         reasoner = make_gateway_reasoner(tools, session_id=session_id)
         messages: list[Dict[str, Any]] = [
@@ -865,10 +871,23 @@ async def run_coder_node(state: Dict[str, Any], config: Optional[RunnableConfig]
     # generation, instead of every step hardcoding BIG regardless of what the
     # router said (N9). BIG remains the fallback when no decision has been
     # computed yet, matching today's behaviour exactly in that case.
-    _routing_decision = getattr(state.get("context_metrics"), "routing_decision", None)
+    # 13.1.10 — the operator's confirmed pick (model_route_gate, once per
+    # turn) takes precedence over the raw router verdict; reading it here is
+    # what makes the confirmation cover every WBS step without re-gating per
+    # step. Falls back to the raw verdict for a turn that never passed
+    # through the gate (a direct node-level test).
+    _routing_decision = (
+        state.get("confirmed_routing_decision")
+        or getattr(state.get("context_metrics"), "routing_decision", None)
+    )
     _coder_model = resolve_model_alias_for_routing(_routing_decision, default=MODEL_BIG)
     _coder_tier = _coder_model.split("/", 1)[1] if _coder_model.startswith("ailienant/") else "big"
     _coder_tier = _coder_tier if _coder_tier in ("small", "medium", "big", "cloud") else "big"
+    # Bind-and-forget — the enclosing graph node wrapper's `finally` owns
+    # cleanup (`core/activity_context.py`'s docstring). Read by every Glass-Box
+    # Timeline marker this step pushes from here on, including the tool rows
+    # `ToolDispatcher.dispatch` emits for this step's read/grounding calls.
+    bind_model_tier(_coder_tier)
 
     cache_context = [(target_file, current_content or "")] + [
         (p, s) for p, s in rag_snippets if s

@@ -45,10 +45,10 @@ class _RecordingSink:
     def __init__(self) -> None:
         self.calls: List[Dict[str, Any]] = []
 
-    async def emit_marker(self, *, ref: str, target: Optional[str]) -> None:
+    async def emit_marker(self, *, ref: str, target: Optional[str], kind: str = "command") -> None:
         self.calls.append({"op": "marker", "ref": ref, "target": target})
 
-    async def emit_blocked(self, *, target: str) -> None:
+    async def emit_blocked(self, *, target: str, kind: str = "command") -> None:
         self.calls.append({"op": "blocked", "target": target})
 
     async def emit_detail(
@@ -248,10 +248,10 @@ async def test_raising_execute_emits_terminal_detail_and_reraises() -> None:
 
 
 class _RaisingSink:
-    async def emit_marker(self, *, ref: str, target: Optional[str]) -> None:
+    async def emit_marker(self, *, ref: str, target: Optional[str], kind: str = "command") -> None:
         raise RuntimeError("sink marker boom")
 
-    async def emit_blocked(self, *, target: str) -> None:
+    async def emit_blocked(self, *, target: str, kind: str = "command") -> None:
         raise RuntimeError("sink blocked boom")
 
     async def emit_detail(self, **_kwargs: Any) -> None:

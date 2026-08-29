@@ -232,10 +232,30 @@ def test_ssot_apply_patch_via_real_interrupt_and_resume(e2e_client, tmp_path, mo
 
         approval_event: Optional[Dict[str, Any]] = None
         apply_event: Optional[Dict[str, Any]] = None
+        route_review_seen = False
         for _ in range(200):
             msg = ws.receive_json()
             kind = msg.get("event_type")
             if kind == "server_hitl_approval_request":
+                data = msg["data"]
+                if data.get("request_kind") == "MODEL_ROUTE_REVIEW":
+                    # 13.1.10 — "ask_before_edits" mode also gates the once-
+                    # per-turn model confirmation, which now fires BEFORE the
+                    # FILE_WRITE approval this test exists to certify. This is
+                    # therefore the real first pause: `fut` resolves here, not
+                    # at the FILE_WRITE interrupt below (see the fut.result()
+                    # comment that used to sit after that one).
+                    route_review_seen = True
+                    fut.result(timeout=30)
+                    ws.send_json({
+                        "event_type": "client_hitl_response",
+                        "data": {
+                            "approval_id": data["approval_id"],
+                            "approved": True,
+                            "session_id": session_id,
+                        },
+                    })
+                    continue
                 approval_event = msg
                 break
             if kind == "server_apply_workspace_edit":
@@ -247,6 +267,7 @@ def test_ssot_apply_patch_via_real_interrupt_and_resume(e2e_client, tmp_path, mo
                     "— the interrupt did not suspend the graph"
                 )
 
+        assert route_review_seen, "expected the 13.1.10 model-route review to fire first in ask mode"
         assert approval_event is not None, "never received server_hitl_approval_request over the WS"
         data = approval_event["data"]
         assert data["request_kind"] == "FILE_WRITE"
@@ -258,20 +279,11 @@ def test_ssot_apply_patch_via_real_interrupt_and_resume(e2e_client, tmp_path, mo
         assert proposed[0]["file_path"].endswith(_TARGET)
         assert proposed[0]["unified_diff"]
 
-        # `fut` (process_task) is only the PRE-PAUSE half of this turn — a
-        # native interrupt() makes _run_coding_task return once the graph is
-        # paused, well before any resume. Confirm THAT half completed cleanly
-        # (a real error here — not a pause — would otherwise surface as a
-        # confusing timeout later) before moving on to the resume, which runs
-        # as a SEPARATE, untracked asyncio.create_task inside main.py's
-        # client_hitl_response handler — awaiting `fut` again after resuming
-        # would be waiting on a future that already finished, which is
-        # exactly what produced an unrelated anyio cross-task CancelScope
-        # error the first time this test was written naively.
-        fut.result(timeout=30)
-
         # Resume over the real WS transport — the production path, not a
-        # direct task_service call.
+        # direct task_service call. This resume's own pre-pause half runs as
+        # an untracked asyncio.create_task inside main.py's client_hitl_response
+        # handler (same as the model-route resume above), so there is no
+        # second future to await here — see the fut.result() call above.
         ws.send_json({
             "event_type": "client_hitl_response",
             "data": {

@@ -34,6 +34,7 @@ from tools.control_tools import (
 # (planner, coder, orchestrator, researcher) MUST NEVER import this module —
 # Test D audits the four logic-agent files for foreign imports on every CI run.
 from brain.personality import soul_manager
+from core.activity_context import bind_model_tier
 from core.config.model_resolver import _TIER_ORDER
 from shared.config import MODEL_MEDIUM
 
@@ -462,6 +463,12 @@ async def run_analyst_node(
         # the graph. Re-runs once on this round's own interrupt()/resume
         # replay (accepted, bounded cost — matches the pre-existing per-round
         # grounding cost this node already had before this redesign).
+        # Bind-and-forget — the enclosing node wrapper's `finally` owns cleanup
+        # (`ideation.py::_guarded` for this subgraph, mirroring `_instrument_node`;
+        # see `core/activity_context.py`'s docstring). The grill is pinned to
+        # one tier for its whole lifetime (module docstring above _GRILL_TIER),
+        # so binding once here covers grounding, reasoning and question rows alike.
+        bind_model_tier(_GRILL_TIER)
         await _emit("grill_grounding")
         context_block = await _assemble_socratic_context(state)
         grounding, dispatch_trace = await _gather_tool_grounding(state, config, task_id)
@@ -587,6 +594,16 @@ async def _gather_tool_grounding(
     tool calls (name + args per entry) for the state delta.
     """
     if not (state.get("workspace_root") or state.get("active_file_path")):
+        # A silent no-op here previously left "the analyst ran no tools" with
+        # no trace at all — indistinguishable from a grounding pass that simply
+        # found nothing. One retrieval marker naming the skip reason makes the
+        # absence itself visible on the Glass-Box Timeline.
+        push_activity = (config or {}).get("configurable", {}).get("push_activity")
+        if push_activity is not None:
+            try:
+                await push_activity("retrieval", metric="no workspace to ground against")
+            except Exception:  # noqa: BLE001 — observability must never break the grill
+                logger.debug("Analyst grounding-skip marker emit failed", exc_info=True)
         return "", []
     try:
         from core.permissions import session_mode_from_channel

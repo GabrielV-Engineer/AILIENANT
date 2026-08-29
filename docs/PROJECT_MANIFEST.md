@@ -1030,6 +1030,99 @@
   [Spec: root-cause and close a live failure where the Glass-Box Timeline showed a single `Gathering context` row per turn and reasoning never appeared at all, despite the whole transparency surface being implemented and its tests green. Cause verified against the installed runtime, not inferred: LangGraph decides what to inject by inspecting the OUTERMOST callable registered with `add_node` (`langgraph/_internal/_runnable.py` — a parameter literally named `config`, of a keyword-passable kind, with an annotation in a small accepted tuple). Both node wrappers were variadic (`_wrapped(state, *args, **kwargs)`) and so advertised no injectable parameter: `func_accepts` stayed empty and NO node ever received its `RunnableConfig`. Every DI seam on `config.configurable` was therefore None inside every node — `narrate` (no read/edit/command/plan rows), `stream_thinking` + `enable_native_thinking` (no reasoning on any graph turn), `push_activity` (no diff markers), `cell_dispatcher`, `on_state_compacted`. The only survivors were the two markers `core/task_service.py` emits OUTSIDE the graph, which is exactly the one row that reached the screen. Fixed by declaring `config: Optional[RunnableConfig] = None` explicitly on `_instrument_node` and `_guarded`, deliberately WITHOUT `functools.wraps` (which would set `__wrapped__` and hand LangGraph the inner signature again, putting delivery back at the mercy of each node's own annotation), forwarding it only to nodes that accept one via a shared `accepts_config` resolved once at decoration time. `brain/agentic_cell.py` annotated `config` as `Optional[Dict[str, Any]]`, a form LangGraph rejects with a `UserWarning` nobody saw — corrected, and `pytest.ini` now fails on that one warning. New `tests/test_graph_config_injection_gate.py` certifies through a REAL compiled graph (INJECT1), carries its own negative control proving the variadic shape still fails (INJECT2), and derives INJECT3/INJECT4 by walking the shipped graphs so a node added later is covered without editing the gate. Why nothing caught it: no test ever invoked a node THROUGH the compiled graph — the 11.5.C gate patched `alienant_app.astream` wholesale and the narration tests call node functions directly with a hand-built config, so both certified the seam we own and assumed the seam we depend on. Second half, forced by the first: with the trace restored a turn goes from ~2 timeline entries to up to `ACTIVITY_CAP`, several carrying full diff/exec bodies, landing on a persistence path with a history of tab-switch data loss. Reasoning now PERSISTS rather than being stripped (an audit trail that evaporates on reload is not one; it is also the only body no other channel re-delivers), bounded per entry and with its `performance.now()` origin dropped since that epoch dies with the document; the in-flight `setState` snapshot sheds the recoverable diff/cell/execution bodies and is budget-trimmed from the head; `companions` was added to the durable transcript (it survived a tab switch but not a restart); and `persistedStore.flush()` no longer lets one oversized slot lose the whole envelope, the user's draft included. Also closed: the grill's reasoning pass (`agents/analyst.py`), which never read `stream_thinking` at all, so Plan mode would still have shown nothing — a separate free-form pass mirroring the planner's, deliberately NOT gated on native models since the batch draft is non-streaming. Target files: `brain/engine.py`, `brain/ideation.py`, `brain/state.py`, `brain/agentic_cell.py`, `agents/analyst.py`, `pytest.ini`, `ailienant-extension/src/workspace/utils/timelineBuilder.ts`, `ailienant-extension/src/workspace/hooks/useSessionPersistence.ts`, `ailienant-extension/src/shared/persistedStore.ts`. **DoD:** a node invoked through the compiled graph receives its configurable payload; Plan mode narrates the grill and streams its reasoning; a dense turn survives repeated tab switches with its trace, explanations and the composer draft intact; all gates green.]
 - [x] **13.1.8. Reviewable Distillation Brief (the grill's closing step).**
   [Spec: the Socratic dialogue is compressed by `brain/ideation.py::_distill_brief_llm` into a brief that REPLACES `user_input` and becomes the requirement statement the planner drafts against — and it was the one stage in the pipeline with no check of any kind. The coder has `validate_output` plus acceptance checks; the planner has its Actor-Critic loop and the empty-WBS gate; the grill has a human on every round; the distillation had nothing, and the Actor-Critic validates the resulting plan against a SCHEMA, never against the dialogue. The operator's two review points were also misaligned by one hop: they see the questions and answers, then much later the plan, while the brief between them was surfaced nowhere (`planner_brief` had zero consumers in `ailienant-extension/`). A dropped constraint therefore never appeared as an error — it appeared as nothing, which no view can render. Shipped: `run_synthesis_node` becomes TWO graph super-steps driven by a new `synthesis_node` self-loop (`route_after_synthesis`), copying `run_analyst_node`'s documented defer-then-interrupt-first pattern — a draft phase commits `pending_brief` and returns without interrupting, a review phase suspends on the state-sourced brief as its first action. The split is load-bearing and costs more here than it does for `pending_grill_batch`: LangGraph replays a node from the top on every resume, so drafting and interrupting in one invocation would re-run the MODEL_BIG distillation on every review round, charging again and non-deterministically swapping out the very text under review for one the operator never saw. Three decisions, all over the EXISTING approval substrate (`core/hitl.py::request_graph_approval` already returns `approved`/`comment`/`modified_content`, and `useHitlResponder` already posts all three, so no new wire contract and no new resume path): accept (an in-place edit is authoritative), rewrite with a note (re-distils the SAME dialogue under that steer — the operator is correcting the summary, not supplying missing information, so it never re-enters the grill and never collides with `_GRILL_MAX_ROUNDS`, already spent by then), and cancel (sets `hitl_pending`, which `route_after_ideation` checks FIRST, so the turn suspends cleanly instead of masquerading as the `ideation_no_op` planner failure it is not). The note rides the distillation's USER payload, never its system prompt, so the system message stays byte-identical across drafts. New state channels `pending_brief`/`brief_revision_note` declared on `AIlienantGraphState` — `assert_declared_channels` is the guard that caught `ideation_synthesized` going dark for the life of that feature. Frontend: `BriefReviewCard` in chat beside `ClarificationGrillCard`, keyed off an additive `request_kind` value (`request_kind` is an open `Optional[str]`, not a closed Literal), rendering the brief VERBATIM and uncapped in an editable field — `HITLInterventionCard` slices `proposed_content` at 800 chars, which would hide part of what is under review. A simplification found while implementing: `_compose_planner_brief` already emits the settled constraints and scope as labelled blocks, so rendering the composed text verbatim already shows them as lists — no extra wire fields, and "what you read is exactly what is sent" stays literally true. Decision logic extracted to `briefReviewLogic.ts` per `clarificationLogic.ts`'s precedent. Two existing tests that drove the compiled subgraph now inject the `brief_review_fn` seam and, in doing so, certify BOTH super-steps end to end. **DoD:** the brief appears in chat as the last step of the grill; an edit reaches the planner verbatim; a rewrite re-distils exactly once more with the note and a byte-identical system prompt; a cancel suspends without reporting a planner failure; a draft→review→accept cycle costs exactly ONE distillation; all gates green.]
+- [x] **13.1.9. Agent Attribution & Living Timeline (Glass-Box Companion repair).**
+  [Spec: four verified defects compounded into a Glass-Box Timeline that showed almost nothing —
+  `ActiveTaskHeader` mirrored the timeline's own latest label by design while separately owning a
+  loader glyph and a live clock (two competing sources of truth); the rail was drawn as
+  `border-left` on each row with a border-less phase-header sibling punching a hole in it on every
+  group boundary; no phase-kind row (`understanding`/`planning`/`retrieval`/`read`) could ever be
+  `active` (`timelineBuilder.ts` granted that only to `reasoning`/`cell`/ref-carrying `command`);
+  and every tool call `ToolDispatcher.dispatch` already instruments (DEBT-133, 12.8) rendered as
+  `kind="command"` — "Running grep_index" was indistinguishable from a real shell command, and the
+  role captured as `initiator` never reached the row, only the collapsed body. Separately,
+  `TelemetryFrame.routing_decision` reached the frontend with zero consumers — the model a turn
+  ran on was displayed nowhere. Shipped: two new contextvars on `core/activity_context.py`
+  (`current_agent_role`, `current_model_tier`), two-precedence binding — the OUTER default is
+  bound by the node wrapper itself (`brain/engine.py::_instrument_node` for the parent graph,
+  `brain/ideation.py::_guarded` for the ideation subgraph), derived from the node's own registered
+  name (`brain/state.py::derive_node_role`, a one-entry alias table for "analyst_grill"->"analyst",
+  the sole node/dispatcher-identity mismatch); the NARROWER override is bound inside
+  `ToolDispatcher.dispatch` itself via a new optional `activity_role` constructor parameter
+  (defaults to the existing `active_role`, diverging only for the coder, whose `active_role` is the
+  per-WBS-step `target_role` — real for RBAC, but would fragment one coding turn into a lane per
+  step change; `agents/coder.py` passes `activity_role="coder"`). Both read by `_push_activity` and
+  carried as two additive optional fields on `ActivityEventPayload`; a new `tool` `ActivityKind` so
+  a tool call reads as itself (`ActivitySink.emit_marker`/`emit_blocked` gained an optional
+  `kind: str = "command"` parameter). D4's silent no-op (`_gather_tool_grounding` returning `("",
+  [])` with zero trace when there is no workspace to ground against) now emits one `retrieval`
+  marker naming the skip reason. The 13.0.7 work-loop phase grouping axis is DELETED (not hidden,
+  `timelineEntryPhase`/`workLoopPhaseLabel` and their tests removed) in favor of consecutive agent
+  lanes (`utils/agentLanes.ts`, new, pure — folds by run, never merges two non-adjacent runs of the
+  same role), each lane carrying a model badge (`formatModelBadge`: tier + real name, joined
+  against `AilienantConfig.tiers` — already a global field on `chatStore`, so the plan's own
+  "lift the preset tier map into workspaceStore" step turned out to be unnecessary and was
+  skipped). Rail redrawn as one continuous `.ws-timeline-rows::before`, making a broken spine
+  structurally impossible instead of patched, with lane-header dot-ring chips sitting on it and a
+  streaming-only mask-image fade at the live end. `ActiveTaskHeader` stripped to prompt + Cancel
+  only (glyph/clock/`statusLabel` deleted along with the now-redundant separate "full prompt"
+  block, since the prompt renders in the bar at all times once status text no longer occupies it).
+  Liveness is a single live LOADER row under the last lane (not a pulsing settled row, which would
+  have signaled "happening now" in two places at once) showing the live reasoning tail when one is
+  streaming, else the newest row's real label — and, for the three kinds with no concrete detail
+  to show (`understanding`/`planning`/`reviewing`), cycling every 3s through a small pool of
+  equivalent phrasings (`utils/loaderPhrases.ts`, new, pure) with a deterministic lead-character
+  decode transition (`utils/scrambleText.ts`, new, pure — first two characters cycle through a
+  fixed glyph set for ~160ms, not a full random scramble) so a slow step does not read as frozen
+  without ever inventing a word untied to a real event. Target files:
+  `core/activity_context.py`, `core/tool_dispatch.py`, `brain/engine.py`, `brain/ideation.py`,
+  `brain/state.py`, `brain/agentic_cell.py`, `core/task_service.py`, `api/ws_contracts.py`,
+  `api/websocket_manager.py`, `agents/planner.py`, `agents/coder.py`, `agents/analyst.py`,
+  `ailienant-extension/src/workspace/utils/agentLanes.ts` (new), `utils/loaderPhrases.ts` (new),
+  `utils/scrambleText.ts` (new), `utils/activityLabels.ts`, `utils/timelineBuilder.ts`,
+  `components/AgentTimeline.tsx`, `components/ActiveTaskHeader.tsx`,
+  `components/ExecutionDetail.tsx`, `workspace.css`, `Workspace.tsx`, `esbuild.js` (bundle ceiling
+  563->566 KB). **DoD:** a Plan-mode grill round shows its tool calls under a named agent lane, not
+  as "Running …"; the rail never breaks across a lane boundary; the loader row shows real streaming
+  text, the newest real action, or a pooled equivalent phrasing — never a static word repeated
+  forever, never a clock; the top header shows only the prompt and Stop; all gates green (ruff 0 ·
+  mypy 0/478 · pyright 0 · pytest 3292 passed/2 skipped · tsc 0 · eslint 0 errors · npm test 297
+  passing).]
+- [x] **13.1.10. Reviewable Model Route (the router's own decision, surfaced once per turn).**
+  [Spec: builds on 13.1.9's lane badge — once per turn, before the planner drafts, the resolved
+  route (TCI/CSS → tier, already computed and already on the wire via `TelemetryPayload`) is now
+  surfaced as an in-chat decision — accept, pick a different tier from the active preset, or
+  cancel — reusing `core/hitl.py::request_graph_approval` and `useHitlResponder` exactly as
+  13.1.8's `BriefReviewCard` does, no new wire message and no new resume path. New
+  `brain/routing_gate.py::run_model_route_node`, spliced between `researcher_agent` and
+  `planner_agent` in BOTH graph topologies (`ENABLE_DYNAMIC_DISPATCH` on or off) since every path
+  to the planner already runs through the researcher first — the dynamic-dispatch path-map was
+  remapped (`"planner_agent": "model_route_gate"`), not the router function touched, the same
+  technique the file already uses to splice the researcher itself in front of every planner entry.
+  Verified during implementation against the plan's own two-phase assumption and corrected:
+  unlike 13.1.8's synthesis split, this node is SINGLE-phase — the plan called for a
+  defer-then-interrupt-first split mirroring the brief review's, but resolving a routing decision
+  is a pure re-read of `context_metrics` already in state, not an expensive/non-deterministic
+  MODEL_BIG call, so replaying the node from the top on resume reproduces the exact same value
+  every time and resolving-then-interrupting in one invocation carries no hazard. New
+  `confirmed_routing_decision` state channel (scalar overwrite) read by all three
+  `resolve_model_alias_for_routing` call sites (`agents/planner.py` ×2, `agents/coder.py`) in place
+  of the raw `routing_decision`, falling back to it when unset — this is what makes one confirmed
+  choice cover every WBS step of a turn without re-gating per step. Mode-aware via the REAL
+  `SessionPermissionMode` vocabulary rather than a fictional 3-value axis: only `CAUTIOUS` and
+  `PLAN_ONLY` (the modes the 3-button UI's "Ask"/"Plan" actually produce) suspend; every other mode,
+  "Auto" (`STANDARD`) foremost, writes the router's pick and returns without interrupting — the
+  13.1.9 lane badge remains the only surface there. The drafted route (decision + TCI + CSS, the
+  justification that makes this a real review rather than a rubber stamp) rides
+  `proposed_content` as a JSON string — `request_graph_approval`'s payload has one `str` content
+  slot, so no new field — parsed defensively on the frontend
+  (`utils/modelRouteLogic.ts::parseRoutePayload`; malformed JSON degrades to a minimal
+  accept/cancel render, never crashes). Target files: `brain/state.py`, `brain/routing_gate.py`
+  (new), `brain/engine.py`, `agents/planner.py`, `agents/coder.py`,
+  `components/ModelRouteCard.tsx` (new), `utils/modelRouteLogic.ts` (new), `Workspace.tsx`,
+  `workspace.css`, `esbuild.js` (bundle ceiling 566->569 KB). **DoD:** a 6-step plan is asked about
+  its model once, not per step; AUTO mode never suspends on this gate; a cancelled review ends the
+  turn without leaving a stale confirmed decision; all gates green (ruff 0 · mypy 0/480 · pyright 0
+  · pytest 3301 passed/2 skipped · tsc 0 · eslint 0 errors · npm test 309 passing).]
 - [ ] **13.2. Binary Packaging (Zero-Friction Install).** **PyInstaller / Nuitka:** compile `/ailienant-core` (FastAPI + LanceDB + Tree-sitter) into a per-OS binary (`.exe` / macOS / Linux). **VS Code Extension Bundling:** the TS extension unpacks and executes the local binary in background on install. The user needs no Python, Docker, or Node installed.
 - [ ] **13.3. Visual Documentation.** `README.md` final with real architecture diagrams.
 - [ ] **13.4. Autonomous Demo.** Recording where TestAgent + LogicAgent + AnalystAgent solve a cyclic bug unattended.

@@ -184,6 +184,36 @@ async def _run_grill_round(
         }
 
 
+# ── 13.1.9 — grounding-skip visibility ───────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_gather_tool_grounding_emits_a_marker_when_skipped_for_no_workspace() -> None:
+    """A silent no-op here previously left "the analyst ran no tools" with no
+    trace at all, indistinguishable from a grounding pass that found nothing.
+    """
+    from agents.analyst import _gather_tool_grounding
+    from langchain_core.runnables import RunnableConfig
+
+    push_activity = AsyncMock()
+    config: RunnableConfig = {"configurable": {"push_activity": push_activity}}
+
+    block, trace = await _gather_tool_grounding({}, config, "task-1")
+
+    assert block == ""
+    assert trace == []
+    push_activity.assert_awaited_once_with("retrieval", metric="no workspace to ground against")
+
+
+@pytest.mark.anyio
+async def test_gather_tool_grounding_skip_is_a_noop_with_no_push_activity_configured() -> None:
+    from agents.analyst import _gather_tool_grounding
+
+    block, trace = await _gather_tool_grounding({}, {}, "task-1")
+    assert block == ""
+    assert trace == []
+
+
 # ── Test C — R1 state-key contract + ReadOnly policy ─────────────────────────
 
 
