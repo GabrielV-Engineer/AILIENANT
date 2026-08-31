@@ -6,7 +6,10 @@ Every tool follows the perception_tools.py convention:
   - untrusted content wrapped by tools.quarantine.wrap_boundary
   - bounded output: caps enforced before return; event loop never blocked for I/O
 
-Tools registered here (all READ_ONLY, allowed_roles={"researcher"}):
+Tools registered here are all READ_ONLY. Their audiences are capability bundles
+from shared/rbac.py, not "the researcher": locating code and querying the dependency
+graph are things every code-writing role needs, and scoping them to the Researcher
+alone is what previously left the CoderAgent unable to ask who calls a symbol.
   glob                — fnmatch path listing over the RAM ∪ indexed-catalog universe
   grep                — regex content search with mandatory O(L) short-circuit
   workspace_structure — relevance-filtered directory tree over the same universe
@@ -47,6 +50,8 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
+from shared.config import READ_FILE_DEFAULT_LINES, READ_FILE_MAX_LINES
+from shared.rbac import CODE_NAVIGATION_ROLES, GRAPH_SEMANTICS_ROLES
 from tools.quarantine import wrap_boundary
 
 if TYPE_CHECKING:
@@ -73,10 +78,15 @@ _GREP_SCAN_DEADLINE_S = 5.0
 _REGEX_META = set(".^$*+?()[]{}\\|")
 
 # ── Role assignment ────────────────────────────────────────────────────────────
-_RESEARCHER_ROLES: FrozenSet[str] = frozenset({"researcher"})
-# workspace_structure and get_dependents are shared with the planner role so the
-# Planner can inspect repository layout and dependency edges during pre-commit checks.
-_RESEARCHER_AND_PLANNER: FrozenSet[str] = _RESEARCHER_ROLES | frozenset({"planner"})
+# Audiences are capability bundles, not a per-module role list: locating code and
+# querying the dependency graph are things every code-writing role needs, so the
+# membership is granted once in shared/rbac.py and aliased here.
+_NAVIGATION_ROLES: FrozenSet[str] = CODE_NAVIGATION_ROLES
+_GRAPH_ROLES: FrozenSet[str] = GRAPH_SEMANTICS_ROLES
+# workspace_structure and get_dependents additionally reach the planner, which
+# inspects repository layout and dependency edges during pre-commit checks.
+_NAVIGATION_AND_PLANNER: FrozenSet[str] = CODE_NAVIGATION_ROLES | frozenset({"planner"})
+_GRAPH_AND_PLANNER: FrozenSet[str] = GRAPH_SEMANTICS_ROLES | frozenset({"planner"})
 
 
 # ── Path canonicalization (audit fix #1) ──────────────────────────────────────
@@ -593,7 +603,15 @@ class FormalisedReadFileInput(BaseModel):
 
     path: str = Field(description="Workspace-relative path to read.")
     offset: int = Field(default=0, description="Line-based read offset (0 = start).")
-    limit: Optional[int] = Field(default=None, description="Max lines to return (None = all).")
+    limit: int = Field(
+        default=READ_FILE_DEFAULT_LINES,
+        ge=1,
+        le=READ_FILE_MAX_LINES,
+        description=(
+            f"Max lines to return (default {READ_FILE_DEFAULT_LINES}, "
+            f"hard ceiling {READ_FILE_MAX_LINES}). Page with 'offset' for more."
+        ),
+    )
 
 
 def _tool_schema(
@@ -601,8 +619,15 @@ def _tool_schema(
     description: str,
     json_schema_class: Type[BaseModel],
     *,
-    roles: FrozenSet[str] = _RESEARCHER_ROLES,
+    roles: FrozenSet[str],
 ) -> ToolSchema:
+    """Build a READ_ONLY researcher-family schema.
+
+    ``roles`` is required, deliberately. It used to default to the researcher
+    alone, so every tool registered here silently inherited a researcher-only
+    audience — which is how the whole navigation and dependency-graph family
+    ended up unreachable by the roles that write the code.
+    """
     return ToolSchema(
         name=name,
         description=description,
@@ -632,45 +657,51 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
             "read_file",
             "Read a workspace file with optional line-based offset/limit pagination.",
             FormalisedReadFileInput,
+            roles=_NAVIGATION_ROLES,
         ),
         _tool_schema(
             "glob",
             "List workspace files matching an fnmatch glob pattern (RAM ∪ indexed catalog).",
             GlobInput,
+            roles=_NAVIGATION_ROLES,
         ),
         _tool_schema(
             "grep",
             "Regex search over workspace file contents (RAM-first, firewalled fallback).",
             GrepInput,
+            roles=_NAVIGATION_ROLES,
         ),
         _tool_schema(
             "workspace_structure",
             "Show an indented directory tree of the workspace (RAM ∪ indexed catalog).",
             WorkspaceStructureInput,
-            roles=_RESEARCHER_AND_PLANNER,
+            roles=_NAVIGATION_AND_PLANNER,
         ),
         _tool_schema(
             "query_graphrag",
             "Expand seed files via GraphRAG and return a compact context block.",
             GraphRAGQueryInput,
+            roles=_GRAPH_ROLES,
         ),
         _tool_schema(
             "get_dependents",
             "Return JSON {target, dependents[]} of files that import the given file.",
             GetDependentsInput,
-            roles=_RESEARCHER_AND_PLANNER,
+            roles=_GRAPH_AND_PLANNER,
         ),
         _tool_schema(
             "architecture_digest",
             "Bounded project overview from the dependency graph: languages, top modules, "
             "centrality hotspots, community clusters, entrypoints, and node/edge counts.",
             ArchitectureDigestInput,
+            roles=_GRAPH_ROLES,
         ),
         _tool_schema(
             "find_symbol_callers",
             "Find files that call/reference a function/class/method by name, with a "
             "confidence tier per caller. Advisory — an empty result never means 'dead'.",
             FindSymbolCallersInput,
+            roles=_GRAPH_ROLES,
         ),
         _tool_schema(
             "trace_cross_boundary",
@@ -678,6 +709,7 @@ async def register_researcher_tools(store: ToolRAGStore) -> int:
             "or emit it across the extension/core boundary. Advisory — empty never means "
             "'unhandled'.",
             TraceCrossBoundaryInput,
+            roles=_GRAPH_ROLES,
         ),
     ]
     for schema in schemas:
@@ -731,7 +763,7 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
         "glob": RegisteredTool(
             GlobTool(path_provider=path_provider),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_ROLES,
+            _NAVIGATION_ROLES,
         ),
         "grep": RegisteredTool(
             GrepTool(
@@ -740,22 +772,22 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
                 narrow_provider=narrow_provider,
             ),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_ROLES,
+            _NAVIGATION_ROLES,
         ),
         "workspace_structure": RegisteredTool(
             WorkspaceStructureTool(path_provider=path_provider),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_AND_PLANNER,
+            _NAVIGATION_AND_PLANNER,
         ),
         "query_graphrag": RegisteredTool(
             GraphRAGQueryTool(extractor=extractor, workspace_root=workspace_root),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_ROLES,
+            _GRAPH_ROLES,
         ),
         "get_dependents": RegisteredTool(
             GetDependentsTool(get_dependents=dependents_fn),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_AND_PLANNER,
+            _GRAPH_AND_PLANNER,
         ),
         "architecture_digest": RegisteredTool(
             ArchitectureDigestTool(
@@ -764,7 +796,7 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
                 session_id=session_id or None,
             ),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_ROLES,
+            _GRAPH_ROLES,
         ),
         "find_symbol_callers": RegisteredTool(
             FindSymbolCallersTool(
@@ -773,7 +805,7 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
                 session_id=session_id or None,
             ),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_ROLES,
+            _GRAPH_ROLES,
         ),
         "trace_cross_boundary": RegisteredTool(
             TraceCrossBoundaryTool(
@@ -782,7 +814,7 @@ def build_researcher_tools(state: Mapping[str, Any]) -> Dict[str, "RegisteredToo
                 session_id=session_id or None,
             ),
             ToolPrivilegeTier.READ_ONLY,
-            _RESEARCHER_ROLES,
+            _GRAPH_ROLES,
         ),
         # External retrieval. Cross-listed from the analyst/perception families
         # rather than re-registered: agents/researcher.py builds its grounding loop

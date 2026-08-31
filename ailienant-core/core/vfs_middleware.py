@@ -6,6 +6,7 @@ import pathspec
 from pydantic import BaseModel
 
 from .ast_engine import ASTEngine as _ASTEngine
+from .path_guard import confine_to_root
 from .rules import rule_manager as _rule_manager
 
 _ast = _ASTEngine()
@@ -26,7 +27,7 @@ class DirtyBuffer(BaseModel):
 
 class VFSReadResult(BaseModel):
     content: Optional[str] = None
-    error: Optional[str] = None      # "FILE_EXCLUDED" | "FILE_IGNORED" | "BINARY_FILE" | "FILE_TOO_LARGE" | "MINIFIED" | "READ_ERROR"
+    error: Optional[str] = None      # "PATH_ESCAPE" | "FILE_EXCLUDED" | "FILE_IGNORED" | "BINARY_FILE" | "FILE_TOO_LARGE" | "MINIFIED" | "READ_ERROR"
     metadata: Optional[Dict[str, Any]] = None
 
     @property
@@ -140,8 +141,9 @@ class VFSMiddleware:
         session_id: Optional[str] = None,
     ) -> VFSReadResult:
         """
-        Three-layer content firewall for LLM context assembly.
+        Content firewall for LLM context assembly, plus workspace confinement.
 
+        Layer 0 — Jail: rejects any path resolving outside project_root.
         Layer 1 — Ignore rules: respects .gitignore and .ailienantignore.
         Layer 2 — Binary block: rejects non-textual file extensions.
         Layer 3 — Anti-OOM: rejects files > 500 KB and minified files.
@@ -161,7 +163,14 @@ class VFSMiddleware:
         ext = os.path.splitext(normalized)[1].lower()
         size_meta: Dict[str, Any] = {"path": normalized, "extension": ext}
 
-        # Layer 0 — Dual-rules exclude (exclude_patterns from .ailienant.json)
+        # Layer 0a — Workspace jail. Runs before every other check and before any
+        # disk access: the remaining layers answer "is this file suitable", which
+        # is a different question from "is this file ours to read at all".
+        escape = confine_to_root(normalized, project_root)
+        if escape is not None:
+            return VFSReadResult(error="PATH_ESCAPE", metadata={**size_meta, "reason": escape})
+
+        # Layer 0b — Dual-rules exclude (exclude_patterns from .ailienant.json)
         if project_root:
             if _rule_manager.is_excluded(normalized, project_root):
                 return VFSReadResult(

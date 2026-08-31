@@ -29,7 +29,18 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    ClassVar,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
@@ -58,6 +69,23 @@ _RUN_TERMINAL_TIMEOUT_S: float = 120.0
 # The discovery meta-tool whose query is replayed on the following iteration so
 # its "name it next turn" instruction resolves to the same tools it just listed.
 _TOOL_SEARCH_NAME: str = "tool_search"
+# Head of the raw file returned when no skeleton can be produced — an unsupported
+# language, or a supported one holding no function/class nodes (a settings module,
+# a JSON fixture). Large enough to carry an import block plus a few definitions,
+# small enough that several reads in one iteration stay affordable.
+_READ_FALLBACK_MAX_CHARS: int = 2000
+# Ceiling on one read observation injected into the trajectory. extract_skeleton
+# already caps its own output; this bounds the fallback path and any future
+# skeleton growth so a single read cannot dominate the next iteration's context.
+_READ_OBSERVATION_MAX_CHARS: int = 6000
+# Skeletons elide bodies, but a SEARCH/REPLACE anchor must be verbatim body text —
+# so the escape hatch has to be advertised, or the model guesses the anchor and the
+# patch fails to apply. Ordering matters: skeleton first keeps the common case cheap.
+_READ_ESCALATION_HINT: str = (
+    "Reading: prefer read_file_ast for structure. When you need the exact text of "
+    "an anchor to patch, escalate to read_file with offset/limit for just that "
+    "range — never to dump a whole file."
+)
 
 # Loop-unsafe tools are excluded via core.tool_registry.filter_loop_safe, shared
 # with the other two dispatch-loop consumers (the subagent worker and the coder's
@@ -98,8 +126,21 @@ def _cell_elapsed_floor() -> float:
 # cell against its own session/surface/VFS closure (the args carry no privileged handle),
 # mirroring how the coder parses SEARCH/REPLACE rather than trusting a free-form payload.
 
-class RunTerminalArgs(BaseModel):
+class _CellToolArgs(BaseModel):
+    """Base for the cell's primitive arg models.
+
+    Carries the dispatch name alongside the schema so the reasoner's advertised
+    signature, and the dispatcher's own name comparisons, both read from the
+    model rather than from a literal restated in three places.
+    """
+
+    TOOL_NAME: ClassVar[str]
+
+
+class RunTerminalArgs(_CellToolArgs):
     """Execute a shell command on the session's work surface."""
+
+    TOOL_NAME: ClassVar[str] = "run_terminal"
 
     command: str = Field(
         description="The exact shell command to run (e.g. 'python -m pytest -q'). "
@@ -107,14 +148,18 @@ class RunTerminalArgs(BaseModel):
     )
 
 
-class ReadFileAstArgs(BaseModel):
+class ReadFileAstArgs(_CellToolArgs):
     """Read a file as an AST skeleton (signatures + docstrings, bodies elided)."""
+
+    TOOL_NAME: ClassVar[str] = "read_file_ast"
 
     path: str = Field(description="Workspace-relative path of the file to inspect.")
 
 
-class ApplyGranularEditArgs(BaseModel):
+class ApplyGranularEditArgs(_CellToolArgs):
     """Apply a single SEARCH/REPLACE edit to a file under an OCC guard."""
+
+    TOOL_NAME: ClassVar[str] = "apply_granular_edit"
 
     path: str = Field(description="Workspace-relative path of the file to edit.")
     search: str = Field(
@@ -126,7 +171,11 @@ class ApplyGranularEditArgs(BaseModel):
 
 # The contract surface bound to a tool-calling model. ``bind_cell_tools`` is the single
 # seam; it accepts any LangChain chat model exposing ``bind_tools`` and returns it bound.
-CELL_TOOLS: List[type[BaseModel]] = [RunTerminalArgs, ReadFileAstArgs, ApplyGranularEditArgs]
+CELL_TOOLS: List[type[_CellToolArgs]] = [
+    RunTerminalArgs,
+    ReadFileAstArgs,
+    ApplyGranularEditArgs,
+]
 
 
 def bind_cell_tools(llm: Any) -> Any:
@@ -136,6 +185,18 @@ def bind_cell_tools(llm: Any) -> Any:
     if binder is None:
         return llm
     return binder(CELL_TOOLS)
+
+
+def _cell_tools_signature() -> str:
+    """Render ``name(arg, arg)`` for each cell primitive, straight from CELL_TOOLS.
+
+    The reasoner advertises the primitives in prose; deriving that prose from the
+    models keeps a renamed field or a new primitive from leaving the prompt
+    describing a contract the dispatcher no longer implements.
+    """
+    return ", ".join(
+        f"{model.TOOL_NAME}({', '.join(model.model_fields)})" for model in CELL_TOOLS
+    )
 
 
 # =====================================================================
@@ -172,9 +233,9 @@ async def _default_reasoner(messages: Sequence[Dict[str, str]]) -> List[ToolCall
 
     schema_hint = (
         "Respond with ONLY a JSON object of the form "
-        '{"tool_calls":[{"name":"run_terminal","args":{"command":"..."}}]}. '
-        "Available tools: run_terminal(command), read_file_ast(path), "
-        "apply_granular_edit(path, search, replace)."
+        f'{{"tool_calls":[{{"name":"{RunTerminalArgs.TOOL_NAME}",'
+        '"args":{"command":"..."}}]}. '
+        f"Available tools: {_cell_tools_signature()}."
     )
     convo: List[Dict[str, Any]] = [{"role": "system", "content": schema_hint}, *messages]
     try:
@@ -758,6 +819,10 @@ async def run_agentic_cell_node(
         audit_entries: List[Dict[str, Any]] = []
         security_flags: List[str] = []
         occ_messages: List[Dict[str, str]] = []
+        # read_file_ast observations. Carried as system-role trajectory records —
+        # the only shape _build_messages replays — so what the model reads is
+        # actually visible to it on the next iteration.
+        read_observations: List[Dict[str, str]] = []
         pending_contents: Dict[str, str] = {}
         candidate_edits: Dict[str, List[str]] = {}  # path -> competing replacement contents
         edited_paths: List[str] = []
@@ -807,7 +872,7 @@ async def run_agentic_cell_node(
                 security_flags.append("SECURITY_TOOL_ARG_REJECTED")
                 continue
 
-            if call.name == "run_terminal":
+            if call.name == RunTerminalArgs.TOOL_NAME:
                 command = str(call.args.get("command", ""))
                 verdict = _classify_execute(state)
                 if verdict == "allow":
@@ -838,7 +903,9 @@ async def run_agentic_cell_node(
                     }
                     defer_delta: Dict[str, Any] = {
                         "agentic_iteration": iteration + 1,
-                        "agentic_trajectory": [defer_rec],
+                        # Reads already done this iteration ride out with the defer,
+                        # so the approval round-trip does not force a re-read.
+                        "agentic_trajectory": [defer_rec, *read_observations],
                         "pending_exec_command": command,
                     }
                     if edited_paths:
@@ -885,11 +952,25 @@ async def run_agentic_cell_node(
                     record["occ_conflicts"].append(path)
                     occ_messages.append(_occ_diagnostic(path))
 
-            elif call.name == "read_file_ast":
+            elif call.name == ReadFileAstArgs.TOOL_NAME:
                 path = str(call.args.get("path", ""))
-                _ = _read_file_ast(working.get(path, ""), path)
+                source = _resolve_read_source(state, working, path)
+                if source is None:
+                    body = (
+                        "NOT FOUND — no such file, or the workspace read firewall "
+                        "declined it (ignored, binary, oversized, or outside the "
+                        "workspace). Check the path before patching it."
+                    )
+                else:
+                    body = (
+                        _read_file_ast(source, path)[:_READ_OBSERVATION_MAX_CHARS]
+                        or "(file is empty)"
+                    )
+                read_observations.append(
+                    {"role": "system", "content": f"[read_file_ast] {path}\n{body}"}
+                )
 
-            elif call.name == "apply_granular_edit":
+            elif call.name == ApplyGranularEditArgs.TOOL_NAME:
                 path = str(call.args.get("path", ""))
                 search = str(call.args.get("search", ""))
                 replace = str(call.args.get("replace", ""))
@@ -954,7 +1035,7 @@ async def run_agentic_cell_node(
                             )
                     tool_defer_delta: Dict[str, Any] = {
                         "agentic_iteration": iteration + 1,
-                        "agentic_trajectory": [tool_defer_rec],
+                        "agentic_trajectory": [tool_defer_rec, *read_observations],
                         "pending_tool_call": {
                             "name": call.name, "args": dict(call.args),
                             "activity_ref": _activity_ref,
@@ -1000,7 +1081,7 @@ async def run_agentic_cell_node(
                     }
                     clar_delta: Dict[str, Any] = {
                         "agentic_iteration": iteration + 1,
-                        "agentic_trajectory": [clar_rec],
+                        "agentic_trajectory": [clar_rec, *read_observations],
                         "pending_hitl_request": _pending_clarification,
                         "cell_tool_query": tool_search_query,
                     }
@@ -1090,7 +1171,9 @@ async def run_agentic_cell_node(
 
         delta: Dict[str, Any] = {
             "agentic_iteration": iteration + 1,
-            "agentic_trajectory": [record, *occ_messages, *fallback_observations],
+            "agentic_trajectory": [
+                record, *occ_messages, *read_observations, *fallback_observations
+            ],
             "current_cost_usd": cost_delta,
             # Scalar overwrite, always written: carries a fresh tool_search query
             # forward, and otherwise clears any query the previous iteration
@@ -1252,12 +1335,12 @@ def _format_fallback_tools_hint(schemas: Sequence[Any], mode: str = "deferred") 
         if mode == "eager"
         else "More tools exist beyond this list; call tool_search to discover them."
     )
+    primitives = "/".join(model.TOOL_NAME for model in CELL_TOOLS)
     return (
-        "Additional tools are available beyond run_terminal/read_file_ast/"
-        "apply_granular_edit — call one by name with args matching its purpose "
-        "if it fits better than the 3 primitives:\n"
+        f"Additional tools are available beyond {primitives} — call one by name "
+        "with args matching its purpose if it fits better than the 3 primitives:\n"
         + "\n".join(lines)
-        + f"\n{closing}"
+        + f"\n{_READ_ESCALATION_HINT}\n{closing}"
     )
 
 
@@ -1342,7 +1425,7 @@ def _occ_diagnostic(path: str) -> Dict[str, str]:
         "role": "system",
         "content": (
             f"Tool failed: OCC conflict on {path}. The file was modified concurrently — "
-            f"read_file_ast it again before patching."
+            f"call {ReadFileAstArgs.TOOL_NAME} on it again before patching."
         ),
     }
 
@@ -1532,14 +1615,45 @@ async def _emit_pending_tool_resolution(
 
 
 def _read_file_ast(content: str, path: str) -> str:
-    """AST skeleton of a file (signatures + docstrings, bodies elided)."""
-    from core.ast_engine import extract_skeleton
+    """AST skeleton of a file (signatures + docstrings, bodies elided).
 
-    language = "python" if path.endswith(".py") else "text"
-    try:
-        return extract_skeleton(content, language)
-    except Exception:  # noqa: BLE001 — skeleton extraction is best-effort
-        return content[:1500]
+    The language is resolved from the extension rather than assumed Python, so
+    every language the tree-sitter engine supports yields a real skeleton.
+
+    Falls back to a bounded head of the raw source whenever no skeleton can be
+    produced. ``extract_skeleton`` returns '' — it never raises — for an
+    unsupported language, a parse failure, or a file holding no function/class
+    nodes, so an empty skeleton is the ordinary outcome for data and config
+    files rather than an error worth hiding behind a guard.
+    """
+    from core.ast_engine import extract_skeleton
+    from shared.contracts import detect_language
+
+    language = detect_language(path)
+    skeleton = extract_skeleton(content, language) if language else ""
+    return skeleton or content[:_READ_FALLBACK_MAX_CHARS]
+
+
+def _resolve_read_source(
+    state: Dict[str, Any], working: Dict[str, str], path: str
+) -> Optional[str]:
+    """Current text for ``path`` — the turn's working set first, then the VFS.
+
+    The working set holds only files this turn already touched. Any other path
+    must fall through to the firewalled reader; serving it as '' would tell the
+    model the file is empty rather than that it has not been opened, which is
+    the difference between "nothing to patch" and "read it first".
+    """
+    if path in working:
+        return working[path]
+    from core.vfs_middleware import make_safe_reader
+
+    read = make_safe_reader(
+        str(state.get("project_id") or "") or None,
+        str(state.get("workspace_root") or "") or None,
+        str(state.get("task_id") or "") or None,
+    )
+    return read(path)
 
 
 def _compute_edit(base: str, path: str, search: str, replace: str) -> str:

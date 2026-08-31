@@ -101,7 +101,9 @@ _SANDBOX_BASH_ROLES: FrozenSet[str] = frozenset(
 )
 
 # Task V2: orchestrator needs to create and poll background tasks (wave 5 parity).
-_TASK_CREATE_ROLES: FrozenSet[str] = _EXECUTE_ROLES | frozenset({"orchestrator"})
+# Public because tools/gateway_tools.py derives task_list/task_stop's audience from
+# it — whoever may start a background task must be able to list and kill one.
+TASK_CREATE_ROLES: FrozenSet[str] = _EXECUTE_ROLES | frozenset({"orchestrator"})
 _TASK_GET_ROLES: FrozenSet[str] = _EXECUTE_ROLES | frozenset({"orchestrator"})
 
 _SANDBOX_ENV_WHITELIST: Tuple[str, ...] = (
@@ -852,7 +854,7 @@ async def register_execution_tools(store: ToolRAGStore) -> int:
             "task_create",
             "Spawn a long-running background asyncio subprocess; returns task_id.",
             TaskCreateInput,
-            roles=_TASK_CREATE_ROLES,
+            roles=TASK_CREATE_ROLES,
         ),
         _execute_schema(
             "task_get",

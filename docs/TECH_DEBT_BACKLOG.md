@@ -80,6 +80,13 @@ Decision    Not a defect — see [DECISION] tier.
 | DEBT-204 | Output-budget-brief candidate directions deferred by measurement (§8.1 incremental plan materialization, §8.3 GBNF, §8.5 slim schema, §8.9 streaming+incremental parse) | LOW | Declared tradeoff | revisit if measurements change | Floating |
 | DEBT-205 | `run_checks` (deep effort) executes only the mechanically-executable subset of a plan's own `checks`; non-command criteria are excluded, not silently passed | LOW | Correctness gap (declared MVP) | future checks-verification slice | Floating |
 | DEBT-206 | Zero `server_activity_event` fired during an entire 12-minute planner window (OQ-6) — narration wiring gap, not yet investigated | LOW | Observability | short separate investigation | Floating |
+| DEBT-221 | `run_agentic_cell_node` (`brain/agentic_cell.py:396`) is CC 108 (radon grade F) — the highest cyclomatic complexity in the backend | MEDIUM | Architecture / maintainability | future node-decomposition slice | Floating |
+| DEBT-222 | `run_planner_node` (`agents/planner.py:209`) is CC 84 (radon grade F) | MEDIUM | Architecture / maintainability | future node-decomposition slice | Floating |
+| DEBT-223 | `run_coder_node` (`agents/coder.py:459`) is CC 80 (radon grade F) | MEDIUM | Architecture / maintainability | future node-decomposition slice | Floating |
+| DEBT-224 | `run_researcher_node` (`agents/researcher.py:201`) is CC 76 (radon grade F) | MEDIUM | Architecture / maintainability | future node-decomposition slice | Floating |
+| DEBT-225 | `websocket_endpoint` (`main.py:1326`) is CC 59 (radon grade F) | MEDIUM | Architecture / maintainability | future node-decomposition slice | Floating |
+| DEBT-226 | `TaskService._format_coding_summary` (`core/task_service.py:1623`) is radon grade F | LOW | Architecture / maintainability | future node-decomposition slice | Floating |
+| DEBT-227 | `ValidateWBSDependenciesTool._arun` (`tools/planner_tools.py:116`) is CC 53 (radon grade F) | LOW | Architecture / maintainability | future node-decomposition slice | Floating |
 
 ---
 
@@ -94,10 +101,15 @@ Debt Ratio = (HIGH×3 + MEDIUM×2 + LOW×1) / KLOC(production)
 ```
 
 **Baseline (2026-08-28, ailienant-core only):** 0 HIGH, 3 MEDIUM, 13 LOW → weighted 19 · SLOC 40,446
-(radon raw) → **Debt Ratio ≈ 0.47 / KLOC**. `ailienant-extension/src` is not yet included (no
-`radon`-equivalent SLOC pass wired for TypeScript) — extending the ratio there is itself
-DEBT-166-shaped (advisory, not blocking) and not worth a dedicated ticket until the number is
-tracked over more than one data point.
+(radon raw) → Debt Ratio ≈ 0.47 / KLOC.
+
+**Recomputed (2026-08-31, ailienant-core only):** the DEBT-221–DEBT-227 batch (7 new entries — 5
+MEDIUM, 2 LOW, filed for the backend's 7 radon-grade-F cyclomatic-complexity functions) moves the
+Open Items Dashboard count to 0 HIGH, 8 MEDIUM, 15 LOW → weighted 31 · SLOC 40,844 (`radon raw -s`
+over `ailienant-core`, excluding `venv/`, `tests/`, and cache directories) → **Debt Ratio ≈ 0.76 /
+KLOC**. `ailienant-extension/src` is not yet included (no `radon`-equivalent SLOC pass wired for
+TypeScript) — extending the ratio there is itself DEBT-166-shaped (advisory, not blocking) and not
+worth a dedicated ticket until the number is tracked over more than one data point.
 
 ---
 
@@ -108,7 +120,7 @@ tracked over more than one data point.
 | DEBT-010 | OCC version-vectors on the graph state dict: rejected in favor of existing reducers (decision record) | DECISION |
 | DEBT-102 | `tree-sitter-dart` single-release supply-chain risk | DECISION |
 | DEBT-109 | Context-utilization telemetry is flat pipe-delimited text, not typed JSONL | DECISION |
-| DEBT-131 | 11 tools deliberately left unwired in `core/tool_registry.py` (decision record) | DECISION |
+| DEBT-131 | 7 tools deliberately left unwired in `core/tool_registry.py` (decision record) | DECISION · re-audited 2026-08-31 |
 | DEBT-145 | Per-task reasoning-mode config rides mutable graph state, not a config table | DECISION |
 | DEBT-149 | CSS's semantic-similarity term is deliberately calibrated against file-centroid distances only | DECISION |
 | DEBT-159 | Pre-commit's mypy-on-changed-files is a local approximation only | DECISION |
@@ -130,9 +142,9 @@ tracked over more than one data point.
 | DEBT-210 | No automatic subsystem/community detection in internal GraphRAG | MEDIUM · Floating |
 | DEBT-211 | Internal GraphRAG has no git/PR-history awareness | LOW · Floating |
 | DEBT-212 | GraphRAG and project docs are separate context sources, never nodes in one graph | MEDIUM · Floating |
-| DEBT-213 | `web_fetch` destination guard is open to DNS rebinding (double resolution) | MEDIUM · Floating |
+| DEBT-213 | `web_fetch` destination guard is open to DNS rebinding (double resolution) | MEDIUM · **RESOLVED 2026-08-31, 8.20** |
 | DEBT-214 | DuckDuckGo search fallback parses an unversioned public HTML page | LOW · Floating |
-| DEBT-215 | `ROLE_REGISTRY.allowed_tools` is vestigial but frozen by a test snapshot | LOW · Floating |
+| DEBT-215 | `ROLE_REGISTRY.allowed_tools` is NOT vestigial — it recorded the contract live RBAC had drifted from | LOW · **RESOLVED 2026-08-31, 8.20** (premise reversed) |
 | DEBT-035 | MultiPL-E TypeScript execution needs a Node-capable sandbox runtime | MEDIUM · Floating |
 | DEBT-074 | `pre_file_read` GraphRAG-injection hook bypasses cost accounting | MEDIUM · Blocked |
 | DEBT-075 | Syntactic-only symbol extraction; no LSP-style type resolution | LOW · Unscheduled |
@@ -167,13 +179,16 @@ tracked over more than one data point.
 | DEBT-169 | GraphRAG/tool retrieval has no reranking stage | MEDIUM · Floating |
 | DEBT-174 | Coder-node edit generation never receives image attachments | LOW · Floating |
 | DEBT-175 | `TOOL_RAG_TOP_K` cannot rise until the Phase-5.7 gate's baseline is reworked; its prescribed remedy is near self-cancelling | MEDIUM · Floating |
-| DEBT-176 | No tool-invocation telemetry exists; a usage prior would break `select_tools` determinism | LOW · Floating |
+| DEBT-176 | No tool-invocation telemetry exists; a usage prior would break `select_tools` determinism | LOW · **RESOLVED 2026-08-31, 8.20** (emit-only half was already shipped) |
 | DEBT-178 | `toggle_plan_mode`'s READ_ONLY tier cannot express that it mutates the permission channel | LOW · Floating |
 | DEBT-194 | No liveness signal exists to distinguish "local model is slow" from "local model is dead" | LOW · Floating, PARTIALLY RESOLVED 2026-08-31 (streaming paths only) |
 | DEBT-199 | `apply_patch`/`apply_commit` assume SWARM (`parallel_tasks`) stays dormant | LOW · Floating |
 | DEBT-200 | No one-click revert for an applied step; VS Code Local History is the only recovery path | MEDIUM · Floating |
 | DEBT-217 | No Runtime Capacity panel; the chat HUD's context-window ring reads the wrong denominator on a local target | MEDIUM · Floating |
 | DEBT-218 | No way to reconfigure Ollama's KV-cache quantization from AILIENANT | MEDIUM · Floating |
+| DEBT-219 | `batch_semantic_edit` (multi-file ACID) stays excluded for want of a safe `vfs_write` closure | MEDIUM · Floating |
+| DEBT-220 | `bind_cell_tools` has no consumer and would advertise names the dispatcher does not match | LOW · Floating |
+| DEBT-228 | Six gateway tests read the host's live free RAM and fail on a memory-starved machine | MEDIUM · Floating |
 
 ---
 
@@ -1527,15 +1542,20 @@ Discovered incidentally in `docs/OUTPUT_BUDGET_BRIEF.md`'s forensic log review (
 - **Phase:** Decision recorded under **7.18 (ADR-746)**. Re-open **only** if a demonstrated corruption bug proves reducers insufficient.
 - **Notes:** A genuine future risk: once 7.18 wires execute-tier dispatch, **async MCP tool calls** mutating state mid-node could warrant Option B (targeted execute-tier write idempotency) — a small hardening, not a global OCC rewrite.
 
-### DEBT-131 [DECISION] — 11 tools deliberately left unwired in `core/tool_registry.py` (decision record)
+### DEBT-131 [DECISION] — 7 tools deliberately left unwired in `core/tool_registry.py` (decision record)
 
-- **Date:** 2026-07-30
-- **Reproduce:** N/A (architecture decision, not an error). Division 8.18 built a reachability gate asserting every `BaseTool` class is either resolvable or explicitly excluded; 11 names are excluded by design.
-- **File(s):** `ailienant-core/core/tool_registry.py::_INTENTIONALLY_UNREGISTERED` (the authoritative, reasoned list); `ailienant-core/tests/test_phase8_18_checkpoint_gate.py::test_r1_every_basetool_class_is_reachable_or_allowlisted` (the gate that enforces the list stays exhaustive).
-- **Error:** Not a defect. Three distinct rationales — the third corrected by 12.3 (2026-08-01), the original two below unchanged: (a) `atomic_code_patch`, `batch_semantic_edit`, `file_write`, `generate_docstring` (4 tools) are redundant with `brain/agentic_cell.py`'s own `apply_granular_edit` primitive, and no safe `vfs_write(path, content)` closure exists in production to back them anyway (writes flow through `VFSMiddleware.ingest_dirty_buffers`, not a simple write API) — wiring them would mean inventing new, riskier write plumbing to duplicate a capability the coder already has. `guard_env_file` is excluded because it already emits its own content-hash-idempotent HITL gate and must not be double-gated by a generic dispatch wrapper. (b) `run_benchmark`, `get_benchmark_report` (2 tools) genuinely duplicate `gateway/handlers.py`'s real, already-live MCP-gateway logic — the canonical owner is that standalone process, not this in-process registry. (c) `list_capabilities`, `skill_invoke`, `task_list`, `task_stop` (4 tools) were **originally** attributed to the same gateway-duplicate rationale as (b); 12.3's DEBT-049 investigation found that false — `gateway/catalog.py::CATALOG` has no counterpart for any of the four. Their real, now-corrected reason: all four are scoped to `{orchestrator, planner}` (`task_list`/`task_stop` to `{orchestrator}` only), a role set disjoint from `resolve_tools()`'s only runtime consumer (the agentic cell, always running under one of the 8 WBS coder roles), and neither orchestrator nor planner runs a `ToolDispatcher` loop by the permanent DEBT-068 architectural decision.
-- **Blocked by:** N/A — resolved as: leave excluded, documented, and gate-enforced rather than wired or deleted.
-- **Phase:** Decision recorded under Division 8.18; rationale (c) corrected under 12.3. Re-open only if a concrete need surfaces for the coder to mutate files through a path other than `apply_granular_edit` (would need a real `vfs_write` closure design first), if the gateway package's `run_benchmark`/`get_benchmark_report` classes are ever deleted outright, or if a future phase gives a WBS step a planner/orchestrator `target_role` (which would make group (c) reachable and force re-deciding whether to wire it).
-- **Notes:** group (b) (2 of the 11, not 6 as originally recorded) is the strongest candidate for outright deletion rather than permanent exclusion — tracked here rather than acted on. `tests/test_phase12_3_integration_debts.py::test_skill4_skill_roles_disjoint_from_control_roles` is a regression lock on the structural fact rationale (c) depends on.
+- **Date:** 2026-07-30 · **Re-audited and reduced from 11 to 7:** 2026-08-31 (8.20.6)
+- **Reproduce:** N/A (architecture decision). Division 8.18 built a reachability gate asserting every `BaseTool` class is either resolvable or explicitly excluded.
+- **The 8.20.6 re-audit — checked against the code, not against the recorded rationale. Seven held; four did not:**
+  - **Hold, unchanged:** `atomic_code_patch`, `file_write`, `generate_docstring` are genuinely redundant with `brain/agentic_cell.py::apply_granular_edit`, which also covers new-file creation via its empty-anchor path. `guard_env_file` emits its own content-hash-idempotent HITL gate and must not be double-gated.
+  - **Wired (2):** `task_list`, `task_stop`. They lived in `tools/gateway_tools.py` while `task_create`/`task_get` lived in `tools/execution_tools.py`, and inherited an orchestrator-only audience from their module rather than from their function — `task_create`'s own `owner_role` field is documented as existing "so `task_list`…", a field serving a tool nobody could call. The Coder could spawn background tasks and neither list nor kill them, leaving a hung task with no cleanup path. Now granted to `TASK_CREATE_ROLES`; `owner_role` still scopes visibility per role.
+  - **Deleted (2):** `run_benchmark`, `get_benchmark_report`. Unreachable duplicates of `gateway/handlers.py`, which owns the surface and submits over loopback so the host's own single-flight and task lifecycle apply. This entry's earlier notes already named them the strongest deletion candidates; 8.20.6 executed it. Their dedicated tests went with them — coverage of deleted code has nothing to backfill (same reasoning as DEBT-208).
+  - **Rationale corrected, exclusion kept (2):** `batch_semantic_edit` was recorded as "redundant with apply_granular_edit", which is **false** — it is multi-file ACID and no coder path has that; the real blocker is the missing safe `vfs_write` closure, now tracked as **DEBT-219**. `skill_invoke`'s recorded reason (role-scope disjointness) was true but not load-bearing: skills already reach the coder and planner prompts through `core/task_service.py`'s `active_skills` resolution and `core/skill_resolver.py::build_skill_directive_block`, so a tool call would re-resolve what the prompt already carries.
+- **Remaining 7:** `atomic_code_patch`, `batch_semantic_edit`, `file_write`, `generate_docstring`, `guard_env_file`, `list_capabilities`, `skill_invoke`.
+- **Enforcement:** `tests/test_phase8_18_checkpoint_gate.py` now iterates the allowlist rather than restating its membership, so the gate cannot go stale as the list moves; `tests/test_phase8_20_checkpoint_gate.py::test_wire3_...` additionally asserts the resolvable and excluded records stay disjoint.
+- **Notes:** the lesson worth keeping is that two of the four wrong entries were wrong in the *right direction* — plausible, specific, and no longer true. An exclusion's reason has to be re-derived from the code periodically, not inherited.
+
+---
 
 ### DEBT-165 [DECISION] — OpenSpec adoption is new-phases-only (decision record)
 
@@ -1723,14 +1743,14 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 
 ---
 
-### DEBT-213 [MEDIUM · Floating] — `web_fetch` destination guard is open to DNS rebinding
+### DEBT-213 [MEDIUM · RESOLVED 2026-08-31, 8.20] — `web_fetch` destination guard was open to DNS rebinding
 
-- **Date:** 2026-08-28
-- **Files:** `ailienant-core/core/url_guard.py` (`validate_fetch_url`), `ailienant-core/tools/perception_tools.py` (`WebFetchTool._fetch`).
-- **Gap:** the guard resolves the hostname to classify it, then `httpx` resolves the same name again when it opens the connection. A name server the attacker controls can answer the two lookups differently — a routable address for the check, a private one for the connect — so a validated URL still reaches an internal host. Every literal-address and single-resolution attempt is blocked, which is the whole class an untrusted page or file can express without also controlling DNS.
-- **Why it is not a defect of this design:** validate-then-connect is inherently a TOC-TOU (CLAUDE.md §6.2); no amount of pre-flight checking closes it. The fix is architectural, not a stricter predicate.
-- **What it would take:** pin the validated address for the connection — a custom `httpx` transport that dials the checked IP while preserving the original `Host` header and TLS SNI so certificate validation still matches the hostname. Non-trivial: it must not weaken certificate checking, and it interacts with the manual redirect walk.
-- **Phase:** unscheduled; warranted before any deployment where an untrusted party can influence a fetched URL and also control DNS.
+- **Date:** 2026-08-28 · **Resolved:** 2026-08-31 (8.20.7)
+- **Was:** `core/url_guard.py` resolved the hostname to classify it, and httpx then resolved the same name again to connect. A name server the attacker controls can answer the two lookups differently — public for the check, private for the connection — which no amount of validation before the connect can detect.
+- **Resolution — pinning, not re-checking:** `resolve_fetch_target` now returns the address it approved, and `WebFetchTool._fetch` requests that literal address while `Host` and TLS SNI keep the real hostname (`extensions={"sni_hostname": host}`). The client therefore performs no second, unchecked resolution. Applied on every redirect hop, not only the first, composing with 8.19's manual redirect walk.
+- **Why this is not a TLS weakening:** verified hermetically rather than asserted — a local TLS server presenting a certificate valid only for a non-resolving name is reachable over the pinned IP *with* the SNI override and is rejected by certificate verification *without* it. `verify` is untouched. Locked by the gate's PIN3 row, which carries the instruction to revert the approach rather than relax the row if it ever needs `verify=False`.
+- **Files:** `core/url_guard.py` (`FetchTarget`, `resolve_fetch_target`, `_pinned_url`), `tools/perception_tools.py` (`_fetch`, `_host_header`).
+- **Verified:** `tests/test_phase8_20_checkpoint_gate.py` PIN1–PIN3; `tests/test_phase8_19_checkpoint_gate.py` unchanged and green.
 
 ---
 
@@ -1745,14 +1765,48 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 
 ---
 
-### DEBT-215 [LOW · Floating] — `ROLE_REGISTRY.allowed_tools` is vestigial but frozen by a test snapshot
+### DEBT-215 [LOW · RESOLVED 2026-08-31, 8.20] — `ROLE_REGISTRY.allowed_tools` is not vestigial; its premise was wrong
 
-- **Date:** 2026-08-28
-- **Files:** `ailienant-core/agents/roles.py` (`RoleConfig.allowed_tools`), `ailienant-core/tests/test_phase8_8_tool_parity_gate.py` (`_FROZEN_ROLE_TOOLS`).
-- **Gap:** `allowed_tools` is consulted by no dispatch path (`ToolSchema.allowed_roles` is the live gate, per `core/tool_registry.py`), yet a frozen per-role snapshot in the parity gate keeps it alive and must be edited in lockstep with it. Dead data held in place by a test is a maintenance tax that also invites a future reader to treat it as authoritative.
-- **Why it was left:** the snapshot is a deliberate lock against silent role-contract erosion; removing it is a decision about what that gate protects, not a cleanup.
-- **What it would take:** decide whether the gate should freeze the live `allowed_roles` surface instead, then delete the vestigial field and its snapshot together.
+- **Date:** 2026-08-28 · **Resolved:** 2026-08-31 (8.20.7)
+- **Was:** recorded as dead data kept alive by a frozen test snapshot, with deletion as the prescribed fix. 8.20's plan carried that instruction.
+- **Why it was reversed:** every role's `allowed_tools` entry holds `FileReadTool`, `GrepTool`, `GlobTool`, and `query_graphrag` — precisely the tools live dispatch granted to `researcher` alone until 8.20.3. The field was therefore the only artifact in the repository recording the contract the live RBAC gate had drifted away from, and it independently corroborates that division's grant. Deleting it would have destroyed that evidence. Its other entries already agreed exactly with live state (`BashTool` ↔ `_SANDBOX_BASH_ROLES`, `apply_patch` ↔ `_APPLY_PATCH_ROLES`), which is what makes the disagreement on the read tools legible as drift rather than noise.
+- **Resolution:** the resolution the entry itself proposed — make the gate check the live surface. `tests/test_phase8_20_checkpoint_gate.py::test_contract1_legacy_whitelist_agrees_with_live_allowed_roles` bridges the two vocabularies and asserts that a role holding a legacy entry is not denied its live counterpart. One direction only: the legacy record may omit tools added since, but the live gate may never again silently withhold a capability the role contract names.
+- **Files:** `tests/test_phase8_20_checkpoint_gate.py`; `agents/roles.py` and `tests/test_phase8_8_tool_parity_gate.py::_FROZEN_ROLE_TOOLS` deliberately unchanged.
+- **Notes:** logged under CLAUDE.md §11.2 as a declared deviation from an approved plan.
+
+---
+
+### DEBT-219 [MEDIUM · Floating] — `batch_semantic_edit` is excluded for want of a safe write closure
+
+- **Date:** 2026-08-31 (recorded at 8.20 ship)
+- **Reproduce:** read `core/tool_registry.py::_INTENTIONALLY_UNREGISTERED["batch_semantic_edit"]` and `tools/mutation_tools.py::BatchSemanticEditTool`.
+- **Gap:** the tool is a three-phase multi-file ACID transaction (pre-validate every item's OCC, apply to a local write buffer, commit — leaving the VFS byte-identical on any failure). No coder path offers that: `brain/agentic_cell.py::apply_granular_edit` is single-file and commits per path, so a cross-file refactor lands partially today. It was recorded for years as "redundant with apply_granular_edit", which is false; 8.20.6 corrected the record.
+- **Why it is still excluded:** the second half of the original reason is real and unchanged — no safe `vfs_write(path, content)` closure exists in production. Writes flow through `VFSMiddleware.ingest_dirty_buffers` and the per-step apply gate, not a simple write API.
+- **What it would take:** design that closure first (how a tool-issued multi-file commit interacts with `brain/apply_gate.py`'s per-step `_prepare_files`/`_commit_files` and with the cell's MCTS candidate rollback), then wire the tool. That is a division, not a flag flip.
+- **Phase:** future multi-file-mutation slice.
+- **Notes:** the class is deliberately NOT deleted — it is a correct implementation of a capability the system otherwise lacks.
+
+---
+
+### DEBT-220 [LOW · Floating] — `bind_cell_tools` has no consumer and would advertise the wrong names
+
+- **Date:** 2026-08-31 (recorded at 8.20 ship)
+- **Reproduce:** grep `bind_cell_tools` — the only hits are its own definition and docstring in `brain/agentic_cell.py`. The live path is `_default_reasoner`, which parses a JSON envelope out of text.
+- **Gap:** were it wired to a real tool-calling model, `bind_tools(CELL_TOOLS)` would name each tool after its Pydantic class (`RunTerminalArgs`), while the dispatcher compares against `TOOL_NAME` (`run_terminal`) — so every native tool call would fall through to the registry-fallback branch and resolve as an unknown name.
+- **Why it was left:** 8.20 made the names derivable (`_CellToolArgs.TOOL_NAME`), which is the prerequisite; wiring native tool-calling is a separate decision about whether the cell should stop parsing JSON out of text at all.
+- **What it would take:** either delete the unused seam, or convert `CELL_TOOLS` into properly-named tool objects and switch `_default_reasoner` to the native path behind a capability check.
 - **Phase:** unscheduled.
+
+---
+
+### DEBT-228 [MEDIUM · Floating] — Six gateway tests depend on the host's live free RAM
+
+- **Date:** 2026-08-31 (surfaced during the 8.20 full-suite run)
+- **Reproduce:** with under ~1 GB of free physical memory, run `tests/test_llm_gateway_num_ctx.py`, `tests/test_abort_mesh.py::test_astream_byom_records_usage_on_completion`, `tests/test_hybrid_routing.py::test_ainvoke_tier_cloud_records_local_when_byom_resolves_local`, and `tests/test_llm_gateway_generation_telemetry.py::test_ainvoke_records_the_resolved_num_ctx_for_a_local_target`. Six fail with `LocalResourceExhaustedError` from `core/config/model_resolver.py::check_local_admission`. Re-running the same four files with `AILIENANT_LOCAL_RAM_SAFETY_FLOOR_MB=64` turns all 44 green — measured, which is what identifies the cause as the host rather than the code.
+- **Gap:** these assert gateway behaviour (`num_ctx` resolution, usage recording, tier routing), not memory admission, yet they exercise the real `check_local_admission`, which compares live host memory against `_LOCAL_RAM_SAFETY_FLOOR_MB` (default 1024 MB). `tests/conftest.py` stubs no hardware. The suite's outcome therefore depends on what else the developer has open — a violation of the zero-flake policy in `DEVELOPERS.md` and CLAUDE.md §16.4, and one that reads as a code regression to whoever hits it next.
+- **What it would take:** pin the floor (or stub `check_local_admission`) in a shared fixture — the sensitivity is one function, not one test file — sealing the heavy engine at its boundary per CLAUDE.md §8.3.
+- **Why it was left here:** pre-existing and outside Division 8.20's blast radius. None of the four files is in its diff, and all four ran green earlier in the same session against the same code; only free memory changed.
+- **Phase:** future test-isolation slice.
 
 ---
 
@@ -1781,6 +1835,97 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Why this needs its own design pass, not a quick patch:** actually applying this safely requires (a) detecting how Ollama is currently running on this OS — tray app, systemd service, or manual — each with a different persistence mechanism (Windows `setx`/registry, macOS `launchctl setenv`, a `systemd` drop-in on Linux), and (b) safely stopping/restarting a process that may be **shared with other tools** the user runs against the same Ollama instance — real shared-infrastructure risk with a genuine bad-failure-mode: a botched restart could leave the user with no working Ollama at all, worse than the status quo. This is exactly the class of action that needs an explicit, non-silent confirmation UX stating the shared-service risk, plus a post-restart verification read-back before ever telling the user it worked — not a bare click.
 - **What it would take:** an OS-detection step, a per-OS persistence writer, an explicit confirmation dialog, a stop/restart sequence, and a verification read-back (re-probe `/api/show`/`/api/ps` for the new setting) before reporting success. A genuinely separate, larger feature from DEBT-217's read-only estimator.
 - **Phase:** unscheduled — needs its own design spike before a build ticket.
+
+---
+
+### DEBT-221 [MEDIUM · Floating] — `run_agentic_cell_node` is CC 108 (radon grade F), the highest cyclomatic complexity in the backend
+
+- **Date:** 2026-08-31
+- **Reproduce:** `python -m radon cc ailienant-core/brain/agentic_cell.py -s -n F`
+- **File(s):** `ailienant-core/brain/agentic_cell.py:396` (`run_agentic_cell_node`).
+- **Error:** not a defect — a maintainability/testability risk. CC 108 means ~108 independent execution paths in one function; exhaustive branch coverage is impractical, and every new agentic-cell capability added to this node raises the number further.
+- **Why it is not fixed in place:** the agentic cell is the highest-blast-radius node in the graph (CLAUDE.md §3, Core/Eval/Brain zone — demands determinism/immutability); decomposing it safely needs characterization tests written against current behavior *before* any extraction, not an opportunistic refactor riding on an unrelated change.
+- **What it would take:** profile the branch structure (likely dispatch by tool-call type / cell phase), extract named per-branch helpers behind the existing node contract, add characterization tests first. Its own sub-phase with a checkpoint gate, per CLAUDE.md's phase-closure convention.
+- **Phase:** unscheduled — candidate for a future node-decomposition division.
+- **Notes:** filed as a batch alongside DEBT-222–DEBT-227, all six `run_*_node`/hot-path functions currently at radon grade F.
+
+---
+
+### DEBT-222 [MEDIUM · Floating] — `run_planner_node` is CC 84 (radon grade F)
+
+- **Date:** 2026-08-31
+- **Reproduce:** `python -m radon cc ailienant-core/agents/planner.py -s -n F`
+- **File(s):** `ailienant-core/agents/planner.py:209` (`run_planner_node`).
+- **Error:** not a defect — maintainability/testability risk, same class as DEBT-221.
+- **Why it is not fixed in place:** the planner node is a graph hot path (CLAUDE.md §3 Core/Eval/Brain zone); needs characterization tests before extraction, not an ad-hoc split.
+- **What it would take:** same approach as DEBT-221 — profile branch structure, extract named helpers, characterize before refactor.
+- **Phase:** unscheduled — candidate for a future node-decomposition division.
+- **Notes:** part of the DEBT-221 batch.
+
+---
+
+### DEBT-223 [MEDIUM · Floating] — `run_coder_node` is CC 80 (radon grade F)
+
+- **Date:** 2026-08-31
+- **Reproduce:** `python -m radon cc ailienant-core/agents/coder.py -s -n F`
+- **File(s):** `ailienant-core/agents/coder.py:459` (`run_coder_node`).
+- **Error:** not a defect — maintainability/testability risk, same class as DEBT-221.
+- **Why it is not fixed in place:** the coder node is a graph hot path (CLAUDE.md §3 Core/Eval/Brain zone); needs characterization tests before extraction, not an ad-hoc split.
+- **What it would take:** same approach as DEBT-221 — profile branch structure, extract named helpers, characterize before refactor.
+- **Phase:** unscheduled — candidate for a future node-decomposition division.
+- **Notes:** part of the DEBT-221 batch.
+
+---
+
+### DEBT-224 [MEDIUM · Floating] — `run_researcher_node` is CC 76 (radon grade F)
+
+- **Date:** 2026-08-31
+- **Reproduce:** `python -m radon cc ailienant-core/agents/researcher.py -s -n F`
+- **File(s):** `ailienant-core/agents/researcher.py:201` (`run_researcher_node`).
+- **Error:** not a defect — maintainability/testability risk, same class as DEBT-221.
+- **Why it is not fixed in place:** the researcher node is a graph hot path (CLAUDE.md §3 Core/Eval/Brain zone); needs characterization tests before extraction, not an ad-hoc split.
+- **What it would take:** same approach as DEBT-221 — profile branch structure, extract named helpers, characterize before refactor.
+- **Phase:** unscheduled — candidate for a future node-decomposition division.
+- **Notes:** part of the DEBT-221 batch.
+
+---
+
+### DEBT-225 [MEDIUM · Floating] — `websocket_endpoint` is CC 59 (radon grade F)
+
+- **Date:** 2026-08-31
+- **Reproduce:** `python -m radon cc ailienant-core/main.py -s -n F`
+- **File(s):** `ailienant-core/main.py:1326` (`websocket_endpoint`).
+- **Error:** not a defect — maintainability/testability risk, same class as DEBT-221. This one sits in the Gateway/Transport zone (CLAUDE.md §3 — the untrusted boundary), where high branch count also raises the odds of a missed edge case in message-type dispatch.
+- **Why it is not fixed in place:** the WS endpoint is the single entry point for every client message type; splitting it needs a message-type dispatch table extracted behind characterization tests, not an ad-hoc split mid-feature.
+- **What it would take:** likely a dispatch-table refactor keyed by inbound event type (mirrors the existing `ws_contracts.py` event taxonomy), each branch's body extracted to a named handler, characterized before extraction.
+- **Phase:** unscheduled — candidate for a future node-decomposition division.
+- **Notes:** part of the DEBT-221 batch.
+
+---
+
+### DEBT-226 [LOW · Floating] — `TaskService._format_coding_summary` is radon grade F
+
+- **Date:** 2026-08-31
+- **Reproduce:** `python -m radon cc ailienant-core/core/task_service.py -s -n F`
+- **File(s):** `ailienant-core/core/task_service.py:1623` (`TaskService._format_coding_summary`).
+- **Error:** not a defect — maintainability/testability risk, same class as DEBT-221. Filed LOW rather than MEDIUM: it is a summary-formatting method, not a graph hot path, so its blast radius is lower than the `run_*_node` functions.
+- **Why it is not fixed in place:** out of scope for the unrelated pass that surfaced it; needs its own extraction pass with characterization tests over its formatting branches.
+- **What it would take:** profile the branch structure (likely per-outcome-type summary formatting), extract named per-branch formatters.
+- **Phase:** unscheduled.
+- **Notes:** part of the DEBT-221 batch.
+
+---
+
+### DEBT-227 [LOW · Floating] — `ValidateWBSDependenciesTool._arun` is CC 53 (radon grade F)
+
+- **Date:** 2026-08-31
+- **Reproduce:** `python -m radon cc ailienant-core/tools/planner_tools.py -s -n F`
+- **File(s):** `ailienant-core/tools/planner_tools.py:116` (`ValidateWBSDependenciesTool._arun`).
+- **Error:** not a defect — maintainability/testability risk, same class as DEBT-221. Filed LOW rather than MEDIUM: it is a single tool's validation method, not a graph hot path.
+- **Why it is not fixed in place:** out of scope for the unrelated pass that surfaced it; needs its own extraction pass with characterization tests over its validation-rule branches.
+- **What it would take:** profile the branch structure (likely per-dependency-rule validation), extract named per-rule checkers.
+- **Phase:** unscheduled.
+- **Notes:** part of the DEBT-221 batch.
 
 ---
 
@@ -1990,6 +2135,19 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
   force-closed to satisfy it: 12.10 now certifies the cacheable-prefix *prerequisite*
   (`tests/test_prompt_prefix_stability.py`) instead, and this entry stays open with its existing
   trigger, unchanged.
+- **External validation (2026-08-31 literature pass):** industry practice (Anthropic's own prompt-
+  caching docs) confirms this entry's numbers independently — tool schemas count toward the cached
+  prefix and invalidate it on any change, matching the DEBT-130 concern above; a sub-floor prefix
+  pays the cache-write premium for zero reads, matching the "net loss" finding. One implementation
+  constraint for the secondary unblocker (`core/task_service.py`'s `_MAX_HISTORY_MESSAGES = 24` chat
+  history) was not yet on record: "Don't Break the Cache" (arXiv 2601.06007), a study of prompt
+  caching under long-horizon agentic tasks, finds that summarizing or editing earlier turns
+  invalidates the cache for everything after that edit — full-context caching only pays off when
+  history is appended-to, never rewritten in place. If this unblocker is ever pursued, `_conversations`
+  must stay append-only (new turns added at the tail, nothing upstream re-summarized) for the cache to
+  hold; a compaction pass over old turns — which nothing in this codebase currently does to that
+  dict — would defeat the exact prefix stability being sought. No action required today; recorded so
+  the constraint is not rediscovered mid-implementation.
 
 
 ### DEBT-138 [MEDIUM · Blocked] — Agentic cell does not route through the devcontainer session tier
@@ -2154,18 +2312,15 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3, with the measurements above so the decision is made on numbers rather than the docstring's slogan.
 
 
-### DEBT-176 [LOW · Floating] — No tool-invocation telemetry exists; a usage prior would break `select_tools` determinism
+### DEBT-176 [LOW · RESOLVED 2026-08-31, 8.20] — Tool-invocation telemetry: the emit-only half was already shipped
 
-- **Date:** 2026-08-18
-- **Reproduce:** `core/telemetry.py` has five tables (`routing_decisions`, `oom_fallback_events`, `request_latency`, `container_lifecycle`, `action_token_usage`). None is keyed by tool name — `action_token_usage` is keyed by WBS `action` (`write_file`/`edit_file`) and stores token counts only. There is no call-frequency, success-rate, or per-role tool history anywhere in the codebase, so tool ranking has no signal beyond cosine similarity to the composed intent.
-- **Two halves, deliberately split:**
-  - *Emit-only* (worth doing, zero behavioral risk): a `tool_invocations` table (`ts, task_id, role, tool_name, decision, executed, duration_ms, error`) written from `core/tool_dispatch.py::ToolDispatcher.dispatch`. Pure observability, fits the existing substrate, and is the data any future ranking decision would need to justify itself.
-  - *Consuming it as a ranking prior* (**rejected, not merely deferred**): a frequency/success prior makes `select_tools` non-deterministic across runs, contradicting the guarantee in `core/tool_rag.py`'s module docstring and the reproducibility LangGraph checkpoint replay and Rewind depend on. It would also only affect the deferred branch, which 13.0.2's eager wiring makes rare.
-- **File(s):** `core/telemetry.py`, `core/tool_dispatch.py` (`dispatch`), `core/tool_rag.py` (`select_tools`, if ever consumed).
-- **Error:** capability gap, not a defect.
-- **Phase:** emit-only, future observability slice; the prior stays rejected until the determinism conflict has an answer.
-- **Notes:** logged at 13.0.2 ship per CLAUDE.md §11.3.
+- **Date:** 2026-08-18 · **Resolved:** 2026-08-31 (8.20.7) — as a record correction, not new code.
+- **Was:** recorded as "no tool-invocation telemetry exists", with the emit-only half marked worth doing.
+- **Finding:** it already exists and is wired. `core/telemetry.py` carries the `tool_invocations` table and `log_tool_invocation`; `core/tool_dispatch.py::ToolDispatcher.dispatch` calls it from every outcome branch including DENY, behind a never-raise guard; `tests/test_telemetry.py` covers both the write and the uninitialized-DB no-op. The ledger row was stale — discovered by reading the code rather than trusting the entry, the same way DEBT-112 was.
+- **Still rejected, unchanged:** consuming the data as a ranking prior in `select_tools`. It would make selection non-deterministic across runs, which checkpoint replay and Rewind depend on.
+- **Files:** `core/telemetry.py`, `core/tool_dispatch.py`.
 
+---
 
 ### DEBT-178 [LOW · Floating] — `toggle_plan_mode`'s READ_ONLY tier cannot express that it mutates the permission channel
 

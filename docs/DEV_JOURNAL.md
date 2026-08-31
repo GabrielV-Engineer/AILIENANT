@@ -13,6 +13,15 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.20: Coder Read Capability, Tool-Role Strategy & Tool-Debt Sweep — 2026-08-31
+**Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/483 · pyright 0 · pytest 3344 passed/2 skipped
+- Shipped: the CoderAgent can now read and check its own work — `read_file_ast` returns an observation the model actually receives (it discarded the result), and the navigation/graph family (`find_symbol_callers`, `query_graphrag`, `grep`, `glob`, `read_file`, +4) reaches all 8 dev roles instead of `researcher` alone. Adds `core/path_guard.py` as Layer 0 of `read_safe`, capability bundles in `shared/rbac.py`, `document_parser` bounds, and the DEBT-131 audit (2 tools wired, 2 deleted, 2 rationales corrected).
+- Key decision: DEBT-215 reversed rather than executed. `ROLE_REGISTRY.allowed_tools` was recorded as vestigial and slated for deletion; every role's entry holds `FileReadTool`/`GrepTool`/`GlobTool`/`query_graphrag`, which live dispatch granted to `researcher` only — so the "dead" field was the sole record of the contract the live gate had drifted from, and independently confirms this division's grant. It is now cross-checked against live `allowed_roles` by a gate row instead of deleted.
+- Key decision: the grant was gated on measurement, not intuition. `core_dev` was already on the deferred branch at the default window (8603 chars vs a 3276 threshold), so the feared eager→deferred flip could not be caused by this change; at 32k the post-grant slice sits at ~91% of the eager ceiling, locked by BUDGET1 so the next grant cannot cross it silently.
+- Deferred: DEBT-219 — `batch_semantic_edit` (multi-file ACID, a capability no coder path has) stays excluded until a safe `vfs_write` closure exists; DEBT-220 — `bind_cell_tools` has no consumer and would advertise class names the dispatcher does not match.
+
+---
+
 ## 12.10: Pre-Launch Innovation Gate — 2026-08-06
 **Status:** COMPLETE | **Gates:** mypy 0/461 · pyright 0 · pytest 2877 passed/2 skipped, zero footnoted flakes · npm compile 0 · npm lint 0 · npm test 191 passed
 - Shipped: Phase 12 closure. Amended the gate's own "prompt caching tokens-saved metric > 0" criterion (CLAUDE.md §4 Option B) — 12.1's own measurement had already disproven the premise; DEBT-137 stays open with cause and a re-evaluation trigger, not silently closed. New `tests/test_phase12_checkpoint_gate.py` (17 tests) re-certifies 12.1–12.14's cross-cutting invariants. Translated 47 Spanish lines across 10 production files (§13.3), including the public FastAPI app description and `DirtyBuffer`/`IDEContext` OpenAPI field descriptions. Fixed six stale post-12.7 claims in `DEVELOPERS.md` and two stale manifest "Next action" pointers.

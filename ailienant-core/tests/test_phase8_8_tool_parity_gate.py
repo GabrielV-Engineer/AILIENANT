@@ -165,9 +165,10 @@ async def test_rbac_excludes_out_of_set_roles(tmp_path: Path) -> None:
     # vector-ranking miss can never produce a false pass.
     forbidden = [
         ("file_write", "researcher"),
-        ("run_benchmark", "planner"),
-        ("task_list", "qa_tester"),
-        ("run_benchmark", "core_dev"),
+        ("sandbox_bash", "researcher"),
+        ("task_list", "doc_manager"),
+        ("task_stop", "vcs_manager"),
+        ("git_commit", "core_dev"),
     ]
     for name, role in forbidden:
         schema = by_name.get(name)

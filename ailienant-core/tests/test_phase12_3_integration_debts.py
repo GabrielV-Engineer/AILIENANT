@@ -1,9 +1,9 @@
 """Phase 12.3 — Remaining Integration DEBTs Sprint.
 
 Covers the corrected DEBT-049 (SkillInvokeTool's "semantic matching disabled" premise
-was false; skill_invoke is architecturally unreachable via resolve_tools() for a
-structural reason — role-scope disjointness from its only consumer — not a gateway
-duplicate) and the closed DEBT-054 (the agentic cell's todo_write fallback path now
+was false; skill_invoke stays unreachable via resolve_tools() because skills already
+reach the coder and planner prompts through a live passive path, not because of a
+gateway duplicate) and the closed DEBT-054 (the agentic cell's todo_write fallback path now
 promotes its payload onto the agent_todos state channel and streams it over WS, with
 an event-loop parse ceiling and emit idempotence guarding the new surface).
 """
@@ -106,14 +106,27 @@ def test_skill2_tool_auto_matches_via_real_resolver(
     asyncio.run(_run())
 
 
-def test_skill3_skill_invoke_excluded_for_role_scope_not_gateway() -> None:
+def test_skill3_skill_invoke_exclusion_names_the_live_passive_path() -> None:
+    """The exclusion reason must name the cause that actually holds.
+
+    DEBT-049 corrected a false "gateway duplicate" claim, and the replacement
+    ("role-scope disjointness") was true but not load-bearing: skills already
+    reach the coder and planner prompts without any tool call, which is why
+    wiring one would add nothing. That is the reason recorded now, and the
+    passive path is asserted live below rather than trusted from a comment.
+    """
     reason = _INTENTIONALLY_UNREGISTERED["skill_invoke"]
     assert "gateway/handlers.py" not in reason, (
         "skill_invoke has no gateway/catalog.py counterpart — the exclusion "
         "reason must not claim a gateway duplicate"
     )
-    assert "dispatch loop" in reason or "disjoint" in reason
+    assert "skill_resolver" in reason and "task_service" in reason
     assert "skill_invoke" not in all_registrable_names()
+
+    # The passive path the reason depends on must still exist.
+    from core.skill_resolver import build_skill_directive_block, resolve_active_skills
+
+    assert callable(build_skill_directive_block) and callable(resolve_active_skills)
 
 
 def test_skill4_skill_roles_disjoint_from_control_roles() -> None:

@@ -47,8 +47,13 @@ _INTENTIONALLY_UNREGISTERED: Dict[str, str] = {
         "VFSMiddleware.ingest_dirty_buffers, not a simple write API"
     ),
     "batch_semantic_edit": (
-        "redundant with brain/agentic_cell.py's apply_granular_edit primitive; "
-        "no safe vfs_write(path, content) closure exists in production"
+        "NOT redundant with apply_granular_edit — it is a multi-file ACID "
+        "transaction (pre-validate every item's OCC, apply to a write buffer, "
+        "commit or leave the VFS byte-identical), a capability no coder path "
+        "currently has. Excluded solely because no safe vfs_write(path, content) "
+        "closure exists in production: writes flow through "
+        "VFSMiddleware.ingest_dirty_buffers, not a simple write API. Wiring it "
+        "requires designing that closure first"
     ),
     "file_write": (
         "redundant with brain/agentic_cell.py's apply_granular_edit primitive; "
@@ -64,45 +69,24 @@ _INTENTIONALLY_UNREGISTERED: Dict[str, str] = {
         "docstring: it already emits its own content-hash-idempotent HITL gate "
         "and must not be double-gated by a generic dispatch wrapper"
     ),
-    "run_benchmark": (
-        "duplicates gateway/handlers.py's real MCP-gateway logic; canonical "
-        "owner is the gateway package (a standalone process), not this "
-        "in-process registry"
-    ),
-    "get_benchmark_report": (
-        "duplicates gateway/handlers.py's real MCP-gateway logic; canonical "
-        "owner is the gateway package (a standalone process), not this "
-        "in-process registry"
-    ),
-    # The following four are scoped to orchestrator and/or planner only (see
-    # each tool's allowed_roles), which is disjoint from every runtime consumer
-    # of resolve_tools(): brain/agentic_cell.py resolves the active role from
-    # the WBS step's target_role (one of the 8 canonical coder roles);
-    # agents/coder.py's grounding pre-pass resolves the same target_role; and
-    # brain/nodes/subagent_worker_node.py resolves the dispatched subagent's own
-    # role (one of the 8 dev roles, or analyst_readonly) — all three are
-    # disjoint from {orchestrator, planner}. Neither orchestrator nor planner
-    # runs a ToolDispatcher loop (a permanent architectural decision — the
-    # orchestrator is a deterministic node with no reasoner to drive a loop,
-    # and the planner is PLAN-only; see the DEBT-068 scope correction), so a
-    # factory here would build a tool no reachable role is ever permitted to
-    # call. NOT a gateway duplicate — gateway/catalog.py's CATALOG carries no
-    # skill/task-list/task-stop/capability-listing entry.
+    # The remaining two are scoped to {orchestrator, planner}, disjoint from every
+    # runtime consumer of resolve_tools() (all three resolve one of the 8 dev roles
+    # or analyst_readonly), and neither of those roles runs a ToolDispatcher loop —
+    # a permanent architectural decision, see the DEBT-068 scope correction. But
+    # role disjointness is not the load-bearing reason, and recording it as though
+    # it were is how an exclusion outlives its premise: both capabilities ALREADY
+    # REACH the agents through a non-tool path, which is why wiring them would add
+    # nothing. core/task_service.py resolves state["active_skills"] and both
+    # agents/coder.py and agents/planner.py inject it via build_skill_directive_block.
     "list_capabilities": (
-        "scoped to {orchestrator, planner}; disjoint from the coder roles "
-        "resolve_tools() serves, and neither role runs a dispatch loop"
+        "the gateway catalog it lists is not actionable by any role that runs a "
+        "dispatch loop; scoped to {orchestrator, planner}, neither of which does"
     ),
     "skill_invoke": (
-        "scoped to {orchestrator, planner}; disjoint from the coder roles "
-        "resolve_tools() serves, and neither role runs a dispatch loop"
-    ),
-    "task_list": (
-        "scoped to {orchestrator} only; disjoint from the coder roles "
-        "resolve_tools() serves, and orchestrator runs no dispatch loop"
-    ),
-    "task_stop": (
-        "scoped to {orchestrator} only; disjoint from the coder roles "
-        "resolve_tools() serves, and orchestrator runs no dispatch loop"
+        "redundant with a live passive path — skills already reach the coder and "
+        "planner prompts via core/task_service.py's active_skills resolution and "
+        "core/skill_resolver.py::build_skill_directive_block, so a tool call would "
+        "re-resolve what the prompt already carries"
     ),
 }
 
@@ -175,7 +159,7 @@ def _simple_factories() -> Dict[str, ToolFactory]:
 
 
 def _build_task_tools(state: MutableMapping[str, Any]) -> Dict[str, BaseTool]:
-    """``task_create`` + ``task_get`` bound to ONE shared ``BackgroundTaskManager``.
+    """The background-task family bound to ONE shared ``BackgroundTaskManager``.
 
     ``tools/agent_tools.py::make_task_create_tool``/``make_task_get_tool`` each
     independently call ``state.setdefault("background_tasks", {})`` and wrap it
@@ -186,12 +170,18 @@ def _build_task_tools(state: MutableMapping[str, Any]) -> Dict[str, BaseTool]:
     registry's scope (``BackgroundTaskManager`` itself is unchanged).
     """
     from tools.execution_tools import BackgroundTaskManager, TaskCreateTool, TaskGetTool
+    from tools.gateway_tools import TaskListTool, TaskStopTool
 
     registry = state.setdefault("background_tasks", {})
     manager = BackgroundTaskManager(registry)
+    # list/stop share this manager rather than resolving their own: a stop issued
+    # against a different manager instance cannot see the subprocess handle the
+    # creating manager holds, so it would report "not found" for a live task.
     return {
         "task_create": TaskCreateTool(manager=manager),
         "task_get": TaskGetTool(manager=manager),
+        "task_list": TaskListTool(manager=manager),
+        "task_stop": TaskStopTool(manager=manager),
     }
 
 
@@ -368,6 +358,6 @@ def all_registrable_names() -> Dict[str, str]:
         "run_tests", "git_stage", "git_commit", "git_diff", "linter_autofix",
         "install_dependency", "run_data_pipeline",  # make_coder_execute_tools
         "get_wbs_status", "emit_hitl_request",  # build_orchestrator_tools
-        "task_create", "task_get",
+        "task_create", "task_get", "task_list", "task_stop",  # _build_task_tools
     }
     return {**{n: "delegated" for n in delegated}, **{n: "factory" for n in _simple_factories()}}

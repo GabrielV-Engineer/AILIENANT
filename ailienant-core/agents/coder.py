@@ -312,7 +312,11 @@ def _build_style_block(target_file: str, snippets: list[tuple[str, str]]) -> str
 # re-entered by the error_correction retry loop, so only an idempotent READ_ONLY
 # pass is safe here without a HITL approval channel.
 
-_GROUNDING_MAX_ITERS: int = 2
+# Three, not two: the useful grounding shape is locate -> inspect -> confirm
+# (grep/glob for the symbol, inspect_ast_node or find_symbol_callers on the hit,
+# one follow-up on what that surfaced). At two, the pair of lookups consumes the
+# whole budget and the pass ends before anything is read back.
+_GROUNDING_MAX_ITERS: int = 3
 
 
 def _needs_grounding(

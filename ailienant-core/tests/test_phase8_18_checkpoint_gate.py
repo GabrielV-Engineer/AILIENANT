@@ -135,41 +135,37 @@ async def test_r2_deferred_selection_respects_top_k_cap() -> None:
     assert decision.reduction_ratio >= 0.0
 
 
-def test_r3_gateway_tools_are_flagged_not_silently_wired() -> None:
-    """Every gateway_tools.py class is excluded with a reasoned justification.
+def test_r3_every_exclusion_is_reasoned_and_unreachable() -> None:
+    """Each entry in the exclusion allowlist states a real cause and is unreachable.
 
-    Two (run_benchmark, get_benchmark_report) genuinely duplicate
-    gateway/handlers.py's MCP-gateway logic. The other four (list_capabilities,
-    skill_invoke, task_list, task_stop) are excluded for a structural reason:
-    every runtime consumer of resolve_tools() (the agentic cell, the coder's
-    grounding pre-pass, and the dispatched-subagent worker) always runs under a
-    coder or dispatch-subagent role, and these four are scoped to
-    orchestrator/planner only — disjoint role sets, not a gateway duplicate
-    (gateway/catalog.py carries no counterpart for any of the four; see
-    DEBT-049's correction).
+    Derived over the allowlist rather than over a hardcoded name list: the set
+    shrinks as tools get wired or deleted, and a gate that restates its membership
+    goes stale exactly when the list moves. What must hold for every entry is the
+    invariant — a substantive reason, and no factory behind it.
     """
-    gateway_names = {"run_benchmark", "get_benchmark_report"}
-    role_scoped_names = {"list_capabilities", "skill_invoke", "task_list", "task_stop"}
-    all_names = gateway_names | role_scoped_names
+    assert _INTENTIONALLY_UNREGISTERED, "an empty allowlist makes this row vacuous"
+    registrable = all_registrable_names()
+    for name, reason in _INTENTIONALLY_UNREGISTERED.items():
+        assert name not in registrable, (
+            f"{name} is excluded but constructible — the two records disagree"
+        )
+        assert len(reason) > 40, (
+            f"{name}'s exclusion reason is too thin to audit: {reason!r}"
+        )
 
-    assert all_names <= set(_INTENTIONALLY_UNREGISTERED)
-    for name in gateway_names:
-        assert "gateway/handlers.py" in _INTENTIONALLY_UNREGISTERED[name], (
-            f"{name}'s exclusion reason should name the canonical gateway owner"
-        )
-    for name in role_scoped_names:
-        reason = _INTENTIONALLY_UNREGISTERED[name]
-        assert "gateway/handlers.py" not in reason, (
-            f"{name} has no gateway/handlers.py counterpart — the exclusion "
-            "reason must not claim otherwise"
-        )
-        assert "dispatch loop" in reason or "disjoint" in reason, (
-            f"{name}'s exclusion reason should state the real cause: role-scope "
-            "disjointness from resolve_tools()'s runtime consumers"
-        )
-        assert name not in all_registrable_names(), (
-            f"{name} must not be constructible — no reachable role may call it"
-        )
+
+def test_r3b_batch_semantic_edit_reason_does_not_claim_redundancy() -> None:
+    """batch_semantic_edit is multi-file ACID; no coder path offers that.
+
+    It was excluded for years as "redundant with apply_granular_edit", which is
+    false — apply_granular_edit is single-file and commits per path. The real
+    blocker is the missing safe vfs_write closure. Locked here because a reason
+    that is wrong in the right direction is what keeps an exclusion alive past
+    its premise.
+    """
+    reason = _INTENTIONALLY_UNREGISTERED["batch_semantic_edit"]
+    assert "NOT redundant" in reason
+    assert "vfs_write" in reason
 
 
 def test_r4_agentic_cell_primitives_unaffected() -> None:
@@ -184,8 +180,12 @@ def test_r4_agentic_cell_primitives_unaffected() -> None:
     import brain.agentic_cell as ac
 
     source = _inspect.getsource(ac.run_agentic_cell_node)
-    for primitive in ('"run_terminal"', '"read_file_ast"', '"apply_granular_edit"'):
-        assert primitive in source, f"{primitive} branch missing from run_agentic_cell_node"
+    # Each primitive is dispatched by its model's own TOOL_NAME rather than a
+    # repeated string literal, so this scans for that reference and stays correct
+    # if a fourth primitive is ever added to CELL_TOOLS.
+    for model in ac.CELL_TOOLS:
+        marker = f"{model.__name__}.TOOL_NAME"
+        assert marker in source, f"{model.TOOL_NAME} branch missing from run_agentic_cell_node"
     assert "_build_fallback_dispatcher" in source
 
 

@@ -15,21 +15,21 @@ metadata endpoint is a credential-disclosure vector.
 Pure and synchronous apart from name resolution, so it is exhaustively testable
 without a network.
 
-Known limitation — DNS rebinding: this guard resolves the hostname, and the HTTP
-client then resolves it again independently when it connects. A name server the
-attacker controls can answer the two lookups differently (public first, private
-second), which no amount of validation here can detect. Closing it requires
-pinning the validated address for the connection itself, which is tracked
-separately; the guard still stops every literal-address and single-resolution
-attempt, which is the entire class an untrusted page or file can express.
+DNS rebinding is closed by pinning rather than by re-checking: ``resolve_fetch_target``
+returns the address it approved, and the caller connects to that literal address while
+keeping the original hostname for the ``Host`` header and TLS SNI. The client therefore
+never performs a second, unchecked resolution, and certificate verification still runs
+against the real hostname (empirically confirmed: without the SNI override the same
+request is rejected by verification, so this is not a weakening of ``verify``).
 """
 
 from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import List, Optional
-from urllib.parse import urlparse, urlunparse
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+from urllib.parse import ParseResult, urlparse, urlunparse
 
 from shared.config import WEB_FETCH_ALLOW_LOOPBACK
 
@@ -85,27 +85,60 @@ def _resolve_all(host: str) -> List[ipaddress.IPv4Address | ipaddress.IPv6Addres
     return [ipaddress.ip_address(str(info[4][0])) for info in infos]
 
 
-def validate_fetch_url(url: str) -> Optional[str]:
-    """Return a human-readable deny reason, or ``None`` when the URL may be fetched.
+@dataclass(frozen=True)
+class FetchTarget:
+    """A destination approved for one connection, carrying the address checked.
 
-    Never raises: a malformed URL or a failed resolution is itself a denial, since
-    a destination that cannot be verified must not be contacted.
+    ``connect_url`` addresses the validated IP literally while ``host`` remains the
+    name for the ``Host`` header and TLS SNI, so the connection lands on exactly the
+    address this module approved and the certificate is still verified against the
+    real hostname.
+    """
+
+    host: str
+    address: str
+    connect_url: str
+
+
+def _pinned_url(parsed: "ParseResult", address: str) -> str:
+    """Rebuild ``parsed`` addressing ``address`` literally, preserving everything else."""
+    literal = f"[{address}]" if ":" in address else address
+    netloc = f"{literal}:{parsed.port}" if parsed.port else literal
+    return urlunparse(
+        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def resolve_fetch_target(url: str) -> Tuple[Optional[str], Optional[FetchTarget]]:
+    """Validate ``url`` and return ``(deny_reason, None)`` or ``(None, target)``.
+
+    Every address the host maps to is checked; the first is pinned for the actual
+    connection. Pinning is what closes DNS rebinding: without it this module and the
+    HTTP client resolve the name independently, and a name server the attacker
+    controls can answer the two lookups differently — public for the check, private
+    for the connection.
+
+    Never raises: a malformed URL or a failed resolution is itself a denial, since a
+    destination that cannot be verified must not be contacted.
     """
     try:
         parsed = urlparse(url)
     except ValueError as exc:
-        return f"malformed URL ({exc})"
+        return f"malformed URL ({exc})", None
 
     if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
-        return f"scheme {parsed.scheme or '(none)'!r} is not allowed; use http or https"
+        return (
+            f"scheme {parsed.scheme or '(none)'!r} is not allowed; use http or https",
+            None,
+        )
 
     host = parsed.hostname
     if not host:
-        return "URL has no host"
+        return "URL has no host", None
 
     lowered = host.lower().rstrip(".")
     if lowered.endswith(_INTERNAL_SUFFIXES):
-        return f"host {lowered!r} resolves inside a private network namespace"
+        return f"host {lowered!r} resolves inside a private network namespace", None
 
     # A literal IP skips resolution entirely — parsing it directly also prevents a
     # resolver from being consulted for an address the caller already supplied.
@@ -114,20 +147,32 @@ def validate_fetch_url(url: str) -> Optional[str]:
     except ValueError:
         literal = None
     if literal is not None:
-        return _classify_ip(literal)
+        reason = _classify_ip(literal)
+        if reason is not None:
+            return reason, None
+        return None, FetchTarget(host=lowered, address=str(literal), connect_url=url)
 
     try:
         addresses = _resolve_all(lowered)
     except (socket.gaierror, UnicodeError, ValueError) as exc:
-        return f"host {lowered!r} could not be resolved ({exc})"
+        return f"host {lowered!r} could not be resolved ({exc})", None
     if not addresses:
-        return f"host {lowered!r} resolved to no addresses"
+        return f"host {lowered!r} resolved to no addresses", None
 
     for address in addresses:
         reason = _classify_ip(address)
         if reason is not None:
-            return f"{reason} for host {lowered!r}"
-    return None
+            return f"{reason} for host {lowered!r}", None
+
+    pinned = str(addresses[0])
+    return None, FetchTarget(
+        host=lowered, address=pinned, connect_url=_pinned_url(parsed, pinned)
+    )
+
+
+def validate_fetch_url(url: str) -> Optional[str]:
+    """Return a human-readable deny reason, or ``None`` when the URL may be fetched."""
+    return resolve_fetch_target(url)[0]
 
 
 def redact_url(url: str) -> str:

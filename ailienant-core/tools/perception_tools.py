@@ -26,6 +26,7 @@ import io
 import json
 import logging
 import zipfile
+from urllib.parse import urlparse
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -47,6 +48,9 @@ from pydantic import BaseModel, Field, PrivateAttr
 from core.permissions import ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore, ToolSchema
 from shared.config import (
+    DOCUMENT_PARSER_MAX_CHARS,
+    DOCUMENT_PARSER_MAX_PAYLOAD_BYTES,
+    DOCUMENT_PARSER_MAX_UNCOMPRESSED_BYTES,
     WEB_FETCH_MAX_CALLS_PER_TURN,
     WEB_FETCH_MAX_CHARS,
     WEB_FETCH_TIMEOUT_S,
@@ -124,6 +128,13 @@ class DocumentParserTool(BaseTool):
                 self._boundary_provider,
             )
 
+        if len(payload) > DOCUMENT_PARSER_MAX_PAYLOAD_BYTES:
+            return _wrap_boundary(
+                f"[document_parser] ERROR: payload is {len(payload)} bytes, over the "
+                f"{DOCUMENT_PARSER_MAX_PAYLOAD_BYTES}-byte ceiling.",
+                self._boundary_provider,
+            )
+
         try:
             if mime_type == "text/csv":
                 text = self._parse_csv(payload)
@@ -145,6 +156,11 @@ class DocumentParserTool(BaseTool):
                 self._boundary_provider,
             )
 
+        if len(text) > DOCUMENT_PARSER_MAX_CHARS:
+            text = (
+                text[:DOCUMENT_PARSER_MAX_CHARS]
+                + f"\n\n[document_parser] TRUNCATED at {DOCUMENT_PARSER_MAX_CHARS} chars."
+            )
         return _wrap_boundary(text, self._boundary_provider)
 
     @staticmethod
@@ -163,13 +179,33 @@ class DocumentParserTool(BaseTool):
                 "Add `pypdf` to requirements.txt and reinstall."
             ) from exc
         reader = pypdf.PdfReader(io.BytesIO(payload))
-        return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+        # Accumulate page by page and stop at the cap rather than extracting the
+        # whole document and truncating after: extraction is the expensive half,
+        # and a thousand-page report costs the same as the first few either way.
+        chunks: List[str] = []
+        total = 0
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            chunks.append(text)
+            total += len(text)
+            if total >= DOCUMENT_PARSER_MAX_CHARS:
+                break
+        return "\n\n".join(chunks)
 
     @staticmethod
     def _parse_docx(payload: bytes) -> str:
         # Pure-stdlib DOCX extraction — DOCX is a zipped XML container.
         with zipfile.ZipFile(io.BytesIO(payload)) as zf:
-            with zf.open("word/document.xml") as doc:
+            # The declared uncompressed size is checked BEFORE opening the member:
+            # a small container can declare gigabytes, and reading first is what
+            # makes a zip bomb a memory-exhaustion vector rather than a bad input.
+            info = zf.getinfo("word/document.xml")
+            if info.file_size > DOCUMENT_PARSER_MAX_UNCOMPRESSED_BYTES:
+                raise RuntimeError(
+                    f"DOCX body declares {info.file_size} uncompressed bytes, over the "
+                    f"{DOCUMENT_PARSER_MAX_UNCOMPRESSED_BYTES}-byte ceiling."
+                )
+            with zf.open(info) as doc:
                 tree = ET.parse(doc)
         ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
         chunks: List[str] = []
@@ -502,7 +538,15 @@ class WebFetchTool(BaseTool):
     async def _fetch(url: str) -> str:
         import httpx  # lazy: skip cost when WebFetchTool isn't used
 
-        from core.url_guard import MAX_REDIRECT_HOPS, redact_url, validate_fetch_url
+        from core.url_guard import (
+            MAX_REDIRECT_HOPS,
+            redact_url,
+            resolve_fetch_target,
+        )
+
+        denial, target = resolve_fetch_target(url)
+        if denial is not None or target is None:
+            return f"[web_fetch] DENIED for {redact_url(url)}: {denial}."
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(WEB_FETCH_TIMEOUT_S)) as client:
             current = url
@@ -510,14 +554,25 @@ class WebFetchTool(BaseTool):
                 # Redirects are walked manually so every hop passes the same guard
                 # as the first; httpx's follow_redirects would validate only the
                 # URL the model supplied.
-                async with client.stream("GET", current, follow_redirects=False) as resp:
+                #
+                # The request addresses the validated IP while Host and TLS SNI keep
+                # the real hostname: the client never re-resolves, so a name server
+                # cannot answer the guard's lookup and the connection's differently.
+                # Certificate verification still runs against `host`, not the IP.
+                async with client.stream(
+                    "GET",
+                    target.connect_url,
+                    follow_redirects=False,
+                    headers={"Host": _host_header(current)},
+                    extensions={"sni_hostname": target.host},
+                ) as resp:
                     if resp.is_redirect:
                         location = resp.headers.get("location")
                         if not location:
                             return f"[web_fetch] HTTP {resp.status_code} with no redirect target."
                         current = str(httpx.URL(current).join(location))
-                        denial = validate_fetch_url(current)
-                        if denial is not None:
+                        denial, target = resolve_fetch_target(current)
+                        if denial is not None or target is None:
                             from core.telemetry_log import log_network_denial
 
                             safe_hop = redact_url(current)
@@ -563,6 +618,17 @@ async def _read_capped(resp: Any, max_chars: int) -> str:
         if total >= max_chars:
             break
     return "".join(chunks)[:max_chars]
+
+
+def _host_header(url: str) -> str:
+    """The ``Host`` value for ``url`` — name plus port when one is explicit.
+
+    Needed because the request line addresses a pinned IP, so the origin server
+    would otherwise see the address instead of the virtual host it serves.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return f"{host}:{parsed.port}" if parsed.port else host
 
 
 def _to_markdown(body: str, safe_url: str) -> str:

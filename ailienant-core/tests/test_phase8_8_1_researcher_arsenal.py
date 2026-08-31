@@ -5,7 +5,7 @@ DoD:
   - select_tools(active_role="researcher") can surface each of the 10 tools.
   - Every net-new tool is READ_ONLY and survives PLAN session mode.
   - Net-new tools execute without raising (DoD "executes").
-  - A non-researcher role cannot retrieve the researcher-only net-new tools.
+  - A role outside a tool's capability bundle cannot retrieve it.
   - Path canonicalization de-duplicates cross-casing entries in the path universe.
   - GrepTool short-circuit: match counter breaks at max_matches (O(L)).
   - Boundary tag wraps tool output.
@@ -26,6 +26,7 @@ import pytest
 
 from core.permissions import SessionPermissionMode, ToolPrivilegeTier
 from core.tool_rag import ToolRAGStore
+from shared.rbac import ALL_ROLES
 from tools.perception_tools import register_perception_tools
 from tools.researcher_tools import (
     GetDependentsTool,
@@ -87,7 +88,7 @@ _WAVE1_TOOLS = [
 ]
 
 # The 6 researcher-only net-new tools (distinct from the 4 perception wire-ins).
-_RESEARCHER_ONLY_TOOLS = [
+_BUNDLED_READ_TOOLS = [
     "read_file",
     "glob",
     "grep",
@@ -176,25 +177,41 @@ async def test_researcher_tools_survive_plan_mode(tmp_path: Path) -> None:
 
 
 # =====================================================================
-# C — Negative RBAC: vcs_manager cannot retrieve researcher-only tools
+# C — Negative RBAC: a role outside the bundle cannot retrieve these tools
 # =====================================================================
 
 
 @pytest.mark.anyio
-async def test_non_researcher_role_cannot_retrieve_net_new_tools(tmp_path: Path) -> None:
+async def test_role_outside_the_bundle_cannot_retrieve_these_tools(tmp_path: Path) -> None:
+    """select_tools' RBAC filter is a real gate, not advisory metadata.
+
+    The probe role is derived from what the schemas actually grant rather than
+    named literally: these tools' audiences are capability bundles spanning every
+    developer role, so a hardcoded outsider is precisely the kind of literal that
+    keeps passing while silently testing nothing.
+    """
     store = _isolated_store(tmp_path)
     await register_researcher_tools(store)
 
+    by_name = {s.name: s for s in store.all_schemas()}
+    granted = set().union(*(by_name[n].allowed_roles for n in _BUNDLED_READ_TOOLS))
+    outsiders = sorted(ALL_ROLES - granted)
+    assert outsiders, (
+        "every role is granted these tools — this probe would assert nothing. "
+        "Narrow a bundle or delete this row deliberately."
+    )
+    probe = outsiders[0]
+
     results = await store.select_tools(
         "file content search",
-        k=10,
-        active_role="vcs_manager",
+        k=len(store.all_schemas()),
+        active_role=probe,
         session_mode=SessionPermissionMode.DEFAULT,
     )
     returned_names = {s.name for s in results}
-    for tool_name in _RESEARCHER_ONLY_TOOLS:
+    for tool_name in _BUNDLED_READ_TOOLS:
         assert tool_name not in returned_names, (
-            f"vcs_manager should NOT see researcher-only tool {tool_name!r}"
+            f"{probe!r} is outside {tool_name!r}'s bundle and must not see it"
         )
 
 

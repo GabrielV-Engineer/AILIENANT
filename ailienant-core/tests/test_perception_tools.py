@@ -51,7 +51,22 @@ def test_read_file_tool_basic_read() -> None:
 def test_read_file_tool_offset_and_limit() -> None:
     tool = make_read_file_tool(lambda _path: "a\nb\nc\nd\ne\n")
     result = tool.invoke({"path": "x.txt", "offset": 1, "limit": 2})
-    assert result == "b\nc\n"
+    assert result.startswith("b\nc\n")
+    # A window the reader cannot tell is a window is worse than no window at all:
+    # the remaining count and the next offset are what let the model page on.
+    assert "2 more line(s)" in result
+    assert "offset=3" in result
+
+
+def test_read_file_tool_omitting_limit_is_still_bounded() -> None:
+    """No `limit` must mean the default window, never the whole file."""
+    from shared.config import READ_FILE_DEFAULT_LINES
+
+    body = "".join(f"line{i}\n" for i in range(READ_FILE_DEFAULT_LINES * 3))
+    tool = make_read_file_tool(lambda _path: body)
+    result = tool.invoke({"path": "x.txt"})
+    assert result.count("line") <= READ_FILE_DEFAULT_LINES + 1
+    assert "more line(s)" in result
 
 
 def test_read_file_tool_missing_file() -> None:

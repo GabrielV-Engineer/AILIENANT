@@ -328,6 +328,37 @@ WEB_FETCH_ALLOW_LOOPBACK: bool = os.getenv("AILIENANT_WEB_FETCH_ALLOW_LOOPBACK",
 # instance counter bounds fetches per agent turn without any lifecycle to leak.
 WEB_FETCH_MAX_CALLS_PER_TURN: int = max(1, _env_int("AILIENANT_WEB_FETCH_MAX_CALLS_PER_TURN", 10))
 
+# ---------------------------------------------------------------------------
+# read_file pagination window. The default is a WINDOW, not the whole file: an
+# unbounded default let one call inject an entire file into a reasoning loop's
+# context, and the model has no reason to pass a limit it was never given a
+# reason to think about. A caller that genuinely needs more pages with `offset`.
+# Lives here, not next to either half of the tool, because the advertised schema
+# and the executable must read the same numbers or the tool lies about its shape.
+# ---------------------------------------------------------------------------
+READ_FILE_DEFAULT_LINES: int = max(20, _env_int("AILIENANT_READ_FILE_DEFAULT_LINES", 400))
+READ_FILE_MAX_LINES: int = max(
+    READ_FILE_DEFAULT_LINES, _env_int("AILIENANT_READ_FILE_MAX_LINES", 2000)
+)
+
+# ---------------------------------------------------------------------------
+# Document-parser bounds. Same trust class as the web fetch above — bytes from
+# outside the workspace, decoded into an agent's context — so the same two
+# questions apply: how much may arrive, and how much may be handed to the model.
+# The decompression ceiling is separate because a ZIP container (DOCX) can expand
+# by orders of magnitude, so bounding the encoded payload alone bounds nothing.
+# ---------------------------------------------------------------------------
+DOCUMENT_PARSER_MAX_PAYLOAD_BYTES: int = max(
+    64 * 1024, _env_int("AILIENANT_DOCUMENT_PARSER_MAX_PAYLOAD_BYTES", 10 * 1024 * 1024)
+)
+DOCUMENT_PARSER_MAX_CHARS: int = max(
+    1_000, _env_int("AILIENANT_DOCUMENT_PARSER_MAX_CHARS", 50_000)
+)
+DOCUMENT_PARSER_MAX_UNCOMPRESSED_BYTES: int = max(
+    1024 * 1024,
+    _env_int("AILIENANT_DOCUMENT_PARSER_MAX_UNCOMPRESSED_BYTES", 100 * 1024 * 1024),
+)
+
 # Phase 5.2 — MCP transport URI (None → local-only fallback, no MCP session).
 # Format expected: "stdio:///absolute/path/to/server[?arg=...]" (only stdio
 # supported in 5.2; websocket/http transports deferred).

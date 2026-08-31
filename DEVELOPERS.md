@@ -333,7 +333,8 @@ Proyect_Ailienant/
 │   │   ├── observability.py     #     env-gated LangSmith tracing bootstrap (no new sink)
 │   │   ├── telemetry.py         #     append-only SQLite audit trail (routing/OOM/latency/tool_invocations); dashboard-read + janitor-pruned
 │   │   ├── telemetry_log.py     #     tail-able rotating file sink (.ailienant_telemetry.log; WS/NODE/INDEX/CONTEXT/GENERATION/NETWORK/ERROR categories)
-│   │   ├── url_guard.py         #     outbound-fetch destination validation (scheme allowlist; loopback/RFC1918/link-local/metadata refused) + log-safe URL redaction
+│   │   ├── url_guard.py         #     outbound-fetch destination validation (scheme allowlist; loopback/RFC1918/link-local/metadata refused) + validated-address pinning (closes DNS rebinding) + log-safe URL redaction
+│   │   ├── path_guard.py        #     workspace confinement for agent-supplied paths (resolve + is_relative_to, symlinks followed); Layer 0 of vfs_middleware.read_safe
 │   │   ├── redaction.py         #     shared ReDoS-safe secret masker (mask_secrets; used by telemetry + exec_log)
 │   │   ├── exec_log.py          #     bounded in-memory per-exec command-output ring (non-persistent, source-tagged, seq-cursor); sole emitter of the Glass-Box Timeline execution-detail channel
 │   │   ├── activity_context.py  #     turn-scoped ActivitySink Protocol + ContextVars — execution-detail correlation, PLUS (13.1.9) agent-role/model-tier attribution for the Glass-Box Timeline's lane badges (two precedences: node-derived default, ToolDispatcher-narrowed override) — no tool-signature changes

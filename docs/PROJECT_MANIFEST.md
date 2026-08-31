@@ -876,6 +876,25 @@
 
 ---
 
+### Division 8.20 — Coder Read Capability, Tool-Role Strategy & Tool-Debt Sweep ✅
+
+> Auditing the rest of the tool surface after 8.19 found the CoderAgent structurally unable to check its own work: its only native read primitive discarded its result before the model saw it, and every navigation and dependency-graph tool was gated to `researcher` alone by a default argument nobody had revisited. The same window installs the filesystem counterpart of `url_guard`, converges the remaining hand-listed role sets, and resolves the standing tool-debt items.
+
+- [x] **8.20.0 — Repair the cell's read primitive.**
+  `read_file_ast` computed the AST skeleton and discarded it (`_ = ...`), and no trajectory record carried a read — so the tool the OCC diagnostic tells the model to re-call returned nothing, a livelock generator inside the code that exists to break livelocks. Result now becomes a replayed system record; an unopened path falls through to the VFS instead of reading as empty; the language is resolved from the extension rather than assumed Python; the advertised primitive list derives from `CELL_TOOLS`. **DoD:** a read is visible in the next iteration's messages.
+- [x] **8.20.1 — `core/path_guard.py`: workspace confinement.**
+  `read_safe` was a content firewall (ignore rules, binary, size, minification) with no path confinement, so an absolute path or `../` traversal passed every layer. The correct jail already existed inside `analyst_tools`; it is extracted to one predicate and wired as Layer 0 of `read_safe`, covering every consumer. Returns `PATH_ESCAPE`, never raises.
+- [x] **8.20.2 — Capability bundles replace per-module role lists.**
+  `CODE_NAVIGATION_ROLES` / `GRAPH_SEMANTICS_ROLES` / `EXTERNAL_RETRIEVAL_ROLES` in `shared/rbac.py`, derived from `DEV_ROLES`. `roles` becomes a required keyword in the researcher registrar's schema helper — the default argument was the direct cause of the capability gap.
+- [x] **8.20.3 — Measure, then grant.** Measured first: `core_dev` sat at 15 schemas / 8603 chars against a 3276-char threshold, i.e. already on the deferred branch, so the grant moves no branch (24 schemas / ~12000 chars stays deferred below 32k and eager above). Granted on both RBAC sides: `find_symbol_callers`, `get_dependents`, `trace_cross_boundary`, `architecture_digest`, `query_graphrag`, `grep`, `glob`, `workspace_structure`, `read_file`. Grounding budget raised from 2 to 3 iterations.
+- [x] **8.20.4 — Bounded full-file read as an escape hatch.** `read_file_ast` stays the default; `read_file` gains a bounded default `limit` (it was `None` = the whole file, for every caller) so an exact patch anchor can be fetched by range without dumping a file.
+- [x] **8.20.5 — `document_parser` bounds.** Payload ceiling, extracted-text cap, page-wise PDF accumulation that stops at the cap, and a declared-uncompressed-size check before opening the DOCX member (a ZIP container could previously declare gigabytes).
+- [x] **8.20.6 — DEBT-131 resolution.** All 11 exclusions re-audited against the code: 7 hold, 4 did not. `task_list`/`task_stop` wired to the roles that already hold `task_create` (spawning without a stop path is an asymmetry, not a privilege boundary); `run_benchmark`/`get_benchmark_report` deleted outright; `batch_semantic_edit` and `skill_invoke` keep their exclusion with corrected, true rationales.
+- [x] **8.20.7 — DEBT closure.** DEBT-213 closed by pinning the validated address for the connection while `Host` and TLS SNI keep the hostname. DEBT-176 found already implemented and wired. DEBT-215 reversed — see the journal entry.
+- [x] **8.20.8 — Division 8.20 Checkpoint Gate.** `tests/test_phase8_20_checkpoint_gate.py` — read-observation delivery, path confinement, per-role admission at `ToolDispatcher.classify`, derived role sets, the legacy-contract cross-check, the eager/deferred budget lock, document-parser bounds, and the DNS-rebinding pin including a hermetic proof that TLS verification still holds.
+
+---
+
 ## PHASE 9 — Native Thinking (Real-Time Reasoning Stream) ✅
 
 > Real-time native model reasoning exposed in a collapsible Thought Box (Claude Extended Thinking / open reasoning models via `reasoning_content`). Strictly transport/orchestration/UI layers — `agents/` untouched.

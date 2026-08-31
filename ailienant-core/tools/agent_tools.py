@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any, Callable, MutableMapping, Optional, Tuple
 
 from langchain_core.tools import BaseTool, tool
 
+from shared.config import READ_FILE_DEFAULT_LINES, READ_FILE_MAX_LINES
+
 if TYPE_CHECKING:
     from brain.state import VFSFile
 
@@ -47,18 +49,29 @@ def make_read_file_tool(
     def read_file(
         path: str, offset: int = 0, limit: Optional[int] = None
     ) -> str:
-        """Read a file from the VFS. Optional line-based offset/limit pagination."""
+        """Read a file from the VFS. Line-based offset/limit pagination."""
         content = vfs_read(path)
         if content is None:
             logger.warning("read_file: '%s' not found in VFS.", path)
             return f"[read_file] ERROR: '{path}' not found in VFS or on disk."
 
-        # Line-based slicing. offset clamped to non-negative; limit None means "all".
-        if offset or limit is not None:
-            lines = content.splitlines(keepends=True)
-            start = max(0, int(offset))
-            stop = (start + int(limit)) if limit is not None else None
-            content = "".join(lines[start:stop])
+        # Always a bounded window. `limit=None` used to mean "the whole file", so
+        # a model that simply omitted the argument pulled an unbounded read into
+        # its context. The default and ceiling come from shared/config.py — the
+        # same values FormalisedReadFileInput advertises, so the schema the model
+        # is shown and the code that runs cannot describe different tools.
+        lines = content.splitlines(keepends=True)
+        start = max(0, int(offset))
+        window = READ_FILE_DEFAULT_LINES if limit is None else int(limit)
+        window = max(1, min(window, READ_FILE_MAX_LINES))
+        stop = start + window
+        truncated = stop < len(lines)
+        content = "".join(lines[start:stop])
+        if truncated:
+            content += (
+                f"\n[read_file] {len(lines) - stop} more line(s); "
+                f"re-read with offset={stop}."
+            )
 
         # Audit hook — populates state["read_files_state"] when wired up by the
         # graph node. Failures here are non-fatal: read still returns the bytes.

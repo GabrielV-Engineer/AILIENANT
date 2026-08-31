@@ -105,6 +105,39 @@ ALL_ROLES: FrozenSet[str] = DEV_ROLES | COGNITIVE_ROLES | {CRITIC_ROLE}
 register with this set."""
 
 
+# ---------------------------------------------------------------------------
+# Capability bundles — what a tool DOES decides who may call it.
+#
+# Before these existed, each tool module wrote its own role frozenset, so a tool's
+# audience was decided by which registrar it happened to live in rather than by its
+# function: the whole workspace-navigation and dependency-graph family was scoped to
+# `researcher` purely because that module's schema helper defaulted to it. Naming the
+# capability makes the grant reviewable and keeps the several registrars that share a
+# capability from drifting apart one edit at a time.
+# ---------------------------------------------------------------------------
+
+CODE_NAVIGATION_ROLES: FrozenSet[str] = DEV_ROLES | {"researcher"}
+"""Finding code: path listing, content search, directory structure. Every role that
+writes code needs to locate it first, and the Researcher's whole job is retrieval."""
+
+
+GRAPH_SEMANTICS_ROLES: FrozenSet[str] = DEV_ROLES | {"researcher", "analyst"}
+"""Querying the dependency graph: callers of a symbol, dependents of a file, the
+cross-boundary seam, the architecture digest, GraphRAG expansion.
+
+The CoderAgent is included deliberately. Editing a symbol without being able to ask
+who calls it is how a regression ships: `get_symbol_references` answers at file
+granularity, which does not tell an agent whether the function it is about to change
+has callers. The Analyst reviews the same code and needs the same answers."""
+
+
+EXTERNAL_RETRIEVAL_ROLES: FrozenSet[str] = DEV_ROLES | {"researcher", "analyst"}
+"""Reaching the public internet. Membership is unchanged from the per-tool sets it
+replaces; `tools.perception_tools.WEB_FETCH_ROLES` and
+`tools.analyst_tools.WEB_SEARCH_ROLES` remain the tool-level names because
+web_search is deliberately narrower than this bundle."""
+
+
 DISPATCH_ROLE_PERMISSIONS: Dict[str, PermissionMode] = {
     **{role: PermissionMode.EDIT_EXECUTE_RBW for role in DEV_ROLES},
     CRITIC_ROLE: PermissionMode.READ_ONLY,

@@ -19,9 +19,10 @@ Tools registered here (all READ_ONLY, allowed_roles={"analyst"}):
   architecture_digest — bounded project overview from persisted graph analytics
                         (defined in perception_tools.py; wired here for the Analyst)
 
-Security: every disk read is confined to workspace_root via _jailed_disk_read (path
-traversal check using pathlib.resolve().is_relative_to). LLM-supplied file paths
-that escape the workspace jail are silently rejected before any file handle opens.
+Security: every disk read is confined to workspace_root via _jailed_disk_read, which
+delegates the traversal check to core.path_guard.confine_to_root — the same predicate
+the VFS firewall applies. LLM-supplied file paths that escape the workspace jail are
+rejected before any file handle opens.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from typing import (
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
+from core.path_guard import confine_to_root
 from core.permissions import ToolPrivilegeTier
 from core.token_ledger import TokenLedger
 from core.tool_rag import ToolRAGStore, ToolSchema
@@ -101,12 +103,12 @@ def _jailed_disk_read(path: str, workspace_root: str) -> Optional[str]:
     Callers decide the semantics of None (e.g. CodeDiffTool treats a missing
     disk file as an empty original to produce an all-additions diff).
     """
+    escape = confine_to_root(path, workspace_root)
+    if escape is not None:
+        logger.warning("_jailed_disk_read: %s", escape)
+        return None
     try:
         resolved = pathlib.Path(path).resolve()
-        jail = pathlib.Path(workspace_root).resolve()
-        if not resolved.is_relative_to(jail):
-            logger.warning("_jailed_disk_read: path %s escapes workspace jail %s", path, workspace_root)
-            return None
         size = resolved.stat().st_size
         if size > _DISK_MAX_BYTES:
             logger.debug("_jailed_disk_read: %s exceeds %d byte cap (%d bytes)", path, _DISK_MAX_BYTES, size)

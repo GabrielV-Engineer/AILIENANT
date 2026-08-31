@@ -30,7 +30,7 @@ from tools.execution_tools import (
     TaskGetTool,
     _EXECUTE_ROLES,
     _SANDBOX_BASH_ROLES,
-    _TASK_CREATE_ROLES,
+    TASK_CREATE_ROLES,
     _TASK_GET_ROLES,
     register_execution_tools,
 )
@@ -377,7 +377,7 @@ async def test_execution_tier_assignment(tmp_path: Path) -> None:
     # three execution tools keep the broader _EXECUTE_ROLES set.
     assert by_name["sandbox_bash"].allowed_roles == _SANDBOX_BASH_ROLES
     # Task V2: task_create and task_get are extended to include orchestrator.
-    assert by_name["task_create"].allowed_roles == _TASK_CREATE_ROLES
+    assert by_name["task_create"].allowed_roles == TASK_CREATE_ROLES
     assert by_name["task_get"].allowed_roles == _TASK_GET_ROLES
     assert by_name["check_type_integrity"].allowed_roles == _EXECUTE_ROLES
 

@@ -1,20 +1,21 @@
-"""Wave 5 Gateway/Benchmark Arsenal gate — sibling-file checkpoint.
+"""Gateway Arsenal gate — sibling-file checkpoint.
 
 DoD (RBAC parity + substrate contract):
-  - 6 net-new gateway schemas register; each tool is gated to its owning role(s).
+  - 4 gateway schemas register; each tool is gated to its owning role(s).
   - task_create and task_get (Task V2) carry orchestrator in allowed_roles.
-  - Tiers: get_benchmark_report/list_capabilities/skill_invoke/task_list are
-    READ_ONLY and survive PLAN mode; run_benchmark/task_stop are EXECUTE and are
-    dropped in PLAN.
-  - Negative RBAC: core_dev cannot reach benchmark tools; doc_manager cannot
-    reach list_capabilities; vcs_manager cannot reach task_stop.
-  - Benchmark tools call the same substrate functions as the 8.5 verbs (no
-    duplicated runner). BackgroundTaskManager hardening: cancel wins the race
-    over _watch; _procs pop is in a finally block; dead-process terminate is safe.
+  - Tiers: list_capabilities/skill_invoke/task_list are READ_ONLY and survive
+    PLAN mode; task_stop is EXECUTE and is dropped in PLAN.
+  - Negative RBAC: doc_manager cannot reach list_capabilities; a role that cannot
+    create a background task cannot list or stop one either.
+  - BackgroundTaskManager hardening: cancel wins the race over _watch; _procs pop
+    is in a finally block; dead-process terminate is safe.
+
+The benchmark pair this file also covered was removed with the tools themselves —
+gateway/handlers.py is their canonical owner. Coverage of deleted code has nothing
+to backfill.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import struct
@@ -31,19 +32,15 @@ import tools.execution_tools as execution_tools
 from tools.execution_tools import (
     BackgroundTaskManager,
     _EXECUTE_ROLES,
-    _TASK_CREATE_ROLES,
+    TASK_CREATE_ROLES,
     _TASK_GET_ROLES,
     register_execution_tools,
 )
 from tools.gateway_tools import (
-    _BENCHMARK_ROLES,
     _CATALOG_ROLES,
     _SKILL_ROLES,
     _TASK_MGR_ROLES,
-    _cleanup_benchmark,
-    GetBenchmarkReportTool,
     ListCapabilitiesTool,
-    RunBenchmarkTool,
     SkillInvokeTool,
     TaskListTool,
     TaskStopTool,
@@ -117,20 +114,18 @@ def _make_manager() -> BackgroundTaskManager:
 
 
 @pytest.mark.anyio
-async def test_register_gateway_tools_returns_six(tmp_path: Path) -> None:
+async def test_register_gateway_tools_returns_four(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     count = await register_gateway_tools(store)
-    assert count == 6
+    assert count == 4
 
 
 @pytest.mark.anyio
-async def test_all_six_names_present(tmp_path: Path) -> None:
+async def test_all_four_names_present(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await register_gateway_tools(store)
     names = set(_by_name(store))
     assert names == {
-        "run_benchmark",
-        "get_benchmark_report",
         "list_capabilities",
         "skill_invoke",
         "task_list",
@@ -143,8 +138,6 @@ async def test_role_sets_match_constants(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await register_gateway_tools(store)
     roles = {n: s.allowed_roles for n, s in _by_name(store).items()}
-    assert roles["run_benchmark"] == _BENCHMARK_ROLES
-    assert roles["get_benchmark_report"] == _BENCHMARK_ROLES
     assert roles["list_capabilities"] == _CATALOG_ROLES
     assert roles["skill_invoke"] == _SKILL_ROLES
     assert roles["task_list"] == _TASK_MGR_ROLES
@@ -158,7 +151,7 @@ async def test_task_create_v2_extended_to_orchestrator(tmp_path: Path) -> None:
     schemas = _by_name(store)
     assert "orchestrator" in schemas["task_create"].allowed_roles
     assert _EXECUTE_ROLES.issubset(schemas["task_create"].allowed_roles)
-    assert schemas["task_create"].allowed_roles == _TASK_CREATE_ROLES
+    assert schemas["task_create"].allowed_roles == TASK_CREATE_ROLES
 
 
 @pytest.mark.anyio
@@ -180,8 +173,6 @@ async def test_tier_assignments(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await register_gateway_tools(store)
     tiers = {n: s.privilege_tier for n, s in _by_name(store).items()}
-    assert tiers["run_benchmark"] == ToolPrivilegeTier.EXECUTE
-    assert tiers["get_benchmark_report"] == ToolPrivilegeTier.READ_ONLY
     assert tiers["list_capabilities"] == ToolPrivilegeTier.READ_ONLY
     assert tiers["skill_invoke"] == ToolPrivilegeTier.READ_ONLY
     assert tiers["task_list"] == ToolPrivilegeTier.READ_ONLY
@@ -192,7 +183,7 @@ async def test_tier_assignments(tmp_path: Path) -> None:
 async def test_read_only_tools_survive_plan_mode(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await _register_all(store)
-    for tool_name in ("get_benchmark_report", "list_capabilities", "skill_invoke", "task_list"):
+    for tool_name in ("list_capabilities", "skill_invoke", "task_list"):
         results = await store.select_tools(
             tool_name, k=10,
             active_role="orchestrator",
@@ -207,7 +198,7 @@ async def test_read_only_tools_survive_plan_mode(tmp_path: Path) -> None:
 async def test_execute_tools_dropped_in_plan_mode(tmp_path: Path) -> None:
     store = _isolated_store(tmp_path)
     await _register_all(store)
-    for tool_name in ("run_benchmark", "task_stop"):
+    for tool_name in ("task_stop",):
         results = await store.select_tools(
             tool_name, k=10,
             active_role="orchestrator",
@@ -221,15 +212,6 @@ async def test_execute_tools_dropped_in_plan_mode(tmp_path: Path) -> None:
 # =====================================================================
 # C — Negative RBAC (the DoD)
 # =====================================================================
-
-
-@pytest.mark.anyio
-async def test_core_dev_cannot_access_benchmark_tools(tmp_path: Path) -> None:
-    store = _isolated_store(tmp_path)
-    await _register_all(store)
-    schemas = _by_name(store)
-    assert "core_dev" not in schemas["run_benchmark"].allowed_roles
-    assert "core_dev" not in schemas["get_benchmark_report"].allowed_roles
 
 
 @pytest.mark.anyio
@@ -249,27 +231,29 @@ async def test_vcs_manager_cannot_stop_tasks(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_qa_tester_cannot_list_tasks(tmp_path: Path) -> None:
-    """task_list is orchestrator-only; qa_tester holds run_benchmark but not task_list."""
+async def test_task_management_audience_equals_task_creator_audience(tmp_path: Path) -> None:
+    """Whoever can spawn a background task can also list and stop one.
+
+    Asserted as an equality rather than by naming a role: the asymmetry this
+    replaces (create without stop) left a hung task with no cleanup path, and a
+    hardcoded probe role is what let the two halves drift apart in the first place.
+    """
     store = _isolated_store(tmp_path)
     await _register_all(store)
     schemas = _by_name(store)
-    assert "qa_tester" not in schemas["task_list"].allowed_roles
+    creators = schemas["task_create"].allowed_roles
+    for managed in ("task_list", "task_stop"):
+        assert creators <= schemas[managed].allowed_roles, (
+            f"a role may create a task but not {managed}"
+        )
+    # Still a real gate: a non-creator role reaches neither.
+    assert "doc_manager" not in schemas["task_list"].allowed_roles
+    assert "doc_manager" not in schemas["task_stop"].allowed_roles
 
 
 # =====================================================================
 # D — Behaviour smoke tests
 # =====================================================================
-
-
-@pytest.mark.anyio
-async def test_get_benchmark_report_pending(tmp_path: Path) -> None:
-    tool = GetBenchmarkReportTool()
-    fake_result = {"status": "running", "task_id": "abc"}
-    with patch("core.benchmark_service.read_report", return_value=fake_result) as mock_rr:
-        result = await tool._arun(task_id="a" * 32)
-    assert json.loads(result)["status"] == "running"
-    mock_rr.assert_called_once_with("a" * 32)
 
 
 @pytest.mark.anyio
@@ -334,158 +318,6 @@ async def test_task_stop_happy_path(tmp_path: Path) -> None:
     fake_proc.terminate.assert_called_once()
     assert manager._registry[task_id]["status"] == "cancelled"
     assert task_id not in manager._procs
-
-
-# =====================================================================
-# E — DoD substrate contract + audit hardening
-# =====================================================================
-
-
-@pytest.mark.anyio
-async def test_run_benchmark_busy_returns_busy_dict(tmp_path: Path) -> None:
-    tool = RunBenchmarkTool()
-    with patch("core.benchmark_service.try_reserve", return_value=False):
-        result = await tool._arun(suite="v1")
-    assert json.loads(result)["status"] == "busy"
-
-
-@pytest.mark.anyio
-async def test_run_benchmark_unknown_suite_rejected(tmp_path: Path) -> None:
-    tool = RunBenchmarkTool()
-    with patch("core.benchmark_service.try_reserve", side_effect=ValueError("unknown suite: 'bad'")):
-        result = await tool._arun(suite="bad")
-    assert result.startswith("[run_benchmark] REJECTED")
-
-
-@pytest.mark.anyio
-async def test_run_benchmark_happy_path_charges_registers_and_wires_callback(
-    tmp_path: Path,
-) -> None:
-    """DEBT-050: upfront ledger charge · DEBT-048: register_active_task · callback wired."""
-    tool = RunBenchmarkTool()
-    captured_callbacks: List[Any] = []
-
-    class _FakeTask:
-        def add_done_callback(self, cb: Any) -> None:
-            captured_callbacks.append(cb)
-
-        def cancel(self) -> None:  # pragma: no cover — not reached on the happy path
-            pass
-
-    async def _noop_run(task_id: str, suite: str = "v1") -> None:
-        return None
-
-    charged: List[Any] = []
-
-    async def _fake_consume(caller_id: str, amount: float) -> None:
-        charged.append((caller_id, amount))
-
-    registered: List[Any] = []
-    fake_ts = MagicMock()
-    fake_ts.register_active_task.side_effect = lambda tid, t: registered.append((tid, t))
-
-    with (
-        patch("core.benchmark_service.try_reserve", return_value=True),
-        patch("core.benchmark_service.run_benchmark", side_effect=_noop_run),
-        patch("asyncio.create_task", return_value=_FakeTask()),
-        patch("gateway.ledger.consume_budget", side_effect=_fake_consume),
-        patch("core.task_service.get_task_service", return_value=fake_ts),
-    ):
-        result = await tool._arun(suite="v1")
-
-    payload = json.loads(result)
-    assert payload["status"] == "submitted"
-    assert "task_id" in payload
-    assert payload["poll"] == "check_task_status"  # task_get reads a different registry
-    assert len(captured_callbacks) == 1  # only _cleanup_benchmark (registration is mocked)
-    assert charged and charged[0][0] == "internal:agent"  # DEBT-050 upfront charge
-    assert registered and registered[0][0] == payload["task_id"]  # DEBT-048 registration
-
-
-@pytest.mark.anyio
-async def test_run_benchmark_refunds_and_releases_on_spawn_failure(tmp_path: Path) -> None:
-    """A spawn failure after the upfront charge must refund and release the slot."""
-    tool = RunBenchmarkTool()
-    consume_calls: List[Any] = []
-
-    async def _fake_consume(caller_id: str, amount: float) -> None:
-        consume_calls.append((caller_id, amount))
-
-    with (
-        patch("core.benchmark_service.try_reserve", return_value=True),
-        patch("core.benchmark_service.release_flight") as mock_release,
-        patch("asyncio.create_task", side_effect=RuntimeError("loop gone")),
-        patch("gateway.ledger.consume_budget", side_effect=_fake_consume),
-    ):
-        with pytest.raises(RuntimeError):
-            await tool._arun(suite="v1")
-
-    # Charged once (+cost), then refunded once (-cost); slot released.
-    assert len(consume_calls) == 2
-    assert consume_calls[0][1] == -consume_calls[1][1]
-    mock_release.assert_called_once()
-
-
-@pytest.mark.anyio
-async def test_cleanup_benchmark_logs_exception(tmp_path: Path, caplog: Any) -> None:
-    """_cleanup_benchmark must log failures with exc_info, not raise (§5.2 / §12)."""
-    import logging
-
-    err = RuntimeError("harness exploded")
-    task = MagicMock(spec=asyncio.Task)
-    task.cancelled.return_value = False
-    task.exception.return_value = err
-
-    with (
-        patch("core.benchmark_service.release_flight"),
-        caplog.at_level(logging.ERROR, logger="GATEWAY_TOOLS"),
-    ):
-        _cleanup_benchmark(task, suite="v1")
-
-    assert any("v1" in r.message or "harness" in r.message for r in caplog.records)
-
-
-@pytest.mark.anyio
-async def test_cleanup_benchmark_does_not_raise_on_cancelled(tmp_path: Path) -> None:
-    """A cancelled task must not trigger task.exception() (which raises CancelledError)."""
-    task = MagicMock(spec=asyncio.Task)
-    task.cancelled.return_value = True
-
-    with patch("core.benchmark_service.release_flight"):
-        _cleanup_benchmark(task, suite="v1")  # must not raise
-
-    task.exception.assert_not_called()
-
-
-@pytest.mark.anyio
-async def test_get_benchmark_report_uses_asyncio_to_thread(tmp_path: Path) -> None:
-    """read_report is sync disk I/O; it must run in a thread, not on the event loop."""
-    tool = GetBenchmarkReportTool()
-    with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_tt:
-        mock_tt.return_value = {"status": "running", "task_id": "x" * 32}
-        await tool._arun(task_id="x" * 32)
-    mock_tt.assert_called_once()
-
-
-@pytest.mark.anyio
-async def test_get_benchmark_report_rejects_malformed_task_id(tmp_path: Path) -> None:
-    tool = GetBenchmarkReportTool()
-    # Patch asyncio.to_thread to raise ValueError (as _resolve_artifact would)
-    with patch("asyncio.to_thread", side_effect=ValueError("invalid task_id: 'bad!'")):
-        result = await tool._arun(task_id="bad!")
-    payload = json.loads(result)
-    assert payload["status"] == "rejected"
-    assert "invalid" in payload["detail"]
-
-
-@pytest.mark.anyio
-async def test_get_benchmark_report_handles_file_not_found(tmp_path: Path) -> None:
-    """TOCTOU: file was present at exists() but vanished before read_text() in thread."""
-    tool = GetBenchmarkReportTool()
-    with patch("asyncio.to_thread", new_callable=AsyncMock, side_effect=FileNotFoundError("gone")):
-        result = await tool._arun(task_id="a" * 32)
-    payload = json.loads(result)
-    assert payload["status"] == "rejected"
 
 
 @pytest.mark.anyio
