@@ -12,6 +12,6 @@
   },
   "devDependencies": {
     "@fission-ai/openspec": "^1.9.0",
-    "jscpd": "^4.0.5"
+    "jscpd": "^5.0.16"
   }
 }
