@@ -12,7 +12,7 @@ import { InlineMutationManager } from '../core/InlineMutationManager';
 import { GrammarLexer } from '../core/GrammarLexer';
 import { StreamingCodeTokenizer } from '../core/StreamingCodeTokenizer';
 import { WSClient, WSMessageCallback, WSStatusCallback } from '../api/ws_client';
-import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS } from '../shared/config';
+import { BudgetLimitMode, DreamingProfile, OrchestrationMode, WORKSPACE_STATE_KEYS, WsConnectionStatus } from '../shared/config';
 import { APIClient } from '../api/api_client';
 import type { EffortLevel } from '../api/api_client';
 import type { AilienantConfig, Session } from '../shared/types';
@@ -23,6 +23,38 @@ import { HitlNotifier, type HITLApprovalRequestPayload, type HitlMode } from './
 import { getDevcontainerProvisioner, getDevcontainerSessionHandler } from './devcontainerFactory';
 import { handleDevcontainerServerEvent } from './devcontainerExecHandler';
 import { resolveDocEntries } from './docsCatalog';
+
+/**
+ * ABORT_MESH's routing decision, extracted out of the message-handler closure
+ * so it's callable without constructing a live WebviewPanel. `deps` is
+ * injected rather than reached for via WSClient/APIClient's own singletons —
+ * this is the code path that exists FOR the scenario where the backend (and
+ * often the WS heartbeat with it) is already unhealthy, so it must stay
+ * testable in isolation, not just verified by tsc/eslint.
+ */
+export async function resolveAbortMeshOutcome(
+    sessionId: string,
+    wsStatus: WsConnectionStatus,
+    deps: {
+        sendWs: (payload: unknown) => void;
+        abortViaHttp: (sessionId: string) => Promise<{ signalled: boolean }>;
+    },
+): Promise<{ sentViaWs: boolean; httpAck?: { session_id: string; signalled: boolean } }> {
+    if (wsStatus !== 'connected') {
+        // Socket is down (or reconnecting) — client_abort_mesh can't reach the
+        // backend over WS. Fall back to the HTTP abort endpoint (same
+        // idempotent task_service.abort_session underneath) so Stop still
+        // works in exactly the scenario where it matters most — a
+        // stuck/overloaded backend that also dropped the WS heartbeat.
+        const { signalled } = await deps.abortViaHttp(sessionId);
+        return { sentViaWs: false, httpAck: { session_id: sessionId, signalled } };
+    }
+    deps.sendWs({
+        event_type: 'client_abort_mesh',
+        data: { session_id: sessionId },
+    });
+    return { sentViaWs: true };
+}
 
 function findBackendPath(extensionFsPath: string): string | null {
     const candidates = [
@@ -988,23 +1020,13 @@ export class WorkspacePanelManager {
                     // cancels the client-side HTTP fetch — useful for any other
                     // in-flight HTTP, harmless here).
                     const ws = WSClient.getInstance();
-                    if (ws.getStatus() !== 'connected') {
-                        // Socket is down — client_abort_mesh can't reach the backend over
-                        // WS. Fall back to the HTTP abort endpoint (same idempotent
-                        // task_service.abort_session underneath) so Stop still works in
-                        // exactly the scenario where it matters most — a stuck/overloaded
-                        // backend that also dropped the WS heartbeat.
-                        const { signalled } = await APIClient.getInstance().abortTaskViaHttp(session.id);
-                        panel.webview.postMessage({
-                            type: 'server_abort_ack',
-                            payload: { session_id: session.id, signalled },
-                        });
-                        break;
-                    }
-                    ws.send({
-                        event_type: 'client_abort_mesh',
-                        data: { session_id: session.id },
+                    const outcome = await resolveAbortMeshOutcome(session.id, ws.getStatus(), {
+                        sendWs: (payload) => ws.send(payload),
+                        abortViaHttp: (id) => APIClient.getInstance().abortTaskViaHttp(id),
                     });
+                    if (outcome.httpAck) {
+                        panel.webview.postMessage({ type: 'server_abort_ack', payload: outcome.httpAck });
+                    }
                     break;
                 }
                 case 'PTY_STDIN': {
