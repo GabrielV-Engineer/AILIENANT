@@ -30,6 +30,7 @@ from core.memory.context_auditor import (
     compute_task_complexity_index,
     derive_routing_decision,
     hardware_reroute,
+    tci_floor_for_tier,
     is_underspecified,
 )
 from shared.config import MODEL_MEDIUM, check_cloud_availability
@@ -44,6 +45,11 @@ DEBUG_MODE: bool = os.getenv("AILIENANT_RESEARCHER_DEBUG", "0") != "0"
 # Minimum semantic similarity (0–1) for the deep-context block to be folded into the
 # skeleton's source material. Below this floor a retrieved file is noise.
 _DEEP_CONTEXT_MIN_SIM: float = 0.20
+
+# Tier a MEDIUM semantic verdict raises LOCAL_SMALL to. One notch of headroom over
+# the structural score, never straight to CLOUD: a "moderate scope" verdict is not
+# evidence that a turn needs a paid remote API.
+_MEDIUM_RISK_TIER_FLOOR: str = "LOCAL_BIG"
 
 # Upper bound on reason→call→observe cycles the grounding loop spends before it must
 # commit to the skeleton. Bounded so a chatty model cannot stall the node. Sized so a
@@ -526,14 +532,18 @@ async def run_researcher_node(
 
             elif _risk == RiskLevel.MEDIUM:
                 if _math_routing == "LOCAL_SMALL":
-                    _cascade_routing = "LOCAL_BIG"
+                    _cascade_routing = _MEDIUM_RISK_TIER_FLOOR
                     logger.warning(
-                        "VETO: Semantic risk detected, overriding LOCAL_SMALL to LOCAL_BIG"
+                        "VETO: Semantic risk detected, overriding LOCAL_SMALL to %s",
+                        _MEDIUM_RISK_TIER_FLOOR,
                     )
                 else:
                     _cascade_routing = _math_routing
                 _cascade_provider = "CLOUD" if _cascade_routing == "CLOUD" else "LOCAL"
-                tci = max(tci, 75.0)
+                # Raise the score to this tier's own floor, never past it. A flat
+                # bump wrote a CLOUD-band TCI under a LOCAL_MEDIUM decision, so the
+                # meter justified a tier the turn never actually ran on.
+                tci = max(tci, tci_floor_for_tier(_cascade_routing))
                 updated_context_metrics = updated_context_metrics.model_copy(
                     update={"task_complexity_index": tci}
                 )

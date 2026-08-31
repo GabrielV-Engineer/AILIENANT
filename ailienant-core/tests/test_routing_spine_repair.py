@@ -22,6 +22,7 @@ from core.memory.context_auditor import (
     compute_task_complexity_index,
     derive_routing_decision,
     resolve_model_alias_for_routing,
+    tci_floor_for_tier,
 )
 from core.task_service import TaskPayload, TaskService
 from shared.config import MODEL_BIG, MODEL_CLOUD, MODEL_MEDIUM, MODEL_SMALL
@@ -87,6 +88,66 @@ def test_band_boundaries_are_untouched() -> None:
     assert derive_routing_decision(50.0, 80.0) == "LOCAL_BIG"
     assert derive_routing_decision(75.0, 80.0) == "CLOUD"
     assert derive_routing_decision(10.0, 30.0) == "CLOUD"  # red-alert CSS floor
+
+
+def test_repeated_action_verbs_count_as_separate_deliverables() -> None:
+    """Set-cardinality scored "refactor A, then refactor B, then refactor C" as ONE
+    requirement, so a repetitive multi-target ask — the shape a small model is least
+    able to hold in one draft — read as trivial and routed to the cheapest tier."""
+    repeated = compute_task_complexity_index(
+        user_input="refactor the auth file, then refactor the user file, "
+                   "then refactor the db file",
+        retrieved_files=1,
+    )
+    single = compute_task_complexity_index(
+        user_input="refactor the auth file", retrieved_files=1
+    )
+    assert repeated > single
+    assert derive_routing_decision(repeated, 80.0) != "LOCAL_SMALL"
+
+
+def test_occurrence_counting_does_not_inflate_a_trivial_ask() -> None:
+    """Counting occurrences must sharpen the signal, not raise the floor for
+    everything — a one-verb edit stays on the cheap path."""
+    assert derive_routing_decision(
+        compute_task_complexity_index(user_input="fix the typo", retrieved_files=1), 80.0
+    ) == "LOCAL_SMALL"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Semantic escalation must not contradict the score that justifies it
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_tier_floor_is_the_exact_inverse_of_the_bands() -> None:
+    """Every floor must map back onto the tier it belongs to. Derived from the band
+    constants, so retuning a band can never leave the two disagreeing."""
+    for tier in ("LOCAL_SMALL", "LOCAL_MEDIUM", "LOCAL_BIG", "CLOUD"):
+        assert derive_routing_decision(tci_floor_for_tier(tier), 80.0) == tier
+
+
+def test_unknown_tier_never_inflates_the_score() -> None:
+    """A floor that cannot be resolved must not silently raise a turn's complexity."""
+    assert tci_floor_for_tier("NOT_A_TIER") == 0.0
+
+
+@pytest.mark.parametrize("structural_tci", [10.0, 30.0, 35.0, 49.0, 55.0, 80.0])
+def test_medium_verdict_keeps_score_and_decision_coherent(structural_tci: float) -> None:
+    """The MEDIUM branch bumped TCI to a flat 75.0 — a CLOUD-band score — while
+    routing to LOCAL_MEDIUM, so the persisted meter justified a tier the turn never
+    ran on. The reviewable route card shows that score to the operator as the
+    decision's rationale, so an incoherent pair is a defect the user can see."""
+    math_routing = derive_routing_decision(structural_tci, 80.0)
+    cascade = "LOCAL_BIG" if math_routing == "LOCAL_SMALL" else math_routing
+    persisted = max(structural_tci, tci_floor_for_tier(cascade))
+    assert derive_routing_decision(persisted, 80.0) == cascade
+
+
+def test_medium_verdict_raises_to_the_floor_but_never_past_it() -> None:
+    """The floor is a minimum, not an overwrite: a turn already scoring above its
+    tier's floor keeps its own, more precise score."""
+    assert max(60.0, tci_floor_for_tier("LOCAL_BIG")) == 60.0
+    assert max(10.0, tci_floor_for_tier("LOCAL_BIG")) == 50.0
 
 
 # ══════════════════════════════════════════════════════════════════════════════

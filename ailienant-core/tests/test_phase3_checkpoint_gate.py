@@ -43,7 +43,11 @@ from brain.episodic.checkpointing import MCTSCheckpointer
 from brain.mcts.tree import MCTSTree
 from brain.state import ContextMeter, MissionSpecification, WBSStep
 from core.janitor import _vector_gc_sync, purge_obsolete_graphs
-from core.memory.context_auditor import RiskLevel
+from core.memory.context_auditor import (
+    RiskLevel,
+    derive_routing_decision,
+    tci_floor_for_tier,
+)
 from core.state_manager import (
     CachedAgentState,
     dump_state_to_markdown,
@@ -320,7 +324,13 @@ async def test_v1_scenario_b_mid_css_judge_medium_escalates_route() -> None:
     assert final_ctx.is_red_alert is False
     # Pre-veto math: tci=10 < 30 → LOCAL_SMALL. MEDIUM Veto upgrades to LOCAL_BIG.
     assert final_ctx.routing_decision == "LOCAL_BIG"
-    assert final_ctx.task_complexity_index >= 75.0
+    # The escalated score must justify the tier it escalated TO — derived from the
+    # band table, never a literal: the old `>= 75.0` was CLOUD's floor asserted on a
+    # LOCAL_BIG decision, certifying the very incoherence it was meant to guard.
+    assert final_ctx.task_complexity_index >= tci_floor_for_tier("LOCAL_BIG")
+    assert derive_routing_decision(
+        final_ctx.task_complexity_index, final_ctx.css_total
+    ) == final_ctx.routing_decision
     mock_audit.assert_awaited_once()
 
 

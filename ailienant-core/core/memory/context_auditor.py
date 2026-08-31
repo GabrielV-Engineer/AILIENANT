@@ -195,15 +195,20 @@ def compute_task_complexity_index(
     text = (user_input or "").strip()[:_TCI_SCAN_CAP]
     lowered = text.lower()
     words = lowered.split()
-    tokens = set(re.findall(r"[a-z']+", lowered))
+    word_list = re.findall(r"[a-z']+", lowered)
+    tokens = set(word_list)
 
     breadth_count = float(retrieved_files + explicit_mentions + dirty_buffers)
     breadth = min(1.0, breadth_count / _TCI_BREADTH_SATURATION)
 
-    # One requirement is implicit in any prompt; each distinct action verb or
-    # conjunction marker beyond that signals another deliverable in the same ask.
+    # One requirement is implicit in any prompt; each action verb or conjunction
+    # marker beyond that signals another deliverable in the same ask. Counted by
+    # OCCURRENCE, not by distinct word: "refactor A, then refactor B, then
+    # refactor C" is three deliverables, and set-cardinality scored it as one —
+    # systematically under-routing exactly the repetitive multi-target asks a
+    # small model is least able to hold in a single draft.
     requirements = _TCI_BASE_REQUIREMENTS + float(
-        len(tokens & _ACTION_VERBS) + len(tokens & _REQUIREMENT_MARKERS)
+        sum(1 for w in word_list if w in _ACTION_VERBS or w in _REQUIREMENT_MARKERS)
     )
     verbosity = min(1.0, len(words) / _TCI_WORDS_SATURATION)
     load = (
@@ -259,6 +264,24 @@ def is_underspecified(
     return bool(tokens & _ACTION_VERBS) and bool(tokens & _CONTEXT_DEICTIC)
 
 
+# Band boundaries — the committed TCI→tier contract. Named because both the
+# forward mapping (`derive_routing_decision`) and its inverse (`tci_floor_for_tier`)
+# read them: two literal copies of 30/50/75 would be two sources of truth that
+# drift the moment one band is retuned.
+_TCI_BAND_LOCAL_MEDIUM: float = 30.0
+_TCI_BAND_LOCAL_BIG: float = 50.0
+_TCI_BAND_CLOUD: float = 75.0
+
+# Inverse of the band table: the minimum TCI that lands on each tier. LOCAL_SMALL
+# floors at 0.0 — it is the bottom band, so nothing needs raising to reach it.
+_TCI_TIER_FLOORS: dict[str, float] = {
+    "LOCAL_SMALL": 0.0,
+    "LOCAL_MEDIUM": _TCI_BAND_LOCAL_MEDIUM,
+    "LOCAL_BIG": _TCI_BAND_LOCAL_BIG,
+    "CLOUD": _TCI_BAND_CLOUD,
+}
+
+
 def derive_routing_decision(
     tci: float, css: float, corpus_empty: bool = False
 ) -> str:
@@ -285,13 +308,28 @@ def derive_routing_decision(
     """
     if css < 40.0 and not corpus_empty:
         return "CLOUD"
-    if tci < 30.0:
+    if tci < _TCI_BAND_LOCAL_MEDIUM:
         return "LOCAL_SMALL"
-    if tci < 50.0:
+    if tci < _TCI_BAND_LOCAL_BIG:
         return "LOCAL_MEDIUM"
-    if tci < 75.0:
+    if tci < _TCI_BAND_CLOUD:
         return "LOCAL_BIG"
     return "CLOUD"
+
+
+def tci_floor_for_tier(tier: str) -> float:
+    """Lowest TCI that ``derive_routing_decision`` maps onto ``tier``.
+
+    The inverse of the band table above, derived from the same constants so the
+    two can never disagree. A semantic escalation raises the *tier*; the score
+    that justifies it must be raised to match, or the persisted meter reports a
+    complexity its own bands would have routed somewhere else — a contradiction
+    the reviewable route card surfaces directly to the operator.
+
+    An unknown tier yields 0.0: a floor that cannot be resolved must never
+    silently inflate a turn's recorded complexity.
+    """
+    return _TCI_TIER_FLOORS.get(tier, 0.0)
 
 
 # Maps a computed routing_decision onto the litellm proxy alias (agents/*.py's
