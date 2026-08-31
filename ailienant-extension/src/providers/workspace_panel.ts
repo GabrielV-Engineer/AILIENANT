@@ -1029,6 +1029,24 @@ export class WorkspacePanelManager {
                     }
                     break;
                 }
+                case 'STEER_TURN': {
+                    // Mid-run operator steering. Sent instead of a submit while a
+                    // turn is active: a submit would be rejected by the backend's
+                    // single-runner admission guard, and aborting to re-ask throws
+                    // away the work already done. Dropped if the socket is down —
+                    // the operator can see the turn is still running and re-send.
+                    const ws = WSClient.getInstance();
+                    if (ws.getStatus() !== 'connected') { break; }
+                    ws.send({
+                        event_type: 'client_steering_message',
+                        data: {
+                            session_id: session.id,
+                            message_id: data.message_id as string,
+                            text: data.text as string,
+                        },
+                    });
+                    break;
+                }
                 case 'PTY_STDIN': {
                     // Interactive terminal: relay a line of stdin onto the WS so the
                     // backend feeds it to the session's live PTY. Droppable if the

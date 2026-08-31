@@ -189,6 +189,7 @@ worth a dedicated ticket until the number is tracked over more than one data poi
 | DEBT-219 | `batch_semantic_edit` (multi-file ACID) stays excluded for want of a safe `vfs_write` closure | MEDIUM · Floating |
 | DEBT-220 | `bind_cell_tools` has no consumer and would advertise names the dispatcher does not match | LOW · Floating |
 | DEBT-228 | Six gateway tests read the host's live free RAM and fail on a memory-starved machine | MEDIUM · Floating |
+| DEBT-229 | Mid-run steering reaches the one-shot coder path only at a node boundary, not per iteration | LOW · Floating |
 
 ---
 
@@ -1796,6 +1797,18 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Why it was left:** 8.20 made the names derivable (`_CellToolArgs.TOOL_NAME`), which is the prerequisite; wiring native tool-calling is a separate decision about whether the cell should stop parsing JSON out of text at all.
 - **What it would take:** either delete the unused seam, or convert `CELL_TOOLS` into properly-named tool objects and switch `_default_reasoner` to the native path behind a capability check.
 - **Phase:** unscheduled.
+
+---
+
+### DEBT-229 [LOW · Floating] — Mid-run steering is coarse on the one-shot coder path
+
+- **Date:** 2026-08-31 (recorded at 8.21 ship)
+- **Reproduce:** send a `client_steering_message` while a WBS step is executing on the one-shot coder path (a step the planner did not flag as needing iteration) rather than inside the agentic cell.
+- **Gap:** `drain_steering` runs at the top of an agentic-cell iteration, and `route_after_cell` makes each iteration a graph super-step — a natural, checkpointed boundary. The one-shot path has no iteration to re-enter, so a message sent mid-step is picked up only at the next graph node boundary (planner → coder → verify). The operator sees a longer delay before the correction takes effect, and a step already generating its edit finishes on the pre-steering instruction.
+- **Why it was left:** closing it means giving the one-shot path a re-entry point it deliberately does not have — it exists precisely because most WBS steps do not need a loop, and adding a drain checkpoint inside it would import the cell's super-step overhead into the cheap path. Not a defect of the steering channel; a property of where loop boundaries exist.
+- **What it would take:** either a drain at the coder node's own entry (cheap, still coarse — one chance per step rather than per iteration), or routing a steered step into the cell. The first is probably right if this is ever felt in practice.
+- **Phase:** unscheduled.
+- **Notes:** stated in `docs/SCHEMA_EVOLUTION.MD` §60's scope-limit section too, so the contract does not read as promising per-iteration delivery everywhere.
 
 ---
 

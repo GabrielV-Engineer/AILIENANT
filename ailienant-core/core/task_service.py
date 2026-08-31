@@ -11,7 +11,8 @@ import uuid
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 from typing import (
-    Awaitable, Callable, List, Dict, Any, Literal, Optional, Set, Tuple, cast, TYPE_CHECKING,
+    Awaitable, Callable, List, Dict, Any, Literal, Optional, Set, Tuple, cast,
+    TYPE_CHECKING,
 )
 from .vfs_middleware import VFSMiddleware, DirtyBuffer
 from brain.state import ManualAttachment
@@ -23,7 +24,12 @@ if TYPE_CHECKING:
 from core.activity_context import (
     bind_activity_sink, current_agent_role, current_model_tier, reset_activity_sink,
 )
-from shared.config import GRAPH_RECURSION_LIMIT, PAUSED_INTERRUPT_TTL_S
+from shared.config import (
+    GRAPH_RECURSION_LIMIT,
+    PAUSED_INTERRUPT_TTL_S,
+    STEERING_MAX_CHARS,
+    STEERING_MAX_QUEUED,
+)
 from shared.persona import compose
 from transport.token_batcher import batch_tokens
 
@@ -623,6 +629,13 @@ class TaskService:
         # abandoned-pause reclamation (DEBT-170) — a card nobody answers must not wedge
         # the session "busy" forever.
         self._paused_tasks: Dict[str, Tuple["TaskPayload", str, float]] = {}
+        # Mid-run operator steering — session_id → ordered [(message_id, text)].
+        # A transport-tier side-bag, deliberately NOT a graph-state channel: the
+        # operator writes while the graph is running, and LangGraph state is only
+        # mutable through a node's returned delta. The running node peeks this
+        # queue at a super-step boundary and reports back which ids it folded in,
+        # which is what makes the drain replay-safe (see consume_steering).
+        self._steering_queues: Dict[str, List[Tuple[str, str]]] = {}
         # Phase 7.11.6 (ADR-706 §4.5f) — Rich Tool Chips: tracked tool-call
         # registry keyed by (session_id, tool_call_id). Side-bag (NOT in
         # AIlienantGraphState) so agents stay isolated from this transport-tier
@@ -1509,6 +1522,56 @@ class TaskService:
             return False
         return True
 
+    # ------------------------------------------------------------------
+    # Mid-run operator steering
+    # ------------------------------------------------------------------
+
+    def enqueue_steering(self, session_id: str, message_id: str, text: str) -> str:
+        """Queue an operator instruction for the turn already running on ``session_id``.
+
+        Returns a status string rather than raising — this is a transport-tier
+        admission decision the caller reports back to the UI, not an error:
+
+        * ``"not_busy"``  — nothing is running; the operator should submit normally.
+        * ``"duplicate"`` — this ``message_id`` is already queued (a client retry).
+        * ``"full"``      — the queue is at ``STEERING_MAX_QUEUED``.
+        * ``"queued"``    — accepted.
+
+        Spawns nothing. That is the whole point: a second runner on one checkpoint
+        is the defect ``is_session_busy`` rejects, and steering must not reopen it
+        by another door.
+        """
+        if not self.is_session_busy(session_id):
+            return "not_busy"
+        queue = self._steering_queues.setdefault(session_id, [])
+        if any(existing_id == message_id for existing_id, _ in queue):
+            return "duplicate"
+        if len(queue) >= STEERING_MAX_QUEUED:
+            return "full"
+        queue.append((message_id, text[:STEERING_MAX_CHARS]))
+        logger.info(
+            "[Session: %s] steering message queued (%d in queue)", session_id, len(queue)
+        )
+        return "queued"
+
+    def peek_steering(self, session_id: str) -> List[Tuple[str, str]]:
+        """Return the queued messages WITHOUT removing them.
+
+        Reads are never destructive here. A node that popped and then failed
+        before its delta committed would lose the operator's message on replay —
+        the hazard ``pending_brief`` and DEBT-129 exist to guard against.
+        De-duplication is the graph's job instead: the node skips ids already in
+        the ``_consumed_steering_ids`` watermark and adds what it injects, so a
+        replay re-reads the same queue and reaches the same answer. The queue is
+        bounded by ``STEERING_MAX_QUEUED`` and dropped whole at session end, so
+        holding entries costs nothing and removes the loss window entirely.
+        """
+        return list(self._steering_queues.get(session_id, ()))
+
+    def drop_steering_queue(self, session_id: str) -> None:
+        """Discard any queue for a finished session (§5.1 guaranteed cleanup)."""
+        self._steering_queues.pop(session_id, None)
+
     def live_task_ids(self) -> Set[str]:
         """Every session id with an in-flight OR HITL-paused graph run.
 
@@ -2304,6 +2367,11 @@ class TaskService:
         """
         if self._active_tasks.get(session_id) is task:
             self._active_tasks.pop(session_id, None)
+            # Same identity check, same reason: a successor already registered for
+            # this session owns any queue now, and its steering must survive this
+            # predecessor's completion. Riding the existing guaranteed-cleanup
+            # path rather than adding a second one (§5.1).
+            self.drop_steering_queue(session_id)
 
     def _schedule_cell_teardown(self, session_id: str) -> None:
         """Fire-and-forget orphaned agentic-cell cleanup for a completed runner task.

@@ -309,6 +309,17 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
     // ABORT_MESH is the new path: workspace_panel.ts turns it into a
     // `client_abort_mesh` WS frame the backend resolves to Task.cancel().
     // The `isAborting` guard makes the second click idempotent.
+    // Mid-run steering: a correction typed while a turn is running. Queued for the
+    // running turn rather than submitted — a submit would be rejected by the
+    // backend's single-runner guard, and aborting to re-ask discards the work.
+    const handleSteer = useCallback((text: string) => {
+        vscode.postMessage({
+            type: 'STEER_TURN',
+            message_id: `steer-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            text,
+        });
+    }, []);
+
     const handleAbort = useCallback(() => {
         if (isAborting) { return; }
         setIsAborting(true);
@@ -836,6 +847,7 @@ export function Workspace({ initial }: { initial: InitialState }): JSX.Element {
                                 onModelPrefChange={handleModelPrefChange}
                                 sessionId={initial.sessionId}
                                 onSubmit={handleSubmit}
+                                onSteer={handleSteer}
                                 onAbort={handleAbort}
                             />
                             <TelemetryHUD

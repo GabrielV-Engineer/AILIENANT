@@ -55,6 +55,7 @@ from brain.retry_policy import (
     AGENTIC_CELL_MAX_ITERATIONS,
 )
 from brain.state import VFSFile
+from shared.config import STEERING_ITERATION_GRANT
 from brain.subagent_tournament import _content_to_vfs
 from brain.subagent_tournament import run_tournament as select_candidate_via_mcts
 
@@ -798,7 +799,11 @@ async def run_agentic_cell_node(
         # nothing. Both filters run at this one seam, so an excluded tool is absent
         # from the dispatcher map too, never merely unadvertised.
         fallback_schemas = filter_loop_safe(filter_resolvable(selected_schemas))
-        messages = _build_messages(state)
+        # Operator steering is folded in BEFORE reasoning, so an instruction sent
+        # mid-run lands on this iteration rather than the next one. Appended after
+        # the replayed trajectory so it reads as the latest thing the human said.
+        steering_records, steering_consumed = drain_steering(state)
+        messages = [*_build_messages(state), *steering_records]
         if fallback_schemas:
             messages = [
                 *messages,
@@ -903,9 +908,13 @@ async def run_agentic_cell_node(
                     }
                     defer_delta: Dict[str, Any] = {
                         "agentic_iteration": iteration + 1,
-                        # Reads already done this iteration ride out with the defer,
-                        # so the approval round-trip does not force a re-read.
-                        "agentic_trajectory": [defer_rec, *read_observations],
+                        # Reads and steering already folded in this iteration ride
+                        # out with the defer, so the approval round-trip does not
+                        # force a re-read or a re-injection.
+                        "agentic_trajectory": [
+                            defer_rec, *steering_records, *read_observations
+                        ],
+                        "_consumed_steering_ids": steering_consumed,
                         "pending_exec_command": command,
                     }
                     if edited_paths:
@@ -1035,7 +1044,10 @@ async def run_agentic_cell_node(
                             )
                     tool_defer_delta: Dict[str, Any] = {
                         "agentic_iteration": iteration + 1,
-                        "agentic_trajectory": [tool_defer_rec, *read_observations],
+                        "agentic_trajectory": [
+                            tool_defer_rec, *steering_records, *read_observations
+                        ],
+                        "_consumed_steering_ids": steering_consumed,
                         "pending_tool_call": {
                             "name": call.name, "args": dict(call.args),
                             "activity_ref": _activity_ref,
@@ -1081,7 +1093,10 @@ async def run_agentic_cell_node(
                     }
                     clar_delta: Dict[str, Any] = {
                         "agentic_iteration": iteration + 1,
-                        "agentic_trajectory": [clar_rec, *read_observations],
+                        "agentic_trajectory": [
+                            clar_rec, *steering_records, *read_observations
+                        ],
+                        "_consumed_steering_ids": steering_consumed,
                         "pending_hitl_request": _pending_clarification,
                         "cell_tool_query": tool_search_query,
                     }
@@ -1143,7 +1158,10 @@ async def run_agentic_cell_node(
                 step=iteration + 1,
                 cost_usd=float(state.get("current_cost_usd", 0.0)) + cost_delta,
                 elapsed_s=time.monotonic() - cell.start_time,
-                max_steps=int(configurable.get("cell_max_steps", AGENTIC_CELL_MAX_ITERATIONS)),
+                max_steps=(
+                    int(configurable.get("cell_max_steps", AGENTIC_CELL_MAX_ITERATIONS))
+                    + _steering_step_grant(state, steering_consumed)
+                ),
                 max_cost_usd=float(
                     configurable.get(
                         "cell_max_cost_usd",
@@ -1172,8 +1190,12 @@ async def run_agentic_cell_node(
         delta: Dict[str, Any] = {
             "agentic_iteration": iteration + 1,
             "agentic_trajectory": [
-                record, *occ_messages, *read_observations, *fallback_observations
+                record, *steering_records, *occ_messages, *read_observations,
+                *fallback_observations,
             ],
+            # operator.add: an empty list appends nothing, so this is written on
+            # every path rather than guarded four times.
+            "_consumed_steering_ids": steering_consumed,
             "current_cost_usd": cost_delta,
             # Scalar overwrite, always written: carries a fresh tool_search query
             # forward, and otherwise clears any query the previous iteration
@@ -1403,6 +1425,12 @@ def _build_messages(state: Dict[str, Any]) -> List[Dict[str, str]]:
     for record in state.get("agentic_trajectory") or []:
         if record.get("role") == "system":
             messages.append({"role": "system", "content": str(record.get("content", ""))})
+        elif record.get("role") == "user":
+            # Mid-run operator steering. Replayed as `user`, not `system`, so the
+            # model reads it as the person redirecting the work rather than as
+            # machine narration — and deliberately NOT quarantine-wrapped, which
+            # would tell it to treat its own operator's instruction as inert data.
+            messages.append({"role": "user", "content": str(record.get("content", ""))})
         elif record.get("diagnostics"):
             messages.append(
                 {"role": "user", "content": f"Verdict: {record.get('diagnostics')}"}
@@ -1632,6 +1660,52 @@ def _read_file_ast(content: str, path: str) -> str:
     language = detect_language(path)
     skeleton = extract_skeleton(content, language) if language else ""
     return skeleton or content[:_READ_FALLBACK_MAX_CHARS]
+
+
+def _steering_step_grant(state: Dict[str, Any], newly_consumed: Sequence[str]) -> int:
+    """Extra iterations earned by operator steering, bounded.
+
+    New work asked for mid-run has to be paid for, or "also do X" reliably dies on
+    the step axis with X undone. Bounded per message and derived from the total
+    consumed (not just this iteration's), so the grant survives the iterations it
+    is meant to fund. An unbounded grant would make steering a way out of the
+    governor rather than a way to redirect it.
+    """
+    total = len(set(state.get("_consumed_steering_ids") or ()) | set(newly_consumed))
+    return total * STEERING_ITERATION_GRANT
+
+
+def drain_steering(state: Dict[str, Any]) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Return ``(trajectory records, consumed ids)`` for any new operator steering.
+
+    Reads the TaskService queue non-destructively and filters against the
+    ``_consumed_steering_ids`` watermark already in state, so this is safe to run
+    at the top of every iteration and safe to re-run on a replayed super-step.
+
+    Best-effort: no service, no session, or a lookup fault yields nothing rather
+    than failing the turn — an operator's aside must never be able to break the
+    work it is trying to redirect.
+    """
+    session_id = str(state.get("task_id") or "")
+    if not session_id:
+        return [], []
+    try:
+        from core.task_service import get_task_service
+
+        queued = get_task_service().peek_steering(session_id)
+    except Exception:  # noqa: BLE001 — steering is additive; a fault must not end the turn
+        logger.debug("steering drain skipped for %s", session_id, exc_info=True)
+        return [], []
+
+    already = set(state.get("_consumed_steering_ids") or ())
+    records: List[Dict[str, str]] = []
+    consumed: List[str] = []
+    for message_id, text in queued:
+        if message_id in already:
+            continue
+        records.append({"role": "user", "content": text})
+        consumed.append(message_id)
+    return records, consumed
 
 
 def _resolve_read_source(

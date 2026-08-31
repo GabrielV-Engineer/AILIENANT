@@ -336,6 +336,21 @@ WEB_FETCH_MAX_CALLS_PER_TURN: int = max(1, _env_int("AILIENANT_WEB_FETCH_MAX_CAL
 # Lives here, not next to either half of the tool, because the advertised schema
 # and the executable must read the same numbers or the tool lies about its shape.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Mid-run operator steering. A steering message is trusted input from the
+# operator, injected into a turn that is already running — so the bounds here are
+# about context economics, not trust: an operator pasting a large log must not
+# blow the window the running turn still needs, and a queue with no ceiling turns
+# an impatient double-send into an unbounded prompt.
+#
+# The extension budget is what keeps "also do X" from dying against the iteration
+# governor with X undone. Deliberately bounded: an unbounded extension would make
+# steering a way to escape the governor entirely.
+# ---------------------------------------------------------------------------
+STEERING_MAX_CHARS: int = max(200, _env_int("AILIENANT_STEERING_MAX_CHARS", 4000))
+STEERING_MAX_QUEUED: int = max(1, _env_int("AILIENANT_STEERING_MAX_QUEUED", 5))
+STEERING_ITERATION_GRANT: int = max(0, _env_int("AILIENANT_STEERING_ITERATION_GRANT", 2))
+
 READ_FILE_DEFAULT_LINES: int = max(20, _env_int("AILIENANT_READ_FILE_DEFAULT_LINES", 400))
 READ_FILE_MAX_LINES: int = max(
     READ_FILE_DEFAULT_LINES, _env_int("AILIENANT_READ_FILE_MAX_LINES", 2000)

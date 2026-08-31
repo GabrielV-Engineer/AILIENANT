@@ -895,6 +895,19 @@
 
 ---
 
+### Division 8.21 — Mid-Run Operator Steering ✅
+
+> DEBT-170 closed a real concurrency defect (a resubmit spawned a second runner against one checkpoint) by rejecting the submit — leaving an operator with a mid-run correction no channel at all: refused if they submitted, and losing the whole run if they aborted. `PromptBar.tsx` swallowed the typed text outright. This adds the missing third option without reopening what that fix closed.
+
+- [x] **8.21.0 — Contract + queue.** Additive `client_steering_message` WS event routed to a new `TaskService` per-session queue. A DIFFERENT message type from a submit, deliberately: it spawns nothing, so `submit_task`'s busy-reject stays the sole path that starts work. Client-generated `message_id` deduplicated against socket retries; text and queue depth bounded; the queue is dropped from the runner's existing done-callback rather than a second cleanup path (§5.1).
+- [x] **8.21.1 — Replay-safe drain.** Reads are non-destructive and de-duplicated against a new `_consumed_steering_ids` watermark channel. Popping instead would lose the message whenever a node read it and then failed before its delta committed — the hazard `pending_brief` and DEBT-129 exist to guard against. A Rewind past the injection correctly rewinds the watermark with it.
+- [x] **8.21.2 — Injection.** Steering enters the trajectory as a `user` record; `_build_messages` gained the additive branch for that role (it previously replayed only `system` records and diagnostics rows, so a `user` record was dropped). Never quarantine-wrapped — wrapping the operator's own instruction would tell the model to treat it as inert data.
+- [x] **8.21.3 — Budget.** A bounded per-message governor grant, so "also do X" is not reliably killed on the step axis with X undone; deliberately capped, since an unbounded grant would make steering an escape from the governor.
+- [x] **8.21.4 — Frontend.** `PromptBar` routes a submit to steering while a turn is active instead of silently discarding it; new `STEER_TURN` panel message and `ClientSteeringMessageEvent` contract type. The submit gate itself is untouched.
+- [x] **8.21.5 — Division 8.21 Checkpoint Gate.** `tests/test_phase8_21_checkpoint_gate.py` — delivery as a `user` turn, watermark idempotency across a replay, admission (not-busy / duplicate / full), no quarantine wrap, the bounded grant, queue teardown, and a structural DEBT-170 regression lock asserting `enqueue_steering` starts no work.
+
+---
+
 ## PHASE 9 — Native Thinking (Real-Time Reasoning Stream) ✅
 
 > Real-time native model reasoning exposed in a collapsible Thought Box (Claude Extended Thinking / open reasoning models via `reasoning_content`). Strictly transport/orchestration/UI layers — `agents/` untouched.

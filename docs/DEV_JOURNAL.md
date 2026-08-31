@@ -13,6 +13,15 @@ Template (max ~12 lines per entry):
 
 ---
 
+## 8.21: Mid-Run Operator Steering — 2026-08-31
+**Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/484 · pyright 0 · pytest 3356 passed/2 skipped · npm compile 0 · npm lint 0 · npm test 319 passed
+- Shipped: an operator can now correct or extend a turn already running — type and send while it works, and the instruction is queued for the running runner instead of being silently discarded. Additive `client_steering_message` WS event, a `TaskService` queue, the `_consumed_steering_ids` watermark, a `user`-role replay branch in the agentic cell, a bounded governor grant, and the `PromptBar` route.
+- Key decision: steering is a different WS message type from a submit, and writes to a queue the EXISTING runner drains. DEBT-170's defect was a second `create_task(_runner())` on one checkpoint; making steering a submit variant would have reopened it. `submit_task`'s busy-reject and the frontend submit gate are untouched, and the gate locks this structurally rather than behaviourally, since an errant spawn would look healthy in any single-turn test.
+- Key decision: the queue is read non-destructively and de-duplicated by a state watermark, not popped. A node that popped and then failed before its delta committed would lose the operator's message — the same replay hazard `pending_brief` and DEBT-129 guard against.
+- Deferred: DEBT-229 — steering lands at a loop boundary, so the one-shot coder path receives it only at the next graph node boundary rather than per iteration.
+
+---
+
 ## 8.20: Coder Read Capability, Tool-Role Strategy & Tool-Debt Sweep — 2026-08-31
 **Status:** COMPLETE | **Gates:** ruff 0 · mypy 0/483 · pyright 0 · pytest 3344 passed/2 skipped
 - Shipped: the CoderAgent can now read and check its own work — `read_file_ast` returns an observation the model actually receives (it discarded the result), and the navigation/graph family (`find_symbol_callers`, `query_graphrag`, `grep`, `glob`, `read_file`, +4) reaches all 8 dev roles instead of `researcher` alone. Adds `core/path_guard.py` as Layer 0 of `read_safe`, capability bundles in `shared/rbac.py`, `document_parser` bounds, and the DEBT-131 audit (2 tools wired, 2 deleted, 2 rationales corrected).

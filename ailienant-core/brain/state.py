@@ -919,6 +919,14 @@ class AIlienantGraphState(TypedDict):
     # (mirrors every other Send() fan-in channel). Never cleared mid-dispatch —
     # an operator.add channel cannot be reset, and synthesis is terminal.
     _dispatch_results: Annotated[List[Dict[str, Any]], operator.add]
+    # Mid-run operator steering — ids of the steering messages already folded into
+    # the trajectory. The queue itself lives in TaskService (the operator writes
+    # while the graph runs, which graph state cannot express); this is the
+    # watermark that makes reading it replay-safe. operator.add: a node that
+    # injected a message and then failed before committing leaves no entry here,
+    # so the replay re-injects it exactly once — and a Rewind past the injection
+    # correctly rewinds the watermark with it.
+    _consumed_steering_ids: Annotated[List[str], operator.add]
     # Number of subagent waves already dispatched within one dispatch level
     # (distinct from dispatch_depth, which counts recursion). Advanced once per
     # fan-in barrier by dispatch_gate; single-writer, so no reducer. Default 0.

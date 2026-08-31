@@ -698,6 +698,25 @@ export interface ClientHITLResponseEvent {
     data: HITLResponsePayload;
 }
 
+/**
+ * An operator instruction for a turn that is ALREADY running.
+ *
+ * Deliberately not a submit: a submit spawns a runner, and the backend rejects a
+ * same-session resubmit while one is in flight. This is queued for the existing
+ * runner to pick up at its next iteration boundary, so a mid-run correction no
+ * longer costs an abort. `message_id` is client-generated; the backend dedupes on
+ * it so a socket retry cannot inject the same instruction twice.
+ */
+export interface SteeringMessagePayload {
+    session_id: string;
+    message_id: string;
+    text: string;
+}
+export interface ClientSteeringMessageEvent {
+    event_type: 'client_steering_message';
+    data: SteeringMessagePayload;
+}
+
 export interface RegisterSessionPayload {
     session_id: string;
 }

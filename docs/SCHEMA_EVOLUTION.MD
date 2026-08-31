@@ -3245,3 +3245,71 @@ decisions all use the SAME `approved`/`modified_content` shape §58 already esta
 (`approved=true`, no override), pick a different tier (`approved=true`,
 `modified_content=<routing_decision string>`), cancel (`approved=false`, ends the turn — `hitl_pending`
 set, `confirmed_routing_decision` cleared rather than left stale).
+
+
+---
+
+## §60 — Mid-Run Operator Steering: `client_steering_message` / `_consumed_steering_ids` (Manifest 8.21)
+
+### The problem this contract exists to solve
+
+`TaskService.is_session_busy` rejects a second submit for a session that already has a runner —
+DEBT-170's fix for two runners racing one LangGraph checkpoint. The chosen policy was *reject*, on
+the reasoning that Stop/Esc already offers an explicit replace path. The consequence was that an
+operator with a mid-run correction ("also read this URL and continue") had no channel at all: the
+submit was refused, and aborting discarded the work already done. `PromptBar.tsx` swallowed the
+typed text entirely.
+
+### `ClientSteeringMessageEvent` (additive, §10)
+
+```
+{ event_type: "client_steering_message",
+  data: { session_id: str, message_id: str, text: str (max STEERING_MAX_CHARS) } }
+```
+
+A **different message type from a submit**, deliberately. `main.py` routes it to
+`TaskService.enqueue_steering`, which writes to a per-session queue and spawns nothing —
+`submit_task`'s busy-reject and `PromptBar`'s own submit gate are untouched, so steering cannot
+reopen the second-runner defect by another door. `enqueue_steering` returns an admission status
+(`queued` / `duplicate` / `full` / `not_busy`) rather than raising: these are transport-tier
+decisions, not errors. `message_id` is client-generated and deduplicated, because WebSocket clients
+retry and a retried steer must not be injected twice.
+
+The queue is a `TaskService` side-bag, **not** a graph-state channel: the operator writes while the
+graph is running, and LangGraph state is only mutable through a node's returned delta.
+
+### `_consumed_steering_ids: Annotated[List[str], operator.add]`
+
+The watermark that makes reading that queue replay-safe. `brain/agentic_cell.py::drain_steering`
+peeks the queue non-destructively and skips ids already in this channel; the ids it injects are
+returned in the node's delta.
+
+Popping the queue instead would lose the operator's message whenever a node read it and then failed
+before its delta committed — the hazard `pending_brief` and DEBT-129 already guard against. With the
+watermark, a replayed super-step re-reads the same queue and reaches the same answer, and a Rewind
+past the injection correctly rewinds the watermark with it. The queue is bounded by
+`STEERING_MAX_QUEUED` and dropped whole from the runner's existing done-callback (§5.1), so holding
+entries costs nothing.
+
+### Injection shape
+
+Steering enters `agentic_trajectory` as a `{"role": "user"}` record, and `_build_messages` gained an
+additive branch for that role — previously it replayed only `system` records and `diagnostics` rows,
+so a `user` record was silently dropped. Replayed as `user` rather than `system` so the model reads
+it as the person redirecting the work, and **never quarantine-wrapped**: quarantine marks untrusted
+content inert, and wrapping the operator's own instruction would tell the model to ignore it. A URL
+inside the message is still quarantined once `web_fetch` returns the page, which is the boundary
+that actually matters.
+
+### Budget
+
+`STEERING_ITERATION_GRANT` extra governor steps per consumed message, derived from the total
+consumed so the grant survives the iterations it funds. Bounded on purpose — an unbounded grant
+would make steering a way out of the iteration governor rather than a way to redirect it.
+
+### Scope limit
+
+Steering lands at a loop boundary. Cell-routed steps pick it up per iteration; the one-shot coder
+path has no iteration to re-enter, so a step routed there receives it only at the next graph node
+boundary. Logged rather than hidden — see the tech-debt backlog.
+

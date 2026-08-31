@@ -1459,6 +1459,23 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
                     valid_event.data.active,
                 )
 
+            elif valid_event.event_type == "client_steering_message":
+                # Queue-only. Deliberately does NOT spawn a runner: submit_task's
+                # busy-reject stays the sole admission path for starting work, so
+                # steering cannot reopen the second-runner defect it exists to stop.
+                _steer_session = valid_event.data.session_id or client_id
+                _steer_status = task_service.enqueue_steering(
+                    _steer_session,
+                    valid_event.data.message_id,
+                    valid_event.data.text,
+                )
+                logger.info(
+                    "[Session: %s] steering message %s: %s",
+                    _steer_session,
+                    valid_event.data.message_id,
+                    _steer_status,
+                )
+
             elif valid_event.event_type == "client_hitl_response":
                 # Two HITL transports: a paused graph (native interrupt) resumes via
                 # Command(resume=…); everything else (MCP adapter, post-graph file-write

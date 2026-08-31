@@ -3,6 +3,8 @@
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Literal, Optional, Union
 
+from shared.config import STEERING_MAX_CHARS
+
 # =====================================================================
 # 1. EVENT PAYLOADS
 # =====================================================================
@@ -287,6 +289,28 @@ class ClientPlannerModeToggleEvent(BaseModel):
 class ClientHITLResponseEvent(BaseModel):
     event_type: Literal["client_hitl_response"] = "client_hitl_response"
     data: HITLResponsePayload
+
+
+class SteeringMessagePayload(BaseModel):
+    """An unsolicited operator instruction for a turn that is already running.
+
+    Deliberately NOT a submit: a submit spawns a runner, and a second runner on
+    one checkpoint is the concurrency defect ``TaskService.is_session_busy``
+    exists to reject. This writes to a queue the EXISTING runner drains, so the
+    busy-reject on submit stays exactly as it is.
+
+    ``message_id`` is client-generated and deduplicated server-side — WebSocket
+    clients retry, and a retried steer must not be injected twice.
+    """
+
+    session_id: str
+    message_id: str = Field(..., description="Client-generated id; retries dedupe on it.")
+    text: str = Field(..., max_length=STEERING_MAX_CHARS)
+
+
+class ClientSteeringMessageEvent(BaseModel):
+    event_type: Literal["client_steering_message"] = "client_steering_message"
+    data: SteeringMessagePayload
 
 
 class RegisterSessionPayload(BaseModel):
@@ -1644,6 +1668,7 @@ WebSocketMessage = Union[
     ServerHITLApprovalRequestEvent,
     ClientPlannerModeToggleEvent,
     ClientHITLResponseEvent,
+    ClientSteeringMessageEvent,      # mid-run operator steering — queued, never a second runner
     ClientRegisterSessionEvent,      # multiplexing handshake — alias session→socket
     ClientConcurrencyConflictEvent,
     ServerModelWarmupEvent,

@@ -39,6 +39,8 @@ interface Props {
     sessionId: string;
     // Submit
     onSubmit: (text: string) => void;
+    /** Mid-run correction for a turn already in flight — queued, not a new submit. */
+    onSteer: (text: string) => void;
     onAbort: () => void;
 }
 
@@ -47,7 +49,7 @@ export function PromptBar({
     mode, preset, onModeChange, onPresetChange,
     dreamingActive, dreamingProfile, onDreamingToggle,
     activeModelId, orchestrationMode, onModelPrefChange,
-    sessionId, onSubmit, onAbort,
+    sessionId, onSubmit, onSteer, onAbort,
 }: Props): JSX.Element {
     // Phase 7.11.2 — rehydrated panel-lifetime state via workspaceStore.
     // Phase 7.12.9 (Fix 5) — draft is keyed by sessionId so switching sessions
@@ -166,18 +168,28 @@ export function PromptBar({
 
     const submit = useCallback(() => {
         const text = value.trim();
+        if (!text || disabled) { return; }
+        // A turn already running takes the text as STEERING rather than a submit.
         // isTurnActive (not just `disabled`, which only covers HITL-pending, and
         // not just isStreaming, which misses the node-execution/interrupt-pause
-        // gap before the first token) blocks a stray Enter/Send while a prior
-        // turn is still running — the backend admission guard (DEBT-170) rejects
-        // a same-session resubmit anyway, but gating here avoids a round-trip
-        // that always comes back "busy".
-        if (!text || disabled || isTurnActive) { return; }
+        // gap before the first token) is the right signal: the backend's
+        // single-runner guard rejects a same-session resubmit, so this used to
+        // swallow the text entirely — the operator typed a correction and nothing
+        // happened. It is now queued for the running turn to pick up.
+        if (isTurnActive) {
+            onSteer(text);
+            setValue('');
+            setPaletteOpen(false);
+            return;
+        }
         onSubmit(text);
         setValue('');
         setPaletteOpen(false);
         setActiveSkill(sessionId, null);
-    }, [value, disabled, isTurnActive, onSubmit, setValue, setPaletteOpen, sessionId, setActiveSkill]);
+    }, [
+        value, disabled, isTurnActive, onSubmit, onSteer, setValue, setPaletteOpen,
+        sessionId, setActiveSkill,
+    ]);
 
     const onKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         // Phase 7.11.4 — mention-dropdown keyboard navigation. Palette wins
