@@ -107,6 +107,28 @@ def _find_superset_node(node: Any, required: "set[str]") -> Optional[Dict[str, A
     return None
 
 
+def _find_node_with_any_key(node: Any, keys: "set[str]") -> Optional[Dict[str, Any]]:
+    """Return the first dict in the tree sharing at least one key with ``keys``.
+
+    The all-optional counterpart to :func:`_find_superset_node`: with no required
+    fields to anchor on, "carries a field this schema declares" is the weakest
+    evidence that a node is the intended object rather than its envelope.
+    """
+    if isinstance(node, dict):
+        if keys & node.keys():
+            return node
+        for value in node.values():
+            found = _find_node_with_any_key(value, keys)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_node_with_any_key(item, keys)
+            if found is not None:
+                return found
+    return None
+
+
 # ── response_format graceful degradation ────────────────────────────────────
 # Some local backends 400 on the json-mode param. We don't guess by is_local —
 # we learn: a model that rejects response_format is memoed here, and subsequent
@@ -810,6 +832,17 @@ class LLMGateway:
             name for name, field in schema_class.model_fields.items() if field.is_required()
         }
         target = _find_superset_node(parsed, required)
+        # An all-optional schema makes `required` empty, and every dict is a
+        # superset of the empty set — so the walk would match the outermost
+        # envelope and validate into a fully-defaulted instance. For a schema
+        # whose default IS a meaningful signal (an empty GrillQuestionBatch means
+        # "done asking"), that silently turns a malformed response into a
+        # confident wrong answer. Prefer the first node carrying any declared
+        # field; fall back to the plain match when the tree has none.
+        if target is not None and not required:
+            declared = set(schema_class.model_fields)
+            if declared and not (set(target) & declared):
+                target = _find_node_with_any_key(parsed, declared) or target
         if target is not None:
             return target
 

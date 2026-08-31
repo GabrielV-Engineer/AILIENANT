@@ -824,6 +824,21 @@ _ANALYST_BYOM_DOWN: str = (
 )
 
 
+def _analyst_failure_message(exc: BaseException) -> str:
+    """Map a failed analyst turn to a message naming its ACTUAL cause.
+
+    A local-memory refusal and an unreachable engine need opposite responses
+    from the user (free RAM / pick a smaller tier, versus start the engine), so
+    reporting both as "can't reach the model" sends them to the wrong fix. The
+    resource error already carries the numbers that make it actionable.
+    """
+    from core.config.model_resolver import LocalResourceExhaustedError
+
+    if isinstance(exc, LocalResourceExhaustedError):
+        return str(exc)
+    return _ANALYST_BYOM_DOWN
+
+
 async def generate_analyst_reply_stream(
     text: str,
     context_block: str = "",
@@ -891,8 +906,10 @@ async def generate_analyst_reply_stream(
         if not produced:
             yield "(no response)"
     except Exception as exc:  # noqa: BLE001 — analyst must never crash the WS loop
-        logger.warning("Analyst live reply failed [%s: %s]", type(exc).__name__, exc)
-        yield _ANALYST_BYOM_DOWN
+        logger.warning(
+            "Analyst live reply failed [%s: %s]", type(exc).__name__, exc, exc_info=True
+        )
+        yield _analyst_failure_message(exc)
 
 
 async def generate_analyst_reply(text: str, session_id: str = "") -> str:

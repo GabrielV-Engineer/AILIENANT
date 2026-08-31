@@ -108,3 +108,45 @@ def test_unwrap_real_mission_specification_envelope() -> None:
     revalidated = MissionSpecification.model_validate(extracted)
     assert revalidated.outcome == "Add an endpoint."
     assert len(revalidated.tasks) == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# All-optional schemas. `required` is empty, and every dict is a superset of
+# the empty set, so the plain walk matches the OUTERMOST node — validating a
+# foreign envelope into a fully-defaulted instance without raising. For a
+# schema whose default carries meaning (an empty GrillQuestionBatch means "no
+# further questions"), that turns a malformed answer into a confident wrong one.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class _AllOptional(BaseModel):
+    questions: list[str] = []
+
+
+def test_all_optional_schema_prefers_a_node_carrying_a_declared_field() -> None:
+    """A nested wrapper whose inner node declares `questions` must be unwrapped
+    to that node, not matched at the envelope."""
+    enveloped = json.dumps({
+        "interview_goal": "gather requirements",
+        "sections": [{"section_name": "Purpose", "questions": ["What is the goal?"]}],
+    })
+
+    extracted = _unwrap(enveloped, _AllOptional)
+
+    assert extracted.get("questions") == ["What is the goal?"]
+    assert _AllOptional.model_validate(extracted).questions == ["What is the goal?"]
+
+
+def test_all_optional_schema_still_unwraps_a_flat_object() -> None:
+    """The declared-field preference must not disturb the already-correct case."""
+    flat = json.dumps({"questions": ["a", "b"]})
+
+    assert _unwrap(flat, _AllOptional) == {"questions": ["a", "b"]}
+
+
+def test_all_optional_schema_falls_back_when_no_declared_field_exists() -> None:
+    """A response carrying nothing this schema declares still returns a dict, so
+    the caller's own validation (not this helper) decides what to do with it."""
+    foreign = json.dumps({"totally": "unrelated"})
+
+    assert _unwrap(foreign, _AllOptional) == {"totally": "unrelated"}

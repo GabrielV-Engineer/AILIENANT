@@ -366,6 +366,40 @@ async def test_check_local_admission_adds_reload_headroom_for_an_already_residen
     projection ALONE (~0.11 GB) comfortably admits against 1.5 GB free — the
     raise below is proof the resident model's 1 GB was actually added, not an
     artifact of an already-tight baseline."""
+    resident_models = [
+        {"name": "gemma4:e4b", "size": 1024 * 1024 * 1024, "context_length": 2048},
+    ]
+    with patch("shared.hardware.HardwareDetector.detect", return_value=_ram_profile(1.5)), \
+         patch("httpx.AsyncClient", _client_factory(_mock_ps_transport(resident_models))):
+        with pytest.raises(model_resolver.LocalResourceExhaustedError):
+            await model_resolver.check_local_admission(
+                _ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192,
+            )
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_charges_no_reload_when_resident_window_already_fits() -> None:
+    """A model resident at a window that already holds the request serves it
+    without reloading, so its resident bytes must NOT be charged. Same 1.5 GB /
+    1 GB pairing as the sibling above — charging them here would refuse a model
+    that is loaded, warm, and immediately servable, which is the inversion this
+    gate exists to prevent."""
+    resident_models = [
+        {"name": "gemma4:e4b", "size": 1024 * 1024 * 1024, "context_length": 16384},
+    ]
+    with patch("shared.hardware.HardwareDetector.detect", return_value=_ram_profile(1.5)), \
+         patch("httpx.AsyncClient", _client_factory(_mock_ps_transport(resident_models))):
+        await model_resolver.check_local_admission(
+            _ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192,
+        )
+    # No exception — a no-reload serve never pays the resident model's footprint.
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_assumes_reload_when_context_length_is_absent() -> None:
+    """Older Ollama builds omit `context_length` from /api/ps. With no way to
+    tell whether a reload is coming, the gate must over-reserve: refusing a call
+    it was unsure about is recoverable, letting the box swap is not."""
     resident_models = [{"name": "gemma4:e4b", "size": 1024 * 1024 * 1024}]
     with patch("shared.hardware.HardwareDetector.detect", return_value=_ram_profile(1.5)), \
          patch("httpx.AsyncClient", _client_factory(_mock_ps_transport(resident_models))):

@@ -550,6 +550,22 @@ def _build_chat_target(model_id: str, endpoints: list[EndpointConfig]) -> ModelT
     )
 
 
+def _active_preset_tiers_changed(before: BYOMConfig, after: BYOMConfig) -> bool:
+    """True when this save altered the tier map of the currently-active preset.
+
+    Only user presets are compared: a built-in preset's tiers are derived from
+    the model cache, not editable, so it can never be the thing a save changed.
+    """
+    preset_id = after.active_preset_id
+    if not preset_id:
+        return False
+    old = next((p for p in before.presets if p.id == preset_id), None)
+    new = next((p for p in after.presets if p.id == preset_id), None)
+    if new is None:
+        return False
+    return old is None or old.tiers != new.tiers
+
+
 async def _apply_preset(preset: ModelPreset) -> None:
     """Write config.yaml with tier overrides, then signal LiteLLM to reload."""
     tier_overrides: dict[str, str] = {
@@ -730,8 +746,15 @@ async def put_config(request: Request) -> BYOMConfigResponse:
     merged = _merge_patch(existing, raw_body)
     await asyncio.to_thread(save_byom_config, merged)
 
-    # Apply preset → config.yaml → LiteLLM reload — ONLY on an explicit activation.
-    if "active_preset_id" in raw_body and merged.active_preset_id:
+    # Re-apply on an explicit activation, and also when this save edited the
+    # ACTIVE preset's tiers: `tiers` is what the user picks, `chat_models` is the
+    # derived form every call path actually reads. Persisting the first without
+    # recomputing the second strands the engine on the previous model — the UI
+    # shows the new choice while every turn still runs the old one.
+    if merged.active_preset_id and (
+        "active_preset_id" in raw_body
+        or _active_preset_tiers_changed(existing, merged)
+    ):
         builtin_presets, discovered = await _build_builtin_presets(merged.model_cache)
         all_presets = {p.id: p for p in builtin_presets + merged.presets}
         active = all_presets.get(merged.active_preset_id)

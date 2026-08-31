@@ -354,6 +354,12 @@ async def check_local_admission(target: Any, requested_num_ctx: int) -> None:
     need memory for both the outgoing and incoming copies, so that model's
     own currently-resident size is added to the projected footprint for this
     check only, never to the served ``num_ctx`` sizing itself.
+
+    A model already resident at a window that ALREADY holds the request needs
+    no reload, so its resident bytes are not charged: they are memory the OS
+    reports as in-use precisely because the model is loaded and ready. Charging
+    them would make a warm, immediately-servable model the hardest one to admit
+    — the exact inversion of what this gate exists to prevent.
     """
     if not getattr(target, "is_local", False):
         return
@@ -377,8 +383,16 @@ async def check_local_admission(target: Any, requested_num_ctx: int) -> None:
             for entry in ps_models:
                 entry_name = entry.get("name") or entry.get("model")
                 if entry_name and _bare_ollama_model_name(str(entry_name)) == bare_name:
+                    resident_ctx = entry.get("context_length")
+                    # Absent context_length (older Ollama) → assume a reload is
+                    # needed: over-reserving can only refuse a call this gate was
+                    # unsure about, while under-reserving lets the box thrash.
+                    needs_reload = (
+                        not isinstance(resident_ctx, int)
+                        or resident_ctx < requested_num_ctx
+                    )
                     resident_size = entry.get("size")
-                    if isinstance(resident_size, int) and resident_size > 0:
+                    if needs_reload and isinstance(resident_size, int) and resident_size > 0:
                         projected_bytes += resident_size  # reload headroom
                     break
 

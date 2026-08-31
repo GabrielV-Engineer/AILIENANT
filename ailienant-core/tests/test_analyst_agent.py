@@ -604,3 +604,33 @@ def test_soul_manager_not_imported_by_logic_agents() -> None:
         "Cognitive-isolation fence breached — logic agents must not import "
         f"brain.personality. Breaches: {breaches}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Failure attribution. A local-memory refusal and an unreachable engine need
+# opposite responses from the user (free RAM / pick a smaller tier, versus
+# start the engine), so collapsing both into "can't reach the model" sends
+# them to the wrong fix.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_resource_exhaustion_reports_the_memory_cause() -> None:
+    from core.config.model_resolver import LocalResourceExhaustedError
+    from agents.analyst import _ANALYST_BYOM_DOWN, _analyst_failure_message
+
+    exc = LocalResourceExhaustedError(
+        "Not enough free memory for this local model at this context size "
+        "(~8.9 GB projected, 5.3 GB free) — close other applications, pick a "
+        "smaller model tier, or lower max tokens."
+    )
+
+    message = _analyst_failure_message(exc)
+
+    assert "Not enough free memory" in message
+    assert message != _ANALYST_BYOM_DOWN
+
+
+def test_transport_failure_still_reports_the_unreachable_engine() -> None:
+    from agents.analyst import _ANALYST_BYOM_DOWN, _analyst_failure_message
+
+    assert _analyst_failure_message(ConnectionError("refused")) == _ANALYST_BYOM_DOWN

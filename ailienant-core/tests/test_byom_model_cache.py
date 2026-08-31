@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict
 
-from core.config.byom_config import BYOMConfig, EndpointConfig, ModelTarget
+from core.config.byom_config import BYOMConfig, EndpointConfig, ModelPreset, ModelTarget
 from api.byom import (
+    _active_preset_tiers_changed,
     _build_builtin_presets,
     _canonical_model_id,
     _merge_patch,
@@ -107,3 +108,62 @@ def test_cloud_template_uses_imported_model() -> None:
     presets, _discovered = asyncio.run(_build_builtin_presets(cache))
     cloud = next(p for p in presets if p.name == "Cloud Only")
     assert cloud.tiers["big"] == "google/gemini-2.0-flash"
+
+
+# ── Active-preset tier edits must re-derive chat_models ───────────────────────
+# `tiers` is what the user picks in the UI; `chat_models` is the derived form
+# every call path actually reads. A save that persists the first without
+# recomputing the second strands the engine on the previous model — the panel
+# shows the new choice while every turn still runs the old one.
+
+
+def _preset(pid: str, tiers: Dict[str, str]) -> ModelPreset:
+    return ModelPreset(id=pid, name="p", tiers=tiers)
+
+
+def test_editing_the_active_presets_tiers_is_detected() -> None:
+    before = BYOMConfig(
+        presets=[_preset("p1", {"medium": "ollama/qwen2.5-coder:3b"})],
+        active_preset_id="p1",
+    )
+    after = BYOMConfig(
+        presets=[_preset("p1", {"medium": "google/gemini-2.5-flash"})],
+        active_preset_id="p1",
+    )
+    assert _active_preset_tiers_changed(before, after) is True
+
+
+def test_editing_an_inactive_preset_is_not_detected() -> None:
+    """Only the active preset feeds chat_models — editing another one changes
+    nothing the engine reads, so it must not trigger a re-apply."""
+    before = BYOMConfig(
+        presets=[_preset("p1", {"medium": "a"}), _preset("p2", {"medium": "b"})],
+        active_preset_id="p1",
+    )
+    after = BYOMConfig(
+        presets=[_preset("p1", {"medium": "a"}), _preset("p2", {"medium": "CHANGED"})],
+        active_preset_id="p1",
+    )
+    assert _active_preset_tiers_changed(before, after) is False
+
+
+def test_an_endpoints_only_save_is_not_detected() -> None:
+    """The no-op case: same tiers in, same tiers out."""
+    tiers = {"medium": "ollama/qwen2.5-coder:3b"}
+    before = BYOMConfig(presets=[_preset("p1", dict(tiers))], active_preset_id="p1")
+    after = BYOMConfig(presets=[_preset("p1", dict(tiers))], active_preset_id="p1")
+    assert _active_preset_tiers_changed(before, after) is False
+
+
+def test_no_active_preset_is_not_detected() -> None:
+    before = BYOMConfig(presets=[_preset("p1", {"medium": "a"})])
+    after = BYOMConfig(presets=[_preset("p1", {"medium": "b"})])
+    assert _active_preset_tiers_changed(before, after) is False
+
+
+def test_a_newly_created_active_preset_is_detected() -> None:
+    """Activating a preset that did not exist in the previous config still needs
+    chat_models derived — there is no prior tier map to compare against."""
+    before = BYOMConfig(presets=[], active_preset_id="p1")
+    after = BYOMConfig(presets=[_preset("p1", {"medium": "a"})], active_preset_id="p1")
+    assert _active_preset_tiers_changed(before, after) is True
