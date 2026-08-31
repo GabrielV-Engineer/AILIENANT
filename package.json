@@ -11,7 +11,7 @@
     "metrics:duplication": "jscpd --config .jscpd.json"
   },
   "devDependencies": {
-    "@fission-ai/openspec": "^1.9.0",
+    "@fission-ai/openspec": "^1.11.0",
     "jscpd": "^4.0.5"
   }
 }
