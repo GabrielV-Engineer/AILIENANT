@@ -4,7 +4,7 @@
   "private": true,
   "description": "Repo-wide tooling root — not a publishable package. Pins spec-governance CLI dependencies decoupled from ailienant-extension's own packaging.",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "openspec:validate": "openspec validate --all --strict --json --no-interactive",
