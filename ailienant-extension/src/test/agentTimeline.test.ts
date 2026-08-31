@@ -43,6 +43,7 @@ import * as React from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { act } from 'react';
 import { AgentTimeline, type AgentTimelineProps } from '../workspace/components/AgentTimeline';
+import { useChatStore } from '../workspace/chatStore';
 import type { TimelineEntry, PlanWBSStep, DiffBlockShape, CellIterationShape, ExecutionDetailShape } from '../shared/config';
 
 function render(props: Partial<AgentTimelineProps> & { entries: TimelineEntry[] }): { container: HTMLDivElement; root: Root } {
@@ -104,6 +105,34 @@ suite('11.5.C.2 — AgentTimeline', function () {
             streaming: true,
         });
         assert.strictEqual(container.querySelector('.ws-timeline-label')?.textContent, 'Working…');
+        act(() => root.unmount());
+        container.remove();
+    });
+
+    test('a slow (not stuck) local turn shows the non-destructive "still working" note instead of ending', () => {
+        useChatStore.getState().setStreamSlow(true);
+        try {
+            const { container, root } = render({
+                entries: [entry({ id: 'seq:0', kind: 'understanding', status: 'done' })],
+                streaming: true,
+            });
+            const note = container.querySelector('.ws-timeline-loader-slow');
+            assert.ok(note, 'the loader row should render the still-working note when streamSlow is set');
+            assert.match(note?.textContent ?? '', /slower than expected/i);
+            act(() => root.unmount());
+            container.remove();
+        } finally {
+            useChatStore.getState().setStreamSlow(false); // never leak into a later test
+        }
+    });
+
+    test('the still-working note is absent when streamSlow is false (the default)', () => {
+        assert.strictEqual(useChatStore.getState().streamSlow, false, 'precondition: reset by the prior test');
+        const { container, root } = render({
+            entries: [entry({ id: 'seq:0', kind: 'understanding', status: 'done' })],
+            streaming: true,
+        });
+        assert.strictEqual(container.querySelector('.ws-timeline-loader-slow'), null);
         act(() => root.unmount());
         container.remove();
     });

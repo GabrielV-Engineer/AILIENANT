@@ -51,6 +51,16 @@ export interface ChatState {
      * consumers rely on that narrower meaning.
      */
     isTurnActive: boolean;
+    /**
+     * True once the stream-stall watchdog's budget has elapsed for a LOCAL
+     * target with no live activity — distinct from the watchdog's cloud-target
+     * behavior, which still force-ends the turn. A local generation that is
+     * merely slow (not stuck) must never be silently killed; this flag drives
+     * a persistent "still working — slower than expected" note instead, while
+     * `isStreaming`/`isTurnActive` stay untouched so the turn can still land
+     * normally. Cleared by the next real stream-activity event.
+     */
+    streamSlow: boolean;
     wsStatus: WsConnectionStatus;
     nattMessages: NattMessage[];
     hitlPending: HITLIntervention | undefined;
@@ -86,6 +96,7 @@ export interface ChatState {
     setMessages: Dispatch<SetStateAction<Message[]>>;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setIsTurnActive: Dispatch<SetStateAction<boolean>>;
+    setStreamSlow: Dispatch<SetStateAction<boolean>>;
     setWsStatus: Dispatch<SetStateAction<WsConnectionStatus>>;
     setNattMessages: Dispatch<SetStateAction<NattMessage[]>>;
     setHitlPending: Dispatch<SetStateAction<HITLIntervention | undefined>>;
@@ -119,6 +130,7 @@ export const useChatStore = create<ChatState>((set) => ({
     messages: [],
     isStreaming: false,
     isTurnActive: false,
+    streamSlow: false,
     wsStatus: 'disconnected',
     nattMessages: [],
     hitlPending: undefined,
@@ -146,6 +158,7 @@ export const useChatStore = create<ChatState>((set) => ({
     setMessages:          (v) => set((s) => ({ messages: apply(v, s.messages) })),
     setIsStreaming:       (v) => set((s) => ({ isStreaming: apply(v, s.isStreaming) })),
     setIsTurnActive:      (v) => set((s) => ({ isTurnActive: apply(v, s.isTurnActive) })),
+    setStreamSlow:        (v) => set((s) => ({ streamSlow: apply(v, s.streamSlow) })),
     setWsStatus:          (v) => set((s) => ({ wsStatus: apply(v, s.wsStatus) })),
     setNattMessages:      (v) => set((s) => ({ nattMessages: apply(v, s.nattMessages) })),
     setHitlPending:       (v) => set((s) => ({ hitlPending: apply(v, s.hitlPending) })),

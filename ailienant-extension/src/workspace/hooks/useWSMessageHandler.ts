@@ -103,18 +103,25 @@ export function useWSMessageHandler(): void {
     // `lastStreamActivityRef` is bumped on every live stream event.
     const [streamWatchdogMs, setStreamWatchdogMs] = useState<number>(DEFAULT_STREAM_WATCHDOG_MS);
     const lastStreamActivityRef = useRef<number>(0);
+    // Whether the target the current watchdog budget was sized for is local —
+    // a ref (not state) since only the watchdog interval callback below reads
+    // it; a local target never gets auto-killed on timeout, only flagged slow.
+    const isLocalTargetRef = useRef<boolean>(false);
 
     // ── WS / extension message handler ─────────────────────────
     useEffect(() => {
         const handler = (event: MessageEvent): void => {
-            const msg = event.data as { type: string; payload?: unknown; config?: unknown; open?: boolean };
+            const msg = event.data as { type: string; payload?: unknown; config?: unknown; open?: boolean; isLocal?: boolean };
             const cs = useChatStore.getState();
             const ws = useWorkspaceStore.getState();
             const nattName = cs.config?.agent_settings.analyst_name ?? DEFAULT_ANALYST_NAME;
 
-            // Any live stream event keeps the stall watchdog at bay.
+            // Any live stream event keeps the stall watchdog at bay, and — for a
+            // local target that had been flagged slow — proves it was alive all
+            // along, so the note clears the moment real progress resumes.
             if (STREAM_ACTIVITY_EVENTS.has(msg.type)) {
                 lastStreamActivityRef.current = performance.now();
+                if (cs.streamSlow) { cs.setStreamSlow(false); }
             }
 
             switch (msg.type) {
@@ -122,9 +129,11 @@ export function useWSMessageHandler(): void {
                     cs.setWsStatus(msg.payload as WsConnectionStatus);
                     break;
                 case 'STREAM_WATCHDOG_MS':
-                    // Backend-governed stall timeout for the active model (zero-config).
+                    // Backend-governed stall timeout for the active model (zero-config),
+                    // paired with whether that target is local.
                     if (typeof msg.payload === 'number' && msg.payload > 0) {
                         setStreamWatchdogMs(msg.payload);
+                        isLocalTargetRef.current = Boolean(msg.isLocal);
                     }
                     break;
                 case 'server_abort_ack': {
@@ -968,9 +977,19 @@ export function useWSMessageHandler(): void {
                     break;
                 }
                 case 'server_byom_config_applied': {
-                    const d = msg.payload as { preset_id?: string; preset_name?: string };
+                    const d = msg.payload as {
+                        preset_id?: string; preset_name?: string;
+                        stream_watchdog_ms?: number; stream_watchdog_is_local?: boolean;
+                    };
                     cs.addToast('info', `Preset "${d.preset_name ?? ''}" applied — retrying indexer…`);
                     cs.setIndexing(prev => prev.state === 'error' ? { state: 'idle' } : prev);
+                    // Re-arm the watchdog pairing for whichever target this preset
+                    // resolves to — a mid-session cloud<->local switch must not leave
+                    // a stale budget/is-local pairing armed until the next submit.
+                    if (typeof d.stream_watchdog_ms === 'number' && d.stream_watchdog_ms > 0) {
+                        setStreamWatchdogMs(d.stream_watchdog_ms);
+                        isLocalTargetRef.current = Boolean(d.stream_watchdog_is_local);
+                    }
                     break;
                 }
                 case 'server_model_warmup': {
@@ -1119,9 +1138,17 @@ export function useWSMessageHandler(): void {
     }, []);
 
     // Stream-stall watchdog. While streaming, if no token / tool / natt activity
-    // arrives within the backend-governed budget, `server_stream_end` was almost
-    // certainly lost — finalize the turn so the UI never hangs on "Streaming…".
-    // The budget is dictated by the backend (longer for slow local engines), never
+    // arrives within the backend-governed budget:
+    //  - a CLOUD target: `server_stream_end` was almost certainly lost —
+    //    finalize the turn so the UI never hangs on "Streaming…" (unchanged).
+    //  - a LOCAL target: a merely-slow-but-alive generation on constrained
+    //    hardware can legitimately exceed the budget without anything having
+    //    gone wrong — auto-killing it only to have the backend's answer (or a
+    //    HITL card) land moments later in a torn-down turn is worse than
+    //    waiting. Surface a persistent, non-destructive "still working" note
+    //    instead and leave isStreaming/isTurnActive/inflightTurn untouched;
+    //    only real activity or an explicit Stop ends the turn from here.
+    // The budget (and which branch applies) is dictated by the backend, never
     // a hardcoded product constant.
     const isStreaming = useChatStore((s) => s.isStreaming);
     useEffect(() => {
@@ -1129,11 +1156,18 @@ export function useWSMessageHandler(): void {
         if (lastStreamActivityRef.current === 0) {
             lastStreamActivityRef.current = performance.now();
         }
+        useChatStore.getState().setStreamSlow(false);
         const interval = setInterval(() => {
             if (performance.now() - lastStreamActivityRef.current <= streamWatchdogMs) { return; }
-            lastStreamActivityRef.current = 0;
             const cs = useChatStore.getState();
             const ws = useWorkspaceStore.getState();
+
+            if (isLocalTargetRef.current) {
+                if (!cs.streamSlow) { cs.setStreamSlow(true); }
+                return;
+            }
+
+            lastStreamActivityRef.current = 0;
             cs.setIsStreaming(false);
             cs.setIsTurnActive(false);
             ws.setIsAborting(false);

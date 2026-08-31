@@ -41,7 +41,7 @@ from core.config_generator import discover_models
 from core.db_maintenance import WALCheckpointer
 from core.sandbox import resolve_default_adapter
 from core.task_service import TaskPayload, get_task_service
-from core.config.byom_config import stream_watchdog_ms
+from core.config.byom_config import stream_watchdog_ms, stream_watchdog_is_local
 from core.config.host_discovery import clear_run_state, write_run_state
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -844,6 +844,7 @@ async def submit_task(
             "status": "duplicate_ignored",
             "session_id": x_task_id,
             "stream_watchdog_ms": stream_watchdog_ms(),
+            "stream_watchdog_is_local": stream_watchdog_is_local(),
         }
 
     # Per-session admission guard (DEBT-170): a resubmit while the session already
@@ -857,6 +858,7 @@ async def submit_task(
             "status": "busy",
             "session_id": x_task_id,
             "stream_watchdog_ms": stream_watchdog_ms(),
+            "stream_watchdog_is_local": stream_watchdog_is_local(),
         }
 
     async def _runner() -> None:
@@ -901,11 +903,14 @@ async def submit_task(
 
     # The client arms its stream watchdog from this backend-governed value (longer
     # for slow local engines, tighter for fast cloud APIs) — never a hardcoded UI
-    # constant.
+    # constant. `stream_watchdog_is_local` lets the client tell "still working,
+    # just slow" (never auto-kill) apart from a genuine cloud stall once that
+    # budget elapses.
     return {
         "status": "accepted",
         "session_id": x_task_id,
         "stream_watchdog_ms": stream_watchdog_ms(),
+        "stream_watchdog_is_local": stream_watchdog_is_local(),
     }
 
 
@@ -918,6 +923,21 @@ async def task_status(task_id: str) -> Dict[str, Any]:
     that already exists — it introduces no new task store.
     """
     return task_service.get_task_status(task_id)
+
+
+@app.post("/api/v1/task/{task_id}/abort")
+async def task_abort(task_id: str) -> Dict[str, Any]:
+    """HTTP fallback for Stop when the WebSocket itself is the thing that's
+    down — `client_abort_mesh` (the WS path, below) cannot reach the backend
+    in that exact scenario, and until now there was no other way to cancel a
+    live task. Reuses the identical, idempotent cancel path
+    (`interrupt_session` + `abort_session`) the WS handler calls — this is a
+    second entry point onto the same mechanism, not a second mechanism.
+    """
+    await task_service.interrupt_session(task_id)
+    did_abort = task_service.abort_session(task_id)
+    logger.info("[Session: %s] HTTP abort fallback: signalled=%s", task_id, did_abort)
+    return {"signalled": did_abort}
 
 
 class BenchmarkSubmitPayload(BaseModel):

@@ -220,6 +220,31 @@ export class APIClient {
     }
 
     /**
+     * HTTP fallback for Stop when the WebSocket itself is down — the WS-based
+     * abort mesh (client_abort_mesh) cannot reach the backend in that exact
+     * scenario. Reaches the same idempotent task_service.abort_session path
+     * over plain HTTP (POST /task/{taskId}/abort). Never throws: a network
+     * failure here means the backend is genuinely unreachable, which is
+     * itself the answer (signalled: false), not a caller-facing error.
+     */
+    public async abortTaskViaHttp(taskId: string): Promise<{ signalled: boolean }> {
+        try {
+            const response = await fetch(`${this._baseUrl}/task/${taskId}/abort`, {
+                method: 'POST',
+                headers: { ...this._authHeaders() },
+                signal: AbortSignal.timeout(5000),
+            });
+            if (!response.ok) {
+                return { signalled: false };
+            }
+            const data = await response.json();
+            return { signalled: Boolean(data?.signalled) };
+        } catch {
+            return { signalled: false };
+        }
+    }
+
+    /**
      * Phase 1.6.3 — Fetch available models from the discovery endpoint.
      * Tries LiteLLM proxy first; falls back to direct Ollama scan if proxy is down.
      * Returns empty array on any network error (non-blocking).

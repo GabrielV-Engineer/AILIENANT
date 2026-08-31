@@ -2334,6 +2334,18 @@ html, body, #root { height: 100%; }
 }
 .ws-loader-text { display: inline-block; }
 
+/* Non-destructive "still working" note (a LOCAL target only) — the
+   stream-stall watchdog's budget elapsed with no activity, but a merely-slow
+   generation on constrained hardware is never auto-killed for it. Distinct
+   warn tone from the loader's own accent color so it reads as a caveat on
+   top of "working", not a replacement for it. */
+.ws-timeline-loader-slow {
+  display: block;
+  margin-top: 2px;
+  color: var(--accent-warn);
+  font-size: 12px;
+}
+
 @keyframes ws-timeline-row-in {
   from { opacity: 0; transform: translateX(-6px); }
   to   { opacity: 1; transform: translateX(0); }

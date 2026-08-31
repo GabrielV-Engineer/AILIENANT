@@ -313,3 +313,99 @@ async def test_resolve_num_ctx_falls_back_to_the_architectural_ceiling_when_ram_
         n = await model_resolver.resolve_num_ctx(_ollama("ollama_chat/gemma4:e4b"), min_required=6000)
     model_resolver.refresh()
     assert n == 6000
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# check_local_admission — a hard pre-flight gate distinct from resolve_num_ctx's
+# WINDOW SIZING above: even a correctly-sized num_ctx can still be a call this
+# machine cannot currently afford to run at all (another process ate the RAM
+# since the last reading, or this is a resize that forces a full model
+# reload). Refuses outright rather than letting the OS silently thrash.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _ram_profile(available_gb: float) -> "object":
+    from shared.hardware import HardwareProfile
+
+    return HardwareProfile(
+        os_type="linux", is_apple_silicon=False,
+        ram_gb=64.0, ram_available_gb=available_gb, vram_gb=0.0, vram_used_gb=0.0,
+        gpu_name=None, cpu_name="test-cpu", cpu_cores=8, cpu_freq_mhz=3000.0,
+    )
+
+
+def _mock_ps_transport(models: list[dict], status: int = 200) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"models": models})
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_admits_when_ram_is_ample() -> None:
+    with patch("shared.hardware.HardwareDetector.detect", return_value=_ram_profile(32.0)), \
+         patch("httpx.AsyncClient", _client_factory(_mock_ps_transport([]))):
+        await model_resolver.check_local_admission(_ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192)
+    # No exception raised = admitted.
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_refuses_when_ram_is_tight() -> None:
+    # 8192 tokens * 14_500 bytes/token (~113 MB) against ~50 MB free must refuse.
+    with patch("shared.hardware.HardwareDetector.detect", return_value=_ram_profile(0.05)), \
+         patch("httpx.AsyncClient", _client_factory(_mock_ps_transport([]))):
+        with pytest.raises(model_resolver.LocalResourceExhaustedError, match="Not enough free memory"):
+            await model_resolver.check_local_admission(
+                _ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192,
+            )
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_adds_reload_headroom_for_an_already_resident_model() -> None:
+    """A resize that forces Ollama to reload the whole model needs headroom for
+    BOTH the outgoing and incoming copies transiently. Calibrated so the base
+    projection ALONE (~0.11 GB) comfortably admits against 1.5 GB free — the
+    raise below is proof the resident model's 1 GB was actually added, not an
+    artifact of an already-tight baseline."""
+    resident_models = [{"name": "gemma4:e4b", "size": 1024 * 1024 * 1024}]
+    with patch("shared.hardware.HardwareDetector.detect", return_value=_ram_profile(1.5)), \
+         patch("httpx.AsyncClient", _client_factory(_mock_ps_transport(resident_models))):
+        with pytest.raises(model_resolver.LocalResourceExhaustedError):
+            await model_resolver.check_local_admission(
+                _ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192,
+            )
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_ignores_a_different_resident_model() -> None:
+    """Reload headroom only applies to THIS call's own target model — another
+    model's residency must not inflate this call's projected footprint. Same
+    1.5 GB / 1 GB pairing as the sibling test above: if the model-name match
+    were ever wrongly loosened, this would start raising too."""
+    resident_models = [{"name": "some-other-model:7b", "size": 1024 * 1024 * 1024}]
+    with patch("shared.hardware.HardwareDetector.detect", return_value=_ram_profile(1.5)), \
+         patch("httpx.AsyncClient", _client_factory(_mock_ps_transport(resident_models))):
+        await model_resolver.check_local_admission(
+            _ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192,
+        )
+    # No exception — the other model's 1 GB never entered this call's projection.
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_is_noop_for_cloud_target() -> None:
+    """A cloud target has no local RAM constraint — must never even read
+    hardware, let alone refuse, regardless of how tight a mocked reading is."""
+    target = ModelTarget(model="gpt-4o", provider="openai", api_base=None, is_local=False)
+    with patch("shared.hardware.HardwareDetector.detect") as mock_detect:
+        await model_resolver.check_local_admission(target, requested_num_ctx=1_000_000)
+    mock_detect.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_check_local_admission_degrades_to_admit_on_hardware_read_failure() -> None:
+    """An unreadable hardware signal must not block a call — matches every
+    other best-effort probe's degrade-on-failure contract in this module."""
+    with patch("shared.hardware.HardwareDetector.detect", side_effect=RuntimeError("boom")):
+        await model_resolver.check_local_admission(
+            _ollama("ollama_chat/gemma4:e4b"), requested_num_ctx=8192,
+        )
+    # No exception raised = degraded to admit.

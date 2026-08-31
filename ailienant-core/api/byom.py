@@ -32,6 +32,8 @@ from core.config.byom_config import (
     load_byom_config,
     mask_api_key,
     save_byom_config,
+    stream_watchdog_is_local,
+    stream_watchdog_ms,
 )
 from core.config import embedding_resolver, model_resolver
 from core.config.model_pricing import price_for
@@ -747,7 +749,11 @@ async def put_config(request: Request) -> BYOMConfigResponse:
             await asyncio.to_thread(save_byom_config, merged)
             embedding_resolver.refresh()
             model_resolver.refresh()
-            await vfs_manager.broadcast_byom_config_applied(active.id, active.name)
+            await vfs_manager.broadcast_byom_config_applied(
+                active.id, active.name,
+                stream_watchdog_ms=stream_watchdog_ms(),
+                stream_watchdog_is_local=stream_watchdog_is_local(),
+            )
             await lazy_indexer.retry()
 
     return await get_config()

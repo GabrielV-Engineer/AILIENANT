@@ -347,6 +347,50 @@ def estimate_effort_costs(model: Optional[str] = None) -> Dict[str, Dict[str, An
 # same `if target.is_local` branches `_effective_timeout` already uses.
 _LOCAL_LLM_MAX_RETRIES: int = int(_env_timeout_s("AILIENANT_LOCAL_LLM_MAX_RETRIES", 1.0))
 
+# Per-chunk idle bound for a local streaming call (DEBT-191 follow-up, part 2).
+# `_effective_timeout`/`resolve_local_timeout` above bound the WHOLE call, sized
+# generously for a slow-but-steady local model — but a call-level bound cannot
+# distinguish "still generating, just slow" from "went completely silent" until
+# the full multi-minute budget elapses. A stream that stops producing chunks
+# entirely (the engine hung, or the process died) is a materially different
+# fault and should surface far sooner than the full call timeout. Cloud targets
+# are unaffected (only ever read where `target.is_local` gates it).
+_LOCAL_STREAM_IDLE_TIMEOUT_S: float = _env_timeout_s("AILIENANT_LOCAL_STREAM_IDLE_TIMEOUT_S", 45.0)
+
+
+class LocalStreamStalledError(RuntimeError):
+    """Raised when a local streaming call goes silent mid-flight — no new
+    chunk within `_LOCAL_STREAM_IDLE_TIMEOUT_S` — so a genuine stall becomes
+    a visible, logged failure instead of the caller (and the user) waiting on
+    the full call timeout, or indefinitely if the engine never recovers."""
+
+
+async def _iter_with_stall_detection(
+    stream: AsyncIterator[Any], *, idle_timeout_s: float, is_local: bool,
+) -> AsyncIterator[Any]:
+    """Re-yield ``stream``'s items, raising :class:`LocalStreamStalledError`
+    if the upstream goes silent for longer than ``idle_timeout_s`` between
+    items. A transparent passthrough for a non-local target — a cloud stall
+    is already covered by the caller's own `timeout=` and the frontend's
+    stream-stall watchdog.
+    """
+    if not is_local:
+        async for item in stream:
+            yield item
+        return
+    aiter = stream.__aiter__()
+    while True:
+        try:
+            item = await asyncio.wait_for(aiter.__anext__(), timeout=idle_timeout_s)
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError as exc:
+            raise LocalStreamStalledError(
+                f"Local model generation went silent for over {idle_timeout_s:.0f}s "
+                "mid-stream — the engine may be overloaded or stuck. Ending this turn."
+            ) from exc
+        yield item
+
 
 def _looks_like_oom(exc: Exception) -> bool:
     """True when an APIConnectionError message reveals a CUDA / VRAM OOM."""
@@ -894,9 +938,13 @@ class LLMGateway:
                     byom_kwargs["api_base"] = _target.api_base
                 if _target.api_key:
                     byom_kwargs["api_key"] = _target.api_key
-                byom_kwargs.update(
-                    await LLMGateway._resolve_local_num_ctx_kwarg(_target, messages, max_tokens)
+                _num_ctx_kwarg = await LLMGateway._resolve_local_num_ctx_kwarg(
+                    _target, messages, max_tokens
                 )
+                byom_kwargs.update(_num_ctx_kwarg)
+                if _target.is_local and "num_ctx" in _num_ctx_kwarg:
+                    from core.config.model_resolver import check_local_admission
+                    await check_local_admission(_target, _num_ctx_kwarg["num_ctx"])
 
         if byom_kwargs is not None:
             logger.debug(
@@ -1562,10 +1610,16 @@ class LLMGateway:
                 # once to the next callable ladder target; a second failure re-raises.
                 attempted_failover = False
                 while True:
+                    _num_ctx_kwarg = await LLMGateway._resolve_local_num_ctx_kwarg(
+                        target, messages, max_tokens
+                    )
+                    if target.is_local and "num_ctx" in _num_ctx_kwarg:
+                        from core.config.model_resolver import check_local_admission
+                        await check_local_admission(target, _num_ctx_kwarg["num_ctx"])
                     kwargs = LLMGateway._byom_kwargs(
                         target, messages, temperature=temperature, max_tokens=max_tokens,
                         timeout=_effective_timeout, stream=True, max_retries=_effective_max_retries,
-                        **await LLMGateway._resolve_local_num_ctx_kwarg(target, messages, max_tokens),
+                        **_num_ctx_kwarg,
                     )
                     kwargs.setdefault("stream_options", {"include_usage": True})
                     logger.debug("BYOM astream — model=%s base=%s trace=%s", target.model, target.api_base, trace_id)
@@ -1586,7 +1640,9 @@ class LLMGateway:
                         _effective_timeout = resolve_local_timeout(max_tokens, target.model) if target.is_local else timeout
                         _effective_max_retries = _LOCAL_LLM_MAX_RETRIES if target.is_local else LLM_MAX_TRANSPORT_RETRIES
                         attempted_failover = True
-                async for chunk in response:
+                async for chunk in _iter_with_stall_detection(
+                    response, idle_timeout_s=_LOCAL_STREAM_IDLE_TIMEOUT_S, is_local=target.is_local,
+                ):
                     # Final-chunk shape (include_usage): `usage` populated, `choices`
                     # may be empty. Pre-final chunks: `usage=None`, content in choices[0].delta.
                     usage = getattr(chunk, "usage", None)
@@ -1672,10 +1728,16 @@ class LLMGateway:
         # so the window must hold both — sizing num_ctx off max_tokens alone would
         # reproduce this exact bug's shape for the one case this parameter exists.
         _num_ctx_max_tokens = max_tokens + thinking_budget_tokens if thinking_on else max_tokens
+        _num_ctx_kwarg = await LLMGateway._resolve_local_num_ctx_kwarg(
+            target, messages, _num_ctx_max_tokens
+        )
+        if target.is_local and "num_ctx" in _num_ctx_kwarg:
+            from core.config.model_resolver import check_local_admission
+            await check_local_admission(target, _num_ctx_kwarg["num_ctx"])
         kwargs = LLMGateway._byom_kwargs(
             target, messages, temperature=temperature, max_tokens=max_tokens,
             timeout=_effective_timeout, stream=True, max_retries=_effective_max_retries,
-            **await LLMGateway._resolve_local_num_ctx_kwarg(target, messages, _num_ctx_max_tokens),
+            **_num_ctx_kwarg,
         )
         kwargs.setdefault("stream_options", {"include_usage": True})
         if thinking_on:
@@ -1727,7 +1789,9 @@ class LLMGateway:
                         response = cast(CustomStreamWrapper, await litellm.acompletion(**kwargs))
                     else:
                         raise
-                async for chunk in response:
+                async for chunk in _iter_with_stall_detection(
+                    response, idle_timeout_s=_LOCAL_STREAM_IDLE_TIMEOUT_S, is_local=target.is_local,
+                ):
                     usage = getattr(chunk, "usage", None)
                     if usage is not None:
                         prompt_tokens = int(

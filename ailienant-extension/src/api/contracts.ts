@@ -176,6 +176,13 @@ export interface ServerIndexingErrorEvent {
 export interface ByomConfigAppliedPayload {
     preset_id: string;
     preset_name: string;
+    // Additive: re-arms the stream-stall watchdog for whichever target the
+    // newly-activated preset resolves to, so a mid-session cloud<->local
+    // switch never leaves a stale budget/is-local pairing armed. Optional —
+    // absent on an older backend, in which case the pairing stays whatever
+    // the last task submit resolved.
+    stream_watchdog_ms?: number;
+    stream_watchdog_is_local?: boolean;
 }
 export interface ServerByomConfigAppliedEvent {
     event_type: 'server_byom_config_applied';

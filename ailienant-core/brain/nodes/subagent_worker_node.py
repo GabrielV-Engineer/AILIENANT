@@ -96,7 +96,7 @@ async def _resolve_tools(
         return {}
 
     try:
-        from brain.agent_context import resolve_context_budget
+        from brain.agent_context import resolve_real_window
         from core.deferred_tool_loader import DeferredToolLoader
         from core.tool_rag import TOOL_RAG_TOP_K, tool_rag_store
         from core.tool_registry import filter_loop_safe, resolve_tools
@@ -111,7 +111,7 @@ async def _resolve_tools(
             intent,
             active_role=role,
             session_mode=session_mode,
-            context_window=resolve_context_budget(state),
+            context_window=await resolve_real_window(state),
             # +1 so the tool_search slot the deferred branch reserves does not
             # cost this subagent one of its usable tools (see agentic_cell.py).
             k=TOOL_RAG_TOP_K + 1,

@@ -69,6 +69,15 @@ async def resolve_real_window(state: Mapping[str, Any], tier: str = "big") -> in
     """Resolve the ACTUAL served context window for ``tier``, probed from the
     runtime rather than trusted from a declared profile.
 
+    For a local Ollama target this is the RAM-clamped window
+    (:func:`core.config.model_resolver.resolve_num_ctx`) — the model's
+    architectural maximum is routinely far larger than what this specific
+    machine can actually serve, and a budget check against the architectural
+    number alone lets a caller (the summarizer's compaction trigger, the
+    tool-RAG eager/deferred gate) let far more into the prompt than the local
+    engine can hold. A cloud target is unaffected — no local RAM constraint
+    applies, so the architectural ceiling remains correct there.
+
     Falls back to :func:`resolve_context_budget` when the tier cannot be
     resolved to a concrete target, or when the runtime probe returns unknown
     (a non-Ollama provider, or a transient probe failure) — never raises, and
@@ -76,12 +85,16 @@ async def resolve_real_window(state: Mapping[str, Any], tier: str = "big") -> in
     an unresolved probe simply defers to the existing conservative behaviour.
     """
     try:
-        from core.config.model_resolver import get_chat_target, probe_runtime_capabilities
+        from core.config.model_resolver import get_chat_target, probe_runtime_capabilities, resolve_num_ctx
 
         target = get_chat_target(tier)
         if target is not None:
             caps = await probe_runtime_capabilities(target)
             if caps.context_length is not None and caps.context_length > 0:
+                if getattr(target, "is_local", False):
+                    ram_aware = await resolve_num_ctx(target, min_required=caps.context_length)
+                    if ram_aware is not None:
+                        return ram_aware
                 return caps.context_length
     except Exception:  # noqa: BLE001 — a probe fault must degrade, never block the caller
         logger.debug("resolve_real_window: probe failed for tier=%s", tier, exc_info=True)

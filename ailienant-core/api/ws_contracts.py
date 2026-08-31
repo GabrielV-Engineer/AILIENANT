@@ -399,6 +399,12 @@ class ByomConfigAppliedPayload(BaseModel):
     """Emitted after a BYOM preset is saved and applied to config.yaml."""
     preset_id: str
     preset_name: str
+    # Additive (§10): re-arms the client's stream-stall watchdog for whichever
+    # target the newly-activated preset resolves to, so switching cloud<->local
+    # mid-session never leaves a stale budget/is-local pairing armed until the
+    # next task submit. Optional — an older client simply ignores them.
+    stream_watchdog_ms: Optional[int] = None
+    stream_watchdog_is_local: Optional[bool] = None
 
 
 class ServerByomConfigAppliedEvent(BaseModel):

@@ -397,7 +397,7 @@ async def run_agentic_cell_node(
     state: Dict[str, Any], config: Optional[RunnableConfig] = None
 ) -> Dict[str, Any]:
     """One ReAct iteration. See module docstring for the loop contract."""
-    from brain.agent_context import resolve_context_budget
+    from brain.agent_context import resolve_real_window
     from core.blob_storage import blob_storage
     from core.deferred_tool_loader import DeferredToolLoader
     from core.permissions import PermissionDecision, session_mode_from_channel
@@ -710,7 +710,7 @@ async def run_agentic_cell_node(
             _compose_cell_intent(state),
             active_role=active_role,
             session_mode=session_mode,
-            context_window=resolve_context_budget(state),
+            context_window=await resolve_real_window(state),
             k=TOOL_RAG_TOP_K + 1,
         )
         selected_schemas = list(decision.schemas)

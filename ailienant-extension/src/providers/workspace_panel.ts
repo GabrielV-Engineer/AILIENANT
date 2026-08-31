@@ -929,7 +929,7 @@ export class WorkspacePanelManager {
                                 }
                             }
                         }
-                        const watchdogMs = await SessionManager.forSession(session.id).startAITask(taskText, {
+                        const watchdog = await SessionManager.forSession(session.id).startAITask(taskText, {
                             explicit_mentions,
                             // Phase 9 (ADR-707) — forwarded from the Webview's
                             // persisted Native Thinking toggle (default true).
@@ -950,10 +950,14 @@ export class WorkspacePanelManager {
                             accepted_plan: data.accepted_plan as boolean | undefined,
                         });
                         // Backend-governed stream-stall timeout (longer for slow local
-                        // engines). The webview arms its watchdog from this — never a
-                        // hardcoded UI constant.
-                        if (typeof watchdogMs === 'number') {
-                            panel.webview.postMessage({ type: 'STREAM_WATCHDOG_MS', payload: watchdogMs });
+                        // engines) plus whether that target is local. The webview arms
+                        // its watchdog from this — never a hardcoded UI constant.
+                        if (watchdog) {
+                            panel.webview.postMessage({
+                                type: 'STREAM_WATCHDOG_MS',
+                                payload: watchdog.watchdogMs,
+                                isLocal: watchdog.isLocal,
+                            });
                         }
                     }
                     break;
@@ -985,12 +989,15 @@ export class WorkspacePanelManager {
                     // in-flight HTTP, harmless here).
                     const ws = WSClient.getInstance();
                     if (ws.getStatus() !== 'connected') {
-                        // Socket is down — the abort can't reach the backend. Synthesize
-                        // a negative ACK so the UI clears its optimistic isAborting flag
-                        // and surfaces the failure, instead of freezing the Stop button.
+                        // Socket is down — client_abort_mesh can't reach the backend over
+                        // WS. Fall back to the HTTP abort endpoint (same idempotent
+                        // task_service.abort_session underneath) so Stop still works in
+                        // exactly the scenario where it matters most — a stuck/overloaded
+                        // backend that also dropped the WS heartbeat.
+                        const { signalled } = await APIClient.getInstance().abortTaskViaHttp(session.id);
                         panel.webview.postMessage({
                             type: 'server_abort_ack',
-                            payload: { session_id: session.id, signalled: false },
+                            payload: { session_id: session.id, signalled },
                         });
                         break;
                     }

@@ -169,9 +169,11 @@ tracked over more than one data point.
 | DEBT-175 | `TOOL_RAG_TOP_K` cannot rise until the Phase-5.7 gate's baseline is reworked; its prescribed remedy is near self-cancelling | MEDIUM · Floating |
 | DEBT-176 | No tool-invocation telemetry exists; a usage prior would break `select_tools` determinism | LOW · Floating |
 | DEBT-178 | `toggle_plan_mode`'s READ_ONLY tier cannot express that it mutates the permission channel | LOW · Floating |
-| DEBT-194 | No liveness signal exists to distinguish "local model is slow" from "local model is dead" | LOW · Floating |
+| DEBT-194 | No liveness signal exists to distinguish "local model is slow" from "local model is dead" | LOW · Floating, PARTIALLY RESOLVED 2026-08-31 (streaming paths only) |
 | DEBT-199 | `apply_patch`/`apply_commit` assume SWARM (`parallel_tasks`) stays dormant | LOW · Floating |
 | DEBT-200 | No one-click revert for an applied step; VS Code Local History is the only recovery path | MEDIUM · Floating |
+| DEBT-217 | No Runtime Capacity panel; the chat HUD's context-window ring reads the wrong denominator on a local target | MEDIUM · Floating |
+| DEBT-218 | No way to reconfigure Ollama's KV-cache quantization from AILIENANT | MEDIUM · Floating |
 
 ---
 
@@ -1754,6 +1756,34 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 
 ---
 
+### DEBT-217 [MEDIUM · Floating] — No Runtime Capacity panel; the chat HUD's context-window ring reads the wrong denominator on a local target
+
+- **Date:** 2026-08-31
+- **Files:** `ailienant-extension/src/workspace/components/TelemetryHUD.tsx` (`OccContextRing`), `ailienant-core/api/sessions.py` (`compute_context_occupancy`), `ailienant-core/core/config/model_resolver.py` (`resolve_num_ctx`, `check_local_admission` — the RAM-aware/`/api/ps`-informed resolution this panel would consume), `ailienant-core/core/config/byom_config.py`.
+- **Capability (not built) + adjacent real bug found while investigating it:** `compute_context_occupancy` sizes the chat HUD ring's denominator from `_resolve_model_window` (the model's **architectural** ceiling via `litellm.get_model_info()`, or a static 8192 fallback) — never the RAM-clamped `num_ctx` a local Ollama target actually gets served. `resolve_num_ctx`'s own docstring already says this explicitly. On constrained hardware the ring can read "9% full" against a number that was never the real ceiling, while the real (RAM-clamped) window is already tight — silently reproducing the exact context-shift/JSON-drift failure mode `_resolve_local_num_ctx_kwarg`'s docstring already documented once.
+- **The requested capability:** a reference-only (not live/streaming) panel in the web dashboard's Runtime section. Spec, as designed with the user:
+  - Top-left hamburger menu lists every configured BYOM preset; selecting one switches the panel to that preset.
+  - The preset's models are listed (one row per tier), each with its estimated tokens/sec (sourced from `_measured_local_seconds_per_token`'s calibration window, `tools/llm_gateway.py`, once fed — see DEBT-192). Clicking a model switches the graph to that model's estimate.
+  - The graph is a nested "matryoshka" treemap: three boxes, outermost-to-innermost — a fixed 1M-token horizon (scale anchor) → the model's architectural capacity → the hardware-resolved ceiling (`resolve_num_ctx`/`check_local_admission`'s real reading). Nesting is stylized for legibility, not strict area-proportional (a true area-proportional treemap renders the hardware box as an invisible sliver next to a 1M anchor).
+  - Below the graph: a KV-cache-quantization selector (f16/q8_0/q4_0) that is a pure **what-if estimator** — selecting an option recomputes and redraws only the hardware-ceiling box using that quantization's bytes-per-token multiplier. It does **not** touch the running Ollama process (see DEBT-218, kept deliberately separate). Accurate per-quantization multipliers (roughly q8_0 ≈ half of f16's KV bytes/token, q4_0 ≈ a quarter — first-order approximations, to be validated empirically) would replace today's single blanket `_ESTIMATED_KV_BYTES_PER_TOKEN`, ideally derived per-model from architecture fields if Ollama's `/api/show` exposes them.
+- **Why it is not a defect:** the HUD ring's current denominator was a working design for a cloud-only or unconstrained-hardware deployment; nothing shipped claims it reflects post-RAM-clamp reality.
+- **What it would take:** the panel itself (frontend, dashboard-only, no code built this pass); once its real-capacity resolution logic exists, point `compute_context_occupancy` at it instead of the architectural max so the (separate, still-live) chat HUD ring also becomes accurate.
+- **Phase:** unscheduled — a real feature slice.
+
+---
+
+### DEBT-218 [MEDIUM · Floating] — No way to reconfigure Ollama's KV-cache quantization from AILIENANT
+
+- **Date:** 2026-08-31
+- **Files:** none yet — no code exists for this; would touch a new OS-integration module plus whatever surfaces the action (see DEBT-217's what-if estimator, which this would upgrade from "estimate" to "apply").
+- **Capability (not built):** `OLLAMA_KV_CACHE_TYPE` (and typically its prerequisite `OLLAMA_FLASH_ATTENTION=1`) are read by the Ollama **server process** at startup, not a per-request API option, and AILIENANT neither launches nor manages that process today (confirmed: no `ollama serve`/process-spawning code exists anywhere in `ailienant-core`; it is only ever a client). A user cannot ask AILIENANT to "just switch to q8_0" and have it happen.
+- **Why it is not a defect:** nothing shipped claims this control exists; f16 (Ollama's default) is what any user gets who never sets the env var themselves, regardless of AILIENANT.
+- **Why this needs its own design pass, not a quick patch:** actually applying this safely requires (a) detecting how Ollama is currently running on this OS — tray app, systemd service, or manual — each with a different persistence mechanism (Windows `setx`/registry, macOS `launchctl setenv`, a `systemd` drop-in on Linux), and (b) safely stopping/restarting a process that may be **shared with other tools** the user runs against the same Ollama instance — real shared-infrastructure risk with a genuine bad-failure-mode: a botched restart could leave the user with no working Ollama at all, worse than the status quo. This is exactly the class of action that needs an explicit, non-silent confirmation UX stating the shared-service risk, plus a post-restart verification read-back before ever telling the user it worked — not a bare click.
+- **What it would take:** an OS-detection step, a per-OS persistence writer, an explicit confirmation dialog, a stop/restart sequence, and a verification read-back (re-probe `/api/show`/`/api/ps` for the new setting) before reporting success. A genuinely separate, larger feature from DEBT-217's read-only estimator.
+- **Phase:** unscheduled — needs its own design spike before a build ticket.
+
+---
+
 ### DEBT-025 [LOW · Blocked] — Docker persistent-PTY backend has no daemon integration test
 
 - **Date:** 2026-06-09
@@ -2148,9 +2178,11 @@ Before 13.0.9, `pre_patch`/`post_patch` ran exactly once per coding turn, over t
 - **Notes:** logged at 13.0.3 ship per CLAUDE.md §11.3.
 
 
-### DEBT-194 [LOW · Floating] — No liveness signal exists to distinguish "local model is slow" from "local model is dead"
+### DEBT-194 [LOW · Floating, PARTIALLY RESOLVED 2026-08-31] — No liveness signal exists to distinguish "local model is slow" from "local model is dead"
 
 `ainvoke` makes one non-streaming `await litellm.acompletion(...)` — no incremental feedback exists until the full response or a timeout error returns, so DEBT-191's larger, hardware-scaled timeouts necessarily also mean a genuinely dead/hung local endpoint now takes proportionally longer to surface as an error (there is no way to tell the two apart with a single lump-sum request timeout). A proper fix would need `ainvoke` itself to move onto a streaming call, where each token's arrival could reset a per-chunk gap timeout instead of one whole-request timeout (a much closer proxy for "still working" vs. "hung") — real architectural work, correctly out of scope for DEBT-191's actual purpose.
+
+**2026-08-31:** The exact gap this entry describes was closed for the paths that actually serve live chat generation — `astream_byom`/`astream_byom_thinking` (`tools/llm_gateway.py`) now wrap their `async for chunk in response` loop in `_iter_with_stall_detection`, an `asyncio.wait_for`-bound per-chunk idle timeout (`AILIENANT_LOCAL_STREAM_IDLE_TIMEOUT_S`, default 45s) that raises `LocalStreamStalledError` well before the full call-level timeout, independent of the client-side watchdog. `ainvoke`'s own single lump-sum timeout (the literal target of this entry's text) is unchanged — it remains the mini-judge/summarizer path, not the interactive chat turn, so this entry stays open for that narrower remaining scope rather than being marked fully RESOLVED.
 
 
 ### DEBT-199 [LOW · Floating] — `apply_patch`/`apply_commit` assume SWARM (`parallel_tasks`) stays dormant

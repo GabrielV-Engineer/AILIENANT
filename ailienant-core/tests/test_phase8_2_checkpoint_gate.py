@@ -341,3 +341,60 @@ async def test_planner_low_vram_reroutes_local_to_cloud() -> None:
 
     assert result["context_metrics"].routing_decision == "CLOUD"
     assert result["routing_warning"] is not None
+
+
+async def test_planner_overflow_reroute_runs_even_with_no_bound_profile() -> None:
+    """`active_llm_profile` is essentially never bound in production (its only
+    write site is resource_manager.py's cloud-fallback branch) — before this
+    fix, that meant the overflow-risk check was silently SKIPPED whenever the
+    profile was unbound (the normal case), regardless of how large the state
+    actually was. This is the regression proof: it fails against the
+    pre-fix code (no `active_llm_profile` here => `_ctx_window` stayed 0 =>
+    `estimate_graph_weight` never ran => `overflow_risk` stayed False =>
+    `hardware_reroute` was never even asked about it) and passes now that
+    resolution runs unconditionally off the RUNTIME-probed window."""
+    search, deep, audit, llm = _planner_mocks(sem=0.9, coverage=0.9)
+    # Ample VRAM so a reroute, if it happens, is provably caused by
+    # overflow_risk alone — never the VRAM-floor branch already covered above.
+    state = _state(
+        "refactor the authentication module",
+        hardware_profile=_profile(vram_gb=24.0),
+        # No active_llm_profile bound — the realistic production case.
+    )
+
+    from core.graph_weight import GraphWeightEstimate
+
+    with patch("agents.researcher.DEBUG_MODE", False), \
+         patch("core.state_manager.load_state_from_markdown", return_value=None), \
+         patch("core.state_manager.dump_state_to_markdown", return_value=True), \
+         patch("agents.researcher.audit_task_complexity", new=audit), \
+         patch("agents.researcher.check_cloud_availability", return_value=True), \
+         patch(
+             "agents.researcher.resolve_real_window", new=AsyncMock(return_value=4_096),
+         ) as mock_resolve_window, \
+         patch("agents.researcher.estimate_graph_weight") as mock_weight, \
+         patch("tools.researcher_tools.build_researcher_tools", return_value={}), \
+         patch("core.memory.semantic_memory.SemanticMemoryManager") as sem_cls, \
+         patch("core.memory.graphrag_extractor.GraphRAGDynamicExtractor") as extr_cls, \
+         patch("tools.llm_gateway.LLMGateway.ainvoke", new=llm), \
+         patch("agents.researcher.hardware_reroute") as mock_reroute:
+        extr_cls.return_value.deep_parse = deep
+        sem_cls.return_value.search_with_paths = search
+        mock_weight.return_value = GraphWeightEstimate(
+            estimated_tokens=50_000, budget_tokens=3_276, overflow_risk=True,
+        )
+        mock_reroute.return_value = ("LOCAL_SMALL", "ollama", None)  # no-op passthrough
+
+        from agents.researcher import run_researcher_node
+        await run_researcher_node(state, _RCFG)
+
+    # Before this fix, `active_llm_profile` being unbound meant `_ctx_window`
+    # stayed 0, the whole `if _ctx_window > 0` block was skipped, and NEITHER
+    # of these two calls happened at all — this asserts both now run
+    # unconditionally, and that the RAM-aware window actually reaches the
+    # weight estimate and then the reroute decision.
+    mock_resolve_window.assert_called_once()
+    assert mock_resolve_window.call_args.kwargs.get("tier") == "small"  # from "LOCAL_SMALL"
+    mock_weight.assert_called_once_with(state, model_context_window=4_096)
+    mock_reroute.assert_called_once()
+    assert mock_reroute.call_args.kwargs["overflow_risk"] is True

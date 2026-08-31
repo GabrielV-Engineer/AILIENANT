@@ -20,6 +20,7 @@ WS boundary is stubbed.
 from __future__ import annotations
 
 import functools
+from types import SimpleNamespace
 from typing import List, Tuple
 from unittest.mock import AsyncMock, patch
 
@@ -395,3 +396,59 @@ async def test_resolve_real_window_falls_back_on_resolver_import_or_probe_error(
     with patch("core.config.model_resolver.get_chat_target", side_effect=RuntimeError("boom")):
         window = await resolve_real_window({}, tier="big")
     assert window == DEFAULT_CONTEXT_BUDGET
+
+
+async def test_resolve_real_window_prefers_the_ram_clamped_window_for_a_local_target() -> None:
+    """The whole point of this fix: a local target's architectural ceiling
+    (131_072) is routinely far larger than what THIS machine can actually
+    serve. `resolve_num_ctx` (RAM-aware) must win over the raw architectural
+    number whenever the resolved target is local — proven here by making the
+    two disagree and asserting the SMALLER, RAM-aware value is returned."""
+    from core.config.model_resolver import RuntimeCapabilities
+
+    fake_local_target = SimpleNamespace(is_local=True)
+    with patch("core.config.model_resolver.get_chat_target", return_value=fake_local_target), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=131_072, supports_thinking=True)),
+         ), \
+         patch(
+             "core.config.model_resolver.resolve_num_ctx",
+             new=AsyncMock(return_value=9_216),  # the RAM-clamped ceiling, deliberately << 131_072
+         ):
+        window = await resolve_real_window({}, tier="big")
+    assert window == 9_216
+
+
+async def test_resolve_real_window_keeps_the_architectural_ceiling_for_a_cloud_target() -> None:
+    """A cloud target has no local RAM constraint — resolve_num_ctx must never
+    even be consulted, let alone override the architectural number."""
+    from core.config.model_resolver import RuntimeCapabilities
+
+    fake_cloud_target = SimpleNamespace(is_local=False)
+    with patch("core.config.model_resolver.get_chat_target", return_value=fake_cloud_target), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=200_000, supports_thinking=False)),
+         ), \
+         patch("core.config.model_resolver.resolve_num_ctx", new=AsyncMock()) as mock_num_ctx:
+        window = await resolve_real_window({}, tier="big")
+    assert window == 200_000
+    mock_num_ctx.assert_not_called()
+
+
+async def test_resolve_real_window_falls_back_to_architectural_when_num_ctx_is_unresolvable() -> None:
+    """If resolve_num_ctx itself can't resolve (non-Ollama, or an internal
+    probe miss), degrade to the architectural ceiling rather than losing the
+    window entirely."""
+    from core.config.model_resolver import RuntimeCapabilities
+
+    fake_local_target = SimpleNamespace(is_local=True)
+    with patch("core.config.model_resolver.get_chat_target", return_value=fake_local_target), \
+         patch(
+             "core.config.model_resolver.probe_runtime_capabilities",
+             new=AsyncMock(return_value=RuntimeCapabilities(context_length=131_072, supports_thinking=True)),
+         ), \
+         patch("core.config.model_resolver.resolve_num_ctx", new=AsyncMock(return_value=None)):
+        window = await resolve_real_window({}, tier="big")
+    assert window == 131_072

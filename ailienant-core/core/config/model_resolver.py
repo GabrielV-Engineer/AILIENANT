@@ -300,6 +300,98 @@ def _estimate_ram_affordable_num_ctx() -> Optional[int]:
         return None
 
 
+class LocalResourceExhaustedError(RuntimeError):
+    """Raised when a local-tier call is refused pre-flight because this
+    machine's free RAM cannot plausibly absorb it — never raised for a cloud
+    target, where no local RAM constraint applies."""
+
+
+# Floor of free RAM (after this call's projected KV-cache footprint) required
+# to admit a local-tier request at all. Distinct from `_estimate_ram_affordable_
+# num_ctx`'s 50% reservation above: that shapes HOW BIG a window to request;
+# this is a hard admission gate that can refuse the call outright rather than
+# let the OS start swapping. Env-overridable — a genuine per-deployment policy
+# choice, not a derivable fact.
+_LOCAL_RAM_SAFETY_FLOOR_MB: int = int(os.getenv("AILIENANT_LOCAL_RAM_SAFETY_FLOOR_MB", "1024"))
+
+_PS_PROBE_TIMEOUT_S: float = 5.0
+
+
+async def _query_ollama_ps(api_base: str) -> Optional[list[Dict[str, Any]]]:
+    """Live snapshot of what Ollama currently has resident (``GET /api/ps``).
+
+    Returns ``None`` on any transport/parse fault — a probe fault must
+    degrade to "unknown," never block or corrupt the admission check it
+    feeds. Mirrors ``_probe_ollama_show``'s own degrade-on-failure contract.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_PS_PROBE_TIMEOUT_S) as client:
+            resp = await client.get(f"{api_base.rstrip('/')}/api/ps")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:  # noqa: BLE001 — a probe fault must degrade, never block a chat turn
+        logger.debug("Ollama /api/ps probe failed at %s: %s", api_base, exc)
+        return None
+    models = data.get("models")
+    return models if isinstance(models, list) else None
+
+
+async def check_local_admission(target: Any, requested_num_ctx: int) -> None:
+    """Pre-flight admission gate for a local-tier call — refuses outright
+    rather than letting the OS silently thrash for minutes.
+
+    Raises :class:`LocalResourceExhaustedError` when this machine's current
+    free RAM cannot plausibly absorb the call's projected KV-cache footprint
+    plus the safety floor. A no-op for a non-local target (no RAM constraint
+    applies) or when the hardware/probe reads themselves fail — degrading to
+    "admit" on an unreadable signal matches every other best-effort probe in
+    this module (never block a call on a broken thermometer).
+
+    When ``/api/ps`` shows this exact model already resident at a SMALLER
+    window than ``requested_num_ctx``, Ollama must fully reload it to serve
+    the larger window (this module's own resolve_num_ctx docstring: "Ollama
+    reloads the ENTIRE model when num_ctx changes") — a reload can transiently
+    need memory for both the outgoing and incoming copies, so that model's
+    own currently-resident size is added to the projected footprint for this
+    check only, never to the served ``num_ctx`` sizing itself.
+    """
+    if not getattr(target, "is_local", False):
+        return
+    try:
+        from shared.hardware import HardwareDetector
+
+        profile = HardwareDetector.detect()
+        available_bytes = profile.ram_available_gb * 1024**3
+    except Exception:  # noqa: BLE001 — an unreadable hardware signal must not block the call
+        logger.debug("check_local_admission: hardware read failed (non-fatal)", exc_info=True)
+        return
+
+    projected_bytes = requested_num_ctx * _ESTIMATED_KV_BYTES_PER_TOKEN
+
+    api_base = getattr(target, "api_base", None)
+    model_id = getattr(target, "model", None)
+    if api_base and model_id:
+        bare_name = _bare_ollama_model_name(model_id)
+        ps_models = await _query_ollama_ps(api_base)
+        if ps_models is not None:
+            for entry in ps_models:
+                entry_name = entry.get("name") or entry.get("model")
+                if entry_name and _bare_ollama_model_name(str(entry_name)) == bare_name:
+                    resident_size = entry.get("size")
+                    if isinstance(resident_size, int) and resident_size > 0:
+                        projected_bytes += resident_size  # reload headroom
+                    break
+
+    floor_bytes = _LOCAL_RAM_SAFETY_FLOOR_MB * 1024 * 1024
+    if available_bytes - projected_bytes < floor_bytes:
+        raise LocalResourceExhaustedError(
+            "Not enough free memory for this local model at this context size "
+            f"(~{projected_bytes / 1024**3:.1f} GB projected, "
+            f"{available_bytes / 1024**3:.1f} GB free) — close other "
+            "applications, pick a smaller model tier, or lower max tokens."
+        )
+
+
 async def resolve_num_ctx(target: Any, min_required: int) -> Optional[int]:
     """Resolve a served context window for ``target`` that can hold
     ``min_required`` tokens (the caller's real prompt + max_tokens + margin),

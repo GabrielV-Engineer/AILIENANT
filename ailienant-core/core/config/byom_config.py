@@ -134,6 +134,15 @@ _WATCHDOG_LOCAL_MS: int = 180_000
 _WATCHDOG_CLOUD_MS: int = 90_000
 
 
+def _resolve_watchdog_target() -> Optional[ModelTarget]:
+    """The same 'big, else medium' target both watchdog functions below govern
+    their behaviour by — one resolution, shared, so the timeout and the
+    is-local signal sent alongside it can never disagree about which target
+    they describe."""
+    cfg = load_byom_config()
+    return cfg.chat_models.get("big") or cfg.chat_models.get("medium")
+
+
 def stream_watchdog_ms() -> int:
     """Resolve the client stream-watchdog timeout from the active model routing.
 
@@ -148,13 +157,31 @@ def stream_watchdog_ms() -> int:
     from shared.config import check_cloud_availability
 
     try:
-        cfg = load_byom_config()
-        target = cfg.chat_models.get("big") or cfg.chat_models.get("medium")
+        target = _resolve_watchdog_target()
         if target is not None:
             return _WATCHDOG_LOCAL_MS if target.is_local else _WATCHDOG_CLOUD_MS
     except Exception as exc:  # noqa: BLE001 — a config read must never break submit
         logger.warning("stream_watchdog_ms: config read failed (%s); using fallback", exc)
     return _WATCHDOG_CLOUD_MS if check_cloud_availability() else _WATCHDOG_LOCAL_MS
+
+
+def stream_watchdog_is_local() -> bool:
+    """Whether the target `stream_watchdog_ms()` sized its budget for is local.
+
+    Sent alongside the watchdog budget so the client can distinguish "still
+    working, just slow" (never auto-kill the turn) from a genuine cloud stall
+    (today's teardown behaviour, unchanged) once the budget elapses. Same
+    fallback direction as `stream_watchdog_ms()`: an unconfigured box is
+    local-only, so a read failure degrades to True, not False.
+    """
+    try:
+        target = _resolve_watchdog_target()
+        if target is not None:
+            return target.is_local
+    except Exception as exc:  # noqa: BLE001 — a config read must never break submit
+        logger.warning("stream_watchdog_is_local: config read failed (%s); using fallback", exc)
+    from shared.config import check_cloud_availability
+    return not check_cloud_availability()
 
 
 def load_byom_config() -> BYOMConfig:

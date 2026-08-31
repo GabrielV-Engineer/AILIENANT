@@ -21,6 +21,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agents.prompts import build_safe_prompt
 from agents.recency import compute_recency_score, session_heatmap
+from brain.agent_context import resolve_real_window
 from brain.state import ContextMeter
 from core.graph_weight import estimate_graph_weight
 from core.memory.context_auditor import (
@@ -599,8 +600,17 @@ async def run_researcher_node(
         _hw_profile = state.get("hardware_profile")
         _overflow_risk = False
         if _cascade_routing.startswith("LOCAL"):
-            _llm_profile = state.get("active_llm_profile")
-            _ctx_window = int(getattr(_llm_profile, "context_window", 0) or 0)
+            # `active_llm_profile.context_window` is essentially never bound in
+            # production (the only write site is resource_manager.py's
+            # cloud-fallback branch), so gating this check on it being set
+            # silently disabled overflow prediction for local routing almost
+            # always. `resolve_real_window` probes the RUNTIME-served (RAM-
+            # clamped) window for the tier this decision is actually about to
+            # use — derived directly from the routing string itself
+            # ("LOCAL_SMALL"/"LOCAL_MEDIUM"/"LOCAL_BIG" -> "small"/"medium"/"big",
+            # exactly model_resolver.py's _TIER_ORDER vocabulary), never guessed.
+            _tier = _cascade_routing[len("LOCAL_"):].lower()
+            _ctx_window = await resolve_real_window(state, tier=_tier)
             if _ctx_window > 0:
                 _weight = estimate_graph_weight(
                     state, model_context_window=_ctx_window

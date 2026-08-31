@@ -612,10 +612,27 @@ class ConnectionManager:
                     session_id, exc_info=True,
                 )
 
-    async def broadcast_byom_config_applied(self, preset_id: str, preset_name: str) -> None:
-        """Notify all connected clients that a BYOM preset was applied."""
+    async def broadcast_byom_config_applied(
+        self,
+        preset_id: str,
+        preset_name: str,
+        *,
+        stream_watchdog_ms: Optional[int] = None,
+        stream_watchdog_is_local: Optional[bool] = None,
+    ) -> None:
+        """Notify all connected clients that a BYOM preset was applied.
+
+        Piggybacks the freshly-resolved stream-watchdog budget/is-local
+        pairing on this existing broadcast rather than adding a new WS event
+        type — a preset switch is exactly the moment that pairing can go
+        stale (task-submit is otherwise the only place it's ever pushed).
+        """
         event = ServerByomConfigAppliedEvent(
-            data=ByomConfigAppliedPayload(preset_id=preset_id, preset_name=preset_name)
+            data=ByomConfigAppliedPayload(
+                preset_id=preset_id, preset_name=preset_name,
+                stream_watchdog_ms=stream_watchdog_ms,
+                stream_watchdog_is_local=stream_watchdog_is_local,
+            )
         )
         payload = ws_adapter.dump_json(event).decode("utf-8")
         for ws in list(self.active_connections.values()):

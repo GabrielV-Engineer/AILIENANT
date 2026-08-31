@@ -198,6 +198,11 @@ function AgentTimelineImpl({
 }: AgentTimelineProps): JSX.Element | null {
     const done = !streaming;
     const config = useChatStore((s) => s.config);
+    // Set by the stream-stall watchdog for a LOCAL target only, once its budget
+    // elapses with no activity — a merely-slow-but-alive generation, never
+    // auto-killed. This is the live loader row's job to surface (per this
+    // file's own "only place 'what's happening right now' is shown" contract).
+    const streamSlow = useChatStore((s) => s.streamSlow);
     // Initial state is derived from isLatestTurn, not hardcoded true: a
     // rehydrated past turn mounts already-collapsed (no expand-then-collapse
     // flash); the current turn mounts open. The effect below only ever
@@ -470,6 +475,11 @@ function AgentTimelineImpl({
                             <span className="ws-timeline-dot" data-status="active" aria-hidden="true" />
                             <div className="ws-timeline-row-body">
                                 <LoaderText text={loaderText} />
+                                {streamSlow && (
+                                    <span className="ws-timeline-loader-slow">
+                                        Still working — the local model is slower than expected.
+                                    </span>
+                                )}
                             </div>
                         </div>
                     )}

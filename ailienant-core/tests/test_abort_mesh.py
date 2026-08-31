@@ -244,6 +244,48 @@ def test_client_abort_mesh_payload_contract_round_trip() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 5b. HTTP abort fallback — Stop must work even when the WS itself is down.
+# Reuses the identical abort_session/interrupt_session mechanism as
+# client_abort_mesh above; this proves the SECOND entry point onto it, callable
+# with zero WebSocket connectivity, actually cancels a live backend task.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_http_abort_fallback_cancels_live_task() -> None:
+    import main
+
+    ts = main.task_service  # the exact instance task_abort's endpoint closes over
+    started = asyncio.Event()
+
+    async def _slow_runner() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            return
+
+    task = asyncio.create_task(_slow_runner())
+    await started.wait()
+    ts.register_active_task("sess-http-abort", task)
+
+    result = await main.task_abort("sess-http-abort")
+
+    assert result == {"signalled": True}
+    # The runner catches CancelledError and returns cleanly (mirrors the
+    # WS-path sibling test above) — proof cancellation actually propagated
+    # into the live task, not just that the registry entry was touched.
+    await asyncio.wait_for(task, timeout=1.0)
+    assert "sess-http-abort" not in ts._active_tasks
+
+
+async def test_http_abort_fallback_reports_false_for_an_unknown_session() -> None:
+    import main
+
+    result = await main.task_abort("sess-never-existed")
+    assert result == {"signalled": False}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 6. Stream-resilience (ADR-715) — delivery ACKs + idempotent submit
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -332,3 +374,54 @@ def test_stream_watchdog_ms_is_local_vs_cloud_aware() -> None:
         assert stream_watchdog_ms() == _WATCHDOG_LOCAL_MS
     with _patch("core.config.byom_config.load_byom_config", return_value=cloud_cfg):
         assert stream_watchdog_ms() == _WATCHDOG_CLOUD_MS
+
+
+def test_stream_watchdog_is_local_agrees_with_stream_watchdog_ms() -> None:
+    """The two functions resolve the SAME target (via the shared
+    `_resolve_watchdog_target` helper) — this is the falsifiable proof they
+    can never disagree about which target they describe, which is the whole
+    point of sending them paired to the client."""
+    from unittest.mock import patch as _patch
+
+    from core.config.byom_config import (
+        BYOMConfig,
+        ModelTarget,
+        stream_watchdog_is_local,
+    )
+
+    local_cfg = BYOMConfig(
+        chat_models={
+            "big": ModelTarget(model="ollama/llama3.1", provider="ollama", is_local=True)
+        }
+    )
+    cloud_cfg = BYOMConfig(
+        chat_models={
+            "big": ModelTarget(model="gpt-4o", provider="openai", is_local=False)
+        }
+    )
+    with _patch("core.config.byom_config.load_byom_config", return_value=local_cfg):
+        assert stream_watchdog_is_local() is True
+    with _patch("core.config.byom_config.load_byom_config", return_value=cloud_cfg):
+        assert stream_watchdog_is_local() is False
+
+
+async def test_broadcast_byom_config_applied_carries_the_watchdog_pairing() -> None:
+    """A preset switch (cloud<->local) is exactly the moment the client's
+    armed watchdog budget/is-local pairing can go stale — this proves the
+    fresh pairing actually rides on the SAME broadcast the extension already
+    listens to, rather than requiring a new WS event type."""
+    from api.websocket_manager import ConnectionManager
+
+    mgr = ConnectionManager()
+    fake_ws = AsyncMock()
+    mgr.active_connections["sess-preset-switch"] = fake_ws
+
+    await mgr.broadcast_byom_config_applied(
+        "preset-1", "My Local Preset",
+        stream_watchdog_ms=180_000, stream_watchdog_is_local=True,
+    )
+
+    fake_ws.send_text.assert_awaited_once()
+    sent_json = fake_ws.send_text.await_args.args[0]
+    assert '"stream_watchdog_ms":180000' in sent_json
+    assert '"stream_watchdog_is_local":true' in sent_json

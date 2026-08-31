@@ -87,7 +87,7 @@ export class SessionManager {
     public async startAITask(
         taskPrompt: string,
         opts?: { explicit_mentions?: string[]; enable_native_thinking?: boolean; planner_mode_active?: boolean; execution_mode?: string; invoked_skill_id?: string; auto_accept_low_risk?: boolean; accepted_plan?: boolean },
-    ): Promise<number | undefined> {
+    ): Promise<{ watchdogMs: number; isLocal: boolean } | undefined> {
         try {
             // 1. Ensure the listening channel (WebSockets) is open BEFORE speaking.
             // Doing it in the opposite order risks losing LangGraph's first tokens.
@@ -166,12 +166,16 @@ export class SessionManager {
             logger.debug(`[SessionManager] Analyzing directive with ${dirtyBuffers.length} buffers in context...`);
 
             // Fire the request. On failure, the local catch handles it.
-            // The 202 carries `stream_watchdog_ms` — the backend-governed timeout the
-            // UI arms its stall watchdog with (longer for slow local engines).
+            // The 202 carries `stream_watchdog_ms`/`stream_watchdog_is_local` —
+            // the backend-governed timeout (longer for slow local engines) and
+            // whether the resolved target is local, so the watchdog can tell
+            // "still working, just slow" apart from a genuine cloud stall.
             const ack = await apiClient.submitTask(this.sessionId, payload) as
-                { stream_watchdog_ms?: number } | undefined;
+                { stream_watchdog_ms?: number; stream_watchdog_is_local?: boolean } | undefined;
             const ms = ack?.stream_watchdog_ms;
-            return typeof ms === 'number' ? ms : undefined;
+            return typeof ms === 'number'
+                ? { watchdogMs: ms, isLocal: Boolean(ack?.stream_watchdog_is_local) }
+                : undefined;
 
         } catch (error: any) {
             if (error.name !== 'AbortError') {
@@ -182,11 +186,21 @@ export class SessionManager {
     }
 
     /**
-     * Panic button (Human-In-The-Loop): aborts the in-flight HTTP request.
+     * Cleans up the client-side HTTP AbortController for the original
+     * submit POST (Workspace.tsx's ABORT_TASK, fired alongside ABORT_MESH on
+     * every Stop click). By the time a user needs Stop, that POST has almost
+     * always already returned "accepted" — the backend spawns the real
+     * generation task and replies immediately — so this controller is
+     * usually already gone and aborting it does nothing to a live
+     * generation. It must therefore never claim success: ABORT_MESH's own
+     * `server_abort_ack` (backend-confirmed, HTTP-fallback-aware) is the
+     * single source of truth for whether Stop actually worked. Previously
+     * this unconditionally showed "Mission aborted by user" regardless of
+     * outcome, which could contradict ABORT_MESH's own honest failure
+     * message for the exact same click.
      */
     public abortCurrentTask(): void {
         APIClient.getInstance().cancelTask(this.sessionId);
-        vscode.window.showWarningMessage("AILIENANT: Mission aborted by user.");
     }
 
     // Expose the session id for the UI to use when it needs to render against it.
